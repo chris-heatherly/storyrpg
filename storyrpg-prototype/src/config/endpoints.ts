@@ -41,6 +41,7 @@ export const PROXY_CONFIG = {
   get modelsAvailable() { return `${this.getProxyUrl()}/models/available`; },
   get modelsScan() { return `${this.getProxyUrl()}/models/scan`; },
   get generatorSettings() { return `${this.getProxyUrl()}/generator-settings`; },
+  get openStoryFolder() { return `${this.getProxyUrl()}/open-story-folder`; },
 
   /** Passport OAuth (proxy only; web uses session cookies on the proxy origin). */
   get authProviders() { return `${this.getProxyUrl()}/auth/providers`; },

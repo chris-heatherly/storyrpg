@@ -12,6 +12,7 @@ import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { buildBranchSkeleton, type BranchSkeleton } from '../utils/branchTopology';
+import { buildBranchAnnotationJsonSchema } from '../schemas/branchAnnotationSchema';
 import type {
   StoryAnchors,
   SevenPointStructure,
@@ -179,7 +180,12 @@ provided. Never invent ids that were not given to you.
       const response = await this.callLLM(
         [{ role: 'user', content: prompt }],
         4,
-        { jsonSchema: { name: 'branch_annotations', description: 'Annotations for the deterministic branch structure', schema: BRANCH_ANNOTATION_SCHEMA } },
+        {
+          jsonSchema: buildBranchAnnotationJsonSchema({
+            pathCount: skeleton.paths.length,
+            reconvergenceCount: skeleton.reconvergence.length,
+          }),
+        },
       );
       const annotations = this.parseJSON<BranchAnnotationPayload>(response);
       this.applyAnnotations(analysis, annotations);
@@ -373,49 +379,6 @@ RULES:
 `;
   }
 }
-
-/** JSON Schema for {@link BranchAnnotationPayload} — enforced provider-side. */
-const BRANCH_ANNOTATION_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  properties: {
-    pathAnnotations: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          name: { type: 'string' },
-          description: { type: 'string' },
-          narrativeTheme: { type: 'string' },
-        },
-        required: ['id'],
-      },
-    },
-    reconvergenceAnnotations: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          sceneId: { type: 'string' },
-          narrativeAcknowledgment: { type: 'string' },
-          stateReconciliation: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                stateVariable: { type: 'string' },
-                possibleValues: { type: 'array', items: { type: 'string' } },
-                howToHandle: { type: 'string' },
-              },
-            },
-          },
-        },
-        required: ['sceneId'],
-      },
-    },
-    recommendations: { type: 'array', items: { type: 'string' } },
-  },
-};
 
 /** Small, flat payload the annotation LLM call returns (keyed by deterministic ids). */
 interface BranchAnnotationPayload {

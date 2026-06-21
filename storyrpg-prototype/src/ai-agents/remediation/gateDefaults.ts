@@ -108,8 +108,10 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // written scene that under-realizes its authored moments gets ONE immediate
   // SceneWriter retry with the exact missing content words as feedback
   // (deterministic mirror of the final validators — no extra LLM to detect);
+  // if authored/signature moments remain missing after that retry, the scene
+  // fails locally instead of deferring the blocker to final-contract repair;
   // (b) polish/regen rewrites that would LOSE a depicted authored moment are
-  // reverted (free). Remediation-only: can retry or preserve, never abort.
+  // reverted (free).
   GATE_SCENE_REQUIRED_BEAT_CHECK: true,
 
   // Judge confirmation for HEURISTIC fidelity findings (WS3, 2026-06-11 audit).
@@ -210,6 +212,11 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // 74-blocker season-final abort. Keep findings as warnings by default; run
   // `GATE_ENCOUNTER_PROSE_INTEGRITY=1` for watched repair/promotion tests.
   GATE_ENCOUNTER_PROSE_INTEGRITY: false,
+  // G24: planning-register/task prose ("Open the episode", "Introduce X on-page",
+  // "Authored treatment choice", "Decide how to handle...") is authoring scaffold,
+  // not fiction. High precision and repairable by localized scene-prose rewrite, so
+  // keep it blocking by default; reversible via =0.
+  GATE_PLANNING_REGISTER_PROSE: true,
   // WS1.4 (bite-me-g17): deterministic encounter skill-rebalance. perception carried 52–55% of
   // choice slots in all three g17 encounters (a single-skill meta). Reassign the excess dominant-
   // skill slots to the least-used skill ALREADY present in the encounter until no skill exceeds
@@ -282,14 +289,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // confirmed misses drive the GATE_FINAL_CONTRACT_SCENE_REGEN per-scene rewrite instead of
   // an immediate abort. The run aborts only when repair rounds exhaust. Reversible via =0.
   GATE_REQUIRED_BEAT_REALIZATION: true,
-  // bite-me-g16 audit: a treatment SEED plant (cold-open / consequence-seed / info-ledger
-  // tell — e.g. "the stray dog in the courtyard, watching") was dropped on-page yet its
-  // Episode-3 payoff still referenced it, because a dropped seed only WARNS. When on, a
-  // seed absent from its entire bound episode escalates from warning to a blocking miss,
-  // routed to the season-final scene regen (re-plant the seed). STILL OFF: detection runs
-  // regardless (warnings + per-episode incremental contract); promote after one live `=1`
-  // run confirms the regen re-plants rather than aborts. Reversible via =0.
-  GATE_TREATMENT_SEED_REALIZATION: false,
+  // bite-me-g16/g24 audit: treatment SEED plants (cold-open / consequence-seed /
+  // info-ledger tells such as "the stray dog in the courtyard, watching", readership
+  // counters, or delivered objects) were dropped on-page yet later payoffs still
+  // referenced them, because a dropped seed only warned. PROMOTED ON 2026-06-20 after
+  // a watched run showed the exact class again (missing blog counter + roses/card)
+  // and the gate already routes to the season-final scene regen path. Reversible via =0.
+  GATE_TREATMENT_SEED_REALIZATION: true,
   // 2026-06-09 storytelling-quality audit: unacknowledged time/place jumps between
   // adjacent scenes (bite-me-g10 bookshop-afternoon → 4am-rooftop hard cut). The
   // generative half is live (plan-time SceneBlueprint.timeOfDay/timeJumpFromPrevious,

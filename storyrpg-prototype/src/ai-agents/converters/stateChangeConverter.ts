@@ -99,21 +99,68 @@ export function convertStateChangeToConsequence(sc: StateChange): Consequence | 
 function tryNormalizeStateChange(raw: Record<string, unknown>): StateChange | null {
   if (!raw || typeof raw !== 'object' || !raw.type) return null;
 
+  const coerceChange = (value: unknown): string | number | boolean => {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+    return 0;
+  };
+
+  const slugFromDescription = (fallback: string): string => {
+    const description = typeof raw.description === 'string' ? raw.description : '';
+    const words = description
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word.length >= 3 && !['your', 'you', 'the', 'and', 'for', 'with', 'into', 'from'].includes(word))
+      .slice(0, 4);
+    return words.length > 0 ? words.join('_') : fallback;
+  };
+
   if (raw.type === 'attribute' && typeof raw.attribute === 'string') {
-    return { type: 'score', name: raw.attribute, change: (raw.change as string | number | boolean) ?? 0 };
+    return { type: 'score', name: raw.attribute, change: coerceChange(raw.change) };
   }
 
   if (raw.type === 'skill' && typeof raw.skill === 'string') {
-    return { type: 'score', name: raw.skill, change: (raw.change as string | number | boolean) ?? 0 };
+    return { type: 'score', name: raw.skill, change: coerceChange(raw.change) };
+  }
+
+  if (raw.type === 'stat') {
+    const name =
+      (typeof raw.name === 'string' && raw.name) ||
+      (typeof raw.stat === 'string' && raw.stat) ||
+      (typeof raw.score === 'string' && raw.score) ||
+      slugFromDescription('encounter_stat');
+    return { type: 'score', name, change: coerceChange(raw.change ?? raw.value) };
   }
 
   if (raw.type === 'relationship' && typeof raw.npcId === 'string' && typeof raw.dimension === 'string') {
-    return { type: 'relationship', name: `${raw.npcId}:${raw.dimension}`, change: (raw.change as string | number | boolean) ?? 0 };
+    return { type: 'relationship', name: `${raw.npcId}:${raw.dimension}`, change: coerceChange(raw.change ?? raw.value) };
   }
 
-  // { type: 'score', score: 'X', ... } — missing `name` field but has `score`
-  if (raw.type === 'score' && typeof raw.score === 'string' && !raw.name) {
-    return { type: 'score', name: raw.score, change: (raw.change as string | number | boolean) ?? 0 };
+  if (raw.type === 'relationship') {
+    const target =
+      (typeof raw.name === 'string' && raw.name) ||
+      (typeof raw.npcId === 'string' && raw.npcId) ||
+      (typeof raw.targetNpcId === 'string' && raw.targetNpcId) ||
+      (typeof raw.characterId === 'string' && raw.characterId);
+    if (target) {
+      return { type: 'relationship', name: target.includes(':') ? target : `${target}:trust`, change: coerceChange(raw.change ?? raw.value) };
+    }
+    return { type: 'score', name: slugFromDescription('encounter_relationship_pressure'), change: coerceChange(raw.change ?? raw.value) };
+  }
+
+  // { type: 'score', score: 'X', ... } or { type: 'score', flag: 'X', ... }
+  // — missing `name` field but carries the score key under a common LLM alias.
+  if (raw.type === 'score' && !raw.name) {
+    const name =
+      (typeof raw.score === 'string' && raw.score) ||
+      (typeof raw.flag === 'string' && raw.flag);
+    if (name) {
+      return { type: 'score', name, change: coerceChange(raw.change ?? raw.value) };
+    }
+    if (typeof raw.description === 'string' && (raw.change !== undefined || raw.value !== undefined)) {
+      return { type: 'score', name: slugFromDescription('encounter_score'), change: coerceChange(raw.change ?? raw.value) };
+    }
   }
 
   // { type: 'flag', flag: 'X', value: true } — missing `name` field but has `flag`

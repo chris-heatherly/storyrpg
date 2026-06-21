@@ -84,7 +84,7 @@ describe('harvestEpisodeCallbacks', () => {
     // door_open (flag:) + tint:bold (tone:) = 2 hooks; route_left excluded.
     expect(newHooks).toBe(2);
     expect(ledger.size()).toBe(2);
-    expect(ledger.all().map((h) => h.id)).toEqual(expect.arrayContaining(['flag:door_open', 'tone:bold']));
+    expect(ledger.all().map((h) => h.id)).toEqual(expect.arrayContaining(['flag:door_open', 'tone:boldness']));
     expect(ledger.all().some((h) => h.id.startsWith('route'))).toBe(false);
   });
 
@@ -354,6 +354,53 @@ describe('injectFallbackCallbacks', () => {
     expect(variant.text).toContain('You asked the real question.');
   });
 
+  it('does not inject fallback callback variants onto choice-point beats', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'accept-card',
+            text: "Accept Victor's card.",
+            consequences: [{ type: 'setFlag', flag: 'accepted_club_card', value: true } as any],
+            reminderPlan: {
+              immediate: "Victor's card sits heavy in your pocket.",
+              shortTerm: "Victor's card sits heavy in your pocket.",
+            },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const choiceBeat = {
+      id: 'scene-2-choice',
+      text: 'Stela presses a small protection bag into your palm.',
+      isChoicePoint: true,
+      choices: [{ id: 'take-bag', text: 'Accept the herb bag gracefully.' }],
+      textVariants: [] as any[],
+    };
+    const laterBeat = {
+      id: 'scene-2-after',
+      text: 'The brunch table goes quiet.',
+      textVariants: [] as any[],
+    };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [choiceBeat, laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+
+    expect(injected).toBe(1);
+    expect(choiceBeat.textVariants).toHaveLength(0);
+    expect(laterBeat.textVariants).toHaveLength(1);
+    expect(laterBeat.textVariants[0].text).toContain("Victor's card sits heavy");
+  });
+
   it('G12: never sources injected prose from the ChoiceAuthor reminder stubs', () => {
     const ledger = new CallbackLedger();
     const choiceSets = [
@@ -382,16 +429,40 @@ describe('injectFallbackCallbacks', () => {
       ] as any,
       choiceSets: choiceSets as any,
     });
-    // Behavior intentionally changed (part C): rather than dropping the hook, the
-    // realizer now falls through the meta reminder stubs to a CLEAN deterministic
-    // acknowledgment derived from the choice — but never the stub itself.
-    expect(injected).toBe(1);
-    const variant = laterBeat.textVariants[0];
-    expect(variant.text).not.toContain('The moment lands immediately.');
-    expect(variant.text).not.toContain('should remember this choice');
-    // Base prose preserved; clean derived continuity beat appended.
-    expect(variant.text).toContain('Base prose.');
-    expect(variant.text).toContain('earlier');
+    // If no authored in-fiction prose exists, skip the injection rather than
+    // synthesize a generic callback line.
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
+    expect(laterBeat.text).toBe('Base prose.');
+  });
+
+  it('does not derive fallback callback prose from bare choice text', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Accepting the quartz Stela presses into my hand',
+            consequences: [{ type: 'setFlag', flag: 'accepted_quartz', value: true } as any],
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+    const laterBeat = { id: 'scene-2-beat-1', text: 'Base prose.', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
   });
 
   it('does not double-realize a hook already referenced by an authored variant', () => {
@@ -489,14 +560,10 @@ describe('injectFallbackCallbacks', () => {
       choiceSets: choiceSets as any,
     });
 
-    // Behavior intentionally changed (part C): the meta scene-references are still
-    // rejected, but the hook now realizes via the clean derived fallback instead of
-    // being dropped. Critically, NONE of the leaked planning text reaches prose.
-    expect(injected).toBe(1);
-    const variant = laterBeat.textVariants[0];
-    expect(variant.text).not.toContain('In the next scene');
-    expect(variant.text).not.toContain('In the caravan scene');
-    expect(variant.text).not.toMatch(/\bscene\b/i);
+    // Meta scene-references are rejected, and without authored in-fiction prose
+    // the hook is dropped rather than replaced with generic scaffolding.
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
   });
 
   it('falls through a meta reminderPlan to a clean echoSummary', () => {
@@ -632,7 +699,7 @@ describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, deri
     expect(injected).toBe(4);
   });
 
-  it('realizes a stub-only flag hook via the clean derived acknowledgment (no longer dropped)', () => {
+  it('drops a stub-only flag hook instead of synthesizing generic callback prose', () => {
     const ledger = new CallbackLedger();
     // A choice with NO authored reminderPlan/echo — its only prose source is the
     // synthesized `Earlier choice: "…" (sets …)` stub the filter rejects.
@@ -655,14 +722,9 @@ describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, deri
       ] as any,
       choiceSets: choiceSets as any,
     });
-    expect(injected).toBe(1);
-    const variant = laterBeat.textVariants[0];
-    expect(variant.callbackHookId).toBe('flag:took_back_stairs');
-    // Base prose preserved; clean derived continuity beat appended; no raw stub.
-    expect(variant.text).toContain('Inside, the lobby is empty.');
-    expect(variant.text).not.toContain('Earlier choice:');
-    expect(variant.text).not.toContain('sets took_back_stairs');
-    expect(variant.text).not.toMatch(/\bscene\b/i);
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
+    expect(laterBeat.text).toBe('Inside, the lobby is empty.');
   });
 });
 

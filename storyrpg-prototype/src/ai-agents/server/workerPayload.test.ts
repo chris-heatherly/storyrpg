@@ -17,6 +17,23 @@ describe('assertValidWorkerPayload', () => {
     expect(() => assertValidWorkerPayload(payload)).not.toThrow();
   });
 
+  it('accepts optional worker display labels', () => {
+    const payload = {
+      mode: 'generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      friendlyName: 'Bite Me · Story generation · Episodes 1-8',
+      processTitle: 'storyrpg:generation:Bite-Me',
+      generationInput: {
+        brief: {
+          story: { title: 'Bite Me' },
+        },
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
   it('accepts a valid image-generation payload', () => {
     const payload = {
       mode: 'image-generation',

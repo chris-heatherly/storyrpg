@@ -245,6 +245,7 @@ function visitConsequence(
 ): void {
   switch (consequence.type) {
     case 'setFlag':
+      if (typeof consequence.flag !== 'string' || consequence.flag.trim().length === 0) break;
       state.flagsIntroduced.push(consequence.flag);
       if (consequence.flag.startsWith('arc:')) {
         const [, axis, direction = 'changed'] = consequence.flag.split(':');
@@ -253,12 +254,17 @@ function visitConsequence(
       break;
     case 'changeScore':
     case 'setScore':
-      state.scoresChanged.push(consequence.score);
+      if (typeof consequence.score === 'string' && consequence.score.trim().length > 0) {
+        state.scoresChanged.push(consequence.score);
+      }
       break;
     case 'addTag':
-      state.tagsIntroduced.push(consequence.tag);
+      if (typeof consequence.tag === 'string' && consequence.tag.trim().length > 0) {
+        state.tagsIntroduced.push(consequence.tag);
+      }
       break;
     case 'relationship':
+      if (typeof consequence.npcId !== 'string' || consequence.npcId.trim().length === 0) break;
       state.relationshipDeltas.push({
         npcId: consequence.npcId,
         dimension: consequence.dimension,

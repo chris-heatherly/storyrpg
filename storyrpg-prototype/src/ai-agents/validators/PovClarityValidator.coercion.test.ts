@@ -24,6 +24,19 @@ describe('coerceThirdPersonProtagonistToSecond (WS0.3 encounter-POV backstop)', 
     expect(text).toBe('You touch your own arm, realizing how easily you almost let a beautiful face overwrite your instincts.');
   });
 
+  it('preserves object-vs-possessive uses of her in the Bite Me Cișmigiu rescue beat', () => {
+    const src = 'Kylie is pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks her home, kisses her hand at the threshold, declines to come in, and vanishes.';
+    const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
+    expect(text).toBe('You are pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks you home, kisses your hand at the threshold, declines to come in, and vanishes.');
+  });
+
+  it('does not steal an NPC possessive before the protagonist anchor and repairs self-body residue', () => {
+    const src = 'The charcoal suit steps back, the streetlamp catching the silver pin on his lapel. Kylie touches her throat, finding it bruised but whole, the sharp night air filling her lungs. The shadow is gone, leaving only the scent of ozone and old earth.';
+    const wrongPronouns = { coercePronouns: true, subjectPronoun: 'he' as const };
+    const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, wrongPronouns);
+    expect(text).toBe('The charcoal suit steps back, the streetlamp catching the silver pin on his lapel. You touch your throat, finding it bruised but whole, the sharp night air filling your lungs. The shadow is gone, leaving only the scent of ozone and old earth.');
+  });
+
   it('does not turn protagonist-name modifiers into malformed "you noun" prose', () => {
     const src = 'Kylie rooftop bar is everything she crossed an ocean for.';
     const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
@@ -34,6 +47,22 @@ describe('coerceThirdPersonProtagonistToSecond (WS0.3 encounter-POV backstop)', 
     const src = 'Kylie candle between them dies.';
     const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
     expect(text).toBe('Your candle between them dies.');
+  });
+
+  it('uses possessive second person for possessive protagonist names', () => {
+    const src = "The attacker flees, but Kylie's favorite scarf is torn, her neck bruised.";
+    const { text } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
+    expect(text).toBe('The attacker flees, but your favorite scarf is torn, your neck bruised.');
+  });
+
+  it('coerces malformed male object-pronoun possessives to your eyes/forehead/laptop', () => {
+    const male = { coercePronouns: true, subjectPronoun: 'he' as const };
+    expect(coerceThirdPersonProtagonistToSecond('A flash catches him eyes.', 'Mika', male).text)
+      .toBe('A flash catches your eyes.');
+    expect(coerceThirdPersonProtagonistToSecond('Rain beads on him forehead.', 'Mika', male).text)
+      .toBe('Rain beads on your forehead.');
+    expect(coerceThirdPersonProtagonistToSecond('The post waits on him laptop.', 'Mika', male).text)
+      .toBe('The post waits on your laptop.');
   });
 
   it('preserves quoted dialogue', () => {
@@ -51,6 +80,13 @@ describe('coerceThirdPersonProtagonistToSecond (WS0.3 encounter-POV backstop)', 
 
   it('does not touch NPC-only prose', () => {
     const src = 'Victor pours the last of the champagne, his gaze lingering.';
+    const { text, changed } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
+    expect(changed).toBe(false);
+    expect(text).toBe(src);
+  });
+
+  it('does not pronoun-coerce NPC-only feminine prose when the protagonist is absent', () => {
+    const src = 'The shadow digs her claws into the bark. The stranger extends his hand.';
     const { text, changed } = coerceThirdPersonProtagonistToSecond(src, KYLIE, pronouns);
     expect(changed).toBe(false);
     expect(text).toBe(src);

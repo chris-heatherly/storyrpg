@@ -49,15 +49,16 @@ export interface AgentMessage {
 /**
  * Opt-in schema-strict JSON output for a single {@link BaseAgent.callLLM} call.
  * When provided, the agent forces the provider to return JSON matching `schema`:
- * Anthropic via forced tool use (`tool_choice`), OpenAI via `response_format`
- * `json_schema`. Other providers (and the proxy/web path when the model returns
- * plain text) degrade gracefully to text parsing — the prompt still carries the
- * shape, so `parseJSON` recovers it. `schema` is a JSON Schema object.
+ * Anthropic via forced tool use (`tool_choice`), OpenAI/OpenRouter via
+ * `response_format` `json_schema`, and Gemini via `responseSchema` with
+ * `responseMimeType: application/json`. `schema` is a JSON Schema object.
  */
 export interface StructuredJsonSchema {
   /** Tool/schema name (must match `^[a-zA-Z0-9_-]+$` for the provider APIs). */
   name: string;
   description?: string;
+  /** Expected compact output cap for this schema; prevents structured calls inheriting oversized agent budgets. */
+  maxOutputTokens?: number;
   schema: Record<string, unknown>;
 }
 
@@ -90,6 +91,22 @@ export class LLMQuotaError extends Error {
   }
 }
 
+export class TruncatedLLMResponseError extends Error {
+  public readonly provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown';
+  public readonly finishReason?: string;
+
+  constructor(
+    message: string,
+    provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown' = 'unknown',
+    finishReason?: string,
+  ) {
+    super(message);
+    this.name = 'TruncatedLLMResponseError';
+    this.provider = provider;
+    this.finishReason = finishReason;
+  }
+}
+
 export function isLlmQuotaError(err: unknown): boolean {
   if (err instanceof LLMQuotaError) return true;
   const message = err instanceof Error ? err.message : String(err ?? '');
@@ -100,6 +117,86 @@ export function isLlmQuotaError(err: unknown): boolean {
     lower.includes('generate_requests_per_model_per_day') ||
     lower.includes('limit: 0')
   );
+}
+
+function isTruncationFinishReason(reason: unknown): boolean {
+  return /^(?:max_tokens|max_tokens?_|max[_-]?tokens|length)$/i.test(String(reason || ''));
+}
+
+function toGeminiResponseSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const stripUnsupported = (value: unknown, parentKey?: string): unknown => {
+    if (Array.isArray(value)) return value.map((item) => stripUnsupported(item, parentKey));
+    if (!value || typeof value !== 'object') return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      // Gemini's REST `responseSchema` accepts an OpenAPI-style subset and
+      // rejects `additionalProperties` even though our deterministic registry
+      // uses it for provider-neutral JSON Schema. Strip it only for Gemini.
+      if (key === 'additionalProperties') continue;
+      // Strip JSON-Schema annotation text, but keep real output properties named
+      // "description" under a `properties` map.
+      if (key === 'description' && parentKey !== 'properties') continue;
+      out[key] = stripUnsupported(nested, key);
+    }
+    return out;
+  };
+
+  return stripUnsupported(schema) as Record<string, unknown>;
+}
+
+function structuredMaxTokens(configured: number, schema: StructuredJsonSchema | undefined, defaultCap: number): number {
+  const configuredValue = Number.isFinite(configured) && configured > 0 ? configured : defaultCap;
+  const schemaCap = Number.isFinite(schema?.maxOutputTokens) && (schema?.maxOutputTokens ?? 0) > 0
+    ? schema!.maxOutputTokens!
+    : defaultCap;
+  return Math.max(256, Math.min(configuredValue, schemaCap));
+}
+
+function resolveGeminiThinkingConfig(model: string | undefined, structured: boolean): Record<string, unknown> | undefined {
+  if (!structured) return undefined;
+  const normalized = String(model || '').toLowerCase();
+  const envBudget = Number.parseInt(
+    process.env.GEMINI_STRUCTURED_THINKING_BUDGET
+      || process.env.EXPO_PUBLIC_GEMINI_STRUCTURED_THINKING_BUDGET
+      || '',
+    10,
+  );
+  const envLevel = (
+    process.env.GEMINI_STRUCTURED_THINKING_LEVEL
+      || process.env.EXPO_PUBLIC_GEMINI_STRUCTURED_THINKING_LEVEL
+      || ''
+  ).trim().toLowerCase();
+
+  if (/gemini-(?:3|3\.)/.test(normalized)) {
+    return { thinkingLevel: envLevel || 'low' };
+  }
+  if (/gemini-2\.5/.test(normalized)) {
+    if (Number.isFinite(envBudget)) return { thinkingBudget: envBudget };
+    return { thinkingBudget: normalized.includes('pro') ? 128 : 0 };
+  }
+  return undefined;
+}
+
+function structuredOutputContract(schemaName: string): string {
+  return [
+    `STRUCTURED OUTPUT CONTRACT: the API request includes the deterministic JSON schema "${schemaName}".`,
+    'Return exactly one JSON value matching that schema.',
+    'Do not add fields that are not named in the schema. Do not include markdown, commentary, placeholders, schema examples, or rationale.',
+    'Keep every string concise and scene-specific; prefer short, concrete prose over broad explanation.',
+  ].join(' ');
+}
+
+function appendTextInstruction(message: AgentMessage, instruction: string): AgentMessage {
+  if (typeof message.content === 'string') {
+    return { ...message, content: `${message.content}\n\n${instruction}` };
+  }
+  return {
+    ...message,
+    content: [
+      ...message.content,
+      { type: 'text', text: instruction },
+    ],
+  };
 }
 
 export interface LlmGuardrailConfig {
@@ -296,7 +393,8 @@ export abstract class BaseAgent {
       msg.includes('503') || // Service unavailable
       msg.includes('rate limit') ||
       msg.includes('overloaded') ||
-      msg.includes('high demand')
+      msg.includes('high demand') ||
+      msg.includes('truncated llm response')
     );
     return { isRetryable, isAbortError, isConnectionFailure };
   }
@@ -398,6 +496,12 @@ Do not use markdown code blocks around the JSON.
     if (!systemMessage && this.includeSystemPrompt && this.systemPrompt) {
       systemMessage = { role: 'system', content: this.systemPrompt };
     }
+    if (options?.jsonSchema) {
+      const instruction = structuredOutputContract(options.jsonSchema.name);
+      systemMessage = systemMessage
+        ? appendTextInstruction(systemMessage, instruction)
+        : { role: 'system', content: instruction };
+    }
 
     const fullMessages: AgentMessage[] = [
       ...(systemMessage ? [systemMessage] : []),
@@ -441,7 +545,7 @@ Do not use markdown code blocks around the JSON.
         } else if (this.config.provider === 'anthropic') {
           result = await this.callAnthropic(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else if (this.config.provider === 'gemini') {
-          result = await this.callGemini(fullMessages, signal, usageCapture);
+          result = await this.callGemini(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else if (this.config.provider === 'openrouter') {
           result = await this.callOpenRouter(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else {
@@ -492,6 +596,13 @@ Do not use markdown code blocks around the JSON.
           attempt,
           error: lastError.message,
         });
+
+        // Truncation is not a transient provider failure. Retrying the same
+        // prompt/output schema repeats the same MAX_TOKENS failure and prevents
+        // agent-level compact/schema-specific repair paths from running.
+        if (lastError instanceof TruncatedLLMResponseError) {
+          throw lastError;
+        }
 
         // Classify the failure (pure helper — see BaseAgent.classifyLlmError). The
         // scoped abort signal is authoritative for "was this an intentional abort",
@@ -578,7 +689,7 @@ Do not use markdown code blocks around the JSON.
 
     const body: any = {
       model: this.config.model,
-      max_tokens: this.config.maxTokens,
+      max_tokens: jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens,
       // Cache the stable system prompt prefix across calls (C1).
       system: this.buildCachedSystemField(systemText),
       messages: otherMessages.map((m) => {
@@ -697,7 +808,11 @@ Do not use markdown code blocks around the JSON.
         if (typeof data.usage?.output_tokens === 'number') usageOut.outputTokens = data.usage.output_tokens;
       }
       if (stopReason === 'max_tokens') {
-        console.warn(`[${this.name}] ⚠️ RESPONSE TRUNCATED — stop_reason is max_tokens (limit: ${this.config.maxTokens}). Response will be incomplete JSON.`);
+        throw new TruncatedLLMResponseError(
+          `Truncated LLM response from Anthropic: stop_reason=max_tokens (limit: ${this.config.maxTokens})`,
+          'anthropic',
+          'max_tokens',
+        );
       }
       // Schema-strict path: return the forced tool's `input` (already valid JSON)
       // serialized so the caller's parseJSON sees an object. Falls back to text
@@ -712,6 +827,7 @@ Do not use markdown code blocks around the JSON.
         : undefined;
       return textBlock?.text ?? data.content[0]?.text ?? '';
     } catch (parseError) {
+      if (parseError instanceof TruncatedLLMResponseError) throw parseError;
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       throw new Error(`Failed to parse Anthropic response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
@@ -908,7 +1024,11 @@ Do not use markdown code blocks around the JSON.
         }
 
         if (stopReason === 'max_tokens') {
-          console.warn(`[${this.name}] ⚠️ RESPONSE TRUNCATED with memory enabled`);
+          throw new TruncatedLLMResponseError(
+            `Truncated LLM response from Anthropic: stop_reason=max_tokens with memory enabled (limit: ${this.config.maxTokens})`,
+            'anthropic',
+            'max_tokens',
+          );
         }
         return textBlock?.text || '';
       }
@@ -1007,11 +1127,13 @@ Do not use markdown code blocks around the JSON.
         high: 32768,
       };
       const floor = reasoningFloorByEffort[reasoningEffort] ?? 16384;
-      const budget = Math.max(this.config.maxTokens ?? 0, floor);
+      const budget = jsonSchema
+        ? structuredMaxTokens(this.config.maxTokens, jsonSchema, floor)
+        : Math.max(this.config.maxTokens ?? 0, floor);
       body.max_completion_tokens = budget;
       body.reasoning_effort = reasoningEffort;
     } else {
-      body.max_tokens = this.config.maxTokens;
+      body.max_tokens = jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens;
       body.temperature = this.config.temperature;
     }
 
@@ -1049,6 +1171,13 @@ Do not use markdown code blocks around the JSON.
       const choice = data.choices?.[0];
       const content: string = choice?.message?.content ?? '';
       const finishReason: string | undefined = choice?.finish_reason;
+      if (isTruncationFinishReason(finishReason)) {
+        throw new TruncatedLLMResponseError(
+          `Truncated LLM response from OpenAI: finish_reason=${finishReason} (limit: ${this.config.maxTokens})`,
+          'openai',
+          finishReason,
+        );
+      }
 
       if (!content || content.trim().length === 0) {
         const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
@@ -1069,6 +1198,7 @@ Do not use markdown code blocks around the JSON.
 
       return content;
     } catch (parseError) {
+      if (parseError instanceof TruncatedLLMResponseError) throw parseError;
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       // If we already threw a descriptive error above, rethrow it verbatim.
       if (msg.startsWith('OpenAI returned empty content')) throw parseError;
@@ -1189,7 +1319,7 @@ Do not use markdown code blocks around the JSON.
           }).filter(Boolean),
         };
       }),
-      max_tokens: this.config.maxTokens,
+      max_tokens: jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens,
       temperature: this.config.temperature,
     };
     if (jsonSchema) {
@@ -1229,6 +1359,13 @@ Do not use markdown code blocks around the JSON.
       const choice = data.choices?.[0];
       const content: string = choice?.message?.content ?? '';
       const finishReason: string | undefined = choice?.finish_reason;
+      if (isTruncationFinishReason(finishReason)) {
+        throw new TruncatedLLMResponseError(
+          `Truncated LLM response from OpenRouter: finish_reason=${finishReason} (limit: ${this.config.maxTokens})`,
+          'openrouter',
+          finishReason,
+        );
+      }
       if (!content || content.trim().length === 0) {
         throw new Error(
           `OpenRouter returned empty content (finish_reason=${finishReason ?? 'unknown'}). Model=${model}. Response: ${text.substring(0, 500)}`,
@@ -1236,6 +1373,7 @@ Do not use markdown code blocks around the JSON.
       }
       return content;
     } catch (parseError) {
+      if (parseError instanceof TruncatedLLMResponseError) throw parseError;
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       if (msg.startsWith('OpenRouter returned empty content')) throw parseError;
       throw new Error(`Failed to parse OpenRouter response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
@@ -1316,6 +1454,7 @@ Do not use markdown code blocks around the JSON.
     messages: AgentMessage[],
     signal?: AbortSignal,
     usageOut?: { inputTokens?: number; outputTokens?: number },
+    jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error('Gemini API key is missing');
@@ -1328,6 +1467,9 @@ Do not use markdown code blocks around the JSON.
       console.warn(`[${this.name}] Anthropic model "${model}" passed to Gemini provider — falling back to gemini-2.5-pro`);
       model = 'gemini-2.5-pro';
     }
+    const maxOutputTokens = jsonSchema
+      ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192)
+      : this.config.maxTokens;
 
     const toParts = (content: AgentMessage['content']): Array<{ text: string }> => {
       if (typeof content === 'string') {
@@ -1346,7 +1488,11 @@ Do not use markdown code blocks around the JSON.
       })),
       generationConfig: {
         temperature: this.config.temperature,
-        maxOutputTokens: this.config.maxTokens,
+        maxOutputTokens,
+        ...(() => {
+          const thinkingConfig = resolveGeminiThinkingConfig(model, !!jsonSchema);
+          return thinkingConfig ? { thinkingConfig } : {};
+        })(),
         // Gemini's native JSON mode: constrains the model to emit a single valid
         // JSON value — no markdown fences, no prose preamble — which the narrative
         // agents (SceneWriter/ChoiceAuthor/StoryArchitect) all expect. Without it
@@ -1355,9 +1501,14 @@ Do not use markdown code blocks around the JSON.
         // Mirrors the OpenAI `response_format: json_object` path and shares its opt-out
         // flag, so an agent that wants free-form prose (openaiForceJsonResponse=false)
         // still gets plain text.
-        ...(this.config.openaiForceJsonResponse !== false
-          ? { responseMimeType: 'application/json' }
-          : {}),
+        ...(jsonSchema
+          ? {
+              responseMimeType: 'application/json',
+              responseSchema: toGeminiResponseSchema(jsonSchema.schema),
+            }
+          : this.config.openaiForceJsonResponse !== false
+            ? { responseMimeType: 'application/json' }
+            : {}),
       },
       // Gemini's DEFAULT safety filters over-block mature creative fiction — a dark
       // vampire-romance world (blood, predators, hunting, sensuality) trips them and the API
@@ -1377,7 +1528,7 @@ Do not use markdown code blocks around the JSON.
 
     // LEVER A: stream on the node/direct path via :streamGenerateContent?alt=sse.
     // The web/proxy path keeps the buffered :generateContent call below.
-    if (shouldStreamLLM(isWebRuntime())) {
+    if (!jsonSchema && shouldStreamLLM(isWebRuntime())) {
       return await this.callGeminiStreaming(model, body, signal, usageOut);
     }
 
@@ -1385,7 +1536,7 @@ Do not use markdown code blocks around the JSON.
     // (the worker path) have no proxy to honor a timeout header, so without this
     // a stalled connection hangs indefinitely with no output and the worker gets
     // killed as "stale". The timeout aborts the fetch so the retry loop can act.
-    const timeoutMs = this.config.maxTokens >= 32000 ? 900_000 : 300_000;
+    const timeoutMs = maxOutputTokens >= 32000 ? 900_000 : 300_000;
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(new Error(`Gemini request exceeded ${timeoutMs}ms timeout`)),
@@ -1421,7 +1572,10 @@ Do not use markdown code blocks around the JSON.
       try {
         const parsed = JSON.parse(text);
         const maybeMessage = parsed?.error?.message;
-        if (maybeMessage) message = `Gemini API error: ${maybeMessage}`;
+        const maybeDetails = Array.isArray(parsed?.error?.details)
+          ? ` Details: ${JSON.stringify(parsed.error.details).slice(0, 1200)}`
+          : '';
+        if (maybeMessage) message = `Gemini API error: ${maybeMessage}${maybeDetails}`;
         if (BaseAgent.isQuotaMessage(maybeMessage || text)) {
           throw new LLMQuotaError(message, 'gemini');
         }
@@ -1443,8 +1597,17 @@ Do not use markdown code blocks around the JSON.
         if (typeof promptTokens === 'number') usageOut.inputTokens = promptTokens;
         if (typeof candidatesTokens === 'number') usageOut.outputTokens = candidatesTokens;
       }
+      const finishReason = data?.candidates?.[0]?.finishReason;
+      if (isTruncationFinishReason(finishReason)) {
+        const candidatesTokens = data?.usageMetadata?.candidatesTokenCount;
+        const thoughtsTokens = data?.usageMetadata?.thoughtsTokenCount;
+        throw new TruncatedLLMResponseError(
+          `Truncated LLM response from Gemini: finishReason=${finishReason} (limit: ${maxOutputTokens}, outputTokens: ${typeof candidatesTokens === 'number' ? candidatesTokens : 'unknown'}, thoughtsTokens: ${typeof thoughtsTokens === 'number' ? thoughtsTokens : 'unknown'})`,
+          'gemini',
+          finishReason,
+        );
+      }
       if (!output) {
-        const finishReason = data?.candidates?.[0]?.finishReason;
         const blockReason = data?.promptFeedback?.blockReason;
         throw new Error(
           `Gemini returned empty content (finishReason=${finishReason ?? 'unknown'}`
@@ -1453,6 +1616,7 @@ Do not use markdown code blocks around the JSON.
       }
       return output;
     } catch (parseError) {
+      if (parseError instanceof TruncatedLLMResponseError) throw parseError;
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       throw new Error(`Failed to parse Gemini response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
@@ -1547,6 +1711,13 @@ Do not use markdown code blocks around the JSON.
         + `${result.blockReason ? `, blockReason=${result.blockReason}` : ''}). Model=${model}.`,
       );
     }
+    if (isTruncationFinishReason(result.finishReason)) {
+      throw new TruncatedLLMResponseError(
+        `Truncated LLM response from Gemini stream: finishReason=${result.finishReason} (limit: ${this.config.maxTokens})`,
+        'gemini',
+        result.finishReason,
+      );
+    }
     return result.text;
   }
 
@@ -1585,9 +1756,16 @@ Do not use markdown code blocks around the JSON.
       try {
         const repaired = this.repairJSON(cleaned);
         const result = JSON.parse(repaired) as T;
+        if (this.lastResponseTruncated && process.env.STORYRPG_ALLOW_LOSSY_JSON_TRUNCATION !== '1') {
+          throw new TruncatedLLMResponseError(
+            `Truncated LLM response from ${this.name}: JSON repair dropped or synthesized content; rejecting lossy parse.`,
+            this.config.provider,
+          );
+        }
         log.debug(`[${this.name}] JSON repair successful`);
         return result;
       } catch (repairError) {
+        if (repairError instanceof TruncatedLLMResponseError) throw repairError;
         // All attempts failed - throw original error with context
         throw new Error(`Failed to parse JSON response: ${firstError}\nResponse: ${response.slice(0, 500)}...`);
       }
@@ -1669,24 +1847,14 @@ Do not use markdown code blocks around the JSON.
    */
   private stripMarkdownCodeBlocks(response: string): string {
     let cleaned = response.trim();
-    
-    // Pattern 0: LLM outputs prose BEFORE a code block (e.g. "Looking at the character...\n```json\n{...}\n```")
-    // This is common — extract the JSON from inside the code block regardless of preamble text
-    const embeddedCodeBlock = cleaned.match(/```(?:json|JSON)?\s*\n([\s\S]*?)\n\s*```/);
-    if (embeddedCodeBlock) {
-      const extracted = embeddedCodeBlock[1].trim();
-      // Verify it looks like JSON before using it
-      if (extracted.startsWith('{') || extracted.startsWith('[')) {
-        return extracted;
-      }
-    }
-    
-    // Pattern 1: ```json\n...\n``` or ```\n...\n``` (entire response is a code block)
-    // Use regex to handle whitespace variations
-    const codeBlockMatch = cleaned.match(/^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?\s*```\s*$/);
-    if (codeBlockMatch) {
-      return codeBlockMatch[1].trim();
-    }
+
+    // Avoid broad /[\s\S]*?/ regex extraction on model output. Large or malformed
+    // SceneWriter responses can otherwise burn CPU inside V8 regexp matching before
+    // the truncation/repair guards get a chance to reject them. Fence handling is a
+    // simple bounded scan: find the first ``` fence, skip an optional language tag,
+    // and use the next fence if present.
+    const fenced = this.extractMarkdownFenceBody(cleaned);
+    if (fenced) return fenced;
     
     // Pattern 2: Just strip leading ```json or ``` and trailing ```
     // Handle cases where there's content after closing ```
@@ -1698,10 +1866,10 @@ Do not use markdown code blocks around the JSON.
       cleaned = cleaned.slice(3);
     }
     
-    // Remove trailing ``` with possible whitespace
-    const trailingMatch = cleaned.match(/([\s\S]*?)\s*```\s*$/);
-    if (trailingMatch) {
-      cleaned = trailingMatch[1];
+    // Remove a trailing fence with possible whitespace using linear string ops.
+    const trailingFence = cleaned.lastIndexOf('```');
+    if (trailingFence >= 0 && cleaned.slice(trailingFence + 3).trim() === '') {
+      cleaned = cleaned.slice(0, trailingFence);
     }
     
     // Pattern 3: Sometimes LLM wraps with single backticks
@@ -1738,6 +1906,33 @@ Do not use markdown code blocks around the JSON.
     }
     
     return cleaned.trim();
+  }
+
+  private extractMarkdownFenceBody(text: string): string | null {
+    const open = text.indexOf('```');
+    if (open < 0) return null;
+
+    let bodyStart = open + 3;
+    while (bodyStart < text.length && /[ \t]/.test(text[bodyStart])) bodyStart += 1;
+
+    const lineEnd = text.indexOf('\n', bodyStart);
+    if (lineEnd >= 0) {
+      const tag = text.slice(bodyStart, lineEnd).trim().toLowerCase();
+      if (tag === '' || tag === 'json') {
+        bodyStart = lineEnd + 1;
+      } else if (open === 0) {
+        // Unknown fence language; keep the body after the tag for backward
+        // compatibility with providers that return ```JSON5-ish labels.
+        bodyStart = lineEnd + 1;
+      }
+    }
+
+    const close = text.indexOf('```', bodyStart);
+    if (close < 0) return null;
+
+    const body = text.slice(bodyStart, close).trim();
+    if (body.startsWith('{') || body.startsWith('[')) return body;
+    return null;
   }
 
   /**
@@ -1852,22 +2047,17 @@ Do not use markdown code blocks around the JSON.
 
     // Find the last complete array element (for shots arrays)
     // Look for the pattern: }, { or }, ] which indicates a complete object in an array
-    const lastCompleteObjectMatch = json.match(/.*\}(\s*,\s*\{|\s*\])/s);
-    if (lastCompleteObjectMatch) {
-      // Find the position of the last complete object
-      const lastCompletePos = json.lastIndexOf('},');
-      if (lastCompletePos > 0) {
-        // Truncate after the last complete object
-        const truncated = json.slice(0, lastCompletePos + 1);
-        const droppedChars = json.length - truncated.length;
-        this.markResponseTruncated();
-        log.warn(
-          `[${this.name}] Truncation recovery DROPPED ~${droppedChars} chars of content ` +
-            `(recovered to last complete object). Output is incomplete — likely missing trailing ` +
-            `scenes/beats. Consider raising maxTokens. See landmine L4.`,
-        );
-        return truncated;
-      }
+    const lastCompletePos = json.lastIndexOf('},');
+    if (lastCompletePos > 0) {
+      const truncated = json.slice(0, lastCompletePos + 1);
+      const droppedChars = json.length - truncated.length;
+      this.markResponseTruncated();
+      log.warn(
+        `[${this.name}] Truncation recovery DROPPED ~${droppedChars} chars of content ` +
+          `(recovered to last complete object). Output is incomplete — likely missing trailing ` +
+          `scenes/beats. Consider raising maxTokens. See landmine L4.`,
+      );
+      return truncated;
     }
 
     // If we can't find a clean truncation point, try to close the current string
@@ -1885,11 +2075,11 @@ Do not use markdown code blocks around the JSON.
     if (quoteCount % 2 === 1 && lastQuotePos > 0) {
       // Find the last property name before the unterminated value
       const beforeLastQuote = json.slice(0, lastQuotePos);
-      const lastPropMatch = beforeLastQuote.match(/.*"([^"]+)"\s*:\s*$/s);
+      const lastPropName = this.findPropertyNameBeforeDanglingValue(beforeLastQuote);
       
-      if (lastPropMatch) {
+      if (lastPropName) {
         // Truncate before this property and close the structure
-        const propStart = beforeLastQuote.lastIndexOf('"' + lastPropMatch[1] + '"');
+        const propStart = beforeLastQuote.lastIndexOf('"' + lastPropName + '"');
         if (propStart > 0) {
           // Go back to find the comma or opening brace
           let truncateAt = propStart;
@@ -1926,6 +2116,25 @@ Do not use markdown code blocks around the JSON.
     }
 
     return json;
+  }
+
+  private findPropertyNameBeforeDanglingValue(text: string): string | null {
+    let i = text.length - 1;
+    while (i >= 0 && /\s/.test(text[i])) i -= 1;
+    if (text[i] !== ':') return null;
+    i -= 1;
+    while (i >= 0 && /\s/.test(text[i])) i -= 1;
+    if (text[i] !== '"') return null;
+
+    const end = i;
+    i -= 1;
+    while (i >= 0) {
+      if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
+        return text.slice(i + 1, end);
+      }
+      i -= 1;
+    }
+    return null;
   }
 
   /**

@@ -6,6 +6,7 @@ import {
 } from './IntegratedBestPracticesValidator';
 import { PLACEHOLDER_STAKES } from '../constants/placeholderStakes';
 import type { AgentConfig } from '../config';
+import { DEFAULT_LEDGER_CONFIG } from '../pipeline/callbackLedger';
 
 // Empty apiKey keeps the LLM-backed sub-validators (StakesTriangle, FiveFactor)
 // on their heuristic, non-LLM paths so this aggregator test is deterministic.
@@ -79,6 +80,49 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(report.metrics.choiceDensity.totalChoices).toBe(14);
   });
 
+  it('passes callback ledger scope through so future-window hooks do not block locally', async () => {
+    const validator = new IntegratedBestPracticesValidator(agentConfig);
+    const report = await validator.runFullValidation(baseInput({
+      choices: [
+        {
+          id: 'choice-treatment-seed',
+          text: 'Keep the quartz close.',
+          choiceType: 'expression',
+          sceneId: 'scene-1',
+          consequences: [{ type: 'setFlag', flag: 'treatment_seed_ep1_1', value: true }],
+          reminderPlan: {
+            immediate: 'Kylie keeps the quartz close enough to feel its cold edge.',
+            shortTerm: 'The apartment ward has a witness now.',
+          },
+        },
+      ],
+      callbackLedger: {
+        version: 1,
+        hooks: [
+          {
+            id: 'flag:treatment_seed_ep1_1',
+            sourceEpisode: 1,
+            sourceSceneId: 'scene-1',
+            sourceChoiceId: 'choice-treatment-seed',
+            flags: ['treatment_seed_ep1_1'],
+            summary: 'The quartz choice should matter when the apartment ward pays off.',
+            payoffWindow: { minEpisode: 1, maxEpisode: 4 },
+            payoffCount: 0,
+            resolved: false,
+            createdAt: '2026-06-20T00:00:00.000Z',
+          },
+        ],
+        config: DEFAULT_LEDGER_CONFIG,
+      },
+      generatedThroughEpisode: 1,
+    }));
+
+    expect(report.blockingIssues.some((issue) =>
+      issue.category === 'callback_opportunities' &&
+      issue.message.includes('flags set but never referenced'),
+    )).toBe(false);
+  });
+
   it('surfaces the choice TYPE distribution metric (previously unmeasured)', async () => {
     // ChoiceDistributionValidator was unregistered, so the taxonomy mix was
     // never reported. Full validation must now expose it.
@@ -116,6 +160,23 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(dist?.deviations).toBeUndefined();
   });
 
+  it('keeps consequence budget as generated-slice telemetry, not an episode-level warning', async () => {
+    const choices = Array.from({ length: 4 }, (_, i) => ({
+      id: `callback-heavy-${i}`,
+      text: `Callback-heavy choice ${i}`,
+      choiceType: 'relationship',
+      sceneId: 'scene-1',
+      consequences: [{ type: 'setFlag', flag: `callback_${i}`, value: true, budgetCategory: 'callback' }],
+    }));
+    const validator = new IntegratedBestPracticesValidator(agentConfig);
+    const report = await validator.runFullValidation(baseInput({ choices }));
+
+    expect(report.metrics.consequenceBudget.scope).toBe('generated-slice');
+    expect(report.metrics.consequenceBudget.note).toContain('season scope');
+    expect(report.warnings.some((issue) => issue.category === 'consequence_budget')).toBe(false);
+    expect(report.blockingIssues.some((issue) => issue.category === 'consequence_budget')).toBe(false);
+  });
+
   it('full validation returns a scored ComprehensiveValidationReport', async () => {
     const validator = new IntegratedBestPracticesValidator(agentConfig);
     const report = await validator.runFullValidation(baseInput());
@@ -123,6 +184,7 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(typeof report.overallScore).toBe('number');
     expect(report.overallScore).toBeGreaterThanOrEqual(0);
     expect(report.overallScore).toBeLessThanOrEqual(100);
+    expect(report.qualityScore).toBe(report.overallScore);
     expect(typeof report.overallPassed).toBe('boolean');
     // Default mode is advisory: the run is reported as passed even though it
     // aggregates the no-choice-points blocking issue (advisory never hard-fails).

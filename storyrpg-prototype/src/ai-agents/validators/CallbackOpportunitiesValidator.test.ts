@@ -103,14 +103,43 @@ describe('CallbackOpportunitiesValidator referential-flag filter (Fix 3i)', () =
             { type: 'setFlag', flag: 'tint:distant' },
             { type: 'setFlag', flag: 'expr:wry' },
             { type: 'setFlag', flag: 'moment:held' },
-            { type: 'setFlag', flag: 'route_spared_the_guard' },
+            { type: 'setFlag', flag: 'helped_the_guard' },
           ] as any,
         },
       ],
     });
 
-    // Only the referential route_* flag counts toward "should be referenced".
+    // Only the referential story flag counts toward "should be referenced".
     expect(result.metrics.flagsSet).toBe(1);
+  });
+
+  it('excludes empty and structural branch/route/encounter flags from callback-debt accounting', async () => {
+    const validator = new CallbackOpportunitiesValidator();
+    const result = await validator.validate({
+      scenes: [makeScene('s1', [{ id: 'b1', text: 'plain' }])],
+      knownFlags: [undefined, null, '', 'route_known'] as any,
+      choices: [
+        {
+          id: 'c1',
+          sceneId: 's1',
+          text: 'branch',
+          consequences: [
+            { type: 'setFlag' },
+            { type: 'setFlag', flag: null },
+            { type: 'setFlag', flag: '' },
+            { type: 'setFlag', flag: '   ' },
+            { type: 'setFlag', flag: 'route_rooftop' },
+            { type: 'setFlag', flag: 'treatment_branch_scene_stela_visit_herbs_wards_tinted_trustingly_1_7a' },
+            { type: 'setFlag', flag: 'encounter_treatment-enc-1-1_victory' },
+            { type: 'setFlag', flag: 'mika_kept_a_secret' },
+          ] as any,
+        },
+      ],
+    });
+
+    expect(result.metrics.flagsSet).toBe(1);
+    expect(result.issues.find((i) => i.message.includes('flags set but never referenced'))?.message)
+      .toContain('mika_kept_a_secret');
   });
 });
 
@@ -156,5 +185,37 @@ describe('CallbackOpportunitiesValidator flag-reference detection (Issue 1a)', (
       }],
     });
     expect(result.metrics.flagsReferenced).toBe(2);
+  });
+
+  it('does not report unreferenced flags that are explicit future-window ledger hooks', async () => {
+    const validator = new CallbackOpportunitiesValidator({ level: 'error' });
+    const result = await validator.validate({
+      scenes: [makeScene('s1', [{ id: 'b1', text: 'plain', textVariants: [{ condition: {}, text: 'alt' }] }])],
+      generatedThroughEpisode: 3,
+      callbackLedger: {
+        version: 1,
+        config: { payoffThreshold: 2, defaultWindowSpan: 3, maxActiveHooks: 24 },
+        hooks: [{
+          id: 'flag:future_window_flag',
+          sourceEpisode: 3,
+          sourceSceneId: 's1',
+          sourceChoiceId: 'c1',
+          flags: ['future_window_flag'],
+          summary: 'Future payoff.',
+          payoffWindow: { minEpisode: 3, maxEpisode: 5 },
+          payoffCount: 0,
+          resolved: false,
+          createdAt: '2026-06-19T00:00:00.000Z',
+        }],
+      },
+      choices: [{
+        id: 'c1', sceneId: 's1', text: 'x',
+        consequences: [{ type: 'setFlag', flag: 'future_window_flag' }] as any,
+      }],
+    });
+
+    expect(result.issues.some((i) => i.message.includes('flags set but never referenced'))).toBe(false);
+    expect(result.metrics.flagsSet).toBe(1);
+    expect(result.metrics.flagsReferenced).toBe(0);
   });
 });

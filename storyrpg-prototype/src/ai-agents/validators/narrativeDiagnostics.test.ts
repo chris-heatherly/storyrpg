@@ -138,6 +138,30 @@ describe('runNarrativeDiagnostics', () => {
 
     expect(report.checks.find((check) => check.name === 'setup_payoff')?.status).toBe('failed');
   });
+
+  it('uses supplied authored choice scene ids instead of requiring beat-attached choices', () => {
+    const report = runNarrativeDiagnostics({
+      episodeNumber: 1,
+      sceneContents: [
+        {
+          sceneId: 'scene-1',
+          sceneName: 'Opening',
+          beats: [{ id: 'beat-1', text: 'A choice is about to land.' }],
+          startingBeatId: 'beat-1',
+          moodProgression: [],
+          charactersInvolved: [],
+          keyMoments: [],
+          continuityNotes: [],
+        },
+      ],
+      choicePlannedSceneIds: ['scene-1'],
+      choiceAuthoredSceneIds: ['scene-1'],
+    });
+
+    const choiceCoverage = report.checks.find((check) => check.name === 'choice_coverage');
+    expect(choiceCoverage?.status).toBe('passed');
+    expect(choiceCoverage?.metrics).toMatchObject({ planned: 1, authored: 1, covered: 1 });
+  });
 });
 
 function emptyCallbackLedger(): SerializedCallbackLedger {

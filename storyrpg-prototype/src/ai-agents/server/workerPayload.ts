@@ -13,6 +13,8 @@ export type WorkerPayload = {
   mode: WorkerMode;
   config: Record<string, unknown>;
   externalJobId?: string;
+  friendlyName?: string;
+  processTitle?: string;
   resultPath: string;
   resumeCheckpoint?: ResumeCheckpointPayload;
   analysisInput?: {
@@ -65,6 +67,8 @@ export type WorkerJobStartRequest = {
 export type WorkerJobStartResponse = {
   success: boolean;
   jobId: string;
+  friendlyName?: string;
+  processTitle?: string;
   deduped?: boolean;
   status?: string;
 };
@@ -104,6 +108,12 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
   }
   if (!isRecord(value.config)) {
     throw new Error('Worker payload is missing a valid config object.');
+  }
+  if (value.friendlyName != null && typeof value.friendlyName !== 'string') {
+    throw new Error('Worker payload friendlyName must be a string when provided.');
+  }
+  if (value.processTitle != null && typeof value.processTitle !== 'string') {
+    throw new Error('Worker payload processTitle must be a string when provided.');
   }
   if (typeof value.resultPath !== 'string' || value.resultPath.length === 0) {
     throw new Error('Worker payload is missing resultPath.');

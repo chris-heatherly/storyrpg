@@ -333,10 +333,11 @@ describe('buildSeasonScenePlan', () => {
   it('pins a scene setting to the location its authored turn names (no collapse-to-first)', () => {
     const ep = episode(1, ['hook'], {
       estimatedSceneCount: 4,
-      locations: ['Vâlcescu Club', 'Cișmigiu Gardens', 'Lumina Books'],
+      locations: ['Kylie\'s Lipscani Apartment', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Lumina Books'],
       treatmentGuidance: {
         episodeTurns: [
           'The Dusk Club gathers at the Vâlcescu Club door.',
+          'At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie\'s hand.',
           'Walking home through Cișmigiu Gardens at 1am, a shadow strikes.',
         ],
       },
@@ -347,18 +348,45 @@ describe('buildSeasonScenePlan', () => {
     // The Cișmigiu turn's scene is set to Cișmigiu Gardens, not the first location.
     expect(sceneOf('Cișmigiu')?.locations).toEqual(['Cișmigiu Gardens']);
     expect(sceneOf('Vâlcescu Club')?.locations).toEqual(['Vâlcescu Club']);
+    expect(sceneOf('rose quartz')?.locations).toEqual(['Lumina Books']);
+    expect(sceneOf('rose quartz')?.locations).not.toEqual(['Kylie\'s Lipscani Apartment']);
+  });
+
+  it('pins fallback major-choice pressure scenes to named locations', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 5,
+      locations: ['Kylie\'s Lipscani Apartment', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Lumina Books'],
+      treatmentGuidance: {
+        episodeTurns: [],
+        majorChoicePressures: [
+          'Mika adopts Kylie at the door of Vâlcescu Club on night two.',
+          'At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie\'s hand.',
+          'Walking home through Cișmigiu Gardens at 1am, a shadow strikes.',
+        ],
+      },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const sceneOf = (needle: string) =>
+      scenes.find((s) => (s.requiredBeats ?? []).some((b) => b.mustDepict.includes(needle)));
+
+    expect(sceneOf('Vâlcescu')?.locations).toEqual(['Vâlcescu Club']);
+    expect(sceneOf('rose quartz')?.locations).toEqual(['Lumina Books']);
+    expect(sceneOf('Cișmigiu')?.locations).toEqual(['Cișmigiu Gardens']);
   });
 
   it('distributes information-ledger entries touching the episode as advisory seed beats', () => {
     const ep = episode(1, ['hook'], { estimatedSceneCount: 4, treatmentGuidance: { episodeTurns: ['A turn.'] } });
     const informationLedger = [
       { id: 'INFO-E', label: 'The blog is the thing Victor cannot control; he keeps his face out of every frame', description: 'An unphotographable man.', introducedEpisode: 1, setupTouchEpisodes: [2, 3] },
+      { id: 'INFO-C', label: "Victor's Nature", description: 'Victor is a strigoi who casts no reflection.', introducedEpisode: 1, setupTouchEpisodes: [3, 4] },
       { id: 'INFO-G', label: 'A Strigoi Mama watches the line', description: 'Older entity.', introducedEpisode: 8, setupTouchEpisodes: [] },
     ] as any;
     const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], { informationLedger })), 1);
     const seedBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'seed'));
     // INFO-E touches ep1 (introduced) → planted; INFO-G (ep8 only) → absent.
     expect(seedBeats.some((b) => b.mustDepict.includes('keeps his face out of every frame'))).toBe(true);
+    expect(seedBeats.some((b) => b.mustDepict.includes('casts no reflection'))).toBe(true);
+    expect(seedBeats.some((b) => b.mustDepict === "Victor's Nature")).toBe(false);
     expect(seedBeats.some((b) => b.mustDepict.includes('Strigoi Mama'))).toBe(false);
   });
 
@@ -413,5 +441,47 @@ describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bit
       .filter((s) => s.kind !== 'encounter')
       .flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'authored'));
     expect(authoredOnStd.length).toBeGreaterThan(0);
+  });
+
+  it('folds composite treatment encounters into the authored scene that owns the event', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 6,
+      locations: ['Lipscani', 'Rooftop Bar', 'Cismigiu Gardens'],
+      treatmentGuidance: {
+        episodeTurns: [
+          'Mika adopts Kylie at the door of Valcescu Club and hands her a key card.',
+          'Stela presses a chunk of rose quartz into Kylie\'s hand at a Lipscani bookshop.',
+          'At a rooftop bar at sunset, the Dusk Club locks into place and Kylie catches Victor watching her.',
+          'Walking home through Cișmigiu at 1am, Kylie is pinned to a willow by a shadow and Victor rescues her.',
+          'At 4am, Kylie launches Dating After Dusk and Mr. Midnight goes viral by sunset.',
+        ],
+        encounterAnchors: [
+          'Two anchors, light then dark — the rooftop bar at sunset where the Dusk Club locks into place; then Cișmigiu at 1am, a shadow, a scream, and a rescue.',
+        ],
+      },
+      plannedEncounters: [
+        {
+          id: 'treatment-enc-1-1',
+          type: 'dramatic',
+          description: 'Two anchors, light then dark — the rooftop bar at sunset where the Dusk Club locks into place; then Cișmigiu at 1am, a shadow, a scream, and a rescue.',
+          centralConflict: 'The rooftop is the new life Kylie crossed an ocean for, and the park is the cost the city exacts for it; attention, safety, beauty, authorship, glamour, hunger, performance, romance, reinvention, and danger all twist together.',
+          difficulty: 'moderate',
+          npcsInvolved: ['Victor'],
+          stakes: 'The city hunts back.',
+          relevantSkills: ['awareness'],
+          isBranchPoint: true,
+        },
+      ],
+    } as Partial<SeasonEpisode>);
+
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const encounters = scenes.filter((scene) => scene.kind === 'encounter');
+    expect(encounters).toHaveLength(1);
+    expect(encounters[0].id).toBe('treatment-enc-1-1');
+    expect(encounters[0].requiredBeats?.some((beat) => beat.mustDepict.includes('Cișmigiu at 1am'))).toBe(true);
+    expect(encounters[0].requiredBeats?.some((beat) => beat.tier === 'signature')).toBe(false);
+    expect(encounters[0].encounter?.description).toContain('Cișmigiu at 1am');
+    expect(encounters[0].encounter?.description).not.toContain('rooftop bar at sunset');
+    expect(scenes.filter((scene) => scene.id === 'treatment-enc-1-1')).toHaveLength(1);
   });
 });

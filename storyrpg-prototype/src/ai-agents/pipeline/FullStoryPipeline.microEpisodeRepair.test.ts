@@ -92,11 +92,18 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
       choiceType: 'dilemma',
     });
     expect(choiceSets[0].choices.map(choice => choice.text)).toEqual([
-      'Scream.',
-      'Run.',
-      'Freeze.',
-      'Fight.',
+      'Scream for help.',
+      'Run for the open path.',
+      'Freeze and read the danger.',
+      'Fight back with everything you have.',
     ]);
+    for (const choice of choiceSets[0].choices) {
+      expect(choice.consequences).toContainEqual({
+        type: 'setFlag',
+        flag: choice.tintFlag,
+        value: true,
+      });
+    }
 
     const choiceSet = choiceSets[0];
     const episode = {
@@ -165,6 +172,50 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
     expect(content.beats[0].primaryAction).toBe('Aethavyr sees the first arrow split the carriage rail.');
   });
 
+  it('builds fallback choices with reader-facing text and a real tint surface', async () => {
+    const { FullStoryPipeline } = await import('./FullStoryPipeline');
+    const pipeline = Object.create(FullStoryPipeline.prototype);
+
+    const choiceSet = pipeline.createFallbackSceneEpisodeChoiceSet({
+      id: 's1-6',
+      name: 'release scene 6',
+      dramaticQuestion: 'Can Kylie understand what the warning costs?',
+      dramaticPurpose: 'Aftermath that resettles stakes; serves the hook beat.',
+      conflictEngine: 'Forward pressure: Stela arrives with herbs.',
+      choicePoint: {
+        type: 'dilemma',
+        description: 'Decide how to handle release scene 6.',
+        optionHints: ['Decide how to handle release scene 6.'],
+        stakes: {
+          want: 'Advance the goal of release scene 6',
+          cost: 'Forward pressure: Stela arrives with herbs.',
+          identity: 'The choice reveals the protagonist under pressure.',
+        },
+      },
+    }, {
+      id: 's1-6-b6',
+      text: '"I am coming over with herbs." The line goes dead before you can reply.',
+      isChoicePoint: true,
+    });
+
+    expect(choiceSet.choices).toHaveLength(2);
+    for (const choice of choiceSet.choices) {
+      expect(choice.text).not.toMatch(/Decide how to handle|release scene 6|Advance the goal/i);
+      expect(choice.consequenceTier).toBe('sceneTint');
+      expect(choice.tintFlag).toMatch(/^tint:/);
+      expect(choice.consequences).toContainEqual({
+        type: 'setFlag',
+        flag: choice.tintFlag,
+        value: true,
+      });
+      expect(choice.reactionText).toBeTruthy();
+      expect(choice.outcomeTexts?.failure).toMatch(/complication/i);
+      expect(choice.residueHints?.[0]?.kind).toBe('immediate_prose_echo');
+      expect(choice.stakes.want).not.toMatch(/Advance the goal|serves the hook beat/i);
+      expect(choice.stakes.cost).not.toMatch(/Forward pressure/i);
+    }
+  });
+
   it('writes choice bridge beats as story prose without internal scene tags', async () => {
     const { FullStoryPipeline } = await import('./FullStoryPipeline');
     const pipeline = Object.create(FullStoryPipeline.prototype);
@@ -193,6 +244,32 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
     expect(bridgeText).not.toContain('one concrete step');
     expect(bridgeText).not.toContain('ENCOUNTER');
     expect(bridgeText).not.toContain('Episode Climax');
+  });
+
+  it('prefers authored outcome prose over generic bridge placeholders', async () => {
+    const { FullStoryPipeline } = await import('./FullStoryPipeline');
+    const pipeline = Object.create(FullStoryPipeline.prototype);
+
+    const bridgeText = pipeline.buildChoiceBridgeBeatText({
+      id: 'choice-3',
+      text: 'Take the key card.',
+      outcomeTexts: {
+        success: 'Mika beams as the card catches the club light.',
+        partial: 'The cool plastic settles into your palm, heavier than a favor should be.',
+        failure: 'Your fingers fumble, and Mika catches the card before it falls.',
+      },
+      feedbackCue: {
+        echoSummary: 'You accepted the key card.',
+        progressSummary: 'The choice leaves a visible pressure in the next moment.',
+      },
+      reminderPlan: {
+        immediate: 'The choice leaves a visible pressure in the next moment.',
+        shortTerm: 'The card matters later.',
+      },
+    });
+
+    expect(bridgeText).toBe('The cool plastic settles into your palm, heavier than a favor should be.');
+    expect(bridgeText).not.toContain('visible pressure');
   });
 
   it('drops meta/design-note lead fragments and never leaks the scene name', async () => {

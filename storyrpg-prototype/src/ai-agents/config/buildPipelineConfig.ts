@@ -207,16 +207,15 @@ export function buildPipelineConfig(
   return {
     agents: {
       storyArchitect: buildAgentConfig('architect', { maxTokens: 8192, temperature: 0.7 }),
-      // 8192 (matching the architect/image tiers), not 4096: SceneWriter emits the
-      // heaviest output (a full multi-beat scene), so the tighter budget truncated
-      // rich scenes mid-JSON — the s1-6 "Unterminated string" abort. Truncation now
-      // degrades gracefully, but the higher ceiling avoids dropping trailing beats.
-      sceneWriter: buildAgentConfig('scene', { maxTokens: 8192, temperature: 0.85 }),
-      // 8192 (was 4096): a full choice set (3–5 choices, each with a stakes triangle,
-      // consequences, and THREE 1–3 sentence outcome tiers) is heavy output that
-      // truncated mid-JSON on weaker models → parse-failure fallbacks. The compact
-      // re-author retry (ChoiceAuthor) is the second line; this is the headroom.
-      choiceAuthor: buildAgentConfig('choice', { maxTokens: 8192, temperature: 0.75 }),
+      // 16384: SceneWriter emits full multi-beat scenes and the validation/revision
+      // loop can legitimately need more than 8192 tokens. Keep this aligned with
+      // the default agent config; structured provider calls may floor low values,
+      // but they must not silently undercut the pipeline's intended headroom.
+      sceneWriter: buildAgentConfig('scene', { maxTokens: 16384, temperature: 0.85 }),
+      // 16384: ChoiceAuthor emits dense structured JSON (choices, consequences, and
+      // outcome tiers). A live Gemini structured call hit MAX_TOKENS at the old
+      // 8192 runtime ceiling despite the default config documenting 16384.
+      choiceAuthor: buildAgentConfig('choice', { maxTokens: 16384, temperature: 0.75 }),
       // Lower temperature for consistent grading; decorrelated from the author
       // when a distinct QA model is assigned (within the same family).
       qaRunner: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.3 }),

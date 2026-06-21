@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   assembleChoiceForStory,
+  buildReaderFacingFallbackChoiceOptions,
   foldTintFlagIntoConsequences,
+  isSafeChoiceAttachmentBeat,
   normalizeConsequence,
   normalizeConsequences,
   routeFallbackChoicesAcrossTargets,
@@ -9,6 +11,127 @@ import {
   reconcileChoiceSetBeatIds,
   bakeWitnessReactionsIntoOutcomeTexts,
 } from './choiceAssembly';
+
+describe('buildReaderFacingFallbackChoiceOptions', () => {
+  it('filters planning-register option hints and derives in-world choices from the beat', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints: ['Decide how to handle release scene 6.', 'Advance the goal of Rooftop Exit'],
+      choiceBeatText: 'Stela lowers her voice and points to the black roses waiting on the table.',
+      sceneName: 'release scene 6',
+    });
+
+    expect(options).toHaveLength(3);
+    expect(options.join(' ')).not.toMatch(/Decide how to handle|Advance the goal|release scene 6/i);
+    expect(options[0]).toMatch(/Stela/);
+    expect(options[1]).toMatch(/Stela/);
+  });
+
+  it('keeps authored reader-facing option hints and pads to the reader minimum', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints: ['Ask Stela why the roses came first', 'Pocket the card before anyone sees it'],
+      choiceBeatText: 'Decide how to handle release scene 6.',
+    });
+
+    expect(options).toEqual([
+      'Ask Stela why the roses came first.',
+      'Pocket the card before anyone sees it.',
+      'Act before the moment closes.',
+      'Wait long enough to read the danger.',
+    ]);
+  });
+
+  it('splits authored list hints and expands short labels into playable options', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints: [
+        'In the park when the shadow appears: scream, run, freeze.',
+        'What name do you give him: Mr. Midnight (canonical), The Stranger, The Suit.',
+      ],
+      choiceBeatText: 'The email lands with no subject line.',
+    });
+
+    expect(options).toEqual([
+      'Scream for help.',
+      'Run for the open path.',
+      'Freeze and read the danger.',
+      'Choose Mr. Midnight.',
+    ]);
+    expect(options.join(' ')).not.toContain('scream, run, freeze');
+  });
+
+  it('filters stale mixed option hints against the current beat context', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints: [
+        'In the park when the shadow appears: scream, run, freeze',
+        'fight back — and the next morning, what name do you give him: Mr. Midnight (canonical), The Stranger, The Velvet',
+        'The Suit.',
+      ],
+      localContext: [
+        'At 4am, unable to sleep, Kylie launches Dating After Dusk with a post about a club, a friend who calls everyone iubita, and the man she names only Mr. Midnight; by 6pm it has 80,000 reads.',
+      ],
+      choiceBeatText: 'You open the site. The readership counter is spinning like a slot machine. 80,000 reads.',
+    });
+
+    expect(options).toEqual([
+      'Choose Mr. Midnight.',
+      'Choose The Stranger as the name.',
+      'Choose The Velvet as the name.',
+    ]);
+    expect(options.join(' ')).not.toMatch(/Scream|Run for the open path|Freeze/i);
+  });
+
+  it('does not turn quoted planning metadata into "what was just said" choices', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      choiceBeatText:
+        'Aftermath that resettles stakes; serves the hook beat ("Kylie unpacks in Bucharest, fleeing public heartbreak.").',
+      dramaticPurpose:
+        'Aftermath that resettles stakes; serves the hook beat ("Kylie unpacks in Bucharest, fleeing public heartbreak.").',
+      sceneName: 'release scene 6',
+    });
+
+    expect(options).toEqual([
+      'Act before the moment closes.',
+      'Wait long enough to read the danger.',
+      'Ask what is really at stake.',
+    ]);
+    expect(options.join(' ')).not.toMatch(/what was just said|Aftermath|serves the hook beat|release scene/i);
+  });
+
+  it('does not split mixed treatment decision prose into stale choices for a completed beat', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints: [
+        "On the broken-down country road: accept Radu's lift, or wait for the tow; and at 2am with both numbers in her phone, choose the chef's codename — *The Mountain* (canonical), *The Wolf* (foreshadowing the audience catches later), or *The Cab Whisperer*.",
+      ],
+      choiceBeatText:
+        "You write the chef into the dictionary. You name him *The Mountain*. And you know exactly what you need to write about next.",
+    });
+
+    expect(options.join(' ')).not.toMatch(/Radu's lift|tow|2am|Mountain|Wolf|foreshadowing|Cab Whisperer/i);
+  });
+});
+
+describe('isSafeChoiceAttachmentBeat', () => {
+  it('allows explicitly marked choice-point beats', () => {
+    expect(isSafeChoiceAttachmentBeat({
+      id: 'b-choice',
+      text: 'You write the chef into the dictionary. You name him *The Mountain*.',
+      isChoicePoint: true,
+    })).toBe(true);
+  });
+
+  it('rejects completed aftermath beats as fallback attachment targets', () => {
+    expect(isSafeChoiceAttachmentBeat({
+      id: 's2-4-b8',
+      text: "You write the chef into the dictionary. You name him *The Mountain*. And you know exactly what you need to write about next.",
+    })).toBe(false);
+  });
+
+  it('allows unmarked beats only when the prose is still a live prompt', () => {
+    expect(isSafeChoiceAttachmentBeat({
+      id: 'b-live',
+      text: 'The cab idles at the curb. Do you accept the ride or wait for the tow?',
+    })).toBe(true);
+  });
+});
 
 describe('repairBranchFanOut (under-fanned branch point recovery)', () => {
   it('re-points a redundant choice to the orphaned target (bite-me-gen-8 s1-1)', () => {
@@ -110,11 +233,27 @@ describe('reconcileChoiceSetBeatIds (post-rewrite beatId drift)', () => {
     expect(choiceSets[0].beatId).toBe('b1');
   });
 
-  it('falls back to the last beat when no beat is marked isChoicePoint', () => {
-    const sceneContents = [{ sceneId: 's1', beats: [{ id: 's1-a' }, { id: 's1-b' }] }];
+  it('falls back to a promptable last beat when no beat is marked isChoicePoint', () => {
+    const sceneContents = [{ sceneId: 's1', beats: [{ id: 's1-a' }, { id: 's1-b', text: 'Do you follow Mika or stay with Stela?' }] }];
     const choiceSets = [{ sceneId: 's1', beatId: 'stale' }];
     expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(1);
     expect(choiceSets[0].beatId).toBe('s1-b');
+  });
+
+  it('does not fall back to a completed final beat when no beat is marked isChoicePoint', () => {
+    const sceneContents = [{
+      sceneId: 's2-4',
+      beats: [
+        { id: 's2-4-b7', text: 'The cursor blinks on a blank page.' },
+        {
+          id: 's2-4-b8',
+          text: "You write the chef into the dictionary. You name him *The Mountain*. And you know exactly what you need to write about next.",
+        },
+      ],
+    }];
+    const choiceSets = [{ sceneId: 's2-4', beatId: 'stale' }];
+    expect(reconcileChoiceSetBeatIds(sceneContents, choiceSets)).toBe(0);
+    expect(choiceSets[0].beatId).toBe('stale');
   });
 
   it('never steals a choice-point beat already claimed by an aligned choice set', () => {
@@ -205,6 +344,17 @@ describe('foldTintFlagIntoConsequences (D1)', () => {
   it('assembleChoiceForStory folds tintFlag into consequences', () => {
     const assembled = assembleChoiceForStory({ id: 'c', text: 't', choiceType: 'expression', consequences: [], tintFlag: 'tint:control' } as any);
     expect(assembled.consequences).toContainEqual({ type: 'setFlag', flag: 'tint:control', value: true });
+  });
+  it('assembleChoiceForStory normalizes stat-check difficulty and skill weights', () => {
+    const assembled = assembleChoiceForStory({
+      id: 'c',
+      text: 't',
+      choiceType: 'strategic',
+      consequences: [],
+      statCheck: { skillWeights: { persuasion: 1, perception: 0.5 }, difficulty: 30 },
+    } as any);
+    expect(assembled.statCheck?.difficulty).toBe(35);
+    expect(assembled.statCheck?.skillWeights).toEqual({ persuasion: 0.6667, perception: 0.3333 });
   });
 });
 

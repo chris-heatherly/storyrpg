@@ -50,7 +50,7 @@
     "corpus:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/defect-corpus/replay-corpus.ts",
     "smoke:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/smoke-live.ts",
     "invalidate:episode": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/invalidate-episode.ts",
-    "validate:assets": "npx ts-node --esm scripts/validate-assets.ts",
+    "validate:assets": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/validate-assets.ts",
     "test:e2e": "npx playwright test",
     "test:e2e:story": "npx playwright test --grep",
     "upload:gcs:latest": "npx ts-node --esm scripts/upload-stories-to-gcs.ts --latest",

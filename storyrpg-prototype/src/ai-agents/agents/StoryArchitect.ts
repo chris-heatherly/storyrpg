@@ -518,6 +518,7 @@ export interface SceneBlueprint {
   encounterType?: EncounterType;
   encounterStyle?: EncounterNarrativeStyle;
   encounterDescription?: string;
+  encounterCentralConflict?: string;
   encounterStakes?: string;
   encounterRequiredNpcIds?: string[];
   encounterRelevantSkills?: string[];
@@ -990,21 +991,31 @@ export class StoryArchitect extends BaseAgent {
   }
 
   private applyPlannedEncounterToScene(scene: SceneBlueprint, plannedEncounter: PlannedEncounterDirective): void {
-    const encounterType = this.normalizeEncounterType(plannedEncounter.type);
+    const effectivePlannedEncounter = scene.encounterDescription?.trim()
+      ? {
+          ...plannedEncounter,
+          description: scene.encounterDescription,
+          centralConflict: scene.encounterCentralConflict || plannedEncounter.centralConflict,
+        }
+      : plannedEncounter;
+    const encounterType = this.normalizeEncounterType(effectivePlannedEncounter.type);
     const existingSkills = scene.encounterRelevantSkills || [];
-    const plannedSkills = plannedEncounter.relevantSkills || [];
-    const npcIds = new Set([...(scene.npcsPresent || []), ...(scene.encounterRequiredNpcIds || []), ...(plannedEncounter.npcsInvolved || [])]);
+    const plannedSkills = effectivePlannedEncounter.relevantSkills || [];
+    const npcIds = new Set([...(scene.npcsPresent || []), ...(scene.encounterRequiredNpcIds || []), ...(effectivePlannedEncounter.npcsInvolved || [])]);
 
     scene.isEncounter = true;
-    scene.plannedEncounterId = plannedEncounter.id;
+    scene.plannedEncounterId = effectivePlannedEncounter.id;
     scene.encounterType = encounterType;
-    scene.encounterStyle = scene.encounterStyle || this.inferEncounterStyle(encounterType, plannedEncounter.description);
+    scene.encounterStyle = scene.encounterStyle || this.inferEncounterStyle(encounterType, effectivePlannedEncounter.description);
     scene.encounterDescription = scene.encounterDescription?.trim()
       ? scene.encounterDescription
-      : plannedEncounter.description;
+      : effectivePlannedEncounter.description;
+    scene.encounterCentralConflict = scene.encounterCentralConflict?.trim()
+      ? scene.encounterCentralConflict
+      : effectivePlannedEncounter.centralConflict;
     scene.encounterStakes = scene.encounterStakes?.trim()
       ? scene.encounterStakes
-      : plannedEncounter.stakes || `The outcome of ${plannedEncounter.description} changes the protagonist's immediate safety and trust.`;
+      : effectivePlannedEncounter.stakes || `The outcome of ${effectivePlannedEncounter.description} changes the protagonist's immediate safety and trust.`;
     scene.encounterRequiredNpcIds = Array.from(npcIds);
     scene.npcsPresent = Array.from(npcIds);
     scene.encounterRelevantSkills = Array.from(new Set([
@@ -1012,14 +1023,14 @@ export class StoryArchitect extends BaseAgent {
       ...plannedSkills,
       ...this.defaultSkillsForEncounterType(encounterType),
     ])).slice(0, 5);
-    scene.encounterBeatPlan = this.buildEncounterBeatPlan(plannedEncounter, scene.encounterBeatPlan);
-    scene.encounterDifficulty = scene.encounterDifficulty || this.normalizeEncounterDifficulty(plannedEncounter.difficulty);
+    scene.encounterBeatPlan = this.buildEncounterBeatPlan(effectivePlannedEncounter, scene.encounterBeatPlan);
+    scene.encounterDifficulty = scene.encounterDifficulty || this.normalizeEncounterDifficulty(effectivePlannedEncounter.difficulty);
     scene.encounterBuildup = scene.encounterBuildup?.trim()
       ? scene.encounterBuildup
-      : plannedEncounter.encounterBuildup || `Earlier scenes establish why ${plannedEncounter.description} is unavoidable and personal.`;
+      : effectivePlannedEncounter.encounterBuildup || `Earlier scenes establish why ${effectivePlannedEncounter.description} is unavoidable and personal.`;
     scene.encounterSetupContext = Array.from(new Set([
       ...(scene.encounterSetupContext || []),
-      ...(plannedEncounter.encounterSetupContext || []),
+      ...(effectivePlannedEncounter.encounterSetupContext || []),
     ]));
     scene.purpose = scene.purpose || 'bottleneck';
   }
@@ -1518,12 +1529,12 @@ export class StoryArchitect extends BaseAgent {
       },
       stakesLayers: this.mergeTreatmentStakesLayers(existingChoice?.stakesLayers, stakesLayers),
       themeAnswer: existingChoice?.themeAnswer || guidance?.themePressure || guidance?.liePressure,
-      description: `Authored treatment choice: ${pressure}`,
+      description: `Treatment-defined pressure: ${pressure}`,
       optionHints: options.length >= 2 ? options : [pressure],
       consequenceDomain: existingChoice?.consequenceDomain || this.inferChoiceConsequenceDomain(pressure, guidance),
       reminderPlan: {
-        immediate: existingChoice?.reminderPlan?.immediate || `The next beat visibly responds to the authored choice: ${pressure}`,
-        shortTerm: existingChoice?.reminderPlan?.shortTerm || `Later sceneEpisode pressure remembers which option the player chose.`,
+        immediate: existingChoice?.reminderPlan?.immediate || `The choice changes the leverage around ${scene.name}.`,
+        shortTerm: existingChoice?.reminderPlan?.shortTerm || 'The next scene should dramatize the concrete residue of that choice.',
         ...(existingChoice?.reminderPlan?.later
           ? { later: existingChoice.reminderPlan.later }
           : residue[0]
@@ -1533,7 +1544,7 @@ export class StoryArchitect extends BaseAgent {
       expectedResidue: Array.from(new Set([
         ...(existingChoice?.expectedResidue || []),
         ...residue,
-        `Authored choice pressure remains visible: ${pressure}`,
+        `Treatment pressure remains visible: ${pressure}`,
       ])),
     };
 
@@ -1567,7 +1578,7 @@ export class StoryArchitect extends BaseAgent {
       const cp = choiceScenes[i].choicePoint!;
       if ((cp.optionHints?.length ?? 0) >= 2) continue; // already carries an authored menu
       cp.optionHints = this.splitAuthoredChoiceOptions(pressures[i]);
-      if (!cp.description?.trim()) cp.description = `Authored treatment choice: ${pressures[i]}`;
+      if (!cp.description?.trim()) cp.description = `Treatment-defined pressure: ${pressures[i]}`;
       if (altResidue.length) {
         cp.expectedResidue = Array.from(new Set([...(cp.expectedResidue || []), ...altResidue]));
       }
@@ -2050,6 +2061,55 @@ export class StoryArchitect extends BaseAgent {
     blueprint.suggestedFlags = Array.isArray(blueprint.suggestedFlags) ? blueprint.suggestedFlags : [];
     const knownFlagNames = new Set(blueprint.suggestedFlags.map((f) => f.name));
     const emittedFlags: string[] = [];
+    const sceneTextForSeed = (scene: EpisodeBlueprint['scenes'][number]): string => [
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.location,
+      scene.narrativeFunction,
+      scene.dramaticPurpose,
+      scene.choicePoint?.description,
+      ...(scene.keyBeats || []),
+      ...(scene.choicePoint?.optionHints || []),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const seedTokens = (seed: string): string[] => seed
+      .toLowerCase()
+      .split(/[^a-z0-9âăîșşțţéèêëáàäöüóòíìúùç]+/i)
+      .map((token) => token.trim())
+      .filter((token) =>
+        token.length >= 3 &&
+        ![
+          'the', 'and', 'or', 'did', 'didn', 'with', 'that', 'this', 'into', 'from', 'when', 'then', 'their', 'there',
+          'accept', 'accepted', 'decline', 'declined', 'take', 'takes', 'took', 'give', 'gives', 'gave',
+          'kylie', 'protagonist',
+        ].includes(token)
+      );
+    const originIndexForHost = scenes.indexOf(originScene);
+    const eligibleChoiceScenes =
+      scenes.slice(0, originIndexForHost + 1).filter((scene) => scene.choicePoint);
+    const fallbackSeedHost =
+      (originScene.choicePoint ? originScene : undefined)
+      || [...scenes.slice(0, originIndexForHost + 1)].reverse().find((s) => s.choicePoint)
+      || [...scenes].reverse().find((s) => s.choicePoint);
+    const bestSeedHostFor = (seed: string): EpisodeBlueprint['scenes'][number] | undefined => {
+      const tokens = seedTokens(seed);
+      if (tokens.length === 0) return fallbackSeedHost;
+      let bestScene: EpisodeBlueprint['scenes'][number] | undefined;
+      let bestScore = 0;
+      for (const scene of eligibleChoiceScenes) {
+        const haystack = sceneTextForSeed(scene);
+        const score = tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
+        if (score > bestScore) {
+          bestScore = score;
+          bestScene = scene;
+        }
+      }
+      return bestScore > 0 ? bestScene : fallbackSeedHost;
+    };
+    const flagsByHost = new Map<EpisodeBlueprint['scenes'][number], string[]>();
 
     seeds.slice(0, 4).forEach((seed, index) => {
       const flagName = `treatment_seed_ep${episodeNumber}_${index + 1}`;
@@ -2069,6 +2129,11 @@ export class StoryArchitect extends BaseAgent {
         ...(originScene.encounterSetupContext || []),
         directive,
       ]));
+
+      const host = bestSeedHostFor(seed);
+      if (host?.choicePoint) {
+        flagsByHost.set(host, [...(flagsByHost.get(host) || []), flagName]);
+      }
     });
 
     // Carry the flag names on a CHOICE-BEARING scene's choicePoint so the
@@ -2081,16 +2146,13 @@ export class StoryArchitect extends BaseAgent {
     // authored consequenceSeeds always emits them on-page even when its origin is an
     // encounter. The encounter still READS the flag via its encounterSetupContext.
     if (emittedFlags.length > 0) {
-      const originIndex = scenes.indexOf(originScene);
-      const seedHost =
-        (originScene.choicePoint ? originScene : undefined)
-        || [...scenes.slice(0, originIndex + 1)].reverse().find((s) => s.choicePoint)
-        || [...scenes].reverse().find((s) => s.choicePoint);
-      if (seedHost?.choicePoint) {
-        seedHost.choicePoint.setsTreatmentSeeds = Array.from(new Set([
-          ...(seedHost.choicePoint.setsTreatmentSeeds || []),
-          ...emittedFlags,
-        ]));
+      for (const [seedHost, flags] of flagsByHost) {
+        if (seedHost.choicePoint) {
+          seedHost.choicePoint.setsTreatmentSeeds = Array.from(new Set([
+            ...(seedHost.choicePoint.setsTreatmentSeeds || []),
+            ...flags,
+          ]));
+        }
       }
     }
   }
@@ -2370,11 +2432,13 @@ ${sceneEpisodeMode}
     const scenes: SceneBlueprint[] = planned.map((p, idx) => {
       const isEncounter = p.kind === 'encounter';
       const nextId = sceneIds[idx + 1];
+      const requiredBeats = [...(p.requiredBeats ?? []), ...(p.encounter?.requiredBeats ?? [])];
+      const repairedLocation = this.inferPlannedSceneLocationFromRequiredBeats(requiredBeats, p.locations?.[0]);
       const scene: SceneBlueprint = {
         id: p.id,
         name: p.title || `Scene ${idx + 1}`,
         description: p.dramaticPurpose,
-        location: p.locations?.[0] || input.currentLocation,
+        location: repairedLocation || p.locations?.[0] || input.currentLocation,
         timeOfDay: normalizeTimeOfDay(p.timeOfDay),
         timeJumpFromPrevious: p.timeJump,
         ...(episodeInvariants.length ? { invariants: episodeInvariants } : {}),
@@ -2391,7 +2455,7 @@ ${sceneEpisodeMode}
         paysOff: p.paysOff,
         // Carry authored required beats (scene-level + any encounter-level staged
         // beats) and the signature moment so SceneWriter can depict them in order.
-        requiredBeats: [...(p.requiredBeats ?? []), ...(p.encounter?.requiredBeats ?? [])],
+        requiredBeats,
         signatureMoment: p.signatureMoment,
         keyBeats: [p.dramaticPurpose],
         leadsTo: nextId ? [nextId] : [],
@@ -2447,6 +2511,37 @@ ${sceneEpisodeMode}
       suggestedTags: [],
       narrativePromises: [],
     };
+  }
+
+  private inferPlannedSceneLocationFromRequiredBeats(
+    requiredBeats: Array<{ mustDepict?: string; sourceTurn?: string; tier?: string }>,
+    currentLocation: string | undefined,
+  ): string | undefined {
+    const authoredText = requiredBeats
+      .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
+      .map((beat) => beat.mustDepict || beat.sourceTurn || '')
+      .join(' ')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    if (!authoredText.trim()) return undefined;
+
+    if (/\blumina\b/.test(authoredText) || /\bbook\s*shop\b|\bbookshop\b|\bbookstore\b/.test(authoredText)) {
+      return 'Lumina Books';
+    }
+    if (/\bcismigiu\b/.test(authoredText) || /\bgardens?\b|\bpark\b/.test(authoredText)) {
+      return 'Cișmigiu Gardens';
+    }
+    if (/\brooftop\b/.test(authoredText)) {
+      return 'Rooftop Bar';
+    }
+    if (/\bvalcescu\b/.test(authoredText)) {
+      return 'Vâlcescu Club';
+    }
+    if (/\bapartment\b|\bwalk\s*up\b|\bthreshold\b/.test(authoredText)) {
+      return currentLocation;
+    }
+    return undefined;
   }
 
   async execute(input: StoryArchitectInput, retryCount: number = 0): Promise<AgentResponse<EpisodeBlueprint>> {
@@ -4414,7 +4509,6 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     const sceneChange = this.pickBlueprintText(
       scene.dramaticStructure?.changedState,
       scene.residue?.[0]?.description,
-      scene.choicePoint?.reminderPlan?.immediate,
       scene.choicePoint?.description,
       scene.keyBeats?.[scene.keyBeats.length - 1],
       scene.narrativeFunction,

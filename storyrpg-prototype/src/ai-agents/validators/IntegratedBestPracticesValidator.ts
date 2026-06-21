@@ -57,6 +57,7 @@ import {
   FiveFactorInput,
 } from '../../types/validation';
 import { CHOICE_DENSITY_DEFAULTS } from '../../constants/validation';
+import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
 
 // Branching-frequency reference cap fed to ChoiceDistributionValidator's
 // reporting pass. The metric only reports branchingCount vs. this cap today;
@@ -163,6 +164,8 @@ export interface ValidationInput {
   // Known flags/scores for callback validation
   knownFlags?: string[];
   knownScores?: string[];
+  callbackLedger?: SerializedCallbackLedger;
+  generatedThroughEpisode?: number;
 
   // Optional encounter structures for Pixar principles validation
   encounterStructures?: EncounterStructure[];
@@ -384,23 +387,18 @@ export class IntegratedBestPracticesValidator {
       }
     }
 
-    // 5. Consequence Budget — fast, deterministic check for 60/25/10/5 target
+    // 5. Consequence Budget
+    // Generated episodes are slices of the season, not the season budget itself.
+    // The 60/25/10/5 target is enforced at plan/season scope, so quick validation
+    // should not warn or block merely because this slice's local mix differs.
     if (this.config.rules.consequenceBudget.enabled && input.choices.length > 0) {
-      const budgetResult = await this.consequenceBudgetValidator.validate({
+      await this.consequenceBudgetValidator.validate({
         choices: input.choices.map(c => ({
           id: c.id,
           choiceType: c.choiceType,
           consequences: c.consequences,
         })),
       });
-
-      for (const issue of budgetResult.issues) {
-        if (issue.level === 'error') {
-          blockingIssues.push(issue);
-        } else if (issue.level === 'warning') {
-          warningCount++;
-        }
-      }
     }
 
     // 6. Callback Opportunities — drive SceneWriter textVariants repair
@@ -416,6 +414,8 @@ export class IntegratedBestPracticesValidator {
         })),
         knownFlags: input.knownFlags,
         knownScores: input.knownScores,
+        callbackLedger: input.callbackLedger,
+        generatedThroughEpisode: input.generatedThroughEpisode,
       });
 
       for (const issue of callbackResult.issues) {
@@ -577,7 +577,10 @@ export class IntegratedBestPracticesValidator {
       // slice (that is a category error). Reported here for visibility only; the
       // season plan owns balance (validateSeasonSkillPlan) and per-episode conformance
       // is checked by SkillPlanConformanceValidator.
-      const coverageResult = this.skillCoverageValidator.validate({ choices: input.choices as any });
+      const coverageResult = this.skillCoverageValidator.validate({
+        choices: input.choices as any,
+        encounters: input.encounterStructures,
+      });
       allIssues.push(...coverageResult.issues.map((issue) => toValidationIssue('skill_coverage', issue)));
       metrics.skillCoverage = coverageResult.metrics;
     }
@@ -624,7 +627,6 @@ export class IntegratedBestPracticesValidator {
       };
 
       const budgetResult = await this.consequenceBudgetValidator.validate(budgetInput);
-      allIssues.push(...budgetResult.issues);
 
       const totalConsequences = Object.values(budgetResult.consequencesByCategory)
         .reduce((sum, count) => sum + count, 0);
@@ -632,6 +634,8 @@ export class IntegratedBestPracticesValidator {
       metrics.consequenceBudget = {
         allocation: budgetResult.allocation,
         totalConsequences,
+        scope: 'generated-slice',
+        note: 'Generated slice only — consequence-budget percentages are planned and enforced at season scope, not episode scope.',
       };
     }
 
@@ -712,6 +716,8 @@ export class IntegratedBestPracticesValidator {
         })),
         knownFlags: input.knownFlags,
         knownScores: input.knownScores,
+        callbackLedger: input.callbackLedger,
+        generatedThroughEpisode: input.generatedThroughEpisode,
       });
 
       allIssues.push(...callbackResult.issues);
@@ -838,6 +844,7 @@ export class IntegratedBestPracticesValidator {
     return {
       overallPassed,
       overallScore,
+      qualityScore: overallScore,
       blockingIssues,
       warnings,
       suggestions,

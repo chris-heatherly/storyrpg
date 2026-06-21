@@ -116,6 +116,7 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
       'GATE_PROTAGONIST_PRONOUN',
       'GATE_NPC_PRONOUN',
       'GATE_OUTCOME_TEXT_QUALITY',
+      'GATE_PLANNING_REGISTER_PROSE',
       'GATE_FLAG_CONTRACT',
       'GATE_DESIGN_NOTE_LEAK',
       'GATE_SENTENCE_OPENER_VARIETY',

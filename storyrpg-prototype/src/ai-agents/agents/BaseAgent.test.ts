@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentResponse, BaseAgent, type StructuredJsonSchema, type AgentMessage } from './BaseAgent';
+import { AgentResponse, BaseAgent, TruncatedLLMResponseError, type StructuredJsonSchema, type AgentMessage } from './BaseAgent';
 import type { AgentConfig } from '../config';
 import { setLLMStreamingEnabled } from './streamLLM';
 
@@ -29,6 +29,10 @@ class TestAgent extends BaseAgent {
 
   callStructured(messages: AgentMessage[], schema: StructuredJsonSchema) {
     return this.callLLM(messages, 0, { jsonSchema: schema });
+  }
+
+  callStructuredWithRetries(messages: AgentMessage[], schema: StructuredJsonSchema, retries: number) {
+    return this.callLLM(messages, retries, { jsonSchema: schema });
   }
 
   callPlain(messages: AgentMessage[]) {
@@ -81,6 +85,13 @@ describe('BaseAgent JSON repair', () => {
     const parsed = agent.parse<{ title: string }>('{"title":"The Locked Wing"');
     expect(parsed.title).toBe('The Locked Wing');
   });
+
+  it('rejects huge dangling JSON values without greedy regex repair', () => {
+    const agent = new TestAgent();
+    const hugeDanglingValue = `{"items":[{"a":1},{"a":2}],"dangling":"${'x'.repeat(25000)}`;
+
+    expect(() => agent.parse(hugeDanglingValue)).toThrow(TruncatedLLMResponseError);
+  });
 });
 
 describe('BaseAgent.classifyLlmError (retry classification)', () => {
@@ -125,16 +136,19 @@ describe('BaseAgent prompt caching (C1)', () => {
 });
 
 describe('BaseAgent truncation-loss signal (L4)', () => {
-  it('flags wasLastResponseTruncated when recovery drops content', () => {
+  afterEach(() => {
+    delete process.env.STORYRPG_ALLOW_LOSSY_JSON_TRUNCATION;
+  });
+
+  it('rejects lossy truncation recovery by default', () => {
     const agent = new TestAgent();
 
     // Truncated array of objects (ends mid-string, no closing brackets) — the
-    // recovery cuts back to the last complete object, dropping the rest.
-    const parsed = agent.parse<{ shots: Array<Record<string, unknown>> }>(
+    // recovery used to cut back to the last complete object, silently dropping the rest.
+    expect(() => agent.parse<{ shots: Array<Record<string, unknown>> }>(
       '{"shots":[{"a":1},{"b":2},{"c":"hello',
-    );
+    )).toThrow(TruncatedLLMResponseError);
 
-    expect(parsed.shots).toEqual([{ a: 1 }, { b: 2 }]);
     expect(agent.wasLastResponseTruncated()).toBe(true);
   });
 
@@ -146,58 +160,52 @@ describe('BaseAgent truncation-loss signal (L4)', () => {
     expect(agent.wasLastResponseTruncated()).toBe(false);
   });
 
-  it('recovers a response cut mid-string VALUE inside a nested array (the analyzer overflow)', () => {
+  it('rejects a response cut mid-string VALUE inside a nested array', () => {
     const agent = new TestAgent();
 
-    // Mimics the structure-analysis overflow: valid leading fields, then cut
-    // mid-string inside an array element with no closing quote/brackets. Used to
-    // throw "Unterminated string …"; now the string is closed + structures
-    // balanced so the leading data survives.
-    const parsed = agent.parse<{ genre: string; themes: string[] }>(
+    expect(() => agent.parse<{ genre: string; themes: string[] }>(
       '{"genre":"Epic romantasy","themes":["Is a life measured by how long it lasts, or by what',
-    );
+    )).toThrow(TruncatedLLMResponseError);
 
-    expect(parsed.genre).toBe('Epic romantasy');
-    expect(Array.isArray(parsed.themes)).toBe(true);
-    expect(parsed.themes[0]).toContain('Is a life measured by how long it lasts');
     expect(agent.wasLastResponseTruncated()).toBe(true);
   });
 
-  it('recovers an array-element string cut with a dangling escape', () => {
+  it('rejects an array-element string cut with a dangling escape', () => {
     const agent = new TestAgent();
     // Cut inside an ARRAY element string (preceded by `[`, not `"prop":`), ending
     // on a lone backslash — exercises the close-the-string fallback + escape trim.
-    const parsed = agent.parse<{ a: string; themes: string[] }>(
+    expect(() => agent.parse<{ a: string; themes: string[] }>(
       '{"a":"ok","themes":["a complete one","a partial one ending in a dangling escape\\',
-    );
-    expect(parsed.a).toBe('ok');
-    expect(Array.isArray(parsed.themes)).toBe(true);
-    expect(parsed.themes[0]).toBe('a complete one');
-    expect(parsed.themes[1]).toContain('a partial one');
+    )).toThrow(TruncatedLLMResponseError);
   });
 
-  it('recovers a SceneWriter response cut right after `"text":"` (dangling open quote)', () => {
+  it('rejects a SceneWriter response cut right after `"text":"` (dangling open quote)', () => {
     const agent = new TestAgent();
     // bite-me-g14 s1-6: the response was truncated mid-string so the last
-    // non-whitespace char is a `"` (the just-opened value quote). handleTruncation
-    // used to early-return on `endsWith('"')` and assume the JSON was complete,
-    // rethrowing "Unterminated string in JSON". Now the dangling string is closed,
-    // the incomplete trailing beat is dropped, and the completed beats survive.
-    const parsed = agent.parse<{ sceneId: string; beats: Array<{ id: string; text: string }> }>(
+    // non-whitespace char is a `"` (the just-opened value quote).
+    expect(() => agent.parse<{ sceneId: string; beats: Array<{ id: string; text: string }> }>(
       '{"sceneId":"s1-6","name":"release scene 6","beats":[{"id":"b1","text":"She opened the door."},{"id":"b2","text":"',
-    );
-    expect(parsed.sceneId).toBe('s1-6');
-    expect(parsed.beats[0]).toEqual({ id: 'b1', text: 'She opened the door.' });
+    )).toThrow(TruncatedLLMResponseError);
     expect(agent.wasLastResponseTruncated()).toBe(true);
   });
 
-  it('recovers when the cut lands on a bare opening value quote with no prior beats', () => {
+  it('rejects when the cut lands on a bare opening value quote with no prior beats', () => {
     const agent = new TestAgent();
-    const parsed = agent.parse<{ sceneId: string; beats: unknown[] }>(
+    expect(() => agent.parse<{ sceneId: string; beats: unknown[] }>(
       '{"sceneId":"s1-6","name":"n","beats":[{"id":"b1","text":"',
+    )).toThrow(TruncatedLLMResponseError);
+  });
+
+  it('can temporarily allow lossy truncation recovery behind the explicit escape hatch', () => {
+    process.env.STORYRPG_ALLOW_LOSSY_JSON_TRUNCATION = '1';
+    const agent = new TestAgent();
+
+    const parsed = agent.parse<{ shots: Array<Record<string, unknown>> }>(
+      '{"shots":[{"a":1},{"b":2},{"c":"hello',
     );
-    expect(parsed.sceneId).toBe('s1-6');
-    expect(Array.isArray(parsed.beats)).toBe(true);
+
+    expect(parsed.shots).toEqual([{ a: 1 }, { b: 2 }]);
+    expect(agent.wasLastResponseTruncated()).toBe(true);
   });
 });
 
@@ -208,10 +216,9 @@ describe('BaseAgent truncation shadow counter (WS5)', () => {
     try {
       const agent = new TestAgent();
       // An array cut mid-object: recovery drops the trailing partial element.
-      const parsed = agent.parse<{ scenes: Array<{ id: string }> }>(
+      expect(() => agent.parse<{ scenes: Array<{ id: string }> }>(
         '{"scenes":[{"id":"s1"},{"id":"s2"},{"id":"s3","te',
-      );
-      expect(parsed.scenes.length).toBeGreaterThanOrEqual(2);
+      )).toThrow(TruncatedLLMResponseError);
       expect(agent.wasLastResponseTruncated()).toBe(true);
       expect(events.length).toBeGreaterThanOrEqual(1);
       expect(events[0]).toEqual({ agentName: 'Test Agent', provider: 'anthropic' });
@@ -239,10 +246,9 @@ describe('BaseAgent truncation shadow counter (WS5)', () => {
     });
     try {
       const agent = new TestAgent();
-      const parsed = agent.parse<{ scenes: Array<{ id: string }> }>(
+      expect(() => agent.parse<{ scenes: Array<{ id: string }> }>(
         '{"scenes":[{"id":"s1"},{"id":"s2","te',
-      );
-      expect(parsed.scenes.length).toBeGreaterThanOrEqual(1);
+      )).toThrow(TruncatedLLMResponseError);
       expect(agent.wasLastResponseTruncated()).toBe(true);
     } finally {
       BaseAgent.setTruncationObserver(undefined);
@@ -251,13 +257,30 @@ describe('BaseAgent truncation shadow counter (WS5)', () => {
 });
 
 describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    BaseAgent.setLlmTransportOverride(null);
+  });
 
   const schema: StructuredJsonSchema = {
     name: 'demo',
     description: 'demo schema',
     schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
   };
+
+  it('prepends a deterministic schema-shape contract for every structured call', async () => {
+    let captured: any = null;
+    BaseAgent.setLlmTransportOverride(async (request) => {
+      captured = request;
+      return '{"ok":true}';
+    });
+
+    await new TestAgent().callStructured([{ role: 'user', content: 'go' }], schema);
+
+    const system = captured.messages.find((message: AgentMessage) => message.role === 'system');
+    expect(system?.content).toContain('deterministic JSON schema "demo"');
+    expect(system?.content).toContain('Do not add fields that are not named in the schema');
+  });
 
   it('Anthropic: forces tool use (non-streaming) and returns the tool_use input as JSON', async () => {
     let captured: any = null;
@@ -296,6 +319,32 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
 
     const out = await new TestAgent().callStructured([{ role: 'user', content: 'go' }], schema);
     expect(JSON.parse(out)).toEqual({ ok: true });
+  });
+
+  it('does not retry MAX_TOKENS truncation with the same structured request', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        candidates: [{
+          finishReason: 'MAX_TOKENS',
+          content: { parts: [{ text: '{"ok":' }] },
+        }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 8192,
+          thoughtsTokenCount: 64,
+        },
+      }),
+    } as any));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro' })
+        .callStructuredWithRetries([{ role: 'user', content: 'go' }], schema, 3),
+    ).rejects.toThrow(TruncatedLLMResponseError);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('OpenAI: sets response_format json_schema (non-streaming)', async () => {
@@ -344,6 +393,111 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     } finally {
       setLLMStreamingEnabled(true);
     }
+  });
+
+  it('Gemini: sends responseSchema for structured JSON calls and stays on the buffered path', async () => {
+    setLLMStreamingEnabled(true);
+    let body: any = null;
+    let url = '';
+    vi.stubGlobal('fetch', vi.fn(async (u: string, init: any) => {
+      url = u;
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          candidates: [{ content: { parts: [{ text: '{"ok":true}' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+        }),
+      } as any;
+    }));
+
+    const geminiSchema: StructuredJsonSchema = {
+      ...schema,
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          nested: {
+            type: 'object',
+            additionalProperties: true,
+            properties: { note: { type: 'string' } },
+          },
+        },
+        required: ['ok'],
+      },
+    };
+
+    const out = await new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro', maxTokens: 4096 }).callStructured(
+      [{ role: 'user', content: 'go' }],
+      geminiSchema,
+    );
+
+    expect(url).toContain(':generateContent?');
+    expect(url).not.toContain(':streamGenerateContent');
+    expect(body.generationConfig.maxOutputTokens).toBe(4096);
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 128 });
+    expect(body.generationConfig.responseMimeType).toBe('application/json');
+    expect(body.generationConfig.responseSchema).toEqual({
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        nested: {
+          type: 'object',
+          properties: { note: { type: 'string' } },
+        },
+      },
+      required: ['ok'],
+    });
+    expect(JSON.parse(out)).toEqual({ ok: true });
+  });
+
+  it('Gemini: caps structured-output headroom by the schema budget', async () => {
+    setLLMStreamingEnabled(true);
+    let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: any) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          candidates: [{ content: { parts: [{ text: '{"ok":true}' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+        }),
+      } as any;
+    }));
+
+    await new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro', maxTokens: 16384 }).callStructured(
+      [{ role: 'user', content: 'go' }],
+      { ...schema, maxOutputTokens: 12000 },
+    );
+
+    expect(body.generationConfig.maxOutputTokens).toBe(12000);
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 128 });
+  });
+
+  it('Gemini: uses low thinking level for Gemini 3 structured JSON calls', async () => {
+    setLLMStreamingEnabled(true);
+    let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: any) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          candidates: [{ content: { parts: [{ text: '{"ok":true}' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+        }),
+      } as any;
+    }));
+
+    await new TestAgent({ provider: 'gemini', model: 'gemini-3.1-pro-preview', maxTokens: 16384 }).callStructured(
+      [{ role: 'user', content: 'go' }],
+      schema,
+    );
+
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'low' });
   });
 
   it('Gemini: omits JSON mode when the agent opts out (openaiForceJsonResponse=false)', async () => {
@@ -396,6 +550,7 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     // No OpenAI reasoning-class shaping leaks in — plain max_tokens + temperature.
     expect(body.max_completion_tokens).toBeUndefined();
     expect(body.reasoning_effort).toBeUndefined();
+    expect(body.max_tokens).toBe(1024);
     expect(body.model).toBe('deepseek/deepseek-v4-pro');
     expect(JSON.parse(out)).toEqual({ ok: true });
   });
@@ -454,5 +609,31 @@ describe('BaseAgent callLLMForJson re-sample on parse failure', () => {
     await expect(
       new TestAgent().callJson<{ worldRules: string[] }>([{ role: 'user', content: 'go' }]),
     ).rejects.toThrow(/Failed to parse JSON/);
+  });
+});
+
+describe('BaseAgent provider truncation guards', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setLLMStreamingEnabled(true);
+  });
+
+  it('rejects Gemini MAX_TOKENS responses even when content is present', async () => {
+    setLLMStreamingEnabled(false);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        candidates: [{
+          finishReason: 'MAX_TOKENS',
+          content: { parts: [{ text: '{"partial":true}' }] },
+        }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20 },
+      }),
+    })) as any);
+
+    await expect(
+      new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro' }).callPlain([{ role: 'user', content: 'go' }]),
+    ).rejects.toThrow(TruncatedLLMResponseError);
   });
 });

@@ -415,8 +415,11 @@ async function main() {
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);
   activeResultPath = payload.resultPath;
+  if (payload.processTitle) {
+    process.title = payload.processTitle;
+  }
 
-  emit('worker_start', { mode: payload.mode });
+  emit('worker_start', { mode: payload.mode, friendlyName: payload.friendlyName, processTitle: payload.processTitle });
 
   // WS1b preflight: 1-token ping so an exhausted account pauses the job before
   // any generation spend. Fail-open — only a definitive billing error throws

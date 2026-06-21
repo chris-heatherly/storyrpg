@@ -23,6 +23,7 @@ export interface SceneGraphBranchIssue {
   beatId?: string;
   choiceId?: string;
   targetSceneId?: string;
+  skippedSceneIds?: string[];
 }
 
 export interface SceneGraphBranchMetrics {
@@ -177,6 +178,7 @@ export class SceneGraphBranchValidator {
                   beatId: beat.id,
                   choiceId: choice.id,
                   targetSceneId: effectiveNextSceneId,
+                  skippedSceneIds: skipped.map(s => s.id),
                 });
               }
             }

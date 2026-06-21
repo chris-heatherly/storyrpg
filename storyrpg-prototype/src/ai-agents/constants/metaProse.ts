@@ -44,6 +44,13 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     label: 'parenthetical system-variable mention',
     suggestion: 'Remove system-variable mentions from reader prose.',
   },
+  {
+    // Story-planning register from fallback choice reminders. This is not
+    // diegetic prose; it names authoring machinery and the next story beat.
+    pattern: /\bthe\s+next\s+beat\s+visibly\s+responds\b|\bauthored\s+choice\b/i,
+    label: 'choice-response planning language',
+    suggestion: 'Describe the consequence in-fiction; never reference authored choices or story beats.',
+  },
 ];
 
 /**
@@ -87,6 +94,11 @@ export const STRUCTURAL_SCAFFOLDING_PATTERNS: Array<{ pattern: RegExp; label: st
     label: 'forward-motion scaffolding',
     suggestion: 'Replace the structural forward-motion tag with in-fiction prose.',
   },
+  {
+    pattern: /\bstill changes how this moment lands\b/i,
+    label: 'callback scaffolding',
+    suggestion: 'Show the earlier decision changing the scene in-fiction; never ship generic callback scaffolding.',
+  },
 ];
 
 /**
@@ -109,6 +121,10 @@ export const META_CALLBACK_REJECT_PATTERNS: RegExp[] = [
   // Generic planning defaults the autofill emits.
   /\bshould remember this choice\b/i,
   /\bremember this (?:choice|moment)\b/i,
+  /\bwhich option the player chose\b/i,
+  /\bthe player chose\b/i,
+  /\bthe\s+next\s+beat\s+visibly\s+responds\b/i,
+  /\bauthored\s+choice\b/i,
 ];
 
 /**

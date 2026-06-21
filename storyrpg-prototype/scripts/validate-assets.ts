@@ -50,8 +50,75 @@ async function validateStoryDir(storyDir: string): Promise<{ findings: Finding[]
   const findings: Finding[] = [];
   let hadError = false;
 
+  const validatePackageFile = (primaryAbs: string): boolean => {
+    let pkg;
+    try {
+      const raw = JSON.parse(fs.readFileSync(primaryAbs, 'utf8'));
+      pkg = decodeStory(raw);
+      findings.push({
+        severity: 'ok',
+        message: `decodeStory: schemaVersion=${pkg.detectedSchemaVersion} → v${pkg.schemaVersion} (${Object.keys(pkg.assets).length} assets)`,
+      });
+    } catch (err) {
+      const issues = err instanceof StoryValidationError
+        ? err.issues.map((i) => `${i.path}: ${i.message}`).join('; ')
+        : (err instanceof Error ? err.message : String(err));
+      findings.push({ severity: 'error', message: `decodeStory failed: ${issues}` });
+      return true;
+    }
+
+    const assetsRoot = path.join(storyDir, 'assets');
+    let missing = 0;
+    let hashMismatch = 0;
+    let verified = 0;
+    for (const [sha, ref] of Object.entries(pkg.assets)) {
+      if (sha !== ref.sha256) {
+        findings.push({
+          severity: 'error',
+          message: `assets["${sha}"].sha256 does not match its key (got ${ref.sha256})`,
+        });
+        hadError = true;
+        continue;
+      }
+      const rel = pathForSha256(ref.sha256, ref.mimeType);
+      const abs = path.join(assetsRoot, rel);
+      if (!fs.existsSync(abs)) {
+        findings.push({ severity: 'error', message: `missing asset file for ${sha.slice(0, 12)}...: ${rel}` });
+        missing++;
+        hadError = true;
+        continue;
+      }
+      const { sha256: onDisk } = sha256OfFileSync(abs);
+      if (onDisk !== sha) {
+        findings.push({
+          severity: 'error',
+          message: `asset sha256 mismatch for ${rel} (manifest=${sha} disk=${onDisk})`,
+        });
+        hashMismatch++;
+        hadError = true;
+        continue;
+      }
+      verified++;
+    }
+    findings.push({
+      severity: missing + hashMismatch > 0 ? 'error' : 'ok',
+      message: `assets/: ${verified} verified, ${missing} missing, ${hashMismatch} hash-mismatch`,
+    });
+
+    return hadError;
+  };
+
   const manifest = readManifest(storyDir);
   if (!manifest) {
+    const packagedStory = path.join(storyDir, 'story.json');
+    if (fs.existsSync(packagedStory)) {
+      findings.push({
+        severity: 'warn',
+        message: 'codec manifest missing or shadowed by run manifest — validating story.json package directly',
+      });
+      return { findings, hadError: validatePackageFile(packagedStory) };
+    }
+
     findings.push({
       severity: 'warn',
       message: 'manifest.json missing — falling back to legacy HTTP asset walk',
@@ -86,60 +153,7 @@ async function validateStoryDir(storyDir: string): Promise<{ findings: Finding[]
   }
 
   // 2. decodeStory passes
-  let pkg;
-  try {
-    const raw = JSON.parse(fs.readFileSync(primaryAbs, 'utf8'));
-    pkg = decodeStory(raw);
-    findings.push({
-      severity: 'ok',
-      message: `decodeStory: schemaVersion=${pkg.detectedSchemaVersion} → v${pkg.schemaVersion} (${Object.keys(pkg.assets).length} assets)`,
-    });
-  } catch (err) {
-    const issues = err instanceof StoryValidationError
-      ? err.issues.map((i) => `${i.path}: ${i.message}`).join('; ')
-      : (err instanceof Error ? err.message : String(err));
-    findings.push({ severity: 'error', message: `decodeStory failed: ${issues}` });
-    return { findings, hadError: true };
-  }
-
-  // 3. Every AssetRef.sha256 exists on disk + hash matches.
-  const assetsRoot = path.join(storyDir, 'assets');
-  let missing = 0;
-  let hashMismatch = 0;
-  let verified = 0;
-  for (const [sha, ref] of Object.entries(pkg.assets)) {
-    if (sha !== ref.sha256) {
-      findings.push({
-        severity: 'error',
-        message: `assets["${sha}"].sha256 does not match its key (got ${ref.sha256})`,
-      });
-      hadError = true;
-      continue;
-    }
-    const rel = pathForSha256(ref.sha256, ref.mimeType);
-    const abs = path.join(assetsRoot, rel);
-    if (!fs.existsSync(abs)) {
-      findings.push({ severity: 'error', message: `missing asset file for ${sha.slice(0, 12)}...: ${rel}` });
-      missing++;
-      hadError = true;
-      continue;
-    }
-    const { sha256: onDisk } = sha256OfFileSync(abs);
-    if (onDisk !== sha) {
-      findings.push({
-        severity: 'error',
-        message: `asset sha256 mismatch for ${rel} (manifest=${sha} disk=${onDisk})`,
-      });
-      hashMismatch++;
-      hadError = true;
-      continue;
-    }
-    verified++;
-  }
-  findings.push({
-    severity: missing + hashMismatch > 0 ? 'error' : 'ok',
-    message: `assets/: ${verified} verified, ${missing} missing, ${hashMismatch} hash-mismatch`,
-  });
+  hadError = validatePackageFile(primaryAbs);
 
   return { findings, hadError };
 }

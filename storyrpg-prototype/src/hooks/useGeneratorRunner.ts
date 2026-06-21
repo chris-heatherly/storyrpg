@@ -91,7 +91,7 @@ export function useGeneratorRunner() {
     request: WorkerJobStartRequest,
     onPipelineEvent?: (event: PipelineEvent) => void,
     onStatusUpdate?: (status: any) => void,
-    onJobStarted?: (jobId: string) => void | Promise<void>,
+    onJobStarted?: (jobId: string, startData: WorkerJobStartResponse) => void | Promise<void>,
   ): Promise<{ jobId: string; result: T }> => {
     const startResp = await fetch(`${PROXY_CONFIG.workerJobs}/start`, {
       method: 'POST',
@@ -111,7 +111,7 @@ export function useGeneratorRunner() {
       throw new Error('Worker start response missing jobId');
     }
 
-    await Promise.resolve(onJobStarted?.(jobId));
+    await Promise.resolve(onJobStarted?.(jobId, startData));
 
     let seenTimeline = 0;
     let idlePolls = 0;

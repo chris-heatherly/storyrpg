@@ -29,10 +29,12 @@ function usage(message?: string): never {
   process.exit(message ? 1 : 0);
 }
 
-const argv = process.argv.slice(2);
+const rawArgv = process.argv.slice(1);
+const scriptArgIndex = rawArgv.findIndex((arg) => /(?:^|[/\\])invalidate-episode\.ts$/.test(arg));
+const argv = scriptArgIndex >= 0 ? rawArgv.slice(scriptArgIndex + 1) : rawArgv;
 const reasonIdxRaw = argv.indexOf('--reason');
 const reasonValue = reasonIdxRaw !== -1 ? argv[reasonIdxRaw + 1] : undefined;
-const positional = argv.filter((a, i) => !a.startsWith('--') && i !== reasonIdxRaw + 1);
+const positional = argv.filter((a, i) => !a.startsWith('--') && !(reasonIdxRaw !== -1 && i === reasonIdxRaw + 1));
 if (positional.length !== 2) usage('expected exactly <runDir> <episodeNumber>');
 const runDir = path.resolve(positional[0]);
 const target = Number(positional[1]);

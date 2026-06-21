@@ -131,7 +131,7 @@ export function CancelJobModal({ job, onCancel, onConfirm }: CancelJobModalProps
       visible={job !== null}
       title="Stop generation?"
       message={job
-        ? `Are you sure you want to stop "${(job.storyTitle || 'Untitled')}"? Partial progress may be lost.`
+        ? `Are you sure you want to stop "${(job.friendlyName || job.storyTitle || 'Untitled')}"? Partial progress may be lost.`
         : 'Are you sure you want to stop this generation job? Partial progress may be lost.'}
       confirmLabel="Stop"
       cancelLabel="Continue"

@@ -87,7 +87,7 @@ A StoryRPG branching-narrative season treatment.
 - **Opening situation:** Kylie dressing for Victor while FaceTiming Sadie.
 - **Encounter anchor (dark):** The mirror moment in Victor's bedroom.
 - **Encounter anchor (warm):** Stela's bookshop floor at 3am.
-- **Encounter buildup:** A tender lunch, the blog offer, and Stela's Tower card.
+- **Encounter buildup:** A tender after-sundown dinner, the blog offer, and Stela's Tower card.
 - **Major choice pressure:**
   - Agree to consider winding down the blog or refuse.
   - Confront Victor, run, or pretend you did not see.

@@ -45,6 +45,8 @@ function createSyncGenerationMirrorFromWorker(deps) {
       projectId,
       resumeFromJobId,
       storyTitle: workerJob.storyTitle || 'Untitled Story',
+      friendlyName: workerJob.friendlyName || workerJob.resumeContext?.friendlyName,
+      processTitle: workerJob.processTitle || workerJob.resumeContext?.processTitle,
       startedAt: workerJob.startedAt || workerJob.createdAt,
       updatedAt: workerJob.updatedAt || new Date().toISOString(),
       status: workerJob.status,

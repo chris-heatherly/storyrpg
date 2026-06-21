@@ -39,6 +39,8 @@ interface PipelineProgressProps {
 
 export interface PipelineRuntimeSnapshot {
   jobId?: string;
+  friendlyName?: string;
+  processTitle?: string;
   status?: string;
   currentPhase?: string;
   progress?: number;
@@ -568,7 +570,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
           <View style={styles.opsGrid}>
             <View style={styles.opsMetric}>
               <Text style={styles.opsMetricLabel}>JOB</Text>
-              <Text style={styles.opsMetricValue} numberOfLines={1}>{runtime?.jobId || 'LOCAL'}</Text>
+              <Text style={styles.opsMetricValue} numberOfLines={1}>{runtime?.friendlyName || runtime?.jobId || 'LOCAL'}</Text>
             </View>
             <View style={styles.opsMetric}>
               <Text style={styles.opsMetricLabel}>ELAPSED</Text>

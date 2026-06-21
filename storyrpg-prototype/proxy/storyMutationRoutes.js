@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const { atomicWriteJsonSync } = require('./atomicIo');
 const manifestModule = require('./storyManifest');
@@ -41,6 +42,52 @@ function readStoryPackage(storyDir) {
     return { pkg: decoded.pkg, primary };
   } catch {
     return null;
+  }
+}
+
+function resolveStoryFolderPath(storiesDir, outputDir) {
+  if (typeof outputDir !== 'string' || outputDir.trim().length === 0) {
+    throw new Error('Missing outputDir');
+  }
+
+  const storiesRoot = path.resolve(storiesDir);
+  const normalized = outputDir.trim().replace(/\\/g, '/').replace(/^\/app\//, '');
+  if (/^https?:\/\//i.test(normalized) || normalized.includes('\0')) {
+    throw new Error('outputDir must reference a local generated story folder');
+  }
+
+  let candidate;
+  if (path.isAbsolute(normalized)) {
+    candidate = path.resolve(normalized);
+  } else {
+    const withoutPrefix = normalized
+      .replace(/^\.\//, '')
+      .replace(/^generated-stories\/?/, '');
+    const storyDirName = withoutPrefix.split('/').filter(Boolean)[0];
+    if (!storyDirName) {
+      throw new Error('outputDir must include a story folder name');
+    }
+    candidate = path.resolve(storiesRoot, storyDirName);
+  }
+
+  const relative = path.relative(storiesRoot, candidate);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('outputDir must stay within generated-stories');
+  }
+
+  return candidate;
+}
+
+function openFolderInDesktop(folderPath) {
+  const command = process.platform === 'darwin'
+    ? 'open'
+    : process.platform === 'win32'
+      ? 'explorer'
+      : 'xdg-open';
+  const result = spawnSync(command, [folderPath], { stdio: 'ignore' });
+  if (result.error) throw result.error;
+  if (typeof result.status === 'number' && result.status !== 0) {
+    throw new Error(`${command} exited with status ${result.status}`);
   }
 }
 
@@ -88,6 +135,22 @@ function registerStoryMutationRoutes(app, { storiesDir, deletedStoriesFile }) {
     }
 
     res.json({ success: deleted > 0, deleted });
+  });
+
+  app.post('/open-story-folder', (req, res) => {
+    try {
+      const folderPath = resolveStoryFolderPath(storiesDir, req.body?.outputDir);
+      if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+        return res.status(404).json({ error: 'Story folder not found on local disk' });
+      }
+
+      openFolderInDesktop(folderPath);
+      res.json({ success: true, path: folderPath });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Proxy] Failed to open story folder:', message);
+      res.status(400).json({ error: message });
+    }
   });
 
   app.post('/install-builtin-story', (req, res) => {
@@ -230,4 +293,5 @@ function registerStoryMutationRoutes(app, { storiesDir, deletedStoriesFile }) {
 
 module.exports = {
   registerStoryMutationRoutes,
+  resolveStoryFolderPath,
 };

@@ -240,9 +240,11 @@ Your plans must define:
     // guaranteed fallback. Here we attempt to UPGRADE it to an LLM-authored
     // spine (scenes planned with real dramatic content + setup/payoff logic).
     // On any failure the deterministic spine is kept.
+    const isTreatmentSourcedPlan = seasonPlan.episodes.some((ep) => Boolean(ep.treatmentGuidance));
     if (
       isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
-      seasonPlan.scenePlan
+      seasonPlan.scenePlan &&
+      !isTreatmentSourcedPlan
     ) {
       // Standard-mode episodes must stay branchable, so hold the LLM-authored
       // spine to the deterministic per-episode scene floor; sceneEpisodes mode
@@ -261,6 +263,10 @@ Your plans must define:
           `Scene-first planning: LLM-authored spine (${authored.scenes.length} scenes, ${authored.setupPayoffEdges.length} setup/payoff edges).`,
         );
       }
+    } else if (seasonPlan.scenePlan && isTreatmentSourcedPlan) {
+      seasonPlan.notes.push(
+        'Scene-first planning: kept deterministic treatment-bound spine so authored required beats remain the source of truth.',
+      );
     }
 
     // Season choice/consequence BUDGET layer. Runs AFTER the scene plan is built

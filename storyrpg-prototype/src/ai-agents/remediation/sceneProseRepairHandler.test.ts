@@ -73,6 +73,21 @@ describe('selectSceneProseRepairs', () => {
     expect(groups.get('s2-1')).toHaveLength(2);
   });
 
+  it('routes planning-register prose leaks to scene-prose repair', () => {
+    const groups = selectSceneProseRepairs([
+      {
+        type: 'planning_register_prose',
+        severity: 'error',
+        message: 'Planning-register instruction leaked into story content (Open the episode).',
+        validator: 'PlanningRegisterLeakValidator',
+        sceneId: 's1-4',
+        episodeNumber: 1,
+      },
+    ]);
+
+    expect([...groups.keys()]).toEqual(['s1-4']);
+  });
+
   it('caps the number of scenes per round but keeps extra findings for capped scenes', () => {
     const groups = selectSceneProseRepairs(
       [requiredBeatIssue('a'), requiredBeatIssue('b'), requiredBeatIssue('c'), requiredBeatIssue('a')],

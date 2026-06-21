@@ -48,6 +48,18 @@ function validStory(overrides: Partial<Story> = {}): Story {
                     consequences: [{ type: 'setFlag', flag: 'opened_carefully', value: true }],
                     reminderPlan: { immediate: 'The hinge stays quiet.', shortTerm: 'The quiet approach changes the next room.' },
                   } as any,
+                  {
+                    id: 'choice-2',
+                    text: 'Knock before opening',
+                    nextBeatId: 'beat-2',
+                    consequences: [{ type: 'setFlag', flag: 'knocked_first', value: true }],
+                  } as any,
+                  {
+                    id: 'choice-3',
+                    text: 'Listen at the door',
+                    nextBeatId: 'beat-2',
+                    consequences: [{ type: 'setFlag', flag: 'listened_first', value: true }],
+                  } as any,
                 ],
               } as any,
               {
@@ -114,6 +126,28 @@ function validEncounter() {
                   failure: outcome('defeat'),
                 },
               },
+              {
+                id: 'enc-choice-2',
+                text: 'Ask the chamber what it wants',
+                approach: 'clever',
+                primarySkill: 'persuasion',
+                outcomes: {
+                  success: outcome('victory'),
+                  complicated: outcome('victory'),
+                  failure: outcome('defeat'),
+                },
+              },
+              {
+                id: 'enc-choice-3',
+                text: 'Brace yourself and step forward',
+                approach: 'bold',
+                primarySkill: 'intimidation',
+                outcomes: {
+                  success: outcome('victory'),
+                  complicated: outcome('victory'),
+                  failure: outcome('defeat'),
+                },
+              },
             ],
           },
           {
@@ -123,10 +157,32 @@ function validEncounter() {
             setupText: 'The answer demands a cost.',
             choices: [
               {
-                id: 'enc-choice-2',
+                id: 'enc-choice-4',
                 text: 'Pay the cost openly',
                 approach: 'cautious',
                 primarySkill: 'persuasion',
+                outcomes: {
+                  success: outcome('victory'),
+                  complicated: outcome('victory'),
+                  failure: outcome('defeat'),
+                },
+              },
+              {
+                id: 'enc-choice-5',
+                text: 'Offer a truth instead',
+                approach: 'clever',
+                primarySkill: 'perception',
+                outcomes: {
+                  success: outcome('victory'),
+                  complicated: outcome('victory'),
+                  failure: outcome('defeat'),
+                },
+              },
+              {
+                id: 'enc-choice-6',
+                text: 'Refuse the bargain and push through',
+                approach: 'bold',
+                primarySkill: 'intimidation',
                 outcomes: {
                   success: outcome('victory'),
                   complicated: outcome('victory'),
@@ -143,6 +199,57 @@ function validEncounter() {
 }
 
 describe('FinalStoryContractValidator', () => {
+  it('blocks reader-facing choice surfaces outside the 3-4 option contract', async () => {
+    const story = validStory();
+    story.episodes[0].scenes[0].beats[0].choices = story.episodes[0].scenes[0].beats[0].choices!.slice(0, 2);
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'choice_count_contract',
+        sceneId: 'scene-1',
+        beatId: 'beat-1',
+      }),
+    ]));
+  });
+
+  it('blocks vampire or strigoi characters being scheduled for daytime meals', async () => {
+    const story = validStory({
+      npcs: [
+        { id: 'victor', name: 'Victor Valcescu', description: 'A vampire patron and romantic stranger.' } as any,
+      ],
+    });
+    story.episodes[0].scenes[0].beats[1].text =
+      "The first message is from Victor: Lunch Saturday at Casa Stelarum, the whole weekend if you can stand it.";
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'supernatural_canon_contradiction',
+        sceneId: 'scene-1',
+        beatId: 'beat-2',
+      }),
+    ]));
+  });
+
+  it('allows daytime-meal absence as a vampire tell instead of treating it as a contradiction', async () => {
+    const story = validStory({
+      npcs: [
+        { id: 'victor', name: 'Victor Valcescu', description: 'A strigoi patron and romantic stranger.' } as any,
+      ],
+    });
+    story.episodes[0].scenes[0].beats[1].text =
+      'Mika jokes that Victor is never at brunch, and the absence lands like a clue.';
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'supernatural_canon_contradiction')).toBe(false);
+  });
+
   it('fails an empty non-encounter scene', async () => {
     const story = validStory({
       episodes: [{
@@ -391,6 +498,51 @@ describe('FinalStoryContractValidator', () => {
     expect(direct.valid).toBe(true);
   });
 
+  it('uses the roster protagonist instead of an unsafe brief protagonist for encounter POV repair', async () => {
+    const encounter = validEncounter();
+    (encounter.phases[0].beats[0] as any).setupText =
+      'The Cișmigiu paths are dead quiet. A second figure steps from the fog.';
+    (encounter.phases[0].beats[0].choices[0].outcomes.success as any).narrativeText =
+      'Kylie straightens her collar as Victor watches.';
+    const story = validStory({
+      npcs: [
+        {
+          id: 'char-kylie',
+          name: 'Kylie Marinescu',
+          description: 'The protagonist.',
+          role: 'protagonist',
+          pronouns: 'she/her',
+        },
+        {
+          id: 'char-victor',
+          name: 'Victor',
+          description: 'A vampire.',
+          role: 'ally',
+          pronouns: 'he/him',
+        },
+      ],
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: encounter as any,
+        }],
+      }],
+    });
+
+    await new FinalStoryContractValidator().validate({
+      story,
+      protagonist: { name: 'The', pronouns: 'she/her' },
+    });
+
+    const beat = (story.episodes[0].scenes[0].encounter as any).phases[0].beats[0];
+    expect(beat.setupText).toBe('The Cișmigiu paths are dead quiet. A second figure steps from the fog.');
+    expect(beat.choices[0].outcomes.success.narrativeText).toBe('You straighten your collar as Victor watches.');
+  });
+
   it('flags a routing contradiction: a choice targets a real scene not in scene.leadsTo', async () => {
     const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
       id,
@@ -485,6 +637,59 @@ describe('FinalStoryContractValidator', () => {
     expect(report.passed).toBe(false);
     expect(report.blockingIssues).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'choice_bridge_skips_required_setup', sceneId: 'scene-1' }),
+    ]));
+  });
+
+  it('blocks planning-register prose leaked into beats, variants, encounters, and visual metadata', async () => {
+    const story = validStory();
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.visualMetadata = {
+      prompt: 'Introduce Victor on-page with a clear silhouette before the reveal.',
+    };
+    scene.encounter = {
+      ...validEncounter(),
+      phases: [{
+        id: 'phase-leak',
+        beats: [{
+          id: 'enc-leak',
+          setupText: 'Decide how to handle the bookshop witness before the fight begins.',
+          choices: [],
+        }],
+      }],
+    };
+    scene.beats[0].text = 'Open the episode with the door already waiting for you.';
+    scene.beats[1].textVariants = [{
+      condition: { type: 'flag', flag: 'opened_carefully', value: true },
+      text: 'The next beat visibly responds to the authored choice: take the careful opening or rush through.',
+    }];
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+    const leaks = report.blockingIssues.filter((issue) => issue.type === 'planning_register_prose');
+
+    expect(report.passed).toBe(false);
+    expect(leaks).toHaveLength(4);
+    expect(leaks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-1' }),
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-2' }),
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1' }),
+    ]));
+  });
+
+  it('blocks choice reminder text appended to base beat prose', async () => {
+    const story = validStory();
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.beats[1].text = `Because you opened the door carefully, the room keeps its breath.\n\nThe hinge stays quiet.`;
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'echo_summary_variant',
+        validator: 'FinalStoryContractValidator',
+        sceneId: 'scene-1',
+        beatId: 'beat-2',
+      }),
     ]));
   });
 
@@ -707,6 +912,57 @@ describe('FinalStoryContractValidator', () => {
     expect(treatment.blockingIssues).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'unrepaired_callback_debt' }),
     ]));
+  });
+
+  it('does not block callback debt when the callback ledger records an in-window payoff', async () => {
+    const story = validStory();
+    (story.episodes[0].scenes[0].beats[0].choices![1] as any).consequences = [
+      { type: 'relationship', npcId: 'keeper', dimension: 'trust', change: 1 },
+    ];
+    (story.episodes[0].scenes[0].beats[0].choices![1] as any).reminderPlan = {
+      immediate: 'The knock changes the silence.',
+      shortTerm: 'The keeper remembers the courtesy.',
+    };
+    (story.episodes[0].scenes[0].beats[0].choices![2] as any).consequences = [
+      { type: 'relationship', npcId: 'keeper', dimension: 'respect', change: 1 },
+    ];
+    (story.episodes[0].scenes[0].beats[0].choices![2] as any).reminderPlan = {
+      immediate: 'The listening buys you a breath.',
+      shortTerm: 'The keeper notices the restraint.',
+    };
+    const choice = story.episodes[0].scenes[0].beats[0].choices![0] as any;
+    choice.consequences = [{ type: 'setFlag', flag: 'treatment_seed_ep1_1', value: true }];
+
+    const withoutLedger = await new FinalStoryContractValidator().validate({
+      story,
+      treatmentSourced: true,
+    });
+    expect(withoutLedger.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'unrepaired_callback_debt', message: expect.stringContaining('treatment_seed_ep1_1') }),
+    ]));
+
+    const withLedger = await new FinalStoryContractValidator().validate({
+      story,
+      treatmentSourced: true,
+      generatedThroughEpisode: 1,
+      callbackLedger: {
+        version: 1,
+        config: { defaultWindowSpan: 3, resolveAfterPayoffs: 2 },
+        hooks: [{
+          id: 'flag:treatment_seed_ep1_1',
+          sourceEpisode: 1,
+          sourceSceneId: 'scene-1',
+          sourceChoiceId: 'choice-1',
+          flags: ['treatment_seed_ep1_1'],
+          conditionKeys: ['treatment_seed_ep1_1'],
+          summary: 'The quartz choice is acknowledged.',
+          payoffWindow: { minEpisode: 1, maxEpisode: 4 },
+          payoffCount: 2,
+          resolved: true,
+        }],
+      },
+    });
+    expect(withLedger.blockingIssues.some((i) => i.type === 'unrepaired_callback_debt')).toBe(false);
   });
 
   it('labels fewer generated treatment episodes as a partial slice instead of full completion', async () => {

@@ -6,7 +6,11 @@ import {
   protagonistFromStory,
 } from './encounterPovBackstop';
 
-function storyWithEncounter(storyletText: string, npcs?: Array<Record<string, unknown>>): Story {
+function storyWithEncounter(
+  storyletText: string,
+  npcs?: Array<Record<string, unknown>>,
+  extraEncounter: Record<string, unknown> = {},
+): Story {
   return {
     npcs: npcs ?? [
       { id: 'p', name: 'Kylie Marinescu', role: 'protagonist', pronouns: 'she/her' },
@@ -20,6 +24,7 @@ function storyWithEncounter(storyletText: string, npcs?: Array<Record<string, un
           {
             id: 's1',
             encounter: {
+              ...extraEncounter,
               storylets: {
                 victory: { beats: [{ id: 'b1', text: storyletText }] },
               },
@@ -57,6 +62,94 @@ describe('encounterPovBackstop (WS0.3)', () => {
     const res = applyEncounterPovBackstop(story);
     expect(res.coerced).toBe(0);
     expect(res.residualBreaks).toEqual([]);
+  });
+
+  it('repairs second-person residue even after the protagonist name is gone', () => {
+    const story = storyWithEncounter('', undefined, {
+      description: 'Walking home through Cișmigiu at 1am, you are pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks her home, kisses her hand at the threshold, declines to come in, and vanishes.',
+    });
+    const res = applyEncounterPovBackstop(story);
+    expect(res.coerced).toBe(1);
+    const encounter = story.episodes[0].scenes[0].encounter as any;
+    expect(encounter.description).toBe('Walking home through Cișmigiu at 1am, you are pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks you home, kisses your hand at the threshold, declines to come in, and vanishes.');
+  });
+
+  it('prefers the roster protagonist over an unsafe provided name', () => {
+    const story = storyWithEncounter('Kylie straightens her collar.', undefined, {
+      phases: [{
+        id: 'phase-1',
+        beats: [{
+          id: 'beat-1',
+          setupText: 'The Cișmigiu paths are dead quiet. A second figure steps from the fog.',
+        }],
+      }],
+    });
+    const res = applyEncounterPovBackstop(story, { name: 'The', pronouns: 'she/her' });
+    expect(res.coerced).toBe(1);
+    const encounter = story.episodes[0].scenes[0].encounter as any;
+    expect(encounter.phases[0].beats[0].setupText).toBe('The Cișmigiu paths are dead quiet. A second figure steps from the fog.');
+    expect(encounter.storylets.victory.beats[0].text).toBe('You straighten your collar.');
+  });
+
+  it('leaves embedded choice labels untouched while repairing encounter description prose', () => {
+    const story = storyWithEncounter('', undefined, {
+      description: 'Kylie is pinned to a willow by a shadow, walks her home, and kisses her hand.',
+      phases: [{
+        id: 'phase-1',
+        beats: [{
+          id: 'beat-1',
+          setupText: 'The shadow digs her claws into the bark. The stranger extends his hand.',
+          choices: [{
+            id: 'c1',
+            text: "Twist violently out of the shadow's grip just as the suited man strikes.",
+            approach: 'aggressive',
+            outcomes: {
+              success: { narrativeText: 'Kylie steadies her breath and keeps moving.' },
+              complicated: { narrativeText: 'Kylie lets him walk her home.' },
+              failure: { narrativeText: 'Kylie touches her bruised throat.' },
+            },
+          }],
+        }],
+      }],
+    });
+    const res = applyEncounterPovBackstop(story);
+    expect(res.residualBreaks).toEqual([]);
+    const encounter = story.episodes[0].scenes[0].encounter as any;
+    expect(encounter.description).toBe('You are pinned to a willow by a shadow, walks you home, and kisses your hand.');
+    expect(encounter.phases[0].beats[0].setupText).toBe('The shadow digs her claws into the bark. The stranger extends his hand.');
+    expect(encounter.phases[0].beats[0].choices[0].text).toBe("Twist violently out of the shadow's grip just as the suited man strikes.");
+    expect(encounter.phases[0].beats[0].choices[0].outcomes.complicated.narrativeText).toBe('You let him walk you home.');
+  });
+
+  it('repairs visual and cost support fields that feed reader packaging', () => {
+    const story = storyWithEncounter('', undefined, {
+      phases: [{
+        id: 'phase-1',
+        beats: [{
+          id: 'beat-1',
+          choices: [{
+            id: 'c1',
+            text: 'Hold still.',
+            outcomes: {
+              success: {
+                narrativeText: 'Kylie steadies her breath.',
+                visualMoment: "Kylie's favorite scarf is torn, her neck bruised.",
+                visualContract: { visibleCost: "Kylie's throat is bruised." },
+                cost: { visibleComplication: "Kylie's bruise will be hard to hide." },
+              },
+            },
+          }],
+        }],
+      }],
+    });
+
+    expect(findEncounterPovBreaks(story).length).toBeGreaterThan(0);
+    const res = applyEncounterPovBackstop(story);
+    expect(res.residualBreaks).toEqual([]);
+    const success = (story.episodes[0].scenes[0].encounter as any).phases[0].beats[0].choices[0].outcomes.success;
+    expect(success.visualMoment).toBe('Your favorite scarf is torn, your neck bruised.');
+    expect(success.visualContract.visibleCost).toBe('Your throat is bruised.');
+    expect(success.cost.visibleComplication).toBe('Your bruise will be hard to hide.');
   });
 
   it('is idempotent (running twice changes nothing the second time)', () => {

@@ -100,6 +100,35 @@ function makeAnalysis() {
 }
 
 describe('SeasonPlannerAgent treatment handoff', () => {
+  it('does not replace treatment-bound required beats with an LLM-authored scene spine', async () => {
+    const planner = makePlanner();
+    (planner as any).callLLM = async () => '{}';
+    (planner as any).authorScenePlanLLM = async () => {
+      throw new Error('authorScenePlanLLM should not run for authored treatments');
+    };
+
+    const result = await planner.execute({
+      sourceAnalysis: makeAnalysis() as any,
+      preferences: {
+        targetScenesPerEpisode: 6,
+        targetChoicesPerEpisode: 4,
+        pacing: 'moderate',
+      },
+      sevenPointBlocking: false,
+    });
+
+    expect(result.success).toBe(true);
+    const ep1Scenes = result.data!.episodes[0].plannedScenes ?? [];
+    const requiredText = ep1Scenes
+      .flatMap((scene: any) => scene.requiredBeats ?? [])
+      .map((beat: any) => beat.mustDepict)
+      .join('\n');
+    expect(requiredText).toContain('Mika\'s key card');
+    expect(requiredText).toContain('quartz');
+    expect(requiredText).toContain('rooftop bar at sunset');
+    expect(result.data!.notes.join('\n')).toContain('kept deterministic treatment-bound spine');
+  });
+
   it('maps treatment episode guidance into encounters, cliffhangers, branches, and ending routes', () => {
     const planner = makePlanner();
     const analysis = makeAnalysis();

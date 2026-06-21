@@ -38,6 +38,7 @@ describe('MechanicsLeakageValidator', () => {
         // Regression: "roll" as a physical action verb hard-failed a real story.
         { id: 'b4', text: "Aethavyr's arms close around Lysandra as they roll to safety." },
         { id: 'b5', text: 'Together you rolled away before the floor collapsed.' },
+        { id: 'b6', text: "With a theatrical eye-roll for Mika, you drop the bag into your purse as if it's a charming joke." },
       ],
     });
 
@@ -51,6 +52,7 @@ describe('MechanicsLeakageValidator', () => {
         { id: 'b1', text: 'You roll a 17 on the check and shove the door open.' },
         { id: 'b2', text: 'She rolled a 4 and the rope slipped.' },
         { id: 'b3', text: 'Roll under 12 to slip past unseen.' },
+        { id: 'b4', text: 'Roll for perception before opening the door.' },
       ],
     });
 
@@ -163,6 +165,22 @@ describe('MechanicsLeakageValidator design-note scan (opt-in, Fix 5a)', () => {
     expect(messages).toContain('episode number');
     expect(messages).toContain('system-variable');
     expect(result.issues.every((i) => i.severity === 'warning')).toBe(true);
+  });
+
+  it('flags choice-response planning language when scanDesignNotes=true', () => {
+    const result = new MechanicsLeakageValidator().validate({
+      texts: [{
+        id: 'bridge',
+        text: 'The next beat visibly responds to the authored choice: take Mika’s key card or leave it.',
+      }],
+      scanDesignNotes: true,
+    });
+
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: expect.stringContaining('choice-response planning language'),
+      }),
+    ]));
   });
 
   it('leaves clean reader prose untouched even with the scan on', () => {

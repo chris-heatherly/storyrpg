@@ -167,6 +167,7 @@ export class SceneCriticContinuity {
     qaReport: QAReport,
     outputDirectory: string,
     blueprint?: EpisodeBlueprint,
+    options?: { forceRevalidation?: boolean; revalidationReason?: string },
   ): Promise<void> {
     const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
     const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
@@ -274,6 +275,7 @@ export class SceneCriticContinuity {
         qaReport,
         [...rewrittenSceneIds],
         blueprint,
+        options?.forceRevalidation === true,
       );
     }
 
@@ -285,6 +287,8 @@ export class SceneCriticContinuity {
       candidateScenes: scenes,
       repaired,
       revalidation,
+      forceRevalidation: options?.forceRevalidation === true,
+      revalidationReason: options?.revalidationReason,
       criticWasInjected: !!this.deps.sceneCritic,
     });
   }
@@ -309,8 +313,9 @@ export class SceneCriticContinuity {
     qaReport: QAReport,
     repairedSceneIds: string[],
     blueprint?: EpisodeBlueprint,
+    force = false,
   ): Promise<{ ran: boolean; succeeded: boolean; residueErrors: number } | undefined> {
-    if (!isGateEnabled('GATE_CONTINUITY_REMEDIATION') && !isGateEnabled('GATE_QA_CRITICAL_BLOCK')) {
+    if (!force && !isGateEnabled('GATE_CONTINUITY_REMEDIATION') && !isGateEnabled('GATE_QA_CRITICAL_BLOCK')) {
       return { ran: false, succeeded: false, residueErrors: 0 };
     }
     if (repairedSceneIds.length === 0 || !qaReport.continuity) return { ran: false, succeeded: false, residueErrors: 0 };

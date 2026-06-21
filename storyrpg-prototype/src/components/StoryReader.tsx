@@ -35,6 +35,7 @@ import {
 } from '../engine/storyEngine';
 import { sentenceFromChoiceText } from '../engine/choiceEcho';
 import { processTemplate } from '../engine/templateProcessor';
+import { sanitizeReaderProse } from '../engine/readerProseSanitizer';
 import { NarrativeText } from './NarrativeText';
 import { ChoiceButton } from './ChoiceButton';
 import { EncounterView } from './EncounterView';
@@ -201,25 +202,9 @@ function choiceOutcomeColor(tier?: ChoiceOutcomeTier): string {
 // sentenceFromChoiceText / lowercaseFirst moved to ../engine/choiceEcho (pure,
 // unit-tested). Imported at the top of this file.
 
-function fallbackChoiceProgress(choice: Choice): string | undefined {
-  switch (choice.consequenceDomain) {
-    case 'relationship':
-      return 'A relationship shifts.';
-    case 'reputation':
-      return 'Your reputation shifts.';
-    case 'danger':
-      return 'The danger around you changes.';
-    case 'information':
-      return 'Your understanding changes.';
-    case 'identity':
-      return 'Your identity shifts.';
-    case 'leverage':
-      return 'Your leverage changes.';
-    case 'resource':
-      return 'Your resources change.';
-    default:
-      return undefined;
-  }
+function sanitizeReaderLine(text?: string | null): string | undefined {
+  const sanitized = sanitizeReaderProse(text ?? '').replace(/\s+/g, ' ').trim();
+  return sanitized || undefined;
 }
 
 export const StoryReader: React.FC<StoryReaderProps> = ({
@@ -260,7 +245,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const [statCheckTier, setStatCheckTier] = useState<'success' | 'complicated' | 'failure' | null>(null);
   const proceedAfterStatCheckRef = useRef<(() => void) | null>(null);
   const [recentChoiceEcho, setRecentChoiceEcho] = useState<{
-    summary: string;
+    summary?: string;
     progress?: string;
     targetSceneId?: string;
     targetBeatId?: string;
@@ -1149,13 +1134,21 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const echoTarget = resolveEchoTarget(result.nextBeatId, result.nextSceneId);
       const consequenceSentence = buildChoiceConsequenceSentence(applied);
       const processedChoiceText = processTemplate(choice.text, player, currentStory);
-      const progressText = consequenceSentence || fallbackChoiceProgress(choice);
+      const progressText = consequenceSentence;
+      const recapSummary = sanitizeReaderLine(
+        choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate
+      ) || sentenceFromChoiceText(processedChoiceText) || processedChoiceText;
+      const echoSummary = sanitizeReaderLine(
+        choice.feedbackCue?.echoSummary ||
+        choice.reminderPlan?.immediate
+      );
+      const echoProgress = sanitizeReaderLine(progressText);
       setEpisodeChoiceRecap((prev) => [
         ...prev,
         {
           id: `${currentScene.id}:${currentBeatId}:${choice.id}:${prev.length}`,
           chosenText: processedChoiceText,
-          summary: choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate || 'The choice changed the shape of the story.',
+          summary: recapSummary,
           otherPaths: (beat.choices || [])
             .filter((candidate) => candidate.id !== choice.id)
             .map((candidate) => processTemplate(candidate.text, player, currentStory))
@@ -1167,23 +1160,21 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           consequences: visible.slice(0, 3),
         },
       ]);
-      setRecentChoiceEcho({
-        // Prefer the authored, well-formed acknowledgment (feedbackCue.echoSummary,
-        // e.g. "You gave the honest answer. It cost you something visible.") over
-        // the "You chose to {text}" template — that template assumes a short
-        // imperative label and mangles dialogue / first-person choice text
-        // ("You chose to i knew less than I should have…").
-        summary:
-          choice.feedbackCue?.echoSummary ||
-          choice.reminderPlan?.immediate ||
-          sentenceFromChoiceText(processedChoiceText) ||
-          'You made a choice.',
-        progress: progressText,
-        targetSceneId: echoTarget?.sceneId,
-        targetBeatId: echoTarget?.beatId,
-        tier: result.resolution?.tier as ChoiceOutcomeTier | undefined,
-        hasBeenShown: false,
-      });
+      if (echoSummary || echoProgress) {
+        setRecentChoiceEcho({
+          // Prefer only authored, well-formed acknowledgment prose. Do not
+          // synthesize generic reaction copy here; story reaction belongs in the
+          // generated beat text or in authored feedback fields.
+          summary: echoSummary,
+          progress: echoProgress,
+          targetSceneId: echoTarget?.sceneId,
+          targetBeatId: echoTarget?.beatId,
+          tier: result.resolution?.tier as ChoiceOutcomeTier | undefined,
+          hasBeenShown: false,
+        });
+      } else {
+        setRecentChoiceEcho(null);
+      }
     };
 
     const proceedAfterStatCheck = () => {
@@ -1861,7 +1852,11 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const activeChoiceEcho =
     recentChoiceEcho?.targetSceneId === currentScene?.id &&
     recentChoiceEcho?.targetBeatId === currentBeatId
-      ? recentChoiceEcho
+      ? {
+          ...recentChoiceEcho,
+          summary: sanitizeReaderLine(recentChoiceEcho.summary),
+          progress: sanitizeReaderLine(recentChoiceEcho.progress),
+        }
       : undefined;
 
   return (
@@ -1885,7 +1880,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           }
         }}
       >
-        {activeChoiceEcho && (
+        {(activeChoiceEcho?.summary || activeChoiceEcho?.progress) && (
           <View
             style={[
               styles.storyletOutcomeEchoPanel,
@@ -1896,7 +1891,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             ]}
             testID={`choice-consequence-${activeChoiceEcho.tier || 'change'}`}
           >
-            <Text style={styles.echoSummaryText}>{activeChoiceEcho.summary}</Text>
+            {!!activeChoiceEcho.summary && (
+              <Text style={styles.echoSummaryText}>{activeChoiceEcho.summary}</Text>
+            )}
             {!!activeChoiceEcho.progress && (
               <Text style={styles.echoProgressText}>{activeChoiceEcho.progress}</Text>
             )}

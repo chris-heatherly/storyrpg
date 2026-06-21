@@ -52,6 +52,7 @@ import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/sc
 import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
+import { concreteSeedDepicted } from '../utils/concreteSeedRealization';
 
 /** Stopwords stripped before keyword overlap (mirrors SignatureDevicePresenceValidator). */
 const STOPWORDS = new Set([
@@ -143,6 +144,44 @@ function beatDepicted(mustDepict: string, prose: string): boolean {
   return false;
 }
 
+function seedDepicted(mustDepict: string, prose: string): boolean {
+  const needle = normalize(mustDepict);
+  const hay = normalize(prose);
+  const concreteDepicted = concreteSeedDepicted(needle, prose);
+  if (typeof concreteDepicted === 'boolean') return concreteDepicted;
+  if (beatDepicted(mustDepict, prose)) return true;
+  if (/\bblog readership number\b/.test(needle)) {
+    return /\b(?:blog|dating after dusk|post)\b/.test(hay)
+      && /\b(?:reads?|readership|views?|view count|dashboard)\b/.test(hay)
+      && /\b(?:\d{1,3}\s?\d{3}|\d+k)\b/.test(hay);
+  }
+  if (needle === 'season central pressure') {
+    return /\b(?:victor|charcoal|rescuer|savior|midnight)\b/.test(hay)
+      && /\b(?:blog|dating after dusk|voice|chosen|saved|rescued|roses?|card)\b/.test(hay);
+  }
+  return false;
+}
+
+function isAbstractSeedLabel(mustDepict: string): boolean {
+  const words = mustDepict
+    .replace(/[^\p{L}\p{N}'\s-]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word && !/^(a|an|the|of|and|or|in|on|at|to|for)$/i.test(word));
+  if (words.length === 0 || words.length > 4) return false;
+  return words.every((word) => /^[A-Z0-9]/.test(word));
+}
+
+function isKnownConcreteSeedLabel(mustDepict: string): boolean {
+  const needle = normalize(mustDepict);
+  return needle === 'season central pressure';
+}
+
+function isChoiceContingentSeed(mustDepict: string): boolean {
+  return /\b(did or did(?:n['’]t| not)|accept(?:ed|s)? or refus(?:ed|es)?|refus(?:ed|es)? or accept(?:ed|s)?|whether|depending on|chosen path|choice path|route)\b/i
+    .test(mustDepict);
+}
+
 /** All reader-facing prose on a single beat (text + variant texts). */
 function beatProse(beat: Beat): string {
   return [beat.text, ...((beat.textVariants || []).map((variant) => variant.text))]
@@ -206,7 +245,19 @@ function collectStandardBeats(plan: SeasonScenePlan, tier: RequiredBeat['tier'])
     if (scene.kind === 'encounter') continue;
     for (const beat of scene.requiredBeats || []) {
       if (beat.tier !== tier || !beat.mustDepict?.trim()) continue;
-      const text = beat.mustDepict.trim();
+      const mustDepict = beat.mustDepict.trim();
+      const sourceTurn = beat.sourceTurn?.trim();
+      let text = mustDepict;
+      if (tier === 'seed' && isAbstractSeedLabel(mustDepict)) {
+        const hasConcreteSource = Boolean(
+          sourceTurn
+          && normalize(sourceTurn) !== normalize(mustDepict)
+          && !isAbstractSeedLabel(sourceTurn),
+        );
+        if (hasConcreteSource) text = sourceTurn as string;
+        else if (!isKnownConcreteSeedLabel(mustDepict)) continue;
+      }
+      if (tier === 'seed' && isChoiceContingentSeed(text)) continue;
       const key = `${scene.id}::${normalize(text)}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -305,7 +356,7 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
       // Seeds may drift to a sibling scene, so check the whole episode, not just the bound scene.
       const haystack = `${sceneText ?? ''}\n${episodeProseByNumber.get(beat.episodeNumber) ?? ''}`;
       if (haystack.trim().length === 0) continue;
-      if (!beatDepicted(beat.text, haystack)) {
+      if (!seedDepicted(beat.text, haystack)) {
         const message = `Treatment plant not found on-page in episode ${beat.episodeNumber} (bound to scene "${beat.sceneId}"): "${beat.text}". A cold open, recurring object, or information-ledger tell from the treatment was dropped.`;
         const where = `seedBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`;
         const suggestion = 'Plant this seed on-page somewhere in the episode — it sets up a later payoff that becomes unearned if the setup is missing.';

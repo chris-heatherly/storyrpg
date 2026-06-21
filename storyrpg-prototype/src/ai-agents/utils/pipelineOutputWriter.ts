@@ -513,6 +513,15 @@ export interface PipelineOutputs {
   };
 }
 
+export interface QualityScoreBasis {
+  qaScore?: number;
+  validationScore?: number;
+  finalStoryContractScore?: number;
+  evidenceCoverage: number;
+  caps: string[];
+  penalties: string[];
+}
+
 export interface OutputManifest {
   storyTitle: string;
   storyId: string;
@@ -532,6 +541,8 @@ export interface OutputManifest {
     choices: number;
     qaScore?: number;
     validationScore?: number;
+    qualityScore?: number;
+    qualityScoreBasis?: QualityScoreBasis;
     validationPassed?: boolean;
     finalStoryContractPassed?: boolean;
     finalStoryContractBlockingIssues?: number;
@@ -943,6 +954,94 @@ function runNameFromDir(outputDir: string): string {
   return trimmed.slice(trimmed.lastIndexOf('/') + 1);
 }
 
+function clampScore(score: number): number {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function finalStoryContractScore(report?: FinalStoryContractReport): number | undefined {
+  if (!report) return undefined;
+  const metrics = report.metrics || {};
+  const uniqueWarningCount = new Set((report.warnings || []).map(w => {
+    const warning = w as Record<string, unknown>;
+    return [
+      warning.type,
+      warning.validator,
+      warning.sceneId,
+      warning.episodeNumber,
+      warning.message,
+    ].filter(value => value != null).join(':');
+  })).size;
+  const warningPenalty = Math.min(uniqueWarningCount * 2, 15);
+  const raw = 100
+    - (report.blockingIssues?.length || 0) * 25
+    - warningPenalty
+    - (metrics.requestedEpisodesMissing || 0) * 20
+    - (metrics.failedIncrementalResults || 0) * 15
+    - (metrics.callbackIssues || 0) * 10
+    - (metrics.mechanicsLeaks || 0) * 10;
+  return clampScore(raw);
+}
+
+export function deriveRunQualityScore(outputs: Pick<PipelineOutputs, 'qaReport' | 'bestPracticesReport' | 'finalStoryContractReport'>): {
+  score: number;
+  basis: QualityScoreBasis;
+} {
+  const qaScore = outputs.qaReport?.overallScore;
+  const validationScore = outputs.bestPracticesReport?.overallScore;
+  const contractScore = finalStoryContractScore(outputs.finalStoryContractReport);
+  const caps: string[] = [];
+  const penalties: string[] = [];
+
+  if (!outputs.qaReport) {
+    penalties.push('missing_qarunner_report');
+    caps.push('missing_qa_cap_69');
+  } else if (!outputs.qaReport.passesQA || outputs.qaReport.criticalIssues.length > 0) {
+    caps.push('qa_failed_cap_69');
+  }
+
+  if (!outputs.bestPracticesReport) {
+    penalties.push('missing_best_practices_validation');
+    caps.push('missing_validation_cap_69');
+  } else if (!outputs.bestPracticesReport.overallPassed || outputs.bestPracticesReport.blockingIssues.length > 0) {
+    caps.push('validation_failed_cap_69');
+  }
+
+  if (!outputs.finalStoryContractReport) {
+    penalties.push('missing_final_story_contract');
+    caps.push('missing_final_contract_cap_69');
+  } else if (!outputs.finalStoryContractReport.passed || outputs.finalStoryContractReport.blockingIssues.length > 0) {
+    caps.push('final_contract_failed_cap_49');
+  }
+
+  const evidenceCoverage = Math.round(
+    ((outputs.qaReport ? 0.30 : 0) +
+      (outputs.bestPracticesReport ? 0.45 : 0) +
+      (outputs.finalStoryContractReport ? 0.25 : 0)) * 100,
+  );
+  let score = clampScore(
+    (qaScore ?? 0) * 0.30 +
+    (validationScore ?? 0) * 0.45 +
+    (contractScore ?? 0) * 0.25,
+  );
+
+  for (const cap of caps) {
+    if (cap.endsWith('_cap_49')) score = Math.min(score, 49);
+    else if (cap.endsWith('_cap_69')) score = Math.min(score, 69);
+  }
+
+  return {
+    score,
+    basis: {
+      qaScore,
+      validationScore,
+      finalStoryContractScore: contractScore,
+      evidenceCoverage,
+      caps,
+      penalties,
+    },
+  };
+}
+
 /**
  * Append a 'failed' row to the cross-run quality ledger at a genuine terminal
  * abort (F4). Best-effort; never throws.
@@ -974,13 +1073,18 @@ export async function appendFailedRunLedger(
  * `story.json` / catalog. Best-effort: never throws.
  * See docs/PROJECT_AUDIT_2026-05-28.md (Track B2).
  */
-export async function savePartialStory(outputDir: string, story: Story): Promise<void> {
+export async function savePartialStory(
+  outputDir: string,
+  story: Story,
+  options?: { note?: string; diagnostic?: boolean },
+): Promise<void> {
   if (!outputDir || !story) return;
   try {
     await ensureDirectory(outputDir);
     await writeJsonFile(outputDir + 'partial-story.json', {
       _partial: true,
-      _note: 'Recovery snapshot written before final validation gates. The completed episodes are playable; later phases may not have run.',
+      _diagnostic: options?.diagnostic === true,
+      _note: options?.note || 'Recovery snapshot written before final validation gates. The completed episodes are playable; later phases may not have run.',
       savedAt: new Date().toISOString(),
       episodeCount: Array.isArray(story.episodes) ? story.episodes.length : 0,
       story,
@@ -988,6 +1092,30 @@ export async function savePartialStory(outputDir: string, story: Story): Promise
     console.info(`[OutputWriter] Wrote partial-story.json recovery snapshot (${Array.isArray(story.episodes) ? story.episodes.length : 0} episode(s))`);
   } catch (e) {
     console.warn('[OutputWriter] Failed to write partial story snapshot (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * Persist the exact final-contract failure report plus the last assembled/repaired
+ * candidate. These are diagnostic artifacts only; they never write story.json,
+ * manifest.json, or 08-final-story.json, so failed runs stay out of the catalog.
+ */
+export async function saveFinalStoryContractFailure(
+  outputDir: string,
+  story: Story,
+  report: FinalStoryContractReport,
+): Promise<void> {
+  if (!outputDir || !story || !report) return;
+  try {
+    await ensureDirectory(outputDir);
+    await writeJsonFile(outputDir + '07b-final-story-contract.failed.json', report);
+    await savePartialStory(outputDir, story, {
+      diagnostic: true,
+      note: 'Diagnostic snapshot of the last assembled/repaired candidate after final-story contract failure. Not a playable package; inspect with the failed contract report.',
+    });
+    console.info('[OutputWriter] Wrote final-contract failure report and repaired partial snapshot');
+  } catch (e) {
+    console.warn('[OutputWriter] Failed to write final-contract failure artifacts (non-fatal):', e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -1520,6 +1648,7 @@ export async function savePipelineOutputs(
     const validationSize = await writeJsonFile(validationPath, {
       overallPassed: outputs.bestPracticesReport.overallPassed,
       overallScore: outputs.bestPracticesReport.overallScore,
+      qualityScore: outputs.bestPracticesReport.qualityScore ?? outputs.bestPracticesReport.overallScore,
       metrics: outputs.bestPracticesReport.metrics,
       issuesSummary: {
         blocking: outputs.bestPracticesReport.blockingIssues.length,
@@ -2048,6 +2177,8 @@ export async function savePipelineOutputs(
   const storyEncounters = storyScenes.map(s => s.encounter).filter(Boolean);
 
   // Create manifest
+  const quality = deriveRunQualityScore(outputs);
+
   const manifest: OutputManifest = {
     storyTitle,
     storyId,
@@ -2086,6 +2217,8 @@ export async function savePipelineOutputs(
         || 0,
       qaScore: outputs.qaReport?.overallScore,
       validationScore: outputs.bestPracticesReport?.overallScore,
+      qualityScore: quality.score,
+      qualityScoreBasis: quality.basis,
       validationPassed: outputs.bestPracticesReport?.overallPassed,
       finalStoryContractPassed: outputs.finalStoryContractReport?.passed,
       finalStoryContractBlockingIssues: outputs.finalStoryContractReport?.blockingIssues.length,
@@ -2130,8 +2263,9 @@ export async function savePipelineOutputs(
       storyId: manifest.storyId,
       storyTitle: manifest.storyTitle,
       outcome: 'success',
-      overallScore: manifest.summary?.validationScore,
+      overallScore: manifest.summary?.qualityScore,
       qaScore: manifest.summary?.qaScore,
+      validationScore: manifest.summary?.validationScore,
       validationPassed: manifest.summary?.validationPassed,
       finalStoryContractPassed: manifest.summary?.finalStoryContractPassed,
       remediationsAttempted: outputs.remediationSummary?.attempted,

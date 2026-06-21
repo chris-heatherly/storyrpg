@@ -6,6 +6,7 @@ import {
   type EncounterArchitectInput,
   type EncounterPhaseError,
   type Phase1Result,
+  type Phase4Result,
 } from './EncounterArchitect';
 import { TimeoutError } from '../utils/withTimeout';
 
@@ -70,6 +71,13 @@ function makePhase1(): Phase1Result {
     },
   };
 }
+
+const makePhase4 = (): Phase4Result => ({
+  victory: { id: 'sv', name: 'Victory', triggerOutcome: 'victory', tone: 'triumphant', narrativeFunction: 'The win changes the room.', beats: [{ id: 'sv-1', text: 'The confrontation releases its grip, and the room makes space for what Alex just proved.', isTerminal: true }], startingBeatId: 'sv-1', consequences: [] },
+  partialVictory: { id: 'sp', name: 'Costly Victory', triggerOutcome: 'partialVictory', tone: 'bittersweet', narrativeFunction: 'The win carries a visible cost.', beats: [{ id: 'sp-1', text: 'Alex gets the opening, but Eros leaves a cost visible in the silence between them.', isTerminal: true }], startingBeatId: 'sp-1', consequences: [] },
+  defeat: { id: 'sd', name: 'Defeat', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: 'The loss points toward recovery.', beats: [{ id: 'sd-1', text: 'The exchange goes wrong, and Alex sees exactly what must change before facing Eros again.', isTerminal: true }], startingBeatId: 'sd-1', consequences: [] },
+  escape: { id: 'se', name: 'Escape', triggerOutcome: 'escape', tone: 'relieved', narrativeFunction: 'The narrow escape keeps danger alive.', beats: [{ id: 'se-1', text: 'Distance opens just enough to breathe, though the threat remains close behind.', isTerminal: true }], startingBeatId: 'se-1', consequences: [] },
+});
 
 describe('getMinimumRequiredBeatCount (authored-anchor scaling)', () => {
   const min = (overrides: Partial<EncounterArchitectInput>): number => {
@@ -160,13 +168,22 @@ function makePhase2(choiceId: string): unknown {
   });
   const situation = (suffix: string) => ({
     setupText: `The hall shifts after the ${choiceId}-${suffix} turn; Eros recalibrates with dangerous patience and closes the distance.`,
-    choices: [{
-      id: `${choiceId}-${suffix}-c1`,
-      text: 'Press the advantage now',
-      approach: 'bold',
-      primarySkill: 'resolve',
-      outcomes: { success: outcome('victory'), complicated: outcome('partialVictory'), failure: outcome('defeat') },
-    }],
+    choices: [
+      {
+        id: `${choiceId}-${suffix}-c1`,
+        text: 'Press the advantage now',
+        approach: 'bold',
+        primarySkill: 'resolve',
+        outcomes: { success: outcome('victory'), complicated: outcome('partialVictory'), failure: outcome('defeat') },
+      },
+      {
+        id: `${choiceId}-${suffix}-c2`,
+        text: 'Change the pressure point',
+        approach: 'clever',
+        primarySkill: 'persuasion',
+        outcomes: { success: outcome('victory'), complicated: outcome('partialVictory'), failure: outcome('escape') },
+      },
+    ],
   });
   return { choiceId, afterSuccess: situation('s'), afterComplicated: situation('c'), afterFailure: situation('f') };
 }
@@ -185,10 +202,10 @@ describe('executePhased telemetry', () => {
       throw new Error('The operation was aborted'); // simulate timeout/abort
     });
 
-    await expect(architect.executePhased(input)).rejects.toThrow(/refusing template-beat synthesis/);
+    await expect(architect.executePhased(input)).rejects.toThrow(/Phase 4 failed to generate authored storylets/);
   });
 
-  it('records phaseErrors and marks degraded on a PARTIAL gap (phase 4 fails, branches OK)', async () => {
+  it('rejects a PARTIAL gap when phase 4 fails, even if branches are OK', async () => {
     const architect = new EncounterArchitect(config) as any;
     const phase1Json = JSON.stringify(makePhase1());
     vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any) => {
@@ -201,17 +218,7 @@ describe('executePhased telemetry', () => {
       throw new Error('The operation was aborted'); // phase 4 fails
     });
 
-    const res = await architect.executePhased(input);
-    expect(res.success).toBe(true);
-    const tel = res.metadata?.encounterTelemetry;
-    expect(tel).toBeTruthy();
-    expect(tel.phase1Ok).toBe(true);
-    expect(tel.degraded).toBe(true);
-    expect(tel.mode).toBe('phased_with_gaps');
-    expect(tel.phase2.every((ok: boolean) => ok === true)).toBe(true);
-    expect(tel.phase4Ok).toBe(false);
-    expect(Array.isArray(tel.phaseErrors)).toBe(true);
-    expect(tel.phaseErrors.length).toBeGreaterThan(0);
+    await expect(architect.executePhased(input)).rejects.toThrow(/Phase 4 failed to generate authored storylets/);
   });
 });
 
@@ -248,6 +255,7 @@ describe('phase-3 conditional choices resolve terminally (no template branch)', 
       sceneId: 'scene-3', encounterType: 'dramatic',
       goalClock: { name: 'g', segments: 6, filled: 0, type: 'goal' },
       threatClock: { name: 't', segments: 4, filled: 0, type: 'threat' },
+      storylets: makePhase4(),
       beats: [{
         id: 'beat-1', phase: 'setup', name: 'Open', setupText: 'Vraxxan steps from shadow.',
         choices: [

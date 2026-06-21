@@ -10,7 +10,7 @@
 
 import { AgentConfig } from '../config';
 import { describeTierRequirements } from '../config/tierRequirements';
-import { BaseAgent, AgentResponse } from './BaseAgent';
+import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent';
 import type {
   CharacterFashionStyle,
   StoryAnchors,
@@ -19,7 +19,7 @@ import type {
 } from '../../types/sourceAnalysis';
 import type { InformationLedgerEntry } from '../../types/seasonPlan';
 import { resolveAuthoredContext } from '../utils/documentSectionSlice';
-import { slugify } from '../utils/idUtils';
+import { buildCharacterBibleJsonSchema } from '../schemas/characterBibleSchema';
 
 // Input types
 export interface CharacterDesignerInput {
@@ -422,9 +422,22 @@ Before finalizing:
     );
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
+      let response: string;
+      try {
+        response = await this.callLLM(
+          [{ role: 'user', content: prompt }],
+          0,
+          { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
+        );
+      } catch (error) {
+        if (!(error instanceof TruncatedLLMResponseError)) throw error;
+        console.warn(`[CharacterDesigner] first response hit ${error.finishReason || 'token limit'} — retrying with compact character-bible contract.`);
+        response = await this.callLLM(
+          [{ role: 'user', content: this.buildCompactRetryPrompt(prompt, 'The previous character-bible response hit the provider output token limit before a complete JSON object was returned.') }],
+          1,
+          { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
+        );
+      }
 
       console.log(`[CharacterDesigner] Received response (${response.length} chars)`);
 
@@ -456,16 +469,7 @@ Before finalizing:
       this.preserveInputFashionStyle(characterBible, input);
 
       this.validateCharacterBible(characterBible, input);
-
-      // Make `bible.gaps` actionable. The first pass writes any missing
-      // archetypes (love interest / mentor / antagonist / best friend) into
-      // `gaps`, but nothing downstream ever reads it — so a thin roster ships a
-      // cast with no antagonist/mentor even though the model flagged the hole.
-      // Synthesize a minimal request for each flagged-and-uncovered archetype
-      // and route it through fillMissingCharacters() so it gets a full record
-      // (pronouns, voiceProfile, …). Bounded to a single pass; no-op when gaps
-      // is empty or every named archetype is already covered.
-      await this.backfillGapArchetypes(characterBible, input);
+      characterBible.gaps = [];
 
       // Run quality checks and attempt revision if needed
       const qualityIssues = this.collectQualityIssues(characterBible, input);
@@ -527,13 +531,15 @@ Before finalizing:
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       console.warn(`[CharacterDesigner] JSON parse failed (${msg.slice(0, 120)}) — retrying with a compact, strictly-valid JSON directive.`);
     }
-    const compactPrompt =
-      `${basePrompt}\n\n` +
-      `IMPORTANT: your previous response was not valid JSON (a malformed or over-long object — likely an unescaped ` +
-      `quote inside a string, or it was cut off). Re-emit the COMPLETE character bible as ONE strictly-valid JSON ` +
-      `object: escape every double-quote inside a string value as \\", put no raw line breaks inside strings, no ` +
-      `trailing commas, and keep every field tight so the whole object fits. Return only the JSON.`;
-    const response = await this.callLLM([{ role: 'user', content: compactPrompt }]);
+    const compactPrompt = this.buildCompactRetryPrompt(
+      basePrompt,
+      'Your previous response was not valid JSON because it was malformed or over-long.',
+    );
+    const response = await this.callLLM(
+      [{ role: 'user', content: compactPrompt }],
+      4,
+      { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
+    );
     return this.parseJSON<CharacterBible>(response); // rethrows on failure → execute() fails → phase falls back
   }
 
@@ -564,7 +570,11 @@ Before finalizing:
     );
     const subInput: CharacterDesignerInput = { ...input, charactersToCreate: missing };
     try {
-      const response = await this.callLLM([{ role: 'user', content: this.buildPrompt(subInput) }]);
+      const response = await this.callLLM(
+        [{ role: 'user', content: this.buildPrompt(subInput) }],
+        4,
+        { jsonSchema: buildCharacterBibleJsonSchema(subInput.charactersToCreate.length) },
+      );
       let patch = this.parseJSON<CharacterBible>(response);
       patch = this.normalizeCharacterBible(patch);
       this.alignCharacterIds(patch, subInput);
@@ -587,76 +597,20 @@ Before finalizing:
   }
 
   /**
-   * Archetypes the gap-backfill recognizes, in priority order. Each maps a set
-   * of keyword triggers (matched against `bible.gaps` text) to the request
-   * `role` used when synthesizing a replacement, and to the keywords that mark
-   * the archetype as ALREADY covered by the designed roster (so we never
-   * duplicate an antagonist/mentor that exists under a different label).
-   */
-  private static readonly GAP_ARCHETYPES: Array<{
-    label: string;
-    triggers: string[];
-    role: CharacterDesignerInput['charactersToCreate'][number]['role'];
-    coveredBy: string[];
-  }> = [
-    { label: 'Antagonist', triggers: ['antagonist', 'villain', 'adversary'], role: 'antagonist', coveredBy: ['antagonist', 'villain'] },
-    { label: 'Mentor', triggers: ['mentor', 'guide', 'teacher'], role: 'ally', coveredBy: ['mentor', 'teacher', 'guide'] },
-    { label: 'Love interest', triggers: ['love interest', 'romantic', 'love-interest'], role: 'ally', coveredBy: ['love', 'romantic'] },
-    { label: 'Best friend', triggers: ['best friend', 'confidant', 'sidekick'], role: 'ally', coveredBy: ['friend', 'confidant', 'sidekick', 'ally'] },
-  ];
-
-  /**
-   * Single, bounded backfill pass that turns `bible.gaps` into real characters.
-   * For each recognized archetype the model named in `gaps` whose role is NOT
-   * already present in the designed roster, synthesize a minimal
-   * `charactersToCreate` request and route it through fillMissingCharacters()
-   * so it receives a full record. Mutates `characterBible.characters` in place.
-   * Bounded (one pass, no recursion) and dedup-guarded so it can neither loop
-   * nor create a character that already exists.
+   * Legacy no-op. `bible.gaps` is model-authored advisory text, not deterministic
+   * source material. It must not synthesize generic "Mentor" / "Antagonist"
+   * characters in treatment-bound runs; only `charactersToCreate` may add roster
+   * entries.
    */
   private async backfillGapArchetypes(
     characterBible: CharacterBible,
     input: CharacterDesignerInput,
   ): Promise<void> {
-    const gaps = Array.isArray(characterBible.gaps) ? characterBible.gaps : [];
-    if (gaps.length === 0) return;
-    const gapText = gaps.join(' \n ').toLowerCase();
-    if (!gapText.trim()) return;
-
-    // What the roster already covers, read from each character's role label.
-    const rosterRoles = (characterBible.characters || [])
-      .map((c) => `${c.role || ''} ${c.importance || ''}`.toLowerCase())
-      .join(' ');
-    const existingIds = new Set((characterBible.characters || []).map((c) => c.id));
-
-    const synthesized: CharacterDesignerInput['charactersToCreate'] = [];
-    for (const archetype of CharacterDesigner.GAP_ARCHETYPES) {
-      // Only act when the gap text actually names this archetype.
-      if (!archetype.triggers.some((t) => gapText.includes(t))) continue;
-      // Skip if the roster already covers the role under any label.
-      if (archetype.coveredBy.some((k) => rosterRoles.includes(k))) continue;
-
-      const id = `char-${slugify(archetype.label)}`;
-      if (existingIds.has(id) || synthesized.some((s) => s.id === id)) continue;
-
-      synthesized.push({
-        id,
-        name: archetype.label,
-        role: archetype.role,
-        importance: 'supporting',
-        briefDescription: `${archetype.label} the story's cast is missing; the character bible flagged this gap.`,
-      });
+    void input;
+    if (Array.isArray(characterBible.gaps) && characterBible.gaps.length > 0) {
+      console.warn(`[CharacterDesigner] Ignoring ${characterBible.gaps.length} model-authored character gap suggestion(s); requested cast is authoritative.`);
     }
-
-    if (synthesized.length === 0) return;
-    console.warn(
-      `[CharacterDesigner] bible.gaps named ${synthesized.length} uncovered archetype(s) ` +
-        `(${synthesized.map((s) => s.name).join(', ')}) — backfilling via the missing-character machinery.`,
-    );
-    // Reuse fillMissingCharacters: charactersToCreate is the synthesized set, so
-    // every entry is "missing" and gets fully designed in one focused call.
-    const backfillInput: CharacterDesignerInput = { ...input, charactersToCreate: synthesized };
-    await this.fillMissingCharacters(characterBible, backfillInput);
+    characterBible.gaps = [];
   }
 
   private buildPrompt(input: CharacterDesignerInput): string {
@@ -752,6 +706,13 @@ ${characterList}
 
 ## Required JSON Structure
 
+OUTPUT BUDGET:
+- Emit ONLY the fields shown below; do not add fullBackground, traits, values, quirks, pixarDepth, skills, stats, hiddenSecret, or unrequested lore fields.
+- Keep scalar text fields to one sentence, ideally 8-18 words.
+- Keep arrays to 1-2 items unless a requirement below asks for more.
+- Keep relationships to at most 2 per character and keyDynamics to at most 4 total.
+- If Fashion Style is provided above, reflect it in typicalAttire; do not emit a nested fashionStyle object unless the schema asks for it.
+
 {
   "characters": [
     {
@@ -763,17 +724,8 @@ ${characterList}
       "importance": "major/supporting/minor",
       "tier": "core | supporting | background (NPC tier by narrative weight: 'core' = protagonist, primary antagonist, or recurring main cast with a full arc; 'supporting' = named secondary NPCs who appear in several scenes with a relationship dimension; 'background' = one-scene or ambient NPCs)",
       "physicalDescription": "Brief appearance",
-      "distinctiveFeatures": ["visual feature 1"],
+      "distinctiveFeatures": ["visual feature 1", "visual feature 2"],
       "typicalAttire": "One concise outfit description that incorporates any provided Fashion Style",
-      "fashionStyle": {
-        "styleSummary": "Preserve the provided Fashion Style summary if present; otherwise infer a concise wardrobe identity",
-        "styleTags": ["fashion keyword"],
-        "signatureGarments": ["recurring garment"],
-        "materials": ["fabric or material"],
-        "colorPalette": ["clothing color"],
-        "accessories": ["worn or carried accessory"],
-        "sourceEvidence": ["optional short source/prompt evidence"]
-      },
       "want": "What they desire most",
       "fear": "What they're afraid of",
       "flaw": "Their key weakness",
@@ -791,7 +743,7 @@ ${characterList}
         "underStressExamples": ["Stressed line 1"],
         "signatureLines": ["Unique line 1", "Unique line 2", "Unique line 3"]
       },
-      "relationships": [{"characterId": "other-id", "type": "friend/rival/etc", "description": "brief"}],
+      "relationships": [{"targetId": "other-id", "targetName": "Name", "relationshipType": "friend/rival/etc", "currentDynamic": "brief"}],
       "arcPotential": {"growth": "How they could grow", "fall": "How they could fall"},
       "secrets": ["One secret"]
     }
@@ -799,7 +751,6 @@ ${characterList}
   "relationshipSummary": "Brief overview of how characters relate",
   "keyDynamics": [{"characters": ["id1", "id2"], "dynamic": "brief", "narrativePotential": "brief"}],
   "ensembleBalance": "How characters complement each other",
-  "gaps": ["Any missing character types"],
   "voiceDistinctions": "How to keep characters sounding distinct from each other",
   "doNotForget": ["Critical character facts to remember"]
 }
@@ -808,12 +759,21 @@ CRITICAL REQUIREMENTS:
 1. Each character "id" MUST be EXACTLY one of: ${characterIds} — copy the string VERBATIM. Do NOT substitute underscores for hyphens. Do NOT change case. Do NOT add suffixes. "char-mr-green" is NOT the same as "char-mr_green".
 2. Each character MUST have "pronouns" set to "he/him" or "she/her". Only use "they/them" if the character is explicitly non-binary or transgender. Default to he/him or she/her based on the character's identity.
 3. Each character MUST have want, fear, and flaw filled in
-4. If a character has a provided Fashion Style, preserve it in "fashionStyle" and make "typicalAttire" reflect its garments, silhouette, materials, palette, and accessories. Fashion style is wardrobe only, not art style.
+4. If a character has a provided Fashion Style, preserve it by reflecting its garments, silhouette, materials, palette, and accessories in "typicalAttire". Fashion style is wardrobe only, not art style.
 5. Each voiceProfile MUST have at least 2 greetingExamples and 3 signatureLines
 6. MUST include "voiceDistinctions" at the top level (not nested)
 7. Keep ALL descriptions concise - one sentence each
 8. Return ONLY valid JSON, no markdown, no extra text
 `;
+  }
+
+  private buildCompactRetryPrompt(basePrompt: string, reason: string): string {
+    return `${basePrompt}\n\n` +
+      `COMPACT RETRY: ${reason}\n` +
+      `Re-emit the COMPLETE character bible as ONE strictly-valid JSON object matching the schema. ` +
+      `Escape every double quote inside strings as \\", put no raw line breaks inside strings, and use no trailing commas. ` +
+      `Hard output caps: no fields beyond the schema; one sentence per scalar field; arrays max 2 items except greetingExamples and signatureLines; ` +
+      `greetingExamples exactly 2, signatureLines exactly 3, keyDynamics max 4, relationships max 2 per character. Return only JSON.`;
   }
 
   private normalizeCharacterBible(bible: CharacterBible): CharacterBible {
@@ -1272,9 +1232,11 @@ Return ONLY valid JSON, no markdown, no extra text.
 `;
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: revisionPrompt }
-      ]);
+      const response = await this.callLLM(
+        [{ role: 'user', content: revisionPrompt }],
+        4,
+        { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
+      );
 
       console.log(`[CharacterDesigner] Received revision response (${response.length} chars)`);
 

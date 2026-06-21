@@ -33,7 +33,7 @@ import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
 import { convertEncounterStructureToEncounter } from '../converters';
-import { assembleChoiceForStory, reconcileChoiceSetBeatIds } from './choiceAssembly';
+import { assembleChoiceForStory, isSafeChoiceAttachmentBeat, reconcileChoiceSetBeatIds } from './choiceAssembly';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { sceneTimelineMetaForScene } from '../utils/sceneTimeline';
 import { CHARACTER_DEFAULTS, DEFAULT_SKILLS } from '../../constants/pipeline';
@@ -223,7 +223,7 @@ export class Assembly {
 
         // Attach choices through the shared resolver (source of truth = choice-set
         // presence, plus the backward-navigation guard). See assembleBeatChoices.
-        beat.choices = this.assembleBeatChoices(sceneBlueprint, blueprint, genBeat.id, choiceMap);
+        beat.choices = this.assembleBeatChoices(sceneBlueprint, blueprint, genBeat, choiceMap);
 
         return beat;
       });
@@ -503,7 +503,7 @@ export class Assembly {
           routeContext: gb.routeContext,
           // Shared choice resolver (source of truth = choice-set presence) — same
           // path as assembleStory, including the backward-navigation guard.
-          choices: this.assembleBeatChoices(sb, blueprint, gb.id, choiceMap)
+          choices: this.assembleBeatChoices(sb, blueprint, gb, choiceMap)
         })),
         encounter,
         sequenceIntent: (content as any).sequenceIntent || (sb as any).sequenceIntent,
@@ -587,11 +587,19 @@ export class Assembly {
   private assembleBeatChoices(
     sceneBlueprint: SceneBlueprint,
     blueprint: EpisodeBlueprint,
-    beatId: string,
+    beat: { id: string; text?: string; isChoicePoint?: boolean },
     choiceMap: Map<string, ChoiceSet>,
   ): Beat['choices'] {
+    const beatId = beat.id;
     const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${beatId}`);
     if (!choiceSet) return undefined;
+    if (!isSafeChoiceAttachmentBeat(beat)) {
+      console.warn(
+        `[Pipeline] assembly: refusing to attach choice set "${sceneBlueprint.id}::${beatId}" ` +
+        'because the target beat is not a reader-facing choice point.',
+      );
+      return undefined;
+    }
     const currentIdx = blueprint.scenes.findIndex(s => s.id === sceneBlueprint.id);
     return choiceSet.choices.map((gc, ci) => {
       let nextSceneId = gc.nextSceneId;

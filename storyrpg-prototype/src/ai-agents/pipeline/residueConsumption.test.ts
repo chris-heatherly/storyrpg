@@ -90,6 +90,26 @@ describe('residueConsumption (WS0.2)', () => {
     expect(injected!.text.startsWith(beat.text)).toBe(true);
   });
 
+  it('uses concrete flag-derived prose instead of generic earlier-choice boilerplate', () => {
+    const s = story(['lost_notebook']);
+    applyResidueConsumption(s);
+    const beat = (s.episodes[0].scenes[1] as { beats: Array<{ text: string; textVariants?: Array<{ text: string }> }> }).beats[0];
+    const text = beat.textVariants?.[0]?.text ?? '';
+
+    expect(text).toContain('missing notebook');
+    expect(text).not.toMatch(/earlier choice|what you chose|decision you made before|something you decided/i);
+  });
+
+  it('does not inject generic memory-of-flag prose when no concrete acknowledgment exists', () => {
+    const s = story(['mika_lie_forced']);
+    const res = applyResidueConsumption(s);
+    const beat = (s.episodes[0].scenes[1] as { beats: Array<{ text: string; textVariants?: Array<{ text: string }> }> }).beats[0];
+
+    expect(res.injected).toBe(0);
+    expect(res.residual).toEqual(['mika_lie_forced']);
+    expect(beat.textVariants ?? []).toEqual([]);
+  });
+
   it('is idempotent (a second pass injects nothing)', () => {
     const s = story(['mika_claimed_kylie', 'drank_dark_wine']);
     applyResidueConsumption(s);

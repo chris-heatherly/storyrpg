@@ -21,6 +21,7 @@
 import type { Choice } from '../../types/choice';
 import type { ChoiceConsequenceTier, ChoiceImpactFactor } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
+import { normalizeTintFlag } from '../utils/tintVocabulary';
 
 export interface CallbackHook {
   id: string;
@@ -417,7 +418,11 @@ export class CallbackLedger {
    * {@link trackableFlagsOf}, which deliberately EXCLUDES them). Set, not cleared.
    */
   trackableTintsOf(choice: Choice): string[] {
-    const tints: string[] = [];
+    const tints = new Set<string>();
+    if (typeof choice.tintFlag === 'string') {
+      const normalized = normalizeTintFlag(choice.tintFlag);
+      if (isTintFlag(normalized)) tints.add(normalized);
+    }
     for (const consequence of choice.consequences ?? []) {
       if (
         consequence.type === 'setFlag' &&
@@ -425,10 +430,10 @@ export class CallbackLedger {
         isTintFlag(consequence.flag) &&
         consequence.value !== false
       ) {
-        tints.push(consequence.flag);
+        tints.add(normalizeTintFlag(consequence.flag));
       }
     }
-    return tints;
+    return [...tints];
   }
 
   /**

@@ -508,6 +508,7 @@ describe('SceneGraphBranchValidator', () => {
         sceneId: 's1-1',
         choiceId: 'decline-keycard',
         targetSceneId: 'treatment-enc-1-1',
+        skippedSceneIds: ['s1-2'],
       }),
     ]));
   });

@@ -199,6 +199,21 @@ export function loadCompletedEpisode(
 ): ResumedEpisode | null {
   const watermark = load<EpisodeCompletionWatermark>(episodeCompleteArtifact(episodeNumber));
   if (!watermark || watermark.version !== 1 || watermark.episodeNumber !== episodeNumber) return null;
+  const incrementalContract = load<{
+    passed?: boolean;
+    blockingCount?: number;
+    blockingIssues?: unknown[];
+  }>(`episode-${episodeNumber}-incremental-contract.json`);
+  if (
+    incrementalContract
+    && (
+      incrementalContract.passed === false
+      || (incrementalContract.blockingCount ?? 0) > 0
+      || (incrementalContract.blockingIssues?.length ?? 0) > 0
+    )
+  ) {
+    return null;
+  }
   const episode = load<Episode>(watermark.assembledArtifact);
   if (!episode || typeof episode !== 'object') return null;
   if (typeof episode.number === 'number' && episode.number !== episodeNumber) return null;

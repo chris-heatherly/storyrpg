@@ -1,6 +1,9 @@
 import type { Choice, Consequence } from '../../types';
+import { isPlaceholderStake } from '../constants/placeholderStakes';
+import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { normalizeTintFlag } from '../utils/tintVocabulary';
 import { isGateEnabled } from '../remediation/gateDefaults';
+import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 
 /**
  * Route a fallback choice set across a branch point's distinct `leadsTo` targets so
@@ -22,6 +25,216 @@ export function routeFallbackChoicesAcrossTargets<T extends { id: string; nextSc
     choices.push({ ...template, id: `${beatId}-fallback-choice-${i + 1}` });
   }
   return choices.map((choice, i) => ({ ...choice, nextSceneId: targets[i % targets.length] }));
+}
+
+export interface ReaderFacingFallbackChoiceInput {
+  optionHints?: string[];
+  localContext?: string[];
+  choicePointDescription?: string;
+  choiceBeatText?: string;
+  choiceBeatVisualMoment?: string;
+  sceneName?: string;
+  dramaticQuestion?: string;
+  dramaticPurpose?: string;
+  conflictEngine?: string;
+}
+
+export interface ChoiceAttachmentBeat {
+  id: string;
+  text?: string;
+  isChoicePoint?: boolean;
+}
+
+function isUnsafeFallbackText(text: string | undefined): boolean {
+  if (!text || text.trim().length === 0) return true;
+  return isPlanningRegisterText(text)
+    || isPlaceholderStake(text)
+    || /\bforeshadowing\b/i.test(text)
+    || /\baudience catches\b/i.test(text)
+    || /\bprotagonist\b/i.test(text)
+    || /\bscene should echo\b/i.test(text)
+    || /\bchoice changes the room\b/i.test(text)
+    || /\bchoice leaves visible residue\b/i.test(text)
+    || /\bdecision changes the tone\b/i.test(text)
+    || /\bscene\s*\d+\b/i.test(text)
+    || /\bserves\s+the\s+\w+\s+beat\b/i.test(text)
+    || /\bforward\s+pressure\s*:/i.test(text)
+    || /\bsceneEpisode\b/i.test(text);
+}
+
+function isMixedDecisionHint(text: string | undefined): boolean {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  const hasMultipleClauses = /;\s*(?:and|or)\b/i.test(normalized) || /\band at \d/i.test(normalized);
+  if (!hasMultipleClauses) return false;
+  const decisionWords = normalized.match(/\b(?:accept|decline|wait|choose|name|run|fight|freeze|scream)\b/gi) ?? [];
+  return decisionWords.length >= 3;
+}
+
+function sentence(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  if (!trimmed) return trimmed;
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function expandShortFallbackOption(text: string): string {
+  const trimmed = text.trim().replace(/\.$/, '');
+  const normalized = trimmed.toLowerCase();
+  const known: Record<string, string> = {
+    scream: 'Scream for help',
+    run: 'Run for the open path',
+    freeze: 'Freeze and read the danger',
+    fight: 'Fight back with everything you have',
+    'fight back': 'Fight back with everything you have',
+  };
+  if (known[normalized]) return known[normalized];
+  if (/^(?:the|a|an)\s+/i.test(trimmed)) return `Choose ${trimmed} as the name`;
+  if (trimmed.length < 16) return `Choose ${trimmed}`;
+  return trimmed;
+}
+
+interface OptionHintFragment {
+  text: string;
+  context: string;
+}
+
+function optionHintFragments(hints: string[]): OptionHintFragment[] {
+  const fragments: OptionHintFragment[] = [];
+  for (const hint of hints) {
+    const trimmed = String(hint || '').trim();
+    if (!trimmed) continue;
+    if (isUnsafeFallbackText(trimmed) || isMixedDecisionHint(trimmed)) continue;
+
+    const afterColon = trimmed.split(/:/).slice(1).join(':').trim();
+    const beforeColon = afterColon ? trimmed.split(/:/)[0].trim() : '';
+    const listLike = Boolean(afterColon) || /,|\/|\bor\b/i.test(trimmed);
+    if (!listLike) fragments.push({ text: trimmed, context: trimmed });
+
+    const listSource = afterColon || trimmed;
+    for (const piece of listSource.split(/\s*(?:,|\/|\bor\b)\s*/i)) {
+      const clean = piece
+        .replace(/\((?:canonical|default)\)/gi, '')
+        .replace(/^(?:and|or)\s+/i, '')
+        .trim();
+      if (clean && !isUnsafeFallbackText(clean)) {
+        fragments.push({ text: clean, context: [beforeColon, clean].filter(Boolean).join(' ') });
+      }
+    }
+  }
+  return fragments;
+}
+
+const FALLBACK_CONTEXT_STOPWORDS = new Set([
+  'the', 'and', 'that', 'this', 'with', 'from', 'into', 'your', 'you', 'her', 'his',
+  'him', 'she', 'they', 'them', 'their', 'for', 'when', 'what', 'where', 'why', 'how',
+  'does', 'did', 'will', 'can', 'could', 'would', 'should', 'give', 'handle', 'choose',
+  'decide', 'scene', 'moment', 'next', 'morning',
+]);
+
+function fallbackContextTokens(text: string | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const raw of String(text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    let token = raw.trim();
+    if (token.endsWith('s') && token.length > 4) token = token.slice(0, -1);
+    if (token.length < 4 || FALLBACK_CONTEXT_STOPWORDS.has(token)) continue;
+    out.add(token);
+  }
+  return out;
+}
+
+function contextualHintFragments(fragments: OptionHintFragment[], contextText: string): OptionHintFragment[] {
+  const context = fallbackContextTokens(contextText);
+  if (context.size === 0) return fragments;
+  const scored = fragments.map((fragment) => {
+    const tokens = fallbackContextTokens(fragment.context);
+    let score = 0;
+    for (const token of tokens) if (context.has(token)) score += 1;
+    return { fragment, score };
+  });
+  const best = Math.max(0, ...scored.map((item) => item.score));
+  if (best <= 0) return fragments;
+  return scored.filter((item) => item.score > 0).map((item) => item.fragment);
+}
+
+function compactFragment(text: string | undefined, maxWords = 8): string {
+  const cleaned = String(text || '')
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || isUnsafeFallbackText(cleaned)) return '';
+
+  const named = cleaned.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b/);
+  if (named?.[0] && !/^(The|A|An|This|That|Then|When|Before|After)$/.test(named[0])) {
+    return `${named[0]}'s signal`;
+  }
+
+  const concrete = cleaned.match(/\b(?:the|a|an|her|his|their|this|that)\s+[a-z][a-z'-]+(?:\s+[a-z][a-z'-]+){0,5}/i);
+  const source = concrete?.[0] || cleaned.split(/[.!?;:]/)[0] || '';
+  const words = source.split(/\s+/).filter(Boolean).slice(0, maxWords);
+  return words.join(' ').replace(/[,;:]$/, '').trim();
+}
+
+function uniqueSafeOptions(options: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const option of options) {
+    const text = sentence(expandShortFallbackOption(option));
+    const key = text.toLowerCase();
+    if (isUnsafeFallbackText(text) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
+export function buildReaderFacingFallbackChoiceOptions(input: ReaderFacingFallbackChoiceInput): string[] {
+  const fragments = optionHintFragments(input.optionHints || []);
+  const localContext = [
+    ...(input.localContext || []),
+    input.choiceBeatText,
+    input.choiceBeatVisualMoment,
+  ].filter(Boolean).join(' ');
+  const contextual = contextualHintFragments(fragments, localContext);
+  const hinted = uniqueSafeOptions(contextual.map((fragment) => fragment.text));
+  if (hinted.length >= 3) return hinted.slice(0, 4);
+
+  const anchor =
+    compactFragment(input.choiceBeatText) ||
+    compactFragment(input.choiceBeatVisualMoment) ||
+    compactFragment(input.dramaticQuestion) ||
+    compactFragment(input.dramaticPurpose) ||
+    compactFragment(input.conflictEngine) ||
+    compactFragment(input.sceneName);
+
+  const derived = anchor
+    ? [
+        `Respond to ${anchor}`,
+        `Hold back and study ${anchor}`,
+        `Press for the truth behind ${anchor}`,
+      ]
+    : [
+        'Act before the moment closes',
+        'Wait long enough to read the danger',
+        'Ask what is really at stake',
+      ];
+
+  return uniqueSafeOptions([...hinted, ...derived]).slice(0, 4);
+}
+
+const COMPLETED_CHOICE_BEAT_RE =
+  /\b(?:you|kylie|he|she|they)\s+(?:write|writes|wrote|name|names|named|choose|chooses|chose|accept|accepts|accepted|decline|declines|declined|wait|waits|waited|open|opens|opened|finally|already)\b/i;
+
+const PROMPTABLE_CHOICE_BEAT_RE =
+  /\b(?:what do you|how do you|which do you|do you|will you|decide how|choose whether|choose how|choose what|pick one|make the call)\b/i;
+
+export function isSafeChoiceAttachmentBeat(beat: ChoiceAttachmentBeat | undefined): boolean {
+  if (!beat) return false;
+  if (beat.isChoicePoint === true) return true;
+  const text = String(beat.text || '').replace(/\s+/g, ' ').trim();
+  if (!text || isUnsafeFallbackText(text)) return false;
+  if (PROMPTABLE_CHOICE_BEAT_RE.test(text)) return true;
+  if (COMPLETED_CHOICE_BEAT_RE.test(text)) return false;
+  return false;
 }
 
 const BRANCH_MATCH_STOPWORDS = new Set([
@@ -137,7 +350,7 @@ export function repairBranchFanOut<T extends { nextSceneId?: string; text?: stri
  * `choiceSets` in place; returns the number of re-pointed sets.
  */
 export function reconcileChoiceSetBeatIds(
-  sceneContents: Array<{ sceneId: string; beats?: Array<{ id: string; isChoicePoint?: boolean }> }>,
+  sceneContents: Array<{ sceneId: string; beats?: Array<ChoiceAttachmentBeat> }>,
   choiceSets: Array<{ sceneId?: string; beatId: string }>,
 ): number {
   const beatsByScene = new Map(sceneContents.map((sc) => [sc.sceneId, sc.beats ?? []]));
@@ -177,12 +390,15 @@ export function reconcileChoiceSetBeatIds(
     // NON-choice-point beat while the choice point moved elsewhere (bite-me-g14
     // ep2 s2-1: set keyed "beat-3", but the post-rewrite choice point is "beat-4",
     // so the branch shipped choiceless and "reached none of [s2-2, s2-3]").
-    // Re-point at an UNCLAIMED choice-point beat (else the last beat).
+    // Re-point at an UNCLAIMED choice-point beat (else a promptable last beat).
+    // Never fall back to a beat that already narrates the decision as completed;
+    // that shipped stale fallback choices on Bite Me s2-4-b8 ("You name him
+    // The Mountain" with choices to accept Radu's lift / wait for the tow).
     const sceneClaimed = claimed.get(cs.sceneId) ?? new Set<string>();
     const lastBeat = beats[beats.length - 1];
     const candidate =
       beats.find((b) => b.isChoicePoint && !sceneClaimed.has(b.id)) ??
-      (sceneClaimed.has(lastBeat.id) ? undefined : lastBeat);
+      (!sceneClaimed.has(lastBeat.id) && isSafeChoiceAttachmentBeat(lastBeat) ? lastBeat : undefined);
     if (candidate && candidate.id !== cs.beatId) {
       cs.beatId = candidate.id;
       claim(cs.sceneId, candidate.id);
@@ -306,7 +522,7 @@ export function assembleChoiceForStory(
     conditions: choice.conditions,
     showWhenLocked: choice.showWhenLocked,
     lockedText: choice.lockedText,
-    statCheck: choice.statCheck,
+    statCheck: normalizeChoiceStatCheck(choice.statCheck),
     consequenceDomain: choice.consequenceDomain,
     storyVerb: choice.storyVerb,
     affordanceSource: choice.affordanceSource,

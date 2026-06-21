@@ -14,7 +14,9 @@ import { FlagContractValidator } from './FlagContractValidator';
 import { SentenceOpenerVarietyValidator } from './SentenceOpenerVarietyValidator';
 import { ReferencedEventPresenceValidator } from './ReferencedEventPresenceValidator';
 import { ChoiceTypePlanConformanceValidator } from './ChoiceTypePlanConformanceValidator';
+import { ConsequenceTierPlanConformanceValidator } from './ConsequenceTierPlanConformanceValidator';
 import type { SeasonChoicePlan } from '../pipeline/seasonChoicePlan';
+import type { ConsequenceTier } from '../../types/scenePlan';
 import { SkillPlanConformanceValidator } from './SkillPlanConformanceValidator';
 import type { SeasonSkillPlan } from '../pipeline/seasonSkillPlan';
 import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, normalizeEncounterOutcomeFlags } from '../utils/encounterOutcomeFlags';
@@ -24,12 +26,14 @@ import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
+import { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
 import { applyResidueConsumption } from '../pipeline/residueConsumption';
 import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
 import { rebalanceStoryEncounterSkills } from '../utils/encounterSkillRebalance';
+import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -54,6 +58,8 @@ export type FinalStoryContractIssueType =
   | 'broken_navigation'
   | 'routing_contradiction'
   | 'choice_bridge_skips_required_setup'
+  | 'choice_count_contract'
+  | 'supernatural_canon_contradiction'
   | 'beat_id_collision'
   | 'encounter_template_collapse'
   | 'encounter_malformed_prose'
@@ -69,9 +75,11 @@ export type FinalStoryContractIssueType =
   | 'npc_pronoun_inconsistency'
   | 'outcome_text_stub'
   | 'echo_summary_variant'
+  | 'planning_register_prose'
   | 'unset_flag_condition'
   | 'promised_clue_absent'
   | 'choice_type_plan_nonconformance'
+  | 'consequence_tier_plan_nonconformance'
   | 'skill_plan_nonconformance'
   | 'sentence_opener_monotony'
   | 'encounter_prose_integrity'
@@ -143,9 +151,17 @@ export interface FinalStoryContractInput {
   /** Optional planned per-scene choice type (blueprint `choicePoint.type`), enabling the
    * conformance validator's binding-fidelity Check A. */
   plannedChoiceTypesByScene?: Record<string, string>;
+  /**
+   * Optional planned per-scene consequence tier from the season scene plan.
+   * The budget mix is season-level; generated episodes are checked against
+   * these assigned tiers, not against whole-season percentages.
+   */
+  plannedConsequenceTiersByScene?: Record<string, ConsequenceTier>;
   /** The season skill plan. When present, SkillPlanConformanceValidator checks each
    * generated episode leaned on the skills the plan favoured for it (L2). */
   seasonSkillPlan?: SeasonSkillPlan;
+  callbackLedger?: SerializedCallbackLedger;
+  generatedThroughEpisode?: number;
   qaReport?: QAReport;
   bestPracticesReport?: ComprehensiveValidationReport;
   validSkills?: string[];
@@ -175,8 +191,73 @@ export interface FinalStoryContractInput {
 
 const PLACEHOLDER_TEXT_PATTERN = /\b(what happened in|scene content was not generated|branch reconvergence|route chosen before this moment|the path here still matters|changes how everyone enters|tbd|placeholder|fill later)\b/i;
 
+type ContractProtagonist = NonNullable<FinalStoryContractInput['protagonist']>;
+
+const UNSAFE_PROTAGONIST_NAMES = new Set([
+  'a',
+  'an',
+  'hero',
+  'lead',
+  'main',
+  'protagonist',
+  'the',
+  'unknown',
+]);
+
+function normalizeProtagonistName(name?: string): string | undefined {
+  const trimmed = name?.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length < 3) return undefined;
+  if (UNSAFE_PROTAGONIST_NAMES.has(trimmed.toLowerCase())) return undefined;
+  return trimmed;
+}
+
+function protagonistFromStoryRoster(story: Story): ContractProtagonist | undefined {
+  const rosterProtagonist = (story.npcs || []).find((npc) => npc.role === 'protagonist');
+  const name = normalizeProtagonistName(rosterProtagonist?.name);
+  if (!name) return undefined;
+  return {
+    name,
+    pronouns: rosterProtagonist?.pronouns,
+  };
+}
+
+function mergeAliases(rosterName: string, provided?: ContractProtagonist): string[] | undefined {
+  const aliases = new Set<string>();
+  const providedName = normalizeProtagonistName(provided?.name);
+  if (providedName && providedName !== rosterName) aliases.add(providedName);
+  for (const alias of provided?.aliases || []) {
+    const clean = normalizeProtagonistName(alias);
+    if (clean && clean !== rosterName) aliases.add(clean);
+  }
+  return aliases.size > 0 ? [...aliases] : undefined;
+}
+
+function resolveContractProtagonist(
+  story: Story,
+  provided?: ContractProtagonist,
+): ContractProtagonist | undefined {
+  const roster = protagonistFromStoryRoster(story);
+  if (roster?.name) {
+    return {
+      name: roster.name,
+      aliases: mergeAliases(roster.name, provided),
+      pronouns: roster.pronouns || provided?.pronouns,
+    };
+  }
+
+  const providedName = normalizeProtagonistName(provided?.name);
+  if (!providedName) return undefined;
+  return {
+    name: providedName,
+    aliases: mergeAliases(providedName, provided),
+    pronouns: provided?.pronouns,
+  };
+}
+
 export class FinalStoryContractValidator {
   async validate(input: FinalStoryContractInput): Promise<FinalStoryContractReport> {
+    const protagonist = resolveContractProtagonist(input.story, input.protagonist);
     const mode = input.mode || 'advisory';
     const issues: FinalStoryContractIssue[] = [];
     const metrics = {
@@ -194,6 +275,8 @@ export class FinalStoryContractValidator {
     if (mode === 'disabled') {
       return this.buildReport([], metrics);
     }
+
+    issues.push(...this.collectChoiceCountContractIssues(input.story));
 
     // Normalize witnessReaction npcIds to canonical `story.npcs` ids before any
     // checks. Upstream authoring uses raw per-scene NPC labels (names/slugs), so
@@ -224,10 +307,10 @@ export class FinalStoryContractValidator {
     // "Kylie Marinescu — wary" (rendered as a HUD badge) and relationship consequences
     // paid affection to char-kylie-marinescu. Deterministic strip + a finding so the
     // prose half (a second protagonist talking at the table) gets regen attention.
-    if (input.protagonist?.name) {
+    if (protagonist?.name) {
       const strip = stripProtagonistFromEncounters(input.story, {
-        name: input.protagonist.name,
-        aliases: input.protagonist.aliases,
+        name: protagonist.name,
+        aliases: protagonist.aliases,
       });
       if (strip.npcStatesRemoved > 0 || strip.relationshipConsequencesRemoved > 0) {
         console.info(
@@ -238,7 +321,7 @@ export class FinalStoryContractValidator {
           type: 'protagonist_as_npc',
           severity: 'warning',
           message:
-            `Protagonist "${input.protagonist.name}" appeared as an encounter NPC ` +
+            `Protagonist "${protagonist.name}" appeared as an encounter NPC ` +
             `(${strip.npcStatesRemoved} npcState(s), ${strip.relationshipConsequencesRemoved} relationship target(s) — removed). ` +
             'The encounter was likely generated without protagonist context; its prose may still address the protagonist as a separate character.',
           validator: 'encounterProtagonistGuard',
@@ -254,11 +337,11 @@ export class FinalStoryContractValidator {
     // output. Mutates input.story like the strip/pronoun passes; the per-scene POV scan below
     // then surfaces only residue the coercion could not safely clear (same-gender NPC
     // ambiguity) for the EncounterArchitect regen route.
-    if (isGateEnabledAt('GATE_ENCOUNTER_POV', 'season-final') && input.protagonist?.name) {
+    if (isGateEnabledAt('GATE_ENCOUNTER_POV', 'season-final') && protagonist?.name) {
       const pov = applyEncounterPovBackstop(input.story, {
-        name: input.protagonist.name,
-        aliases: input.protagonist.aliases,
-        pronouns: input.protagonist.pronouns,
+        name: protagonist.name,
+        aliases: protagonist.aliases,
+        pronouns: protagonist.pronouns,
       });
       if (pov.coerced > 0) {
         console.info(
@@ -323,21 +406,47 @@ export class FinalStoryContractValidator {
       }
     }
 
+    // G24: planning-register prose leaked into reader-facing beats/variants,
+    // encounter prose, and visual metadata ("Open the episode", "Introduce X
+    // on-page", "Authored treatment choice", "Decide how to handle..."). These
+    // are authoring instructions, not fiction. High precision; routed through
+    // the scene-prose repair loop when blocking.
+    {
+      const planningLeaks = new PlanningRegisterLeakValidator().validate({ story: input.story });
+      if (planningLeaks.findings.length > 0) {
+        console.info(`[FinalStoryContract] planning-register prose leaks: ${planningLeaks.findings.length} finding(s)`);
+      }
+      const blockPlanningLeaks = isGateEnabledAt('GATE_PLANNING_REGISTER_PROSE', 'season-final');
+      for (const finding of planningLeaks.findings) {
+        issues.push({
+          type: 'planning_register_prose',
+          severity: blockPlanningLeaks ? 'error' : 'warning',
+          message: `Planning-register instruction leaked into story content (${finding.pattern}) at ${finding.path}: "${finding.excerpt}"`,
+          episodeId: finding.episodeId,
+          episodeNumber: finding.episodeNumber,
+          sceneId: finding.sceneId,
+          beatId: finding.beatId,
+          validator: 'PlanningRegisterLeakValidator',
+          suggestion: 'Rewrite this field as in-world prose or visual direction; remove planning-register instructions and authorial task labels.',
+        });
+      }
+    }
+
     // W1: deterministically repair wrong-gender protagonist pronouns in player-facing
     // prose (the encounter generator drifted Kylie -> he/him). Pronouns are canon, so
     // the safe (protagonist-only-sentence) repair runs always — pure data correctness,
     // like the witness pass above. Genuinely ambiguous residue (protagonist + a
     // wrong-gender NPC in one sentence) is never auto-rewritten; it is flagged for
     // regen only when GATE_PROTAGONIST_PRONOUN is on.
-    if (input.protagonist?.pronouns) {
-      const names = [input.protagonist.name, ...(input.protagonist.aliases || [])].filter(
+    if (protagonist?.pronouns) {
+      const names = [protagonist.name, ...(protagonist.aliases || [])].filter(
         (n): n is string => Boolean(n),
       );
       if (names.length > 0) {
         const pronounFix = canonicalizeProtagonistPronouns(
           input.story,
-          { names, pronouns: input.protagonist.pronouns },
-          otherGenderNamesFromStory(input.story, input.protagonist.pronouns),
+          { names, pronouns: protagonist.pronouns },
+          otherGenderNamesFromStory(input.story, protagonist.pronouns),
         );
         if (pronounFix.repaired > 0 || pronounFix.ambiguous.length > 0) {
           console.info(
@@ -367,7 +476,7 @@ export class FinalStoryContractValidator {
     // attribution is too ambiguous to auto-rewrite safely). Advisory; escalated to
     // blocking when GATE_NPC_PRONOUN is on (default-OFF pending a live run).
     {
-      const npcScan = findNpcPronounInconsistencies(input.story, input.story.npcs, input.protagonist);
+      const npcScan = findNpcPronounInconsistencies(input.story, input.story.npcs, protagonist);
       if (npcScan.findings.length > 0) {
         console.info(
           `[FinalStoryContract] NPC pronoun inconsistencies: ${npcScan.findings.length} (of ${npcScan.fieldsScanned} fields)`,
@@ -388,7 +497,7 @@ export class FinalStoryContractValidator {
       // genders (Bite-Me-G15's Stela drifted they→he→she with no roster entry, so the
       // roster scan above was blind to her). Always advisory (detection only, never
       // blocking) — there is no canon pronoun to rewrite toward.
-      const internalConflicts = findInternalPronounConflicts(input.story, input.protagonist);
+      const internalConflicts = findInternalPronounConflicts(input.story, protagonist);
       for (const c of internalConflicts) {
         issues.push({
           type: 'npc_pronoun_inconsistency',
@@ -406,7 +515,7 @@ export class FinalStoryContractValidator {
     {
       const properNouns = [
         ...(input.story.npcs || []).map((n) => n.name).filter((n): n is string => Boolean(n)),
-        ...(input.protagonist?.name ? [input.protagonist.name] : []),
+        ...(protagonist?.name ? [protagonist.name] : []),
       ];
       const otqResult = new OutcomeTextQualityValidator().validate({ story: input.story, properNouns });
       if (otqResult.issues.length > 0) {
@@ -428,7 +537,11 @@ export class FinalStoryContractValidator {
     // (blog_post_timing class) mean authored variants/modifiers can never render.
     // Deterministic; blocking when GATE_FLAG_CONTRACT is on, advisory otherwise.
     {
-      const flagResult = new FlagContractValidator().validate({ story: input.story });
+      const flagResult = new FlagContractValidator().validate({
+        story: input.story,
+        callbackLedger: input.callbackLedger,
+        generatedThroughEpisode: input.generatedThroughEpisode,
+      });
       if (flagResult.issues.length > 0) {
         console.info(
           `[FinalStoryContract] flag contract: ${flagResult.metrics.unsetConditionFlags} unset-condition flag(s), ` +
@@ -460,6 +573,13 @@ export class FinalStoryContractValidator {
         const n = normMeta(s);
         if (n.length >= 8) metaStrings.add(n);
       };
+      const leakedMetaParagraph = (s: unknown): string | undefined => {
+        if (typeof s !== 'string' || metaStrings.size === 0) return undefined;
+        return s
+          .split(/\n{2,}/)
+          .map(normMeta)
+          .find((paragraph) => paragraph && metaStrings.has(paragraph));
+      };
       for (const ep of input.story.episodes || []) {
         for (const scene of ep.scenes || []) {
           for (const beat of scene.beats || []) {
@@ -478,6 +598,22 @@ export class FinalStoryContractValidator {
         for (const ep of input.story.episodes || []) {
           for (const scene of ep.scenes || []) {
             for (const beat of scene.beats || []) {
+              const leakedBeatParagraph = leakedMetaParagraph(beat.text);
+              if (leakedBeatParagraph) {
+                issues.push({
+                  type: 'echo_summary_variant',
+                  severity: blockLeak ? 'error' : 'warning',
+                  message:
+                    `Beat ${beat.id} appends a choice echo-summary/reminder line to its base prose ` +
+                    `("${leakedBeatParagraph.slice(0, 70)}…") — feedback metadata must not ship as scene text.`,
+                  episodeId: ep.id,
+                  sceneId: scene.id,
+                  beatId: beat.id,
+                  validator: 'FinalStoryContractValidator',
+                  suggestion:
+                    'Remove the appended feedback cue from beat text; render the choice consequence as authored prose, not metadata.',
+                });
+              }
               for (const variant of (beat as { textVariants?: Array<{ text?: string }> }).textVariants || []) {
                 const v = normMeta(variant.text);
                 if (v && metaStrings.has(v)) {
@@ -570,6 +706,26 @@ export class FinalStoryContractValidator {
       }
     }
 
+    if (input.plannedConsequenceTiersByScene && Object.keys(input.plannedConsequenceTiersByScene).length > 0) {
+      const consequenceConf = new ConsequenceTierPlanConformanceValidator().validate({
+        story: input.story,
+        plannedTiersByScene: input.plannedConsequenceTiersByScene,
+      });
+      if (consequenceConf.issues.length > 0) {
+        console.info(`[FinalStoryContract] consequence-tier plan conformance: ${consequenceConf.issues.length} finding(s)`);
+      }
+      const blockConsequence = isGateEnabledAt('GATE_CONSEQUENCE_TIER_CONFORMANCE', 'season-final');
+      for (const issue of consequenceConf.issues) {
+        issues.push({
+          type: 'consequence_tier_plan_nonconformance',
+          severity: blockConsequence ? 'error' : 'warning',
+          message: issue.message,
+          validator: 'ConsequenceTierPlanConformanceValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
     // Skill plan conformance (G10, L2): each generated episode leaned on the skills its
     // season plan favoured for it (not an off-plan dominant skill). Season coverage is an
     // L1 plan property (validateSeasonSkillPlan); this never gates a slice vs season target.
@@ -624,7 +780,7 @@ export class FinalStoryContractValidator {
     const callbackChoices: Array<{ id: string; sceneId: string; text: string; consequences?: Consequence[]; reminderPlan?: unknown }> = [];
     const encounterValidator = new IncrementalEncounterValidator(input.validSkills || Object.keys(input.story.initialState?.skills || {}));
     const povValidator = new PovClarityValidator();
-    const protagonistName = input.protagonist?.name;
+    const protagonistName = protagonist?.name;
 
     for (const episode of input.story.episodes || []) {
       const sceneMap = new Map((episode.scenes || []).map(scene => [scene.id, scene]));
@@ -802,7 +958,8 @@ export class FinalStoryContractValidator {
       }
     }
 
-    await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics, input.treatmentSourced === true);
+    this.collectSupernaturalCanonContradictions(input.story, storyTexts, issues);
+    await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics, input.treatmentSourced === true, input.callbackLedger, input.generatedThroughEpisode);
     this.validateMechanicsLeakage(storyTexts, issues, metrics);
     this.validateIncrementalResults(input.incrementalValidationResults || [], issues, metrics);
     this.validateQAReports(input.qaReport, input.bestPracticesReport, issues, metrics, input.treatmentSourced === true);
@@ -1149,16 +1306,67 @@ export class FinalStoryContractValidator {
     }
   }
 
+  private collectSupernaturalCanonContradictions(
+    story: Story,
+    storyTexts: MechanicsLeakageText[],
+    issues: FinalStoryContractIssue[],
+  ): void {
+    const supernaturalMealTerms = String.raw`(?:lunch|brunch|breakfast)`;
+    const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const vampireNames = (story.npcs || [])
+      .filter((npc) => {
+        const haystack = JSON.stringify(npc).toLowerCase();
+        return /\b(?:vampire|strigoi)\b/.test(haystack);
+      })
+      .flatMap((npc) => {
+        const full = typeof npc.name === 'string' ? npc.name.trim() : '';
+        const first = full.split(/\s+/)[0] || '';
+        return [full, first].filter((name, index, arr) => name.length >= 3 && arr.indexOf(name) === index);
+      });
+
+    if (vampireNames.length === 0) return;
+
+    const vampireNamePattern = vampireNames.map(escapeRegExp).join('|');
+    const contradictionPattern = new RegExp(
+      String.raw`\b(?:${vampireNamePattern})\b[^.!?\n]{0,120}\b${supernaturalMealTerms}\b|\b${supernaturalMealTerms}\b[^.!?\n]{0,120}\b(?:${vampireNamePattern})\b`,
+      'i',
+    );
+    const negatedTellPattern = /\b(?:never|not|no|cannot|can't|doesn't|does not)\b[^.!?\n]{0,40}\b(?:lunch|brunch|breakfast)\b/i;
+
+    for (const item of storyTexts) {
+      const text = item.text || '';
+      const match = text.match(contradictionPattern);
+      if (!match) continue;
+      const snippet = match[0];
+      if (negatedTellPattern.test(snippet)) continue;
+      issues.push({
+        type: 'supernatural_canon_contradiction',
+        severity: 'error',
+        message:
+          `Canon contradiction in ${item.id}: vampire/strigoi character scheduled for a daytime meal ` +
+          `("${snippet.slice(0, 100)}${snippet.length > 100 ? '...' : ''}").`,
+        sceneId: item.sceneId,
+        beatId: item.beatId,
+        validator: 'FinalStoryContractValidator',
+        suggestion: 'Move vampire/strigoi invitations to dinner, after sundown, midnight, or another night-appropriate event.',
+      });
+    }
+  }
+
   private async validateCallbacks(
     callbackScenes: Array<{ id: string; beats: Array<{ id: string; text: string; textVariants?: Array<{ condition: unknown; text: string }>; speaker?: string }> }>,
     callbackChoices: Array<{ id: string; sceneId: string; text: string; consequences?: Consequence[]; reminderPlan?: unknown }>,
     issues: FinalStoryContractIssue[],
     metrics: FinalStoryContractReport['metrics'],
-    treatmentSourced: boolean
+    treatmentSourced: boolean,
+    callbackLedger?: SerializedCallbackLedger,
+    generatedThroughEpisode?: number,
   ): Promise<void> {
     const result = await new CallbackOpportunitiesValidator({ level: 'error' }).validate({
       scenes: callbackScenes,
       choices: callbackChoices as any,
+      callbackLedger,
+      generatedThroughEpisode,
     });
     metrics.callbackIssues = result.issues.length;
     for (const issue of result.issues) {
@@ -1383,5 +1591,68 @@ export class FinalStoryContractValidator {
       metrics,
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  private collectChoiceCountContractIssues(story: Story): FinalStoryContractIssue[] {
+    const issues: FinalStoryContractIssue[] = [];
+    const note = (
+      count: number,
+      path: string,
+      episodeId?: string,
+      episodeNumber?: number,
+      sceneId?: string,
+      beatId?: string,
+    ) => {
+      if (count === 0 || (count >= 3 && count <= 4)) return;
+      issues.push({
+        type: 'choice_count_contract',
+        severity: 'error',
+        message: `Choice surface at ${path} has ${count} choice(s); reader-facing story and encounter beats must have 3-4 choices.`,
+        episodeId,
+        episodeNumber,
+        sceneId,
+        beatId,
+        validator: 'FinalStoryContractValidator',
+        suggestion: 'Re-author or repair this choice surface to exactly three or four fiction-specific options.',
+      });
+    };
+
+    const walkEncounter = (
+      value: unknown,
+      path: string,
+      episodeId: string | undefined,
+      episodeNumber: number | undefined,
+      sceneId: string | undefined,
+    ) => {
+      if (!value || typeof value !== 'object') return;
+      const record = value as Record<string, unknown>;
+      if (Array.isArray(record.choices)) {
+        note(record.choices.length, path, episodeId, episodeNumber, sceneId);
+      }
+      for (const [key, child] of Object.entries(record)) {
+        if (key === 'choices') continue;
+        if (Array.isArray(child)) {
+          child.forEach((item, index) => walkEncounter(item, `${path}.${key}[${index}]`, episodeId, episodeNumber, sceneId));
+        } else if (child && typeof child === 'object') {
+          walkEncounter(child, `${path}.${key}`, episodeId, episodeNumber, sceneId);
+        }
+      }
+    };
+
+    for (const ep of story.episodes || []) {
+      for (const scene of ep.scenes || []) {
+        for (const beat of scene.beats || []) {
+          if (Array.isArray(beat.choices)) {
+            note(beat.choices.length, `episode ${ep.number} scene ${scene.id} beat ${beat.id}`, ep.id, ep.number, scene.id, beat.id);
+          }
+        }
+        const encounter = (scene as unknown as { encounter?: unknown }).encounter;
+        if (encounter) {
+          walkEncounter(encounter, `episode ${ep.number} scene ${scene.id} encounter`, ep.id, ep.number, scene.id);
+        }
+      }
+    }
+
+    return issues;
   }
 }

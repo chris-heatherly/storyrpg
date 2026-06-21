@@ -9,8 +9,8 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
-import { FALLBACK_OUTCOME_TEXT_POOLS } from '../constants/choiceTextFallbacks';
-import { BaseAgent, AgentResponse } from './BaseAgent';
+import { FALLBACK_OUTCOME_TEXT_POOLS, isFallbackReminderStub } from '../constants/choiceTextFallbacks';
+import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
   Choice,
@@ -34,6 +34,7 @@ import {
   SevenPointStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
+import type { ConsequenceTier } from '../../types/scenePlan';
 // Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
 // via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
 // longer re-embedded here, to eliminate token duplication and drift risk.
@@ -45,6 +46,8 @@ import { buildChoiceAuthorCallbackSection } from '../prompts/callbackPromptSecti
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
+import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
+import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 
 /**
  * Bucket C soft-gate decision for the LLM-judged stakes score.
@@ -140,7 +143,7 @@ export interface ChoiceAuthorInput {
   requiredBranchTargets?: Array<{ sceneId: string; intent: string }>;
 
   // Guidance
-  optionCount: number; // Usually 2-4
+  optionCount: number; // Reader-facing choice sets must have 3-4 options
 
   // Source material analysis for IP fidelity (optional)
   sourceAnalysis?: SourceMaterialAnalysis;
@@ -192,13 +195,12 @@ export interface ChoiceAuthorInput {
     stateReconciliationHints?: string[];
   };
 
-  // Consequence budget target (Phase 3.1). Default 60/25/10/5.
-  consequenceBudgetTarget?: {
-    callback: number;
-    tint: number;
-    branchlet: number;
-    branch: number;
-  };
+  /**
+   * Season-assigned consequence tier for this scene's central choice.
+   * The 60/25/10/5-style mix is allocated at season-plan time; ChoiceAuthor
+   * should realize this scene's assigned tier, not rebalance an episode locally.
+   */
+  plannedConsequenceTier?: ConsequenceTier;
 
   // Character arc milestone targets (Phase 7.3). ChoiceAuthor aligns
   // consequence design with planned identity/relationship deltas.
@@ -223,6 +225,14 @@ export interface ChoiceAuthorInput {
 
   // Genre/source-specific verbs that make choices feel native to the story.
   storyVerbs?: StoryVerb[];
+}
+
+const MIN_READER_CHOICES = 3;
+const MAX_READER_CHOICES = 4;
+
+function normalizeReaderChoiceCount(count: number | undefined): number {
+  if (!Number.isFinite(count)) return MIN_READER_CHOICES;
+  return Math.max(MIN_READER_CHOICES, Math.min(MAX_READER_CHOICES, Math.floor(count!)));
 }
 
 // Output types
@@ -473,15 +483,29 @@ Before finalizing:
 `;
   }
 
-  async execute(input: ChoiceAuthorInput): Promise<AgentResponse<ChoiceSet>> {
-    const prompt = this.buildPrompt(input);
+  async execute(rawInput: ChoiceAuthorInput): Promise<AgentResponse<ChoiceSet>> {
+    const input: ChoiceAuthorInput = {
+      ...rawInput,
+      optionCount: normalizeReaderChoiceCount(rawInput.optionCount),
+    };
+    const prompt = this.buildCompactPrompt(input);
+    const jsonSchema = this.buildJsonSchema(input);
 
     console.log(`[ChoiceAuthor] Creating choices for beat: ${input.beatId}`);
 
     try {
-      const firstResponse = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
+      let firstResponse: string;
+      try {
+        firstResponse = await this.callLLM(
+          [{ role: 'user', content: prompt }],
+          1,
+          { jsonSchema },
+        );
+      } catch (llmError) {
+        if (!(llmError instanceof TruncatedLLMResponseError)) throw llmError;
+        console.warn(`[ChoiceAuthor] ${input.beatId}: structured response truncated before parse — retrying with a compact-output directive.`);
+        firstResponse = '';
+      }
 
       console.log(`[ChoiceAuthor] Received response (${firstResponse.length} chars)`);
 
@@ -489,8 +513,31 @@ Before finalizing:
       // weaker models truncate mid-JSON, and re-running the SAME oversized prompt (the
       // phase-level retry) tends to truncate again. A retry that asks for the same
       // content in a more COMPACT form is far more likely to fit and parse.
-      const { choiceSet: parsedSet, response } = await this.parseChoiceSetWithCompactRetry(input, prompt, firstResponse);
+      const { choiceSet: parsedSet, response } = await this.parseChoiceSetWithCompactRetry(input, firstResponse);
       let choiceSet: ChoiceSet = parsedSet;
+      let rawResponse = response;
+
+      const completenessIssues = this.collectChoiceAuthoringCompletenessIssues(choiceSet, input);
+      if (completenessIssues.length > 0) {
+        const issueList = completenessIssues.map((issue, index) => `${index + 1}. ${issue}`).join('\n');
+        console.warn(
+          `[ChoiceAuthor] ${input.beatId}: choice set omitted required authoring fields — retrying before normalization.\n${issueList}`,
+        );
+        const retryPrompt =
+          this.buildCompactRepairPrompt(input, issueList);
+        rawResponse = await this.callLLM(
+          [{ role: 'user', content: retryPrompt }],
+          4,
+          { jsonSchema },
+        );
+        choiceSet = this.parseJSON<ChoiceSet>(rawResponse);
+        const retryIssues = this.collectChoiceAuthoringCompletenessIssues(choiceSet, input);
+        if (retryIssues.length > 0) {
+          throw new Error(
+            `ChoiceAuthor retry still omitted required authoring fields: ${retryIssues.join('; ')}`,
+          );
+        }
+      }
 
       // Normalize arrays that the LLM might return as strings or undefined
       // Pass the input so we can use blueprint stakes as fallback
@@ -527,7 +574,7 @@ Before finalizing:
       return {
         success: true,
         data: choiceSet,
-        rawResponse: response,
+        rawResponse,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -553,28 +600,235 @@ Before finalizing:
    */
   private async parseChoiceSetWithCompactRetry(
     input: ChoiceAuthorInput,
-    basePrompt: string,
     firstResponse: string,
   ): Promise<{ choiceSet: ChoiceSet; response: string }> {
     try {
       const choiceSet = this.parseJSON<ChoiceSet>(firstResponse);
-      if (!this.wasLastResponseTruncated()) {
+      const choiceCount = Array.isArray(choiceSet.choices) ? choiceSet.choices.length : 0;
+      if (!this.wasLastResponseTruncated() && choiceCount >= MIN_READER_CHOICES) {
         return { choiceSet, response: firstResponse };
       }
-      console.warn(`[ChoiceAuthor] ${input.beatId}: response parsed but truncation dropped content — retrying with a compact-output directive.`);
+      const reason = this.wasLastResponseTruncated()
+        ? 'truncation dropped content'
+        : `only ${choiceCount} choice(s) were returned`;
+      console.warn(`[ChoiceAuthor] ${input.beatId}: response parsed but ${reason} — retrying with a compact-output directive.`);
     } catch (parseError) {
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       console.warn(`[ChoiceAuthor] ${input.beatId}: JSON parse failed (${msg.slice(0, 120)}) — retrying with a compact-output directive.`);
     }
-    const compactPrompt =
-      `${basePrompt}\n\n` +
-      `IMPORTANT: your previous response could not be parsed as complete JSON — it was almost ` +
-      `certainly too long and got cut off. Re-emit the COMPLETE choice set as ONE valid JSON object, ` +
-      `but keep it COMPACT so the whole thing fits: each outcomeTexts tier ONE crisp sentence, every ` +
-      `other string field tight, no commentary or trailing prose. Return only the JSON.`;
-    const response = await this.callLLM([{ role: 'user', content: compactPrompt }]);
+    const compactPrompt = this.buildCompactRepairPrompt(
+      input,
+      'Previous response was incomplete or too long. Re-emit the complete ChoiceSet in compact form.',
+    );
+    const response = await this.callLLM(
+      [{ role: 'user', content: compactPrompt }],
+      4,
+      { jsonSchema: this.buildJsonSchema(input) },
+    );
     const choiceSet = this.parseJSON<ChoiceSet>(response); // rethrows on failure → execute() fails → phase falls back
+    const choiceCount = Array.isArray(choiceSet.choices) ? choiceSet.choices.length : 0;
+    if (choiceCount < MIN_READER_CHOICES) {
+      throw new Error(`ChoiceAuthor compact retry returned only ${choiceCount} choice(s); refusing to synthesize placeholder choices.`);
+    }
     return { choiceSet, response };
+  }
+
+  private buildJsonSchema(input: ChoiceAuthorInput) {
+    const choicePoint = input.sceneBlueprint.choicePoint;
+    return buildChoiceSetJsonSchema({
+      choiceType: choicePoint?.type,
+      branching: Boolean(choicePoint?.branches || input.requiredBranchTargets?.length),
+      optionCount: input.optionCount,
+    });
+  }
+
+  private buildCompactRepairPrompt(input: ChoiceAuthorInput, issueList: string): string {
+    const choicePoint = input.sceneBlueprint.choicePoint!;
+    const isBranching = Boolean(choicePoint.branches || input.requiredBranchTargets?.length);
+    const meaningful = choicePoint.type !== 'expression';
+    const nextScenes = input.possibleNextScenes
+      .slice(0, Math.max(4, input.optionCount))
+      .map(scene => `${scene.id}: ${scene.name} — ${scene.description}`)
+      .join('\n');
+    const branchTargets = input.requiredBranchTargets?.length
+      ? input.requiredBranchTargets.map(t => `${t.sceneId}: ${t.intent}`).join('\n')
+      : '';
+    const optionHints = (choicePoint.optionHints || []).slice(0, input.optionCount).join(' | ');
+
+    return `Return one complete compact ChoiceSet JSON object. The deterministic schema is supplied by the caller; match it exactly.
+
+Repair reason:
+${issueList}
+
+Scene: ${input.sceneBlueprint.id} / ${input.sceneBlueprint.name} / ${input.sceneBlueprint.location}
+Beat id: ${input.beatId}
+Beat text: ${input.beatText}
+
+Choice point:
+- type: ${choicePoint.type}
+- options: exactly ${input.optionCount}
+- description: ${choicePoint.description}
+- option hints: ${optionHints || 'author fitting alternatives from the scene'}
+- stakes.want: ${choicePoint.stakes.want}
+- stakes.cost: ${choicePoint.stakes.cost}
+- stakes.identity: ${choicePoint.stakes.identity}
+${isBranching ? `Next scene targets:\n${branchTargets || nextScenes || 'Use available next scenes from schema context.'}` : ''}
+
+Required choice fields:
+- Every choice: id, text, choiceType, choiceIntent, impactFactors, consequenceTier, stakesAnnotation, consequences, outcomeTexts.
+${isBranching ? '- Every choice must include nextSceneId.' : '- Every choice must include reactionText and tintFlag.'}
+${meaningful ? '- Every choice must include statCheck.skillWeights, statCheck.difficulty, and at least one residueHints item.' : '- Expression choices must not include statCheck.'}
+${choicePoint.type === 'dilemma' ? '- Every choice must include moralContract.' : ''}
+
+Compactness:
+- choice text: 5-${this.choiceLimits?.maxChoiceWords ?? 15} words.
+- each outcomeTexts tier: exactly one vivid sentence.
+- reactionText: exactly one sentence.
+- residueHints.description: exactly one concrete sentence.
+- designNotes: one short clause.
+- Do not emit authorNotes, witnessReactions, failureResidue, reminderPlan, feedbackCue, visualResidueHint, memorableMoment, stakesLayers, storyVerb, or affordanceSource.
+
+Stat checks for relationship/strategic/dilemma:
+- skillWeights object with 1-3 of: athletics, stealth, perception, persuasion, intimidation, deception, investigation, survival.
+- exact shape example: {"statCheck":{"skillWeights":{"persuasion":1},"difficulty":45}}
+
+Consequences:
+- setFlag shape: {"type":"setFlag","flag":"accepted_quartz","value":true}
+- never put a flag name in value.
+
+Return JSON only.`;
+  }
+
+  private collectChoiceAuthoringCompletenessIssues(choiceSet: ChoiceSet, input: ChoiceAuthorInput): string[] {
+    const issues: string[] = [];
+    const plannedChoiceType = input.sceneBlueprint.choicePoint?.type || choiceSet.choiceType || 'expression';
+    const choices = Array.isArray(choiceSet.choices) ? choiceSet.choices : [];
+
+    if (choices.length < MIN_READER_CHOICES) {
+      issues.push(`Choice set returned only ${choices.length} choice(s); at least ${MIN_READER_CHOICES} authored choices are required.`);
+      return issues;
+    }
+
+    choices.forEach((choice, index) => {
+      const choiceId = choice.id || `choice-${index + 1}`;
+      const isBranching = typeof choice.nextSceneId === 'string' && choice.nextSceneId.trim().length > 0;
+      if (!isBranching && !this.hasMeaningfulText(choice.reactionText)) {
+        issues.push(`Choice "${choiceId}" is non-branching but omitted reactionText.`);
+      }
+      if (!isBranching && !this.hasMeaningfulText(choice.tintFlag)) {
+        issues.push(`Choice "${choiceId}" is non-branching but omitted tintFlag.`);
+      }
+      if (plannedChoiceType !== 'expression') {
+        const skillWeights = choice.statCheck && typeof choice.statCheck === 'object'
+          ? (choice.statCheck as { skillWeights?: unknown }).skillWeights
+          : undefined;
+        const hasSkillWeights = Boolean(
+          skillWeights &&
+          typeof skillWeights === 'object' &&
+          !Array.isArray(skillWeights) &&
+          Object.keys(skillWeights as Record<string, unknown>).length > 0,
+        );
+        if (!hasSkillWeights) {
+          issues.push(`Choice "${choiceId}" is ${plannedChoiceType} but omitted statCheck.skillWeights.`);
+        }
+        const residueHints = Array.isArray(choice.residueHints) ? choice.residueHints : [];
+        if (residueHints.length === 0) {
+          issues.push(`Choice "${choiceId}" is ${plannedChoiceType} but omitted residueHints.`);
+        } else if (!residueHints.some(hint => this.hasMeaningfulText(hint?.description))) {
+          issues.push(`Choice "${choiceId}" has residueHints with no concrete description.`);
+        }
+      }
+
+      for (const consequenceIssue of this.collectConsequenceCompletenessIssues(choice, choiceId)) {
+        issues.push(consequenceIssue);
+      }
+    });
+
+    return issues;
+  }
+
+  private hasMeaningfulText(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private collectConsequenceCompletenessIssues(choice: GeneratedChoice, choiceId: string): string[] {
+    const issues: string[] = [];
+    const consequences = Array.isArray(choice.consequences)
+      ? choice.consequences
+      : choice.consequences
+        ? [choice.consequences as unknown as Consequence]
+        : [];
+
+    consequences.forEach((consequence, index) => {
+      if (consequence?.type !== 'setFlag') return;
+      const raw = consequence as unknown as Record<string, unknown>;
+      const flag = typeof raw.flag === 'string'
+        ? raw.flag.trim()
+        : typeof raw.name === 'string'
+          ? raw.name.trim()
+          : '';
+      const value = typeof raw.value === 'string' ? raw.value.trim() : raw.value;
+
+      if (!flag && !this.parseFlagFromValue(value).flag) {
+        issues.push(
+          `Choice "${choiceId}" has malformed setFlag consequence #${index + 1}; use {"type":"setFlag","flag":"meaningful_flag","value":true}, not a bare value.`,
+        );
+      }
+      if (flag && typeof value === 'string' && value.length > 0 && !this.parseBooleanString(value)) {
+        issues.push(
+          `Choice "${choiceId}" setFlag "${flag}" has non-boolean value "${value}"; setFlag.value must be true or false.`,
+        );
+      }
+    });
+
+    return issues;
+  }
+
+  private normalizeChoiceConsequences(choice: GeneratedChoice): void {
+    const normalized: Consequence[] = [];
+    for (const consequence of choice.consequences || []) {
+      if (consequence?.type !== 'setFlag') {
+        normalized.push(consequence);
+        continue;
+      }
+
+      const raw = consequence as unknown as Record<string, unknown>;
+      const authoredFlag = typeof raw.flag === 'string' && raw.flag.trim()
+        ? raw.flag.trim()
+        : typeof raw.name === 'string' && raw.name.trim()
+          ? raw.name.trim()
+          : '';
+      const parsedFromValue = this.parseFlagFromValue(raw.value);
+      const flag = authoredFlag || parsedFromValue.flag;
+      if (!flag) continue;
+
+      const explicitBoolean = typeof raw.value === 'boolean'
+        ? raw.value
+        : typeof raw.value === 'string'
+          ? this.parseBooleanString(raw.value)
+          : undefined;
+      const value = explicitBoolean ?? parsedFromValue.value ?? true;
+      normalized.push({ ...(raw as object), type: 'setFlag', flag, value } as Consequence);
+    }
+    choice.consequences = normalized;
+  }
+
+  private parseFlagFromValue(value: unknown): { flag?: string; value?: boolean } {
+    if (typeof value !== 'string') return {};
+    const trimmed = value.trim();
+    if (!trimmed || this.parseBooleanString(trimmed) !== undefined) return {};
+    const colonMatch = trimmed.match(/^([A-Za-z0-9_:\-./]+):(true|false)$/i);
+    if (colonMatch) {
+      return { flag: colonMatch[1], value: colonMatch[2].toLowerCase() === 'true' };
+    }
+    return { flag: trimmed, value: true };
+  }
+
+  private parseBooleanString(value: string): boolean | undefined {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+    return undefined;
   }
 
   /**
@@ -678,6 +932,35 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
     if (collides(ot.failure, [ot.success, ot.partial])) ot.failure = this.buildFallbackOutcomeText(choice, 'failure');
   }
 
+  private cleanReaderReminderText(text: string | undefined): string | undefined {
+    const normalized = text?.replace(/\s+/g, ' ').trim();
+    if (!normalized || isFallbackReminderStub(normalized)) return undefined;
+    if (/^this route should keep carrying the decision forward\.?$/i.test(normalized)) return undefined;
+    if (/^the route choice lands immediately\.?$/i.test(normalized)) return undefined;
+    if (/^the next episode should follow the selected route\.?$/i.test(normalized)) return undefined;
+    if (/^you chose\b/i.test(normalized)) return undefined;
+    if (/\bpeople remember what the protagonist risked\b/i.test(normalized)) return undefined;
+    if (/\bthe protagonist\b/i.test(normalized)) return undefined;
+    return normalized;
+  }
+
+  private buildReaderReminderPlan(
+    current: ReminderPlan | undefined,
+    blueprint: ReminderPlan | undefined
+  ): ReminderPlan | undefined {
+    const immediate = this.cleanReaderReminderText(current?.immediate) || this.cleanReaderReminderText(blueprint?.immediate);
+    const shortTerm = this.cleanReaderReminderText(current?.shortTerm) || this.cleanReaderReminderText(blueprint?.shortTerm);
+    const later = this.cleanReaderReminderText(current?.later) || this.cleanReaderReminderText(blueprint?.later);
+    const first = immediate || shortTerm;
+    const second = shortTerm || immediate;
+    if (!first || !second) return undefined;
+    return {
+      immediate: first,
+      shortTerm: second,
+      ...(later ? { later } : {}),
+    };
+  }
+
   private normalizeChoiceSet(choiceSet: ChoiceSet, input: ChoiceAuthorInput): ChoiceSet {
     // Get blueprint stakes as fallback
     const blueprintStakes = input.sceneBlueprint.choicePoint?.stakes || {
@@ -725,42 +1008,16 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
       choiceSet.choices = [choiceSet.choices as unknown as GeneratedChoice];
     }
 
-    // AUTO-FIX: If LLM returned fewer than 2 choices, generate placeholder choices
-    if (choiceSet.choices.length < 2) {
-      console.warn(`[ChoiceAuthor] LLM only returned ${choiceSet.choices.length} choices, auto-generating to reach minimum of 2`);
-      
-      // Get option hints from blueprint if available
-      const optionHints = input.sceneBlueprint.choicePoint?.optionHints || [];
-      const possibleScenes = input.possibleNextScenes || [];
-      
-      while (choiceSet.choices.length < 2) {
-        const idx = choiceSet.choices.length;
-        const hintText = optionHints[idx] || `Option ${idx + 1}`;
-        const nextScene = possibleScenes[idx] || possibleScenes[0];
-        
-        const generatedChoice: GeneratedChoice = {
-          id: `auto-choice-${idx + 1}`,
-          text: hintText,
-          choiceType: choiceSet.choiceType || 'expression',
-          consequences: [],
-          nextSceneId: nextScene?.id,
-          stakesAnnotation: {
-            want: blueprintStakes.want,
-            cost: blueprintStakes.cost,
-            identity: blueprintStakes.identity,
-          },
-          stakesLayers: blueprintStakesLayers,
-        };
-        
-        choiceSet.choices.push(generatedChoice);
-        console.log(`[ChoiceAuthor] Auto-generated choice: "${generatedChoice.text}" -> ${generatedChoice.nextSceneId || 'no target'}`);
-      }
+    // Do not synthesize placeholder choices. Too-few choices means the authoring
+    // call did not satisfy the deterministic schema and should retry/fail upstream.
+    if (choiceSet.choices.length < MIN_READER_CHOICES) {
+      throw new Error(`ChoiceAuthor returned only ${choiceSet.choices.length} choice(s); refusing to synthesize placeholder choices.`);
     }
     
-    // AUTO-FIX: If LLM returned more than 5 choices, trim to 5
-    if (choiceSet.choices.length > 5) {
-      console.warn(`[ChoiceAuthor] LLM returned ${choiceSet.choices.length} choices, trimming to maximum of 5`);
-      choiceSet.choices = choiceSet.choices.slice(0, 5);
+    // AUTO-FIX: If LLM returned more than 4 choices, trim to the reader contract.
+    if (choiceSet.choices.length > MAX_READER_CHOICES) {
+      console.warn(`[ChoiceAuthor] LLM returned ${choiceSet.choices.length} choices, trimming to maximum of ${MAX_READER_CHOICES}`);
+      choiceSet.choices = choiceSet.choices.slice(0, MAX_READER_CHOICES);
     }
 
     // Normalize each choice
@@ -809,6 +1066,14 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
       ) {
         console.warn(`[ChoiceAuthor] Choice "${choice.id}" has identical success/failure outcome prose — the outcome reads the same either way.`);
       }
+
+      if (choice.consequences && !Array.isArray(choice.consequences)) {
+        choice.consequences = [choice.consequences as unknown as Consequence];
+      }
+      if (!choice.consequences) {
+        choice.consequences = [];
+      }
+      this.normalizeChoiceConsequences(choice);
 
       const setsRouteFlag = choice.consequences?.some(
         consequence => consequence.type === 'setFlag' && typeof consequence.flag === 'string' && consequence.flag.startsWith('route_') && consequence.value !== false
@@ -862,13 +1127,6 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
         choice.stakesLayers = blueprintStakesLayers;
       }
 
-      if (choice.consequences && !Array.isArray(choice.consequences)) {
-        choice.consequences = [choice.consequences as unknown as Consequence];
-      }
-      if (!choice.consequences) {
-        choice.consequences = [];
-      }
-
       // Keep stakesAnnotation in lock-step with the AUTHORED triangle (choice.stakes,
       // computed just above). Historically the annotation could retain StoryArchitect's
       // placeholder sentinel while choice.stakes held the real authored text, which made
@@ -907,43 +1165,34 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
         }
       }
 
-      if (!choice.reminderPlan) {
-        choice.reminderPlan = blueprintReminder || {
-          immediate: 'The moment lands immediately.',
-          shortTerm: 'The next scene should remember this choice.',
-          later: choice.nextSceneId ? 'This route should keep carrying the decision forward.' : undefined,
-        };
+      const readerReminderPlan = this.buildReaderReminderPlan(choice.reminderPlan, blueprintReminder);
+      if (readerReminderPlan) {
+        choice.reminderPlan = readerReminderPlan;
       } else {
-        if (!choice.reminderPlan.immediate) {
-          choice.reminderPlan.immediate = blueprintReminder?.immediate || 'The moment lands immediately.';
-        }
-        if (!choice.reminderPlan.shortTerm) {
-          choice.reminderPlan.shortTerm = blueprintReminder?.shortTerm || 'The next scene should remember this choice.';
-        }
+        delete choice.reminderPlan;
       }
 
-      if (!choice.feedbackCue) {
-        choice.feedbackCue = {
-          echoSummary: choice.reminderPlan.immediate,
-          progressSummary: choice.reminderPlan.shortTerm,
-          checkClass: choice.statCheck?.retryableAfterChange || blueprintCompetenceArc?.growthPath ? 'retryable' : 'dramatic',
-        };
-      } else {
-        if (!choice.feedbackCue.echoSummary) {
-          choice.feedbackCue.echoSummary = choice.reminderPlan.immediate;
-        }
-        if (!choice.feedbackCue.progressSummary) {
-          choice.feedbackCue.progressSummary = choice.reminderPlan.shortTerm;
-        }
-        if (!choice.feedbackCue.checkClass) {
-          choice.feedbackCue.checkClass = choice.statCheck?.retryableAfterChange || blueprintCompetenceArc?.growthPath ? 'retryable' : 'dramatic';
-        }
-      }
+      const checkClass = choice.feedbackCue?.checkClass ||
+        (choice.statCheck?.retryableAfterChange || blueprintCompetenceArc?.growthPath ? 'retryable' : 'dramatic');
+      const echoSummary = this.cleanReaderReminderText(choice.feedbackCue?.echoSummary) || choice.reminderPlan?.immediate;
+      const progressSummary = this.cleanReaderReminderText(choice.feedbackCue?.progressSummary) || choice.reminderPlan?.shortTerm;
+      const feedbackCue: ChoiceFeedbackCue = {
+        ...(choice.feedbackCue || {}),
+        checkClass,
+      };
+      if (echoSummary) feedbackCue.echoSummary = echoSummary;
+      else delete feedbackCue.echoSummary;
+      if (progressSummary) feedbackCue.progressSummary = progressSummary;
+      else delete feedbackCue.progressSummary;
+      choice.feedbackCue = feedbackCue;
 
       if (choice.statCheck?.difficulty && blueprintCompetenceArc?.growthPath && choiceSet.choiceType !== 'expression') {
         choice.statCheck.retryableAfterChange ??= true;
       }
+      choice.statCheck = normalizeChoiceStatCheck(choice.statCheck);
     }
+
+    this.repairRelationshipTargets(choiceSet, input);
 
     const routeFlags = input.availableFlags.filter(flag => flag.name.startsWith('route_'));
     const shouldAssignRouteFlags = routeFlags.length >= 2 || Boolean(input.sceneBlueprint.choicePoint?.branches);
@@ -959,18 +1208,17 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
           ...(choice.consequences || []),
           { type: 'setFlag', flag: routeFlag.name, value: true },
         ];
-        choice.reminderPlan = {
-          ...(choice.reminderPlan || {
-            immediate: 'The route choice lands immediately.',
-            shortTerm: 'The next episode should follow the selected route.',
-          }),
-          later: choice.reminderPlan?.later || `Route residue should acknowledge ${routeFlag.name}.`,
-        };
+        const readerReminderPlan = this.buildReaderReminderPlan(choice.reminderPlan, undefined);
+        if (readerReminderPlan) choice.reminderPlan = readerReminderPlan;
+        else delete choice.reminderPlan;
         choice.feedbackCue = {
           ...(choice.feedbackCue || {}),
-          echoSummary: choice.feedbackCue?.echoSummary || choice.reminderPlan.immediate,
-          progressSummary: choice.feedbackCue?.progressSummary || choice.reminderPlan.shortTerm,
+          checkClass: choice.feedbackCue?.checkClass || 'dramatic',
         };
+        if (!choice.reminderPlan) {
+          delete choice.feedbackCue.echoSummary;
+          delete choice.feedbackCue.progressSummary;
+        }
         delete choice.nextSceneId;
       });
       console.warn(`[ChoiceAuthor] Added cross-episode route flag consequences to ${choiceSet.choices.length} choice(s).`);
@@ -1432,18 +1680,25 @@ not an excuse for thin authoring:
 - Full Stakes Triangle on EVERY choice: name what the player Wants, what it Costs, and what it says about Identity.
 - Each choice carries at least one of the five impact factors (Outcome / Process / Information / Relationship / Identity).
 - Real consequences — durable state, relationship, or flag changes, not empty routing.
+- For flag consequences, use the canonical shape exactly:
+  \`{ "type": "setFlag", "flag": "meaningful_flag_name", "value": true }\`.
+  Never put the flag name in \`value\`, and never emit a bare \`"value": "true"\` or \`"value": "false"\`.
 - Include a \`statCheck\` wherever the choice type requires one.
 - \`outcomeTexts\` (success/partial/failure) must each be a real dramatized beat in the fiction — never a stub or an echo of the choice text.
 ${input.requiredBranchTargets.map(t => `- nextSceneId "${t.sceneId}" → ${t.intent}`).join('\n')}
 ` : ''}
-${input.consequenceBudgetTarget ? `
-## Consequence Budget Target (episode-wide 60/25/10/5)
-Across the episode, consequences should follow this distribution:
-- ~${input.consequenceBudgetTarget.callback}% callback / flavor (no branching)
-- ~${input.consequenceBudgetTarget.tint}% tint (state-setting, no routing)
-- ~${input.consequenceBudgetTarget.branchlet}% branchlet (short divergence then reconverge)
-- ~${input.consequenceBudgetTarget.branch}% branch (true routing to different scenes)
-For THIS choice set, bias toward callback/tint unless \`branchContext.isBranchPoint\` is true.
+${input.plannedConsequenceTier ? `
+## Season-Assigned Consequence Tier
+The season planner assigned THIS scene's central choice to the "${input.plannedConsequenceTier}" consequence tier.
+This is the scene's allocated slice of the season consequence budget; do not rebalance this episode toward global percentages.
+
+Use the matching generated choice tier:
+- callback -> \`consequenceTier: "callback"\`, small visible memory/state echo, no scene routing
+- tint -> \`consequenceTier: "sceneTint"\`, same route with a real tintFlag and visible immediate/replayable residue
+- branchlet -> \`consequenceTier: "branchlet"\`, short divergence or strong branch residue that reconverges
+- branch -> \`consequenceTier: "structuralBranch"\`, true route split when branch topology provides distinct next scenes
+
+If branch topology makes the assigned tier impossible, stay fiction-first and choose the nearest feasible lower-cost tier, but preserve visible residue and explain the tradeoff in \`designNotes\`.
 ` : ''}
 ${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
 ## Character Arc Milestone Targets (from Arc Tracker)
@@ -1554,133 +1809,169 @@ Modifier example:
     }
   ]
 
-## Required JSON Structure
+## Required JSON Shape
 
-{
-  "beatId": "${input.beatId}",
-  "choiceType": "${choicePoint.type}",
-  "choices": [
-    {
-      "id": "choice-1",
-      "text": "Choice text here (5-${this.choiceLimits?.maxChoiceWords ?? 15} words)",
-      "choiceType": "${choicePoint.type}",
-      "choiceIntent": "branching | blind | dilemma | flavor",
-      "impactFactors": ["relationship", "identity"],
-      "consequenceTier": "callback | sceneTint | branchlet | structuralBranch",
-      "stakes": {
-        "want": "what player wants",
-        "cost": "what they risk",
-        "identity": "what this reveals"
-      },
-      "stakesLayers": {
-        "material": "what concrete resource, safety, access, object, or position can change",
-        "relational": "who trusts, depends on, rejects, or is hurt by whom",
-        "identity": "who the protagonist becomes by choosing this",
-        "existential": "what future, freedom, home, survival, or irreversible fate is threatened"
-      },
-      "consequences": [],
-      "nextSceneId": "scene-id-if-branching-or-omit",
-      "storyVerb": "pressure",
-      "affordanceSource": "skill",
-      "statCheck": {
-        "skillWeights": { "persuasion": 0.7, "perception": 0.3 },
-        "difficulty": 55,
-        "modifiers": []
-      },
-      "consequenceDomain": "relationship",
-      "reminderPlan": {
-        "immediate": "The ally stiffens at what you said.",
-        "shortTerm": "The next scene opens with colder distance.",
-        "later": "This choice is named again under pressure."
-      },
-      "feedbackCue": {
-        "echoSummary": "You chose pressure over comfort.",
-        "progressSummary": "This changes how they face you next.",
-        "checkClass": "dramatic"
-      },
-      "outcomeTexts": {
-        "success": "Vivid 1-3 sentence description of full success.",
-        "partial": "Vivid 1-3 sentence description of partial success or complication.",
-        "failure": "Vivid 1-3 sentence description of failure or backfire."
-      },
-      "reactionText": "1-2 sentence world reaction (omit if nextSceneId is set).",
-      "witnessReactions": [
-        {
-          "npcId": "npc-id",
-          "stance": "approves | disapproves | fears | admires | questions | remembers",
-          "reactionText": "Fiction-first note about how this NPC interprets the choice.",
-          "residueHint": "How this witness reaction should echo later."
-        }
-      ],
-      "failureResidue": {
-        "kind": "debt | suspicion | injury | lost_leverage | exposure | obligation | damaged_trust | position_shift",
-        "description": "What playable story material failure creates."
-      },
-      "tintFlag": "tint:boldness",
-      "moralContract": {
-        "valueA": "protect the vulnerable",
-        "valueB": "tell the truth",
-        "unavoidableCost": "Someone loses safety or trust either way.",
-        "benefits": ["npc-id-or-group"],
-        "harms": ["npc-id-or-group"],
-        "uncertainty": "The player cannot know whether the lie will hold."
-      },
-      "residueHints": [
-        {
-          "kind": "later_text_variant",
-          "description": "Later, this NPC notices whether the player protected them.",
-          "targetNpcId": "npc-id"
-        }
-      ],
-      "visualResidueHint": "The NPC stands closer or farther away in the next shared image.",
-      "memorableMoment": {
-        "id": "slug-style-id",
-        "summary": "One-sentence past-tense recap.",
-        "flags": ["flag-name"]
-      },
-      "stakesAnnotation": {
-        "want": "what player wants",
-        "cost": "what they risk",
-        "identity": "what it reveals"
-      }
-    }
-  ],
-  "overallStakes": {
-    "want": "${choicePoint.stakes.want}",
-    "cost": "${choicePoint.stakes.cost}",
-    "identity": "${choicePoint.stakes.identity}"
-  },
-  "overallStakesLayers": {
-    "material": "${choicePoint.stakesLayers?.material || ''}",
-    "relational": "${choicePoint.stakesLayers?.relational || ''}",
-    "identity": "${choicePoint.stakesLayers?.identity || ''}",
-    "existential": "${choicePoint.stakesLayers?.existential || ''}"
-  },
-  "designNotes": "Your reasoning"
-}
+Return one compact JSON object matching the deterministic schema. Do not copy a
+boilerplate example. Emit only fields that are required below or conditionally
+required for this choice type.
+
+Minimum object:
+- Top level: beatId, choiceType, choices, overallStakes, designNotes.
+- Each choice: id, text, choiceType, choiceIntent, impactFactors, consequenceTier,
+  stakesAnnotation, consequences, outcomeTexts.
+- Non-branching choices: add reactionText and tintFlag.
+- relationship/strategic/dilemma choices: add statCheck and residueHints.
+- dilemma choices: add moralContract.
+- Branching choices: add nextSceneId.
+
+Compactness limits:
+- text: 5-${this.choiceLimits?.maxChoiceWords ?? 15} words.
+- outcomeTexts.success / partial / failure: exactly ONE vivid sentence each.
+- reactionText: exactly ONE sentence.
+- residueHints.description: exactly ONE concrete sentence.
+- designNotes: one short clause, not reasoning prose.
+- Do not emit witnessReactions, failureResidue, reminderPlan, feedbackCue,
+  visualResidueHint, memorableMoment, stakesLayers, storyVerb, or affordanceSource
+  unless the prompt explicitly requires that field for this scene.
+
+Canonical consequence examples:
+- setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}
+- relationship: {"type":"relationship","flag":"mika_trust_up","value":true,"npcId":"char-mika-drgan","change":5}
+- score: {"type":"changeScore","name":"blog_reach","change":1}
 
 CRITICAL REQUIREMENTS:
 1. Create exactly ${input.optionCount} unique, meaningful choices
 2. The "overallStakes" field is REQUIRED with want, cost, and identity filled in
 3. Each choice needs stakesAnnotation with want, cost, and identity
-4. Each choice needs choiceIntent, impactFactors, consequenceTier, stakes, and stakesLayers when the blueprint supplies stakesLayers
+4. Each choice needs choiceIntent, impactFactors, consequenceTier, and consequences
 5. ${choicePoint.branches ? 'This is a BRANCHING choice point — set nextSceneId on each choice to one of the available next scenes' : 'Only include nextSceneId if this choice should route to a different scene (expression choices must NOT have nextSceneId)'}
-6. Every choice MUST have outcomeTexts (success, partial, failure) — original prose, not the choice text
+6. Every choice MUST have compact outcomeTexts (success, partial, failure) — original prose, not the choice text
 7. Non-branching choices MUST have reactionText and tintFlag
 8. relationship/strategic/dilemma choices MUST have statCheck
 9. Dilemma choices MUST include moralContract with competing values and unavoidable cost
 10. Meaningful non-expression choices MUST include at least one residueHints item
-11. Meaningful choices should include consequenceDomain, reminderPlan, and feedbackCue
-12. reminderPlan and residueHints should describe visible fiction-first turns, not abstract state deltas
+11. \`setFlag\` consequences MUST use \`flag\` plus boolean \`value\`: \`{"type":"setFlag","flag":"accepted_quartz","value":true}\`; never \`{"type":"setFlag","value":"accepted_quartz"}\` and never bare \`{"type":"setFlag","value":"true"}\`
+12. residueHints should describe visible fiction-first turns, not abstract state deltas
 13. Expression/flavor choices must use choiceIntent "flavor", consequenceTier "sceneTint", and must NOT branch
 14. Meaningful choices must include at least one impact factor from outcome, process, information, relationship, identity
-15. When provided Story Verbs fit the moment, set storyVerb to one of them
-16. Choices gated by conditions, prior flags, items, identity, relationships, tags, skills, or callback hooks should include affordanceSource
-17. Whenever a named NPC is present in this scene, ADD witnessReactions to each relationship, dilemma, deceptive, moral, violent, or loyalty-testing choice — name the witnessing NPC and give a concrete one-line in-the-moment reaction (a look, a shift in posture, a quiet aside). This is the NPC visibly registering the player's decision as it lands. Only omit it when no named NPC is present to witness.
-18. Stat-check failure should create playable fiction; use failureResidue when the failure changes debt, suspicion, injury, leverage, exposure, obligation, trust, or position
-19. Every important stat check should have at least two skill surfaces: prepared advantage, outcome texture, failure residue, branch residue, or prior passive insight setup
-20. Return ONLY valid JSON, no markdown, no extra text
+15. Stat-check failure should create playable fiction inside outcomeTexts.failure, not only metadata
+16. Return ONLY valid JSON, no markdown, no extra text
 `;
+  }
+
+  private buildCompactPrompt(input: ChoiceAuthorInput): string {
+    const choicePoint = input.sceneBlueprint.choicePoint!;
+    const nextSceneList = input.possibleNextScenes
+      .slice(0, Math.max(4, input.optionCount))
+      .map(scene => `- ${scene.id}: ${scene.name} — ${scene.description}`)
+      .join('\n');
+    const npcList = input.npcsInScene
+      .slice(0, 6)
+      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns})${npc.voiceNotes ? ` voice: ${npc.voiceNotes}` : ''}`)
+      .join('\n');
+    const flagList = input.availableFlags
+      .slice(0, 24)
+      .map(f => `${f.name}: ${f.description}`)
+      .join('\n');
+    const routeFlags = input.availableFlags.filter(f => f.name.startsWith('route_')).map(f => f.name);
+    const scoreList = input.availableScores
+      .slice(0, 12)
+      .map(s => `${s.name}: ${s.description}`)
+      .join('\n');
+    const callbackList = (input.unresolvedCallbacks || [])
+      .slice(0, 6)
+      .map(h => `- ${h.id}: ${h.summary}`)
+      .join('\n');
+    const branchTargets = input.requiredBranchTargets?.length
+      ? input.requiredBranchTargets.map(t => `- ${t.sceneId}: ${t.intent}`).join('\n')
+      : '';
+
+    return `Create a compact playable ChoiceSet. Return ONLY JSON. The deterministic response schema is supplied by the caller; match that schema exactly and do not invent fields.
+
+## Story
+- Title: ${input.storyContext.title}
+- Genre/Tone: ${input.storyContext.genre} / ${input.storyContext.tone}
+- Protagonist: ${input.protagonistInfo.name} (${input.protagonistInfo.pronouns})
+
+## Scene
+- Id: ${input.sceneBlueprint.id}
+- Name: ${input.sceneBlueprint.name}
+- Location: ${input.sceneBlueprint.location}
+- Mood: ${input.sceneBlueprint.mood}
+- Choice beat id: ${input.beatId}
+- Beat text: ${input.beatText}
+
+## Choice Point
+- Type: ${choicePoint.type}
+- Description: ${choicePoint.description}
+- Want: ${choicePoint.stakes.want}
+- Cost: ${choicePoint.stakes.cost}
+- Identity: ${choicePoint.stakes.identity}
+- Option hints: ${choicePoint.optionHints.join(', ')}
+${choicePoint.branches ? '- Branching: yes' : '- Branching: no'}
+${choicePoint.consequenceDomain ? `- Consequence domain: ${choicePoint.consequenceDomain}` : ''}
+${choicePoint.expectedResidue?.length ? `- Expected residue: ${choicePoint.expectedResidue.join('; ')}` : ''}
+${choicePoint.failureBranchPurpose ? `- Failure branch purpose: ${choicePoint.failureBranchPurpose}` : ''}
+
+## Characters Present
+${npcList || 'None'}
+
+## Available Next Scenes
+${nextSceneList || 'None'}
+${branchTargets ? `
+## Required Branch Targets
+Author exactly one choice for each target below. Set nextSceneId to that target.
+${branchTargets}
+` : ''}
+
+## Available State
+Flags:
+${flagList || 'None'}
+${routeFlags.length ? `Route flags: ${routeFlags.join(', ')}` : ''}
+Scores:
+${scoreList || 'None'}
+${callbackList ? `
+Callbacks available for small echoes:
+${callbackList}
+` : ''}
+
+## Required Shape
+Top level fields: beatId, choiceType, choices, overallStakes, designNotes.
+Each choice fields: id, text, choiceType, choiceIntent, impactFactors, consequenceTier, stakesAnnotation, consequences, outcomeTexts.
+Non-branching choices also need reactionText and tintFlag.
+Relationship/strategic/dilemma choices also need statCheck and residueHints.
+Dilemma choices also need moralContract.
+Branching choices need nextSceneId.
+
+## Output Limits
+- Create exactly ${input.optionCount} choices.
+- Choice text: 5-${this.choiceLimits?.maxChoiceWords ?? 15} words.
+- outcomeTexts.success/partial/failure: exactly one vivid sentence each.
+- reactionText: exactly one sentence.
+- residueHints.description: exactly one concrete sentence.
+- designNotes: one short clause.
+- Do not emit witnessReactions, failureResidue, reminderPlan, feedbackCue, visualResidueHint, memorableMoment, stakesLayers, storyVerb, affordanceSource, or authorNotes.
+
+## Consequences
+- setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}
+- relationship: {"type":"relationship","flag":"mika_trust_up","value":true,"npcId":"char-mika-drgan","change":5}
+- score: {"type":"changeScore","name":"blog_reach","change":1}
+- Never put the flag name in value. Never emit {"type":"setFlag","value":"flag_name"}.
+
+## Stat Checks
+Expression choices: no statCheck.
+Relationship/strategic/dilemma choices: include statCheck using skillWeights and difficulty.
+Available skills: athletics, stealth, perception, persuasion, intimidation, deception, investigation, survival.
+Example: {"skillWeights":{"persuasion":1},"difficulty":45}
+
+## Quality Rules
+- Every option must feel valid and scene-specific.
+- Every choice needs stakesAnnotation.want, stakesAnnotation.cost, stakesAnnotation.identity.
+- outcomeTexts must dramatize different success/partial/failure results, not repeat the choice text.
+- Non-branching choices must have reactionText and tintFlag.
+- Meaningful non-expression choices must include at least one residueHints item.
+- Keep mechanics fiction-first: no dice, DCs, stats, thresholds, percentages, or system language in player-facing text.
+- Use second person for the protagonist, with varied sentence openers.`;
   }
 
   private validateChoices(choiceSet: ChoiceSet, input: ChoiceAuthorInput): void {
@@ -1697,12 +1988,12 @@ CRITICAL REQUIREMENTS:
       /relationship|trust|affection|respect|fear|bond|ally|rival|love/.test(relationshipSignalText);
 
     // Check choice count
-    if (choiceSet.choices.length < 2) {
-      throw new Error('Must have at least 2 choices');
+    if (choiceSet.choices.length < MIN_READER_CHOICES) {
+      throw new Error(`Must have at least ${MIN_READER_CHOICES} choices`);
     }
 
-    if (choiceSet.choices.length > 5) {
-      throw new Error('Should not have more than 5 choices');
+    if (choiceSet.choices.length > MAX_READER_CHOICES) {
+      throw new Error(`Should not have more than ${MAX_READER_CHOICES} choices`);
     }
 
     // Check each choice has required fields (auto-fix where possible)
@@ -1764,10 +2055,10 @@ CRITICAL REQUIREMENTS:
         c.consequences?.some(con => con.type === 'relationship')
       );
       if (!hasRelConsequence) {
+        const repaired = this.addRelationshipConsequences(choiceSet, input);
         console.warn(
-          `[ChoiceAuthor] Relationship choice set "${choiceSet.beatId}" has no relationship ` +
-          `consequences on any option. Relationship choices must shift at least one NPC ` +
-          `dimension (trust, affection, respect, fear).`
+          `[ChoiceAuthor] Relationship choice set "${choiceSet.beatId}" had no relationship ` +
+          `consequences — ${repaired > 0 ? `repaired ${repaired} option(s)` : 'no suitable NPC found for repair'}.`
         );
       }
     }
@@ -1858,6 +2149,16 @@ CRITICAL REQUIREMENTS:
             `which is NOT in leadsTo [${leadsTo.join(', ')}]. Auto-correcting to "${corrected}".`
           );
           choice.nextSceneId = corrected;
+        }
+      }
+    } else {
+      for (const choice of choiceSet.choices) {
+        if (choice.nextSceneId && !this.isTerminalRouteTarget(choice.nextSceneId)) {
+          console.warn(
+            `[ChoiceAuthor] Choice "${choice.id}" on terminal scene "${input.sceneBlueprint.id}" ` +
+            `invented nextSceneId "${choice.nextSceneId}". Routing to episode-end instead.`
+          );
+          choice.nextSceneId = 'episode-end';
         }
       }
     }
@@ -2004,6 +2305,86 @@ CRITICAL REQUIREMENTS:
         console.warn(`[ChoiceAuthor] Meaningful choice "${choice.id}" missing residueHints — added advisory fallback.`);
       }
     }
+  }
+
+  private isTerminalRouteTarget(sceneId: string | undefined): boolean {
+    if (!sceneId) return false;
+    const id = sceneId.trim().toLowerCase();
+    return id === 'episode-end' || id === 'story-end' || id === 'the-end' || id === 'end' || id.startsWith('episode-');
+  }
+
+  private isProtagonistNpc(candidate: { id?: string; name?: string } | undefined, input: ChoiceAuthorInput): boolean {
+    if (!candidate) return false;
+    const protagonistName = input.protagonistInfo.name.trim().toLowerCase();
+    const protagonistSlug = protagonistName.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const id = String(candidate.id || '').trim().toLowerCase();
+    const name = String(candidate.name || '').trim().toLowerCase();
+    return Boolean(
+      (protagonistName && name === protagonistName) ||
+      (protagonistName && id === protagonistName) ||
+      (protagonistSlug && id === protagonistSlug) ||
+      (protagonistSlug && id === `char-${protagonistSlug}`)
+    );
+  }
+
+  private selectRelationshipNpc(input: ChoiceAuthorInput): ChoiceAuthorInput['npcsInScene'][number] | undefined {
+    const validNpcs = input.npcsInScene.filter(candidate => !this.isProtagonistNpc(candidate, input));
+    if (validNpcs.length === 0) return undefined;
+    const trajectory = input.arcTargets?.relationshipTrajectory?.[0];
+    if (trajectory) {
+      return validNpcs.find(candidate => candidate.id === trajectory.npcId) ?? validNpcs[0];
+    }
+    return validNpcs[0];
+  }
+
+  private repairRelationshipTargets(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+    const targetNpc = this.selectRelationshipNpc(input);
+    if (!targetNpc) return 0;
+
+    let repaired = 0;
+    for (const choice of choiceSet.choices) {
+      for (const consequence of choice.consequences ?? []) {
+        if (consequence.type !== 'relationship') continue;
+        const rel = consequence as Consequence & { npcId?: string; characterId?: string };
+        const target = { id: rel.npcId || rel.characterId, name: rel.npcId || rel.characterId };
+        if (!this.isProtagonistNpc(target, input)) continue;
+        rel.npcId = targetNpc.id;
+        delete rel.characterId;
+        repaired += 1;
+      }
+    }
+    if (repaired > 0) {
+      console.warn(
+        `[ChoiceAuthor] Retargeted ${repaired} protagonist relationship consequence(s) to NPC "${targetNpc.id}".`
+      );
+    }
+    return repaired;
+  }
+
+  private addRelationshipConsequences(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+    const trajectory = input.arcTargets?.relationshipTrajectory?.[0];
+    const npc = this.selectRelationshipNpc(input);
+    if (!npc) return 0;
+
+    const dimension = (trajectory?.dimension || 'trust') as 'trust' | 'affection' | 'respect' | 'fear';
+    let repaired = 0;
+    for (let i = 0; i < choiceSet.choices.length; i += 1) {
+      const choice = choiceSet.choices[i];
+      const text = `${choice.text || ''} ${choice.choiceIntent || ''}`.toLowerCase();
+      const positive = /\b(accept|trust|help|protect|honest|stay|listen|gentle|kind|join|share|comfort)\b/.test(text)
+        ? true
+        : /\b(refuse|reject|lie|hide|leave|cruel|mock|threaten|push|accuse|withdraw)\b/.test(text)
+          ? false
+          : i === 0;
+      choice.consequences = [...(choice.consequences || []), {
+        type: 'relationship',
+        npcId: npc.id,
+        dimension,
+        change: positive ? 5 : -3,
+      }];
+      repaired += 1;
+    }
+    return repaired;
   }
 
   /**
@@ -2188,9 +2569,11 @@ Return ONLY valid JSON, no markdown, no extra text.
 `;
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: revisionPrompt }
-      ]);
+      const response = await this.callLLM(
+        [{ role: 'user', content: revisionPrompt }],
+        4,
+        { jsonSchema: this.buildJsonSchema(input) },
+      );
 
       console.log(`[ChoiceAuthor] Received revision response (${response.length} chars)`);
 
@@ -2204,6 +2587,13 @@ Return ONLY valid JSON, no markdown, no extra text.
           data: originalChoiceSet,
           rawResponse: response,
         };
+      }
+
+      const completenessIssues = this.collectChoiceAuthoringCompletenessIssues(revisedChoiceSet, input);
+      if (completenessIssues.length > 0) {
+        throw new Error(
+          `ChoiceAuthor revision omitted required authoring fields: ${completenessIssues.join('; ')}`,
+        );
       }
 
       // Normalize the revised content

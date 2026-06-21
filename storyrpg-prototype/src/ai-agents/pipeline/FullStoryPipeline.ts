@@ -16,6 +16,8 @@ import { PipelineConfig, loadConfig, defaultValidationConfig, clampTargetBeatCou
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
+import { isPlaceholderStake } from '../constants/placeholderStakes';
+import { isPlanningRegisterText } from '../constants/planningRegisterText';
 
 
 import { 
@@ -87,6 +89,7 @@ import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
+import { normalizeChoiceSetStatChecks } from '../utils/statCheckNormalization';
 import { buildFashionStyleSummary } from '../images/characterFashionStyle';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
 import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
@@ -111,6 +114,7 @@ import {
   EnvironmentalElement, NPCEncounterState, EscalationTrigger, InformationVisibility, 
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
+import type { ChoiceImpactFactor } from '../../types/choice';
 import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './events';
 import {
   type GenerationPlan,
@@ -127,6 +131,7 @@ import {
   spineEntriesFromChoicePlan,
   type SeasonChoicePlan,
 } from './seasonChoicePlan';
+import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
 import { partitionResumableEpisodes } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
@@ -197,6 +202,7 @@ import {
   ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
+  saveFinalStoryContractFailure,
   savePartialStory,
   appendFailedRunLedger,
   saveEarlyDiagnostic,
@@ -243,6 +249,7 @@ import {
   type HarvestEpisodeCallbacksParams,
   type InjectFallbackCallbacksParams,
 } from './callbackOrchestration';
+import { applyResidueConsumption } from './residueConsumption';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
@@ -288,7 +295,6 @@ import {
   runNarrativeDiagnostics,
   type NarrativeDiagnosticsReport,
   ChoiceDensityValidator,
-  ConsequenceBudgetValidator,
   PropIntroductionValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
@@ -342,6 +348,7 @@ import {
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
 import {
+  buildReaderFacingFallbackChoiceOptions,
   normalizeConsequences,
   routeFallbackChoicesAcrossTargets,
 } from './choiceAssembly';
@@ -850,7 +857,7 @@ export class FullStoryPipeline {
       this.emit({
         type: 'warning',
         phase: 'llm_truncation',
-        message: `${t.agentName} response was truncated and lossy-recovered — output may be missing trailing content (L4).`,
+        message: `${t.agentName} response was truncated and rejected — retry/regeneration required (L4).`,
       });
     });
     // A5: default image worker mode ON. The per-provider throttle in
@@ -1028,6 +1035,7 @@ export class FullStoryPipeline {
       phase: string;
       outputDirectory?: string;
       artifactName?: string;
+      choiceSets?: ChoiceSet[];
       residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
     }
   ): Promise<SceneGraphBranchValidationResult> {
@@ -1471,16 +1479,53 @@ export class FullStoryPipeline {
     const optionHints = (choicePoint?.optionHints || [])
       .map((hint) => String(hint || '').trim())
       .filter(Boolean);
-    const options = (optionHints.length >= 2 ? optionHints : [
-      choicePoint?.description || 'Act on the pressure now.',
-      choicePoint?.stakes?.cost ? `Hold back and pay the cost: ${choicePoint.stakes.cost}` : 'Hold back and read the danger.',
-    ]).slice(0, 5);
-    const stakes = choicePoint?.stakes || {
-      want: sceneBlueprint.dramaticQuestion || sceneBlueprint.description || 'change the situation',
-      cost: sceneBlueprint.conflictEngine || 'accept the visible cost',
-      identity: sceneBlueprint.wantVsNeed || 'decide who this pressure is making the protagonist become',
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints,
+      localContext: [
+        ...(sceneBlueprint.requiredBeats || []).flatMap((beat: { sourceTurn?: string; mustDepict?: string }) => [
+          beat.sourceTurn,
+          beat.mustDepict,
+        ]).filter((text): text is string => typeof text === 'string' && text.trim().length > 0),
+      ],
+      choicePointDescription: choicePoint?.description,
+      choiceBeatText: choiceBeat.text,
+      choiceBeatVisualMoment: choiceBeat.visualMoment,
+      sceneName: sceneBlueprint.name,
+      dramaticQuestion: sceneBlueprint.dramaticQuestion,
+      dramaticPurpose: sceneBlueprint.dramaticPurpose,
+      conflictEngine: sceneBlueprint.conflictEngine,
+    });
+    const rawStakes = choicePoint?.stakes;
+    const stakes = {
+      want: this.safeFallbackReaderText(
+        rawStakes?.want,
+        sceneBlueprint.dramaticQuestion || sceneBlueprint.dramaticPurpose || 'Change what can happen next.',
+        'Change what can happen next.'
+      ),
+      cost: this.safeFallbackReaderText(
+        rawStakes?.cost,
+        sceneBlueprint.conflictEngine || 'The choice gives up one kind of safety to claim another.',
+        'The choice gives up one kind of safety to claim another.'
+      ),
+      identity: this.safeFallbackReaderText(
+        rawStakes?.identity,
+        sceneBlueprint.wantVsNeed || 'The choice reveals what the protagonist is becoming under pressure.',
+        'The choice reveals what the protagonist is becoming under pressure.'
+      ),
     };
     const choiceType = choicePoint?.type || 'dilemma';
+    const consequenceTier = 'sceneTint' as const;
+    const impactFactors =
+      choiceType === 'expression' ? [] :
+      choiceType === 'relationship' ? ['relationship', 'identity'] :
+      choiceType === 'strategic' ? ['information', 'process'] :
+      ['identity', 'relationship'];
+    const choiceIntent = choiceType === 'expression' ? 'flavor' : choiceType === 'dilemma' ? 'dilemma' : 'blind';
+    const storyVerb = choiceType === 'relationship' ? 'protect' : choiceType === 'strategic' ? 'observe' : 'commit';
+    const immediateReminder = this.safeFallbackReaderText(
+      choicePoint?.reminderPlan?.immediate || choicePoint?.description,
+      'The decision changes the tone of the scene.'
+    );
 
     return {
       beatId: choiceBeat.id,
@@ -1488,33 +1533,94 @@ export class FullStoryPipeline {
       choiceType,
       overallStakes: stakes,
       overallStakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
-      designNotes: 'Deterministic sceneEpisode fallback: preserves authored choice pressure when ChoiceAuthor does not produce a usable choice set.',
-      choices: options.map((text, index) => ({
-        id: `${choiceBeat.id}-fallback-choice-${index + 1}`,
-        text: this.ensureSentence(text),
-        choiceType,
-        stakes,
-        stakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
-        stakesAnnotation: stakes,
-        consequenceDomain: choicePoint?.consequenceDomain || 'identity',
-        consequences: [],
-        reminderPlan: choicePoint?.reminderPlan || {
-          immediate: sceneBlueprint.choicePoint?.description || 'The decision changes the tone of the scene.',
-          shortTerm: this.stripAgentFacingFidelityText(
-            sceneBlueprint.narrativeFunction || '',
-            'The residue carries into the next sceneEpisode.'
-          ),
-        },
-        feedbackCue: {
-          echoSummary: `You chose: ${this.ensureSentence(text)}`,
-          progressSummary: this.stripAgentFacingFidelityText(
-            choicePoint?.reminderPlan?.immediate || sceneBlueprint.narrativeFunction || '',
-            'The choice leaves visible residue.'
-          ),
-        },
-        expectedResidue: choicePoint?.expectedResidue,
-      })),
+      designNotes: 'Deterministic sceneEpisode fallback: preserves treatment pressure when ChoiceAuthor does not produce a usable choice set.',
+      choices: options.map((text, index) => {
+        const tintFlag = this.fallbackTintFlag(choiceType, index);
+        return {
+          id: `${choiceBeat.id}-fallback-choice-${index + 1}`,
+          text: this.ensureSentence(text),
+          choiceType,
+          choiceIntent,
+          impactFactors,
+          consequenceTier,
+          storyVerb,
+          reactionText: this.fallbackReactionText(text),
+          tintFlag,
+          outcomeTexts: this.fallbackOutcomeTexts(text),
+          residueHints: [{
+            kind: 'immediate_prose_echo' as const,
+            description: this.fallbackResidueDescription(text),
+          }],
+          stakes,
+          stakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
+          stakesAnnotation: stakes,
+          consequenceDomain: choicePoint?.consequenceDomain || 'identity',
+          consequences: [{ type: 'setFlag' as const, flag: tintFlag, value: true }],
+          reminderPlan: choicePoint?.reminderPlan || {
+            immediate: immediateReminder,
+            shortTerm: this.stripAgentFacingFidelityText(
+              sceneBlueprint.narrativeFunction || '',
+              'The residue carries into the next sceneEpisode.'
+            ),
+          },
+          feedbackCue: {
+            echoSummary: `You chose: ${this.ensureSentence(text)}`,
+            progressSummary: this.stripAgentFacingFidelityText(
+              choicePoint?.reminderPlan?.immediate || sceneBlueprint.narrativeFunction || '',
+              'The choice leaves visible residue.'
+            ),
+          },
+          expectedResidue: choicePoint?.expectedResidue,
+        };
+      }),
     } as ChoiceSet;
+  }
+
+  private safeFallbackReaderText(text: string | undefined, fallback: string, lastResort?: string): string {
+    const cleaned = String(text || '').trim();
+    if (!cleaned || this.isUnsafeReaderFallbackText(cleaned)) {
+      const fallbackText = String(fallback || '').trim();
+      if (fallbackText && !this.isUnsafeReaderFallbackText(fallbackText)) {
+        return this.ensureSentence(fallbackText);
+      }
+      return this.ensureSentence(lastResort || 'The choice leaves visible residue in the scene.');
+    }
+    return this.ensureSentence(cleaned);
+  }
+
+  private isUnsafeReaderFallbackText(text: string | undefined): boolean {
+    const cleaned = String(text || '').trim();
+    if (!cleaned) return true;
+    return isPlanningRegisterText(cleaned)
+      || isPlaceholderStake(cleaned)
+      || cleaned.length > 240
+      || /\bserves\s+the\s+\w+\s+beat\b/i.test(cleaned)
+      || /\bforward\s+pressure\s*:/i.test(cleaned)
+      || /\bsceneEpisode\b/i.test(cleaned);
+  }
+
+  private fallbackTintFlag(choiceType: string, index: number): string {
+    if (choiceType === 'expression') return index % 2 === 0 ? 'tint:emotion' : 'tint:intuition';
+    if (choiceType === 'relationship') return index % 2 === 0 ? 'tint:teamwork' : 'tint:empathy';
+    if (choiceType === 'strategic') return index % 2 === 0 ? 'tint:pragmatism' : 'tint:intuition';
+    return index % 2 === 0 ? 'tint:sacrifice' : 'tint:caution';
+  }
+
+  private fallbackReactionText(choiceText: string): string {
+    return `${this.ensureSentence(choiceText)} The choice changes the room's next silence.`;
+  }
+
+  private fallbackOutcomeTexts(choiceText: string): { success: string; partial: string; failure: string } {
+    const sentence = this.ensureSentence(choiceText);
+    return {
+      success: `${sentence} The moment yields a clearer emotional footing.`,
+      partial: `${sentence} The moment shifts, but the uncertainty stays close.`,
+      failure: `${sentence} The hesitation leaves a visible complication behind.`,
+    };
+  }
+
+  private fallbackResidueDescription(choiceText: string): string {
+    return `${this.ensureSentence(choiceText)} The scene should echo this as an immediate tonal residue.`;
   }
 
   private ensureSentence(text: string): string {
@@ -1540,7 +1646,12 @@ export class FullStoryPipeline {
 
     const base = this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, choiceBeat);
     // Pad to cover every target and route round-robin so each leadsTo target is reached.
-    const choices = routeFallbackChoicesAcrossTargets(base.choices, targets, choiceBeat.id);
+    const choices = routeFallbackChoicesAcrossTargets(base.choices, targets, choiceBeat.id).map((choice) => ({
+      ...choice,
+      choiceIntent: 'branching' as const,
+      consequenceTier: 'structuralBranch' as const,
+      impactFactors: Array.from(new Set<ChoiceImpactFactor>([...(choice.impactFactors || []), 'outcome'])),
+    }));
     return {
       ...base,
       choices,
@@ -1557,7 +1668,10 @@ export class FullStoryPipeline {
       .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
       .join('\n\n')
       .trim();
-    return cleaned || this.ensureSentence(fallback || 'The story pressure changes what can happen next.');
+    if (!cleaned || this.isUnsafeReaderFallbackText(cleaned)) {
+      return this.ensureSentence(fallback || 'The story pressure changes what can happen next.');
+    }
+    return cleaned;
   }
 
   private sanitizeSceneContentForReader(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
@@ -1997,6 +2111,9 @@ export class FullStoryPipeline {
     resumeCheckpoint: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> } | undefined,
     stepId: string
   ): T | undefined {
+    if (stepId === 'output_directory' && resumeCheckpoint?.outputs?.[stepId]) {
+      return resumeCheckpoint.outputs[stepId] as T;
+    }
     if (resumeCheckpoint?.steps?.[stepId]?.status !== 'completed') return undefined;
     return resumeCheckpoint.outputs?.[stepId] as T | undefined;
   }
@@ -3616,6 +3733,7 @@ export class FullStoryPipeline {
           phase: 'branch_validation',
           outputDirectory,
           artifactName: `episode-${brief.episode.number}-branch-metrics.json`,
+          choiceSets,
           residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
         });
         this.validateMicroEpisodeStructure(branchValidationEpisode, {
@@ -4424,9 +4542,10 @@ export class FullStoryPipeline {
     qaReport: QAReport,
     outputDirectory: string,
     blueprint?: EpisodeBlueprint,
+    options?: { forceRevalidation?: boolean; revalidationReason?: string },
   ): Promise<void> {
     return this.sceneCriticContinuity().repairContinuityFindings(
-      story, sceneContents, characterBible, qaReport, outputDirectory, blueprint,
+      story, sceneContents, characterBible, qaReport, outputDirectory, blueprint, options,
     );
   }
 
@@ -5176,11 +5295,24 @@ export class FullStoryPipeline {
               previousSummary: baseBrief.episode.previousSummary,
             });
             if (generatedEpisode.episode) {
-              await artifactRuntime.writeEpisodeCompletion({
-                episode: generatedEpisode.episode,
-                episodeNumber: spec.episodeNumber,
-                title: spec.outline.title,
-              });
+              const incrementalPassed = generatedEpisode.episodeBrief
+                ? await this.validateEpisodeIncrementally({
+                  episodeNumber: spec.episodeNumber,
+                  episode: generatedEpisode.episode,
+                  episodeBrief: generatedEpisode.episodeBrief,
+                  characterBible,
+                  qaReport: generatedEpisode.qaReport,
+                  bestPracticesReport: generatedEpisode.bestPracticesReport,
+                  outputDirectory,
+                })
+                : false;
+              if (incrementalPassed) {
+                await artifactRuntime.writeEpisodeCompletion({
+                  episode: generatedEpisode.episode,
+                  episodeNumber: spec.episodeNumber,
+                  title: spec.outline.title,
+                });
+              }
             }
             completedEpisodeCount += 1;
             if (this.generationPlan) {
@@ -5322,11 +5454,24 @@ export class FullStoryPipeline {
           // (In run-graph mode the artifact store writes the same watermark
           // when the step's output persists — same files, same ordering.)
           if (opts.writeWatermark && generated.episode) {
-            await artifactRuntime.writeEpisodeCompletion({
-              episode: generated.episode,
-              episodeNumber: i,
-              title: spec.outline.title,
-            });
+            const incrementalPassed = generated.episodeBrief
+              ? await this.validateEpisodeIncrementally({
+                episodeNumber: i,
+                episode: generated.episode,
+                episodeBrief: generated.episodeBrief,
+                characterBible,
+                qaReport: generated.qaReport,
+                bestPracticesReport: generated.bestPracticesReport,
+                outputDirectory,
+              })
+              : false;
+            if (incrementalPassed) {
+              await artifactRuntime.writeEpisodeCompletion({
+                episode: generated.episode,
+                episodeNumber: i,
+                title: spec.outline.title,
+              });
+            }
           }
           completedEpisodeCount += 1;
           if (this.generationPlan) {
@@ -5393,6 +5538,9 @@ export class FullStoryPipeline {
 
       if (episodeQAReports.length > 0) {
         const avgScore = Math.round(episodeQAReports.reduce((sum, r) => sum + r.overallScore, 0) / episodeQAReports.length);
+        const minScore = Math.min(...episodeQAReports.map(r => r.overallScore));
+        const allEpisodesPassedQA = episodeQAReports.every(r => r.passesQA);
+        const aggregateScore = allEpisodesPassedQA ? avgScore : minScore;
         // A4 (bite-me-g16): the continuity field previously took the LAST episode only, so
         // earlier episodes' continuity issues (e.g. ep3's timeline inversion when ep3 was
         // not last) were dropped before the final-story contract ever saw them. Accumulate
@@ -5411,12 +5559,13 @@ export class FullStoryPipeline {
           continuity: mergedContinuity,
           voice: episodeQAReports[episodeQAReports.length - 1].voice,
           stakes: episodeQAReports[episodeQAReports.length - 1].stakes,
-          overallScore: avgScore,
-          passesQA: episodeQAReports.every(r => r.passesQA),
+          overallScore: aggregateScore,
+          passesQA: allEpisodesPassedQA,
           criticalIssues: episodeQAReports.flatMap(r => r.criticalIssues),
-          summary: `Aggregated QA across ${episodeQAReports.length} episode(s): avg score ${avgScore}/100`,
+          summary: `Aggregated QA across ${episodeQAReports.length} episode(s): score ${aggregateScore}/100 (avg ${avgScore}/100, weakest ${minScore}/100)`,
         };
         this.addCheckpoint('Aggregated QA Report', aggregatedQAReport, !aggregatedQAReport.passesQA);
+        await saveEarlyDiagnostic(outputDirectory, '06-qa-report.json', aggregatedQAReport);
       }
 
       if (episodeBPReports.length > 0) {
@@ -5424,6 +5573,7 @@ export class FullStoryPipeline {
         aggregatedBPReport = {
           overallPassed: episodeBPReports.every(r => r.overallPassed),
           overallScore: avgBPScore,
+          qualityScore: avgBPScore,
           blockingIssues: episodeBPReports.flatMap(r => r.blockingIssues),
           warnings: episodeBPReports.flatMap(r => r.warnings),
           suggestions: episodeBPReports.flatMap(r => r.suggestions),
@@ -5432,6 +5582,7 @@ export class FullStoryPipeline {
           duration: episodeBPReports.reduce((sum, r) => sum + r.duration, 0),
         };
         this.addCheckpoint('Aggregated Best Practices Report', aggregatedBPReport, !aggregatedBPReport.overallPassed);
+        await saveEarlyDiagnostic(outputDirectory, '06b-best-practices-report.json', aggregatedBPReport);
       }
 
       // Check if no episodes were even attempted (e.g., filteredAnalysis had no matching outlines)
@@ -5825,10 +5976,11 @@ export class FullStoryPipeline {
    * WS-A (bite-me-g16): run the final-story contract validators on a SINGLE freshly
    * generated episode, so POV / treatment-fidelity / flag / pronoun / conformance defects
    * surface as each episode is produced — not only after the whole season is assembled.
-   * ADVISORY ONLY: gates keep their configured (mostly default-off) severities, this never
-   * blocks or throws, and the authoritative full pass still runs at season-final. Writes
-   * `episode-<n>-incremental-contract.json` for diagnostics. (Promotion to per-episode
-   * blocking + repair is deferred to the M4 live run — see docs/BITE_ME_G16_REMEDIATION.)
+   * Episode-level contract: run the same final-story contract validators on a SINGLE
+   * freshly generated episode, repair blocking findings while the episode artifact is
+   * still mutable, and only allow completion when blockers are gone. Writes
+   * `episode-<n>-incremental-contract.json` for diagnostics before the season package
+   * bundling step.
    */
   private async validateEpisodeIncrementally(params: {
     episodeNumber: number;
@@ -5838,7 +5990,7 @@ export class FullStoryPipeline {
     qaReport?: QAReport;
     bestPracticesReport?: ComprehensiveValidationReport;
     outputDirectory: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const { episodeNumber: i, episode, episodeBrief, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
     try {
       const protagonistId = episodeBrief.protagonist?.id;
@@ -5856,13 +6008,19 @@ export class FullStoryPipeline {
         episodes: [episode],
       } as unknown as Story;
 
+      // Keep episode-level diagnostics aligned with the final package contract:
+      // outcome flags/variants are part of the episode seal, not post-season surgery.
+      await this.authorEncounterOutcomeVariants(oneEpisodeStory);
+
       const fidelity = runFidelityValidators({
         story: oneEpisodeStory,
         seasonPlan: episodeBrief.seasonPlan,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
       });
+      const plannedChoiceTypes = plannedChoiceTypesByScene(episodeBrief.seasonPlan);
+      const plannedConsequenceTiers = plannedConsequenceTiersByScene(episodeBrief.seasonPlan);
 
-      const report = await new FinalStoryContractValidator().validate({
+      let report = await new FinalStoryContractValidator().validate({
         story: oneEpisodeStory,
         protagonist: episodeBrief.protagonist
           ? { name: episodeBrief.protagonist.name, pronouns: episodeBrief.protagonist.pronouns }
@@ -5876,9 +6034,34 @@ export class FullStoryPipeline {
         mode: this.config.validation?.mode,
         fidelityFindings: fidelity.fidelityFindings,
         treatmentSourced: fidelity.treatmentSourced,
+        callbackLedger: this.callbackLedger.serialize(),
         seasonChoicePlan: this.seasonChoicePlan,
+        plannedChoiceTypesByScene: plannedChoiceTypes,
+        plannedConsequenceTiersByScene: plannedConsequenceTiers,
         seasonSkillPlan: this.seasonSkillPlan,
       });
+      let repairedByEpisodeContract = false;
+
+      if (!report.passed || report.blockingIssues.length > 0) {
+        this.emit({
+          type: 'debug',
+          phase: `incremental_contract_ep_${i}`,
+          message: `Episode ${i} contract has ${report.blockingIssues.length} blocker(s); attempting episode-local repair before completion.`,
+          data: { blockingIssues: report.blockingIssues.slice(0, 5) },
+        });
+        const repairedReport = await this.enforceFinalStoryContract({
+          story: oneEpisodeStory,
+          brief: episodeBrief,
+          requestedEpisodeNumbers: [i],
+          qaReport,
+          bestPracticesReport,
+          phase: `incremental_contract_ep_${i}`,
+        });
+        if (repairedReport) {
+          report = repairedReport;
+          repairedByEpisodeContract = true;
+        }
+      }
 
       const byType: Record<string, number> = {};
       for (const issue of [...report.blockingIssues, ...report.warnings]) {
@@ -5887,7 +6070,8 @@ export class FullStoryPipeline {
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-incremental-contract.json`, {
         generatedAt: new Date().toISOString(),
         episodeNumber: i,
-        advisory: true,
+        advisory: false,
+        repairedByEpisodeContract,
         passed: report.passed,
         blockingCount: report.blockingIssues.length,
         warningCount: report.warnings.length,
@@ -5900,19 +6084,27 @@ export class FullStoryPipeline {
       // file, not the event stream, so the progress-contract golden stays deterministic).
       const total = report.blockingIssues.length + report.warnings.length;
       if (total > 0) {
-        console.info(`[Pipeline] Episode ${i} incremental contract (advisory): ${total} issue(s) — ${Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(', ')}`);
+        console.info(`[Pipeline] Episode ${i} incremental contract: ${total} issue(s) — ${Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(', ')}`);
       }
       this.emit({
         type: 'debug',
         phase: `incremental_contract_ep_${i}`,
-        message: `Episode ${i} incremental contract validated (advisory).`,
+        message: `Episode ${i} incremental contract validated (${report.passed ? 'passed' : 'failed'}).`,
       });
+      if (!report.passed || report.blockingIssues.length > 0) {
+        throw new Error(
+          `Episode ${i} incremental contract failed with ${report.blockingIssues.length} blocking issue(s): ` +
+          report.blockingIssues.slice(0, 3).map(issue => issue.message).join('; '),
+        );
+      }
+      return report.passed && report.blockingIssues.length === 0;
     } catch (err) {
       this.emit({
-        type: 'warning',
+        type: 'error',
         phase: `incremental_contract_ep_${i}`,
-        message: `Incremental contract validation for Episode ${i} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        message: `Incremental contract validation for Episode ${i} failed: ${err instanceof Error ? err.message : String(err)}`,
       });
+      throw err;
     }
   }
 
@@ -5929,6 +6121,7 @@ export class FullStoryPipeline {
     previousSummary?: string;
   }): Promise<{
     episode?: Episode;
+    episodeBrief?: FullCreativeBrief;
     result: { episodeNumber: number; title: string; success: boolean; error?: string };
     qaReport?: QAReport;
     bestPracticesReport?: ComprehensiveValidationReport;
@@ -6077,6 +6270,7 @@ export class FullStoryPipeline {
         phase: `episode_${i}_branch_validation`,
         outputDirectory,
         artifactName: `episode-${i}-branch-metrics.json`,
+        choiceSets,
         residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(episodeBrief, worldBible, characterBible, blueprint, sceneContents, choiceSets, undefined, encounters, undefined) },
       });
       this.validateMicroEpisodeStructure(branchValidationEpisode, {
@@ -6124,8 +6318,11 @@ export class FullStoryPipeline {
           // #26C: declared cast (ids AND display names — charactersInvolved mixes both forms).
           knownEntityIds: (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]).filter(Boolean),
           // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
+          // ChoiceAuthor stores choices in the phase-level choiceSets; beat-level choices
+          // are attached later during episode assembly, so sceneContents alone can report
+          // a false "authored 0 choices" warning after a successful content pass.
           choicePlannedSceneIds: (blueprint.scenes ?? []).filter((s) => !s.isEncounter && s.choicePoint).map((s) => s.id),
-          choiceAuthoredSceneIds: sceneContents.filter((sc) => (sc.beats ?? []).some((b) => ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0)).map((sc) => sc.sceneId),
+          choiceAuthoredSceneIds: choiceSets.filter((cs) => (cs.choices ?? []).length > 0).map((cs) => cs.sceneId).filter(Boolean) as string[],
         });
         narrativeDiagnosticsReport = narrativeDiagnostics;
         await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
@@ -6281,45 +6478,10 @@ export class FullStoryPipeline {
           }
         }
 
-        // ConsequenceBudget gate (default OFF; GATE_CONSEQUENCE_BUDGET=1). The
-        // validator is advisory-only by default (suggestions/warnings); its
-        // strictMode promotes extreme-deviation warnings to 'error'. We pass the
-        // flag through explicitly so the gate sees those errors and shouldGate
-        // can block. Choices carry their set's choiceType (it is per-set, not
-        // per-choice). With the flag OFF this branch is skipped → behavior
-        // unchanged.
-        if (isEnabled(PLAN_GATE_FLAGS.consequenceBudget) || shadow) {
-          const budgetResult = await new ConsequenceBudgetValidator().validate(
-            {
-              choices: choiceSets.flatMap((cs) =>
-                (cs.choices ?? []).map((c) => ({
-                  id: c.id,
-                  choiceType: cs.choiceType,
-                  consequences: c.consequences ?? [],
-                })),
-              ),
-            },
-            { strictMode: true },
-          );
-          const budgetIssues = budgetResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
-          const budgetGate = shouldGate(PLAN_GATE_FLAGS.consequenceBudget, budgetIssues, seasonGateEnforcement);
-          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.consequenceBudget, 'ConsequenceBudgetValidator', budgetGate.blockingCount, budgetIssues, undefined);
-          if (budgetGate.gate) {
-            const errs = budgetIssues.filter((iss) => iss.severity === 'error');
-            await this.recordRemediationSafe({
-              rule: 'consequence_budget_gate', scope: 'episode', attempted: 1,
-              succeeded: false, degraded: false, blocked: true, attempts: 1,
-              storyId: undefined, details: `Consequence budget gate blocked episode ${i}: ${budgetGate.blockingCount} issue(s)`,
-            });
-            throw new PipelineError(
-              `[ConsequenceBudgetGate] Consequence budget failed the blocking gate (${budgetGate.blockingCount} issue(s)): ` +
-                errs.map((iss) => iss.message).join('; ') +
-                '. Unset GATE_CONSEQUENCE_BUDGET to downgrade to advisory.',
-              `episode_${i}_consequence_budget_gate`,
-              { context: { episode: i, blockingCount: budgetGate.blockingCount } },
-            );
-          }
-        }
+        // Consequence-budget balance is a season-plan property. Do not re-run
+        // the whole-season percentage validator against this generated episode
+        // slice; FinalStoryContractValidator checks per-scene consequence-tier
+        // conformance against the season plan instead.
 
         // PropIntroduction gate (default OFF; GATE_PROP_INTRODUCTION=1). PARTIAL
         // gate (see propIntroductionGate.ts SCOPE NOTE): the deterministic
@@ -6524,6 +6686,14 @@ export class FullStoryPipeline {
         encounters,
         encounterImageResults
       );
+      const residueResult = applyResidueConsumption({ episodes: [episode] } as unknown as Story);
+      if (residueResult.injected > 0 || residueResult.residual.length > 0) {
+        this.emit({
+          type: residueResult.residual.length > 0 ? 'warning' : 'debug',
+          phase: `episode_${i}_residue_consumption`,
+          message: `Episode ${i} residue consumption: ${residueResult.injected} flag read(s) injected${residueResult.residual.length > 0 ? `; ${residueResult.residual.length} residual flag(s): ${residueResult.residual.slice(0, 4).join(', ')}` : ''}`,
+        });
+      }
       this.validateMicroEpisodeStructure(episode, {
         phase: `episode_${i}_micro_episode_final_validation`,
       });
@@ -6538,6 +6708,7 @@ export class FullStoryPipeline {
       if (episodeBrief.options?.runQA !== false) {
         try {
           this.emit({ type: 'phase_start', phase: `qa_ep_${i}`, message: `Running QA for Episode ${i}...` });
+          normalizeChoiceSetStatChecks(choiceSets);
           const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
           const [qaResult, bpResult] = await this.measurePhase(`episode_${i}_qa`, () => Promise.all([
             this.runQualityAssurance(episodeBrief, sceneContents, choiceSets, characterBible, blueprint),
@@ -6547,6 +6718,10 @@ export class FullStoryPipeline {
           ]));
           qaReport = qaResult;
           bestPracticesReport = bpResult;
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
+          if (bestPracticesReport) {
+            await saveEarlyDiagnostic(outputDirectory, `episode-${i}-best-practices-report.json`, bestPracticesReport);
+          }
           this.emit({
             type: 'phase_complete',
             phase: `qa_ep_${i}`,
@@ -6571,7 +6746,30 @@ export class FullStoryPipeline {
           // walks story.episodes[].scenes[], so the assembled episode is
           // wrapped as a one-episode story; beat rewrites mutate `episode`
           // in place and flow into the season story downstream.
-          await this.repairContinuityFindings({ episodes: [episode] } as unknown as Story, sceneContents, characterBible, qaReport, outputDirectory, blueprint);
+          const treatmentSourcedContinuityBlocks = Boolean(
+            episodeBrief.multiEpisode?.sourceAnalysis || episodeBrief.rawDocument?.trim(),
+          );
+          await this.repairContinuityFindings(
+            { episodes: [episode] } as unknown as Story,
+            sceneContents,
+            characterBible,
+            qaReport,
+            outputDirectory,
+            blueprint,
+            treatmentSourcedContinuityBlocks
+              ? {
+                  forceRevalidation: true,
+                  revalidationReason: 'treatment-sourced continuity findings escalate at final contract',
+                }
+              : undefined,
+          );
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.post-repair.json`, qaReport);
+          this.emit({
+            type: 'phase_complete',
+            phase: `qa_ep_${i}_post_repair`,
+            message: `Episode ${i} QA Post-Repair Score: ${qaReport.overallScore}/100 - ${qaReport.passesQA ? 'PASSED' : 'NEEDS REVISION'}`,
+          });
         } catch (repairErr) {
           this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
         }
@@ -6584,19 +6782,6 @@ export class FullStoryPipeline {
         }).catch(() => undefined);
       }
 
-      // WS-A: advisory per-episode contract validation — surface POV / treatment-fidelity /
-      // flag / pronoun / conformance defects as each episode is generated, not only at the
-      // end. Non-blocking (gates keep their configured severities); never throws.
-      await this.validateEpisodeIncrementally({
-        episodeNumber: i,
-        episode,
-        episodeBrief,
-        characterBible,
-        qaReport,
-        bestPracticesReport,
-        outputDirectory,
-      });
-
       this.emit({
         type: 'phase_complete',
         phase: `episode_${i}`,
@@ -6605,6 +6790,7 @@ export class FullStoryPipeline {
 
       return {
         episode,
+        episodeBrief,
         result: { episodeNumber: i, title: episodeOutline.title, success: true },
         qaReport,
         bestPracticesReport,
@@ -8591,6 +8777,12 @@ export class FullStoryPipeline {
         emit: this.emit.bind(this),
         recordRemediationSafe: this.recordRemediationSafe.bind(this),
         recordFinalContractShadow: this.recordFinalContractShadow.bind(this),
+        saveFailedContractArtifacts: async (story, report) => {
+          const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
+          if (!rawOutputDirectory) return;
+          const outputDirectory = rawOutputDirectory.endsWith('/') ? rawOutputDirectory : `${rawOutputDirectory}/`;
+          await saveFinalStoryContractFailure(outputDirectory, story, report);
+        },
         disambiguateProtagonistPronouns: this.disambiguateProtagonistPronouns.bind(this),
         authorEncounterOutcomeVariants: this.authorEncounterOutcomeVariants.bind(this),
         relationshipDimensionsForNpc: this.relationshipDimensionsForNpc.bind(this),
@@ -8600,6 +8792,7 @@ export class FullStoryPipeline {
         sceneValidationResults: { get: () => this.sceneValidationResults },
         seasonChoicePlan: { get: () => this.seasonChoicePlan },
         seasonSkillPlan: { get: () => this.seasonSkillPlan },
+        callbackLedger: { get: () => this.callbackLedger },
         allEncounterTelemetry: { get: () => this.allEncounterTelemetry },
         remediationBudget: { get: () => this.remediationBudget },
         sceneCritic: { get: () => this.sceneCritic ?? null },
@@ -9070,16 +9263,43 @@ export class FullStoryPipeline {
   }
 
   private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number]): string {
-    const rawImmediate = this.cleanChoiceBridgeFragment(choice.feedbackCue?.progressSummary || choice.reminderPlan?.immediate);
+    const rawImmediate = this.cleanChoiceBridgeFragment(
+      choice.outcomeTexts?.partial
+      || choice.reactionText
+      || choice.feedbackCue?.progressSummary
+      || choice.reminderPlan?.immediate
+    );
     // The lead fragment is sourced from planning fields; reject any meta/design-note
     // register ("In the next scene…", raw flag ids) rather than leak it to readers.
-    const immediate = rawImmediate && !isUnsafeCallbackProse(rawImmediate) ? rawImmediate : '';
+    const immediate = rawImmediate && !isUnsafeCallbackProse(rawImmediate) && !this.isGenericChoiceBridgeFragment(rawImmediate)
+      ? rawImmediate
+      : '';
     // Prefer the authored in-fiction fragment ALONE. The generic line was previously
     // APPENDED to every bridge, producing robotic structural closers ("The path forward
     // is set.") on top of real prose (gen-5 audit) — it is now a last-resort fallback.
     const lead = immediate || this.genericBridgeDestination(choice.id);
     const trimmed = lead.trim();
     return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
+  private isGenericChoiceBridgeFragment(text: string): boolean {
+    const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
+    return [
+      'the choice leaves a visible pressure in the next moment.',
+      'the choice leaves a visible pressure in the next moment',
+      'in the next room, access, trust, and pressure have already shifted.',
+      'in the next room, access, trust, and pressure have already shifted',
+      'people remember what the protagonist risked, and they treat the next ask differently.',
+      'people remember what the protagonist risked, and they treat the next ask differently',
+      'what comes next is already in motion.',
+      'what comes next is already in motion',
+      'there is no stepping back from here.',
+      'there is no stepping back from here',
+      'the decision settles into your chest and stays there.',
+      'the decision settles into your chest and stays there',
+      'the choice changes the air around you.',
+      'the choice changes the air around you',
+    ].includes(normalized);
   }
 
   /**

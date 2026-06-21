@@ -1,6 +1,7 @@
 import { PlayerState, Story, TextVariant } from '../types';
 import type { ConditionExpression } from '../types';
 import { evaluateCondition } from './conditionEvaluator';
+import { sanitizeReaderProse } from './readerProseSanitizer';
 
 /**
  * Template Processor
@@ -337,7 +338,11 @@ export function processText(
   story: Story | null
 ): string {
   const selectedText = selectTextVariant(baseText, variants, player);
-  return processTemplate(selectedText, player, story);
+  const processed = sanitizeReaderProse(processTemplate(selectedText, player, story));
+  if (processed.trim().length > 0 || selectedText === baseText) {
+    return processed;
+  }
+  return sanitizeReaderProse(processTemplate(baseText, player, story));
 }
 
 /**

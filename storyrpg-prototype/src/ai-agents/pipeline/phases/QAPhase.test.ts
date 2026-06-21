@@ -246,6 +246,7 @@ describe('QAPhase', () => {
             overallPassed: true,
             validationTimeMs: 10,
             voice: {
+              score: 82,
               issues: [
                 {
                   beatId: 'beat-1',
@@ -258,6 +259,8 @@ describe('QAPhase', () => {
               ],
             },
             stakes: {
+              score: 76,
+              hasFalseChoices: true,
               issues: [
                 { choiceId: 'cs-1', severity: 'warning', issue: 'flat stakes', suggestion: 'raise them' },
               ],
@@ -284,6 +287,13 @@ describe('QAPhase', () => {
       expect(qaOptions.continuityFocusCrossScene).toBe(true);
       expect(qaOptions.incrementalResults.voiceIssueCount).toBe(1);
       expect(qaOptions.incrementalResults.stakesIssueCount).toBe(1);
+      expect(qaOptions.incrementalResults.voiceScores).toEqual([82]);
+      expect(qaOptions.incrementalResults.stakesScores).toEqual([76]);
+      expect(qaOptions.incrementalResults.voiceEvidenceCount).toBe(1);
+      expect(qaOptions.incrementalResults.stakesEvidenceCount).toBe(1);
+      expect(qaOptions.incrementalResults.voiceWarningCount).toBe(1);
+      expect(qaOptions.incrementalResults.stakesWarningCount).toBe(1);
+      expect(qaOptions.incrementalResults.falseChoiceCount).toBe(1);
       expect(qaOptions.incrementalResults.voiceIssues[0]).toMatchObject({
         sceneId: 'scene-1',
         beatId: 'beat-1',

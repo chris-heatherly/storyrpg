@@ -231,20 +231,181 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.score).toBe(100);
   });
 
-  it('ADVISORY: a dropped seed beat is a non-blocking warning, not an error', () => {
+  it('blocks a dropped concrete seed beat by default', () => {
     const result = run({
       plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'seed')] })]),
       story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She dresses for the club, fastening her grandmother\'s gold chain.')])])]),
     });
-    expect(result.valid).toBe(true); // seed misses never block
-    expect(result.issues.some((i) => i.severity === 'warning')).toBe(true);
-    expect(result.issues.every((i) => i.severity !== 'error')).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.severity === 'error')).toBe(true);
+  });
+
+  it('does not enforce abstract seed labels as on-page prose moments', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', "Victor's Nature", 'seed')] })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'Victor watches the room without touching the wine.')])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('does not enforce abstract seed labels without deterministic source evidence', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('seed-radu', "Radu's Secret", 'seed')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', 'A stray dog watches from the courtyard below.'),
+            beat('b2', 'Morning light falls across the kitchen counter and a hand-knit blanket.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('enforces an abstract seed label when sourceTurn supplies concrete evidence', () => {
+    const concreteSource = "Radu's Secret: The rougher man at the kitchen entrance who didn't fit.";
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, {
+          requiredBeats: [{ id: 'seed-radu', sourceTurn: concreteSource, mustDepict: "Radu's Secret", tier: 'seed' }],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', 'A stray dog watches from the courtyard below.'),
+            beat('b2', 'Morning light falls across the kitchen counter and a hand-knit blanket.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.severity === 'error')).toBe(true);
+    expect(result.issues[0]?.message).toContain(concreteSource);
+  });
+
+  it('blocks a full rougher-man seed when only unrelated kitchen and entrance words appear', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, {
+          requiredBeats: [requiredBeat('seed-rougher', "The rougher man at the kitchen entrance who didn't fit.", 'seed')],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', 'Mika hands you a key card to the side entrance.'),
+            beat('b2', 'Morning light falls across the kitchen counter and a hand-knit blanket.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.severity === 'error')).toBe(true);
+    expect(result.issues[0]?.location).toContain('seedBeat:ep1:s1-1:seed-rougher');
+  });
+
+  it('blocks a full rougher-man seed when the prose has only a generic man by kitchens', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, {
+          requiredBeats: [
+            requiredBeat('seed-rougher', "The rougher man at the kitchen entrance who didn't fit.", 'seed'),
+          ],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat(
+              'b1',
+              "Your gaze drifts to an archway flanking the kitchens and catches on a man who is a block of granite amidst silk. He isn't watching the party. He's watching the exits.",
+            ),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.filter((issue) => issue.severity === 'error')).toHaveLength(1);
+  });
+
+  it('credits a rougher-man seed depicted across adjacent local sentences', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, {
+          requiredBeats: [
+            requiredBeat('seed-rougher', "The rougher man at the kitchen entrance who didn't fit.", 'seed'),
+          ],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat(
+              'b1',
+              'The scent of woodsmoke leads you toward the building kitchen. Radu is pinned against the doorframe. Opposite him stands a rougher man, his heavy hand-knit sweater straining at the shoulders.',
+            ),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
   });
 
   it('seed beat depicted on-page produces no warning', () => {
     const result = run({
       plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'A FaceTime to her niece Sadie about vampires in Romania', 'seed')] })]),
       story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'On FaceTime, her niece Sadie asks if there are vampires in Romania.')])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('label-style episode seeds can be realized by concrete treatment signs', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, {
+          requiredBeats: [
+            requiredBeat('seed-blog', 'The blog readership number, displayed at episode end and climbing.', 'seed'),
+            requiredBeat('seed-rougher', "The rougher man at the kitchen entrance who didn't fit.", 'seed'),
+            requiredBeat('seed-pressure', 'Season central pressure', 'seed'),
+          ],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', 'The rougher man by the kitchen smells faintly of woodsmoke before turning away.'),
+            beat('b2', 'Victor in charcoal rescues you, and the black roses wait beside the card.'),
+            beat('b3', 'Dating After Dusk has 84,127 reads on the dashboard by morning.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('does not enforce choice-contingent future-window seeds as on-page prose moments', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-1', 1, {
+          requiredBeats: [
+            requiredBeat('seed-quartz-route', "The quartz Kylie did or didn't accept warms in her pocket.", 'seed'),
+          ],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', 'Stela keeps her hand closed, and the question follows you into the stairwell.'),
+          ]),
+        ]),
+      ]),
     });
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
@@ -284,16 +445,25 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.issues).toHaveLength(0);
   });
 
-  it('GATE on: a dropped seed escalates from warning to a blocking error (bite-me-g16 dropped plant)', () => {
+  it('a dropped seed escalates to a blocking error by default (bite-me-g16 dropped plant)', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'The stray dog in the courtyard, watching', 'seed')] })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She dresses for the club, fastening her grandmother\'s gold chain.')])])]),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.severity === 'error')).toBe(true);
+  });
+
+  it('env kill-switch can keep a dropped seed advisory during rollback', () => {
     const prev = process.env.GATE_TREATMENT_SEED_REALIZATION;
-    process.env.GATE_TREATMENT_SEED_REALIZATION = '1';
+    process.env.GATE_TREATMENT_SEED_REALIZATION = '0';
     try {
       const result = run({
         plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', 'The stray dog in the courtyard, watching', 'seed')] })]),
         story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'She dresses for the club, fastening her grandmother\'s gold chain.')])])]),
       });
-      expect(result.valid).toBe(false); // now blocks
-      expect(result.issues.some((i) => i.severity === 'error')).toBe(true);
+      expect(result.valid).toBe(true);
+      expect(result.issues.some((i) => i.severity === 'warning')).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.GATE_TREATMENT_SEED_REALIZATION;
       else process.env.GATE_TREATMENT_SEED_REALIZATION = prev;

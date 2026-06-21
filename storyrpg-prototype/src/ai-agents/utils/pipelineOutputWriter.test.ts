@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Story } from '../../types';
-import { savePipelineOutputs, writeFinalStoryPackage, savePartialStory } from './pipelineOutputWriter';
+import { deriveRunQualityScore, savePipelineOutputs, writeFinalStoryPackage, savePartialStory, saveFinalStoryContractFailure } from './pipelineOutputWriter';
 
 vi.mock('expo-file-system', () => ({
   default: {},
@@ -14,6 +14,80 @@ vi.mock('expo-file-system', () => ({
 }));
 
 const tempDirs: string[] = [];
+
+describe('deriveRunQualityScore', () => {
+  it('combines QA, validation, and final contract evidence', () => {
+    const result = deriveRunQualityScore({
+      qaReport: { overallScore: 80, passesQA: true, criticalIssues: [] } as any,
+      bestPracticesReport: { overallScore: 70, overallPassed: true, blockingIssues: [], warnings: [] } as any,
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [],
+        metrics: {},
+      } as any,
+    });
+
+    expect(result.score).toBe(81);
+    expect(result.basis).toMatchObject({
+      qaScore: 80,
+      validationScore: 70,
+      finalStoryContractScore: 100,
+      evidenceCoverage: 100,
+      caps: [],
+      penalties: [],
+    });
+  });
+
+  it('treats missing evidence as zero and caps the score', () => {
+    const result = deriveRunQualityScore({
+      qaReport: { overallScore: 100, passesQA: true, criticalIssues: [] } as any,
+    });
+
+    expect(result.score).toBe(30);
+    expect(result.basis.penalties).toEqual(expect.arrayContaining([
+      'missing_best_practices_validation',
+      'missing_final_story_contract',
+    ]));
+  });
+
+  it('caps failed final contracts below publishable quality', () => {
+    const result = deriveRunQualityScore({
+      qaReport: { overallScore: 100, passesQA: true, criticalIssues: [] } as any,
+      bestPracticesReport: { overallScore: 100, overallPassed: true, blockingIssues: [], warnings: [] } as any,
+      finalStoryContractReport: {
+        passed: false,
+        blockingIssues: [{ severity: 'error' }],
+        warnings: [],
+        metrics: {},
+      } as any,
+    });
+
+    expect(result.score).toBe(49);
+    expect(result.basis.caps).toContain('final_contract_failed_cap_49');
+  });
+
+  it('keeps passing final-contract warnings visible without treating them like blockers', () => {
+    const result = deriveRunQualityScore({
+      qaReport: { overallScore: 80, passesQA: true, criticalIssues: [] } as any,
+      bestPracticesReport: { overallScore: 94, overallPassed: true, blockingIssues: [], warnings: [] } as any,
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [
+          { type: 'sentence_opener_monotony', validator: 'SentenceOpenerVarietyValidator', sceneId: 's2-4', message: 'Vary sentence openers.' },
+          { type: 'partial_season_scope', message: 'Generated output is a partial slice.' },
+          { type: 'partial_season_scope', message: 'Generated output is a partial slice.' },
+        ],
+        metrics: {},
+      } as any,
+    });
+
+    expect(result.basis.finalStoryContractScore).toBe(96);
+    expect(result.score).toBe(90);
+    expect(result.basis.caps).toEqual([]);
+  });
+});
 
 function makeStory(): Story {
   return {
@@ -81,6 +155,47 @@ describe('pipelineOutputWriter', () => {
 
   it('savePartialStory is best-effort and does not throw on a bad dir', async () => {
     await expect(savePartialStory('', makeStory())).resolves.toBeUndefined();
+  });
+
+  it('saveFinalStoryContractFailure writes failed report and diagnostic partial without package files', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-contract-failed-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+
+    await saveFinalStoryContractFailure(outputDir, makeStory(), {
+      passed: false,
+      blockingIssues: [{
+        type: 'outcome_text_stub',
+        severity: 'error',
+        message: 'Outcome text is still a fallback stub.',
+      }],
+      warnings: [],
+      metrics: {
+        episodesChecked: 1,
+        scenesChecked: 1,
+        beatsChecked: 1,
+        encounterScenesChecked: 0,
+        validEncounterScenes: 0,
+        requestedEpisodesMissing: 0,
+        failedIncrementalResults: 0,
+        callbackIssues: 0,
+        mechanicsLeaks: 0,
+      },
+      generatedAt: '2026-06-19T00:00:00.000Z',
+    });
+
+    const report = JSON.parse(await readFile(`${outputDir}07b-final-story-contract.failed.json`, 'utf8'));
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues[0].type).toBe('outcome_text_stub');
+
+    const partial = JSON.parse(await readFile(`${outputDir}partial-story.json`, 'utf8'));
+    expect(partial._partial).toBe(true);
+    expect(partial._diagnostic).toBe(true);
+    expect(partial.story.title).toBe('Story Writer Test');
+
+    await expect(readFile(`${outputDir}story.json`, 'utf8')).rejects.toThrow();
+    await expect(readFile(`${outputDir}manifest.json`, 'utf8')).rejects.toThrow();
+    await expect(readFile(`${outputDir}08-final-story.json`, 'utf8')).rejects.toThrow();
   });
 
   it('writes final story packages through Node built-in modules when require is unavailable', async () => {
@@ -230,6 +345,11 @@ describe('pipelineOutputWriter', () => {
     expect(manifest.summary).toMatchObject({
       finalStoryContractPassed: true,
       finalStoryContractBlockingIssues: 0,
+      qualityScore: 25,
+      qualityScoreBasis: expect.objectContaining({
+        finalStoryContractScore: 100,
+        evidenceCoverage: 25,
+      }),
     });
   });
 });

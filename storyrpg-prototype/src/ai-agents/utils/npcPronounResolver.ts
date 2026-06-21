@@ -138,6 +138,22 @@ function genderOfPronoun(word: string): Gender | undefined {
   return undefined;
 }
 
+function isBareObjectPronoun(word: string, sentence: string, index: number): boolean {
+  const w = word.toLowerCase();
+  if (w === 'him' || w === 'them') return true;
+  if (w !== 'her') return false;
+  const after = sentence.slice(index + word.length).trimStart();
+  const next = /^\b([a-z]+)\b/i.exec(after)?.[1]?.toLowerCase();
+  if (!next) return true;
+  const likelyPossessedNouns = new Set([
+    'arm', 'arms', 'back', 'blade', 'body', 'breath', 'brow', 'chin', 'coat',
+    'cup', 'eyes', 'face', 'fingers', 'gaze', 'hair', 'hand', 'hands', 'head',
+    'jaw', 'knife', 'lip', 'mouth', 'neck', 'palm', 'shoulder', 'shoulders',
+    'skin', 'sleeve', 'smile', 'throat', 'voice', 'wrist',
+  ]);
+  return !likelyPossessedNouns.has(next);
+}
+
 /** Distinctive name/alias tokens (≥3 letters) for the protagonist, for exclusion matching. */
 function protagonistTokens(p?: { name?: string; aliases?: string[] }): string[] {
   if (!p) return [];
@@ -236,6 +252,12 @@ export function findNpcPronounInconsistencies(
       }
     }
     if (!wrong) return;
+
+    // Bare object pronouns after a named NPC are not strong evidence that the pronoun
+    // refers back to that NPC: "Mika ignores him" has one roster name, but "him" is the
+    // ignored man. Keep subject/possessive/reflexive hits flaggable ("Lysandra tightens
+    // his jaw", "Thorne lowers their shoulder"), but skip ambiguous object-only cases.
+    if (isBareObjectPronoun(wrong, sentence, wrongIndex)) return;
 
     // Two-actor guard (precision): when the sentence ALSO contains an opposite-gender SUBJECT
     // pronoun doing its own action ("Mika tries to block him, but HE simply steps around her"),

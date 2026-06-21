@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { ChoiceAuthor } from './ChoiceAuthor';
 import { BaseAgent } from './BaseAgent';
+import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
 
 const config = {
   provider: 'anthropic' as const,
@@ -36,7 +37,8 @@ function makeInput(overrides?: Record<string, unknown>): any {
 }
 
 function makeChoiceSet(overrides?: Record<string, unknown>): any {
-  return {
+  const { allowShortChoices: _allowShortChoices, ...rest } = overrides || {};
+  const choiceSet = {
     beatId: 'beat-1',
     choiceType: 'expression',
     choices: [
@@ -46,8 +48,15 @@ function makeChoiceSet(overrides?: Record<string, unknown>): any {
     ],
     overallStakes: { want: 'win', cost: 'lose', identity: 'learn' },
     designNotes: 'Test notes',
-    ...overrides,
+    ...rest,
   };
+  if (!_allowShortChoices && Array.isArray(choiceSet.choices) && choiceSet.choices.length > 0 && choiceSet.choices.length < 3) {
+    while (choiceSet.choices.length < 3) {
+      const i = choiceSet.choices.length + 1;
+      choiceSet.choices.push({ id: `fixture-c${i}`, text: `Fixture option ${i}`, choiceType: choiceSet.choiceType, consequences: [] });
+    }
+  }
+  return choiceSet;
 }
 
 // -----------------------------------------------------------------------
@@ -69,19 +78,129 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(prompt).not.toContain('schema_chapters');
   });
 
-  it('throws on fewer than 2 choices', () => {
-    const choiceSet = makeChoiceSet({
-      choices: [{ id: 'c1', text: 'Only one', choiceType: 'expression', consequences: [] }],
-    });
-    expect(() => (author as any).validateChoices(choiceSet, input)).toThrow('Must have at least 2 choices');
+  it('derives required choice schema fields from the deterministic planner choice type', () => {
+    const relationship = buildChoiceSetJsonSchema({ choiceType: 'relationship', branching: false });
+    expect(relationship.maxOutputTokens).toBe(12000);
+    const relChoice = (relationship.schema as any).properties.choices.items;
+    expect(relChoice.required).toEqual(expect.arrayContaining([
+      'choiceType',
+      'choiceIntent',
+      'impactFactors',
+      'consequenceTier',
+      'consequences',
+      'reactionText',
+      'tintFlag',
+      'statCheck',
+      'residueHints',
+    ]));
+    expect(relChoice.properties.statCheck.required).toEqual(['skillWeights', 'difficulty']);
+    expect(relChoice.properties.tintFlag.enum).toEqual(expect.arrayContaining(['tint:honesty', 'tint:teamwork']));
+
+    const expression = buildChoiceSetJsonSchema({ choiceType: 'expression', branching: false });
+    const expressionChoice = (expression.schema as any).properties.choices.items;
+    expect(expressionChoice.required).toEqual(expect.arrayContaining(['reactionText', 'tintFlag']));
+    expect(expressionChoice.required).not.toContain('statCheck');
+    expect(expressionChoice.required).not.toContain('residueHints');
+
+    const branch = buildChoiceSetJsonSchema({ choiceType: 'strategic', branching: true });
+    const branchChoice = (branch.schema as any).properties.choices.items;
+    expect(branchChoice.required).toContain('nextSceneId');
+    expect(branchChoice.required).not.toContain('tintFlag');
   });
 
-  it('throws on more than 5 choices', () => {
-    const choices = Array.from({ length: 6 }, (_, i) => ({
+  it('normalizes stat-check difficulty and skill weights before returning choices', async () => {
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
+      beatId: 'beat-1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Ask Mika for the truth',
+          choiceType: 'relationship',
+          choiceIntent: 'truth',
+          impactFactors: ['relationship'],
+          consequenceTier: 'callback',
+          stakesAnnotation: { want: 'understand her', cost: 'risk the friendship', identity: 'choose candor' },
+          consequences: [{ type: 'setFlag', flag: 'asked_mika_truth', value: true }],
+          outcomeTexts: { success: 'Mika answers softly.', partial: 'Mika gives you half the truth.', failure: 'Mika smiles around the answer.' },
+          reactionText: 'The table goes quiet.',
+          tintFlag: 'tint:honesty',
+          statCheck: { skillWeights: { persuasion: 1, perception: 0.5 }, difficulty: 30 },
+          residueHints: [{ kind: 'relationship_behavior', description: 'Mika remembers the direct question.' }],
+        },
+        {
+          id: 'c2',
+          text: 'Let Mika change the subject',
+          choiceType: 'relationship',
+          choiceIntent: 'avoidance',
+          impactFactors: ['relationship'],
+          consequenceTier: 'callback',
+          stakesAnnotation: { want: 'keep peace', cost: 'miss the tell', identity: 'choose comfort' },
+          consequences: [{ type: 'setFlag', flag: 'let_mika_evade', value: true }],
+          outcomeTexts: { success: 'Mika relaxes.', partial: 'Mika notices the mercy.', failure: 'Mika fills the silence too fast.' },
+          reactionText: 'The question dies between you.',
+          tintFlag: 'tint:teamwork',
+          statCheck: { skillWeights: { perception: 1.5 }, difficulty: 90 },
+          residueHints: [{ kind: 'relationship_behavior', description: 'Mika learns you will let her evade.' }],
+        },
+        {
+          id: 'c3',
+          text: 'Ask Mika what she needs',
+          choiceType: 'relationship',
+          choiceIntent: 'support',
+          impactFactors: ['relationship'],
+          consequenceTier: 'callback',
+          stakesAnnotation: { want: 'support Mika', cost: 'invite a difficult answer', identity: 'choose care' },
+          consequences: [{ type: 'setFlag', flag: 'asked_mika_needs', value: true }],
+          outcomeTexts: { success: 'Mika lets the question soften her.', partial: 'Mika answers around the edges.', failure: 'Mika turns care into a joke.' },
+          reactionText: 'The question offers Mika a gentler door.',
+          tintFlag: 'tint:empathy',
+          statCheck: { skillWeights: { persuasion: 1 }, difficulty: 45 },
+          residueHints: [{ kind: 'relationship_behavior', description: 'Mika remembers that you asked what she needed.' }],
+        },
+      ],
+      overallStakes: { want: 'read Mika', cost: 'strain the friendship', identity: 'choose candor or comfort' },
+      designNotes: 'Stat normalization test.',
+    }));
+
+    const author = new ChoiceAuthor(config);
+    const result = await author.execute(makeInput({
+      optionCount: 3,
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Mika Table',
+        choicePoint: {
+          type: 'relationship',
+          stakes: { want: 'read Mika', cost: 'strain the friendship', identity: 'choose candor or comfort' },
+          optionHints: ['Ask directly', 'Let it go'],
+        },
+      },
+    }));
+
+    expect(result.success).toBe(true);
+    expect(result.data?.choices[0].statCheck?.difficulty).toBe(35);
+    expect(result.data?.choices[0].statCheck?.skillWeights).toEqual({ persuasion: 0.6667, perception: 0.3333 });
+    expect(result.data?.choices[1].statCheck?.difficulty).toBe(80);
+    expect(result.data?.choices[1].statCheck?.skillWeights).toEqual({ perception: 1 });
+  });
+
+  it('throws on fewer than 3 choices', () => {
+    const choiceSet = makeChoiceSet({
+      allowShortChoices: true,
+      choices: [
+        { id: 'c1', text: 'Only one', choiceType: 'expression', consequences: [] },
+        { id: 'c2', text: 'Only two', choiceType: 'expression', consequences: [] },
+      ],
+    });
+    expect(() => (author as any).validateChoices(choiceSet, input)).toThrow('Must have at least 3 choices');
+  });
+
+  it('throws on more than 4 choices', () => {
+    const choices = Array.from({ length: 5 }, (_, i) => ({
       id: `c${i}`, text: `Choice ${i}`, choiceType: 'expression', consequences: [],
     }));
     const choiceSet = makeChoiceSet({ choices });
-    expect(() => (author as any).validateChoices(choiceSet, input)).toThrow('Should not have more than 5 choices');
+    expect(() => (author as any).validateChoices(choiceSet, input)).toThrow('Should not have more than 4 choices');
   });
 
   it('throws on duplicate choice IDs', () => {
@@ -201,21 +320,21 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
   const author = new ChoiceAuthor(config);
   const input = makeInput();
 
-  it('trims to 5 choices when more are provided', () => {
+  it('trims to 4 choices when more are provided', () => {
     const choices = Array.from({ length: 7 }, (_, i) => ({
       id: `c${i}`, text: `Choice ${i}`, choiceType: 'expression', consequences: [],
     }));
     const choiceSet = makeChoiceSet({ choices });
     const result = (author as any).normalizeChoiceSet(choiceSet, input);
-    expect(result.choices).toHaveLength(5);
+    expect(result.choices).toHaveLength(4);
   });
 
-  it('pads to 2 choices when fewer are provided', () => {
+  it('rejects fewer than 3 choices instead of padding placeholders', () => {
     const choiceSet = makeChoiceSet({
+      allowShortChoices: true,
       choices: [{ id: 'c1', text: 'Only one', choiceType: 'expression', consequences: [] }],
     });
-    const result = (author as any).normalizeChoiceSet(choiceSet, input);
-    expect(result.choices.length).toBeGreaterThanOrEqual(2);
+    expect(() => (author as any).normalizeChoiceSet(choiceSet, input)).toThrow('refusing to synthesize placeholder choices');
   });
 
   it('forces the planner-assigned choicePoint.type over the LLM set type (Phase D)', () => {
@@ -282,6 +401,46 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
     });
     const result = (author as any).normalizeChoiceSet(choiceSet, inputWithArc);
     expect(result.choices[0].feedbackCue?.checkClass).toBe('retryable');
+  });
+
+  it('does not synthesize generic reminder or echo prose when story-specific text is missing', () => {
+    const choiceSet = makeChoiceSet({
+      choices: [
+        { id: 'c1', text: 'Ask plainly', choiceType: 'expression', consequences: [] },
+        { id: 'c2', text: 'Hold back', choiceType: 'expression', consequences: [] },
+      ],
+    });
+
+    const result = (author as any).normalizeChoiceSet(choiceSet, input);
+
+    expect(result.choices[0].reminderPlan).toBeUndefined();
+    expect(result.choices[0].feedbackCue?.echoSummary).toBeUndefined();
+    expect(result.choices[0].feedbackCue?.progressSummary).toBeUndefined();
+    expect(result.choices[0].feedbackCue?.checkClass).toBe('dramatic');
+  });
+
+  it('preserves authored story-specific reminder prose for reader feedback', () => {
+    const choiceSet = makeChoiceSet({
+      choices: [
+        {
+          id: 'c1',
+          text: 'Give Mika the card',
+          choiceType: 'expression',
+          consequences: [],
+          reminderPlan: {
+            immediate: 'Mika tucks the card away without meeting your eyes.',
+            shortTerm: 'The lie between you and Mika gets harder to ignore.',
+          },
+        },
+        { id: 'c2', text: 'Keep it', choiceType: 'expression', consequences: [] },
+      ],
+    });
+
+    const result = (author as any).normalizeChoiceSet(choiceSet, input);
+
+    expect(result.choices[0].reminderPlan?.immediate).toBe('Mika tucks the card away without meeting your eyes.');
+    expect(result.choices[0].feedbackCue?.echoSummary).toBe('Mika tucks the card away without meeting your eyes.');
+    expect(result.choices[0].feedbackCue?.progressSummary).toBe('The lie between you and Mika gets harder to ignore.');
   });
 
   it('infers affordanceSource from choice conditions', () => {
@@ -391,6 +550,91 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
   });
 });
 
+describe('ChoiceAuthor relationship consequence repair', () => {
+  it('adds relationship consequences when a relationship choice omits them', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        { id: 'c1', text: 'Trust Mika with the truth', choiceType: 'relationship', consequences: [] },
+        { id: 'c2', text: 'Refuse Mika and hide it', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      npcsInScene: [{ id: 'mika', name: 'Mika', pronouns: 'she/her', description: 'Friend' }],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    expect(choiceSet.choices[0].consequences).toContainEqual(
+      expect.objectContaining({ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 5 }),
+    );
+    expect(choiceSet.choices[1].consequences).toContainEqual(
+      expect.objectContaining({ type: 'relationship', npcId: 'mika', dimension: 'trust', change: -3 }),
+    );
+  });
+
+  it('does not target the protagonist when repairing missing relationship consequences', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        { id: 'c1', text: 'Trust Mika with the truth', choiceType: 'relationship', consequences: [] },
+        { id: 'c2', text: 'Refuse Mika and hide it', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      protagonistInfo: { name: 'Kylie Marinescu', pronouns: 'she/her' },
+      npcsInScene: [
+        { id: 'char-kylie-marinescu', name: 'Kylie Marinescu', pronouns: 'she/her', description: 'Player protagonist' },
+        { id: 'char-mihaela-mika-dragan', name: 'Mika Drăgan', pronouns: 'she/her', description: 'Friend' },
+      ],
+    });
+
+    const repaired = author.addRelationshipConsequences(choiceSet, input);
+
+    expect(repaired).toBe(3);
+    expect(choiceSet.choices.flatMap((choice: any) => choice.consequences.map((c: any) => c.npcId)))
+      .toEqual(['char-mihaela-mika-dragan', 'char-mihaela-mika-dragan', 'char-mihaela-mika-dragan']);
+  });
+
+  it('retargets model-authored protagonist relationship consequences to a real NPC', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Trust Mika with the truth',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'char-kylie-marinescu', dimension: 'trust', change: 5 }],
+        },
+        {
+          id: 'c2',
+          text: 'Refuse Mika and hide it',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'Kylie Marinescu', dimension: 'trust', change: -3 }],
+        },
+      ],
+    });
+    const input = makeInput({
+      protagonistInfo: { name: 'Kylie Marinescu', pronouns: 'she/her' },
+      npcsInScene: [
+        { id: 'char-kylie-marinescu', name: 'Kylie Marinescu', pronouns: 'she/her', description: 'Player protagonist' },
+        { id: 'char-mihaela-mika-dragan', name: 'Mika Drăgan', pronouns: 'she/her', description: 'Friend' },
+      ],
+    });
+
+    const result = author.normalizeChoiceSet(choiceSet, input);
+
+    expect(result.choices.flatMap((choice: any) => choice.consequences.map((c: any) => c.npcId)))
+      .toEqual(['char-mihaela-mika-dragan', 'char-mihaela-mika-dragan']);
+  });
+});
+
 describe('ChoiceAuthor skill rotation (1.7)', () => {
   it('rotates the default relationship skill off persuasion as it gets used', () => {
     const author: any = new ChoiceAuthor(config);
@@ -493,6 +737,52 @@ describe('ChoiceAuthor.buildPrompt (requiredBranchTargets quality bar)', () => {
     expect(prompt).not.toContain('REQUIRED BRANCHING');
     expect(prompt).not.toContain('SAME quality bar as first-pass choices');
   });
+
+  it('uses the season-assigned consequence tier instead of episode-wide budget percentages', () => {
+    const prompt = (author as any).buildPrompt(makeInput({
+      plannedConsequenceTier: 'branchlet',
+    }));
+
+    expect(prompt).toContain('Season-Assigned Consequence Tier');
+    expect(prompt).toContain('assigned THIS scene');
+    expect(prompt).toContain('"branchlet"');
+    expect(prompt).toContain('do not rebalance this episode toward global percentages');
+    expect(prompt).toContain('branchlet -> `consequenceTier: "branchlet"`');
+    expect(prompt).not.toContain('Consequence Budget Target (episode-wide 60/25/10/5)');
+    expect(prompt).not.toContain('Across the episode, consequences should follow this distribution');
+  });
+});
+
+describe('ChoiceAuthor.buildCompactPrompt (live generation contract)', () => {
+  const author = new ChoiceAuthor(config);
+
+  it('keeps the live prompt materially smaller than the legacy full prompt and names the deterministic schema contract', () => {
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Test Scene',
+        location: 'old library',
+        mood: 'tense',
+        choicePoint: {
+          type: 'relationship',
+          description: 'Alex has to decide how much truth to risk.',
+          stakes: { want: 'earn trust', cost: 'lose control', identity: 'honest or guarded' },
+          consequenceDomain: 'relationship',
+          optionHints: ['Tell the truth', 'Deflect', 'Ask for help'],
+        },
+      },
+      availableFlags: Array.from({ length: 30 }, (_, i) => ({ name: `flag_${i}`, description: `Flag ${i}` })),
+      availableScores: Array.from({ length: 20 }, (_, i) => ({ name: `score_${i}`, description: `Score ${i}` })),
+    });
+
+    const full = (author as any).buildPrompt(input);
+    const compact = (author as any).buildCompactPrompt(input);
+
+    expect(compact.length).toBeLessThan(full.length * 0.55);
+    expect(compact).toContain('deterministic response schema is supplied by the caller');
+    expect(compact).toContain('Top level fields: beatId, choiceType, choices, overallStakes, designNotes');
+    expect(compact).toContain('Create exactly 3 choices');
+  });
 });
 
 describe('ChoiceAuthor.reauthorOutcomeTexts (final-contract stub repair)', () => {
@@ -525,14 +815,14 @@ describe('ChoiceAuthor.reauthorOutcomeTexts (final-contract stub repair)', () =>
 
 describe('ChoiceAuthor.parseChoiceSetWithCompactRetry (reliability)', () => {
   afterEach(() => BaseAgent.setLlmTransportOverride(null));
-  const GOOD = '{"beatId":"beat-1","choices":[{"id":"c1","text":"A"},{"id":"c2","text":"B"}]}';
+  const GOOD = '{"beatId":"beat-1","choices":[{"id":"c1","text":"A"},{"id":"c2","text":"B"},{"id":"c3","text":"C"}]}';
 
   it('takes the single-call path on a clean first response (no retry)', async () => {
     let calls = 0;
     BaseAgent.setLlmTransportOverride(async () => { calls += 1; return GOOD; });
     const author: any = new ChoiceAuthor(config);
-    const out = await author.parseChoiceSetWithCompactRetry(makeInput(), 'PROMPT', GOOD);
-    expect(out.choiceSet.choices).toHaveLength(2);
+    const out = await author.parseChoiceSetWithCompactRetry(makeInput(), GOOD);
+    expect(out.choiceSet.choices).toHaveLength(3);
     expect(calls).toBe(0); // first response was clean → no compact retry call
   });
 
@@ -547,10 +837,254 @@ describe('ChoiceAuthor.parseChoiceSetWithCompactRetry (reliability)', () => {
     const author: any = new ChoiceAuthor(config);
     // Truncated mid-string: parseJSON recovers (drops content) and flags truncation → retry fires.
     const truncated = '{"beatId":"beat-1","choices":[{"id":"c1","text":"truncated mid';
-    const out = await author.parseChoiceSetWithCompactRetry(makeInput(), 'BASE_PROMPT', truncated);
-    expect(out.choiceSet.choices).toHaveLength(2);
+    const out = await author.parseChoiceSetWithCompactRetry(makeInput(), truncated);
+    expect(out.choiceSet.choices).toHaveLength(3);
     expect(calls).toBe(1); // exactly one compact retry
-    expect(retryPrompt).toContain('keep it COMPACT'); // the retry carries the compact-output directive
-    expect(retryPrompt).toContain('BASE_PROMPT'); // built on top of the original prompt
+    expect(retryPrompt).toContain('Repair reason');
+    expect(retryPrompt).toContain('complete compact ChoiceSet');
+    expect(retryPrompt).not.toContain('BASE_PROMPT');
+  });
+});
+
+describe('ChoiceAuthor semantic completeness retry', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+
+  const incompleteChoiceSet = JSON.stringify({
+    beatId: 'beat-1',
+    choiceType: 'relationship',
+    choices: [
+      {
+        id: 'c1',
+        text: 'Take the key',
+        stakesAnnotation: { want: 'accept Mika', cost: 'owe Mika', identity: 'belong' },
+        outcomeTexts: {
+          success: 'The card lands warm in your palm.',
+          partial: 'The card lands warm, but Mika holds your wrist too long.',
+          failure: 'The card nearly slips, and Mika sees the flinch.',
+        },
+      },
+      {
+        id: 'c2',
+        text: 'Leave the key',
+        stakesAnnotation: { want: 'stay independent', cost: 'lose access', identity: 'choose distance' },
+        outcomeTexts: {
+          success: 'Mika pockets the card with a careful smile.',
+          partial: 'Mika laughs, but the laugh arrives a beat late.',
+          failure: 'Mika pockets the card like a door closing.',
+        },
+      },
+    ],
+    overallStakes: { want: 'choose access', cost: 'owe the wrong person', identity: 'define belonging' },
+    designNotes: 'Incomplete on purpose.',
+  });
+
+  const completeChoiceSet = JSON.stringify({
+    beatId: 'beat-1',
+    choiceType: 'relationship',
+    choices: [
+      {
+        id: 'c1',
+        text: 'Take the key',
+        stakesAnnotation: { want: 'accept Mika', cost: 'owe Mika', identity: 'belong' },
+        outcomeTexts: {
+          success: 'The card lands warm in your palm.',
+          partial: 'The card lands warm, but Mika holds your wrist too long.',
+          failure: 'The card nearly slips, and Mika sees the flinch.',
+        },
+        reactionText: 'Mika steers you toward the side entrance as if the decision has already rewritten your place beside her.',
+        tintFlag: 'tint:teamwork',
+        residueHints: [{ kind: 'relationship_behavior', description: 'Mika treats Kylie as someone who accepted private access from her.' }],
+        statCheck: { skillWeights: { persuasion: 1 }, difficulty: 45 },
+      },
+      {
+        id: 'c2',
+        text: 'Leave the key',
+        stakesAnnotation: { want: 'stay independent', cost: 'lose access', identity: 'choose distance' },
+        outcomeTexts: {
+          success: 'Mika pockets the card with a careful smile.',
+          partial: 'Mika laughs, but the laugh arrives a beat late.',
+          failure: 'Mika pockets the card like a door closing.',
+        },
+        reactionText: 'The line ahead feels longer after Mika slips the card away.',
+        tintFlag: 'tint:independence',
+        residueHints: [{ kind: 'relationship_behavior', description: 'Mika remembers that Kylie refused private access when it was offered.' }],
+        statCheck: { skillWeights: { persuasion: 1 }, difficulty: 45 },
+      },
+      {
+        id: 'c3',
+        text: 'Ask Mika who else has one',
+        stakesAnnotation: { want: 'understand the access', cost: 'sound suspicious', identity: 'choose scrutiny' },
+        outcomeTexts: {
+          success: 'Mika names no one, which answers more than it should.',
+          partial: 'Mika smiles, but the smile guards a list.',
+          failure: 'Mika makes the question feel rude without saying so.',
+        },
+        reactionText: 'Mika hears the suspicion under the practical question.',
+        tintFlag: 'tint:suspicion',
+        residueHints: [{ kind: 'relationship_behavior', description: 'Mika remembers that Kylie questioned the private access.' }],
+        statCheck: { skillWeights: { perception: 1 }, difficulty: 45 },
+      },
+    ],
+    overallStakes: { want: 'choose access', cost: 'owe the wrong person', identity: 'define belonging' },
+    designNotes: 'Complete after retry.',
+  });
+
+  it('retries instead of synthesizing reaction, tint, or residue fallbacks', async () => {
+    const prompts: string[] = [];
+    BaseAgent.setLlmTransportOverride(async (req) => {
+      prompts.push(req.messages.map((m) => String(m.content)).join('\n'));
+      return prompts.length === 1 ? incompleteChoiceSet : completeChoiceSet;
+    });
+
+    const author = new ChoiceAuthor(config);
+    const result = await author.execute(makeInput({
+      optionCount: 3,
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Test Scene',
+        location: 'club door',
+        choicePoint: {
+          type: 'relationship',
+          stakes: { want: 'choose access', cost: 'owe the wrong person', identity: 'define belonging' },
+          consequenceDomain: 'relationship',
+          optionHints: ['Take the key', 'Leave the key'],
+        },
+      },
+    }));
+
+    expect(result.success).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('Repair reason');
+    expect(prompts[1]).toContain('"statCheck":{"skillWeights"');
+    expect(result.data?.choices[0].reactionText).toContain('side entrance');
+    expect(result.data?.choices[0].residueHints?.[0]?.description).toContain('accepted private access');
+    expect(result.data?.choices[1].tintFlag).toBe('tint:independence');
+    expect(result.data?.choices[0].reactionText).not.toContain('moment settles');
+  });
+
+  it('retries malformed setFlag consequences and canonicalizes recoverable flag values', async () => {
+    const malformedFlags = JSON.stringify({
+      beatId: 'beat-1',
+      choiceType: 'expression',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Take the quartz',
+          stakesAnnotation: { want: 'accept help', cost: 'admit uncertainty', identity: 'trust intuition' },
+          outcomeTexts: {
+            success: 'The quartz settles cool in your palm.',
+            partial: 'The quartz is cool, but Stela watches your hesitation.',
+            failure: 'The quartz nearly slips before you close your fingers.',
+          },
+          reactionText: 'Stela relaxes by a fraction.',
+          tintFlag: 'tint:intuition',
+          consequences: [{ type: 'setFlag', value: 'true' }],
+        },
+        {
+          id: 'c2',
+          text: 'Leave it behind',
+          stakesAnnotation: { want: 'stay practical', cost: 'refuse protection', identity: 'trust logic' },
+          outcomeTexts: {
+            success: 'Stela closes her hand around the stone.',
+            partial: 'Stela closes her hand around the stone, slower than before.',
+            failure: 'The refusal lands colder than you meant it to.',
+          },
+          reactionText: 'The shop seems quieter after Stela pockets it.',
+          tintFlag: 'tint:logic',
+          consequences: [{ type: 'setFlag', value: 'false' }],
+        },
+        {
+          id: 'c3',
+          text: 'Ask what the stone protects',
+          stakesAnnotation: { want: 'understand the warning', cost: 'show fear', identity: 'choose inquiry' },
+          outcomeTexts: {
+            success: 'Stela tells you enough to make the stone heavier.',
+            partial: 'Stela answers, but not the question you meant.',
+            failure: 'Stela hears the fear before the curiosity.',
+          },
+          reactionText: 'The question makes the little stone feel less decorative.',
+          tintFlag: 'tint:curiosity',
+          consequences: [{ type: 'setFlag', value: 'asked_about_quartz' }],
+        },
+      ],
+      overallStakes: { want: 'answer Stela', cost: 'shape her trust', identity: 'choose how to read danger' },
+      designNotes: 'Malformed flags on purpose.',
+    });
+
+    const recoverableFlags = JSON.stringify({
+      beatId: 'beat-1',
+      choiceType: 'expression',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Take the quartz',
+          stakesAnnotation: { want: 'accept help', cost: 'admit uncertainty', identity: 'trust intuition' },
+          outcomeTexts: {
+            success: 'The quartz settles cool in your palm.',
+            partial: 'The quartz is cool, but Stela watches your hesitation.',
+            failure: 'The quartz nearly slips before you close your fingers.',
+          },
+          reactionText: 'Stela relaxes by a fraction.',
+          tintFlag: 'tint:intuition',
+          consequences: [{ type: 'setFlag', value: 'accepted_quartz' }],
+        },
+        {
+          id: 'c2',
+          text: 'Leave it behind',
+          stakesAnnotation: { want: 'stay practical', cost: 'refuse protection', identity: 'trust logic' },
+          outcomeTexts: {
+            success: 'Stela closes her hand around the stone.',
+            partial: 'Stela closes her hand around the stone, slower than before.',
+            failure: 'The refusal lands colder than you meant it to.',
+          },
+          reactionText: 'The shop seems quieter after Stela pockets it.',
+          tintFlag: 'tint:logic',
+          consequences: [{ type: 'setFlag', value: 'refused_quartz:false' }],
+        },
+        {
+          id: 'c3',
+          text: 'Ask what the stone protects',
+          stakesAnnotation: { want: 'understand the warning', cost: 'show fear', identity: 'choose inquiry' },
+          outcomeTexts: {
+            success: 'Stela tells you enough to make the stone heavier.',
+            partial: 'Stela answers, but not the question you meant.',
+            failure: 'Stela hears the fear before the curiosity.',
+          },
+          reactionText: 'The question makes the little stone feel less decorative.',
+          tintFlag: 'tint:curiosity',
+          consequences: [{ type: 'setFlag', value: 'asked_about_quartz:true' }],
+        },
+      ],
+      overallStakes: { want: 'answer Stela', cost: 'shape her trust', identity: 'choose how to read danger' },
+      designNotes: 'Recoverable flag dialect.',
+    });
+
+    const prompts: string[] = [];
+    BaseAgent.setLlmTransportOverride(async (req) => {
+      prompts.push(req.messages.map((m) => String(m.content)).join('\n'));
+      return prompts.length === 1 ? malformedFlags : recoverableFlags;
+    });
+
+    const author = new ChoiceAuthor(config);
+    const result = await author.execute(makeInput({
+      optionCount: 3,
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Test Scene',
+        location: 'bookshop',
+        choicePoint: {
+          type: 'expression',
+          stakes: { want: 'answer Stela', cost: 'shape her trust', identity: 'choose how to read danger' },
+          consequenceDomain: 'callback',
+          optionHints: ['Take the quartz', 'Leave it behind'],
+        },
+      },
+    }));
+
+    expect(result.success).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('malformed setFlag consequence');
+    expect(result.data?.choices[0].consequences).toContainEqual({ type: 'setFlag', value: true, flag: 'accepted_quartz' });
+    expect(result.data?.choices[1].consequences).toContainEqual({ type: 'setFlag', value: false, flag: 'refused_quartz' });
   });
 });

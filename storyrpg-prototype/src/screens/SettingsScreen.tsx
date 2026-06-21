@@ -39,6 +39,7 @@ interface SettingsScreenProps {
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (target: MediaSetupTarget) => void;
   onGenerateImages?: (target: MediaSetupTarget) => void;
+  onOpenStoryFolder?: (story: StoryCatalogEntry) => void;
   onContinueSeasonPlan?: (planId: string) => void;
   seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
   generatedStoryIds?: string[]; // IDs of stories that can be deleted
@@ -59,6 +60,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onRenameStory,
   onGenerateVideos,
   onGenerateImages,
+  onOpenStoryFolder,
   onContinueSeasonPlan,
   seasonContinuations = {},
   generatedStoryIds = [],
@@ -398,6 +400,51 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     );
   };
 
+  const handleOpenStoryFolder = async (story: StoryCatalogEntry) => {
+    if (!story.outputDir) {
+      Alert.alert('Folder Unavailable', 'This story does not have a local output folder.');
+      return;
+    }
+
+    try {
+      const response = await fetch(PROXY_CONFIG.openStoryFolder, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputDir: story.outputDir }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.error || 'Failed to open the story folder.');
+      }
+      onOpenStoryFolder?.(story);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to open the story folder.';
+      Alert.alert('Open Folder Failed', message);
+    }
+  };
+
+  const handleOpenJobFolder = async (job: GenerationJob) => {
+    if (!job.outputDir) {
+      Alert.alert('Folder Unavailable', 'This generation project does not have a local output folder yet.');
+      return;
+    }
+
+    try {
+      const response = await fetch(PROXY_CONFIG.openStoryFolder, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputDir: job.outputDir }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.error || 'Failed to open the generation project folder.');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to open the generation project folder.';
+      Alert.alert('Open Folder Failed', message);
+    }
+  };
+
   const confirmRename = () => {
     if (renamingStory && onRenameStory && newStoryTitle.trim()) {
       onRenameStory(renamingStory.id, newStoryTitle.trim());
@@ -450,6 +497,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           activeJobs={activeJobs}
           recentJobs={recentJobs}
           onOpenGenerator={onOpenGenerator}
+          onOpenJobFolder={(job) => { void handleOpenJobFolder(job); }}
           onCancelJob={handleCancelJob}
           onRemoveJob={removeGenerationProject}
           onClearCompletedJobs={clearCompletedJobs}
@@ -466,6 +514,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           onRenameStory={onRenameStory}
           onGenerateVideos={onGenerateVideos}
           onGenerateImages={onGenerateImages}
+          onOpenStoryFolder={(story) => { void handleOpenStoryFolder(story); }}
           onDeleteSeasonImageReferences={handleDeleteSeasonImageReferences}
           onDeleteEpisodeArt={handleDeleteEpisodeArt}
           onContinueSeasonPlan={onContinueSeasonPlan}
@@ -1132,6 +1181,24 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
     color: TERMINAL.colors.error,
+    letterSpacing: 1,
+  },
+  jobFolderButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  jobFolderButtonText: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: TERMINAL.colors.amber,
     letterSpacing: 1,
   },
   removeJobButton: {

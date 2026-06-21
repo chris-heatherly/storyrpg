@@ -13,6 +13,8 @@ import { SceneContent, GeneratedBeat } from './SceneWriter';
 import { ChoiceSet } from './ChoiceAuthor';
 import { CharacterProfile, VoiceProfile } from './CharacterDesigner';
 import { Beat, Choice } from '../../types';
+import { buildContinuityReportJsonSchema } from '../schemas/continuityReportSchema';
+import { buildStakesReportJsonSchema, buildVoiceReportJsonSchema } from '../schemas/qaReportSchemas';
 
 // ============================================
 // CONTINUITY CHECKER
@@ -187,7 +189,7 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildContinuityReportJsonSchema() });
 
       console.log(`[ContinuityChecker] Received response (${response.length} chars)`);
 
@@ -489,7 +491,7 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildVoiceReportJsonSchema() });
 
       console.log(`[VoiceValidator] Received response (${response.length} chars)`);
 
@@ -765,7 +767,7 @@ Every significant choice needs:
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildStakesReportJsonSchema() });
 
       console.log(`[StakesAnalyzer] Received response (${response.length} chars)`);
 
@@ -959,6 +961,24 @@ export interface QAReport {
   skippedChecks?: string[]; // Which checks were skipped due to incremental validation
 }
 
+const EVIDENCE_LIMITED_MAX_SCORE = 75;
+
+export function deriveEvidenceLimitedScore(input: {
+  scores?: number[];
+  evidenceCount: number;
+  errorCount?: number;
+  warningCount?: number;
+}): number {
+  if (input.evidenceCount <= 0) return 0;
+  const scores = (input.scores ?? []).filter((score) => typeof score === 'number' && Number.isFinite(score));
+  const baseScore = scores.length > 0
+    ? scores.reduce((sum, score) => sum + score, 0) / scores.length
+    : 100;
+  const capped = Math.min(EVIDENCE_LIMITED_MAX_SCORE, baseScore);
+  const penalty = (input.errorCount ?? 0) * 20 + (input.warningCount ?? 0) * 8;
+  return Math.max(0, Math.min(100, Math.round(capped - penalty)));
+}
+
 /**
  * Derive the QA-level outcome (overall score, critical-issue list, pass/fail) purely
  * from the three sub-reports. The single source of truth for QA aggregation: used both
@@ -969,7 +989,7 @@ export interface QAReport {
 export function deriveQAOutcome(
   continuity: Pick<ContinuityReport, 'overallScore' | 'issueCount'>,
   voice: Pick<VoiceReport, 'overallScore' | 'issues'>,
-  stakes: Pick<StakesReport, 'overallScore' | 'metrics'>,
+  stakes: Pick<StakesReport, 'overallScore' | 'metrics'> & Partial<Pick<StakesReport, 'issues'>>,
 ): { overallScore: number; criticalIssues: string[]; passesQA: boolean } {
   const overallScore = Math.round(
     (continuity.overallScore * 0.35) +
@@ -982,6 +1002,9 @@ export function deriveQAOutcome(
   }
   if (voice.issues.filter((i) => i.severity === 'error').length > 0) {
     criticalIssues.push('Voice consistency errors');
+  }
+  if ((stakes.issues ?? []).filter((i) => i.severity === 'error').length > 0) {
+    criticalIssues.push('Stakes analysis errors');
   }
   if (stakes.metrics.falseChoiceCount > 0) {
     criticalIssues.push(`${stakes.metrics.falseChoiceCount} false choice(s)`);
@@ -1000,6 +1023,33 @@ export function recomputeQAReportDerived(report: QAReport): void {
   report.overallScore = overallScore;
   report.criticalIssues = criticalIssues;
   report.passesQA = passesQA;
+  report.summary = buildQAReportSummary(report.continuity, report.voice, report.stakes, overallScore);
+}
+
+export function buildQAReportSummary(
+  continuity: ContinuityReport,
+  voice: VoiceReport,
+  stakes: StakesReport,
+  overall: number
+): string {
+  const parts: string[] = [];
+
+  parts.push(`Overall QA Score: ${overall}/100`);
+  parts.push(`- Continuity: ${continuity.overallScore}/100 (${continuity.issueCount.errors} errors, ${continuity.issueCount.warnings} warnings)`);
+  parts.push(`- Voice: ${voice.overallScore}/100 (${voice.distinctionScore}/100 distinction)`);
+  parts.push(`- Stakes: ${stakes.overallScore}/100 (${stakes.metrics.falseChoiceCount} false choices)`);
+
+  if (overall >= 80) {
+    parts.push('\nContent quality is good. Minor polish recommended.');
+  } else if (overall >= 70) {
+    parts.push('\nContent passes QA. Revision notes should be treated as polish unless a critical issue is present.');
+  } else if (overall >= 60) {
+    parts.push('\nContent needs revision before publishing.');
+  } else {
+    parts.push('\nSignificant issues found. Major revision required.');
+  }
+
+  return parts.join('\n');
 }
 
 /**
@@ -1044,6 +1094,15 @@ export interface QARunnerOptions {
       issue: string;
       suggestion?: string;
     }>;
+    voiceScores?: number[];
+    stakesScores?: number[];
+    voiceEvidenceCount?: number;
+    stakesEvidenceCount?: number;
+    voiceErrorCount?: number;
+    voiceWarningCount?: number;
+    stakesErrorCount?: number;
+    stakesWarningCount?: number;
+    falseChoiceCount?: number;
   };
 }
 
@@ -1128,6 +1187,7 @@ export class QARunner {
       voice = this.getSkippedVoiceReport(
         options.incrementalResults?.voiceIssueCount || 0,
         options.incrementalResults?.voiceIssues,
+        options.incrementalResults,
       );
     } else {
       const voiceResult = results[voiceIdx] as Awaited<ReturnType<VoiceValidator['execute']>>;
@@ -1140,6 +1200,7 @@ export class QARunner {
       stakes = this.getSkippedStakesReport(
         options.incrementalResults?.stakesIssueCount || 0,
         options.incrementalResults?.stakesIssues,
+        options.incrementalResults,
       );
     } else {
       const stakesResult = results[stakesIdx] as Awaited<ReturnType<StakesAnalyzer['execute']>>;
@@ -1171,6 +1232,7 @@ export class QARunner {
   private getSkippedVoiceReport(
     incrementalIssueCount: number,
     incrementalIssues?: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'],
+    incrementalResults?: NonNullable<QARunnerOptions['incrementalResults']>,
   ): VoiceReport {
     const issues: VoiceIssue[] = (incrementalIssues ?? []).map(iss => ({
       severity: iss.severity,
@@ -1184,15 +1246,38 @@ export class QARunner {
       issue: iss.issue,
       suggestion: iss.suggestion ?? '',
     }));
+    const evidenceCount = incrementalResults?.voiceEvidenceCount ?? 0;
+    if (evidenceCount <= 0) {
+      issues.push({
+        severity: 'error',
+        characterId: 'unknown',
+        characterName: 'Unknown',
+        location: { sceneId: 'qa', beatId: 'skipped-voice-validation' },
+        dialogueLine: '',
+        issue: 'Voice validation was skipped but no incremental voice evidence was available',
+        suggestion: 'Run voice validation or provide incremental voice results before assigning a QA score',
+      });
+    }
+    const errorCount = incrementalResults?.voiceErrorCount ?? issues.filter(issue => issue.severity === 'error').length;
+    const warningCount = incrementalResults?.voiceWarningCount ?? issues.filter(issue => issue.severity === 'warning').length;
 
     return {
-      overallScore: incrementalIssueCount === 0 ? 95 : Math.max(60, 95 - incrementalIssueCount * 5),
+      overallScore: deriveEvidenceLimitedScore({
+        scores: incrementalResults?.voiceScores,
+        evidenceCount,
+        errorCount,
+        warningCount,
+      }),
       characterScores: [],
       issues,
       distinctionScore: 85,
       recommendations: incrementalIssueCount > 0 
         ? [`${incrementalIssueCount} voice issue(s) were caught and addressed during incremental validation`]
-        : ['Voice validation was performed incrementally during content generation'],
+        : [
+          evidenceCount > 0
+            ? `Voice validation was performed incrementally during content generation; score is capped at ${EVIDENCE_LIMITED_MAX_SCORE} because full voice QA was skipped`
+            : 'Voice validation has no evidence and is scored as failed',
+        ],
     };
   }
 
@@ -1202,6 +1287,7 @@ export class QARunner {
   private getSkippedStakesReport(
     incrementalIssueCount: number,
     incrementalIssues?: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'],
+    incrementalResults?: NonNullable<QARunnerOptions['incrementalResults']>,
   ): StakesReport {
     const issues: StakesIssue[] = (incrementalIssues ?? []).map(iss => ({
       severity: iss.severity,
@@ -1209,13 +1295,30 @@ export class QARunner {
       issue: iss.issue,
       suggestion: iss.suggestion ?? '',
     }));
+    const evidenceCount = incrementalResults?.stakesEvidenceCount ?? 0;
+    if (evidenceCount <= 0) {
+      issues.push({
+        severity: 'error',
+        choiceSetId: 'skipped-stakes-validation',
+        issue: 'Stakes validation was skipped but no incremental stakes evidence was available',
+        suggestion: 'Run stakes validation or provide incremental stakes results before assigning a QA score',
+      });
+    }
+    const errorCount = incrementalResults?.stakesErrorCount ?? issues.filter(issue => issue.severity === 'error').length;
+    const warningCount = incrementalResults?.stakesWarningCount ?? issues.filter(issue => issue.severity === 'warning').length;
+    const falseChoiceCount = incrementalResults?.falseChoiceCount ?? 0;
 
     return {
-      overallScore: incrementalIssueCount === 0 ? 95 : Math.max(60, 95 - incrementalIssueCount * 5),
+      overallScore: deriveEvidenceLimitedScore({
+        scores: incrementalResults?.stakesScores,
+        evidenceCount,
+        errorCount,
+        warningCount,
+      }),
       choiceSetAnalysis: [],
       metrics: {
         averageStakesScore: 85,
-        falseChoiceCount: 0, // False choices would have been caught incrementally
+        falseChoiceCount,
         dilemmaQuality: 75,
         varietyScore: 80,
       },
@@ -1223,7 +1326,11 @@ export class QARunner {
       strengths: ['Stakes were validated incrementally during content generation'],
       recommendations: incrementalIssueCount > 0
         ? [`${incrementalIssueCount} stakes issue(s) were caught and addressed during incremental validation`]
-        : [],
+        : [
+          evidenceCount > 0
+            ? `Stakes validation was performed incrementally during content generation; score is capped at ${EVIDENCE_LIMITED_MAX_SCORE} because full stakes QA was skipped`
+            : 'Stakes validation has no evidence and is scored as failed',
+        ],
     };
   }
 
@@ -1233,22 +1340,7 @@ export class QARunner {
     stakes: StakesReport,
     overall: number
   ): string {
-    const parts: string[] = [];
-
-    parts.push(`Overall QA Score: ${overall}/100`);
-    parts.push(`- Continuity: ${continuity.overallScore}/100 (${continuity.issueCount.errors} errors, ${continuity.issueCount.warnings} warnings)`);
-    parts.push(`- Voice: ${voice.overallScore}/100 (${voice.distinctionScore}/100 distinction)`);
-    parts.push(`- Stakes: ${stakes.overallScore}/100 (${stakes.metrics.falseChoiceCount} false choices)`);
-
-    if (overall >= 80) {
-      parts.push('\nContent quality is good. Minor polish recommended.');
-    } else if (overall >= 60) {
-      parts.push('\nContent needs revision before publishing.');
-    } else {
-      parts.push('\nSignificant issues found. Major revision required.');
-    }
-
-    return parts.join('\n');
+    return buildQAReportSummary(continuity, voice, stakes, overall);
   }
 
   private getDefaultContinuityReport(): ContinuityReport {

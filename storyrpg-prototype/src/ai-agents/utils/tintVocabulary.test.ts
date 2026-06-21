@@ -24,6 +24,11 @@ describe('tintVocabulary (G12: authored tints matched 0/28 engine keys)', () => 
     }
   });
 
+  it('coerces loose tint prefixes into cosmetic tint namespace', () => {
+    expect(normalizeTintFlag('tint_honest')).toBe('tint:honesty');
+    expect(normalizeTintFlag('tint-mika-favored')).toBe('tint:mika-favored');
+  });
+
   it('leaves unmapped tints unchanged but reports them unknown', () => {
     expect(normalizeTintFlag('tint:wistful-about-trains')).toBe('tint:wistful-about-trains');
     expect(isKnownTint('tint:wistful-about-trains')).toBe(false);

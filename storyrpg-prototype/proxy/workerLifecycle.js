@@ -129,6 +129,104 @@ function buildDefaultWorkerStoryTitle(mode) {
   return 'Source Analysis';
 }
 
+function cleanWorkerLabelPart(value, fallback) {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.replace(/\s+/g, ' ').trim();
+  return trimmed || fallback;
+}
+
+function formatEpisodeScope(episodeRange, episodeCount) {
+  const specific = Array.isArray(episodeRange?.specific)
+    ? episodeRange.specific
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .sort((a, b) => a - b)
+    : [];
+
+  if (specific.length > 0) {
+    const isContiguous = specific.every((value, index) => index === 0 || value === specific[index - 1] + 1);
+    if (isContiguous) {
+      const first = specific[0];
+      const last = specific[specific.length - 1];
+      return first === last ? `Episode ${first}` : `Episodes ${first}-${last}`;
+    }
+    const display = specific.length > 6
+      ? `${specific.slice(0, 6).join(', ')} +${specific.length - 6}`
+      : specific.join(', ');
+    return `Episodes ${display}`;
+  }
+
+  const start = Number(episodeRange?.start);
+  const end = Number(episodeRange?.end);
+  if (Number.isFinite(start) && Number.isFinite(end) && start > 0 && end > 0) {
+    return start === end ? `Episode ${start}` : `Episodes ${start}-${end}`;
+  }
+
+  const count = Number(episodeCount);
+  if (Number.isFinite(count) && count > 1) return `Episodes 1-${Math.floor(count)}`;
+  return 'Episode 1';
+}
+
+function buildWorkerFriendlyName(mode, payload, explicitStoryTitle, episodeCount, options = {}) {
+  const title = cleanWorkerLabelPart(explicitStoryTitle, buildDefaultWorkerStoryTitle(mode));
+  const isResume = !!options.resumeFromJobId;
+  let task = 'Source analysis';
+  let scope = 'Treatment import';
+
+  if (mode === 'generation') {
+    task = isResume ? 'Resume generation' : 'Story generation';
+    scope = formatEpisodeScope(payload?.generationInput?.episodeRange, episodeCount);
+    const failureStep = options.resumeFromStepId;
+    if (isResume && typeof failureStep === 'string' && failureStep.trim()) {
+      scope = `${scope} from ${failureStep.trim()}`;
+    }
+  } else if (mode === 'image-generation') {
+    task = 'Image generation';
+    const input = payload?.imageGenerationInput || {};
+    const targetEpisode = Number(input.targetEpisodeNumber);
+    if (Number.isFinite(targetEpisode) && targetEpisode > 0) {
+      scope = `Episode ${Math.floor(targetEpisode)}`;
+    } else if (Array.isArray(input.targetSlots) && input.targetSlots.length > 0) {
+      scope = `${input.targetSlots.length} missing slot${input.targetSlots.length === 1 ? '' : 's'}`;
+    } else if (input.mode === 'spot') {
+      scope = 'Targeted slots';
+    } else {
+      scope = 'Missing image slots';
+    }
+  } else if (mode === 'compile-episode') {
+    task = 'Episode compile';
+    const request = payload?.compileEpisodeInput?.request || {};
+    const episodeNumber = Number(request.episodeNumber);
+    scope = Number.isFinite(episodeNumber) && episodeNumber > 0
+      ? `Episode ${Math.floor(episodeNumber)}`
+      : cleanWorkerLabelPart(request.storyRunId, 'Episode package');
+  } else {
+    const sourceLength = typeof payload?.analysisInput?.sourceText === 'string'
+      ? payload.analysisInput.sourceText.trim().length
+      : 0;
+    scope = sourceLength > 0 ? 'Treatment import' : 'Source prompt';
+  }
+
+  return [title, task, scope]
+    .map((part) => cleanWorkerLabelPart(part, ''))
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function buildWorkerProcessTitle(mode, friendlyName) {
+  const modeLabel = mode === 'image-generation'
+    ? 'images'
+    : mode === 'compile-episode'
+      ? 'compile'
+      : mode || 'worker';
+  const rawTitle = String(friendlyName || '')
+    .split('·')[0]
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36) || 'StoryRPG';
+  return `storyrpg:${modeLabel}:${rawTitle}`;
+}
+
 function buildWorkerRequestSnapshot(mode, payload, explicitStoryTitle) {
   const generationInput = payload?.generationInput;
   const analysisInput = payload?.analysisInput;
@@ -507,7 +605,7 @@ function createWorkerLifecycle({
     }
     const patch = {
       outputDirectory,
-      outputDir: job.outputDir || outputDirectory,
+      outputDir: outputDirectory,
     };
     if (imageStats) {
       patch.imageStats = imageStats;
@@ -893,7 +991,13 @@ function createWorkerLifecycle({
     const runnerPath = path.resolve(appRoot, 'src/ai-agents/server/worker-runner.ts');
     const payloadPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.payload.json`);
     const resultPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.result.json`);
-    fs.writeFileSync(payloadPath, JSON.stringify({ ...payload, externalJobId: workerJob.id, resultPath }, null, 2), 'utf8');
+    fs.writeFileSync(payloadPath, JSON.stringify({
+      ...payload,
+      externalJobId: workerJob.id,
+      resultPath,
+      friendlyName: workerJob.friendlyName,
+      processTitle: workerJob.processTitle,
+    }, null, 2), 'utf8');
 
     const proc = spawnTsNodeWorker({
       appRootDir: appRoot,
@@ -1310,6 +1414,8 @@ function createWorkerLifecycle({
         if (!agentCfg || typeof agentCfg !== 'object') continue;
         if (agentCfg.provider === 'anthropic' && isMissingApiKey(agentCfg.apiKey)) {
           agentCfg.apiKey = envAnthropicKey;
+        } else if ((agentCfg.provider === 'gemini' || agentCfg.provider === 'google') && isMissingApiKey(agentCfg.apiKey)) {
+          agentCfg.apiKey = envGeminiKey;
         } else if (agentCfg.provider === 'openai' && isMissingApiKey(agentCfg.apiKey)) {
           agentCfg.apiKey = envOpenAiKey;
         } else if (agentCfg.provider === 'openrouter' && isMissingApiKey(agentCfg.apiKey)) {
@@ -1371,7 +1477,14 @@ function createWorkerLifecycle({
             });
             syncGenerationMirrorFromWorker(failed);
           } else {
-            return res.json({ success: true, deduped: true, jobId: existing.id, status: existing.status });
+            return res.json({
+              success: true,
+              deduped: true,
+              jobId: existing.id,
+              status: existing.status,
+              friendlyName: existing.friendlyName || existing.resumeContext?.friendlyName,
+              processTitle: existing.processTitle || existing.resumeContext?.processTitle,
+            });
           }
         }
       }
@@ -1410,6 +1523,8 @@ function createWorkerLifecycle({
         }
       }
       const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
+      const friendlyName = buildWorkerFriendlyName(mode, hydratedPayload, storyTitle, episodeCount, { resumeFromJobId });
+      const processTitle = buildWorkerProcessTitle(mode, friendlyName);
       const resumeOutputs = priorOutputDir
         ? { output_directory: { outputDirectory: priorOutputDir } }
         : undefined;
@@ -1419,6 +1534,8 @@ function createWorkerLifecycle({
         progress: 0,
         currentPhase: 'queued',
         storyTitle: storyTitle || buildDefaultWorkerStoryTitle(mode),
+        friendlyName,
+        processTitle,
         episodeCount: episodeCount || 1,
         idempotencyKey: idempotencyKey || `${mode}:${Date.now()}`,
         resumeFromJobId: resumeFromJobId || undefined,
@@ -1428,6 +1545,8 @@ function createWorkerLifecycle({
           mode,
           requestPayload: hydratedPayload,
           storyTitle: storyTitle || buildDefaultWorkerStoryTitle(mode),
+          friendlyName,
+          processTitle,
           episodeCount: episodeCount || 1,
           resumeFromJobId: resumeFromJobId || undefined,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
@@ -1451,6 +1570,8 @@ function createWorkerLifecycle({
           mode,
           requestPayload: hydratedPayload,
           storyTitle: workerJob.storyTitle,
+          friendlyName,
+          processTitle,
           episodeCount: workerJob.episodeCount,
           resumeFromJobId: resumeFromJobId || undefined,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
@@ -1459,7 +1580,7 @@ function createWorkerLifecycle({
 
       scheduleQueuedWorkers();
       syncGenerationMirrorFromWorker(workerJob);
-      return res.json({ success: true, jobId });
+      return res.json({ success: true, jobId, friendlyName, processTitle });
     });
 
     app.get('/worker-jobs', (req, res) => {
@@ -1643,15 +1764,18 @@ function createWorkerLifecycle({
       const patchedPayload = hydrateWorkerConfigApiKeys(mergeJsonLike(basePayload, payloadPatch));
       const patchedOutputs = mergeJsonLike(hydratedCheckpoint?.outputs || {}, outputsPatch);
 
-      const priorOutputDir = resumeContext.outputDirectory
+      const requestedOutputDir = patchedOutputs?.output_directory?.outputDirectory;
+      const priorOutputDir = requestedOutputDir
+        || resumeContext.outputDirectory
         || hydratedCheckpoint?.failureContext?.context?.outputDirectory;
       if (priorOutputDir && !patchedOutputs.output_directory) {
         patchedOutputs.output_directory = { outputDirectory: priorOutputDir };
       }
 
       const resumeSteps = { ...(hydratedCheckpoint?.steps || {}) };
-      if (priorOutputDir && !resumeSteps.output_directory) {
+      if (priorOutputDir) {
         resumeSteps.output_directory = {
+          ...(resumeSteps.output_directory || {}),
           stepId: 'output_directory',
           status: 'completed',
           updatedAt: new Date().toISOString(),
@@ -1675,6 +1799,11 @@ function createWorkerLifecycle({
         || sourceJob.resumeContext?.resumeFromJobId
         || sourceJob.checkpoint?.resumeContext?.resumeFromJobId
         || sourceJob.id;
+      const friendlyName = buildWorkerFriendlyName(mode, patchedPayload, storyTitle, episodeCount, {
+        resumeFromJobId: sourceJob.id,
+        resumeFromStepId: resumeCheckpoint?.failureContext?.resumeFromStepId || resumeCheckpoint?.failureContext?.failurePhase,
+      });
+      const processTitle = buildWorkerProcessTitle(mode, friendlyName);
 
       const workerJob = upsertWorkerJob(jobId, {
         mode,
@@ -1683,14 +1812,19 @@ function createWorkerLifecycle({
         progress: 0,
         currentPhase: resumeCheckpoint?.failureContext?.resumeFromStepId || resumeCheckpoint?.failureContext?.failurePhase || 'queued',
         storyTitle: storyTitle || 'Untitled Story',
+        friendlyName,
+        processTitle,
         episodeCount: episodeCount || 1,
         idempotencyKey,
         resumeFromJobId: sourceJob.id,
         requestSnapshot,
+        ...(priorOutputDir ? { outputDirectory: priorOutputDir, outputDir: priorOutputDir } : {}),
         resumeContext: {
           mode,
           requestPayload: patchedPayload,
           storyTitle: storyTitle || 'Untitled Story',
+          friendlyName,
+          processTitle,
           episodeCount: episodeCount || 1,
           resumeFromJobId: sourceJob.id,
           resumedAt: new Date().toISOString(),
@@ -1716,6 +1850,8 @@ function createWorkerLifecycle({
           mode,
           requestPayload: patchedPayload,
           storyTitle: workerJob.storyTitle,
+          friendlyName,
+          processTitle,
           episodeCount: workerJob.episodeCount,
           resumeFromJobId: sourceJob.id,
           resumedAt: new Date().toISOString(),
@@ -1727,7 +1863,7 @@ function createWorkerLifecycle({
 
       scheduleQueuedWorkers();
       syncGenerationMirrorFromWorker(workerJob);
-      res.json({ success: true, jobId, resumedFromJobId: sourceJob.id, projectId });
+      res.json({ success: true, jobId, resumedFromJobId: sourceJob.id, projectId, friendlyName, processTitle });
     });
 
     setImmediate(() => {

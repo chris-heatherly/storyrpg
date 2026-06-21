@@ -75,6 +75,19 @@ describe('episodeCheckpoints', () => {
     expect(loadCompletedEpisode(3, store.load)).toBeNull();
   });
 
+  it('rejects completion watermarks paired with failed incremental contracts', async () => {
+    const store = makeStore();
+    await writeEpisodeCompletion({ episode: makeEpisode(1), episodeNumber: 1, title: 'One', save: store.save });
+    await store.save('episode-1-incremental-contract.json', {
+      passed: false,
+      blockingCount: 1,
+      blockingIssues: [{ type: 'qa_blocker_present' }],
+    });
+
+    expect(loadCompletedEpisode(1, store.load)).toBeNull();
+    expect(detectCompletedEpisodes([1], store.load)).toEqual([]);
+  });
+
   it('partitionResumableEpisodes splits specs and preserves order within each side', async () => {
     const store = makeStore();
     await writeEpisodeCompletion({ episode: makeEpisode(2), episodeNumber: 2, title: 'Two', save: store.save });

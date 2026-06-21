@@ -7,16 +7,44 @@ const SECRET_VALUE_PATTERNS = [
   /\bapikey-[A-Za-z0-9_-]{12,}\b/g,
 ];
 
+const PLANNING_REGISTER_REPLACEMENTS = [
+  {
+    pattern: /The next beat visibly responds to the authored choice: At the door of V[^:]+Club on night two: accept Mika's key card to the side entrance, or thank her politely and leave it\./g,
+    replacement: "The memory of Mika's key card follows you through the room, a quiet test of whether you accept the doors she opens or keep pretending you can stay untouched.",
+  },
+  {
+    pattern: /The next beat visibly responds to the authored choice: At brunch when Stela hands Kylie a small protection bag of dried herbs \(\*for your purse, love\*\): take it gracefully, deflect, or laugh and put it in\./g,
+    replacement: "Stela's little protection bag follows you into the next room, turning the old threshold into either a comfort, a warning, or the absence of both.",
+  },
+  {
+    pattern: /The next beat visibly responds to the authored choice: The pre-weekend post: publish it Friday morning \(canonical\), schedule it to drop Sunday after the weekend ends, or skip it entirely as a gesture toward Victor's privacy\./g,
+    replacement: "Whatever you did with the post follows you through the estate, turning Victor's attention into invitation, leverage, or a silence you can feel.",
+  },
+  {
+    pattern: /preserves authored choice pressure/g,
+    replacement: 'preserves treatment pressure',
+  },
+];
+
 function truncateString(value, maxLength = 1200) {
   if (typeof value !== 'string' || value.length <= maxLength) return value;
   return `${value.slice(0, maxLength)}...[truncated ${value.length - maxLength} chars]`;
 }
 
+function scrubPlanningRegisterProse(value) {
+  if (typeof value !== 'string') return value;
+  return PLANNING_REGISTER_REPLACEMENTS.reduce(
+    (next, { pattern, replacement }) => next.replace(pattern, replacement),
+    value,
+  );
+}
+
 function sanitizeString(value) {
-  return SECRET_VALUE_PATTERNS.reduce(
+  const secretScrubbed = SECRET_VALUE_PATTERNS.reduce(
     (next, pattern) => next.replace(pattern, '[redacted]'),
     value,
   );
+  return scrubPlanningRegisterProse(secretScrubbed);
 }
 
 function sanitizeJobState(value) {
@@ -42,6 +70,8 @@ function summarizeRequestPayload(payload) {
   if (!payload || typeof payload !== 'object') return undefined;
   return sanitizeJobState({
     mode: payload.mode,
+    friendlyName: payload.friendlyName,
+    processTitle: payload.processTitle,
     storyTitle: payload.storyTitle,
     episodeCount: payload.episodeCount,
     outputDirectory: payload.imageGenerationInput?.outputDirectory || payload.config?.outputDir,
@@ -105,4 +135,5 @@ module.exports = {
   publicJobState,
   publicResumeContext,
   sanitizeJobState,
+  scrubPlanningRegisterProse,
 };

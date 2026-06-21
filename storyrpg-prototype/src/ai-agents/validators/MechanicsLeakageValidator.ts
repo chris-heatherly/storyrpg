@@ -58,12 +58,12 @@ const LEAK_PATTERNS: Array<{ pattern: RegExp; label: string; suggestion: string 
     // NOTE: bare "roll"/"rolled" are common physical action verbs ("roll to
     // safety", "rolled away") — false-positives that hard-block real stories.
     // Qualify to the RPG sense while still catching genuine die-result leaks:
-    //   - roll + die expression / "dice" / "check" / "for <skill>"
+    //   - roll + die expression / "dice" / "check" / "for <mechanic>"
     //   - "roll a 17" / "rolled a 4"  (roll + "a" + bare number = a die result;
     //     "roll a barrel" / "rolled 3 times" don't match — number is required)
     //   - "roll under/over/above/below 12"  (comparison against a target number)
     // "dice", "d20", etc. are unambiguous on their own.
-    pattern: /\b(?:roll(?:ed)?\s+(?:a\s+)?(?:d\d+|dice|check|for\s+\w+)|roll(?:ed)?\s+a\s+\d+|roll(?:ed)?\s+(?:under|over|above|below)\s+\d+|dice|d20|d12|d10|d8|d6|d4)\b/i,
+    pattern: /\b(?:roll(?:ed)?\s+(?:a\s+)?(?:d\d+|dice|check|for\s+(?:initiative|damage|attack|defense|save|saving\s+throw|skill|stat|stealth|perception|persuasion|insight|investigation|strength|dexterity|constitution|intelligence|wisdom|charisma))|roll(?:ed)?\s+a\s+\d+|roll(?:ed)?\s+(?:under|over|above|below)\s+\d+|dice|d20|d12|d10|d8|d6|d4)\b/i,
     label: 'dice language',
     suggestion: 'Describe uncertainty and outcome through action, tension, and consequence instead of dice.',
   },

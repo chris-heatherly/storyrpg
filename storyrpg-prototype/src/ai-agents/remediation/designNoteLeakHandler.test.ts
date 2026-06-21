@@ -40,6 +40,60 @@ describe('buildDesignNoteLeakStripHandler', () => {
     expect(result.record.attempted).toBe(1);
   });
 
+  it('strips a feedback cue appended as its own base-text paragraph', () => {
+    const story = storyWithLeak();
+    const beat: any = (story as any).episodes[0].scenes[0].beats[0];
+    beat.text = `Base prose.\n\n${CUE}`;
+    beat.textVariants = [{ text: 'A genuine alternate beat with its own staged action and detail.' }];
+
+    const result = handler({ story, blockingIssues: [] }) as { story: Story; changed: boolean; record?: any };
+    const repairedBeat: any = (result.story as any).episodes[0].scenes[0].beats[0];
+
+    expect(result.changed).toBe(true);
+    expect(repairedBeat.text).toBe('Base prose.');
+    expect(repairedBeat.textVariants).toHaveLength(1);
+    expect(result.record.attempted).toBe(1);
+  });
+
+  it('strips generic callback scaffolding appended as its own base-text paragraph', () => {
+    const story = {
+      episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{
+        id: 'b1',
+        text: 'You stop typing, staring at the title you just wrote.\n\nAccepting the rose quartz from her still changes how this moment lands.',
+        textVariants: [],
+        choices: [],
+      }] }] }],
+    } as unknown as Story;
+
+    const result = handler({ story, blockingIssues: [] }) as { story: Story; changed: boolean; record?: any };
+    const repairedBeat: any = (result.story as any).episodes[0].scenes[0].beats[0];
+
+    expect(result.changed).toBe(true);
+    expect(repairedBeat.text).toBe('You stop typing, staring at the title you just wrote.');
+    expect(result.record.attempted).toBe(1);
+  });
+
+  it('strips generic callback scaffolding when it is the whole textVariant', () => {
+    const story = {
+      episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{
+        id: 'b1',
+        text: 'Base prose.',
+        textVariants: [
+          { text: 'A real alternate.' },
+          { text: 'Opening the card and read it aloud to Mika still changes how this moment lands.' },
+        ],
+        choices: [],
+      }] }] }],
+    } as unknown as Story;
+
+    const result = handler({ story, blockingIssues: [] }) as { story: Story; changed: boolean; record?: any };
+    const repairedBeat: any = (result.story as any).episodes[0].scenes[0].beats[0];
+
+    expect(result.changed).toBe(true);
+    expect(repairedBeat.textVariants).toHaveLength(1);
+    expect(repairedBeat.textVariants[0].text).toBe('A real alternate.');
+  });
+
   it('is a no-op when no variant matches a feedback cue (clean run → golden parity)', () => {
     const story = {
       episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{

@@ -11,6 +11,7 @@
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
 import { resolveAuthoredContext } from '../utils/documentSectionSlice';
+import { buildWorldBibleJsonSchema, buildWorldLocationsJsonSchema } from '../schemas/worldBibleSchema';
 
 // Input types
 export interface WorldBuilderInput {
@@ -259,7 +260,7 @@ Before finalizing:
       try {
         const parsed = await this.callLLMForJson<WorldBible>([
           { role: 'user', content: prompt }
-        ]);
+        ], { jsonSchema: buildWorldBibleJsonSchema() });
         worldBible = parsed.data;
         response = parsed.rawResponse;
       } catch (parseError) {
@@ -283,6 +284,8 @@ Before finalizing:
 
       // Normalize arrays that the LLM might return as strings or undefined
       worldBible = this.normalizeWorldBible(worldBible);
+      this.restoreRequestedLocationIds(worldBible, input);
+      this.pruneUnrequestedLocations(worldBible, input);
 
       // Check for missing locations and retry if needed
       if (input.locationsToCreate && input.locationsToCreate.length > 0) {
@@ -301,6 +304,7 @@ Before finalizing:
 
           // Merge the additional locations
           worldBible.locations = [...(worldBible.locations || []), ...additionalLocations];
+          this.pruneUnrequestedLocations(worldBible, input);
           console.log(`[WorldBuilder] After retry, total locations: ${worldBible.locations.length}`);
         }
       }
@@ -314,6 +318,8 @@ Before finalizing:
         const revisedBible = await this.executeRevision(input, worldBible, qualityIssues);
 
         // Re-check quality after revision
+        this.restoreRequestedLocationIds(revisedBible, input);
+        this.pruneUnrequestedLocations(revisedBible, input);
         const revisedIssues = this.collectQualityIssues(revisedBible);
         if (revisedIssues.length < qualityIssues.length) {
           console.log(`[WorldBuilder] Revision improved quality: ${qualityIssues.length} -> ${revisedIssues.length} issues`);
@@ -398,7 +404,7 @@ IMPORTANT: Return EXACTLY ${missingLocations.length} locations with IDs matching
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildWorldLocationsJsonSchema() });
 
       console.log(`[WorldBuilder] Retry response received (${response.length} chars)`);
 
@@ -467,7 +473,9 @@ IMPORTANT: Return EXACTLY ${missingLocations.length} locations with IDs matching
     // location cap (one per authored brief) instead of the old "exactly 3" cap.
     const authoredLocationCount = input.locationIntroductions?.length ?? 0;
     const countInstruction =
-      authoredLocationCount > 0
+      hasLocations
+        ? `Create exactly ${input.locationsToCreate.length} location${input.locationsToCreate.length === 1 ? '' : 's'}: one for each requested ID. Do not add extra locations beyond the requested list.`
+        : authoredLocationCount > 0
         ? `Create one location per authored location brief — exactly ${authoredLocationCount} location${authoredLocationCount === 1 ? '' : 's'} — and one faction per authored faction. Do not drop or merge authored locations.`
         : `Create 3-5 locations and 2-3 factions appropriate to the story (no more than needed).`;
 
@@ -919,13 +927,14 @@ ${issueList}
 ## Requirements
 Return a REVISED WorldBible JSON that fixes all the issues above.
 Keep all existing content but improve the flagged areas.
+Do not change any existing "id" value. Preserve every location and faction ID exactly, including accents/diacritics.
 Return ONLY valid JSON, no markdown, no extra text.
 `;
 
     try {
       const response = await this.callLLM([
         { role: 'user', content: revisionPrompt }
-      ]);
+      ], 4, { jsonSchema: buildWorldBibleJsonSchema() });
 
       console.log(`[WorldBuilder] Received revision response (${response.length} chars)`);
 
@@ -933,6 +942,7 @@ Return ONLY valid JSON, no markdown, no extra text.
       try {
         revisedBible = this.parseJSON<WorldBible>(response);
         revisedBible = this.normalizeWorldBible(revisedBible);
+        this.restoreRequestedLocationIds(revisedBible, input);
         console.log(`[WorldBuilder] Revision complete`);
         return revisedBible;
       } catch (parseError) {
@@ -944,4 +954,73 @@ Return ONLY valid JSON, no markdown, no extra text.
       return originalBible;
     }
   }
+
+  private restoreRequestedLocationIds(bible: WorldBible, input: WorldBuilderInput): void {
+    const requested = input.locationsToCreate || [];
+    if (requested.length === 0 || !Array.isArray(bible.locations)) return;
+
+    const byFoldedId = new Map(requested.map((loc) => [foldLocationKey(loc.id), loc.id]));
+    const byFoldedName = new Map(requested.map((loc) => [foldLocationKey(loc.name), loc.id]));
+    const rewrites = new Map<string, string>();
+
+    for (const location of bible.locations) {
+      const currentId = typeof location.id === 'string' ? location.id : '';
+      const exactRequested = requested.find((loc) => loc.id === currentId);
+      if (exactRequested) continue;
+
+      const targetId =
+        byFoldedId.get(foldLocationKey(currentId)) ||
+        byFoldedName.get(foldLocationKey(location.name));
+      if (!targetId) continue;
+
+      if (currentId && currentId !== targetId) rewrites.set(currentId, targetId);
+      location.id = targetId;
+    }
+
+    if (rewrites.size === 0) return;
+    for (const location of bible.locations) {
+      location.connectedLocations = (location.connectedLocations || []).map((id) => rewrites.get(id) || id);
+    }
+    for (const faction of bible.factions || []) {
+      faction.territories = (faction.territories || []).map((id) => rewrites.get(id) || id);
+    }
+    console.warn(
+      `[WorldBuilder] Restored requested location id(s): ${[...rewrites.entries()].map(([from, to]) => `${from}→${to}`).join(', ')}`
+    );
+  }
+
+  private pruneUnrequestedLocations(bible: WorldBible, input: WorldBuilderInput): void {
+    const requested = input.locationsToCreate || [];
+    if (requested.length === 0 || !Array.isArray(bible.locations)) return;
+
+    const allowed = new Set(requested.map((loc) => loc.id));
+    const before = bible.locations.length;
+    bible.locations = bible.locations.filter((location) => allowed.has(location.id));
+    const removed = before - bible.locations.length;
+    if (removed <= 0) return;
+
+    for (const location of bible.locations) {
+      location.connectedLocations = (location.connectedLocations || []).filter((id) => allowed.has(id));
+    }
+    for (const faction of bible.factions || []) {
+      faction.territories = (faction.territories || []).filter((id) => allowed.has(id));
+    }
+    console.warn(`[WorldBuilder] Pruned ${removed} unrequested location(s); keeping requested IDs only.`);
+  }
+}
+
+function foldLocationKey(value: unknown): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[ăâáàäãå]/gi, 'a')
+    .replace(/[éèëê]/gi, 'e')
+    .replace(/[íìïî]/gi, 'i')
+    .replace(/[óòöôõ]/gi, 'o')
+    .replace(/[úùüû]/gi, 'u')
+    .replace(/[șş]/gi, 's')
+    .replace(/[țţ]/gi, 't')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }

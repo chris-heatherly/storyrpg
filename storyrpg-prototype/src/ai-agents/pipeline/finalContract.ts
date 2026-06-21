@@ -43,12 +43,16 @@ import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
 import { type SeasonChoicePlan } from './seasonChoicePlan';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
 import { foldTintFlagIntoConsequences } from './choiceAssembly';
+import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
+import { normalizeEncounterOutcomeNavigation } from './encounterOutcomeNavigation';
+import type { CallbackLedger } from './callbackLedger';
 import {
   canonicalizeWitnessReactions,
   ensureWitnessNpcsInScenes,
   canonicalizeRelationshipConsequences,
   canonicalizeStoryRelationshipConsequences,
 } from '../utils/witnessNpcResolver';
+import { normalizeChoiceSetStatChecks } from '../utils/statCheckNormalization';
 import { PipelineError } from './errors';
 import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
@@ -65,6 +69,7 @@ export interface FinalContractDeps {
     treatmentSourced: boolean,
     designNoteLeaks: number,
   ) => Promise<void>;
+  saveFailedContractArtifacts?: (story: Story, report: FinalStoryContractReport) => Promise<void>;
   disambiguateProtagonistPronouns: (story: Story, brief: FullCreativeBrief) => Promise<void>;
   authorEncounterOutcomeVariants: (story: Story) => Promise<void>;
   relationshipDimensionsForNpc: (
@@ -76,6 +81,7 @@ export interface FinalContractDeps {
   readonly sceneValidationResults: SceneValidationResult[];
   readonly seasonChoicePlan: SeasonChoicePlan | undefined;
   readonly seasonSkillPlan: SeasonSkillPlan | undefined;
+  readonly callbackLedger?: CallbackLedger;
   readonly allEncounterTelemetry: EncounterTelemetry[];
   readonly remediationBudget: RemediationBudget | null;
   /** The run's SceneCritic for the contract scene-prose repair handler (a one-off is constructed when absent). */
@@ -159,9 +165,19 @@ export class FinalContract {
     // gate (merged in place). Factored into a closure so the Wave-4 repair loop can
     // re-validate a repaired story with identical inputs.
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
+      const repairedEncounterOutcomes = normalizeEncounterOutcomeNavigation(story);
+      if (repairedEncounterOutcomes > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Encounter outcome navigation normalized ${repairedEncounterOutcomes} dead-end outcome(s).`,
+        } as any);
+      }
       // Re-run the heuristic fidelity validators on THIS (possibly repaired) story so
       // a scene-prose rewrite is actually seen (cheap — no LLM). See refutedFidelityKeys.
       const freshFidelity = runFidelityValidators({ story, seasonPlan: input.brief.seasonPlan, sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis });
+      const plannedChoiceTypes = plannedChoiceTypesByScene(input.brief.seasonPlan);
+      const plannedConsequenceTiers = plannedConsequenceTiersByScene(input.brief.seasonPlan);
       const r = await new FinalStoryContractValidator().validate({
         story,
         protagonist: input.brief.protagonist
@@ -182,7 +198,16 @@ export class FinalContract {
         // choice-type budget and leans on its planned skills (balance itself is validated
         // at plan time, over the whole season).
         seasonChoicePlan: this.deps.seasonChoicePlan,
+        plannedChoiceTypesByScene: plannedChoiceTypes,
+        plannedConsequenceTiersByScene: plannedConsequenceTiers,
         seasonSkillPlan: this.deps.seasonSkillPlan,
+        callbackLedger: this.deps.callbackLedger?.serialize?.(),
+        generatedThroughEpisode: Math.max(
+          0,
+          ...(story.episodes || [])
+            .map((episode) => episode.number)
+            .filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
+        ),
       });
       try {
         // Season-final gate: read the cross-episode accumulator (superset of the
@@ -321,6 +346,9 @@ export class FinalContract {
     });
 
     if (!report.passed) {
+      if (this.deps.saveFailedContractArtifacts) {
+        await this.deps.saveFailedContractArtifacts(input.story, report);
+      }
       throw new PipelineError(
         `Final story contract failed with ${report.blockingIssues.length} blocking issue(s)`,
         input.phase,
@@ -378,6 +406,10 @@ export class FinalContract {
     // (mutates the shared choiceSet refs, so the assembled story is corrected too). This is
     // what lets GATE_RELATIONSHIP_ID_INTEGRITY enforce on real residue only.
     canonicalizeRelationshipConsequences(choiceSets, characterBible.characters.map((c) => ({ id: c.id, name: c.name })));
+    // Same validation chokepoint for mechanical balance: stat-check difficulty and
+    // weights must be the normalized shape the assembled story will carry, not the
+    // pre-repair LLM draft. Mutates shared choiceSet refs in place by design.
+    normalizeChoiceSetStatChecks(choiceSets);
     // Then add each canonical witness NPC to its scene's roster (deterministic repair
     // for the "not listed in scene" presence warning). Additive-only; mutates the
     // shared sceneContents refs so both validation and the assembled story see it.
@@ -555,6 +587,8 @@ export class FinalContract {
       encounterStructures,
       knownFlags,
       knownScores,
+      callbackLedger: this.deps.callbackLedger?.serialize?.(),
+      generatedThroughEpisode: blueprint?.number,
     };
   }
 

@@ -90,15 +90,18 @@ const TINT_ALIASES: Record<string, string> = {
 
 /** Normalize an authored tint flag to the canonical engine vocabulary when possible. */
 export function normalizeTintFlag(flag: string): string {
-  if (!flag.startsWith('tint:')) return flag;
-  if (KNOWN.has(flag)) return flag;
-  const bare = flag.slice('tint:'.length).toLowerCase();
+  const trimmed = flag.trim();
+  const normalizedPrefix = trimmed.match(/^tint[_-](.+)$/i)?.[1];
+  const candidate = normalizedPrefix ? `tint:${normalizedPrefix}` : trimmed;
+  if (!candidate.startsWith('tint:')) return flag;
+  if (KNOWN.has(candidate)) return candidate;
+  const bare = candidate.slice('tint:'.length).toLowerCase();
   const aliased = TINT_ALIASES[bare];
   if (aliased) return `tint:${aliased}`;
   // case-only mismatch with a canonical key
   const lower = `tint:${bare}`;
   if (KNOWN.has(lower)) return lower;
-  return flag;
+  return lower;
 }
 
 /** True when the flag (post-normalization) is a tint the identity engine recognizes. */

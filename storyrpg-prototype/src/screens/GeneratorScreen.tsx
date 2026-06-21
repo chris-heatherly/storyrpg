@@ -416,6 +416,8 @@ const buildPipelineRuntimeSnapshot = (
 
   return {
     jobId: statusData?.id || fallbackJobId || undefined,
+    friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+    processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
     status: statusData?.status,
     currentPhase,
     progress,
@@ -1106,6 +1108,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
 
         await updateGenJob(currentJobId, {
           status: (statusData.status as any) || 'running',
+          friendlyName: typeof statusData.friendlyName === 'string' ? statusData.friendlyName : undefined,
+          processTitle: typeof statusData.processTitle === 'string' ? statusData.processTitle : undefined,
           currentPhase: phase || 'processing',
           progress,
           etaSeconds: typeof statusData.etaSeconds === 'number' || statusData.etaSeconds === null ? statusData.etaSeconds : undefined,
@@ -2071,6 +2075,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           if (workerJobIdForUpdates) {
             void updateGenJob(workerJobIdForUpdates, {
               status: (statusData?.status as any) || 'running',
+              friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+              processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
               currentPhase: currentPhaseFromStatus || 'processing',
               progress,
               currentEpisode: Number(statusData?.currentEpisode || 1),
@@ -2083,13 +2089,15 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             });
           }
         },
-        async (jobId) => {
+        async (jobId, startData) => {
           workerJobIdForUpdates = jobId;
           setCurrentJobId(jobId);
           setActiveJobId(jobId);
           await registerGenJob({
             id: jobId,
             storyTitle: brief.story.title || 'Untitled Story',
+            friendlyName: startData.friendlyName,
+            processTitle: startData.processTitle,
             startedAt: new Date().toISOString(),
             status: 'running',
             currentPhase: 'queued',
@@ -2352,6 +2360,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         if (workerJobIdForUpdates) {
           void updateGenJob(workerJobIdForUpdates, {
             status: (statusData?.status as any) || 'running',
+            friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+            processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
             currentPhase: currentPhaseFromStatus || 'images',
             progress,
             currentEpisode: Number(statusData?.currentEpisode || 1),
@@ -2359,13 +2369,15 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           });
         }
       },
-      async (jobId) => {
+      async (jobId, startData) => {
         workerJobIdForUpdates = jobId;
         setCurrentJobId(jobId);
         setActiveJobId(jobId);
         await registerGenJob({
           id: jobId,
           storyTitle: `${title} Images`,
+          friendlyName: startData.friendlyName,
+          processTitle: startData.processTitle,
           startedAt: new Date().toISOString(),
           status: 'running',
           currentPhase: 'queued',
@@ -2465,6 +2477,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         projectId: typeof result.projectId === 'string' ? result.projectId : jobId,
         resumeFromJobId: jobId,
         storyTitle: historyJob?.storyTitle || customStoryTitle || 'Untitled Story',
+        friendlyName: typeof result.friendlyName === 'string' ? result.friendlyName : undefined,
+        processTitle: typeof result.processTitle === 'string' ? result.processTitle : undefined,
         startedAt: new Date().toISOString(),
         status: 'running',
         currentPhase: 'queued',
@@ -4241,7 +4255,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         {state === 'analyzing' && (
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}><Search size={18} color={TERMINAL.colors.amber} /><Text style={[styles.sectionTitle, { color: TERMINAL.colors.amber }]}>SOURCE ANALYSIS IN PROGRESS</Text></View>
-            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} runtime={pipelineRuntime} storyTitle={customStoryTitle || undefined} /></View>
+            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} runtime={pipelineRuntime} storyTitle={pipelineRuntime?.friendlyName || customStoryTitle || undefined} /></View>
           </View>
         )}
         {state === 'analysis_complete' && (
@@ -4606,7 +4620,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         {(state === 'running' || state === 'checkpoint') && (
           <View style={styles.runningSection}>
             <ProgressStep>
-              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} runtime={pipelineRuntime} storyTitle={customStoryTitle || undefined} />
+              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} runtime={pipelineRuntime} storyTitle={pipelineRuntime?.friendlyName || customStoryTitle || undefined} />
               <View style={styles.runningActions}>
                 <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
                   <StopCircle size={18} color={TERMINAL.colors.error} />
@@ -4728,7 +4742,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   {(historyJob.status || 'unknown').toUpperCase()}
                 </Text>
               </View>
-              <Text style={styles.historyTitle}>{(historyJob.storyTitle || 'Untitled').toUpperCase()}</Text>
+              <Text style={styles.historyTitle}>{(historyJob.friendlyName || historyJob.storyTitle || 'Untitled').toUpperCase()}</Text>
               <Text style={styles.historyMeta}>
                 STARTED {new Date(historyJob.startedAt).toLocaleString().toUpperCase()}
               </Text>
@@ -4763,7 +4777,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             {/* Pipeline Progress / Event Log */}
             {events.length > 0 && (
               <View style={styles.historyProgressSection}>
-                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} runtime={pipelineRuntime} storyTitle={historyJob.storyTitle} />
+                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} runtime={pipelineRuntime} storyTitle={historyJob.friendlyName || historyJob.storyTitle} />
               </View>
             )}
 

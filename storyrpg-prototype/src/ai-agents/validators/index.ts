@@ -57,6 +57,7 @@ export type {
 export { NPCDepthValidator } from './NPCDepthValidator';
 
 export { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
+export { ConsequenceTierPlanConformanceValidator } from './ConsequenceTierPlanConformanceValidator';
 
 export { StakesTriangleValidator } from './StakesTriangleValidator';
 
@@ -233,3 +234,5 @@ export type {
 } from './IncrementalValidators';
 export type { PovClarityIssue, PovClarityResult, PovClarityContext } from './PovClarityValidator';
 export type { SceneCraftOptions, SceneCraftResult } from './SceneCraftValidator';
+export { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
+export type { PlanningRegisterLeakFinding, PlanningRegisterLeakResult } from './PlanningRegisterLeakValidator';

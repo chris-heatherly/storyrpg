@@ -39,6 +39,7 @@ export interface QualityLedgerEntry {
   /** Validation (best-practices) overall score, 0-100. */
   overallScore?: number;
   qaScore?: number;
+  validationScore?: number;
   validationPassed?: boolean;
   finalStoryContractPassed?: boolean;
   errorCount?: number;

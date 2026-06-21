@@ -124,6 +124,18 @@ describe('EncounterQualityValidator', () => {
     expect(report.blockingIssues.filter(i => i.type === 'encounter_malformed_prose')).toEqual([]);
   });
 
+  it('does NOT false-positive valid second-person subordinate clauses', () => {
+    const enc = bespokeEncounter(3);
+    enc.phases[0].beats[0].setupText =
+      'You snatch the wool, shielding your neck. He looks amused.';
+    (enc.outcomes as any).victory.outcomeText =
+      'The escort home is brisk, professional. He bows at your door, disappearing before you turn the key.';
+
+    expect(scanMalformedEncounterProse(enc)).toEqual([]);
+    const report = new EncounterQualityValidator().validate({ story: storyWithEncounter(enc) });
+    expect(report.blockingIssues.filter(i => i.type === 'encounter_malformed_prose')).toEqual([]);
+  });
+
   it('detects template prose buried DEEP in a nextSituation branch (depth-limit regression)', () => {
     // The Endsong bug: a phase-3 conditional choice shipped the deterministic
     // template as its nextSituation branch at depth ~10. The old depth>8 cutoff

@@ -3,21 +3,39 @@
  * planned fix the GATE_DESIGN_NOTE_LEAK policyException referenced ("meta-narration
  * stripping ... so hits repair instead of aborting").
  *
- * FinalStoryContractValidator flags `echo_summary_variant`: a beat `textVariant`
- * whose ENTIRE text is one of a choice's echo-summary / reminder cues — a META
- * one-liner (a design note, not prose) that at runtime would REPLACE the beat's
- * prose with a feedback line. The bogus variant IS the leak; the beat's real base
- * prose is fine. So the repair is simply to DELETE that variant (no LLM, no rewrite
- * — precise and model-independent), which clears the finding while leaving the
- * authored prose intact. Before this, a design-note leak hard-aborted the season.
+ * FinalStoryContractValidator flags `echo_summary_variant` when a beat textVariant
+ * is one of a choice's echo-summary / reminder cues, or when that meta one-liner
+ * was appended as its own paragraph to base beat text. The bogus line IS the leak;
+ * the beat's real prose is fine. So the repair deletes the variant or strips the
+ * appended paragraph (no LLM, no rewrite — precise and model-independent).
  */
 
 import type { Story } from '../../types/story';
+import { READER_PROSE_LEAK_PATTERNS, STRUCTURAL_SCAFFOLDING_PATTERNS } from '../constants/metaProse';
 import type { ContractRepairHandler } from './finalContractRepair';
 
 /** Normalize a string the same way the validator does (collapse whitespace, lowercase). */
 const normMeta = (s: unknown): string =>
   typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().toLowerCase() : '';
+
+const metaLeakPatterns = [
+  ...READER_PROSE_LEAK_PATTERNS.map((p) => p.pattern),
+  ...STRUCTURAL_SCAFFOLDING_PATTERNS.map((p) => p.pattern),
+];
+
+function isMetaParagraph(paragraph: string, meta: Set<string>): boolean {
+  const normalized = normMeta(paragraph);
+  return meta.has(normalized) || metaLeakPatterns.some((pattern) => pattern.test(paragraph));
+}
+
+function stripMetaParagraphs(text: unknown, meta: Set<string>): string | undefined {
+  if (typeof text !== 'string') return undefined;
+  const paragraphs = text.split(/\n{2,}/);
+  if (paragraphs.length <= 1) return undefined;
+  const kept = paragraphs.filter((paragraph) => !isMetaParagraph(paragraph, meta));
+  if (kept.length === paragraphs.length || kept.length === 0) return undefined;
+  return kept.join('\n\n').trim();
+}
 
 /**
  * The global set of choice feedback-cue / reminder strings — text that is META
@@ -55,35 +73,45 @@ function collectMetaStrings(story: Story): Set<string> {
 export function buildDesignNoteLeakStripHandler(): ContractRepairHandler {
   return ({ story }) => {
     const meta = collectMetaStrings(story);
-    if (meta.size === 0) return { story, changed: false };
 
     let stripped = 0;
+    let rewritten = 0;
     for (const ep of (story as { episodes?: any[] }).episodes ?? []) {
       for (const scene of ep.scenes ?? []) {
         for (const beat of scene.beats ?? []) {
-          if (!Array.isArray(beat.textVariants)) continue;
-          const before = beat.textVariants.length;
-          beat.textVariants = beat.textVariants.filter(
-            (v: { text?: unknown }) => !(v && meta.has(normMeta(v.text))),
-          );
-          stripped += before - beat.textVariants.length;
+          const cleanedText = stripMetaParagraphs(beat.text, meta);
+          if (cleanedText !== undefined) {
+            beat.text = cleanedText;
+            rewritten += 1;
+          }
+          if (Array.isArray(beat.textVariants)) {
+            const before = beat.textVariants.length;
+            beat.textVariants = beat.textVariants.filter(
+              (v: { text?: unknown }) => {
+                if (!v || typeof v.text !== 'string') return true;
+                return !isMetaParagraph(v.text, meta);
+              },
+            );
+            stripped += before - beat.textVariants.length;
+          }
         }
       }
     }
 
-    if (stripped === 0) return { story, changed: false };
+    if (stripped === 0 && rewritten === 0) return { story, changed: false };
+    const touched = stripped + rewritten;
     return {
       story,
       changed: true,
       record: {
         rule: 'final_contract_design_note_leak',
         scope: 'season',
-        attempted: stripped,
+        attempted: touched,
         succeeded: true,
         degraded: false,
         blocked: false,
         attempts: 1,
-        details: `Stripped ${stripped} echo-summary/reminder textVariant leak(s)`,
+        details: `Stripped ${touched} echo-summary/reminder prose leak(s)`,
       },
     };
   };

@@ -111,6 +111,7 @@ export const GATE_REGISTRY: GateSpec[] = [
   // "You kiss takes"). Shadow by default until nested encounter outcome repair
   // can clear the gate without a season-final abort.
   { id: 'GATE_ENCOUNTER_PROSE_INTEGRITY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_PLANNING_REGISTER_PROSE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // WS1.4: deterministic in-place reassignment of over-cap dominant-skill slots.
   { id: 'GATE_ENCOUNTER_SKILL_REBALANCE', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   // WS1.3: a dropped cold open routes to the existing season-final scene regen to re-author the opening.
@@ -120,7 +121,7 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },

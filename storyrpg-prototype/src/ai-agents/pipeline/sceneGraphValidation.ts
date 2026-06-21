@@ -34,9 +34,18 @@ import { isGateEnabled } from '../remediation/gateDefaults';
 import { buildGateShadowRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
 import { runReconvergenceResidueGate } from '../remediation/reconvergenceResidueRepair';
 import { hasMissingResidueFindings } from './reconvergenceResidue';
-import { repairLostSceneGraphBranches } from './branchRepair';
+import {
+  applyBlueprintRequiredSetupSkipRepairsToChoiceSets,
+  repairBlueprintRequiredSetupSkips,
+  repairInvalidBranchTargets,
+  repairInvalidBranchTargetsInChoiceSets,
+  repairLostSceneGraphBranches,
+  repairRequiredSetupSkips,
+  repairRequiredSetupSkipsInChoiceSets,
+} from './branchRepair';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
+import { plannedConsequenceTiersByScene } from './plannedSceneBudgets';
 import { StoryVerb } from '../utils/storyVerbs';
 import type { PipelineEvent } from './events';
 import { UnresolvedCallbackForPrompt } from './callbackOrchestration';
@@ -107,19 +116,21 @@ export class SceneGraphValidation {
       phase: string;
       outputDirectory?: string;
       artifactName?: string;
+      choiceSets?: ChoiceSet[];
       // WS2a: enables the targeted residue regen; degrade-to-advisory works without it.
       residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
     }
   ): Promise<SceneGraphBranchValidationResult> {
     const isSceneEpisodeMode = this.deps.config.generation?.episodeStructureMode === 'sceneEpisodes';
+    const hasSafeBranchSlot = blueprintHasSafeSceneGraphBranchSlot(blueprint);
     const branchOptions = {
-      requireSceneGraphBranching: isSceneEpisodeMode ? false : this.deps.config.generation?.requireSceneGraphBranching,
+      requireSceneGraphBranching: (isSceneEpisodeMode || !hasSafeBranchSlot) ? false : this.deps.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.deps.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: isSceneEpisodeMode ? true : this.deps.config.generation?.allowLinearBottleneckEpisodes,
+      allowLinearBottleneckEpisodes: (isSceneEpisodeMode || !hasSafeBranchSlot) ? true : this.deps.config.generation?.allowLinearBottleneckEpisodes,
       ignoreBlueprintBranchesWithoutSceneRouting: isSceneEpisodeMode,
       // Gen-4 audit: flag planned multi-target branch points that assembled as a
       // linear pass-through (dead branch). Default-off; metric always recorded.
-      requireBlueprintBranchFanOut: isGateEnabled('GATE_BRANCH_FANOUT'),
+      requireBlueprintBranchFanOut: hasSafeBranchSlot && isGateEnabled('GATE_BRANCH_FANOUT'),
     };
     let result = this.deps.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
 
@@ -140,6 +151,36 @@ export class SceneGraphValidation {
           });
           result = this.deps.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
         }
+      }
+    }
+
+    if (!result.valid) {
+      const repairedInvalidTargets = repairInvalidBranchTargets(episode as never, result.issues, blueprint);
+      const repairedSourceInvalidTargets = repairInvalidBranchTargetsInChoiceSets(context.choiceSets as never, result.issues, episode as never, blueprint);
+      const totalInvalidTargetRepairs = Math.max(repairedInvalidTargets, repairedSourceInvalidTargets);
+      if (totalInvalidTargetRepairs > 0) {
+        this.deps.emit({
+          type: 'warning',
+          phase: context.phase,
+          message: `Repaired ${totalInvalidTargetRepairs} invalid scene route(s) by retargeting choices to valid blueprint targets or episode-end.`,
+        });
+        const repairedEpisode = context.residueRepair?.reassemble?.() ?? episode;
+        result = this.deps.sceneGraphBranchValidator.validateEpisode(repairedEpisode, blueprint, branchOptions);
+      }
+    }
+
+    if (!result.valid) {
+      const repairedSkips = repairRequiredSetupSkips(episode as never, result.issues, blueprint);
+      const repairedSourceSkips = repairRequiredSetupSkipsInChoiceSets(context.choiceSets as never, result.issues, blueprint);
+      const totalRepairedSkips = Math.max(repairedSkips, repairedSourceSkips);
+      if (totalRepairedSkips > 0) {
+        this.deps.emit({
+          type: 'warning',
+          phase: context.phase,
+          message: `Repaired ${totalRepairedSkips} choice bridge(s) that skipped required setup by routing to the first skipped setup scene.`,
+        });
+        const repairedEpisode = context.residueRepair?.reassemble?.() ?? episode;
+        result = this.deps.sceneGraphBranchValidator.validateEpisode(repairedEpisode, blueprint, branchOptions);
       }
     }
 
@@ -296,6 +337,22 @@ export class SceneGraphValidation {
     encounters: Map<string, EncounterStructure>,
     context: { phase: string }
   ): Promise<boolean> {
+    const blueprintSetupRepairs = repairBlueprintRequiredSetupSkips(blueprint as never);
+    const choiceSetSetupRepairs = applyBlueprintRequiredSetupSkipRepairsToChoiceSets(
+      choiceSets as never,
+      blueprintSetupRepairs,
+    );
+    if (blueprintSetupRepairs.length > 0) {
+      this.deps.emit({
+        type: 'warning',
+        phase: context.phase,
+        message:
+          `Repaired ${blueprintSetupRepairs.length} blueprint branch target(s) that skipped required setup ` +
+          `before choice repair${choiceSetSetupRepairs > 0 ? `; retargeted ${choiceSetSetupRepairs} authored choice(s)` : ''}.`,
+        data: { repairs: blueprintSetupRepairs },
+      });
+    }
+
     const episode = this.deps.assembleEpisode(
       brief,
       worldBible,
@@ -316,7 +373,8 @@ export class SceneGraphValidation {
         ? true
         : this.deps.config.generation?.allowLinearBottleneckEpisodes,
     });
-    if (validation.valid) return false;
+    const repairedBlueprintSetup = blueprintSetupRepairs.length > 0 || choiceSetSetupRepairs > 0;
+    if (validation.valid) return repairedBlueprintSetup;
 
     const needsChoiceRepair = validation.issues.some(issue =>
       issue.type === 'lost_branch_during_assembly' ||
@@ -326,7 +384,7 @@ export class SceneGraphValidation {
       issue.type === 'missing_branch_residue'
     );
     const repairable = needsChoiceRepair || needsResidueRepair;
-    if (!repairable) return false;
+    if (!repairable) return repairedBlueprintSetup;
 
     const residueRepaired = needsResidueRepair
       ? this.repairSceneGraphBranchResidue(
@@ -346,7 +404,7 @@ export class SceneGraphValidation {
     );
     if (branchScenes.length === 0) return residueRepaired;
 
-    let repaired = residueRepaired;
+    let repaired = repairedBlueprintSetup || residueRepaired;
     for (const sceneBlueprint of branchScenes.slice(0, 2)) {
       const sceneContent = sceneContents.find(scene => scene.sceneId === sceneBlueprint.id);
       if (!sceneContent || sceneContent.beats.length === 0) continue;
@@ -365,6 +423,7 @@ export class SceneGraphValidation {
       });
 
       const location = this.deps.resolveWorldLocationForScene(sceneBlueprint, worldBible);
+      const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
       const repairResult = await withTimeout(this.deps.choiceAuthor.execute({
         sceneBlueprint,
         beatText: choicePointBeat.text,
@@ -405,10 +464,7 @@ export class SceneGraphValidation {
           isBranchPoint: true,
           expectedBranches: new Set(sceneBlueprint.leadsTo || []).size,
         },
-        // Match ConsequenceBudgetValidator.TARGET_BUDGET (the other call site at
-        // ~7562 already did); the stale 20/10 split told ChoiceAuthor to aim for
-        // a mix the validator then flagged.
-        consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
+        plannedConsequenceTier: plannedConsequenceTiers[sceneBlueprint.id],
         seasonAnchors: brief.seasonPlan?.anchors,
         seasonSevenPoint: brief.seasonPlan?.sevenPoint,
         episodeStructuralRole: brief.seasonPlan?.episodes.find(
@@ -527,4 +583,29 @@ export class SceneGraphValidation {
 
     return repaired;
   }
+}
+
+function blueprintHasSafeSceneGraphBranchSlot(blueprint: EpisodeBlueprint): boolean {
+  const scenes = blueprint.scenes || [];
+  return scenes.some((scene, index) => {
+    if (index >= scenes.length - 2 || scene.isEncounter) return false;
+    const targets = [...new Set(scene.leadsTo || [])];
+    const plannedBranch = scene.choicePoint?.branches || targets.length > 1;
+    if (!plannedBranch || targets.length < 2) return false;
+    return targets.every((target) => {
+      const targetIndex = scenes.findIndex((candidate) => candidate.id === target);
+      if (targetIndex < 0 || targetIndex <= index) return false;
+      const skipped = scenes.slice(index + 1, targetIndex);
+      return !skipped.some(blueprintSceneRequiresSequentialSetup);
+    });
+  });
+}
+
+function blueprintSceneRequiresSequentialSetup(scene: EpisodeBlueprint['scenes'][number]): boolean {
+  if (scene.isEncounter || scene.plannedEncounterId) return true;
+  if (/bottleneck|convergence/i.test(scene.purpose || '')) return true;
+  if (/treatment|encounter|required|anchor/i.test(`${scene.id} ${scene.name || ''}`)) return true;
+  return (scene.requiredBeats || []).some((beat) =>
+    beat?.tier === 'authored' || beat?.tier === 'signature',
+  );
 }

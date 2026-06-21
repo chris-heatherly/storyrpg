@@ -7,12 +7,18 @@ describe('isUnsafeCallbackProse', () => {
     expect(isUnsafeCallbackProse('In the wall-breach encounter, Darian is where you placed him.')).toBe(true);
     expect(isUnsafeCallbackProse('In the next scene, she addresses him only when necessary.')).toBe(true);
     expect(isUnsafeCallbackProse('The next scene should remember this choice.')).toBe(true);
+    expect(isUnsafeCallbackProse('Later pressure remembers which option the player chose.')).toBe(true);
   });
 
   it('rejects synthesized ledger stubs and raw flag identifiers', () => {
     expect(isUnsafeCallbackProse('Earlier choice: "Take the key." (sets accepted_keycard).')).toBe(true);
     expect(isUnsafeCallbackProse('This nudges treatment_seed_ep2_1 forward.')).toBe(true);
     expect(isUnsafeCallbackProse('(moved thorne_loyalty)')).toBe(true);
+  });
+
+  it('rejects choice-response planning language', () => {
+    expect(isUnsafeCallbackProse('The next beat visibly responds to the authored choice: take the key card or leave it.')).toBe(true);
+    expect(isUnsafeCallbackProse('The authored choice colors the room.')).toBe(true);
   });
 
   it('treats empty/undefined as unsafe', () => {
@@ -42,11 +48,13 @@ describe('STRUCTURAL_SCAFFOLDING_PATTERNS (gen-5 third-class meta leaks)', () =>
     expect(matchesAny('The route chosen before this moment still colors how everyone enters the room.')).toBe(true);
     expect(matchesAny('The next threshold waits ahead.')).toBe(true);
     expect(matchesAny('The path forward is set.')).toBe(true);
+    expect(matchesAny('Accepting the rose quartz from her still changes how this moment lands.')).toBe(true);
   });
 
   it('is rejected by the callback injection filter', () => {
     expect(isUnsafeCallbackProse('It leaves a visible residue in how everyone enters.')).toBe(true);
     expect(isUnsafeCallbackProse('The path forward is set.')).toBe(true);
+    expect(isUnsafeCallbackProse('Accepting the rose quartz from her still changes how this moment lands.')).toBe(true);
   });
 
   it('does not fire on diegetic uses of residue/threshold/path', () => {

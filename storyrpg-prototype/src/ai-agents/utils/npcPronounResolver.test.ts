@@ -210,6 +210,15 @@ describe('protagonist-aware guards (bite-me-g16 false positives)', () => {
     expect(res.findings).toHaveLength(0);
   });
 
+  it('does NOT flag a named NPC acting on a bare object pronoun third party', () => {
+    const res = findNpcPronounInconsistencies(
+      g16(['Mika ignores him, pulling a black key card from her clutch, "Side door."']),
+      G16_ROSTER,
+      PROTAG,
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
   it('does NOT record the protagonist or choice-verb openers as internal conflicts', () => {
     const conflicts = findInternalPronounConflicts(
       g16([

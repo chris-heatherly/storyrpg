@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { selectTextVariant, conditionSpecificity } from './templateProcessor';
+import { selectTextVariant, conditionSpecificity, processText } from './templateProcessor';
+import { sanitizeReaderProse } from './readerProseSanitizer';
 import type { PlayerState, TextVariant } from '../types';
 
 function makePlayer(overrides: Partial<PlayerState> = {}): PlayerState {
@@ -105,5 +106,69 @@ describe('selectTextVariant', () => {
       { condition: { type: 'flag', flag: 'city-saved', value: true }, text: 'Real.' },
     ];
     expect(selectTextVariant('base', variants, player)).toBe('Real.');
+  });
+});
+
+describe('processText', () => {
+  it('strips structural callback scaffolding from selected variants', () => {
+    const player = makePlayer({ flags: { shared_card_with_mika: true } });
+    const text = processText(
+      'Three brand-deal inquiries are already in your inbox.',
+      [
+        {
+          condition: { type: 'flag', flag: 'shared_card_with_mika', value: true },
+          text: 'Three brand-deal inquiries are already in your inbox.\n\nOpening the card and read it aloud to Mika still changes how this moment lands.',
+          callbackHookId: 'flag:shared_card_with_mika',
+        } as any,
+      ],
+      player,
+      null,
+    );
+
+    expect(text).toBe('Three brand-deal inquiries are already in your inbox.');
+  });
+
+  it('falls back to base text when a matching variant is only scaffolding', () => {
+    const player = makePlayer({ flags: { shared_card_with_mika: true } });
+    const text = processText(
+      'The roses wait on the counter.',
+      [
+        {
+          condition: { type: 'flag', flag: 'shared_card_with_mika', value: true },
+          text: 'Opening the card and read it aloud to Mika still changes how this moment lands.',
+          callbackHookId: 'flag:shared_card_with_mika',
+        } as any,
+      ],
+      player,
+      null,
+    );
+
+    expect(text).toBe('The roses wait on the counter.');
+  });
+
+  it('strips scene-planning prose before it can render as reader text', () => {
+    const player = makePlayer();
+    const text = processText(
+      'Aftermath that resettles stakes; serves the hook beat ("Kylie unpacks in Bucharest.").',
+      undefined,
+      player,
+      null,
+    );
+
+    expect(text).toBe('');
+  });
+
+  it('strips structural pressure callback prose before it can render', () => {
+    const text = sanitizeReaderProse(
+      'The Vâlcescu Club is a whisper of woodsmoke and old money.\n\nIn the next room, access, trust, and pressure have already shifted.',
+    );
+
+    expect(text).toBe('The Vâlcescu Club is a whisper of woodsmoke and old money.');
+  });
+
+  it('strips generic choice-reaction placeholders before they can render', () => {
+    expect(sanitizeReaderProse('The moment lands immediately.')).toBe('');
+    expect(sanitizeReaderProse('Your understanding changes.')).toBe('');
+    expect(sanitizeReaderProse('You chose cunning over panic.')).toBe('');
   });
 });

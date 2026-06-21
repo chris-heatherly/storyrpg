@@ -17,6 +17,8 @@ import {
   ValidationConfig,
 } from '../../types/validation';
 import { Consequence, ReminderPlan } from '../../types';
+import { isStructuralFlag, type SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import { classifyLedgerFlag } from './FlagContractValidator';
 
 /**
  * One-shot / expressive flags (`tint:*`, `expr:*`/`expression:*`, `moment:*`) are
@@ -25,8 +27,12 @@ import { Consequence, ReminderPlan } from '../../types';
  * callback-debt detection focused on flags that genuinely set up a later payoff
  * (route_*, relationship/story flags), instead of inflating false positives.
  */
-function isReferentialFlag(flag: string): boolean {
-  return !/^(?:tint|expr|expression|moment):/i.test(flag);
+function isReferentialFlag(flag: unknown): flag is string {
+  if (typeof flag !== 'string') return false;
+  const normalized = flag.trim();
+  return normalized.length > 0
+    && !/^(?:tint|expr|expression|moment):/i.test(normalized)
+    && !isStructuralFlag(normalized);
 }
 
 /**
@@ -76,6 +82,12 @@ export interface CallbackInput {
 
   // Known scores that could be referenced
   knownScores?: string[];
+
+  /** Optional callback ledger for future-window / resolved-hook classification. */
+  callbackLedger?: SerializedCallbackLedger;
+
+  /** Highest generated episode number in this run. */
+  generatedThroughEpisode?: number;
 }
 
 export interface CallbackValidationResult {
@@ -109,6 +121,7 @@ export class CallbackOpportunitiesValidator {
    */
   async validate(input: CallbackInput): Promise<CallbackValidationResult> {
     const issues: ValidationIssue[] = [];
+    const generatedThrough = input.generatedThroughEpisode ?? 0;
 
     // Extract all flags set by choices
     const flagsSet = new Set<string>();
@@ -205,7 +218,11 @@ export class CallbackOpportunitiesValidator {
     }
 
     // Issue: Flags set but never referenced
-    const unreferencedFlags = Array.from(flagsSet).filter(f => !flagsReferenced.has(f));
+    const unreferencedFlags = Array.from(flagsSet).filter((f) => {
+      if (flagsReferenced.has(f)) return false;
+      const ledgerClass = classifyLedgerFlag(f, input.callbackLedger, generatedThrough);
+      return ledgerClass !== 'future-window' && ledgerClass !== 'resolved-or-abandoned';
+    });
     if (unreferencedFlags.length > 0 && flagsSet.size > 0) {
       issues.push({
         category: 'callback_opportunities',

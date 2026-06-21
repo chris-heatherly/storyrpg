@@ -17,6 +17,7 @@ import {
   Edit2,
   Eye,
   Film,
+  FolderOpen,
   Image as ImageIcon,
   Info,
   KeyRound,
@@ -451,6 +452,10 @@ function getJobImageStatsLabel(job: GenerationJob) {
   return parts.join(' • ');
 }
 
+function getJobDisplayName(job: GenerationJob) {
+  return job.friendlyName || job.storyTitle || 'Untitled';
+}
+
 interface GenerationJobsSectionProps {
   styles: SettingsStyles;
   jobs: GenerationJob[];
@@ -458,6 +463,7 @@ interface GenerationJobsSectionProps {
   activeJobs: GenerationJob[];
   recentJobs: GenerationJob[];
   onOpenGenerator: (jobId?: string) => void;
+  onOpenJobFolder?: (job: GenerationJob) => void;
   onCancelJob: (job: GenerationJob) => void;
   onRemoveJob: (jobId: string, projectId?: string, projectJobIds?: string[]) => void;
   onClearCompletedJobs: () => void;
@@ -472,6 +478,7 @@ export function GenerationJobsSection({
   activeJobs,
   recentJobs,
   onOpenGenerator,
+  onOpenJobFolder,
   onCancelJob,
   onRemoveJob,
   onClearCompletedJobs,
@@ -514,7 +521,7 @@ export function GenerationJobsSection({
                 </View>
                 <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
               </View>
-              <Text style={styles.jobTitle}>{(job.storyTitle || 'Untitled').toUpperCase()}</Text>
+              <Text style={styles.jobTitle}>{getJobDisplayName(job).toUpperCase()}</Text>
               {job.attemptCount && job.attemptCount > 1 ? (
                 <Text style={styles.jobTelemetryText}>{job.attemptCount} ATTEMPTS IN THIS PROJECT</Text>
               ) : null}
@@ -562,6 +569,15 @@ export function GenerationJobsSection({
                   <Eye size={14} color={TERMINAL.colors.primary} />
                   <Text style={styles.viewProgressButtonText}>VIEW PROGRESS</Text>
                 </TouchableOpacity>
+                {job.outputDir && onOpenJobFolder ? (
+                  <TouchableOpacity
+                    style={styles.jobFolderButton}
+                    onPress={() => onOpenJobFolder(job)}
+                  >
+                    <FolderOpen size={14} color={TERMINAL.colors.amber} />
+                    <Text style={styles.jobFolderButtonText}>FOLDER</Text>
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity
                   style={styles.cancelJobButton}
                   onPress={() => onCancelJob(job)}
@@ -596,7 +612,7 @@ export function GenerationJobsSection({
                     </View>
                     <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
                   </View>
-                  <Text style={styles.jobTitle}>{(job.storyTitle || 'Untitled').toUpperCase()}</Text>
+                  <Text style={styles.jobTitle}>{getJobDisplayName(job).toUpperCase()}</Text>
                   {job.attemptCount && job.attemptCount > 1 ? (
                     <Text style={styles.jobTelemetryText}>{job.attemptCount} ATTEMPTS IN THIS PROJECT</Text>
                   ) : null}
@@ -630,6 +646,18 @@ export function GenerationJobsSection({
                       <Eye size={14} color={TERMINAL.colors.cyan} />
                       <Text style={styles.viewDetailsButtonText}>VIEW DETAILS</Text>
                     </View>
+                    {job.outputDir && onOpenJobFolder ? (
+                      <TouchableOpacity
+                        style={styles.jobFolderButton}
+                        onPress={(event: GestureResponderEvent) => {
+                          event.stopPropagation();
+                          onOpenJobFolder(job);
+                        }}
+                      >
+                        <FolderOpen size={14} color={TERMINAL.colors.amber} />
+                        <Text style={styles.jobFolderButtonText}>FOLDER</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     <TouchableOpacity
                       style={styles.removeJobButtonInline}
                       onPress={(event: GestureResponderEvent) => {
@@ -669,6 +697,7 @@ interface StoryLibrarySectionProps {
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (target: MediaSetupTarget) => void;
   onGenerateImages?: (target: MediaSetupTarget) => void;
+  onOpenStoryFolder?: (story: StoryCatalogEntry) => void;
   onDeleteSeasonImageReferences?: (story: StoryCatalogEntry) => void;
   onDeleteEpisodeArt?: (story: StoryCatalogEntry, target: MediaSetupTarget) => void;
   onContinueSeasonPlan?: (planId: string) => void;
@@ -692,6 +721,7 @@ export function StoryLibrarySection({
   onRenameStory,
   onGenerateVideos,
   onGenerateImages,
+  onOpenStoryFolder,
   onDeleteSeasonImageReferences,
   onDeleteEpisodeArt,
   onContinueSeasonPlan,
@@ -887,6 +917,10 @@ export function StoryLibrarySection({
                     && story.outputDir
                     && story.isBuiltIn !== true
                   );
+                  const canOpenFolder = Boolean(
+                    onOpenStoryFolder
+                    && story.outputDir
+                  );
                   const canDeleteEpisodeArt = Boolean(
                     onDeleteEpisodeArt
                     && story.outputDir
@@ -950,6 +984,16 @@ export function StoryLibrarySection({
                     () => onOpenVisualizer(story.id),
                     { backgroundColor: 'rgba(6, 182, 212, 0.1)', grid: true },
                   ));
+                  if (canOpenFolder) {
+                    rowActions.push(renderStoryAction(
+                      'folder',
+                      'FOLDER',
+                      <FolderOpen size={14} color={TERMINAL.colors.amber} />,
+                      TERMINAL.colors.amber,
+                      () => onOpenStoryFolder?.(story),
+                      { backgroundColor: 'rgba(245, 158, 11, 0.1)', grid: true },
+                    ));
+                  }
                   if (canRename) {
                     rowActions.push(renderStoryAction(
                       'rename',

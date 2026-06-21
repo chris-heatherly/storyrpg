@@ -18,6 +18,8 @@
  * cross-check test pins the constants against the validator behavior.
  */
 
+import { concreteSeedDepicted, concreteSeedRuleFor, normalizeSeedText } from '../utils/concreteSeedRealization';
+
 /** Shared base both validators use, before their per-validator extras. */
 const BASE_STOPWORDS = [
   'about', 'after', 'again', 'against', 'also', 'and', 'because', 'become', 'before', 'being', 'between',
@@ -72,6 +74,10 @@ function stopwordsFor(validator: string | undefined): Set<string> {
 export function momentDepicted(validator: string | undefined, moment: string, prose: string): boolean {
   const normalizedMoment = normalize(moment);
   if (normalizedMoment.length === 0) return true;
+  if ((validator ?? 'RequiredBeatRealizationValidator') === 'RequiredBeatRealizationValidator') {
+    const concreteDepicted = concreteSeedDepicted(normalizedMoment, prose);
+    if (typeof concreteDepicted === 'boolean') return concreteDepicted;
+  }
   if (normalize(prose).includes(normalizedMoment)) return true;
   const stopwords = stopwordsFor(validator);
   const needed = [...new Set(contentTokens(moment, stopwords))];
@@ -84,6 +90,10 @@ export function momentDepicted(validator: string | undefined, moment: string, pr
 
 /** Content words of the authored moment the prose does NOT yet carry. */
 export function missingMomentTokens(validator: string | undefined, moment: string, prose: string): string[] {
+  if ((validator ?? 'RequiredBeatRealizationValidator') === 'RequiredBeatRealizationValidator') {
+    const rule = concreteSeedRuleFor(normalizeSeedText(moment));
+    if (rule && !rule.depicted(prose)) return rule.missingTokens;
+  }
   const stopwords = stopwordsFor(validator);
   const needed = [...new Set(contentTokens(moment, stopwords))];
   const hayTokens = [...new Set(contentTokens(prose, stopwords))];
@@ -99,11 +109,16 @@ export function missingMomentTokens(validator: string | undefined, moment: strin
  * and EncounterAnchorContentValidator (now also routed to the scene-prose repair):
  *   `… does not depict its central conflict on-page: "<MOMENT>".`
  *   `… does not depict required beat <id> (<tier>): "<MOMENT>".`
+ * RequiredBeat seed/cold-open forms:
+ *   `Treatment plant not found …: "<MOMENT>". A cold open…`
+ *   `Cold open not found …: "<MOMENT>". The episode-opening hook…`
  */
 export function requiredMomentFromMessage(message: string | undefined): string | undefined {
   if (!message) return undefined;
   const turn = /: "([\s\S]*)"\. The (?:authored turn|staged signature moment) must be/.exec(message);
   if (turn?.[1]) return turn[1].trim();
+  const treatmentPlant = /(?:Treatment plant|Cold open) not found[\s\S]*?: "([\s\S]*?)"\. (?:A cold open|The episode-opening hook)/.exec(message);
+  if (treatmentPlant?.[1]) return treatmentPlant[1].trim();
   // EncounterAnchorContent forms: the moment is the FINAL quoted span at end of message.
   const anchor = /does not depict (?:its central conflict on-page|required beat [^:]+): "([\s\S]*)"\.\s*$/.exec(message);
   return anchor?.[1]?.trim() || undefined;

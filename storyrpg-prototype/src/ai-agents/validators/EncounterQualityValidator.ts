@@ -115,7 +115,7 @@ const MALFORMED_SECOND_PERSON_PATTERNS: Array<{ id: string; pattern: RegExp }> =
   {
     id: 'you-possessive-noun-after-preposition',
     pattern:
-      /\b(?:on|in|into|from|across|near|at|under|through|between|behind|before|after|inside|outside|against|over|around|beside)\s+you\s+(?:bar|candle|door|hedge|maze|photograph|pulse|roof|rooftop|stair|stairs|turn|way|window)\b/i,
+      /\b(?:on|in|into|from|across|near|at|under|through|between|behind|before|after|inside|outside|against|over|around|beside)\s+you\s+(?:bar|candle|door|hedge|maze|photograph|pulse|roof|rooftop|stair|stairs|way|window)\b/i,
   },
   {
     id: 'imperative-you-adjective-noun',

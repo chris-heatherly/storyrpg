@@ -45,11 +45,144 @@ export interface RepairEpisode {
 }
 export interface RepairBlueprintScene {
   id: string;
+  name?: string;
   leadsTo?: string[];
   choicePoint?: { branches?: boolean } | null;
+  isEncounter?: boolean;
+  plannedEncounterId?: string;
+  purpose?: string;
+  requiredBeats?: Array<{ tier?: string }>;
 }
 export interface RepairBlueprint {
   scenes?: RepairBlueprintScene[];
+}
+
+export interface BlueprintRequiredSetupSkipRepair {
+  sceneId: string;
+  fromTargetSceneId: string;
+  toTargetSceneId: string;
+  skippedSceneIds: string[];
+}
+
+export interface RepairChoiceSet {
+  sceneId?: string;
+  choices?: Array<{
+    id?: string;
+    nextSceneId?: string;
+    repairedRequiredSetupSkip?: boolean;
+    repairedInvalidBranchTarget?: boolean;
+  }>;
+}
+
+function repairBlueprintLeadsTo(
+  blueprint: RepairBlueprint | undefined,
+  sceneId: string | undefined,
+  fromTarget: string | undefined,
+  toTarget: string,
+): void {
+  if (!sceneId || !fromTarget) return;
+  const bpScene = blueprint?.scenes?.find((scene) => scene.id === sceneId);
+  if (bpScene?.leadsTo?.includes(fromTarget)) {
+    bpScene.leadsTo = [...new Set(bpScene.leadsTo.map((target) =>
+      target === fromTarget ? toTarget : target,
+    ))];
+  }
+}
+
+function blueprintSceneRequiresSequentialSetup(scene: RepairBlueprintScene): boolean {
+  if (scene.isEncounter || scene.plannedEncounterId) return true;
+  if (/bottleneck|convergence/i.test(scene.purpose || '')) return true;
+  if (/treatment|encounter|required|anchor/i.test(`${scene.id} ${scene.name || ''}`)) return true;
+  return (scene.requiredBeats || []).some((beat) =>
+    beat?.tier === 'authored' || beat?.tier === 'signature',
+  );
+}
+
+/**
+ * Repair blueprint topology before ChoiceAuthor sees it. A branch scene must not
+ * offer both a required setup/encounter and that setup's aftermath as sibling
+ * targets; the latter asks the LLM to author a route that skips mandatory story
+ * material. Collapse any such target to the first skipped setup scene.
+ */
+export function repairBlueprintRequiredSetupSkips(
+  blueprint: RepairBlueprint | undefined,
+): BlueprintRequiredSetupSkipRepair[] {
+  const scenes = blueprint?.scenes;
+  if (!scenes?.length) return [];
+
+  const indexById = new Map<string, number>();
+  scenes.forEach((scene, index) => indexById.set(scene.id, index));
+
+  const repairs: BlueprintRequiredSetupSkipRepair[] = [];
+  for (const scene of scenes) {
+    const sourceIndex = indexById.get(scene.id);
+    if (sourceIndex === undefined || !scene.leadsTo?.length) continue;
+
+    const repairedTargets = scene.leadsTo.map((target) => {
+      const targetIndex = indexById.get(target);
+      if (targetIndex === undefined || targetIndex <= sourceIndex + 1) return target;
+
+      const skipped = scenes
+        .slice(sourceIndex + 1, targetIndex)
+        .filter(blueprintSceneRequiresSequentialSetup);
+      if (skipped.length === 0) return target;
+
+      const toTarget = skipped[0].id;
+      repairs.push({
+        sceneId: scene.id,
+        fromTargetSceneId: target,
+        toTargetSceneId: toTarget,
+        skippedSceneIds: skipped.map((skippedScene) => skippedScene.id),
+      });
+      return toTarget;
+    });
+
+    scene.leadsTo = [...new Set(repairedTargets)];
+    if (scene.leadsTo.length < 2 && scene.choicePoint?.branches) {
+      scene.choicePoint.branches = false;
+    }
+  }
+
+  return repairs;
+}
+
+export function applyBlueprintRequiredSetupSkipRepairsToChoiceSets(
+  choiceSets: RepairChoiceSet[] | undefined,
+  repairs: BlueprintRequiredSetupSkipRepair[],
+): number {
+  if (!choiceSets?.length || repairs.length === 0) return 0;
+  let repaired = 0;
+
+  for (const repair of repairs) {
+    for (const choiceSet of choiceSets) {
+      if (choiceSet.sceneId !== repair.sceneId) continue;
+      for (const choice of choiceSet.choices || []) {
+        if (choice.nextSceneId !== repair.fromTargetSceneId) continue;
+        choice.nextSceneId = repair.toTargetSceneId;
+        choice.repairedRequiredSetupSkip = true;
+        repaired += 1;
+      }
+    }
+  }
+
+  return repaired;
+}
+
+export interface RequiredSetupSkipIssue {
+  type?: string;
+  sceneId?: string;
+  beatId?: string;
+  choiceId?: string;
+  targetSceneId?: string;
+  skippedSceneIds?: string[];
+}
+
+export interface InvalidBranchTargetIssue {
+  type?: string;
+  sceneId?: string;
+  beatId?: string;
+  choiceId?: string;
+  targetSceneId?: string;
 }
 
 function buildSyntheticBranchChoice(beatId: string, index: number): RepairChoice {
@@ -181,4 +314,174 @@ export function repairLostSceneGraphBranches(
   }
 
   return wired;
+}
+
+/**
+ * Repair an early choice bridge that jumps over required setup by retargeting
+ * the offending bridge to the first skipped setup scene. This preserves the
+ * player path and lets the authored scene sequence carry the setup instead of
+ * silently allowing a continuity skip.
+ */
+export function repairRequiredSetupSkips(
+  episode: RepairEpisode | undefined,
+  issues: RequiredSetupSkipIssue[],
+  blueprint?: RepairBlueprint | undefined,
+): number {
+  const scenes = episode?.scenes;
+  if (!scenes?.length || !issues?.length) return 0;
+  let repaired = 0;
+
+  for (const issue of issues) {
+    if (issue.type !== 'path_missing_required_setup') continue;
+    const firstSkippedSceneId = issue.skippedSceneIds?.[0];
+    if (!firstSkippedSceneId || !issue.sceneId || !issue.choiceId) continue;
+    const source = scenes.find((scene) => scene.id === issue.sceneId);
+    if (!source) continue;
+    const sourceIndex = scenes.findIndex((scene) => scene.id === issue.sceneId);
+    const skippedIndex = scenes.findIndex((scene) => scene.id === firstSkippedSceneId);
+    if (sourceIndex < 0 || skippedIndex <= sourceIndex) continue;
+
+    let touched = false;
+    for (const beat of source.beats || []) {
+      const choice = (beat.choices || []).find((candidate) => candidate.id === issue.choiceId);
+      if (!choice) continue;
+      if (choice.nextBeatId) {
+        const bridge = (source.beats || []).find((candidate) => candidate.id === choice.nextBeatId);
+        if (bridge && bridge.nextSceneId === issue.targetSceneId) {
+          bridge.nextSceneId = firstSkippedSceneId;
+          bridge.repairedRequiredSetupSkip = true;
+          touched = true;
+        }
+      } else if (choice.nextSceneId === issue.targetSceneId) {
+        choice.nextSceneId = firstSkippedSceneId;
+        choice.repairedRequiredSetupSkip = true;
+        touched = true;
+      }
+    }
+    if (touched) {
+      repairBlueprintLeadsTo(blueprint, issue.sceneId, issue.targetSceneId, firstSkippedSceneId);
+      repaired += 1;
+    }
+  }
+
+  return repaired;
+}
+
+/**
+ * Same repair as repairRequiredSetupSkips, but applied to the source ChoiceSet
+ * artifacts that later assembly reads. Without this, branch validation can repair
+ * a temporary assembled episode while the durable episode checkpoint is rebuilt
+ * from stale choiceSets and reintroduces the bad bridge target.
+ */
+export function repairRequiredSetupSkipsInChoiceSets(
+  choiceSets: RepairChoiceSet[] | undefined,
+  issues: RequiredSetupSkipIssue[],
+  blueprint?: RepairBlueprint | undefined,
+): number {
+  if (!choiceSets?.length || !issues?.length) return 0;
+  let repaired = 0;
+
+  for (const issue of issues) {
+    if (issue.type !== 'path_missing_required_setup') continue;
+    const firstSkippedSceneId = issue.skippedSceneIds?.[0];
+    if (!firstSkippedSceneId || !issue.sceneId || !issue.choiceId || !issue.targetSceneId) continue;
+
+    let touched = false;
+    for (const choiceSet of choiceSets) {
+      if (choiceSet.sceneId !== issue.sceneId) continue;
+      const choice = choiceSet.choices?.find((candidate) => candidate.id === issue.choiceId);
+      if (!choice || choice.nextSceneId !== issue.targetSceneId) continue;
+      choice.nextSceneId = firstSkippedSceneId;
+      choice.repairedRequiredSetupSkip = true;
+      touched = true;
+    }
+
+    if (touched) {
+      repairBlueprintLeadsTo(blueprint, issue.sceneId, issue.targetSceneId, firstSkippedSceneId);
+      repaired += 1;
+    }
+  }
+
+  return repaired;
+}
+
+function validRepairTarget(
+  sceneId: string,
+  targetSceneId: string | undefined,
+  episode: RepairEpisode | undefined,
+  blueprint: RepairBlueprint | undefined,
+): string {
+  const sceneIds = new Set((episode?.scenes || []).map((scene) => scene.id));
+  const blueprintScene = blueprint?.scenes?.find((scene) => scene.id === sceneId);
+  const forward = (blueprintScene?.leadsTo || []).find((target) => target !== sceneId && sceneIds.has(target));
+  // A terminal scene has no in-episode forward target; route to the reader's
+  // existing sentinel instead of preserving an invented missing scene.
+  return forward || (targetSceneId?.toLowerCase().startsWith('episode-') ? targetSceneId : 'episode-end');
+}
+
+export function repairInvalidBranchTargets(
+  episode: RepairEpisode | undefined,
+  issues: InvalidBranchTargetIssue[],
+  blueprint?: RepairBlueprint | undefined,
+): number {
+  const scenes = episode?.scenes;
+  if (!scenes?.length || !issues?.length) return 0;
+  let repaired = 0;
+
+  for (const issue of issues) {
+    if (issue.type !== 'invalid_branch_target' || !issue.sceneId || !issue.choiceId || !issue.targetSceneId) continue;
+    const source = scenes.find((scene) => scene.id === issue.sceneId);
+    if (!source) continue;
+    const target = validRepairTarget(issue.sceneId, issue.targetSceneId, episode, blueprint);
+
+    let touched = false;
+    for (const beat of source.beats || []) {
+      for (const choice of beat.choices || []) {
+        if (choice.id !== issue.choiceId) continue;
+        if (choice.nextSceneId === issue.targetSceneId) {
+          choice.nextSceneId = target;
+          choice.repairedInvalidBranchTarget = true;
+          touched = true;
+        }
+        if (choice.nextBeatId) {
+          const bridge = (source.beats || []).find((candidate) => candidate.id === choice.nextBeatId);
+          if (bridge?.nextSceneId === issue.targetSceneId) {
+            bridge.nextSceneId = target;
+            bridge.repairedInvalidBranchTarget = true;
+            touched = true;
+          }
+        }
+      }
+    }
+    if (touched) repaired += 1;
+  }
+
+  return repaired;
+}
+
+export function repairInvalidBranchTargetsInChoiceSets(
+  choiceSets: RepairChoiceSet[] | undefined,
+  issues: InvalidBranchTargetIssue[],
+  episode?: RepairEpisode | undefined,
+  blueprint?: RepairBlueprint | undefined,
+): number {
+  if (!choiceSets?.length || !issues?.length) return 0;
+  let repaired = 0;
+
+  for (const issue of issues) {
+    if (issue.type !== 'invalid_branch_target' || !issue.sceneId || !issue.choiceId || !issue.targetSceneId) continue;
+    const target = validRepairTarget(issue.sceneId, issue.targetSceneId, episode, blueprint);
+    let touched = false;
+    for (const choiceSet of choiceSets) {
+      if (choiceSet.sceneId !== issue.sceneId) continue;
+      const choice = choiceSet.choices?.find((candidate) => candidate.id === issue.choiceId);
+      if (!choice || choice.nextSceneId !== issue.targetSceneId) continue;
+      choice.nextSceneId = target;
+      choice.repairedInvalidBranchTarget = true;
+      touched = true;
+    }
+    if (touched) repaired += 1;
+  }
+
+  return repaired;
 }

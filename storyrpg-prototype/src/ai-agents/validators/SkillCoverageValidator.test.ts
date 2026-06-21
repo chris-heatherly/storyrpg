@@ -68,6 +68,31 @@ describe('SkillCoverageValidator', () => {
     expect(result.score).toBe(100 - warnings.length * 7);
   });
 
+  it('includes encounter primarySkill slots in season skill dominance diagnostics', () => {
+    const validator = new SkillCoverageValidator();
+    const input: SkillCoverageInput = {
+      choices: [
+        { id: 'c1', text: 'Talk them down', statCheck: { skillWeights: { persuasion: 1 }, difficulty: 40 } },
+        { id: 'c2', text: 'Search the records', statCheck: { skillWeights: { investigation: 1 }, difficulty: 40 } },
+      ],
+      encounters: [{
+        phases: [{
+          beats: Array.from({ length: 6 }, (_, index) => ({
+            id: `enc-${index}`,
+            choices: [{ id: `enc-choice-${index}`, primarySkill: 'perception' }],
+          })),
+        }],
+      }],
+    };
+
+    const result = validator.validate(input);
+
+    expect(result.metrics.checkedStatChecks).toBe(8);
+    expect(result.metrics.dominantSkill).toBe('perception');
+    expect(result.metrics.dominantSkillShare).toBeCloseTo(6 / 8);
+    expect(result.issues.map((issue) => issue.message).join('\n')).toContain('perception');
+  });
+
   it('suppresses skill-focus warnings when genre-narrow focus is allowed', () => {
     const validator = new SkillCoverageValidator();
     const input: SkillCoverageInput = {

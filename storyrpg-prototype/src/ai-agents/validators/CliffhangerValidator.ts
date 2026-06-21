@@ -74,7 +74,7 @@ export class CliffhangerValidator extends BaseAgent {
     }
 
     const lastScene = episode.scenes[episode.scenes.length - 1];
-    const lastBeat = lastScene?.beats?.[lastScene.beats.length - 1];
+    const lastBeat = this.selectFinalCliffhangerBeat(lastScene);
     
     if (!lastBeat) {
       return {
@@ -178,7 +178,7 @@ export class CliffhangerValidator extends BaseAgent {
     
     try {
       const lastScene = episode.scenes[episode.scenes.length - 1];
-      const lastBeat = lastScene?.beats[lastScene.beats.length - 1];
+      const lastBeat = this.selectFinalCliffhangerBeat(lastScene);
       
       if (!lastBeat) {
         return {
@@ -274,6 +274,22 @@ Return JSON:
   // ========================================
   // PRIVATE METHODS
   // ========================================
+
+  private selectFinalCliffhangerBeat(scene: Scene | undefined): Beat | undefined {
+    const beats = scene?.beats || [];
+    if (beats.length === 0) return undefined;
+
+    const hasText = (beat: Beat): boolean => Boolean((beat.text || '').trim());
+    const isChoicePayoffBridge = (beat: Beat): boolean => {
+      const data = beat as Beat & { isChoiceBridge?: boolean; sourceChoiceId?: string };
+      const isIntentionalCoda = /cliffhanger-coda$/i.test(data.id || '');
+      return Boolean((data.sourceChoiceId || data.isChoiceBridge) && !isIntentionalCoda);
+    };
+
+    return [...beats].reverse().find((beat) => hasText(beat) && !isChoicePayoffBridge(beat))
+      || [...beats].reverse().find(hasText)
+      || beats[beats.length - 1];
+  }
 
   private analyzeTextForCliffhanger(text: string, plan: EpisodePlan | CliffhangerPlan): CliffhangerAnalysis {
     const planDetails = this.getPlanDetails(plan);

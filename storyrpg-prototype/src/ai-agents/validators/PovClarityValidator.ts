@@ -149,11 +149,135 @@ const PROTAGONIST_NAME_MODIFIER_FOLLOWERS = new Set([
   'maze', 'lantern', 'inch', 'noticer', 'woman', 'night', 'pulse',
   'watchfulness', 'grin', 'thing', 'catalogue',
 ]);
+const MALFORMED_OBJECT_POSSESSIVE_FOLLOWERS = new Set([
+  'eyes', 'eye', 'forehead', 'laptop', 'face', 'mouth', 'hand', 'hands',
+  'shoulder', 'shoulders', 'arm', 'arms', 'pulse', 'breath', 'voice',
+]);
+const POSSESSIVE_PRONOUN_HEAD_NOUNS = new Set([
+  ...MALFORMED_OBJECT_POSSESSIVE_FOLLOWERS,
+  'ankle', 'ankles', 'back', 'body', 'cheek', 'cheeks', 'chest', 'coat',
+  'collar', 'cuffs', 'door', 'dress', 'elbow', 'fingers', 'floor', 'hair',
+  'home', 'instinct', 'instincts', 'jaw', 'knuckles', 'lips', 'neck', 'pocket', 'skin', 'sleeve',
+  'spine', 'throat', 'thumb', 'wrist', 'wrists', 'lungs',
+]);
+const SELF_BODY_POSSESSIVE_HEAD_NOUNS = new Set([
+  'ankle', 'ankles', 'arm', 'arms', 'back', 'body', 'breath', 'cheek', 'cheeks',
+  'chest', 'elbow', 'eyes', 'face', 'fingers', 'hair', 'hand', 'hands', 'heart',
+  'jaw', 'knee', 'knees', 'knuckles', 'lips', 'lungs', 'mouth', 'neck', 'pulse',
+  'ribs', 'shoulder', 'shoulders', 'skin', 'spine', 'throat', 'thumb', 'voice',
+  'wrist', 'wrists',
+]);
+const SELF_BODY_ACTION_VERBS = [
+  'check', 'checks', 'checked',
+  'clutch', 'clutches', 'clutched',
+  'cover', 'covers', 'covered',
+  'feel', 'feels', 'felt',
+  'find', 'finds', 'found',
+  'guard', 'guards', 'guarded',
+  'hold', 'holds', 'held',
+  'lift', 'lifts', 'lifted',
+  'pat', 'pats', 'patted',
+  'press', 'presses', 'pressed',
+  'protect', 'protects', 'protected',
+  'reach for', 'reaches for', 'reached for',
+  'rub', 'rubs', 'rubbed',
+  'test', 'tests', 'tested',
+  'touch', 'touches', 'touched',
+  'wipe', 'wipes', 'wiped',
+];
+const OBJECT_HOME_VERBS = [
+  'bring', 'brings', 'brought',
+  'escort', 'escorts', 'escorted',
+  'lead', 'leads', 'led',
+  'take', 'takes', 'took',
+  'walk', 'walks', 'walked', 'walking',
+];
 
 function nextWordAfter(text: string, offset: number, word: string): string | undefined {
   const rest = text.slice(offset + word.length);
   const match = rest.match(/^\s+([A-Za-z]+)/);
   return match?.[1]?.toLowerCase();
+}
+
+function followingWords(text: string, offset: number, word: string, maxWords: number): string[] {
+  const rest = text.slice(offset + word.length);
+  const out: string[] = [];
+  const re = /\s+([A-Za-z][A-Za-z'’-]*)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(rest)) && out.length < maxWords) {
+    out.push(match[1].toLowerCase().replace(/[’']/g, ''));
+  }
+  return out;
+}
+
+function looksLikePossessiveHer(text: string, offset: number): boolean {
+  const words = followingWords(text, offset, 'her', 4);
+  return words.some((word) => POSSESSIVE_PRONOUN_HEAD_NOUNS.has(word));
+}
+
+function scopedPronounStart(text: string, nameRe: RegExp): number {
+  const match = nameRe.exec(text);
+  return match?.index ?? 0;
+}
+
+function replaceAfterOffset(text: string, offset: number, fn: (segment: string) => string): string {
+  return text.slice(0, offset) + fn(text.slice(offset));
+}
+
+function repairSecondPersonResidueInSegment(seg: string): { text: string; changed: boolean } {
+  if (!/\b(?:you|your)\b/i.test(seg)) return { text: seg, changed: false };
+  let changed = false;
+  let s = seg;
+  const possessive = '(?:her|his|their)';
+  const bodyParts = [...SELF_BODY_POSSESSIVE_HEAD_NOUNS].join('|');
+  const actionVerbs = SELF_BODY_ACTION_VERBS
+    .map((verb) => verb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+
+  const directSelfBodyRe = new RegExp(
+    `\\b(you\\s+(?:${actionVerbs})\\s+)${possessive}\\s+(${bodyParts})\\b`,
+    'gi',
+  );
+  s = s.replace(directSelfBodyRe, (_m, prefix: string, noun: string) => {
+    changed = true;
+    return `${prefix}your ${noun}`;
+  });
+
+  const lingeringSelfBodyRe = new RegExp(
+    `(\\byou\\s+(?:${actionVerbs})\\s+your\\s+(?:${bodyParts})\\b[^.!?]{0,180}?)\\b${possessive}\\s+(${bodyParts})\\b`,
+    'gi',
+  );
+  s = s.replace(lingeringSelfBodyRe, (_m, prefix: string, noun: string) => {
+    changed = true;
+    return `${prefix}your ${noun}`;
+  });
+
+  const homeResidueRe = new RegExp(
+    `\\b(${OBJECT_HOME_VERBS.join('|')})\\s+her\\s+home\\b`,
+    'gi',
+  );
+  s = s.replace(homeResidueRe, (_m, verb: string) => {
+    changed = true;
+    return `${verb} you home`;
+  });
+
+  s = s.replace(/\bkisses\s+her\s+hand\b/gi, (m) => {
+    changed = true;
+    return matchCase(m, 'kisses your hand');
+  });
+
+  return { text: s, changed };
+}
+
+export function repairSecondPersonProtagonistResidue(text: string): { text: string; changed: boolean } {
+  if (!text) return { text, changed: false };
+  let changed = false;
+  const transformed = transformOutsideQuotes(text, (seg) => {
+    const repaired = repairSecondPersonResidueInSegment(seg);
+    if (repaired.changed) changed = true;
+    return repaired.text;
+  });
+  return { text: transformed, changed };
 }
 
 /** De-inflect a present 3rd-singular verb ("straightens"→"straighten") for a "you" subject. */
@@ -189,7 +313,11 @@ export function coerceThirdPersonProtagonistToSecond(
 ): { text: string; changed: boolean } {
   if (!text || !protagonistName) return { text, changed: false };
   const names = Array.from(new Set([protagonistName, protagonistName.split(/\s+/)[0]].filter(Boolean)));
-  const nameRe = new RegExp(`^(?:${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`, 'i');
+  const escapedNames = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const nameRe = new RegExp(`^(?:${escapedNames.join('|')})$`, 'i');
+  const nameAnywhereRe = new RegExp(`\\b(?:${escapedNames.join('|')})\\b`, 'i');
+  const nameAnywhereOrPossessiveRe = new RegExp(`\\b(?:${escapedNames.join('|')})\\b(?:['’]s)?`, 'i');
+  const namePossessiveRe = new RegExp(`\\b(?:${[...escapedNames].sort((a, b) => b.length - a.length).join('|')})['’]s\\b`, 'gi');
   const subj = opts.subjectPronoun ?? 'she';
   const poss = subj === 'he' ? 'his' : 'her';
   const obj = subj === 'he' ? 'him' : 'her';
@@ -200,20 +328,44 @@ export function coerceThirdPersonProtagonistToSecond(
   const transformed = transformOutsideQuotes(text, (seg) => {
     if (!seg) return seg;
     let s = seg;
+    const segmentHasProtagonistName = nameAnywhereRe.test(seg);
+    const shouldCoercePronouns = Boolean(opts.coercePronouns && segmentHasProtagonistName);
 
-    if (opts.coercePronouns) {
+    if (shouldCoercePronouns) {
       // Possessive (pronoun + following word) → "your"; standalone object form → "you".
-      const possRe = new RegExp(`\\b${poss}\\b(?=\\s+[A-Za-z])`, 'g');
-      s = s.replace(possRe, (m) => { changed = true; return matchCase(m, 'your'); });
-      if (obj !== poss) {
-        s = s.replace(new RegExp(`\\b${obj}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'you'); });
-      } else {
-        // her: any remaining (object) "her" → "you" (possessive already consumed above)
-        s = s.replace(new RegExp(`\\b${obj}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'you'); });
-      }
-      if (possS) s = s.replace(new RegExp(`\\b${possS}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'yours'); });
-      s = s.replace(new RegExp(`\\b${reflexive}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'yourself'); });
+      const pronounStart = scopedPronounStart(seg, nameAnywhereOrPossessiveRe);
+      s = replaceAfterOffset(s, pronounStart, (tail) => {
+        let out = tail;
+        if (obj !== poss) {
+          const possRe = new RegExp(`\\b${poss}\\b(?=\\s+[A-Za-z])`, 'g');
+          out = out.replace(possRe, (m) => { changed = true; return matchCase(m, 'your'); });
+          const possessiveObjectRe = new RegExp(`\\b${obj}\\b(?=\\s+(?:${[...MALFORMED_OBJECT_POSSESSIVE_FOLLOWERS].join('|')})\\b)`, 'g');
+          out = out.replace(possessiveObjectRe, (m) => { changed = true; return matchCase(m, 'your'); });
+          out = out.replace(new RegExp(`\\b${obj}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'you'); });
+        } else {
+          const objectHomeRe = new RegExp(`\\b(${OBJECT_HOME_VERBS.join('|')})\\s+her\\s+home\\b`, 'gi');
+          out = out.replace(objectHomeRe, (_m, verb: string) => {
+            changed = true;
+            return `${verb} you home`;
+          });
+          out = out.replace(/\bher\b/g, (m, offset: number, full: string) => {
+            changed = true;
+            return matchCase(m, looksLikePossessiveHer(full, offset) ? 'your' : 'you');
+          });
+        }
+        if (possS) out = out.replace(new RegExp(`\\b${possS}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'yours'); });
+        out = out.replace(new RegExp(`\\b${reflexive}\\b`, 'g'), (m) => { changed = true; return matchCase(m, 'yourself'); });
+        return out;
+      });
+    } else if (opts.coercePronouns && obj !== poss) {
+      const possessiveObjectRe = new RegExp(`\\b${obj}\\b(?=\\s+(?:${[...MALFORMED_OBJECT_POSSESSIVE_FOLLOWERS].join('|')})\\b)`, 'g');
+      s = s.replace(possessiveObjectRe, (m) => { changed = true; return matchCase(m, 'your'); });
     }
+
+    s = s.replace(namePossessiveRe, (m) => {
+      changed = true;
+      return m === m.toUpperCase() && /[A-Z]/.test(m) ? 'YOUR' : 'your';
+    });
 
     // Subject pass: protagonist NAME (always) and subject pronoun (when coercing pronouns)
     // → "you", de-inflecting the verb it governs.
@@ -233,7 +385,7 @@ export function coerceThirdPersonProtagonistToSecond(
         pending = true;
         return 'you';
       }
-      if (opts.coercePronouns && lower === subj) { changed = true; pending = true; return matchCase(word, 'you'); }
+      if (shouldCoercePronouns && lower === subj) { changed = true; pending = true; return matchCase(word, 'you'); }
       if (pending) {
         pending = false;
         const v = deinflectPresentVerb(word);
@@ -241,6 +393,12 @@ export function coerceThirdPersonProtagonistToSecond(
       }
       return word;
     });
+
+    const residue = repairSecondPersonResidueInSegment(s);
+    if (residue.changed) {
+      changed = true;
+      s = residue.text;
+    }
 
     return s;
   });
@@ -417,14 +575,18 @@ export class PovClarityValidator {
     if (!protagonistName) return false;
     const trimmed = text.trim();
     if (trimmed.length === 0) return false;
-    // Any second-person address means the beat is in the house POV — not a break.
-    if (hasPlayerReference(trimmed)) return false;
+    const narration = stripDoubleQuotedSpans(trimmed);
     const names = Array.from(new Set([protagonistName, protagonistName.split(/\s+/)[0]].filter(Boolean)));
-    const nameRe = new RegExp(`\\b(?:${names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'i');
-    if (!nameRe.test(trimmed)) return false;
+    const escapedNames = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const namePossessiveRe = new RegExp(`\\b(?:${[...escapedNames].sort((a, b) => b.length - a.length).join('|')})['’]s\\b`, 'i');
+    if (namePossessiveRe.test(narration)) return true;
+    // Any second-person address in narration means the beat is otherwise in the house POV.
+    if (hasPlayerReference(narration)) return false;
+    const nameRe = new RegExp(`\\b(?:${escapedNames.join('|')})\\b`, 'i');
+    if (!nameRe.test(narration)) return false;
     // Protagonist named, third-person singular pronoun present, and no "you" anywhere →
     // the protagonist is being narrated in third person.
-    return /\b(?:she|he|her|him|his|hers|herself|himself)\b/i.test(trimmed);
+    return /\b(?:she|he|her|him|his|hers|herself|himself)\b/i.test(narration);
   }
 
   private hasAmbiguousPronounChain(text: string, characterNames: string[], protagonistName?: string): boolean {

@@ -15,6 +15,16 @@ describe('requiredMomentFromMessage', () => {
     expect(requiredMomentFromMessage(msg)).toBe(SIGNATURE);
   });
 
+  it('extracts the quoted moment from a treatment plant finding', () => {
+    const msg = 'Treatment plant not found on-page in episode 1 (bound to scene "s1-1"): "The rougher man at the kitchen entrance who didn\'t fit.". A cold open, recurring object, or information-ledger tell from the treatment was dropped.';
+    expect(requiredMomentFromMessage(msg)).toBe("The rougher man at the kitchen entrance who didn't fit.");
+  });
+
+  it('extracts the quoted moment from a cold-open finding', () => {
+    const msg = 'Cold open not found on-page in episode 1 (scene "s1-1"): "A FaceTime to her niece Sadie about vampires in Romania". The episode-opening hook was dropped.';
+    expect(requiredMomentFromMessage(msg)).toBe('A FaceTime to her niece Sadie about vampires in Romania');
+  });
+
   it('returns undefined for non-realization messages', () => {
     expect(requiredMomentFromMessage('Witness npc id "None" is invalid.')).toBeUndefined();
     expect(requiredMomentFromMessage(undefined)).toBeUndefined();
@@ -36,6 +46,31 @@ describe('momentDepicted (mirror of the validators’ presence check)', () => {
 
   it('counts inflected forms via the shared-stem rule', () => {
     expect(momentDepicted('RequiredBeatRealizationValidator', 'she leaps to rescue the child', 'leaping down, she rescues the children')).toBe(true);
+  });
+
+  it('does not let scattered seed ingredients satisfy the concrete treatment plant', () => {
+    const prose = [
+      'Mika hands you a key card to the side entrance.',
+      'Morning light falls across the kitchen counter and a hand-knit blanket.',
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', "The rougher man at the kitchen entrance who didn't fit.", prose)).toBe(false);
+  });
+
+  it('does not count a generic man near kitchens as the concrete treatment plant', () => {
+    const prose =
+      "Your gaze drifts to an archway flanking the kitchens and catches on a man who is a block of granite amidst silk. He isn't watching the party. He's watching the exits.";
+    expect(momentDepicted('RequiredBeatRealizationValidator', "The rougher man at the kitchen entrance who didn't fit.", prose)).toBe(false);
+  });
+
+  it('passes the concrete treatment seed only when the figure and treatment sign land together', () => {
+    const prose = 'The rougher man by the kitchen smells faintly of woodsmoke before turning away.';
+    expect(momentDepicted('RequiredBeatRealizationValidator', "The rougher man at the kitchen entrance who didn't fit.", prose)).toBe(true);
+  });
+
+  it('passes the concrete treatment seed when the local plant spans adjacent sentences', () => {
+    const prose =
+      'The scent of woodsmoke leads you toward the building kitchen. Radu is pinned against the doorframe. Opposite him stands a rougher man, his heavy hand-knit sweater straining at the shoulders.';
+    expect(momentDepicted('RequiredBeatRealizationValidator', "The rougher man at the kitchen entrance who didn't fit.", prose)).toBe(true);
   });
 
   it('treats an empty/unextractable moment as depicted', () => {
@@ -61,6 +96,16 @@ describe('missingMomentTokens', () => {
     const moment = 'the signature gesture happens';
     expect(missingMomentTokens('SignatureDevicePresenceValidator', moment, '')).not.toContain('signature');
     expect(missingMomentTokens('RequiredBeatRealizationValidator', moment, '')).toContain('signature');
+  });
+
+  it('returns concrete seed tokens when the co-located plant is absent', () => {
+    const missing = missingMomentTokens(
+      'RequiredBeatRealizationValidator',
+      "The rougher man at the kitchen entrance who didn't fit.",
+      'A hand-knit blanket lies on the kitchen counter.',
+    );
+    expect(missing).toContain('kitchen');
+    expect(missing).toContain('woodsmoke');
   });
 });
 

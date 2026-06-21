@@ -1,7 +1,7 @@
 import type { Story } from '../../types';
 import type { TextVariant } from '../../types/content';
 import { isStructuralFlag } from './callbackLedger';
-import { buildCallbackCondition, deriveChoiceAcknowledgment } from './callbackOrchestration';
+import { buildCallbackCondition } from './callbackOrchestration';
 
 /**
  * WS0.2 — residue-consume contract (season-final, whole-story).
@@ -129,8 +129,79 @@ interface PlacementState {
   maxPerScene: number;
 }
 
+const FLAG_WORD_STOPLIST = new Set([
+  'flag',
+  'choice',
+  'chose',
+  'selected',
+  'treatment',
+  'branch',
+  'scene',
+  'episode',
+  'encounter',
+  'true',
+  'false',
+]);
+
+function titleWord(word: string): string {
+  if (/^cismigiu$/i.test(word)) return 'Cișmigiu';
+  if (/^mika$/i.test(word)) return 'Mika';
+  if (/^stela$/i.test(word)) return 'Stela';
+  if (/^victor$/i.test(word)) return 'Victor';
+  if (/^kylie$/i.test(word)) return 'Kylie';
+  return word;
+}
+
+function wordsForFlag(flag: string): string[] {
+  return flag
+    .replace(/[:.]/g, '_')
+    .split(/_+/)
+    .map((word) => word.trim().toLowerCase())
+    .filter((word) => word.length >= 3 && !FLAG_WORD_STOPLIST.has(word));
+}
+
+function flagResidueAcknowledgment(flag: string): string {
+  const words = wordsForFlag(flag);
+  if (words.length === 0) return '';
+  const has = (word: string) => words.includes(word);
+  const proper = words.map(titleWord);
+
+  if (has('notebook') && (has('lost') || has('missing'))) {
+    return 'The missing notebook keeps tugging at your attention.';
+  }
+  if (has('bruised') || has('bruise')) {
+    const place = proper.find((word) => word === 'Cișmigiu');
+    return place ? `The bruise from ${place} pulls when you move.` : 'The bruise still pulls when you move.';
+  }
+  if (has('survivor') || has('survived')) {
+    const place = proper.find((word) => word === 'Cișmigiu');
+    return place ? `Surviving ${place} has left your senses too awake.` : 'Surviving that night has left your senses too awake.';
+  }
+  if (has('walked') && has('home')) {
+    const person = proper.find((word) => ['Victor', 'Mika', 'Stela', 'Kylie'].includes(word));
+    return person ? `${person} walking you home still changes how safe the room feels.` : 'Being walked home still changes how safe the room feels.';
+  }
+  if (has('claimed')) {
+    const person = proper.find((word) => ['Victor', 'Mika', 'Stela', 'Kylie'].includes(word));
+    return person ? `${person}'s claim on you lingers like a touch you cannot quite shake.` : 'That claim on you lingers like a touch you cannot quite shake.';
+  }
+  if (has('wine')) {
+    return 'The taste of that dark wine still sits at the back of your throat.';
+  }
+  if (has('key') || has('keycard')) {
+    return 'The black key card feels heavier than plastic in your pocket.';
+  }
+  if (has('quartz')) {
+    return 'The quartz keeps a small warmth against your palm.';
+  }
+
+  return '';
+}
+
 function tryPlace(story: Story, debt: ResidueDebt, st: PlacementState, sameSceneAllowed: boolean): boolean {
   const episodes = story.episodes || [];
+  const ack = flagResidueAcknowledgment(debt.flag);
+  if (!ack) return false;
   for (let e = debt.epIdx; e < episodes.length; e++) {
     const scenes = episodes[e].scenes || [];
     for (let s = 0; s < scenes.length; s++) {
@@ -146,7 +217,6 @@ function tryPlace(story: Story, debt: ResidueDebt, st: PlacementState, sameScene
         // A matching TextVariant REPLACES the beat's base text at runtime, so compose
         // base prose + acknowledgment rather than overwrite the beat (G12 lesson).
         const base = typeof beat.text === 'string' ? beat.text.trim() : '';
-        const ack = deriveChoiceAcknowledgment(debt.flag);
         const variant: TextVariant = {
           condition: buildCallbackCondition(debt.flag),
           text: base ? `${base}\n\n${ack}` : ack,

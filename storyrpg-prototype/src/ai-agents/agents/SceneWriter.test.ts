@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildSourceMaterialFidelitySection, SceneWriter } from './SceneWriter';
+import { buildSceneContentJsonSchema } from '../schemas/sceneContentSchema';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 
 function createWriter(): SceneWriter {
@@ -14,6 +15,800 @@ function createWriter(): SceneWriter {
 }
 
 describe('SceneWriter structural guards', () => {
+  it('does not invent neutral pronouns in deterministic visual subtext cues', () => {
+    const writer = createWriter();
+
+    const cue = (writer as any).deriveVisualSubtextCue(
+      'Mika feels fear because the truth is visible.',
+      'Mika hesitates.',
+      'Mika Drăgan',
+    );
+    const turn = (writer as any).deriveVisibleTurn(
+      'Mika notices the decisive clue.',
+      'Mika steps back.',
+      'Mika Drăgan',
+    );
+
+    expect(cue).toContain("Mika Drăgan's hands tighten");
+    expect(cue).not.toMatch(/\btheir\b/i);
+    expect(turn).toContain("Mika Drăgan's posture");
+    expect(turn).not.toMatch(/\btheir\b/i);
+  });
+
+  it('requires consumed beat and text variant fields in the provider schema', () => {
+    const schema = buildSceneContentJsonSchema(6).schema as any;
+    const beatSchema = schema.properties.beats.items;
+    const variantSchema = beatSchema.properties.textVariants.items;
+
+    expect(beatSchema.required).toContain('isChoicePoint');
+    expect(variantSchema.required).toEqual(expect.arrayContaining(['condition', 'text']));
+  });
+
+  it('reports malformed text variants instead of accepting boilerplate fields', () => {
+    const writer = createWriter();
+    const issues = (writer as any).collectIssues(
+      {
+        sceneId: 'scene-1',
+        sceneName: 'The Choice',
+        startingBeatId: 'beat-1',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'You watch the club lights pulse against the wet street.',
+            isChoicePoint: true,
+            textVariants: [{ text: '' }],
+          },
+        ],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: {
+          id: 'scene-1',
+          name: 'The Choice',
+          choicePoint: { type: 'relationship' },
+        },
+        targetBeatCount: 1,
+      },
+    );
+
+    expect(issues.some((issue: string) => issue.includes('MALFORMED TEXT VARIANT'))).toBe(true);
+  });
+
+  it('reports empty text variant conditions as malformed boilerplate', () => {
+    const writer = createWriter();
+    const issues = (writer as any).collectIssues(
+      {
+        sceneId: 'scene-blog',
+        sceneName: 'The Post',
+        startingBeatId: 'beat-1',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'You watch the blog counter jump again.',
+            isChoicePoint: false,
+            textVariants: [
+              {
+                condition: {},
+                text: 'You watch the blog counter jump again.',
+                callbackHookId: 'kylie_sees_viral_post',
+              },
+            ],
+          },
+        ],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: {
+          id: 'scene-blog',
+          name: 'The Post',
+        },
+        targetBeatCount: 1,
+      },
+    );
+
+    expect(issues.some((issue: string) => issue.includes('MALFORMED TEXT VARIANT'))).toBe(true);
+  });
+
+  it('normalizes underfilled scene-length choice scenes to the validator minimum', () => {
+    const writer = createWriter();
+    const input = {
+      sceneBlueprint: {
+        id: 's1-3',
+        name: 'The Park Warning',
+        description: 'Kylie realizes the path through the park is not as empty as it looked.',
+        narrativeFunction: 'Aftermath that resettles stakes; serves the hook beat.',
+        keyBeats: [
+          'The lamps flicker out behind Kylie.',
+          'Forward pressure: the next scene remembers what she misses.',
+        ],
+        choicePoint: {
+          type: 'dilemma',
+          description: 'Decide how to handle park scene 3.',
+        },
+        npcsPresent: [],
+      },
+      protagonistInfo: { name: 'Kylie' },
+      targetBeatCount: 6,
+    };
+    const content = {
+      sceneId: 's1-3',
+      sceneName: 'The Park Warning',
+      startingBeatId: 'beat-1',
+      beats: [
+        { id: 'beat-1', text: 'You step under the last working lamp.', nextBeatId: 'beat-2' },
+        { id: 'beat-2', text: 'The path ahead narrows into fog.', nextBeatId: 'beat-3' },
+        { id: 'beat-3', text: 'Something watches from the trees.', isChoicePoint: true },
+      ],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    };
+
+    const normalized = (writer as any).normalizeContent(content, input);
+    expect(normalized.beats).toHaveLength(6);
+    expect(normalized.beats[5].isChoicePoint).toBe(true);
+    expect(normalized.beats.map((beat: any) => beat.id)).toEqual([
+      'beat-1',
+      'beat-2',
+      'beat-3',
+      'beat-4',
+      'beat-5',
+      'beat-6',
+    ]);
+    expect(JSON.stringify(normalized.beats)).not.toMatch(/Decide how to handle|Forward pressure|serves the hook beat/i);
+
+    const issues = (writer as any).collectIssues(normalized, input);
+    expect(issues.join('\n')).not.toContain('SCENE-LENGTH UNDERFILL');
+  });
+
+  it('terminates deterministic choice-scene expansion when source lead-ins are unsafe or duplicate', () => {
+    const writer = createWriter();
+    const input = {
+      sceneBlueprint: {
+        id: 's1-6',
+        name: 'Release Scene',
+        description: 'Forward pressure: route into the next episode.',
+        narrativeFunction: 'This serves the resolution beat.',
+        keyBeats: [
+          'Forward pressure: route into the next episode.',
+          'Forward pressure: route into the next episode.',
+        ],
+        choicePoint: {
+          type: 'strategic',
+          description: 'scene 6 decision register',
+        },
+        npcsPresent: [],
+      },
+      protagonistInfo: { name: 'Kylie' },
+      targetBeatCount: 6,
+    };
+    const content = {
+      sceneId: 's1-6',
+      sceneName: 'Release Scene',
+      startingBeatId: 'beat-1',
+      beats: [
+        { id: 'beat-1', text: 'You hold the card while the apartment goes quiet.', isChoicePoint: true },
+      ],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    };
+
+    const normalized = (writer as any).normalizeContent(content, input);
+    expect(normalized.beats).toHaveLength(6);
+    expect(normalized.beats[5].isChoicePoint).toBe(true);
+    expect(JSON.stringify(normalized.beats)).not.toMatch(/Forward pressure|serves the resolution beat|decision register/i);
+  });
+
+  it('compacts short over-fragmented beat prose before hard cap validation', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      sceneId: 'scene-fragments',
+      sceneName: 'Fragmented Beat',
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          text: 'Stela smiles. Kylie freezes. Mika laughs. The quartz warms. The bell rings. Victor looks over.',
+          visualMoment: 'Kylie freezes as Stela smiles across the counter.',
+          primaryAction: 'freezes beside the counter',
+          emotionalRead: 'startled and exposed',
+          relationshipDynamic: 'Stela has the information advantage',
+          mustShowDetail: 'the quartz warming in Kylie\'s palm',
+          intensityTier: 'supporting',
+          isChoicePoint: false,
+        },
+      ],
+      moodProgression: ['uneasy'],
+      charactersInvolved: ['kylie', 'stela'],
+      keyMoments: ['The quartz reacts'],
+      continuityNotes: [],
+    });
+
+    const text = normalized.beats[0].text;
+    const sentenceCount = (text.match(/[.!?]+/g) || []).length;
+    expect(sentenceCount).toBeLessThanOrEqual(4);
+    const issues = (writer as any).collectIssues(normalized, {
+      sceneBlueprint: { id: 'scene-fragments', name: 'Fragmented Beat' },
+      targetBeatCount: 1,
+    });
+    expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(false);
+  });
+
+  it('counts ellipses as one sentence boundary for beat cap validation', () => {
+    const writer = createWriter();
+    const issues = (writer as any).collectIssues({
+      sceneId: 'scene-ellipsis',
+      sceneName: 'Ellipsis Beat',
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          text: 'You wait... Victor smiles. The room goes quiet.',
+          visualMoment: 'Victor smiles as the room goes quiet.',
+          primaryAction: 'waits under pressure',
+          emotionalRead: 'uneasy',
+          relationshipDynamic: 'Victor controls the room',
+          mustShowDetail: 'the room going quiet',
+          isChoicePoint: false,
+        },
+      ],
+      moodProgression: ['uneasy'],
+      charactersInvolved: ['Kylie', 'Victor'],
+      keyMoments: ['The room goes quiet'],
+      continuityNotes: [],
+    }, {
+      sceneBlueprint: { id: 'scene-ellipsis', name: 'Ellipsis Beat' },
+      targetBeatCount: 1,
+    });
+
+    expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(false);
+  });
+
+  it('drops unknown callbackHookIds that were not provided by the deterministic hook list', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 'scene-blog',
+        sceneName: 'The Post',
+        startingBeatId: 'beat-1',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'You watch the blog counter jump again.',
+            isChoicePoint: false,
+            textVariants: [
+              {
+                condition: { type: 'flag', flag: 'blog_went_viral', value: true },
+                text: 'The number makes the apartment feel watched.',
+                callbackHookId: 'kylie_sees_viral_post',
+              },
+              {
+                condition: { type: 'flag', flag: 'accepted_keycard', value: true },
+                text: 'The key card is still cold in your pocket.',
+                callbackHookId: 'flag:accepted_keycard',
+              },
+            ],
+          },
+        ],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: { id: 'scene-blog', name: 'The Post' },
+        unresolvedCallbacks: [
+          { id: 'flag:accepted_keycard', sourceEpisode: 1, summary: 'You accepted the key card.', flags: ['accepted_keycard'] },
+        ],
+      },
+    );
+
+    const variants = normalized.beats[0].textVariants;
+    expect(variants[0].callbackHookId).toBeUndefined();
+    expect(variants[1].callbackHookId).toBe('flag:accepted_keycard');
+  });
+
+  it('drops boilerplate conditionless textVariants during normalization', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 'scene-blog',
+        sceneName: 'The Post',
+        startingBeatId: 'beat-1',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'You watch the blog counter jump again.',
+            isChoicePoint: false,
+            textVariants: [
+              {
+                condition: {},
+                text: 'You watch the blog counter jump again.',
+              },
+            ],
+          },
+        ],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      { sceneBlueprint: { id: 'scene-blog', name: 'The Post' } },
+    );
+
+    expect(normalized.beats[0].textVariants).toEqual([]);
+  });
+
+  it('wires callback textVariants to deterministic hook flags when the model omits the condition', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 'scene-blog',
+        sceneName: 'The Post',
+        startingBeatId: 'beat-1',
+        beats: [
+          {
+            id: 'beat-1',
+            text: 'You watch the blog counter jump again.',
+            isChoicePoint: false,
+            textVariants: [
+              {
+                text: 'The key card is still cold in your pocket.',
+                callbackHookId: 'flag:accepted_keycard',
+              },
+            ],
+          },
+        ],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: { id: 'scene-blog', name: 'The Post' },
+        unresolvedCallbacks: [
+          { id: 'flag:accepted_keycard', sourceEpisode: 1, summary: 'You accepted the key card.', flags: ['accepted_keycard'] },
+        ],
+      },
+    );
+
+    expect(normalized.beats[0].textVariants[0].condition).toEqual({
+      type: 'flag',
+      flag: 'accepted_keycard',
+      value: true,
+    });
+  });
+
+  it('rejects a revision that still contains malformed text variants', async () => {
+    class StillMalformedSceneWriter extends SceneWriter {
+      calls = 0;
+
+      protected async callLLM(): Promise<string> {
+        this.calls += 1;
+        return JSON.stringify({
+          sceneId: 'scene-blog',
+          sceneName: 'The Post',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'You watch the blog counter jump again.',
+              visualMoment: 'Kylie studies the glowing blog counter.',
+              primaryAction: 'studies the counter',
+              emotionalRead: 'uneasy attention',
+              relationshipDynamic: 'Kylie is alone with the consequence of publishing',
+              mustShowDetail: 'the glowing blog counter on the laptop',
+              intensityTier: 'dominant',
+              isChoicePoint: false,
+              textVariants: [
+                {
+                  condition: { type: 'flag' },
+                  text: 'You watch the blog counter jump again.',
+                  callbackHookId: 'kylie_sees_viral_post',
+                },
+              ],
+            },
+          ],
+          moodProgression: ['uneasy'],
+          charactersInvolved: ['kylie'],
+          keyMoments: ['The blog counter jumps'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new StillMalformedSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute({
+      sceneBlueprint: {
+        id: 'scene-blog',
+        name: 'The Post',
+        description: 'Kylie realizes the blog has gone viral.',
+        location: 'apartment',
+        mood: 'uneasy',
+        purpose: 'setup',
+        narrativeFunction: 'Turns publication into exposure.',
+        dramaticQuestion: 'What did publishing cost her?',
+        wantVsNeed: 'Be seen vs stay safe',
+        conflictEngine: 'The post gives Kylie agency and exposes her.',
+        npcsPresent: [],
+        keyBeats: ['Kylie sees the blog counter'],
+        leadsTo: [],
+      },
+      storyContext: {
+        title: 'Bite Me',
+        genre: 'paranormal romance',
+        tone: 'dangerous and intimate',
+        worldContext: 'Modern Bucharest nightlife.',
+      },
+      protagonistInfo: {
+        name: 'Kylie',
+        pronouns: 'she/her',
+        description: 'An American food writer starting over.',
+      },
+      npcs: [],
+      targetBeatCount: 1,
+      dialogueHeavy: false,
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('SceneWriter revision still has');
+    expect(result.error).toContain('hard issue');
+    expect(result.error).toContain('MALFORMED TEXT VARIANT');
+    expect(writer.calls).toBe(2);
+  });
+
+  it('rejects an oversized revision before parsing or regex-heavy validation', async () => {
+    class OversizedRevisionSceneWriter extends SceneWriter {
+      calls = 0;
+
+      protected async callLLM(): Promise<string> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            sceneId: 'scene-blog',
+            sceneName: 'The Post',
+            startingBeatId: 'beat-1',
+            beats: [
+              {
+                id: 'beat-1',
+                text: 'You watch the blog counter jump again.',
+                visualMoment: 'Kylie studies the glowing blog counter.',
+                primaryAction: 'studies the counter',
+                emotionalRead: 'uneasy attention',
+                relationshipDynamic: 'Kylie is alone with the consequence of publishing',
+                mustShowDetail: 'the glowing blog counter on the laptop',
+                intensityTier: 'dominant',
+                isChoicePoint: false,
+                textVariants: [{ condition: {}, text: 'You watch the blog counter jump again.' }],
+              },
+            ],
+            moodProgression: ['uneasy'],
+            charactersInvolved: ['kylie'],
+            keyMoments: ['The blog counter jumps'],
+            continuityNotes: [],
+          });
+        }
+
+        return JSON.stringify({
+          sceneId: 'scene-blog',
+          sceneName: 'The Post',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'You watch the blog counter jump again.',
+              visualMoment: 'Kylie studies the glowing blog counter.',
+              primaryAction: 'studies the counter',
+              emotionalRead: 'uneasy attention',
+              relationshipDynamic: 'Kylie is alone with the consequence of publishing',
+              mustShowDetail: 'the glowing blog counter on the laptop',
+              intensityTier: 'dominant',
+              isChoicePoint: false,
+              textVariants: [
+                {
+                  condition: { type: 'flag', flag: 'blog_went_viral', value: true },
+                  text: 'The number makes the apartment feel watched.',
+                },
+              ],
+              oversized: 'x'.repeat(15000),
+            },
+          ],
+          moodProgression: ['uneasy'],
+          charactersInvolved: ['kylie'],
+          keyMoments: ['The blog counter jumps'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new OversizedRevisionSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute({
+      sceneBlueprint: {
+        id: 'scene-blog',
+        name: 'The Post',
+        description: 'Kylie realizes the blog has gone viral.',
+        location: 'apartment',
+        mood: 'uneasy',
+        purpose: 'setup',
+        narrativeFunction: 'Turns publication into exposure.',
+        dramaticQuestion: 'What did publishing cost her?',
+        wantVsNeed: 'Be seen vs stay safe',
+        conflictEngine: 'The post gives Kylie agency and exposes her.',
+        npcsPresent: [],
+        keyBeats: ['Kylie sees the blog counter'],
+        leadsTo: [],
+      },
+      storyContext: {
+        title: 'Bite Me',
+        genre: 'paranormal romance',
+        tone: 'dangerous and intimate',
+        worldContext: 'Modern Bucharest nightlife.',
+      },
+      protagonistInfo: {
+        name: 'Kylie',
+        pronouns: 'she/her',
+        description: 'An American food writer starting over.',
+      },
+      npcs: [],
+      targetBeatCount: 1,
+      dialogueHeavy: false,
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('SceneWriter revision exceeded raw processing budget');
+    expect(writer.calls).toBe(2);
+  });
+
+  it('reports overlong beat text before expensive scene validators run', () => {
+    const writer = createWriter();
+    const content = (writer as any).boundOverlongContentForProcessing({
+      sceneId: 'scene-long',
+      sceneName: 'The Overwritten Beat',
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          text: `You face the room. ${'Every detail repeats past the useful point. '.repeat(180)}`,
+          isChoicePoint: true,
+        },
+      ],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    const issues = (writer as any).collectIssues(
+      content,
+      {
+        sceneBlueprint: {
+          id: 'scene-long',
+          name: 'The Overwritten Beat',
+          choicePoint: { type: 'identity' },
+        },
+        targetBeatCount: 1,
+      },
+    );
+
+    expect(issues.some((issue: string) => issue.includes('OVERLONG BEAT TEXT'))).toBe(true);
+    expect(content.beats[0].text).toContain('Generation note');
+    expect(content.beats[0].text.length).toBeLessThan(3800);
+  });
+
+  it('rejects oversized first-pass scene JSON before local parse and validation work', async () => {
+    class OversizedFirstPassSceneWriter extends SceneWriter {
+      protected async callLLM(): Promise<string> {
+        return JSON.stringify({
+          sceneId: 'scene-heavy',
+          sceneName: 'The Heavy Scene',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'You stop at the threshold as the room turns toward you.',
+              visualMoment: 'Kylie stops at the threshold.',
+              primaryAction: 'stops at the threshold',
+              emotionalRead: 'wary focus',
+              relationshipDynamic: 'Kylie faces a room that has already judged her',
+              mustShowDetail: 'the open threshold',
+              intensityTier: 'dominant',
+              isChoicePoint: true,
+              oversized: 'x'.repeat(18000),
+            },
+          ],
+          moodProgression: ['tense'],
+          charactersInvolved: ['kylie'],
+          keyMoments: ['The room turns toward Kylie'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new OversizedFirstPassSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute({
+      sceneBlueprint: {
+        id: 'scene-heavy',
+        name: 'The Heavy Scene',
+        description: 'Kylie reaches a dangerous threshold.',
+        location: 'club',
+        mood: 'tense',
+        purpose: 'choice',
+        narrativeFunction: 'Forces Kylie to decide how visible she will be.',
+        dramaticQuestion: 'Does Kylie step into danger?',
+        wantVsNeed: 'Safety vs agency',
+        conflictEngine: 'The room sees her before she is ready.',
+        npcsPresent: [],
+        choicePoint: {
+          type: 'identity',
+          description: 'Kylie must decide whether to step into the room.',
+          stakes: {
+            want: 'stay unseen',
+            cost: 'the room controls the story if she hesitates',
+            identity: 'observer versus participant',
+          },
+        },
+        keyBeats: ['Kylie reaches the threshold'],
+        leadsTo: [],
+      },
+      storyContext: {
+        title: 'Bite Me',
+        genre: 'paranormal romance',
+        tone: 'dangerous and intimate',
+        worldContext: 'Modern Bucharest nightlife.',
+      },
+      protagonistInfo: {
+        name: 'Kylie',
+        pronouns: 'she/her',
+        description: 'An American food writer starting over.',
+      },
+      npcs: [],
+      targetBeatCount: 1,
+      dialogueHeavy: false,
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('SceneWriter response exceeded raw processing budget');
+  });
+
+  it('revises overlong scene output with a compact original-content prompt', async () => {
+    const overlongText = `You step under the rooftop sign. ${'The same pressure keeps expanding without adding new playable information. '.repeat(80)}`;
+
+    class OverlongSceneWriter extends SceneWriter {
+      calls = 0;
+      revisionPrompt = '';
+
+      protected async callLLM(messages: Array<{ content: string }>): Promise<string> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            sceneId: 'scene-rooftop',
+            sceneName: 'Rooftop Pressure',
+            startingBeatId: 'beat-1',
+            beats: [
+              {
+                id: 'beat-1',
+                text: overlongText,
+                shotType: 'character',
+                visualMoment: 'Lena stops beneath the rooftop sign.',
+                primaryAction: 'stops beneath the sign',
+                emotionalRead: 'watchful and unsettled',
+                relationshipDynamic: 'the empty rooftop gives Lena no one to hide behind',
+                mustShowDetail: 'the rooftop sign flickering above Lena',
+                isChoicePoint: false,
+              },
+            ],
+            moodProgression: ['uneasy'],
+            charactersInvolved: ['lena'],
+            keyMoments: ['Lena reaches the rooftop'],
+            continuityNotes: [],
+          });
+        }
+
+        this.revisionPrompt = messages[0].content;
+        return JSON.stringify({
+          sceneId: 'scene-rooftop',
+          sceneName: 'Rooftop Pressure',
+          startingBeatId: 'beat-1',
+          beats: [
+            {
+              id: 'beat-1',
+              text: 'You stop beneath the rooftop sign as its broken red letters blink across your hands, turning the invitation into a warning.',
+              shotType: 'character',
+              visualMoment: 'Lena stops beneath the flickering rooftop sign.',
+              primaryAction: 'stops and studies the sign',
+              emotionalRead: 'watchful and unsettled',
+              relationshipDynamic: 'the empty rooftop leaves Lena exposed',
+              mustShowDetail: 'broken red letters blinking across Lena\'s hands',
+              isChoicePoint: false,
+            },
+          ],
+          moodProgression: ['uneasy'],
+          charactersInvolved: ['lena'],
+          keyMoments: ['Lena reaches the rooftop warning'],
+          continuityNotes: [],
+        });
+      }
+    }
+
+    const writer = new OverlongSceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const result = await writer.execute({
+      sceneBlueprint: {
+        id: 'scene-rooftop',
+        name: 'Rooftop Pressure',
+        description: 'Lena follows the rooftop invitation and realizes it feels like a warning.',
+        location: 'rooftop',
+        mood: 'uneasy',
+        purpose: 'setup',
+        narrativeFunction: 'Turns flirtation into danger.',
+        dramaticQuestion: 'Is the invitation romantic or predatory?',
+        wantVsNeed: 'Be wanted vs stay alert',
+        conflictEngine: 'The invitation promises intimacy while the place signals threat.',
+        npcsPresent: [],
+        keyBeats: ['Lena reaches the rooftop sign'],
+        leadsTo: [],
+      },
+      storyContext: {
+        title: 'Bite Me',
+        genre: 'paranormal romance',
+        tone: 'dangerous and intimate',
+        worldContext: 'Modern Bucharest nightlife.',
+      },
+      protagonistInfo: {
+        name: 'Lena',
+        pronouns: 'she/her',
+        description: 'An American food writer starting over.',
+      },
+      npcs: [],
+      targetBeatCount: 1,
+      dialogueHeavy: false,
+    } as any);
+
+    expect(result.success).toBe(true);
+    expect(writer.calls).toBe(2);
+    expect(writer.revisionPrompt).toContain('OVERLONG BEAT TEXT');
+    expect(writer.revisionPrompt.length).toBeLessThan(14000);
+    expect(writer.revisionPrompt).toContain('Generation note');
+    expect(result.data?.beats[0].text).not.toContain('Generation note');
+    expect((result.data?.beats[0] as any).__sceneWriterOriginalTextCharCount).toBeUndefined();
+  });
+
   const preEncounterInput = {
     sceneBlueprint: {
       id: 'scene-3b',
@@ -300,6 +1095,22 @@ describe('SceneWriter structural guards', () => {
     expect(prompt).toContain('Make description carry pressure, movement, mood, threat, desire, or consequence');
     expect(prompt).toContain('Reveal inner life through action, speech, silence, bodily response, facial expression, object handling, proximity, risk, and choice behavior');
     expect(prompt).toContain('Avoid repeated plot events, dialogue, scene shapes, and descriptive phrasing unless intentional callback/payoff');
+  });
+
+  it('tells pre-encounter scenes to build toward, not spend, the encounter event', () => {
+    const writer = createWriter();
+    const prompt = (writer as any).buildPrompt({
+      ...preEncounterInput,
+      episodeEncounterContext: {
+        encounterType: 'romantic',
+        encounterDescription: 'The rooftop gaze turns into a foggy park attack and rescue.',
+        encounterDifficulty: 'moderate',
+        encounterBuildup: 'Foreshadow the park danger without staging it.',
+      },
+    });
+
+    expect(prompt).toContain('Do NOT depict the encounter');
+    expect(prompt).toContain('leave the event itself for the encounter scene');
   });
 
   it('expands underspecified choice scenes into a stable three-beat structure', () => {

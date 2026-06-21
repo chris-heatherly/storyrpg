@@ -5,8 +5,10 @@ import {
   normalizeContinuitySeverity,
   deriveContinuityScore,
   deriveVoiceScore,
+  deriveEvidenceLimitedScore,
   deriveQAOutcome,
   recomputeQAReportDerived,
+  buildQAReportSummary,
   type ContinuityIssue,
   type QAReport,
 } from './QAAgents';
@@ -81,11 +83,25 @@ describe('deriveVoiceScore', () => {
   });
 });
 
+describe('deriveEvidenceLimitedScore', () => {
+  it('caps clean incremental-only evidence below excellent quality', () => {
+    expect(deriveEvidenceLimitedScore({ scores: [100, 95], evidenceCount: 2 })).toBe(75);
+  });
+
+  it('penalizes incremental warnings and errors without a positive floor', () => {
+    expect(deriveEvidenceLimitedScore({ scores: [100], evidenceCount: 1, warningCount: 1, errorCount: 1 })).toBe(47);
+  });
+
+  it('fails closed when no evidence was collected', () => {
+    expect(deriveEvidenceLimitedScore({ scores: [100], evidenceCount: 0 })).toBe(0);
+  });
+});
+
 describe('deriveQAOutcome / recomputeQAReportDerived', () => {
   const clean = {
     continuity: { overallScore: 100, issueCount: { errors: 0, warnings: 0, suggestions: 0 } },
     voice: { overallScore: 90, issues: [] as Array<{ severity: string }> },
-    stakes: { overallScore: 90, metrics: { falseChoiceCount: 0 } },
+    stakes: { overallScore: 90, metrics: { falseChoiceCount: 0 }, issues: [] as Array<{ severity: string }> },
   };
 
   it('passes when score >= 70 and there are no critical issues', () => {
@@ -100,9 +116,9 @@ describe('deriveQAOutcome / recomputeQAReportDerived', () => {
     const out = deriveQAOutcome(
       { overallScore: 40, issueCount: { errors: 2, warnings: 0, suggestions: 0 } },
       { overallScore: 50, issues: [{ severity: 'error' }] } as never,
-      { overallScore: 60, metrics: { falseChoiceCount: 3 } } as never,
+      { overallScore: 60, metrics: { falseChoiceCount: 3 }, issues: [{ severity: 'error' }] } as never,
     );
-    expect(out.criticalIssues).toEqual(['2 continuity error(s)', 'Voice consistency errors', '3 false choice(s)']);
+    expect(out.criticalIssues).toEqual(['2 continuity error(s)', 'Voice consistency errors', 'Stakes analysis errors', '3 false choice(s)']);
     expect(out.passesQA).toBe(false);
   });
 
@@ -118,5 +134,18 @@ describe('deriveQAOutcome / recomputeQAReportDerived', () => {
     expect(report.criticalIssues).toEqual([]);
     expect(report.passesQA).toBe(true);
     expect(report.overallScore).toBe(94);
+    expect(report.summary).toContain('Content quality is good');
+  });
+
+  it('uses the QA pass threshold in summary text so passing 70s are not labeled revision failures', () => {
+    const summary = buildQAReportSummary(
+      { overallScore: 79, issueCount: { errors: 0, warnings: 2, suggestions: 0 } },
+      { overallScore: 80, distinctionScore: 80, issues: [] } as never,
+      { overallScore: 78, metrics: { falseChoiceCount: 0 }, issues: [] } as never,
+      79,
+    );
+
+    expect(summary).toContain('Content passes QA');
+    expect(summary).not.toContain('needs revision before publishing');
   });
 });

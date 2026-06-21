@@ -57,6 +57,9 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   // corruption class. Explicit `GATE_ENCOUNTER_PROSE_INTEGRITY=1` runs should
   // try the existing scene-prose repair path before aborting.
   'EncounterProseIntegrityValidator',
+  // G24: planning-register/task prose leaking into beats, variants, encounter prose,
+  // or visual metadata is a localized authoring-scaffold leak.
+  'PlanningRegisterLeakValidator',
 ]);
 
 type RepairableIssue = ContractRepairReport['blockingIssues'][number];
@@ -115,6 +118,14 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
         'Phrases such as "you rooftop", "you candle", "you pulse", "you maze", "you kiss you", ' +
         'or "You kiss takes" are ungrammatical repair artifacts. Rewrite them into natural prose ' +
         'using "your", "the", or a concrete character/object as appropriate, while preserving events and choices.',
+      );
+      continue;
+    }
+    if (issue.validator === 'PlanningRegisterLeakValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: remove planning-register/task language such as "Open the episode", ' +
+        '"Introduce X on-page", "Authored treatment choice", and "Decide how to handle". ' +
+        'Rewrite the affected field as in-world second-person prose or concrete visual direction, preserving the intended story event.',
       );
       continue;
     }

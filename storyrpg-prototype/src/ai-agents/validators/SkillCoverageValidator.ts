@@ -5,6 +5,7 @@ import { BaseValidator, type ValidationIssue, type ValidationResult } from './Ba
 
 export interface SkillCoverageInput {
   choices: Array<Choice & { episodeNumber?: number; sceneId?: string; beatId?: string }>;
+  encounters?: unknown[];
   allowGenreNarrowSkillFocus?: boolean;
 }
 
@@ -38,28 +39,52 @@ export class SkillCoverageValidator extends BaseValidator {
     let checkedStatChecks = 0;
     let totalWeight = 0;
 
+    const noteSkill = (skill: string, weight: number, episodeNumber?: number): void => {
+      const normalizedSkill = skill.toLowerCase();
+      skillExercise[normalizedSkill] = (skillExercise[normalizedSkill] ?? 0) + weight;
+      totalWeight += weight;
+
+      if (episodeNumber != null) {
+        const set = episodeSkills.get(episodeNumber) ?? new Set<string>();
+        set.add(normalizedSkill);
+        episodeSkills.set(episodeNumber, set);
+      }
+
+      const def = SKILL_DEFINITIONS[normalizedSkill];
+      if (!def) return;
+      for (const [attr, attrWeight] of Object.entries(def.attributeWeights)) {
+        attrExercise[attr] = (attrExercise[attr] ?? 0) + weight * (attrWeight ?? 0);
+      }
+    };
+
     for (const choice of input.choices) {
       if (!choice.statCheck) continue;
       checkedStatChecks++;
       const normalized = normalizeStatCheck(choice.statCheck);
 
       for (const [skill, weight] of Object.entries(normalized.skillWeights)) {
-        const normalizedSkill = skill.toLowerCase();
-        skillExercise[normalizedSkill] = (skillExercise[normalizedSkill] ?? 0) + weight;
-        totalWeight += weight;
-
-        if (choice.episodeNumber != null) {
-          const set = episodeSkills.get(choice.episodeNumber) ?? new Set<string>();
-          set.add(normalizedSkill);
-          episodeSkills.set(choice.episodeNumber, set);
-        }
-
-        const def = SKILL_DEFINITIONS[normalizedSkill];
-        if (!def) continue;
-        for (const [attr, attrWeight] of Object.entries(def.attributeWeights)) {
-          attrExercise[attr] = (attrExercise[attr] ?? 0) + weight * (attrWeight ?? 0);
-        }
+        noteSkill(skill, weight, choice.episodeNumber);
       }
+    }
+
+    const seen = new Set<object>();
+    const walkEncounter = (node: unknown, episodeNumber?: number): void => {
+      if (!node || typeof node !== 'object' || seen.has(node)) return;
+      seen.add(node as object);
+      if (Array.isArray(node)) {
+        for (const item of node) walkEncounter(item, episodeNumber);
+        return;
+      }
+      const obj = node as Record<string, unknown>;
+      if (typeof obj.primarySkill === 'string' && obj.primarySkill.trim().length > 0) {
+        checkedStatChecks++;
+        noteSkill(obj.primarySkill, 1, episodeNumber);
+      }
+      for (const value of Object.values(obj)) if (value && typeof value === 'object') walkEncounter(value, episodeNumber);
+    };
+    for (const encounter of input.encounters || []) {
+      const episodeNumber = (encounter as { episodeNumber?: unknown })?.episodeNumber;
+      walkEncounter(encounter, typeof episodeNumber === 'number' ? episodeNumber : undefined);
     }
 
     const coveredSkills = Object.keys(skillExercise).filter((skill) => skillExercise[skill] > 0).length;

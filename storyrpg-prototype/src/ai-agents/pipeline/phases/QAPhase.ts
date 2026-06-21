@@ -457,9 +457,22 @@ export class QAPhase {
       // the incremental validators caught.
       const voiceIssues: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'] = [];
       const stakesIssues: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'] = [];
+      const voiceScores: number[] = [];
+      const stakesScores: number[] = [];
+      let voiceEvidenceCount = 0;
+      let stakesEvidenceCount = 0;
+      let voiceErrorCount = 0;
+      let voiceWarningCount = 0;
+      let stakesErrorCount = 0;
+      let stakesWarningCount = 0;
+      let falseChoiceCount = 0;
       for (const sceneResult of this.deps.sceneValidationResults) {
-        if (sceneResult.voice?.issues) {
+        if (sceneResult.voice) {
+          voiceEvidenceCount++;
+          if (typeof sceneResult.voice.score === 'number') voiceScores.push(sceneResult.voice.score);
           for (const iss of sceneResult.voice.issues) {
+            if (iss.severity === 'error') voiceErrorCount++;
+            if (iss.severity === 'warning') voiceWarningCount++;
             voiceIssues.push({
               sceneId: sceneResult.sceneId,
               beatId: iss.beatId,
@@ -471,8 +484,13 @@ export class QAPhase {
             });
           }
         }
-        if (sceneResult.stakes?.issues) {
+        if (sceneResult.stakes) {
+          stakesEvidenceCount++;
+          if (typeof sceneResult.stakes.score === 'number') stakesScores.push(sceneResult.stakes.score);
+          if (sceneResult.stakes.hasFalseChoices) falseChoiceCount++;
           for (const iss of sceneResult.stakes.issues) {
+            if (iss.severity === 'error') stakesErrorCount++;
+            if (iss.severity === 'warning') stakesWarningCount++;
             stakesIssues.push({
               sceneId: sceneResult.sceneId,
               choiceSetId: iss.choiceId,
@@ -493,6 +511,15 @@ export class QAPhase {
         continuityIssueCount: aggregated.totalIssues.continuity,
         voiceIssues,
         stakesIssues,
+        voiceScores,
+        stakesScores,
+        voiceEvidenceCount,
+        stakesEvidenceCount,
+        voiceErrorCount,
+        voiceWarningCount,
+        stakesErrorCount,
+        stakesWarningCount,
+        falseChoiceCount,
       };
 
       context.emit({

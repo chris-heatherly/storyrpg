@@ -58,6 +58,8 @@ export interface GenerationJobCheckpoint {
     mode?: string;
     requestPayload?: Record<string, unknown>;
     storyTitle?: string;
+    friendlyName?: string;
+    processTitle?: string;
     episodeCount?: number;
     resumeFromJobId?: string;
     resumedAt?: string;
@@ -74,6 +76,8 @@ export interface GenerationJob {
   projectJobIds?: string[];
   attemptCount?: number;
   storyTitle: string;
+  friendlyName?: string;
+  processTitle?: string;
   startedAt: string;
   updatedAt: string;
   status: JobStatus;
@@ -177,6 +181,8 @@ export function normalizeGenerationJob(value: unknown): GenerationJob | null {
       : undefined,
     attemptCount: typeof value.attemptCount === 'number' ? value.attemptCount : undefined,
     storyTitle: value.storyTitle,
+    friendlyName: typeof value.friendlyName === 'string' ? value.friendlyName : undefined,
+    processTitle: typeof value.processTitle === 'string' ? value.processTitle : undefined,
     startedAt: value.startedAt,
     updatedAt: value.updatedAt,
     status: value.status,

@@ -341,6 +341,69 @@ describe('StoryArchitect treatment fidelity validation', () => {
     expect(blueprint.suggestedFlags.some((f: any) => f.name === seedFlag)).toBe(true);
   });
 
+  it('distributes consequence-seed emitters to the choice scene whose authored content matches each seed', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({ episodeNumber: 1 });
+    const guidance = {
+      consequenceSeeds: [
+        'The quartz Kylie did or did not accept.',
+        "The key card to Vâlcescu Club's side entrance.",
+        'Mika sees Victor and goes still.',
+      ],
+    } as any;
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      number: 1,
+      suggestedFlags: [],
+      scenes: [
+        {
+          id: 's1-1',
+          choicePoint: {
+            type: 'relationship',
+            stakes: {},
+            description: 'At the club door, Mika offers the side-entrance key card.',
+            optionHints: ['Accept the key card', 'Leave it with Mika'],
+            expectedResidue: [
+              'The quartz Kylie did or did not accept.',
+              "The key card to Vâlcescu Club's side entrance.",
+              'Mika sees Victor and goes still.',
+            ],
+          },
+        },
+        {
+          id: 's1-2',
+          choicePoint: {
+            type: 'relationship',
+            stakes: {},
+            description: 'At the bookshop, Stela presses rose quartz into your hand.',
+            optionHints: ['Take the quartz', 'Decline the quartz'],
+          },
+        },
+        {
+          id: 's1-3',
+          choicePoint: {
+            type: 'relationship',
+            stakes: {},
+            description: 'On the rooftop, Mika notices Victor and freezes.',
+            optionHints: ['Follow Mika toward food', 'Walk over to Victor'],
+          },
+        },
+        { id: 'enc-1-1', isEncounter: true, encounterSetupContext: [] },
+      ],
+    };
+
+    (architect as any).registerConsequenceSeedEmitters(blueprint, input, guidance);
+
+    expect(blueprint.scenes[0].choicePoint.setsTreatmentSeeds).toEqual(['treatment_seed_ep1_2']);
+    expect(blueprint.scenes[1].choicePoint.setsTreatmentSeeds).toEqual(['treatment_seed_ep1_1']);
+    expect(blueprint.scenes[2].choicePoint.setsTreatmentSeeds).toEqual(['treatment_seed_ep1_3']);
+    expect(blueprint.scenes[3].encounterSetupContext).toEqual(expect.arrayContaining([
+      expect.stringContaining('treatment_seed_ep1_1'),
+      expect.stringContaining('treatment_seed_ep1_2'),
+      expect.stringContaining('treatment_seed_ep1_3'),
+    ]));
+  });
+
   it('registerBranchAxisEmitters registers ending axes in suggestedFlags and records them on a choice scene', () => {
     // Gen-4 R3: the season's ending-axis flags (treatment_branch_*) surface to the
     // episode via seasonPlanDirectives.flagsToSet but were never SET on-page, so the
@@ -1152,6 +1215,48 @@ describe('StoryArchitect transition repair', () => {
       connector: 'therefore',
     });
     expect((architect as any).collectDramaticStructureIssues(blueprint, makeInput(), false).join('\n')).not.toContain('without transitionOut metadata');
+  });
+
+  it('does not use choice reminderPlan text as transition prose', () => {
+    const architect = new StoryArchitect(config);
+    const scene: any = {
+      id: 's1',
+      name: 'Bookshop Door',
+      description: 'Kylie decides how much of Mika’s help to accept.',
+      location: 'bookshop',
+      mood: 'tense',
+      purpose: 'branch',
+      dramaticQuestion: '',
+      wantVsNeed: '',
+      conflictEngine: '',
+      npcsPresent: [],
+      narrativeFunction: '',
+      keyBeats: [],
+      leadsTo: ['s2'],
+      choicePoint: {
+        type: 'dilemma',
+        branches: false,
+        stakes: { want: 'Get inside safely', cost: 'Depend on Mika', identity: 'Trust under pressure' },
+        description: 'Choose whether to accept Mika’s key card.',
+        optionHints: ['Take the card', 'Refuse it'],
+        reminderPlan: {
+          immediate: 'In the next room, access, trust, and pressure have already shifted.',
+          shortTerm: 'People remember what the protagonist risked.',
+        },
+      },
+    };
+    const target: any = {
+      id: 's2',
+      name: 'Back Room',
+      description: 'The bookshop turns private.',
+      dramaticQuestion: 'Will Kylie trust the introduction?',
+      conflictEngine: '',
+    };
+
+    const link = (architect as any).buildTransitionCausalLink(scene, target, 'therefore');
+
+    expect(link).toContain('Choose whether to accept Mika’s key card.');
+    expect(link).not.toContain('In the next room, access, trust, and pressure have already shifted.');
   });
 
   it('repairs pressure-only scenes with an irreversible reaction for scene turn validation', () => {
@@ -1979,5 +2084,32 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
       (s: any) => s.choicePoint?.branches && s.choicePoint.type !== 'expression' && new Set(s.leadsTo || []).size >= 2,
     );
     expect(validBranch.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('repairs stale planned-scene locations from explicit required beat settings', () => {
+    const architect = new StoryArchitect(config);
+    const stale = "Kylie's Lipscani Apartment";
+    const scene = (id: string, order: number, mustDepict: string) => ({
+      ...plannedStandard(id, order, 'development'),
+      locations: [stale],
+      requiredBeats: [{ id: `${id}-rb1`, tier: 'authored', sourceTurn: mustDepict, mustDepict }],
+    });
+    const input = makeInput({
+      episodeNumber: 1,
+      currentLocation: stale,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          scene('s1-1', 0, 'Mika adopts Kylie at the door of Vâlcescu Club on night two.'),
+          scene('s1-2', 1, 'At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie\'s hand.'),
+          scene('s1-3', 2, 'Walking home through Cișmigiu Gardens at 1am, a shadow strikes.'),
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
+    expect(blueprint.scenes[1].location).toBe('Lumina Books');
+    expect(blueprint.scenes[2].location).toBe('Cișmigiu Gardens');
   });
 });

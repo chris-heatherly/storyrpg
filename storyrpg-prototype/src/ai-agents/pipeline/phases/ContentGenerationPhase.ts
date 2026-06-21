@@ -38,6 +38,8 @@ import { WorldBible } from '../../agents/WorldBuilder';
 import { RemediationBudget, shouldAttemptRemediation } from '../../remediation/RemediationBudget';
 import { gateEnabledPredicate, isGateEnabled } from '../../remediation/gateDefaults';
 import {
+  improvesMissingRealization,
+  insertMissingMomentBeats,
   missingRequiredMoments,
   realizationRetryFeedback,
   rewriteLosesRequiredMoment,
@@ -79,11 +81,14 @@ import {
   resolveSceneTreatmentSeeds,
 } from '../episodePlantContext';
 import { PipelineError } from '../errors';
+import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
+import { filterProtagonistEncounterRefs } from '../encounterParticipants';
 import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPlan';
 import { buildOutcomeTextVariants } from '../outcomeVariants';
 import { buildSceneSettingContext } from '../planningHelpers';
 import { attachResidueRequirements } from '../reconvergenceResidue';
 import { buildContinueInLocation, buildPriorEncounterOutcomes } from '../scenePreventionContext';
+import { plannedConsequenceTiersByScene } from '../plannedSceneBudgets';
 import { SeasonChoicePlan, episodeTypeCounts } from '../seasonChoicePlan';
 import {
   SeasonSkillPlan,
@@ -290,6 +295,7 @@ export class ContentGenerationPhase {
     // clone/checkpoint reload). Empty slice → default mix.
     const episodeSlice = episodeTypeCounts(this.deps.seasonChoicePlan, episodeNumber ?? 1);
     const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never, undefined, episodeSlice);
+    const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
 
     // P2-skills: bias this episode's stat-check skill assignment toward the season
     // skill plan so the season exercises >=6 of the 8 skills with no >30% dominance.
@@ -701,6 +707,7 @@ export class ContentGenerationPhase {
           npcId => npcId !== brief.protagonist.id
         );
       }
+      this.alignMandatoryOpeningBeatContext(sceneBlueprint);
 
       // Resolve authored location first so downstream image systems do not re-guess scene setting.
       const location = this.deps.resolveWorldLocationForScene(sceneBlueprint, worldBible);
@@ -791,6 +798,7 @@ export class ContentGenerationPhase {
             .slice(0, Math.max(0, blueprintOrderIdx))
             .flatMap((s) => s.npcsPresent || []),
         });
+        this.pruneUnscopedTreatmentSeedBeats(sceneBlueprint);
 
         const sceneWriterInput = {
           sceneBlueprint,
@@ -879,7 +887,7 @@ export class ContentGenerationPhase {
           episodeEncounterContext: primaryEncounterContext && !sceneBlueprint.isEncounter
             ? {
                 ...primaryEncounterContext,
-                encounterBuildup: sceneBlueprint.encounterBuildup || primaryEncounterContext.encounterBuildup,
+                encounterBuildup: sceneBlueprint.encounterBuildup || 'Foreshadow the encounter stakes without depicting or resolving the encounter event itself.',
               }
             : undefined,
           memoryContext: this.deps.cachedPipelineMemory || undefined,
@@ -999,13 +1007,18 @@ export class ContentGenerationPhase {
             data: { reason: sceneResult.error },
           });
 
+          const sceneFailureReason = sceneResult.error || 'unknown SceneWriter failure';
+          const compactRetryInstruction = /raw processing budget|response exceeded/i.test(sceneFailureReason)
+            ? '\n\nCOMPACT RETRY MODE: The previous response was too large to safely process. Return one complete SceneContent JSON object under the hard raw-response budget. Use 6-8 beats, concise prose, compact visual metadata, no optional boilerplate arrays/fields, and textVariants only when they have a real condition from the prompt.'
+            : '';
+
           const retrySceneResult = await withTimeout(this.deps.sceneWriter.execute({
             sceneBlueprint,
             storyContext: {
               title: brief.story.title,
               genre: brief.story.genre,
               tone: brief.story.tone,
-              userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Previous scene generation attempt FAILED with error: ${sceneResult.error}. Please produce valid scene content. Keep it simple and well-structured.`,
+              userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Previous scene generation attempt FAILED with error: ${sceneFailureReason}. Please produce valid scene content. Keep it simple and well-structured.${compactRetryInstruction}`,
               worldContext: this.deps.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
             },
             protagonistInfo: {
@@ -1115,33 +1128,34 @@ export class ContentGenerationPhase {
         // verify the freshly written prose depicts every authored
         // requiredBeat/signatureMoment using the same scoring the season-final
         // validators apply (deterministic, no LLM). An under-realized scene
-        // gets ONE immediate SceneWriter retry whose feedback names the exact
-        // missing content words — a retry here costs one scene; the same miss
-        // at the final contract costs the whole run (bite-me-g13).
+        // gets a tiny bounded SceneWriter retry loop whose feedback names the
+        // exact missing content words — a retry here costs one scene; the same
+        // miss at the final contract costs the whole run (bite-me-g13).
         if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
-          const missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
+          let missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
           if (missing.length > 0) {
-            context.emit({
-              type: 'regeneration_triggered',
-              phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} under-realizes ${missing.length} authored moment(s) — retrying with realization feedback`,
-              data: { missing: missing.map(m => ({ tier: m.tier, missingTokens: m.missingTokens })) },
-            });
             try {
-              const realizationRetry = await withTimeout(
-                this.deps.sceneWriter.execute({
-                  ...sceneWriterInput,
-                  storyContext: {
-                    ...sceneWriterInput.storyContext,
-                    userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\n${realizationRetryFeedback(missing)}`,
-                  },
-                }),
-                PIPELINE_TIMEOUTS.llmAgent,
-                `SceneWriter.execute(${sceneBlueprint.id} realization-retry)`,
-              );
-              if (realizationRetry.success && realizationRetry.data) {
+              for (let attempt = 1; attempt <= 2 && missing.length > 0; attempt++) {
+                context.emit({
+                  type: 'regeneration_triggered',
+                  phase: 'scenes',
+                  message: `Scene ${sceneBlueprint.id} under-realizes ${missing.length} authored moment(s) — retrying with realization feedback (${attempt}/2)`,
+                  data: { missing: missing.map(m => ({ tier: m.tier, missingTokens: m.missingTokens })) },
+                });
+                const realizationRetry = await withTimeout(
+                  this.deps.sceneWriter.execute({
+                    ...sceneWriterInput,
+                    storyContext: {
+                      ...sceneWriterInput.storyContext,
+                      userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\n${realizationRetryFeedback(missing)}`,
+                    },
+                  }),
+                  PIPELINE_TIMEOUTS.llmAgent,
+                  `SceneWriter.execute(${sceneBlueprint.id} realization-retry-${attempt})`,
+                );
+                if (!realizationRetry.success || !realizationRetry.data) continue;
                 const retryMissing = missingRequiredMoments(sceneBlueprint, realizationRetry.data.beats);
-                if (retryMissing.length < missing.length) {
+                if (improvesMissingRealization(missing, retryMissing)) {
                   // Retry realized more of the contract — adopt it in place
                   // (sceneContent stays the canonical object the rest of the
                   // loop and the push use; re-apply the normalization).
@@ -1152,19 +1166,44 @@ export class ContentGenerationPhase {
                   sceneContent.settingContext = sceneSettingContext;
                   sceneContent.requiredBeats = sceneBlueprint.requiredBeats;
                   sceneContent.signatureMoment = sceneBlueprint.signatureMoment;
+                  missing = retryMissing;
                 }
                 context.emit({
-                  type: retryMissing.length === 0 ? 'debug' : 'warning',
+                  type: 'debug',
                   phase: 'scenes',
-                  message: `Realization retry for ${sceneBlueprint.id}: ${missing.length} → ${retryMissing.length} under-realized moment(s)${retryMissing.length > 0 ? ' (final contract may still flag this scene)' : ''}`,
+                  message: `Realization retry ${attempt}/2 for ${sceneBlueprint.id}: ${missing.length} under-realized moment(s) remain`,
                 });
               }
+              if (missing.length > 0) {
+                const beforeRecovery = missing;
+                insertMissingMomentBeats(sceneBlueprint.id, sceneContent.beats, missing);
+                sceneContent.startingBeatId = sceneContent.beats[0]?.id ?? sceneContent.startingBeatId;
+                missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
+                context.emit({
+                  type: missing.length > 0 ? 'warning' : 'debug',
+                  phase: 'scenes',
+                  message:
+                    `Scene ${sceneBlueprint.id} deterministic authored-moment recovery inserted ` +
+                    `${beforeRecovery.length} beat(s); ${missing.length} under-realized moment(s) remain`,
+                  data: { inserted: beforeRecovery.map((m) => ({ tier: m.tier, moment: m.moment })) },
+                });
+              }
+              if (missing.length > 0) {
+                const unresolved = missing
+                  .map((m) => `[${m.tier}] ${m.moment}`)
+                  .join('; ');
+                throw new Error(
+                  `Scene ${sceneBlueprint.id} still under-realizes authored moment(s) after realization retry: ${unresolved}`,
+                );
+              }
             } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
               context.emit({
-                type: 'warning',
+                type: 'error',
                 phase: 'scenes',
-                message: `Realization retry for ${sceneBlueprint.id} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`,
+                message: `Realization retry for ${sceneBlueprint.id} failed authored realization gate: ${message}`,
               });
+              throw err;
             }
           }
         }
@@ -1295,7 +1334,7 @@ export class ContentGenerationPhase {
                   stateReconciliationHints: bc.stateReconciliationNotes,
                 };
               })(),
-              consequenceBudgetTarget: { callback: 60, tint: 25, branchlet: 10, branch: 5 },
+              plannedConsequenceTier: plannedConsequenceTiers[sceneBlueprint.id],
               // Character-arc tracking (default-off): planned identity/relationship
               // movement, mapped to hint shape. Undefined when the flag is off.
               arcTargets: toChoiceAuthorArcTargets(
@@ -1387,18 +1426,18 @@ export class ContentGenerationPhase {
               console.error(`[Pipeline] ❌ ${caFailMsg}`);
               context.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
               // Branch-aware fallback: a choiceless BRANCH POINT would unrealize the branch
-              // and hard-abort at GATE_BRANCH_FANOUT, so route across leadsTo. A single-target
-              // scene that nonetheless declares an on-page contract (treatment seed / ending
-              // axis / info reveal) needs a deterministic set too — otherwise the contract is
-              // declared-but-never-set and the episode hard-aborts at GATE_TREATMENT_SEED_ONPAGE
-              // even though the scene leads nowhere to branch (bite-me-g14 ep2 s2-4).
+              // and hard-abort at GATE_BRANCH_FANOUT, so route across leadsTo. Any planned
+              // choice point also needs a deterministic set when ChoiceAuthor fails; otherwise
+              // season-assigned choice types silently degrade into a generic "Continue..."
+              // expression at assembly time (observed: planned strategic scene s1-5 shipped
+              // no strategic choice after Gemini rejected the schema).
               const declaresOnPageContract =
                 resolveSceneTreatmentSeeds(sceneBlueprint).length > 0 ||
                 resolveSceneBranchAxes(sceneBlueprint).length > 0 ||
                 (sceneBlueprint.revealsInfoIds ?? []).length > 0;
               const fallbackChoiceSet =
                 this.deps.buildBranchFallbackChoiceSet(sceneBlueprint, choicePointBeat)
-                ?? (declaresOnPageContract
+                ?? (declaresOnPageContract || sceneBlueprint.choicePoint
                   ? this.deps.buildDeterministicChoiceSet(sceneBlueprint, choicePointBeat)
                   : undefined);
               if (fallbackChoiceSet) {
@@ -2085,11 +2124,11 @@ export class ContentGenerationPhase {
           ].filter(Boolean).join(' ');
           return !OFF_PAGE_RELATION.test(text);
         };
-        const encounterRequiredNpcIds = Array.from(new Set([
+        const encounterRequiredNpcIds = filterProtagonistEncounterRefs(Array.from(new Set([
           ...(sceneBlueprint.encounterRequiredNpcIds || []),
           ...(plannedEnc?.npcsInvolved || []),
           ...(sceneBlueprint.npcsPresent || []),
-        ])).filter(isStageablePresent);
+        ])), brief.protagonist).filter(isStageablePresent);
         
         // NOTE: encounterRelevantSkills are passed to the architect as *prompt
         // hints* (see availableSkills/encounterRelevantSkills inputs below), but
@@ -2293,7 +2332,7 @@ export class ContentGenerationPhase {
             tier: beat.tier,
           })),
           signatureMoment: sceneBlueprint.signatureMoment,
-          centralConflict: plannedEnc?.centralConflict,
+          centralConflict: sceneBlueprint.encounterCentralConflict || plannedEnc?.centralConflict,
           encounterRequiredNpcIds,
           encounterRelevantSkills,
           encounterBeatPlan,
@@ -2424,10 +2463,15 @@ export class ContentGenerationPhase {
               }
             );
             if (attemptResult.success && attemptResult.data) {
+              if (isEncounterNarrativelyHollow(attemptResult.data)) {
+                lastEncounterFailure = 'EncounterArchitect returned a hollow encounter: no beat contains player-facing narrative setup, description, escalation, or choice outcome prose.';
+              } else {
               encounterResult = attemptResult;
               break;
+              }
+            } else {
+              lastEncounterFailure = attemptResult.error || 'EncounterArchitect returned no data';
             }
-            lastEncounterFailure = attemptResult.error || 'EncounterArchitect returned no data';
           } catch (encErr) {
             lastEncounterFailure = encErr instanceof Error ? encErr.message : String(encErr);
           }
@@ -2791,5 +2835,46 @@ export class ContentGenerationPhase {
     await this.deps.runSceneCriticPass(sceneContents, characterBible);
 
     return { sceneContents, choiceSets, encounters };
+  }
+
+  private pruneUnscopedTreatmentSeedBeats(sceneBlueprint: SceneBlueprint): void {
+    const seedFlags = resolveSceneTreatmentSeeds(sceneBlueprint);
+    if (seedFlags.length === 0) return;
+
+    const existing = sceneBlueprint.requiredBeats ?? [];
+    const allowedSeedIds = new Set(seedFlags);
+    const scopedExisting = existing.filter((beat) => {
+      if (beat.tier !== 'seed') return true;
+      const beatId = String(beat.id || '');
+      return Array.from(allowedSeedIds).some((flag) => beatId.includes(flag));
+    });
+    if (scopedExisting.length !== existing.length) {
+      sceneBlueprint.requiredBeats = scopedExisting;
+    }
+  }
+
+  private alignMandatoryOpeningBeatContext(sceneBlueprint: SceneBlueprint): void {
+    const coldOpen = (sceneBlueprint.requiredBeats ?? [])
+      .find((beat) => beat.tier === 'coldopen' && beat.mustDepict?.trim())
+      ?.mustDepict
+      ?.trim();
+    if (!coldOpen) return;
+
+    const directive = `Open with this cold-open moment before the scene's main pressure, then transition into the planned scene: ${coldOpen}`;
+    const alreadyAligned = (text?: string): boolean =>
+      Boolean(text && (text.includes(coldOpen) || text.includes('Open with this cold-open moment')));
+
+    sceneBlueprint.keyBeats = Array.isArray(sceneBlueprint.keyBeats) ? sceneBlueprint.keyBeats : [];
+    if (!sceneBlueprint.keyBeats.some((beat) => alreadyAligned(beat))) {
+      sceneBlueprint.keyBeats.unshift(directive);
+    }
+
+    if (!alreadyAligned(sceneBlueprint.description)) {
+      sceneBlueprint.description = `Cold-open prelude: ${coldOpen}\n\nThen continue into the planned scene: ${sceneBlueprint.description || sceneBlueprint.name}`;
+    }
+
+    if (!alreadyAligned(sceneBlueprint.narrativeFunction)) {
+      sceneBlueprint.narrativeFunction = `Open on the required cold-open prelude, then fulfill the planned scene function: ${sceneBlueprint.narrativeFunction || sceneBlueprint.description || sceneBlueprint.name}`;
+    }
   }
 }

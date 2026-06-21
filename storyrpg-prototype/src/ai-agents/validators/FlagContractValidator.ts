@@ -19,11 +19,16 @@
 
 import type { Story } from '../../types';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
+import type { CallbackHook, SerializedCallbackLedger } from '../pipeline/callbackLedger';
 
 export interface FlagContractInput {
   story: Story;
   /** Extra flags known to be set at runtime outside the story data (engine namespaces). */
   runtimeSetFlagPatterns?: RegExp[];
+  /** Optional callback ledger so write-only flags can be split from future-window hooks. */
+  callbackLedger?: SerializedCallbackLedger;
+  /** Highest generated episode number in the current slice/season. Defaults to the story max. */
+  generatedThroughEpisode?: number;
 }
 
 /** Engine-set namespaces a story condition may legitimately read without an in-story setter. */
@@ -80,7 +85,38 @@ export interface FlagContractMetrics {
   settersTotal: number;
   consumersTotal: number;
   unsetConditionFlags: number;
+  futureWindowFlags: number;
+  resolvedLedgerFlags: number;
   writeOnlyFlags: number;
+}
+
+type LedgerFlagClassification = 'future-window' | 'resolved-or-abandoned' | 'due-or-orphan';
+
+function hookCarriesFlag(hook: CallbackHook, flag: string): boolean {
+  return hook.id === `flag:${flag}` || hook.flags?.includes(flag) === true || hook.conditionKeys?.includes(flag) === true;
+}
+
+function generatedThroughEpisode(story: Story, override?: number): number {
+  if (typeof override === 'number' && Number.isFinite(override)) return override;
+  const numbers = (story.episodes || [])
+    .map((episode) => episode.number)
+    .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+  return numbers.length > 0 ? Math.max(...numbers) : 0;
+}
+
+export function classifyLedgerFlag(
+  flag: string,
+  ledger: SerializedCallbackLedger | undefined,
+  generatedThrough: number,
+): LedgerFlagClassification | undefined {
+  const hooks = (ledger?.hooks || []).filter((hook) => hookCarriesFlag(hook, flag));
+  if (hooks.length === 0) return undefined;
+  if (hooks.every((hook) => hook.resolved || hook.abandoned)) return 'resolved-or-abandoned';
+  const open = hooks.filter((hook) => !hook.resolved && !hook.abandoned);
+  if (open.some((hook) => (hook.payoffEpisode ?? hook.payoffWindow?.maxEpisode ?? 0) > generatedThrough)) {
+    return 'future-window';
+  }
+  return 'due-or-orphan';
 }
 
 export class FlagContractValidator extends BaseValidator {
@@ -90,6 +126,7 @@ export class FlagContractValidator extends BaseValidator {
 
   validate(input: FlagContractInput): ValidationResult & { metrics: FlagContractMetrics } {
     const runtimePatterns = [...DEFAULT_RUNTIME_PATTERNS, ...(input.runtimeSetFlagPatterns || [])];
+    const generatedThrough = generatedThroughEpisode(input.story, input.generatedThroughEpisode);
     const setters = new Map<string, FlagRef[]>();
     const consumers = new Map<string, FlagRef[]>();
 
@@ -176,18 +213,26 @@ export class FlagContractValidator extends BaseValidator {
 
     // Write-only summary (advisory): exclude plumbing namespaces that are consumed
     // out-of-band (tints → identity engine, treatment branch markers, ledger hooks).
-    const writeOnly = [...setters.keys()].filter(
-      (f) =>
-        !consumers.has(f) &&
-        !f.startsWith('tint:') &&
-        !f.startsWith('route_') &&
-        !f.startsWith('treatment_') &&
-        !/^encounter[_.]/.test(f),
-    );
+    let futureWindowFlags = 0;
+    let resolvedLedgerFlags = 0;
+    const writeOnly = [...setters.keys()].filter((f) => {
+      if (consumers.has(f)) return false;
+      if (f.startsWith('tint:') || f.startsWith('route_') || f.startsWith('treatment_') || /^encounter[_.]/.test(f)) return false;
+      const ledgerClass = classifyLedgerFlag(f, input.callbackLedger, generatedThrough);
+      if (ledgerClass === 'future-window') {
+        futureWindowFlags += 1;
+        return false;
+      }
+      if (ledgerClass === 'resolved-or-abandoned') {
+        resolvedLedgerFlags += 1;
+        return false;
+      }
+      return true;
+    });
     if (writeOnly.length > 0) {
       issues.push(this.warning(
         `${writeOnly.length} player-choice flag(s) are set but never read by any condition in the generated range ` +
-        `(e.g. ${writeOnly.slice(0, 5).join(', ')}). Cross-episode windows may consume some later; the rest are residue the story silently forgets.`,
+        `(e.g. ${writeOnly.slice(0, 5).join(', ')}). Ledger-qualified future-window hooks are counted separately; these are true orphan flags the story silently forgets.`,
         'story',
         'Condition later prose on the decisions that matter, or drop the dead flags.',
       ));
@@ -203,6 +248,8 @@ export class FlagContractValidator extends BaseValidator {
         settersTotal: setters.size,
         consumersTotal: consumers.size,
         unsetConditionFlags: unsetCount,
+        futureWindowFlags,
+        resolvedLedgerFlags,
         writeOnlyFlags: writeOnly.length,
       },
     };

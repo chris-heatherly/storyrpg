@@ -2,6 +2,7 @@ import type { Story } from '../../types';
 import {
   coerceThirdPersonProtagonistToSecond,
   PovClarityValidator,
+  repairSecondPersonProtagonistResidue,
 } from '../validators/PovClarityValidator';
 
 /**
@@ -24,10 +25,14 @@ const NARRATIVE_KEYS = new Set([
   'outcomeText',
   'successText',
   'failureText',
+  'visualMoment',
+  'visualNarrative',
+  'visibleCost',
   'immediateEffect',
   'lingeringEffect',
   'visibleComplication',
   'narration',
+  'description',
 ]);
 
 export interface ProtagonistRef {
@@ -62,6 +67,37 @@ export function protagonistFromStory(story: Story): ProtagonistRef | undefined {
   return { name: p.name, pronouns: (p as { pronouns?: string }).pronouns };
 }
 
+const UNSAFE_PROTAGONIST_NAMES = new Set([
+  'a',
+  'an',
+  'hero',
+  'lead',
+  'main',
+  'protagonist',
+  'the',
+  'unknown',
+]);
+
+function safeProtagonistName(name?: string): string | undefined {
+  const trimmed = name?.trim();
+  if (!trimmed || trimmed.length < 3) return undefined;
+  if (UNSAFE_PROTAGONIST_NAMES.has(trimmed.toLowerCase())) return undefined;
+  return trimmed;
+}
+
+function resolveProtagonist(story: Story, provided?: ProtagonistRef): ProtagonistRef | undefined {
+  const roster = protagonistFromStory(story);
+  if (safeProtagonistName(roster?.name)) {
+    return {
+      name: roster!.name,
+      aliases: provided?.aliases,
+      pronouns: roster?.pronouns || provided?.pronouns,
+    };
+  }
+  if (!safeProtagonistName(provided?.name)) return undefined;
+  return provided;
+}
+
 function firstNameRe(name: string): RegExp {
   const first = name.split(/\s+/)[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b${first}\\b`, 'i');
@@ -69,6 +105,15 @@ function firstNameRe(name: string): RegExp {
 
 function textHasAnyName(text: string, names: string[]): boolean {
   return names.some((n) => firstNameRe(n).test(text));
+}
+
+function looksLikeChoiceText(obj: Record<string, unknown>, key: string): boolean {
+  return key === 'text' && (
+    obj.outcomes != null ||
+    obj.approach != null ||
+    obj.primarySkill != null ||
+    obj.consequenceDomain != null
+  );
 }
 
 function walkNarrative(node: unknown, fn: (s: string) => string, depth = 0): void {
@@ -81,7 +126,7 @@ function walkNarrative(node: unknown, fn: (s: string) => string, depth = 0): voi
     const obj = node as Record<string, unknown>;
     for (const [k, v] of Object.entries(obj)) {
       if (typeof v === 'string') {
-        if (NARRATIVE_KEYS.has(k)) obj[k] = fn(v);
+        if (NARRATIVE_KEYS.has(k) && !looksLikeChoiceText(obj, k)) obj[k] = fn(v);
       } else {
         walkNarrative(v, fn, depth + 1);
       }
@@ -96,9 +141,10 @@ function collectNarrative(node: unknown, out: string[], depth = 0): void {
     return;
   }
   if (typeof node === 'object') {
-    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    const obj = node as Record<string, unknown>;
+    for (const [k, v] of Object.entries(obj)) {
       if (typeof v === 'string') {
-        if (NARRATIVE_KEYS.has(k) && v.trim()) out.push(v);
+        if (NARRATIVE_KEYS.has(k) && !looksLikeChoiceText(obj, k) && v.trim()) out.push(v);
       } else {
         collectNarrative(v, out, depth + 1);
       }
@@ -116,7 +162,7 @@ function eachEncounter(story: Story, fn: (enc: unknown) => void): void {
 
 /** Detection only: third-person protagonist breaks remaining in encounter narrative prose. */
 export function findEncounterPovBreaks(story: Story, protagonist?: ProtagonistRef): string[] {
-  const prot = protagonist ?? protagonistFromStory(story);
+  const prot = resolveProtagonist(story, protagonist);
   if (!prot?.name) return [];
   const strings: string[] = [];
   eachEncounter(story, (enc) => collectNarrative(enc, strings));
@@ -137,19 +183,24 @@ export function applyEncounterPovBackstop(
   story: Story,
   protagonist?: ProtagonistRef,
 ): EncounterPovBackstopResult {
-  const prot = protagonist ?? protagonistFromStory(story);
+  const prot = resolveProtagonist(story, protagonist);
   if (!prot?.name) return { coerced: 0, residualBreaks: [] };
   const subjectPronoun = subjectPronounOf(prot.pronouns);
   const sameGender = sameGenderNpcNames(story, prot.pronouns).filter((n) => n !== prot.name);
   let coerced = 0;
   eachEncounter(story, (enc) =>
     walkNarrative(enc, (s) => {
+      const residue = repairSecondPersonProtagonistResidue(s);
+      if (!firstNameRe(prot.name!).test(residue.text)) {
+        if (residue.changed) coerced += 1;
+        return residue.text;
+      }
       const coercePronouns = Boolean(subjectPronoun) && !textHasAnyName(s, sameGender);
-      const { text, changed } = coerceThirdPersonProtagonistToSecond(s, prot.name, {
+      const { text, changed } = coerceThirdPersonProtagonistToSecond(residue.text, prot.name, {
         coercePronouns,
         subjectPronoun,
       });
-      if (changed) coerced += 1;
+      if (changed || residue.changed) coerced += 1;
       return text;
     }),
   );

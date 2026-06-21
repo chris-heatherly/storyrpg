@@ -323,18 +323,14 @@ export function buildCallbackCondition(conditionKey: string): ConditionExpressio
  * raw flag names ('Earlier choice: "…" (sets treatment_seed_ep2_1).'). Injecting
  * any of those verbatim leaked design notes to readers. We now consider candidates
  * in reader-facing-preference order and return the FIRST one that passes the
- * meta-prose reject filter. If none of the AUTHORED candidates is clean we no longer
- * give up: we synthesize a short, deterministic in-fiction acknowledgment from the
- * choice text (`deriveChoiceAcknowledgment`) so a hook whose only authored source was
- * the synthesized `Earlier choice: "…" (sets …)` stub still yields usable, non-meta
- * prose instead of being silently dropped (the "write-only flags" gap). Only when even
- * that can't be built (no choice text) do we return '' and skip the injection.
+ * meta-prose reject filter. If no authored in-fiction callback exists, return ''
+ * and skip the injection rather than synthesize generic scaffolding.
  */
 function pickCallbackProse(meta: CallbackProseMeta | undefined, summary: string): string {
   const candidates = [
     // memorableMoment.summary / tone summary arrives here as `summary` (an in-fiction
     // recap); for ordinary flag/score hooks `summary` is the synthesized stub, which
-    // the filter rejects so we fall through to the authored prose then the derived line.
+    // the filter rejects so we fall through to authored prose.
     summary,
     meta?.echoSummary,
     meta?.reminderPlan?.shortTerm,
@@ -344,53 +340,20 @@ function pickCallbackProse(meta: CallbackProseMeta | undefined, summary: string)
     const candidate = (raw ?? '').replace(/\s+/g, ' ').trim();
     if (candidate && !isUnsafeCallbackProse(candidate) && !isFallbackReminderStub(candidate)) return candidate;
   }
-  // Deterministic in-fiction fallback derived from the choice text. Built to pass
-  // the same reject filters (no scene/flag/episode refs, no system math) so it is a
-  // clean acknowledgment, not a bypass.
   const derived = deriveChoiceAcknowledgment(meta?.text);
   if (derived && !isUnsafeCallbackProse(derived) && !isFallbackReminderStub(derived)) return derived;
   return '';
 }
 
 /**
- * A small pool of short, neutral, in-fiction continuity beats. Each references "an
- * earlier decision" WITHOUT naming a scene, flag, or episode, so every entry passes
- * the meta-prose / fallback-stub reject filters. Picked by a stable hash of the
- * choice text so DIFFERENT choices vary (anti-repetition) while the SAME choice is
- * always realized identically (golden-stable, no RNG).
+ * Do not synthesize callback prose from bare choice text. The old fallback built
+ * generic lines like "Accepting the rose quartz from her still changes how this
+ * moment lands", which technically acknowledged state but read like planning
+ * scaffolding in the reader. Keep the export as a stable seam for tests/callers,
+ * but require authored in-fiction prose elsewhere.
  */
-const DERIVED_ACK_POOL: readonly string[] = [
-  'What you chose earlier still sits with you here.',
-  'The decision you made before has not let go of you.',
-  'An earlier choice of yours echoes quietly under this moment.',
-  'You feel the weight of what you settled on before.',
-  'The call you made earlier is still shaping how this lands.',
-  'Something you decided before colors the way you meet this.',
-];
-
-/** Stable, deterministic 32-bit hash of a string (no RNG, golden-safe). */
-function stableHash(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
-
-/**
- * Synthesize a short, clean, in-fiction acknowledgment of an earlier decision when a
- * hook's only authored prose source was the synthesized `Earlier choice: "…"` stub.
- * We do NOT echo the choice text verbatim (imperative choice prose reads oddly mid-
- * scene); instead we pick a neutral continuity beat from {@link DERIVED_ACK_POOL},
- * keyed by a stable hash of the choice text so different choices get different lines
- * (the anti-repetition guard) while the same choice is deterministic. When no choice
- * text is available we still return the first pool entry (better a light beat than a
- * dropped, write-only flag). All pool entries are pre-cleared by the reject filters.
- */
-export function deriveChoiceAcknowledgment(choiceText: string | undefined): string {
-  const text = (choiceText ?? '').replace(/\s+/g, ' ').trim();
-  const key = text && !isUnsafeCallbackProse(text) ? text : '';
-  return DERIVED_ACK_POOL[stableHash(key) % DERIVED_ACK_POOL.length];
+export function deriveChoiceAcknowledgment(_choiceText: string | undefined): string {
+  return '';
 }
 
 /** Choice metadata the callback realizer consults for reader-facing prose. */
@@ -499,6 +462,11 @@ export function injectFallbackCallbacks(
       for (const beat of sceneContents[sIdx].beats || []) {
         const beatId = beat.id || '';
         if (!beatId) continue;
+        const beatChoiceSurface = beat as HarvestBeat & { isChoicePoint?: boolean; choices?: unknown[] };
+        if (
+          beatChoiceSurface.isChoicePoint === true ||
+          (Array.isArray(beatChoiceSurface.choices) && beatChoiceSurface.choices.length > 0)
+        ) continue;
         if ((usedPerBeat.get(beatId) ?? 0) >= maxPerBeat) continue;
 
         // G12: a matching TextVariant REPLACES the beat's base text at runtime, so

@@ -64,4 +64,20 @@ describe('CliffhangerValidator', () => {
     expect(['good', 'excellent']).toContain(result.quality);
     expect(result.strengths.some(s => s.includes('planned hook'))).toBe(true);
   });
+
+  it('analyzes the authored final beat instead of terminal choice bridges', () => {
+    const episode = episodeWithFinalText('The protagonist survived the tribunal, but the victory curdled when the same blue letter slid from the mentor\'s sleeve. In wet blood, the mentor had signed the enemy name, and every promise from dawn meant something else.');
+    episode.scenes[0].beats.push({
+      id: 'bridge-decline',
+      text: 'You step away and carry the decision into tomorrow.',
+      isChoiceBridge: true,
+      sourceChoiceId: 'decline',
+      nextSceneId: 'episode-end',
+    } as never);
+
+    const result = validator.quickAnalyze(episode, highShockPlan);
+
+    expect(['good', 'excellent']).toContain(result.quality);
+    expect(result.finalBeatText).toContain('blue letter');
+  });
 });

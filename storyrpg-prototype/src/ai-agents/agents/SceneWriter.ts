@@ -12,7 +12,7 @@
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
 import { formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
-import { BaseAgent, AgentResponse } from './BaseAgent';
+import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import { buildResidueRequirementPromptSection } from '../pipeline/reconvergenceResidue';
 import { Beat, TextVariant, Consequence, TimingMetadata, SceneVisualSequencePlan } from '../../types';
@@ -43,6 +43,13 @@ import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 import { applySequenceDirectorPlan } from './SequenceDirector';
+import { buildSceneContentJsonSchema } from '../schemas/sceneContentSchema';
+import { isPlanningRegisterText } from '../constants/planningRegisterText';
+
+const SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS = 3500;
+const SCENE_WRITER_REVISION_TEXT_CHARS = 1200;
+const SCENE_WRITER_MAX_RAW_RESPONSE_CHARS = 14000;
+const SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS = 14000;
 
 function normalizeSourceFragments(sourceAnalysis?: SourceMaterialAnalysis): {
   dialogue: string[];
@@ -743,11 +750,21 @@ ${CHOICE_DENSITY_REQUIREMENTS}
     console.log(`[SceneWriter] Writing scene: ${input.sceneBlueprint.id} - "${input.sceneBlueprint.name}"${retryCount > 0 ? ` (revision ${retryCount})` : ''}`);
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
+      const response = await this.callLLM(
+        [{ role: 'user', content: prompt }],
+        4,
+        { jsonSchema: buildSceneContentJsonSchema(input.targetBeatCount) },
+      );
 
       console.log(`[SceneWriter] Received response (${response.length} chars)`);
+
+      if (response.length > SCENE_WRITER_MAX_RAW_RESPONSE_CHARS) {
+        return {
+          success: false,
+          error: `SceneWriter response exceeded raw processing budget (${response.length} > ${SCENE_WRITER_MAX_RAW_RESPONSE_CHARS} chars). Retry with concise beat prose and no boilerplate fields.`,
+          rawResponse: response.slice(0, 1000),
+        };
+      }
 
       let content: SceneContent;
       try {
@@ -766,6 +783,8 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
       // Normalize arrays that the LLM might return as strings or undefined
       content = this.normalizeContent(content, input);
+
+      content = this.boundOverlongContentForProcessing(content);
 
       // Check for issues that need revision
       const issues = this.collectIssues(content, input);
@@ -810,7 +829,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
       return {
         success: true,
-        data: content,
+        data: this.stripInternalProcessingMarkers(content),
         rawResponse: response,
       };
     } catch (error) {
@@ -850,6 +869,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
     parseError: unknown,
   ): Promise<SceneContent> {
     const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
+    const wasTruncated = parseError instanceof TruncatedLLMResponseError;
     const compactBlueprint = {
       id: input.sceneBlueprint.id,
       name: input.sceneBlueprint.name,
@@ -889,12 +909,12 @@ ${CHOICE_DENSITY_REQUIREMENTS}
         })),
     ];
     const repairPrompt = `
-The previous SceneWriter response for scene "${input.sceneBlueprint.id}" was malformed JSON and could not be parsed.
+The previous SceneWriter response for scene "${input.sceneBlueprint.id}" was ${wasTruncated ? 'truncated' : 'malformed JSON'} and could not be used.
 
 Parse error:
 ${errorMessage}
 
-Your job is to RE-EMIT the complete scene as valid JSON only. Do not explain. Do not use markdown fences. Do not return a partial object.
+Your job is to ${wasTruncated ? 'REGENERATE' : 'RE-EMIT'} the complete scene as valid JSON only. Do not explain. Do not use markdown fences. Do not return a partial object.
 
 Scene blueprint:
 ${JSON.stringify(compactBlueprint)}
@@ -911,11 +931,13 @@ ${JSON.stringify({
 Characters:
 ${JSON.stringify(visibleCharacters)}
 
-Malformed/truncated response to repair or regenerate from:
-${malformedResponse.slice(0, 24000)}
+${wasTruncated
+  ? `Do not continue the truncated response. Use the blueprint and story context above to regenerate the whole scene cleanly.`
+  : `Malformed response to repair or regenerate from:\n${malformedResponse.slice(0, 24000)}`}
 
 Return exactly one complete SceneContent JSON object with:
-- sceneId, sceneName, description, startingBeatId, beats, moodProgression, charactersInvolved, keyMoments, continuityNotes
+- sceneId, sceneName, startingBeatId, beats, charactersInvolved
+- include moodProgression, keyMoments, sceneTakeaways, transitionIn, or continuityNotes only when they carry specific scene craft, continuity, or validation value
 - up to ${input.targetBeatCount} beats
 - concise strings so the response cannot truncate
 - no markdown code block
@@ -923,7 +945,11 @@ Return exactly one complete SceneContent JSON object with:
 `;
 
     console.warn(`[SceneWriter] Attempting JSON repair pass for ${input.sceneBlueprint.id}`);
-    const repairedResponse = await this.callLLM([{ role: 'user', content: repairPrompt }], 2);
+    const repairedResponse = await this.callLLM(
+      [{ role: 'user', content: repairPrompt }],
+      2,
+      { jsonSchema: buildSceneContentJsonSchema(input.targetBeatCount) },
+    );
     try {
       const repaired = this.parseJSON<SceneContent>(repairedResponse);
       console.log(`[SceneWriter] JSON repair pass succeeded for ${input.sceneBlueprint.id}`);
@@ -1040,19 +1066,31 @@ Return exactly one complete SceneContent JSON object with:
         beat.text,
         input?.sceneBlueprint?.description || input?.sceneBlueprint?.dramaticQuestion || input?.sceneBlueprint?.name || 'The story pressure changes.'
       );
+      beat.text = this.compactShortOverFragmentedText(
+        beat.text,
+        beat.isClimaxBeat
+          ? TEXT_LIMITS.maxClimaxBeatWordCount
+          : beat.isKeyStoryBeat
+            ? TEXT_LIMITS.maxKeyStoryBeatWordCount
+            : TEXT_LIMITS.maxBeatWordCount,
+        4,
+        `beat ${beat.id || i}`,
+      );
 
       if (beat.textVariants && !Array.isArray(beat.textVariants)) {
         beat.textVariants = [beat.textVariants as unknown as TextVariant];
       }
       
-      // AUTO-FIX: Malformed text variants
+      // AUTO-FIX: Legacy single-key residue variants from older runs.
+      // Do not turn `{ text: "" }` or other schema-shaped boilerplate into a
+      // fake flag; collectIssues will send malformed variants back for revision.
       if (beat.textVariants) {
         beat.textVariants = beat.textVariants.map(variant => {
           const v = variant as any;
           // Check for "lazy" variant: { "flag_name": "text" }
           if (typeof variant === 'object' && !variant.text && !variant.condition) {
             const keys = Object.keys(variant);
-            if (keys.length === 1 && typeof v[keys[0]] === 'string') {
+            if (keys.length === 1 && keys[0] !== 'text' && typeof v[keys[0]] === 'string' && v[keys[0]].trim().length > 0) {
               console.warn(`[SceneWriter] Auto-fixing lazy text variant: ${keys[0]}`);
               return {
                 condition: { type: 'flag' as const, flag: keys[0], value: true },
@@ -1080,8 +1118,38 @@ Return exactly one complete SceneContent JSON object with:
               (id) => knownHookIds.has(id),
             );
           }
+          if (variant?.callbackHookId && !knownHookIds.has(variant.callbackHookId)) {
+            console.warn(`[SceneWriter] Dropping unknown callbackHookId "${variant.callbackHookId}" from beat ${beat.id}; callbackHookId must match a prompt-provided ledger hook.`);
+            delete variant.callbackHookId;
+          }
+          if (variant?.callbackHookId && !this.isMeaningfulVariantCondition(variant.condition)) {
+            const callbackCondition = this.buildCallbackVariantCondition(input, variant.callbackHookId);
+            if (callbackCondition) {
+              variant.condition = callbackCondition as any;
+            }
+          }
+          if (typeof variant?.text === 'string') {
+            variant.text = this.compactShortOverFragmentedText(
+              variant.text,
+              TEXT_LIMITS.maxBeatWordCount,
+              4,
+              `beat ${beat.id || i} textVariant`,
+            );
+          }
           return variant;
-        }).filter(v => v && v.text); // Remove empty/null variants
+        }).filter((variant) => {
+          const v = variant as any;
+          if (!v || typeof v.text !== 'string' || v.text.trim().length === 0) return false;
+          if (this.isMeaningfulVariantCondition(v.condition)) return true;
+          const conditionWasAttempted = Boolean(
+            v.condition
+            && typeof v.condition === 'object'
+            && Object.keys(v.condition as Record<string, unknown>).length > 0
+          );
+          if (conditionWasAttempted || v.callbackHookId) return true;
+          console.warn(`[SceneWriter] Dropping boilerplate textVariant from beat ${beat.id}; no meaningful condition was provided.`);
+          return false;
+        });
       }
 
       if (beat.onShow && !Array.isArray(beat.onShow)) {
@@ -1222,10 +1290,168 @@ Return exactly one complete SceneContent JSON object with:
     return content;
   }
 
+  private boundOverlongContentForProcessing(content: SceneContent): SceneContent {
+    for (const beat of content.beats || []) {
+      if (typeof beat.text === 'string' && beat.text.length > SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS) {
+        (beat as any).__sceneWriterOriginalTextCharCount = beat.text.length;
+        beat.text = this.clipForSceneProcessing(beat.text, SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS);
+      }
+
+      for (const variant of beat.textVariants || []) {
+        const candidate = variant as any;
+        if (typeof candidate.text === 'string' && candidate.text.length > SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS) {
+          candidate.__sceneWriterOriginalTextCharCount = candidate.text.length;
+          candidate.text = this.clipForSceneProcessing(candidate.text, SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS);
+        }
+      }
+    }
+    return content;
+  }
+
+  private clipForSceneProcessing(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    const head = text.slice(0, Math.max(0, maxChars - 180)).trimEnd();
+    return `${head}\n\n[Generation note: this field was ${text.length} characters and exceeded the SceneWriter processing budget. Rewrite it concisely instead of preserving this note.]`;
+  }
+
+  private stripInternalProcessingMarkers(content: SceneContent): SceneContent {
+    for (const beat of content.beats || []) {
+      delete (beat as any).__sceneWriterOriginalTextCharCount;
+      for (const variant of beat.textVariants || []) {
+        delete (variant as any).__sceneWriterOriginalTextCharCount;
+      }
+    }
+    return content;
+  }
+
+  private hasOverlongProcessingMarker(content: SceneContent): boolean {
+    return Boolean((content.beats || []).some((beat: any) =>
+      beat.__sceneWriterOriginalTextCharCount
+      || (beat.textVariants || []).some((variant: any) => variant.__sceneWriterOriginalTextCharCount)
+    ));
+  }
+
+  private compactForRevisionPrompt<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value, (_key, raw) => {
+      if (typeof raw !== 'string' || raw.length <= SCENE_WRITER_REVISION_TEXT_CHARS) return raw;
+      return this.clipForSceneProcessing(raw, SCENE_WRITER_REVISION_TEXT_CHARS);
+    }));
+  }
+
+  private countSentencesBounded(text: string): number {
+    return (text.match(/[.!?]+/g) || []).length;
+  }
+
+  private wordCount(text: string): number {
+    const trimmed = text.trim();
+    return trimmed ? trimmed.split(/\s+/).length : 0;
+  }
+
+  private compactShortOverFragmentedText(
+    text: string,
+    maxWords: number,
+    maxSentences: number,
+    label: string,
+  ): string {
+    if (!text || this.countSentencesBounded(text) <= maxSentences) return text;
+    if (this.wordCount(text) > maxWords) return text;
+    if (text.length > 700) return text;
+
+    const fragments = text
+      .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+      ?.map((fragment) => fragment.trim())
+      .filter(Boolean);
+    if (!fragments || fragments.length <= maxSentences || fragments.length > 9) return text;
+
+    const groups: string[][] = Array.from({ length: maxSentences }, () => []);
+    fragments.forEach((fragment, index) => {
+      groups[Math.min(maxSentences - 1, Math.floor(index * maxSentences / fragments.length))].push(fragment);
+    });
+
+    const compacted = groups
+      .filter((group) => group.length > 0)
+      .map((group) => group.map((fragment, index) => {
+        const cleaned = fragment.replace(/[.!?]+$/g, '').trim();
+        if (index < group.length - 1) return `${cleaned},`;
+        const terminal = fragment.match(/[.!?]+$/)?.[0]?.slice(-1) || '.';
+        return `${cleaned}${terminal}`;
+      }).join(' '))
+      .join(' ');
+
+    if (this.countSentencesBounded(compacted) <= maxSentences) {
+      console.warn(`[SceneWriter] Compacted over-fragmented ${label}: ${fragments.length} sentence fragments -> ${this.countSentencesBounded(compacted)} sentences`);
+      return compacted;
+    }
+    return text;
+  }
+
+  private isMeaningfulVariantCondition(condition: unknown): boolean {
+    if (!condition || typeof condition !== 'object') return false;
+    const candidate = condition as Record<string, unknown>;
+    if (Object.keys(candidate).length === 0) return false;
+    if (typeof candidate.flag === 'string' && candidate.flag.trim().length > 0) return true;
+    if (typeof candidate.score === 'string' && candidate.score.trim().length > 0) return true;
+    switch (candidate.type) {
+      case 'flag':
+        return typeof candidate.flag === 'string' && candidate.flag.trim().length > 0;
+      case 'score':
+        return typeof candidate.score === 'string' && candidate.score.trim().length > 0;
+      case 'relationship':
+        return typeof candidate.npcId === 'string' && candidate.npcId.trim().length > 0;
+      case 'attribute':
+        return typeof candidate.attribute === 'string' && candidate.attribute.trim().length > 0;
+      case 'skill':
+        return typeof candidate.skill === 'string' && candidate.skill.trim().length > 0;
+      case 'tag':
+        return typeof candidate.tag === 'string' && candidate.tag.trim().length > 0;
+      case 'item':
+        return typeof candidate.itemId === 'string' && candidate.itemId.trim().length > 0;
+      case 'identity':
+        return typeof candidate.dimension === 'string' && candidate.dimension.trim().length > 0;
+      case 'and':
+      case 'or':
+        return Array.isArray(candidate.conditions) && candidate.conditions.length > 0;
+      case 'not':
+        return Boolean(candidate.condition && typeof candidate.condition === 'object');
+      default:
+        return false;
+    }
+  }
+
+  private buildCallbackVariantCondition(input: SceneWriterInput | undefined, callbackHookId: unknown): unknown | null {
+    if (!input || typeof callbackHookId !== 'string') return null;
+    const hook = (input.unresolvedCallbacks || []).find((candidate) => candidate.id === callbackHookId);
+    const flags = (hook?.conditionKeys?.length ? hook.conditionKeys : hook?.flags || [])
+      .filter((flag): flag is string => typeof flag === 'string' && flag.trim().length > 0);
+    if (flags.length === 0) return null;
+    if (flags.length === 1) {
+      return { type: 'flag', flag: flags[0], value: true };
+    }
+    return {
+      type: 'and',
+      conditions: flags.map((flag) => ({ type: 'flag', flag, value: true })),
+    };
+  }
+
+  private isHardPostRevisionIssue(issue: string): boolean {
+    return (
+      issue.startsWith('OVERLONG ') ||
+      issue.startsWith('MALFORMED TEXT VARIANT') ||
+      issue.startsWith('SCHEMA PLACEHOLDER LEAK') ||
+      issue.startsWith('BEATS EXCEED CAP') ||
+      issue.startsWith('TOO MANY CLIMAX BEATS') ||
+      issue.startsWith('TOO MANY KEY STORY BEATS') ||
+      issue.startsWith('MISSING CHOICE POINT') ||
+      issue.startsWith('NO BEATS') ||
+      issue.startsWith('SINGLE BEAT') ||
+      issue.startsWith('SCENE-LENGTH UNDERFILL')
+    );
+  }
+
   private ensureMinimumChoiceSceneBeats(content: SceneContent, input?: SceneWriterInput): void {
     if (!input?.sceneBlueprint.choicePoint) return;
 
-    const minimumBeats = input.targetBeatCount >= 3 ? 3 : 2;
+    const minimumBeats = input.targetBeatCount >= 6 ? 6 : input.targetBeatCount >= 3 ? 3 : 2;
     if (content.beats.length >= minimumBeats) return;
 
     const leadInCount = minimumBeats - 1;
@@ -1308,6 +1534,7 @@ Return exactly one complete SceneContent JSON object with:
     const pushText = (value?: string) => {
       const normalized = this.ensureTerminalPunctuation((value || '').trim());
       if (!normalized || uniqueTexts.has(normalized)) return;
+      if (this.isUnsafeSyntheticBeatText(normalized)) return;
       uniqueTexts.add(normalized);
       leadIns.push(normalized);
     };
@@ -1324,15 +1551,34 @@ Return exactly one complete SceneContent JSON object with:
     pushText(this.stripAgentFacingPressureParagraphs(scene.narrativeFunction, scene.description || scene.name));
     pushText(scene.encounterBuildup);
 
-    while (leadIns.length < count) {
-      const fallback =
-        leadIns.length === 0
-          ? `${scene.name} opens with pressure already mounting around ${input.protagonistInfo.name}`
-          : `The pressure tightens as the scene drives toward ${scene.choicePoint?.description || 'a hard decision'}`
+    const fallbackLeadIns = [
+      `${scene.name} opens with pressure already mounting around ${input.protagonistInfo.name}`,
+      `${input.protagonistInfo.name} catches the first sign that this moment will demand a choice`,
+      `A concrete detail changes the room, narrowing what ${input.protagonistInfo.name} can safely ignore`,
+      `The people nearby reveal new stakes without saying them plainly`,
+      `The pressure tightens as the scene drives toward a decision ${input.protagonistInfo.name} cannot avoid`,
+    ];
+    for (const fallback of fallbackLeadIns) {
+      if (leadIns.length >= count) break;
       pushText(fallback);
     }
 
+    while (leadIns.length < count) {
+      leadIns.push(
+        this.ensureTerminalPunctuation(
+          `${input.protagonistInfo.name} reads another specific shift in the moment before choosing a response`
+        )
+      );
+    }
+
     return leadIns.slice(0, count);
+  }
+
+  private isUnsafeSyntheticBeatText(text: string): boolean {
+    return isPlanningRegisterText(text)
+      || /\bserves\s+the\s+\w+\s+beat\b/i.test(text)
+      || /\bforward\s+pressure\s*:/i.test(text)
+      || /\bsceneEpisode\b/i.test(text);
   }
 
   private createSyntheticLeadInBeat(
@@ -1621,6 +1867,7 @@ Write this scene with the encounter in mind. Every beat should move players emot
 - Plant the seeds of conflict that will explode in the encounter
 - Establish or deepen the relationships that will be tested
 - Surface the information, stakes, or personal history that makes the encounter's choices feel loaded
+- Do NOT depict the encounter's defining event yet. If the encounter description names an attack, rescue, confrontation, chase, bargain, revelation, kiss, or escape, this scene may foreshadow or set it up but must leave the event itself for the encounter scene.
 - DO NOT resolve the tension — build it, complicate it, and leave it unresolved for the encounter to detonate
 
 The player should finish this scene feeling that something significant is coming. The encounter should feel INEVITABLE by the time they reach it.
@@ -1690,6 +1937,7 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 ` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
+- HARD OUTPUT BUDGET: the complete JSON response must stay under ${SCENE_WRITER_MAX_RAW_RESPONSE_CHARS} characters. Prefer 6-8 concise beats, compact visual contract strings, and no optional boilerplate. Use textVariants only when a real condition changes player-facing prose.
 ${input.targetBeatCount >= 6 ? '- If this is a scene-length episode, write at least 6 beats and keep the final beat as the visible choice point. Do not compress the episode into only setup to crisis to choice.\n' : ''}
 - ${input.dialogueHeavy ? 'This is dialogue-heavy - focus on conversation' : 'Balance description with any dialogue'}
 - The first non-empty player-facing beat MUST anchor POV to the player character with "you", "your", the protagonist's actual name, or a concrete pronoun before focusing on NPCs or setting.
@@ -1714,6 +1962,7 @@ This scene follows an encounter that can end several ways, and the gameplay stat
 - The opening MUST NOT read identically regardless of how that encounter went.
 - Author at least one textVariant on an EARLY beat gated on the outcome flag so the prose reflects the result — e.g. an ally who was hurt appears injured, a costly win shows its cost, a defeat colors the mood. Use these EXACT flags:
 ${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // ${e.encounterName}: ${o.outcome}`)).join('\n')}
+- Keep this lean: put these aftermath variants on one or two early beats only. Do not add textVariants to every beat.
 - Keep the base text true for the most neutral (victory) path; the variants carry the harder outcomes.
 ${input.priorEncounterOutcomes!.some(e => e.goalPressure || e.threatPressure) ? `- The encounter ran under pressure the aftermath must still carry — ${input.priorEncounterOutcomes!.filter(e => e.goalPressure || e.threatPressure).map(e => [e.goalPressure ? `what was at stake: ${e.goalPressure}` : '', e.threatPressure ? `the rising danger: ${e.threatPressure}` : ''].filter(Boolean).join('; ')).join('; ')}. Let the prose show its residue (time lost, danger nearer, cost paid) in fiction-first terms — never name clocks, segments, or mechanics.` : ''}
 ` : ''}
@@ -2042,7 +2291,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       return `${subject} turns the exchange by making the hidden pressure physically visible.`;
     }
     if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) {
-      return `${subject} notices the decisive clue and their posture changes around it.`;
+      return `${subject} notices the decisive clue and ${subject}'s posture changes around it.`;
     }
     if (/(phone|text|message|screen|photo|app)/.test(lowered)) {
       return `${subject} uses the phone as evidence, shifting the room's attention to the screen.`;
@@ -2062,7 +2311,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       return `${subject}'s smile, averted eyes, and busy hands betray what the words avoid.`;
     }
     if (/(fear|panic|worry|guilt|shame|hurt)/.test(lowered)) {
-      return `${subject}'s weight shifts back while their hands tighten, exposing the feeling they try to contain.`;
+      return `${subject}'s weight shifts back while ${subject}'s hands tighten, exposing the feeling under the words.`;
     }
     if (/(approach|enter|leave|walk|step|back away|retreat)/.test(lowered)) {
       return `The changing distance around ${subject} shows who is gaining or losing control.`;
@@ -2370,7 +2619,8 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     for (const beat of content.beats || []) {
       const text = typeof beat.text === 'string' ? beat.text : String(beat.text || '');
       const wordCount = text.trim().split(/\s+/).length;
-      const sentenceCount = (text.match(/[.!?]+/g) || []).length;
+      const sentenceCount = this.countSentencesBounded(text);
+      const originalTextChars = (beat as any).__sceneWriterOriginalTextCharCount || text.length;
 
       const maxWords = beat.isClimaxBeat
         ? TEXT_LIMITS.maxClimaxBeatWordCount
@@ -2380,11 +2630,30 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       if (beat.isClimaxBeat) climaxCount++;
       if (beat.isKeyStoryBeat) keyStoryBeatCount++;
 
+      if (originalTextChars > SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS) {
+        issues.push(`OVERLONG BEAT TEXT - Beat "${beat.id}" returned ${originalTextChars} characters, exceeding the ${SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS}-character scene processing budget. Rewrite it into concise player-facing prose under the beat word/sentence cap; do not preserve generation notes or boilerplate.`);
+      }
       if (wordCount > maxWords || sentenceCount > MAX_SENTENCES) {
-        longBeats.push(`Beat "${beat.id}" (${beat.isClimaxBeat ? 'climax' : beat.isKeyStoryBeat ? 'key' : 'standard'}): ${wordCount} words, ${sentenceCount} sentences (cap: ${maxWords} words)`);
+        longBeats.push(
+          `Beat "${beat.id}" (${beat.isClimaxBeat ? 'climax' : beat.isKeyStoryBeat ? 'key' : 'standard'}): ` +
+          `${wordCount}/${maxWords} words, ${sentenceCount}/${MAX_SENTENCES} sentences`
+        );
       }
       if (/\{[A-Z][A-Za-z0-9]*\}/.test(text)) {
         issues.push(`SCHEMA PLACEHOLDER LEAK - Beat "${beat.id}" contains an unresolved {Variable} placeholder. Rewrite it as concrete player-facing prose.`);
+      }
+
+      for (const [variantIndex, variant] of (beat.textVariants || []).entries()) {
+        const candidate = variant as { text?: unknown; condition?: unknown };
+        const variantText = typeof candidate.text === 'string' ? candidate.text.trim() : '';
+        const variantOriginalChars = (candidate as any).__sceneWriterOriginalTextCharCount || variantText.length;
+        const hasCondition = this.isMeaningfulVariantCondition(candidate.condition);
+        if (!variantText || !hasCondition) {
+          issues.push(`MALFORMED TEXT VARIANT - Beat "${beat.id}" variant ${variantIndex + 1} must include a real condition object and non-empty text. Remove boilerplate variants or rewrite them as playable branch-residue prose.`);
+        }
+        if (variantOriginalChars > SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS) {
+          issues.push(`OVERLONG TEXT VARIANT - Beat "${beat.id}" variant ${variantIndex + 1} returned ${variantOriginalChars} characters, exceeding the ${SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS}-character scene processing budget. Rewrite it as one concise branch-residue line.`);
+        }
       }
     }
     if (climaxCount > 2) {
@@ -2394,7 +2663,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       issues.push(`TOO MANY KEY STORY BEATS - ${keyStoryBeatCount} marked isKeyStoryBeat. Cap is ${TEXT_LIMITS.maxKeyStoryBeatsPerScene} per scene.`);
     }
     if (longBeats.length > 0) {
-      issues.push(`BEATS EXCEED CAP - Split or shorten:\n${longBeats.join('\n')}`);
+      issues.push(`BEATS EXCEED CAP - Split or shorten any beat over its word or sentence cap:\n${longBeats.join('\n')}`);
     }
 
     if (input.protagonistInfo) {
@@ -2444,12 +2713,13 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     issues: string[]
   ): Promise<AgentResponse<SceneContent>> {
     console.log(`[SceneWriter] Requesting revision for ${issues.length} issues`);
+    const compactOriginalContent = this.compactForRevisionPrompt(originalContent);
 
     const revisionPrompt = `
 You previously generated scene content that has some issues that need fixing.
 
 ## Original Content
-${JSON.stringify(originalContent, null, 2)}
+${JSON.stringify(compactOriginalContent, null, 2)}
 
 ## Issues to Fix
 ${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n\n')}
@@ -2459,6 +2729,8 @@ Please revise the content to fix these issues. Return the COMPLETE revised scene
 
 Key requirements:
 - Each beat must stay under cap: 4 sentences, ${TEXT_LIMITS.maxBeatWordCount} words (climax: ${TEXT_LIMITS.maxClimaxBeatWordCount}, key: ${TEXT_LIMITS.maxKeyStoryBeatWordCount})
+- Hard response budget: the entire JSON response must be under ${SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS} characters. Use concise prose, omit optional empty arrays/boilerplate, and do not duplicate base beat text in textVariants.
+- If an issue says OVERLONG, rewrite that beat from the scene blueprint and nearby context. Do not copy generation notes, placeholders, schema examples, or compacted excerpt markers into the revised JSON.
 - Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats
 - For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your, the protagonist's actual name, or a concrete pronoun.
 - If a beat is too long, split it into multiple beats
@@ -2471,17 +2743,34 @@ Return ONLY valid JSON matching the SceneContent schema.
 `;
 
     try {
-      const response = await this.callLLM([
-        { role: 'user', content: revisionPrompt }
-      ]);
+      const response = await this.callLLM(
+        [{ role: 'user', content: revisionPrompt }],
+        4,
+        { jsonSchema: buildSceneContentJsonSchema(input.targetBeatCount) },
+      );
 
       console.log(`[SceneWriter] Received revision (${response.length} chars)`);
+
+      if (response.length > SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS) {
+        return {
+          success: false,
+          error: `SceneWriter revision exceeded raw processing budget (${response.length} > ${SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS} chars). Retry with concise beat prose, no boilerplate fields, and only meaningful textVariants.`,
+          rawResponse: response.slice(0, 1000),
+        };
+      }
 
       let revisedContent: SceneContent;
       try {
         revisedContent = this.parseJSON<SceneContent>(response);
       } catch (parseError) {
         console.error(`[SceneWriter] Revision JSON parse failed, using original content`);
+
+        if (this.hasOverlongProcessingMarker(originalContent)) {
+          return {
+            success: false,
+            error: 'SceneWriter revision failed after overlong beat text; refusing to accept bounded/generated-note content.',
+          };
+        }
 
         // Check if original content has missing isChoicePoint - pipeline will apply fallback
         if (input.sceneBlueprint.choicePoint) {
@@ -2500,6 +2789,7 @@ Return ONLY valid JSON matching the SceneContent schema.
 
       // Normalize and validate
       revisedContent = this.normalizeContent(revisedContent, input);
+      revisedContent = this.boundOverlongContentForProcessing(revisedContent);
 
       // Preserve original IDs if revision changed them incorrectly
       revisedContent.sceneId = originalContent.sceneId;
@@ -2507,17 +2797,40 @@ Return ONLY valid JSON matching the SceneContent schema.
 
       console.log(`[SceneWriter] Revision complete: ${revisedContent.beats?.length || 0} beats (was ${originalContent.beats?.length || 0})`);
 
+      const remainingIssues = this.collectIssues(revisedContent, input);
+      const hardRemainingIssues = remainingIssues.filter((issue) => this.isHardPostRevisionIssue(issue));
+      if (hardRemainingIssues.length > 0) {
+        return {
+          success: false,
+          error: `SceneWriter revision still has ${hardRemainingIssues.length} hard issue(s): ${hardRemainingIssues.slice(0, 5).join(' | ')}`,
+        };
+      }
+
       // Validate (but don't retry again)
       this.validateContent(revisedContent, input);
 
+      if (this.hasOverlongProcessingMarker(revisedContent)) {
+        return {
+          success: false,
+          error: 'SceneWriter revision still contains overlong beat text.',
+        };
+      }
+
       return {
         success: true,
-        data: revisedContent,
+        data: this.stripInternalProcessingMarkers(revisedContent),
         rawResponse: response,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`[SceneWriter] Revision failed: ${errorMsg}, checking whether original content is safe to use`);
+
+      if (this.hasOverlongProcessingMarker(originalContent)) {
+        return {
+          success: false,
+          error: `SceneWriter revision failed after overlong beat text: ${errorMsg}`,
+        };
+      }
 
       // Check if original content has missing isChoicePoint - pipeline will apply fallback
       if (input.sceneBlueprint.choicePoint) {

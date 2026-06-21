@@ -183,6 +183,8 @@ export function collectEncounterMetaTexts(scene: Scene): string[] {
   const texts: string[] = [];
   const KEYS = new Set([
     'narrativeText', 'outcomeText', 'setupText', 'escalationText',
+    'visualMoment', 'visualNarrative', 'visibleCost', 'visibleComplication',
+    'immediateEffect', 'lingeringEffect',
     'description', 'victory', 'defeat', 'onSuccess', 'onFailure',
   ]);
   const seen = new Set<object>();

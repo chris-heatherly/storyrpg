@@ -112,6 +112,21 @@ describe('CallbackLedger', () => {
     expect(ledger.recordTintSet({ choice, flag: 'door_open', episode: 1, sceneId: 's1' })).toBeUndefined();
   });
 
+  it('tracks choice.tintFlag before assembly folds it into consequences', () => {
+    const ledger = new CallbackLedger();
+    const choice = makeChoice({
+      id: 'favor-mika',
+      text: 'Take Mika at her word.',
+      tintFlag: 'tint_mika_favored',
+      consequences: [],
+    });
+
+    expect(ledger.trackableTintsOf(choice)).toEqual(['tint:mika_favored']);
+    const hook = ledger.recordTintSet({ choice, flag: ledger.trackableTintsOf(choice)[0], episode: 1, sceneId: 's1' });
+    expect(hook?.id).toBe('tone:mika_favored');
+    expect(hook?.flags).toEqual(['tint:mika_favored']);
+  });
+
   it('isTintFlag recognizes tint flags (bare or flag:-prefixed) and nothing else', () => {
     expect(isTintFlag('tint:boldness')).toBe(true);
     expect(isTintFlag('flag:tint:boldness')).toBe(true);

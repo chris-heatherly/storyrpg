@@ -113,6 +113,17 @@ describe('PovClarityValidator', () => {
     expect(hits).toEqual([]);
   });
 
+  it('does not treat protagonist direct address inside dialogue as third-person narration', () => {
+    const validator = new PovClarityValidator();
+    const hits = validator.findThirdPersonProtagonistTexts(
+      [
+        "He withdraws his hand, raising it in mock surrender. 'A warning, Kylie. The world is rarely kind to the devoted.' He respects the boundary, though the danger remains.",
+      ],
+      'Kylie',
+    );
+    expect(hits).toEqual([]);
+  });
+
   it('does not flag an occasional self-naming beat that still addresses you', () => {
     const sc: SceneContent = {
       sceneId: 'scene-1',

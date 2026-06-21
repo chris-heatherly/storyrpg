@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { BaseAgent } from './BaseAgent';
+import { BaseAgent, TruncatedLLMResponseError } from './BaseAgent';
 
 import { CharacterDesigner, normalizeFashionStyle } from './CharacterDesigner';
 
@@ -191,7 +191,7 @@ describe('CharacterDesigner.fillMissingCharacters (incomplete-cast backfill)', (
   });
 });
 
-describe('CharacterDesigner.backfillGapArchetypes (gaps → real characters)', () => {
+describe('CharacterDesigner.backfillGapArchetypes (legacy gaps advisory)', () => {
   afterEach(() => BaseAgent.setLlmTransportOverride(null));
   const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
   const input = () => ({
@@ -201,16 +201,9 @@ describe('CharacterDesigner.backfillGapArchetypes (gaps → real characters)', (
     storyContext: { title: 'T', genre: 'Drama', tone: 'Tense', themes: ['trust'], userPrompt: 'p' },
   });
 
-  it('synthesizes and designs a flagged-and-uncovered archetype (antagonist)', async () => {
-    let prompted = '';
-    BaseAgent.setLlmTransportOverride(async (r) => {
-      prompted = r.messages.map((m) => String(m.content)).join('\n');
-      return JSON.stringify({
-        characters: [{ id: 'char-antagonist', name: 'Antagonist', pronouns: 'they/them', role: 'antagonist', tier: 'supporting' }],
-        keyDynamics: [], gaps: [], doNotForget: [],
-      });
-    });
-    // Roster has only the protagonist; gaps names a missing antagonist.
+  it('does not synthesize generic archetypes from model-authored gaps', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return '{}'; });
     const bible: any = {
       characters: [{ id: 'char-avery', name: 'Avery', role: 'protagonist' }],
       keyDynamics: [], gaps: ['The story is missing a clear antagonist.'], doNotForget: [],
@@ -218,8 +211,9 @@ describe('CharacterDesigner.backfillGapArchetypes (gaps → real characters)', (
 
     await designer.backfillGapArchetypes(bible, input());
 
-    expect(prompted).toContain('char-antagonist'); // routed through the focused fill call
-    expect(bible.characters.map((c: any) => c.id)).toContain('char-antagonist');
+    expect(calls).toBe(0);
+    expect(bible.characters.map((c: any) => c.id)).toEqual(['char-avery']);
+    expect(bible.gaps).toEqual([]);
   });
 
   it('is a no-op when the gap archetype is already covered by the roster', async () => {
@@ -236,6 +230,7 @@ describe('CharacterDesigner.backfillGapArchetypes (gaps → real characters)', (
     await designer.backfillGapArchetypes(bible, input());
     expect(calls).toBe(0);
     expect(bible.characters).toHaveLength(2);
+    expect(bible.gaps).toEqual([]);
   });
 
   it('is a no-op (no LLM call) when gaps is empty', async () => {
@@ -274,5 +269,73 @@ describe('CharacterDesigner.parseCharacterBibleWithCompactRetry (malformed/trunc
     expect(out.characters).toHaveLength(1);
     expect(prompt).toContain('strictly-valid JSON'); // the retry carries the compact directive
     expect(prompt).toContain('BASE_PROMPT');
+  });
+});
+
+describe('CharacterDesigner provider truncation recovery', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+
+  it('routes MAX_TOKENS failures to the compact character-bible contract', async () => {
+    const designer = new CharacterDesigner({ provider: 'gemini', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+    const good = JSON.stringify({
+      characters: [
+        {
+          id: 'char-a',
+          name: 'A',
+          pronouns: 'she/her',
+          role: 'protagonist',
+          importance: 'major',
+          overview: 'A watchful lead trying to rebuild her public life.',
+          want: 'She wants to claim a life that cannot be turned into gossip again.',
+          fear: 'She fears desire will make her visible to people who enjoy hurting her.',
+          flaw: 'She mistakes being chosen for being understood when pressure rises.',
+          physicalDescription: 'A sharp-eyed woman with restless hands and carefully composed posture.',
+          typicalAttire: 'Black travel layers with a practical coat and guarded elegance.',
+          voiceProfile: {
+            greetingExamples: ['You made it.', 'Tell me the worst part first.'],
+            farewellExamples: ['Text me when you get home.'],
+            underStressExamples: ['No, slow down. What did you actually see?'],
+            signatureLines: ['I am taking notes.', 'That is not nothing.', 'Try again, but honest.'],
+            verbalTics: ['No, wait.'],
+            writingGuidance: 'Precise, guarded, funny when cornered.',
+          },
+          relationships: [{ targetId: 'char-b', targetName: 'B', relationshipType: 'friend', currentDynamic: 'Warm trust under pressure.' }],
+          arcPotential: {
+            currentState: 'Guarded observer.',
+            possibleGrowth: 'She claims authorship of her life.',
+            possibleFall: 'She lets attention replace intimacy.',
+            triggerEvents: ['A rescue that feels too perfect.'],
+          },
+        },
+      ],
+      relationshipSummary: 'A small ensemble built around attention, trust, and withheld motives.',
+      keyDynamics: [{ characters: ['char-a', 'char-b'], dynamic: 'Trust under pressure.', narrativePotential: 'Choices can deepen or crack the friendship.' }],
+      ensembleBalance: 'The ensemble balances romantic danger, friend intimacy, and social ambition.',
+      gaps: [],
+      voiceDistinctions: 'A is precise and guarded; others should not share her note-taking cadence.',
+      doNotForget: ['A watches before she acts.'],
+    });
+
+    let calls = 0;
+    let retryPrompt = '';
+    BaseAgent.setLlmTransportOverride(async (req) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new TruncatedLLMResponseError('Truncated LLM response from Gemini: finishReason=MAX_TOKENS', 'gemini', 'MAX_TOKENS');
+      }
+      retryPrompt = req.messages.map((m) => String(m.content)).join('\n');
+      return good;
+    });
+
+    const result = await designer.execute({
+      charactersToCreate: [{ id: 'char-a', name: 'A', role: 'protagonist', importance: 'major', briefDescription: 'A watchful lead.' }],
+      storyContext: { title: 'T', genre: 'Drama', tone: 'Tense', themes: ['trust'] },
+      worldContext: 'A city of secrets.',
+    });
+
+    expect(result.success).toBe(true);
+    expect(calls).toBe(2);
+    expect(retryPrompt).toContain('COMPACT RETRY');
+    expect(retryPrompt).toContain('output token limit');
   });
 });

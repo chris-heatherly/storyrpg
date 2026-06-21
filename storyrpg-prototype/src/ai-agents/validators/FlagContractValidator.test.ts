@@ -119,6 +119,105 @@ describe('FlagContractValidator (G12)', () => {
     expect(r.valid).toBe(true);
   });
 
+  it('splits ledger-qualified future-window flags from true orphan write-only flags', () => {
+    const s = story([
+      {
+        id: 's1',
+        beats: [{
+          id: 'b1',
+          choices: [{
+            id: 'c1',
+            consequences: [
+              { type: 'setFlag', flag: 'future_window_flag', value: true },
+              { type: 'setFlag', flag: 'true_orphan_flag', value: true },
+              { type: 'setFlag', flag: 'resolved_flag', value: true },
+            ],
+          }],
+        }],
+      },
+    ]);
+
+    const r = new FlagContractValidator().validate({
+      story: s,
+      generatedThroughEpisode: 3,
+      callbackLedger: {
+        version: 1,
+        config: { payoffThreshold: 2, defaultWindowSpan: 3, maxActiveHooks: 24 },
+        hooks: [
+          {
+            id: 'flag:future_window_flag',
+            sourceEpisode: 3,
+            sourceSceneId: 's1',
+            sourceChoiceId: 'c1',
+            flags: ['future_window_flag'],
+            summary: 'Future payoff.',
+            payoffWindow: { minEpisode: 3, maxEpisode: 5 },
+            payoffCount: 0,
+            resolved: false,
+            createdAt: '2026-06-19T00:00:00.000Z',
+          },
+          {
+            id: 'flag:resolved_flag',
+            sourceEpisode: 1,
+            sourceSceneId: 's1',
+            sourceChoiceId: 'c1',
+            flags: ['resolved_flag'],
+            summary: 'Already paid.',
+            payoffWindow: { minEpisode: 1, maxEpisode: 2 },
+            payoffCount: 2,
+            resolved: true,
+            createdAt: '2026-06-19T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    expect(r.metrics.futureWindowFlags).toBe(1);
+    expect(r.metrics.resolvedLedgerFlags).toBe(1);
+    expect(r.metrics.writeOnlyFlags).toBe(1);
+    expect(r.issues[0].message).toContain('true_orphan_flag');
+    expect(r.issues[0].message).not.toContain('future_window_flag');
+  });
+
+  it('still counts ledger hooks whose payoff window has expired as write-only debt', () => {
+    const s = story([
+      {
+        id: 's1',
+        beats: [{
+          id: 'b1',
+          choices: [{
+            id: 'c1',
+            consequences: [{ type: 'setFlag', flag: 'expired_hook_flag', value: true }],
+          }],
+        }],
+      },
+    ]);
+
+    const r = new FlagContractValidator().validate({
+      story: s,
+      generatedThroughEpisode: 4,
+      callbackLedger: {
+        version: 1,
+        config: { payoffThreshold: 2, defaultWindowSpan: 3, maxActiveHooks: 24 },
+        hooks: [{
+          id: 'flag:expired_hook_flag',
+          sourceEpisode: 1,
+          sourceSceneId: 's1',
+          sourceChoiceId: 'c1',
+          flags: ['expired_hook_flag'],
+          summary: 'Expired payoff.',
+          payoffWindow: { minEpisode: 1, maxEpisode: 3 },
+          payoffCount: 0,
+          resolved: false,
+          createdAt: '2026-06-19T00:00:00.000Z',
+        }],
+      },
+    });
+
+    expect(r.metrics.futureWindowFlags).toBe(0);
+    expect(r.metrics.writeOnlyFlags).toBe(1);
+  });
+
   it('honors nested all/any condition expressions', () => {
     const s = story([
       {

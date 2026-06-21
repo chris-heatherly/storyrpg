@@ -176,6 +176,8 @@ export interface ValidationMetrics {
   consequenceBudget: {
     allocation: ConsequenceBudgetAllocation;
     totalConsequences: number;
+    scope?: 'generated-slice';
+    note?: string;
   };
   npcDepth: {
     coreNPCsValid: number;
@@ -260,6 +262,8 @@ export interface ValidationMetrics {
 export interface ComprehensiveValidationReport {
   overallPassed: boolean;
   overallScore: number;
+  /** Alias for overallScore used by generation telemetry and round summaries. */
+  qualityScore?: number;
   blockingIssues: ValidationIssue[];
   warnings: ValidationIssue[];
   suggestions: ValidationIssue[];

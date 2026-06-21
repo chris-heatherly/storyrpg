@@ -98,13 +98,31 @@ export async function repairWeakCliffhangerBeforeImages(
     ? terminalPayoffs[0].nextSceneId
     : undefined;
   const hookTokens = (cliffhangerPlan.hook || '').toLowerCase().split(/[^a-zà-žăâîșț0-9]+/).filter(t => t.length >= 4);
-  const carriesHook = (b: BridgeBeat): boolean => {
+  const carriesHookText = (text: string): boolean => {
     if (hookTokens.length === 0) return false;
-    const text = [b.text, ...((b.textVariants || []).map(v => v.text))].filter(Boolean).join(' ').toLowerCase();
-    const hits = hookTokens.filter(t => text.includes(t)).length;
+    const lower = text.toLowerCase();
+    const hits = hookTokens.filter(t => lower.includes(t)).length;
     return hits / hookTokens.length >= 0.3;
   };
-  const hookCoverage = sharedTarget ? terminalPayoffs.filter(carriesHook).length : 0;
+  const carriesHook = (b: BridgeBeat): boolean => {
+    const text = [b.text, ...((b.textVariants || []).map(v => v.text))].filter(Boolean).join(' ');
+    return carriesHookText(text);
+  };
+  const beatById = new Map((finalScene.beats || []).map((beat) => [beat.id, beat as BridgeBeat]));
+  const reachableHookFrom = (beat: BridgeBeat, seen = new Set<string>()): boolean => {
+    if (carriesHook(beat)) return true;
+    const nextId = beat.nextBeatId;
+    if (!nextId || seen.has(nextId)) return false;
+    seen.add(nextId);
+    const nextBeat = beatById.get(nextId);
+    return nextBeat ? reachableHookFrom(nextBeat, seen) : false;
+  };
+  const finalSceneHasHook = carriesHookText((finalScene.beats || [])
+    .map((beat) => [beat.text, ...((beat as BridgeBeat).textVariants || []).map(v => v.text)].filter(Boolean).join(' '))
+    .join(' '));
+  const hookCoverage = sharedTarget
+    ? terminalPayoffs.filter((payoff) => reachableHookFrom(payoff) || finalSceneHasHook).length
+    : 0;
   const pathGatedHook = Boolean(sharedTarget) && hookCoverage < terminalPayoffs.length;
 
   const episode = deps.assembleEpisode(

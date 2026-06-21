@@ -847,7 +847,7 @@ describe('StoryArchitect scene-graph branch repair', () => {
           description: 'Stela offers quartz.',
           location: 'bookshop',
           mood: 'curious',
-          purpose: 'bottleneck',
+          purpose: 'transition',
           dramaticQuestion: '',
           wantVsNeed: '',
           conflictEngine: '',
@@ -862,7 +862,7 @@ describe('StoryArchitect scene-graph branch repair', () => {
           description: 'Kylie meets Victor.',
           location: 'rooftop',
           mood: 'glittering',
-          purpose: 'bottleneck',
+          purpose: 'transition',
           dramaticQuestion: '',
           wantVsNeed: '',
           conflictEngine: '',
@@ -1020,26 +1020,35 @@ describe('StoryArchitect scene-graph branch repair', () => {
     expect(id).toBe('s2');
   });
 
-  it('still synthesizes a branch when EVERY content scene carries an authored beat (dense treatment episode — must not fail blueprint adequacy)', () => {
+  it('never synthesizes a branch that skips a planned encounter scene', () => {
     const architect = new StoryArchitect(config);
     const blueprint = linearBlueprint(5);
-    // The production regression: a treatment episode binds an authored turn to every
-    // content scene, so no skip-safe branch window exists. The repair must still produce
-    // a (shallow) branch rather than zero coverage, which hard-aborts at the adequacy gate.
+    blueprint.scenes[1].id = 'enc-1-1';
+    blueprint.scenes[1].name = 'Planned Encounter';
+    blueprint.scenes[1].isEncounter = true;
+    blueprint.scenes[1].plannedEncounterId = 'enc-1-1';
+    blueprint.scenes[0].leadsTo = ['enc-1-1'];
+    const sceneIndex = new Map<string, number>(blueprint.scenes.map((s: any, i: number) => [s.id, i]));
+
+    const id = (architect as any).synthesizeBranchForCandidate(blueprint.scenes, sceneIndex);
+    const branch = blueprint.scenes.find((s: any) => s.id === id);
+
+    expect(id).toBe('s3');
+    expect(branch.leadsTo).not.toContain('enc-1-1');
+    expect(blueprint.scenes[0].leadsTo).toEqual(['enc-1-1']);
+  });
+
+  it('does not synthesize a skip branch when EVERY content scene carries an authored beat', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = linearBlueprint(5);
+    // Dense treatment episodes bind authored turns to every content scene, so no
+    // skip-safe branch window exists. Do not fabricate a scene-graph fork that
+    // bypasses required setup; branch validation handles this as a linear bottleneck.
     blueprint.scenes.forEach((s: any, i: number) => { s.requiredBeats = [mandatoryBeat(`s${i + 1}`)]; });
 
     (architect as any).repairSceneGraphBranchCoverage(blueprint);
 
-    expect(validBranchScenes(blueprint).length).toBeGreaterThanOrEqual(1);
-    // Reachability preserved (no orphaned scenes) even on the forced fallback branch.
-    const byId = new Map(blueprint.scenes.map((s: any) => [s.id, s]));
-    const seen = new Set<string>([blueprint.startingSceneId]);
-    const queue = [blueprint.startingSceneId];
-    while (queue.length) {
-      const cur = byId.get(queue.shift()!) as any;
-      for (const next of cur?.leadsTo || []) if (!seen.has(next)) { seen.add(next); queue.push(next); }
-    }
-    expect(seen.size).toBe(blueprint.scenes.length);
+    expect(validBranchScenes(blueprint)).toEqual([]);
   });
 });
 

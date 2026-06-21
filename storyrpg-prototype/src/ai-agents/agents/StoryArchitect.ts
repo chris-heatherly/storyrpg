@@ -1076,7 +1076,24 @@ export class StoryArchitect extends BaseAgent {
    * causes a spurious hard-abort on a graph that simply has no room.
    */
   private feasibleBranchSlotCount(scenes: SceneBlueprint[]): number {
-    return scenes.filter((scene, index) => index < scenes.length - 2 && !scene.isEncounter).length;
+    return scenes.filter((scene, index) => this.canHostSafeSceneGraphBranch(scenes, index)).length;
+  }
+
+  private carriesMandatorySequentialBeat(scene: SceneBlueprint | undefined): boolean {
+    if (!scene) return false;
+    if (scene.isEncounter || scene.plannedEncounterId) return true;
+    if (scene.purpose === 'bottleneck') return true;
+    if (/treatment|encounter|required|anchor|^enc-/i.test(`${scene.id} ${scene.name || ''}`)) return true;
+    return (scene.requiredBeats || []).some((b) => b?.tier === 'authored' || b?.tier === 'signature');
+  }
+
+  private canHostSafeSceneGraphBranch(scenes: SceneBlueprint[], index: number): boolean {
+    const scene = scenes[index];
+    if (!scene || index >= scenes.length - 2 || scene.isEncounter) return false;
+    const downstream = scenes.slice(index + 1);
+    if (downstream.length < 2) return false;
+    const firstMandatoryPos = downstream.findIndex((candidate) => this.carriesMandatorySequentialBeat(candidate));
+    return firstMandatoryPos !== 0;
   }
 
   private repairSceneGraphBranchCoverage(blueprint: EpisodeBlueprint): void {
@@ -1134,11 +1151,11 @@ export class StoryArchitect extends BaseAgent {
       new Set(scene.leadsTo || []).size >= 2 &&
       !scene.isEncounter;
 
-    // A scene carrying an authored/signature required beat is a MANDATORY sequential
-    // beat (e.g. the ep2 Victor-booth plot turn). The far arm must NOT skip past one,
-    // or a player on that arm bypasses a fixed turn (the Victor-OR-Radu binary bug).
+    // A scene carrying an authored/signature required beat, planned encounter, or
+    // fixed bottleneck is MANDATORY sequential setup. The far arm must NOT skip past
+    // one, or a player on that arm bypasses a required story turn.
     const carriesMandatoryBeat = (scene: SceneBlueprint | undefined): boolean =>
-      Boolean(scene) && (scene!.requiredBeats || []).some((b) => b?.tier === 'authored' || b?.tier === 'signature');
+      this.carriesMandatorySequentialBeat(scene);
 
     const eligible = (scene: SceneBlueprint, index: number): boolean =>
       index < scenes.length - 2 && !scene.isEncounter && !isAlreadyBranch(scene);
@@ -1147,17 +1164,14 @@ export class StoryArchitect extends BaseAgent {
     const safe = (scene: SceneBlueprint, index: number): boolean =>
       eligible(scene, index) && !carriesMandatoryBeat(scenes[index + 1]);
 
-    // Prefer a safe branch point; fall back to ANY eligible scene. In a dense
-    // treatment episode where every content scene carries an authored turn no safe
-    // point exists — a shallow branch that skips a turn is still better than failing
-    // blueprint adequacy with zero branch coverage (which hard-aborts generation).
+    // Prefer a safe branch point. In a dense treatment episode where every content
+    // scene carries an authored turn, do not synthesize an unsafe scene skip just
+    // to satisfy branch coverage; branch validation treats that as a linear
+    // bottleneck and route/residue choices can still carry agency.
     const candidate =
       scenes.find((s, i) => safe(s, i) && s.choicePoint && s.choicePoint.type !== 'expression') ||
       scenes.find((s, i) => safe(s, i) && s.choicePoint) ||
-      scenes.find((s, i) => safe(s, i)) ||
-      scenes.find((s, i) => eligible(s, i) && s.choicePoint && s.choicePoint.type !== 'expression') ||
-      scenes.find((s, i) => eligible(s, i) && s.choicePoint) ||
-      scenes.find((s, i) => eligible(s, i));
+      scenes.find((s, i) => safe(s, i));
     if (!candidate) return null;
 
     const candidateIndex = sceneIndex.get(candidate.id) ?? 0;
@@ -1172,10 +1186,8 @@ export class StoryArchitect extends BaseAgent {
     const nearArmId = downstream[0];
 
     // Reconverge no later than the first downstream mandatory-beat scene so the far
-    // arm never skips a plot turn. When the immediate next scene is itself mandatory
-    // (firstMandatoryPos === 0 — the dense-episode fallback above), no safe window
-    // exists; route over the full span (best-effort shallow branch) rather than
-    // returning zero coverage and failing the adequacy gate.
+    // arm never skips a plot turn. If no mandatory scene exists downstream, use the
+    // whole remaining window.
     const firstMandatoryPos = downstream.findIndex((id) => carriesMandatoryBeat(scenes[sceneIndex.get(id) ?? -1]));
     const farBoundary = firstMandatoryPos >= 1 ? firstMandatoryPos : downstream.length - 1;
 

@@ -109,6 +109,42 @@ export function buildSeasonPlanDirectives(
     entry.plannedPayoffEpisode === epNum ||
     entry.setupTouchEpisodes?.includes(epNum)
   );
+  const seasonPromiseContracts = (plan.seasonPromiseContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const characterTreatmentContracts = (plan.characterTreatmentContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const worldTreatmentContracts = (plan.worldTreatmentContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const stakesArchitectureContracts = (plan.stakesArchitectureContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const sevenPointBeatContracts = (plan.sevenPointBeatContracts || []).filter((contract) =>
+    contract.targetEpisodeNumber === epNum
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const arcPressureContracts = (plan.arcPressureContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const branchConsequenceContracts = (plan.branchConsequenceContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const endingRealizationContracts = (plan.endingRealizationContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const failureModeAuditContracts = (plan.failureModeAuditContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
 
   return {
     endingMode: plan.endingMode,
@@ -124,7 +160,16 @@ export function buildSeasonPlanDirectives(
     growthContext,
     arcPressure,
     characterArchitecture: plan.characterArchitecture,
+    characterTreatmentContracts: characterTreatmentContracts.length > 0 ? characterTreatmentContracts : undefined,
+    worldTreatmentContracts: worldTreatmentContracts.length > 0 ? worldTreatmentContracts : undefined,
+    stakesArchitectureContracts: stakesArchitectureContracts.length > 0 ? stakesArchitectureContracts : undefined,
+    sevenPointBeatContracts: sevenPointBeatContracts.length > 0 ? sevenPointBeatContracts : undefined,
+    arcPressureContracts: arcPressureContracts.length > 0 ? arcPressureContracts : undefined,
+    branchConsequenceContracts: branchConsequenceContracts.length > 0 ? branchConsequenceContracts : undefined,
+    endingRealizationContracts: endingRealizationContracts.length > 0 ? endingRealizationContracts : undefined,
+    failureModeAuditContracts: failureModeAuditContracts.length > 0 ? failureModeAuditContracts : undefined,
     seasonPromiseArchitecture: plan.seasonPromiseArchitecture,
+    seasonPromiseContracts: seasonPromiseContracts.length > 0 ? seasonPromiseContracts : undefined,
     informationLedgerEntries: informationLedgerEntries.length > 0 ? informationLedgerEntries : undefined,
     // Scene-first planning: this episode's scenes + the setup/payoff edges that
     // touch it. When present, StoryArchitect elaborates these instead of

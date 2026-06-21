@@ -1110,6 +1110,40 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((i) => i.type === 'treatment_field_utilization_violation')).toBe(true);
   });
 
+  it('hard-fails a character treatment realization finding as its own contract type', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'CharacterTreatmentRealizationValidator',
+        severity: 'error',
+        message: 'The protagonist starting identity was planned but never realized on-page.',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'character_treatment_realization_violation')).toBe(true);
+  });
+
+  it('hard-fails a failure-mode audit realization finding as its own contract type', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'NarrativeFailureModeValidator',
+        severity: 'error',
+        message: 'The authored passive-protagonist mitigation was planned but never staged on-page.',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'narrative_failure_mode_violation')).toBe(true);
+  });
+
   it('downgrades a fidelity finding to advisory when the source is NOT a treatment', async () => {
     const report = await new FinalStoryContractValidator().validate({
       story: validStory(),

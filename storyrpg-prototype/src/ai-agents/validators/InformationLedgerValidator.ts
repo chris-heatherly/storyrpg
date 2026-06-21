@@ -118,8 +118,47 @@ export class InformationLedgerValidator extends BaseValidator {
     if (!hasText(entry.payoffPlan)) {
       issues.push(this.error(`Information ledger entry "${entry.id}" is missing payoffPlan.`, `${location}.payoffPlan`));
     }
+    this.validateAuthoredMetadata(entry, location, issues);
     this.validateEpisodeNumbers(entry, totalEpisodes, location, issues);
     this.validateRunway(entry, totalEpisodes, options, location, issues);
+  }
+
+  private validateAuthoredMetadata(
+    entry: InformationLedgerEntry,
+    location: string,
+    issues: ValidationIssue[],
+  ): void {
+    const authored = Boolean(entry.sourceText || entry.authoredId || entry.factualAtoms?.length || entry.setupTouchDetails?.length);
+    if (!authored) return;
+    if (entry.authoredId && entry.authoredId !== entry.id) {
+      issues.push(this.error(
+        `Authored information ledger entry "${entry.authoredId}" was renamed to "${entry.id}".`,
+        `${location}.id`,
+        'Preserve authored INFO ids so setup/reveal/payoff schedules and question references stay traceable.',
+      ));
+    }
+    if (!Array.isArray(entry.factualAtoms) || entry.factualAtoms.length === 0) {
+      issues.push(this.error(
+        `Authored information ledger entry "${entry.id}" has no factual atoms for reveal/payoff validation.`,
+        `${location}.factualAtoms`,
+        'Split the authored "what it is" and payoff plan into one or more concrete facts the writer and final validator can track.',
+      ));
+    }
+    if (entry.plannedRevealEpisode && entry.plannedPayoffEpisode && entry.plannedPayoffEpisode < entry.plannedRevealEpisode) {
+      issues.push(this.error(
+        `Authored information ledger entry "${entry.id}" pays off before it reveals.`,
+        `${location}.plannedPayoffEpisode`,
+        'Schedule information payoffs after the reveal, or make the earlier beat an explicit setup touch instead.',
+      ));
+    }
+    const knownNames = entry.namedKnowledge?.knownByNames ?? [];
+    if (knownNames.length > 0 && (!Array.isArray(entry.knownBy) || entry.knownBy.length === 0)) {
+      issues.push(this.error(
+        `Authored information ledger entry "${entry.id}" has named knowers but no holder mapping.`,
+        `${location}.knownBy`,
+        'Map named knowers into the broad holder categories used by the generator.',
+      ));
+    }
   }
 
   private validateEpisodeNumbers(

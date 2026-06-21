@@ -109,6 +109,30 @@ describe('ArcPressureArchitectureValidator', () => {
     );
   });
 
+  it('blocks treatment-authored arc contracts that drift out of SeasonArc fields', () => {
+    const source = plan();
+    const result = new ArcPressureArchitectureValidator().validate(source, {
+      treatmentSourced: true,
+      arcPressureContracts: [{
+        id: 'arc-pressure-arc-1-midpoint',
+        source: 'treatment',
+        arcId: 'arc-1',
+        arcTitle: 'The Broken Map',
+        fieldName: 'Midpoint recontextualization',
+        sourceText: 'The map reveals Mara sister forged it from bone.',
+        contractKind: 'arc_midpoint_recontextualization',
+        requiredRealization: ['season_arc', 'scene_turn', 'mechanic_pressure', 'final_prose'],
+        targetEpisodeNumbers: [2],
+        targetSceneIds: [],
+        eventAtoms: ['The map reveals Mara sister forged it from bone'],
+        blockingLevel: 'treatment',
+      }],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('does not preserve authored arc field'))).toBe(true);
+  });
+
   it('warns when an arc falls outside the target 3-8 episode range but keeps sceneEpisode exceptions non-blocking', () => {
     const shortSceneEpisodeArc = plan({
       totalEpisodes: 2,

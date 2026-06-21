@@ -93,6 +93,9 @@ export type FinalStoryContractIssueType =
   | 'relationship_pacing_violation'
   | 'mechanic_pressure_violation'
   | 'treatment_field_utilization_violation'
+  | 'season_promise_realization_violation'
+  | 'character_treatment_realization_violation'
+  | 'narrative_failure_mode_violation'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -1573,8 +1576,11 @@ export class FinalStoryContractValidator {
       const isRelationshipPacing = finding.validator === 'RelationshipPacingValidator';
       const isMechanicPressure = finding.validator === 'NarrativeMechanicPressureValidator';
       const isTreatmentFieldUtilization = finding.validator === 'TreatmentFieldUtilizationValidator';
+      const isSeasonPromiseRealization = finding.validator === 'SeasonPromiseRealizationValidator';
+      const isCharacterTreatmentRealization = finding.validator === 'CharacterTreatmentRealizationValidator';
+      const isNarrativeFailureMode = finding.validator === 'NarrativeFailureModeValidator';
       const severity: 'error' | 'warning' =
-        finding.severity === 'error' && (isTransitionContinuity || isSceneTurn || isRelationshipPacing || isMechanicPressure || isTreatmentFieldUtilization)
+        finding.severity === 'error' && (isTransitionContinuity || isSceneTurn || isRelationshipPacing || isMechanicPressure || isTreatmentFieldUtilization || isSeasonPromiseRealization || isCharacterTreatmentRealization || isNarrativeFailureMode)
           ? 'error'
           : finding.severity === 'error' && isFidelity && input.treatmentSourced
           ? 'error'
@@ -1592,6 +1598,12 @@ export class FinalStoryContractValidator {
           ? 'mechanic_pressure_violation'
           : isTreatmentFieldUtilization
           ? 'treatment_field_utilization_violation'
+          : isSeasonPromiseRealization
+          ? 'season_promise_realization_violation'
+          : isCharacterTreatmentRealization
+          ? 'character_treatment_realization_violation'
+          : isNarrativeFailureMode
+          ? 'narrative_failure_mode_violation'
           : 'treatment_fidelity_violation',
         severity,
         message: finding.message,

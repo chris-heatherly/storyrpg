@@ -73,4 +73,78 @@ describe('EndingReachabilityValidator', () => {
     expect(res.valid).toBe(true);
     expect(res.metrics.declaredAxes).toBe(0);
   });
+
+  it('blocks authored ending target conditions that have no planned branch or choice support', () => {
+    const res = v.validateSeasonPlan({
+      endingRealizationContracts: [{
+        id: 'ending-realization-witness-condition-quartz',
+        source: 'treatment',
+        endingId: 'witness',
+        endingName: 'The Witness',
+        fieldName: 'Target condition 1',
+        sourceText: 'The quartz must be accepted and kept.',
+        contractKind: 'ending_target_condition',
+        requiredRealization: ['resolved_ending', 'season_flag', 'condition', 'choice_moment', 'mechanic_pressure', 'ending_route'],
+        targetEpisodeNumbers: [8],
+        targetSceneIds: [],
+        targetEndingIds: ['witness'],
+        stateDomains: ['item', 'route'],
+        linkedContractIds: [],
+        blockingLevel: 'treatment',
+      }],
+      branchConsequenceContracts: [],
+      seasonFlags: [],
+      choiceMoments: [],
+      crossEpisodeBranches: [],
+      resolvedEndings: [],
+    } as any, { blocking: true });
+
+    expect(res.valid).toBe(false);
+    expect(res.issues[0].type).toBe('ending_target_condition_unreachable');
+    expect(res.issues[0].severity).toBe('error');
+  });
+
+  it('accepts authored ending target conditions when linked branch pressure exists', () => {
+    const res = v.validateSeasonPlan({
+      endingRealizationContracts: [{
+        id: 'ending-realization-witness-condition-quartz',
+        source: 'treatment',
+        endingId: 'witness',
+        endingName: 'The Witness',
+        fieldName: 'Target condition 1',
+        sourceText: 'The quartz must be accepted and kept.',
+        contractKind: 'ending_target_condition',
+        requiredRealization: ['resolved_ending', 'season_flag', 'condition', 'choice_moment', 'mechanic_pressure', 'ending_route'],
+        targetEpisodeNumbers: [8],
+        targetSceneIds: [],
+        targetEndingIds: ['witness'],
+        stateDomains: ['item', 'route'],
+        linkedContractIds: ['branch-quartz-eligibility'],
+        blockingLevel: 'treatment',
+      }],
+      branchConsequenceContracts: [{
+        id: 'branch-quartz-eligibility',
+        source: 'treatment',
+        branchId: 'branch-a-quartz',
+        branchName: 'The Quartz',
+        fieldName: 'What state it changes',
+        sourceText: 'The quartz must be accepted and kept for the Witness ending.',
+        contractKind: 'branch_ending_eligibility',
+        requiredRealization: ['season_flag', 'ending_target', 'mechanic_pressure', 'final_prose'],
+        targetEpisodeNumbers: [1, 6],
+        targetSceneIds: [],
+        targetEndingIds: ['witness'],
+        stateDomains: ['item', 'route'],
+        linkedContractIds: [],
+        blockingLevel: 'treatment',
+      }],
+      seasonFlags: [],
+      choiceMoments: [],
+      crossEpisodeBranches: [],
+      resolvedEndings: [],
+    } as any, { blocking: true });
+
+    expect(res.valid).toBe(true);
+    expect(res.metrics.missingAxes).toBe(0);
+  });
 });

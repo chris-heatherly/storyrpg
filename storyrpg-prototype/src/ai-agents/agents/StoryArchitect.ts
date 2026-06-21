@@ -27,7 +27,7 @@ import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraf
 import { PLACEHOLDER_STAKES, isPlaceholderStake } from '../constants/placeholderStakes';
 import type { EncounterCost, EncounterNarrativeStyle, EncounterType, NarrativeSequenceIntent, StakesLayers } from '../../types';
 import type { ArcEpisodeTurnout, CliffhangerPlan, InformationLedgerEntry, SeasonPromiseArchitecture } from '../../types/seasonPlan';
-import { assignInfoRevealsToScenes } from '../pipeline/infoRevealAssignment';
+import { assignInfoLedgerPhasesToScenes } from '../pipeline/infoRevealAssignment';
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
@@ -37,10 +37,19 @@ import type {
   SetupPayoffEdge,
   SceneNarrativeRole,
   RequiredBeat,
+  ArcPressureTreatmentContract,
   AuthoredTreatmentFieldContract,
+  BranchConsequenceRealizationContract,
+  CharacterTreatmentRealizationContract,
+  EndingRealizationContract,
+  FailureModeAuditContract,
   MechanicPressureContract,
   RelationshipPacingContract,
   SceneTurnContract,
+  SeasonPromiseRealizationContract,
+  SevenPointBeatRealizationContract,
+  StakesArchitectureContract,
+  WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
@@ -209,7 +218,16 @@ export interface StoryArchitectInput {
       episodeTurnout?: ArcEpisodeTurnout;
     };
     characterArchitecture?: CharacterArchitecture;
+    characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+    worldTreatmentContracts?: WorldTreatmentRealizationContract[];
+    stakesArchitectureContracts?: StakesArchitectureContract[];
+    sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+    arcPressureContracts?: ArcPressureTreatmentContract[];
+    branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+    endingRealizationContracts?: EndingRealizationContract[];
+    failureModeAuditContracts?: FailureModeAuditContract[];
     seasonPromiseArchitecture?: SeasonPromiseArchitecture;
+    seasonPromiseContracts?: SeasonPromiseRealizationContract[];
     informationLedgerEntries?: InformationLedgerEntry[];
     /**
      * Scene-first planning: this episode's scenes, enumerated at the season
@@ -434,6 +452,8 @@ export interface SceneBlueprint {
   // (Step 2) and emitSceneInfoReveals flags them (Step 3) so the schedule validator can
   // confirm the reveal landed. Empty/undefined when no reveal is scheduled here.
   revealsInfoIds?: string[];
+  setsUpInfoIds?: string[];
+  paysOffInfoIds?: string[];
 
   // === AUTHORED-TREATMENT FIDELITY ("expand, do not rewrite") ===
   // Carried verbatim from PlannedScene when the run is treatment-sourced so
@@ -446,6 +466,15 @@ export interface SceneBlueprint {
   relationshipPacing?: RelationshipPacingContract[];
   mechanicPressure?: MechanicPressureContract[];
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
+  seasonPromiseContracts?: SeasonPromiseRealizationContract[];
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+  endingRealizationContracts?: EndingRealizationContract[];
+  failureModeAuditContracts?: FailureModeAuditContract[];
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
   // Treatment invariants — lines the prose must HOLD (events the episode states must
   // NOT happen, e.g. "she does not go home with him"). Advisory SceneWriter guidance;
   // empty for from-scratch runs and episodes with no stated negative constraint.
@@ -761,12 +790,20 @@ export class StoryArchitect extends BaseAgent {
     const entries = input.seasonPlanDirectives?.informationLedgerEntries;
     const scenes = blueprint.scenes ?? [];
     if (!entries?.length || scenes.length === 0) return;
-    const assignment = assignInfoRevealsToScenes(scenes, entries, input.episodeNumber);
+    const assignment = assignInfoLedgerPhasesToScenes(scenes, entries, input.episodeNumber);
     if (assignment.size === 0) return;
     for (const scene of scenes) {
-      const ids = assignment.get(scene.id);
-      if (!ids?.length) continue;
-      scene.revealsInfoIds = [...new Set([...(scene.revealsInfoIds ?? []), ...ids])];
+      const phases = assignment.get(scene.id);
+      if (!phases) continue;
+      if (phases.setupInfoIds?.length) {
+        scene.setsUpInfoIds = [...new Set([...(scene.setsUpInfoIds ?? []), ...phases.setupInfoIds])];
+      }
+      if (phases.revealInfoIds?.length) {
+        scene.revealsInfoIds = [...new Set([...(scene.revealsInfoIds ?? []), ...phases.revealInfoIds])];
+      }
+      if (phases.payoffInfoIds?.length) {
+        scene.paysOffInfoIds = [...new Set([...(scene.paysOffInfoIds ?? []), ...phases.payoffInfoIds])];
+      }
     }
   }
 
@@ -1350,6 +1387,7 @@ export class StoryArchitect extends BaseAgent {
       ...(guidance.alternativePaths || []),
       ...(guidance.consequenceSeeds || []),
       guidance.consequenceResidue,
+      guidance.connectsBy,
     ].map((value) => value?.trim()).filter(Boolean) as string[]));
   }
 
@@ -1501,7 +1539,7 @@ export class StoryArchitect extends BaseAgent {
   }
 
   private inferChoiceConsequenceDomain(pressure: string, guidance: TreatmentEpisodeGuidance | undefined): NonNullable<SceneBlueprint['choicePoint']>['consequenceDomain'] {
-    const text = [pressure, guidance?.bPressure, guidance?.consequenceResidue, guidance?.informationMovement].filter(Boolean).join(' ').toLowerCase();
+    const text = [pressure, guidance?.bPressure, guidance?.consequenceResidue, guidance?.connectsBy, guidance?.informationMovement].filter(Boolean).join(' ').toLowerCase();
     if (/\b(trust|friend|family|lover|relationship|mika|stela|radu|daniel|victor)\b/.test(text)) return 'relationship';
     if (/\b(photo|publish|blog|message|secret|read|archive|name|codename|information|laptop)\b/.test(text)) return 'information';
     if (/\b(key|card|quartz|access|money|resource|object|item)\b/.test(text)) return 'resource';
@@ -2474,6 +2512,18 @@ ${sceneEpisodeMode}
         relationshipPacing: p.relationshipPacing,
         mechanicPressure: p.mechanicPressure,
         authoredTreatmentFields: p.authoredTreatmentFields,
+        seasonPromiseContracts: p.seasonPromiseContracts,
+        stakesArchitectureContracts: p.stakesArchitectureContracts,
+        sevenPointBeatContracts: p.sevenPointBeatContracts,
+        arcPressureContracts: p.arcPressureContracts,
+        branchConsequenceContracts: p.branchConsequenceContracts,
+        endingRealizationContracts: p.endingRealizationContracts,
+        failureModeAuditContracts: p.failureModeAuditContracts,
+        characterTreatmentContracts: p.characterTreatmentContracts,
+        worldTreatmentContracts: p.worldTreatmentContracts,
+        setsUpInfoIds: (p as { setsUpInfoIds?: string[] }).setsUpInfoIds,
+        revealsInfoIds: (p as { revealsInfoIds?: string[] }).revealsInfoIds,
+        paysOffInfoIds: (p as { paysOffInfoIds?: string[] }).paysOffInfoIds,
         keyBeats: [p.dramaticPurpose],
         leadsTo: nextId ? [nextId] : [],
       };
@@ -3781,6 +3831,26 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       section += 'Episode scenes should pressure one clean slice of the Lie/Truth gap. In sceneEpisodes mode, the single sceneEpisode should expose, reward, punish, tempt, reframe, or force a choice around one aspect of this gap.\n\n';
     }
 
+    if (directives.characterTreatmentContracts?.length) {
+      section += '### Protagonist Treatment Realization Contracts\n';
+      section += 'These authored protagonist fields are binding story obligations. Do not copy field labels into prose; assign them to scene turns, choices, mechanic pressure, information movement, visual profile, climax choice, or ending state so they can be validated later.\n\n';
+      for (const contract of directives.characterTreatmentContracts) {
+        section += `- ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText}\n`;
+        section += `  Required realization: ${contract.requiredRealization.join(', ')}; target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}\n`;
+      }
+      section += 'The opening must establish the starting identity and load-bearing role facts. Major choices should test Want/Need/Lie/Truth pressure. Finale/end-state contracts must become reachable route and ending pressure, not summary-only narration.\n\n';
+    }
+
+    if (directives.worldTreatmentContracts?.length) {
+      section += '### World/Location Treatment Realization Contracts\n';
+      section += 'These authored setting fields are binding only when they carry story law, location purpose, faction pressure, taboo/cost, information movement, or choice pressure. Do not copy them as lore exposition; assign them to world-bible use, scene turns, choices, encounters, information ledger, mechanic pressure, or final prose.\n\n';
+      for (const contract of directives.worldTreatmentContracts) {
+        section += `- ${contract.fieldName} (${contract.contractKind}${contract.locationName ? ` @ ${contract.locationName}` : ''}): ${contract.sourceText}\n`;
+        section += `  Required realization: ${contract.requiredRealization.join(', ')}; target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}\n`;
+      }
+      section += 'Major locations must not become interchangeable backdrops. If a scene uses a contracted location, its purpose or choice pressure should shape the turn, the available action, the risk, or the handoff.\n\n';
+    }
+
     if (directives.seasonPromiseArchitecture) {
       const promise = directives.seasonPromiseArchitecture;
       section += '### Season Promise Architecture\n';
@@ -3804,6 +3874,94 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         section += `  Earned future pressure: ${promise.seasonCompleteness.openFuturePressure}\n`;
       }
       section += 'This episode should either establish, vary, complicate, pay off, or hand forward the season promise. In sceneEpisodes mode, do that through one focused scene-length turn.\n\n';
+    }
+
+    if (directives.seasonPromiseContracts?.length) {
+      section += '### Top-Level Season Promise Realization Contracts\n';
+      section += 'These are authored or inferred season-level promises. Realize them as staged evidence in scene purpose, choices, encounters, information movement, consequence pressure, tone, or ending state. Do not copy them as labels or explanation.\n\n';
+      for (const contract of directives.seasonPromiseContracts) {
+        section += `- ${contract.contractKind}: ${contract.sourceText}\n`;
+        section += `  Realize through: ${contract.requiredRealization.join(', ')}\n`;
+      }
+      section += '\n';
+    }
+
+    if (directives.stakesArchitectureContracts?.length) {
+      section += '### Stakes Architecture Realization Contracts\n';
+      section += 'These authored stakes are binding story pressure. Assign them to concrete scene turns, choices, encounters, information movement, consequence pressure, mechanic pressure, or episode endings. Do not copy them as labels; make the player feel what can be lost, gained, protected, betrayed, or transformed.\n\n';
+      for (const contract of directives.stakesArchitectureContracts) {
+        section += `- ${contract.fieldName} (${contract.contractKind}${contract.stakeLayer ? ` / ${contract.stakeLayer}` : ''}): ${contract.sourceText}\n`;
+        section += `  Required realization: ${contract.requiredRealization.join(', ')}; target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}\n`;
+        if (contract.prerequisiteContractIds.length > 0) {
+          section += `  Prerequisites: ${contract.prerequisiteContractIds.join(', ')}\n`;
+        }
+      }
+      section += 'Material stakes should alter resource/access/reputation/information pressure. Relational stakes should alter behavior, trust, betrayal, repair, alliance, or route pressure. Identity stakes should test self-concept and agency. Existential stakes must be grounded by earlier personal stakes before full payoff.\n\n';
+    }
+
+    if (directives.sevenPointBeatContracts?.length) {
+      section += '### Seven-Point Beat Realization Contracts\n';
+      section += 'These authored 3-act / 7-point beat texts are binding content obligations for this episode. The structural role label is not enough: assign the beat to scene turns, choices, reveals, mechanic pressure, or episode ending state and stage the actual event/function on-page.\n\n';
+      for (const contract of directives.sevenPointBeatContracts) {
+        section += `- ${contract.beat}: ${contract.sourceText}\n`;
+        section += `  Event atoms: ${contract.eventAtoms.join(' | ') || contract.sourceText}\n`;
+        if (contract.stateChange) {
+          section += `  State change to make visible: ${contract.stateChange}\n`;
+        }
+      }
+      section += 'Hook must establish engine pressure, Plot Turn 1 must cross a threshold, Pinches must tighten cost/options, Midpoint must recontextualize the story, Climax must drive decisive choice/consequence, and Resolution must show changed end state. Do not solve this with summary sentences.\n\n';
+    }
+
+    if (directives.arcPressureContracts?.length) {
+      section += '### Arc Pressure Treatment Realization Contracts\n';
+      section += 'These authored arc-plan fields are binding for this episode. Acts and seven-point roles define placement; these arc contracts define the pressure movement that must be felt through scene turns, choices, information movement, mechanic pressure, episode endings, or handoff. Do not paste arc labels into prose.\n\n';
+      for (const contract of directives.arcPressureContracts) {
+        section += `- ${contract.arcTitle} / ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText}\n`;
+        section += `  Target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}; realize through: ${contract.requiredRealization.join(', ')}\n`;
+        if (contract.eventAtoms.length > 0) {
+          section += `  Event atoms: ${contract.eventAtoms.join(' | ')}\n`;
+        }
+      }
+      section += 'Arc questions should be tested by behavior and choice pressure. Midpoints must reframe. Late crises must cost something or narrow options. Finale answers must alter episode state. Handoffs must leave visible residue for the next arc.\n\n';
+    }
+
+    if (directives.branchConsequenceContracts?.length) {
+      section += '### Cross-Episode Branch / Consequence Contracts\n';
+      section += 'These authored Section 11 branch contracts are binding. Origin choices must set specific path state. Later scenes must spend that state through conditional prose, route pressure, consequence chains, mechanic pressure, or text variants. Reconvergence is allowed only when authored residue remains visible.\n\n';
+      for (const contract of directives.branchConsequenceContracts) {
+        section += `- ${contract.branchName} / ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText}\n`;
+        section += `  Target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}; domains: ${contract.stateDomains.join(', ')}; realize through: ${contract.requiredRealization.join(', ')}\n`;
+        if (contract.targetEndingIds.length > 0) {
+          section += `  Ending eligibility: ${contract.targetEndingIds.join(', ')}\n`;
+        }
+      }
+      section += 'Do not target every ending by default. A branch path should point only to endings its authored state actually supports. Do not satisfy branch residue with a generic line; show the changed access, item/resource, relationship posture, information, route permission, or ending eligibility.\n\n';
+    }
+
+    if (directives.endingRealizationContracts?.length) {
+      section += '### Alternate Ending Realization Contracts\n';
+      section += 'These authored Section 14 ending contracts are binding route/finale obligations. The finale choice and ending prose must pay off prior branch state, repeated choice patterns, state drivers, target conditions, emotional register, and theme payoff fiction-first.\n\n';
+      for (const contract of directives.endingRealizationContracts) {
+        section += `- ${contract.endingName} / ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText}\n`;
+        section += `  Ending ids: ${contract.targetEndingIds.join(', ')}; domains: ${contract.stateDomains.join(', ')}; realize through: ${contract.requiredRealization.join(', ')}\n`;
+        if (contract.linkedContractIds.length > 0) {
+          section += `  Linked branch pressure: ${contract.linkedContractIds.join(', ')}\n`;
+        }
+      }
+      section += 'Do not claim transformation or route state that the season has not earned. Endings should feel like the cumulative pattern of choices becoming story, not a menu label or score threshold.\n\n';
+    }
+
+    if (directives.failureModeAuditContracts?.length) {
+      section += '### Failure Mode Audit Contracts\n';
+      section += 'These authored Section 15 audit contracts are binding only as staged mitigations. Do NOT mention failure-mode labels in prose. Instead, make the causal protection visible: agency, setup/payoff, fair-play clues, personal-before-existential stakes, irreversible state change, thematic rhyme, or in-world coincidence mitigation.\n\n';
+      for (const contract of directives.failureModeAuditContracts) {
+        section += `- ${contract.label} (${contract.status} / ${contract.contractKind}): ${contract.sourceText}\n`;
+        section += `  Target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}; realize through: ${contract.requiredRealization.join(', ')}\n`;
+        if (contract.linkedContractIds.length > 0) {
+          section += `  Linked pressure/contracts: ${contract.linkedContractIds.join(', ')}\n`;
+        }
+      }
+      section += 'Repair the story shape, not the explanation. A watch item passes only when the risk event has an on-page cause or mitigation planted before/during the event.\n\n';
     }
 
     if (directives.informationLedgerEntries && directives.informationLedgerEntries.length > 0) {
@@ -3890,6 +4048,12 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (guidance.openingSituation) {
         section += `- Opening situation: ${guidance.openingSituation}\n`;
       }
+      if (guidance.scenePlanningTargets?.length) {
+        section += 'Authored scene planning target(s) from Section 10 — plan scenes around these named dramatic centers, but do not print the labels as prose:\n';
+        for (const target of guidance.scenePlanningTargets) {
+          section += `- ${target}\n`;
+        }
+      }
       if (guidance.episodeTurns?.length) {
         section += 'AUTHORED EPISODE TURNS — these are FIXED required beats, not flavor. You are dramatizing an already-authored episode: each turn below MUST occur, in order, and must NOT be dropped, merged, re-ordered, or re-interpreted. Realize each as a concrete scene beat (scene purpose, keyBeats, sequenceIntent, encounter buildup, choice, or aftermath). Invent only the connective tissue between them:\n';
         guidance.episodeTurns.forEach((turn, idx) => {
@@ -3952,6 +4116,9 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         for (const path of guidance.alternativePaths) {
           section += `- ${path}\n`;
         }
+      }
+      if (guidance.connectsBy) {
+        section += `- Connects by / choice residue: ${guidance.connectsBy}\n`;
       }
       if (guidance.consequenceSeeds?.length) {
         section += 'Authored consequence seeds. Each MUST be SET on-page as a `setFlag` consequence on a choice in the scene that plants it (use the flag name `treatment_seed_ep<thisEpisodeNumber>_<index>`, e.g. the first seed sets `treatment_seed_ep' + (input.episodeNumber ?? '<N>') + '_1`). A later episode reads this flag as a precondition, so it cannot be a callback-only note — it must actually fire. Set it on the choice that causes the seed:\n';

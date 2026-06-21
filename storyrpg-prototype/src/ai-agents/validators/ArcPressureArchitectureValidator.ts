@@ -4,10 +4,14 @@ import type {
   SeasonArc,
   SeasonPlan,
 } from '../../types/seasonPlan';
+import type { ArcPressureTreatmentContract } from '../../types/scenePlan';
+import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
 export interface ArcPressureArchitectureOptions {
   episodeStructureMode?: 'standard' | 'sceneEpisodes';
+  treatmentSourced?: boolean;
+  arcPressureContracts?: ArcPressureTreatmentContract[];
 }
 
 export interface ArcPressureArchitectureMetrics {
@@ -101,6 +105,7 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
     for (const arc of arcs) {
       this.validateArc(arc, plan, options, issues, metrics);
     }
+    this.validateAuthoredContracts(arcs, options, issues);
 
     return this.result(issues, metrics);
   }
@@ -339,6 +344,84 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
     if (complete) {
       metrics.arcsWithCompleteTurnouts += 1;
     }
+  }
+
+  private validateAuthoredContracts(
+    arcs: SeasonArc[],
+    options: ArcPressureArchitectureOptions,
+    issues: ValidationIssue[],
+  ): void {
+    const contracts = (options.arcPressureContracts ?? [])
+      .filter((contract) => contract.blockingLevel !== 'warning');
+    if (!options.treatmentSourced || contracts.length === 0) return;
+
+    for (const contract of contracts) {
+      const arc = arcs.find((candidate) =>
+        candidate.id === contract.arcId
+        || treatmentFieldCloseMatch(contract.arcTitle, candidate.name, 0.45)
+        || contract.targetEpisodeNumbers.some((episodeNumber) =>
+          episodeNumber >= candidate.episodeRange.start && episodeNumber <= candidate.episodeRange.end
+        )
+      );
+      const location = `season.arcPressureContracts.${contract.id}`;
+      if (!arc) {
+        issues.push(this.error(
+          `Authored arc contract "${contract.fieldName}" was not mapped to a SeasonArc.`,
+          location,
+          'Seed SeasonArc from parsed Arc Plan guidance before normalization so authored range/question/reframe/crisis/turnout fields cannot drift.',
+        ));
+        continue;
+      }
+
+      const arcText = this.arcFieldText(arc, contract);
+      if (!arcText.trim() || !treatmentFieldCloseMatch(contract.sourceText, arcText, this.authoredMatchThreshold(contract))) {
+        issues.push(this.error(
+          `SeasonArc "${arc.name}" does not preserve authored arc field "${contract.fieldName}": "${contract.sourceText}".`,
+          `${location}:${arc.id}`,
+          'Carry authored arc field text into the SeasonArc field or an equivalent structured arc pressure field before scene planning.',
+        ));
+      }
+    }
+  }
+
+  private arcFieldText(arc: SeasonArc, contract: ArcPressureTreatmentContract): string {
+    switch (contract.contractKind) {
+      case 'arc_identity':
+        return `${arc.name} Episodes ${arc.episodeRange.start}-${arc.episodeRange.end}`;
+      case 'arc_question':
+        return arc.arcQuestion ?? '';
+      case 'season_relation':
+        return arc.seasonQuestionRelation ?? '';
+      case 'lie_facet':
+        return arc.identityPressureFacet ?? '';
+      case 'arc_midpoint_recontextualization':
+        return textFrom([
+          arc.midpointRecontextualization?.questionBefore,
+          arc.midpointRecontextualization?.questionAfter,
+          arc.midpointRecontextualization?.description,
+        ]);
+      case 'arc_late_crisis':
+        return textFrom([
+          arc.lateArcCrisis?.apparentFailure,
+          arc.lateArcCrisis?.irreversibleCost,
+          arc.lateArcCrisis?.description,
+        ]);
+      case 'arc_finale_answer':
+        return arc.finaleAnswer ?? '';
+      case 'arc_handoff_pressure':
+        return arc.handoffPressure ?? '';
+      case 'arc_episode_turnout':
+        return textFrom((arc.episodeTurnouts ?? [])
+          .filter((turnout) => contract.targetEpisodeNumbers.includes(turnout.episodeNumber))
+          .flatMap((turnout) => [turnout.description, turnout.leavesProtagonistWith, turnout.whyThisCannotMoveLater]));
+      default:
+        return '';
+    }
+  }
+
+  private authoredMatchThreshold(contract: ArcPressureTreatmentContract): number {
+    if (contract.contractKind === 'arc_identity') return 0.45;
+    return contract.sourceText.split(/\s+/).length <= 5 ? 0.6 : 0.65;
   }
 
   private result(

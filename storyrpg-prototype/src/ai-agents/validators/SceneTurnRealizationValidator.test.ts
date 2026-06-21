@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Beat, Scene, Story } from '../../types';
-import type { SceneTurnContract, SeasonScenePlan } from '../../types/scenePlan';
+import type {
+  ArcPressureTreatmentContract,
+  SceneTurnContract,
+  SeasonScenePlan,
+  SevenPointBeatRealizationContract,
+} from '../../types/scenePlan';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 
 function turnContract(overrides: Partial<SceneTurnContract> = {}): SceneTurnContract {
@@ -62,6 +67,39 @@ function plan(contract = turnContract()): SeasonScenePlan {
     }],
     byEpisode: { 1: ['s1-1'] },
     setupPayoffEdges: [],
+  };
+}
+
+function sevenPointContract(overrides: Partial<SevenPointBeatRealizationContract> = {}): SevenPointBeatRealizationContract {
+  return {
+    id: 'seven-point-midpoint-mirror',
+    beat: 'midpoint',
+    sourceText: 'Kylie sees herself alone in Victor mirror; Stela confesses two truths; the genre changes; the blog skips a day.',
+    targetEpisodeNumber: 1,
+    requiredRealization: ['season_plan', 'scene_turn', 'mechanic_pressure', 'final_prose'],
+    eventAtoms: ['Kylie sees herself alone in Victor mirror', 'Stela confesses two truths', 'the blog skips a day'],
+    stateChange: 'the genre changes and the blog skips a day',
+    targetSceneIds: ['s1-1'],
+    blockingLevel: 'treatment',
+    ...overrides,
+  };
+}
+
+function arcPressureContract(overrides: Partial<ArcPressureTreatmentContract> = {}): ArcPressureTreatmentContract {
+  return {
+    id: 'arc-pressure-champagne-midpoint',
+    source: 'treatment',
+    arcId: 'arc-1',
+    arcTitle: 'Champagne',
+    fieldName: 'Midpoint recontextualization',
+    sourceText: 'The glamorous new life is underneath a funnel.',
+    contractKind: 'arc_midpoint_recontextualization',
+    requiredRealization: ['season_arc', 'scene_turn', 'mechanic_pressure', 'final_prose'],
+    targetEpisodeNumbers: [1],
+    targetSceneIds: ['s1-1'],
+    eventAtoms: ['The glamorous new life is underneath a funnel'],
+    blockingLevel: 'treatment',
+    ...overrides,
   };
 }
 
@@ -182,5 +220,81 @@ describe('SceneTurnRealizationValidator', () => {
 
     expect(result.valid).toBe(true);
     expect(result.issues[0].severity).toBe('warning');
+  });
+
+  it('fails when a scene carries a seven-point beat contract but drops the authored event', () => {
+    const zp = sevenPointContract();
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            centralTurn: 'Kylie realizes Victor is dangerous.',
+            turnEvent: 'Kylie realizes Victor is dangerous.',
+          }),
+          sevenPointBeatContracts: [zp],
+          beats: [
+            beat('b1', 'Kylie arrives at the apartment still thinking about Victor.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Kylie realizes Victor is dangerous.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+            beat('b3', 'Afterward, she locks the door and decides to call Stela.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(),
+        scenes: [{
+          ...plan().scenes[0],
+          sevenPointBeatContracts: [zp],
+        }],
+      },
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('seven-point midpoint'))).toBe(true);
+  });
+
+  it('fails when a scene carries an arc pressure contract but drops the authored event', () => {
+    const arc = arcPressureContract();
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            centralTurn: 'Kylie realizes Victor is dangerous.',
+            turnEvent: 'Kylie realizes Victor is dangerous.',
+          }),
+          arcPressureContracts: [arc],
+          beats: [
+            beat('b1', 'Kylie arrives at the rooftop still trying to enjoy the night.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Kylie realizes Victor is dangerous.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+            beat('b3', 'Afterward, she leaves with Mika and keeps checking the door.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(),
+        scenes: [{
+          ...plan().scenes[0],
+          arcPressureContracts: [arc],
+        }],
+      },
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('arc pressure'))).toBe(true);
   });
 });

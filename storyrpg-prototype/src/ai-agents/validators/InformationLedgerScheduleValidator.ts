@@ -51,7 +51,7 @@ import type { Consequence } from '../../types/consequences';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
 /** The phase a marker attests to for an INFO entry. */
-export type InfoSchedulePhase = 'setup' | 'reveal';
+export type InfoSchedulePhase = 'setup' | 'reveal' | 'payoff';
 
 /**
  * A caller-supplied observed schedule for one INFO entry, overriding the story
@@ -63,6 +63,8 @@ export interface ObservedInfoSchedule {
   setupEpisode?: number;
   /** Episode the reveal actually landed in. */
   revealEpisode?: number;
+  /** Episode the payoff actually landed in. */
+  payoffEpisode?: number;
 }
 
 /** Context for {@link InformationLedgerScheduleValidator.validate}. */
@@ -83,6 +85,10 @@ export interface InformationScheduleMetrics {
   revealBeforeSetupCount: number;
   /** Entries whose authored reveal/payoff never appeared (blocking). */
   missingRevealCount: number;
+  /** Authored treatment setup touches that never appeared in generated episodes. */
+  missingSetupTouchCount: number;
+  /** Authored payoffs that never appeared in generated episodes. */
+  missingPayoffCount: number;
   /** Entries with an off-by-one / off-episode placement (warning). */
   offPlacementCount: number;
   /**
@@ -103,7 +109,8 @@ export interface InformationScheduleResult extends ValidationResult {
  * `info_1_reveal` or `INFO-1-payoff`, where an underscore is a word char and a
  * plain `\b` would not match.
  */
-const REVEAL_TOKEN = /(^|[^a-z])(reveal|revealed|payoff|paidoff|paid[\s_-]?off|disclos|expose)/i;
+const PAYOFF_TOKEN = /(^|[^a-z])(payoff|paidoff|paid[\s_-]?off|close|closed|resolve|resolved)/i;
+const REVEAL_TOKEN = /(^|[^a-z])(reveal|revealed|disclos|expose|confess|confession|discover)/i;
 /** Setup/hint keyword signal in a flag suffix (same non-`\b` boundary rule). */
 const SETUP_TOKEN = /(^|[^a-z])(setup|set[\s_-]?up|hint|plant|seed|foreshadow)/i;
 
@@ -180,6 +187,8 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       onScheduleCount: 0,
       revealBeforeSetupCount: 0,
       missingRevealCount: 0,
+      missingSetupTouchCount: 0,
+      missingPayoffCount: 0,
       offPlacementCount: 0,
       flaggedNotDepictedCount: 0,
     };
@@ -222,6 +231,8 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       // reveal episode (reveal preferred, else payoff).
       const authoredSetup = this.authoredSetupEpisode(entry);
       const authoredReveal = entry.plannedRevealEpisode ?? entry.plannedPayoffEpisode;
+      const authoredPayoff = entry.plannedPayoffEpisode;
+      const authoredTreatmentEntry = Boolean(entry.sourceText || entry.authoredId || entry.factualAtoms?.length || entry.setupTouchDetails?.length);
 
       // Observed schedule: caller override, else derived from the story scan.
       const usedOverride = Object.prototype.hasOwnProperty.call(overrides, entry.id);
@@ -229,17 +240,19 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
 
       const observedSetup = observed.setupEpisode;
       const observedReveal = observed.revealEpisode;
+      const observedPayoff = observed.payoffEpisode;
+      const observedLanding = observedReveal ?? observedPayoff;
 
       let entryClean = true;
 
       // (1) reveal-before-setup — BLOCKING. Use the strongest available signal:
       // prefer observed-vs-observed; fall back to observed-reveal-vs-authored-setup.
       const effectiveSetup = observedSetup ?? authoredSetup;
-      if (observedReveal !== undefined && effectiveSetup !== undefined && observedReveal < effectiveSetup) {
+      if (observedLanding !== undefined && effectiveSetup !== undefined && observedLanding < effectiveSetup) {
         metrics.revealBeforeSetupCount += 1;
         entryClean = false;
         issues.push(this.error(
-          `INFO "${entry.id}" reveals in episode ${observedReveal} before its setup in episode ${effectiveSetup} — a reveal must never precede its setup.`,
+          `INFO "${entry.id}" reveals/pays off in episode ${observedLanding} before its setup in episode ${effectiveSetup} — information movement must never precede its setup.`,
           `${location}.reveal`,
           'Move the reveal to (or after) the setup episode, or plant the setup earlier so the reveal is earned.',
         ));
@@ -249,14 +262,45 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       // episodes: a reveal scheduled for an episode that was never generated cannot
       // have landed yet, so skip it (partial-season run). An in-range reveal that
       // never landed is still flagged.
-      if (authoredReveal !== undefined && observedReveal === undefined && episodeGenerated(authoredReveal)) {
+      if (authoredReveal !== undefined && observedLanding === undefined && episodeGenerated(authoredReveal)) {
         metrics.missingRevealCount += 1;
         entryClean = false;
         issues.push(this.error(
-          `INFO "${entry.id}" has an authored reveal/payoff in episode ${authoredReveal} but no reveal landed anywhere in the final story.`,
+          `INFO "${entry.id}" has an authored reveal/payoff in episode ${authoredReveal} but no reveal/payoff landed anywhere in the final story.`,
           `${location}.reveal`,
           'Depict the authored reveal/payoff on-page in its episode, or emit a reveal flag the schedule can detect.',
         ));
+      }
+
+      if (authoredTreatmentEntry) {
+        for (const expectedSetup of this.authoredSetupTouchEpisodes(entry)) {
+          if (!episodeGenerated(expectedSetup)) continue;
+          const observedTouches = this.scanStory(entry, episodes, expectedSetup).setupEpisode;
+          if (observedTouches !== expectedSetup) {
+            metrics.missingSetupTouchCount += 1;
+            entryClean = false;
+            issues.push(this.error(
+              `INFO "${entry.id}" has an authored setup touch in episode ${expectedSetup} but no setup marker landed there.`,
+              `${location}.setupTouchEpisodes`,
+              'Plant the authored information setup touch on-page in its scheduled episode, or emit a setup flag the schedule can detect.',
+            ));
+          }
+        }
+
+        if (
+          authoredPayoff !== undefined &&
+          authoredPayoff !== entry.plannedRevealEpisode &&
+          observedPayoff === undefined &&
+          episodeGenerated(authoredPayoff)
+        ) {
+          metrics.missingPayoffCount += 1;
+          entryClean = false;
+          issues.push(this.error(
+            `INFO "${entry.id}" has an authored payoff in episode ${authoredPayoff} but no payoff landed in the final story.`,
+            `${location}.payoff`,
+            'Pay off the authored information as changed behavior, access, relationship pressure, route pressure, or question closure.',
+          ));
+        }
       }
 
       // (3) off-placement — WARNING. Only meaningful when the entry is not already
@@ -280,15 +324,15 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       // (3b) reveal landed on a DIFFERENT episode than authored (but after setup).
       if (
         authoredReveal !== undefined &&
-        observedReveal !== undefined &&
-        observedReveal !== authoredReveal &&
-        !(effectiveSetup !== undefined && observedReveal < effectiveSetup) &&
+        observedLanding !== undefined &&
+        observedLanding !== authoredReveal &&
+        !(effectiveSetup !== undefined && observedLanding < effectiveSetup) &&
         episodeGenerated(authoredReveal)
       ) {
         metrics.offPlacementCount += 1;
         entryClean = false;
         issues.push(this.warning(
-          `INFO "${entry.id}" reveal landed in episode ${observedReveal}, not its authored reveal episode ${authoredReveal}.`,
+          `INFO "${entry.id}" reveal/payoff landed in episode ${observedLanding}, not its authored reveal episode ${authoredReveal}.`,
           `${location}.reveal`,
           'Land the reveal on its authored episode to preserve the treatment\'s information rhythm.',
         ));
@@ -300,10 +344,11 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
       // the flag stays the deterministic blocking signal; this conservative content
       // check (fires only when the episode prose shares ZERO distinctive fact words)
       // surfaces the rubber-stamp risk without a fuzzy false-positive hard-block.
-      if (!usedOverride && observedReveal !== undefined && episodeGenerated(observedReveal)) {
-        const want = contentWords(`${entry.label ?? ''} ${entry.description ?? ''}`);
+      if (!usedOverride && observedLanding !== undefined && episodeGenerated(observedLanding)) {
+        const revealAtoms = entry.factualAtoms?.filter((atom) => atom.phase === 'reveal').map((atom) => atom.text).join(' ');
+        const want = contentWords(`${entry.label ?? ''} ${entry.description ?? ''} ${revealAtoms ?? ''}`);
         if (want.size > 0) {
-          const prose = this.episodeProse(episodes, observedReveal);
+          const prose = this.episodeProse(episodes, observedLanding);
           const present = contentWords(prose);
           let shared = 0;
           for (const w of want) if (present.has(w)) shared += 1;
@@ -311,7 +356,7 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
             metrics.flaggedNotDepictedCount += 1;
             entryClean = false;
             issues.push(this.warning(
-              `INFO "${entry.id}" is flagged as revealed in episode ${observedReveal} but its authored content is not depicted in that episode's prose.`,
+              `INFO "${entry.id}" is flagged as revealed/paid off in episode ${observedLanding} but its authored content is not depicted in that episode's prose.`,
               `${location}.reveal`,
               'Dramatize the reveal on-page (a character states/shows/discovers the fact), not only via the reveal flag.',
             ));
@@ -372,6 +417,22 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     return undefined;
   }
 
+  private authoredSetupTouchEpisodes(entry: InformationLedgerEntry): number[] {
+    const authored = new Set<number>();
+    for (const detail of entry.setupTouchDetails ?? []) {
+      if (typeof detail.episodeNumber === 'number' && Number.isFinite(detail.episodeNumber)) {
+        authored.add(detail.episodeNumber);
+      }
+    }
+    for (const episode of entry.setupTouchEpisodes ?? []) {
+      if (typeof episode === 'number' && Number.isFinite(episode)) authored.add(episode);
+    }
+    if (typeof entry.introducedEpisode === 'number' && Number.isFinite(entry.introducedEpisode)) {
+      authored.add(entry.introducedEpisode);
+    }
+    return [...authored].sort((a, b) => a - b);
+  }
+
   /**
    * Scan the final story (episode order) for markers tied to this INFO entry.
    * Returns the earliest observed setup episode and the earliest observed reveal
@@ -380,6 +441,7 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
   private scanStory(
     entry: InformationLedgerEntry,
     episodes: Episode[],
+    onlyEpisode?: number,
   ): ObservedInfoSchedule {
     const markers: ScanMarker[] = [];
     const ordered = [...episodes].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
@@ -387,6 +449,7 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     for (const episode of ordered) {
       const epNum = episode.number;
       if (typeof epNum !== 'number' || !Number.isFinite(epNum)) continue;
+      if (onlyEpisode !== undefined && epNum !== onlyEpisode) continue;
       for (const scene of episode.scenes ?? []) {
         this.collectSceneMarkers(entry, scene, epNum, markers);
       }
@@ -397,9 +460,11 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
 
     const setups = markers.filter((m) => m.phase === 'setup').map((m) => m.episode);
     const reveals = markers.filter((m) => m.phase === 'reveal').map((m) => m.episode);
+    const payoffs = markers.filter((m) => m.phase === 'payoff').map((m) => m.episode);
     return {
       setupEpisode: setups.length > 0 ? Math.min(...setups) : undefined,
       revealEpisode: reveals.length > 0 ? Math.min(...reveals) : undefined,
+      payoffEpisode: payoffs.length > 0 ? Math.min(...payoffs) : undefined,
     };
   }
 
@@ -461,7 +526,7 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     ];
     for (const prose of proseFields) {
       if (typeof prose === 'string' && referencesEntry(prose, entry)) {
-        markers.push({ episode: epNum, phase: REVEAL_TOKEN.test(prose) ? 'reveal' : 'setup' });
+        markers.push({ episode: epNum, phase: PAYOFF_TOKEN.test(prose) ? 'payoff' : REVEAL_TOKEN.test(prose) ? 'reveal' : 'setup' });
       }
     }
   }
@@ -475,11 +540,13 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     if (c.type !== 'setFlag') return;
     const flag = c.flag;
     if (typeof flag !== 'string' || !referencesEntry(flag, entry)) return;
-    // Phase from the flag suffix: explicit reveal/payoff token → reveal; explicit
-    // setup/hint/seed token → setup; otherwise default to setup (a bare flag plant
-    // is a setup touch, not a reveal).
-    const phase: InfoSchedulePhase = REVEAL_TOKEN.test(flag)
-      ? 'reveal'
+    // Phase from the flag suffix: explicit payoff token → payoff; explicit reveal
+    // token → reveal; explicit setup/hint/seed token → setup; otherwise default to
+    // setup (a bare flag plant is a setup touch, not a reveal).
+    const phase: InfoSchedulePhase = PAYOFF_TOKEN.test(flag)
+      ? 'payoff'
+      : REVEAL_TOKEN.test(flag)
+        ? 'reveal'
       : SETUP_TOKEN.test(flag)
         ? 'setup'
         : 'setup';

@@ -90,4 +90,90 @@ describe('BranchMechanicalDivergenceValidator routing-fork detection (D3)', () =
     });
     expect(result.metrics.branchChoices).toBe(0);
   });
+
+  it('warns when branch residue is generic but misses the authored branch pressure domain', () => {
+    const validator = new BranchMechanicalDivergenceValidator();
+    const result = validator.validate({
+      scenes: [
+        {
+          id: 'quartz-scene',
+          name: 'Quartz Choice',
+          branchConsequenceContracts: [{
+            id: 'branch-quartz-path-state',
+            source: 'treatment',
+            branchId: 'branch-a-quartz',
+            branchName: 'The Quartz',
+            fieldName: 'Path accepted',
+            sourceText: 'Kylie accepts the rose quartz and keeps the apartment as a warded sanctuary.',
+            contractKind: 'branch_path_state',
+            requiredRealization: ['season_flag', 'mechanic_pressure', 'text_variant', 'final_prose'],
+            targetEpisodeNumbers: [1, 6],
+            targetSceneIds: ['quartz-scene'],
+            targetEndingIds: [],
+            stateDomains: ['item', 'resource'],
+            linkedContractIds: [],
+            blockingLevel: 'treatment',
+          }],
+          beats: [
+            {
+              id: 'b',
+              text: 'Choose.',
+              choices: [
+                { id: 'c', text: 'Pocket it', nextSceneId: 'next', consequences: [{ type: 'setFlag', flag: 'generic_branch_seen', value: true }] },
+              ],
+            },
+          ],
+        } as any,
+      ],
+    });
+
+    expect(result.metrics.branchesWithResidue).toBe(1);
+    expect(result.issues.some((issue) => issue.message.includes('does not match the authored branch pressure'))).toBe(true);
+  });
+
+  it('accepts branch residue that matches authored item/resource pressure', () => {
+    const validator = new BranchMechanicalDivergenceValidator();
+    const result = validator.validate({
+      scenes: [
+        {
+          id: 'quartz-scene',
+          name: 'Quartz Choice',
+          branchConsequenceContracts: [{
+            id: 'branch-quartz-path-state',
+            source: 'treatment',
+            branchId: 'branch-a-quartz',
+            branchName: 'The Quartz',
+            fieldName: 'Path accepted',
+            sourceText: 'Kylie accepts the rose quartz and keeps the apartment as a warded sanctuary.',
+            contractKind: 'branch_path_state',
+            requiredRealization: ['season_flag', 'mechanic_pressure', 'text_variant', 'final_prose'],
+            targetEpisodeNumbers: [1, 6],
+            targetSceneIds: ['quartz-scene'],
+            targetEndingIds: [],
+            stateDomains: ['item', 'resource'],
+            linkedContractIds: [],
+            blockingLevel: 'treatment',
+          }],
+          beats: [
+            {
+              id: 'b',
+              text: 'Choose.',
+              choices: [
+                {
+                  id: 'c',
+                  text: 'Accept the quartz',
+                  nextSceneId: 'next',
+                  consequences: [{ type: 'addItem', item: { id: 'rose_quartz', name: 'Rose quartz' } }],
+                  residueHints: [{ kind: 'item', description: 'The quartz remains protection footing for the apartment sanctuary.' }],
+                },
+              ],
+            },
+          ],
+        } as any,
+      ],
+    });
+
+    expect(result.metrics.branchesWithResidue).toBe(1);
+    expect(result.issues.some((issue) => issue.message.includes('does not match the authored branch pressure'))).toBe(false);
+  });
 });

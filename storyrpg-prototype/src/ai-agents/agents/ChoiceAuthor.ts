@@ -1722,6 +1722,22 @@ ${input.sceneBlueprint.mechanicPressure.map((c) => `- ${c.id}: ${c.domain}/${c.f
 - Bare state math is not enough unless the consequence is purely infrastructural.
 - Conditions/gates should spend pressure that has already been planted or is reachable through prior choices.
 ` : ''}
+${input.sceneBlueprint.characterTreatmentContracts?.length ? `
+## Protagonist Treatment Contracts For This Choice
+Use these authored protagonist fields to shape option pressure and aftermath. Do not display contract labels or raw mechanics.
+${input.sceneBlueprint.characterTreatmentContracts.map((c) => `- ${c.fieldName} (${c.contractKind}): ${c.sourceText}; realize through ${c.requiredRealization.join(', ')}`).join('\n')}
+- At least one choice should test the relevant Want/Need/Lie/Truth gap when those contracts are present.
+- Consequences should leave visible identity, route, relationship, information, or reputation residue that makes later payoff believable.
+- Ending/climax contracts require active player/protagonist agency; do not let the route resolve through outside rescue or summary.
+` : ''}
+${input.sceneBlueprint.worldTreatmentContracts?.length ? `
+## World/Location Treatment Contracts For This Choice
+Use authored setting rules and location pressure as fiction-first affordances, risks, gates, consequences, residue, or information movement. Do not display rule labels or raw mechanics.
+${input.sceneBlueprint.worldTreatmentContracts.map((c) => `- ${c.fieldName} (${c.contractKind}${c.locationName ? ` @ ${c.locationName}` : ''}): ${c.sourceText}; realize through ${c.requiredRealization.join(', ')}`).join('\n')}
+- Location choice pressure should affect what options are tempting, risky, forbidden, costly, or newly possible.
+- Dramatic/supernatural rules should constrain outcomes and create visible residue; do not contradict a rule to make a convenient branch.
+- If a choice spends access, sanctuary, faction leverage, sacred object, taboo, or danger pressure, include residueHints/reminderPlan/feedbackCue so later scenes can pay it off.
+` : ''}
 ## Requirements
 - Create ${input.optionCount} distinct choices
 - Each choice must have the complete Stakes Triangle

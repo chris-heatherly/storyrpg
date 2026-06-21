@@ -5,8 +5,12 @@ import type {
   TreatmentBranchGuidance,
   TreatmentEpisodeGuidance,
   TreatmentSeasonGuidance,
+  ProtagonistTreatmentGuidance,
+  WorldLocationTreatmentGuidance,
+  WorldLocationTreatmentLocationGuidance,
 } from '../../types/sourceAnalysis';
 import { extractBeatEpisodeAnchors } from './treatmentFingerprint';
+import { parseInformationLedgerGuidance } from './informationLedgerContracts';
 
 export interface ExtractedTreatment {
   isTreatment: boolean;
@@ -48,8 +52,13 @@ const TREATMENT_MARKERS = [
   /\*\*How the encounter manifests the central conflict(?:\s*\([^)]*\))?:\*\*/i,
   /\bCapability,\s*Growth,\s*And\s*Fail-Forward\b/i,
   /\bInformation Ledger\b/i,
+  /\bArc\s+\d+:\s+.+?\(Episodes?\s+\d+\s*[-–]\s*\d+\)/i,
+  /\bArc dramatic question\b/i,
+  /\bScene Planning Notes\b/i,
+  /^-\s+Scene\s*:/im,
   /\bFailure Mode Audit\b/i,
   /\bEpisode Endings\b/i,
+  /\bWorld\s+(?:And|\+)\s+Location Brief\b/i,
   /\*\*Episode promise(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Tone register(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Major choice pressure(?:\s*\([^)]*\))?:\*\*/i,
@@ -106,6 +115,20 @@ function isPromptGuideMarkdown(markdown: string): boolean {
 
 function getFlexibleSection(markdown: string, labels: string[]): string {
   const matches = [...markdown.matchAll(SECTION_HEADING_RE)];
+  let foundIndex = -1;
+  for (const label of labels.map((value) => value.toLowerCase())) {
+    foundIndex = matches.findIndex((match) => (match[1] || '').trim().toLowerCase().includes(label));
+    if (foundIndex >= 0) break;
+  }
+  if (foundIndex < 0) return '';
+  const start = (matches[foundIndex].index || 0) + matches[foundIndex][0].length;
+  const end = foundIndex + 1 < matches.length ? matches[foundIndex + 1].index || markdown.length : markdown.length;
+  return markdown.slice(start, end).trim();
+}
+
+function getFlexibleHeadingSection(markdown: string, labels: string[], levels = '3,5'): string {
+  const headingRe = new RegExp(`^#{${levels}}\\s+(.+)$`, 'gm');
+  const matches = [...markdown.matchAll(headingRe)];
   let foundIndex = -1;
   for (const label of labels.map((value) => value.toLowerCase())) {
     foundIndex = matches.findIndex((match) => (match[1] || '').trim().toLowerCase().includes(label));
@@ -416,10 +439,82 @@ function lastEpisodeMention(text: string): number | undefined {
   return mentions.length > 0 ? mentions[mentions.length - 1] : undefined;
 }
 
+function splitBranchStateChanges(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  return Array.from(new Set(value
+    .replace(/\s+(?:and|plus)\s+ending eligibility\b/gi, '; ending eligibility')
+    .split(/\s*(?:;|\n|\s+\|\s+)\s*/g)
+    .flatMap((part) => {
+      const trimmed = part.trim().replace(/^-\s+/, '').replace(/\.$/, '');
+      if (!trimmed) return [];
+      if (trimmed.length > 180) return [trimmed];
+      return trimmed.split(/\s*,\s+(?=(?:access|resource|relationship|identity|information|reputation|route|ending|item|flag|score)\b|(?:and\s+)?ending eligibility\b)/i);
+    })
+    .map((part) => part.trim().replace(/^and\s+/i, '').replace(/\.$/, ''))
+    .filter(Boolean)));
+}
+
+function branchPathVariantsFromText(input: {
+  branchId: string;
+  createdBy?: string;
+  laterEpisodeChange?: string;
+  stateChanges?: string[];
+}): NonNullable<TreatmentBranchGuidance['pathVariants']> {
+  const source = [input.createdBy, input.laterEpisodeChange].filter(Boolean).join(' ');
+  const variants: NonNullable<TreatmentBranchGuidance['pathVariants']> = [];
+  const add = (label: string, conditionText: string, resultText: string, stateChanges: string[] = []) => {
+    const cleanedLabel = label.trim().replace(/^[-–—:,]+|[-–—:,]+$/g, '') || `Path ${variants.length + 1}`;
+    const id = `${input.branchId}-${slugify(cleanedLabel)}`;
+    if (variants.some((variant) => variant.id === id || variant.conditionText === conditionText)) return;
+    variants.push({
+      id,
+      label: cleanedLabel,
+      conditionText: conditionText.trim(),
+      resultText: resultText.trim() || conditionText.trim(),
+      stateChanges: Array.from(new Set([...(stateChanges ?? []), ...(input.stateChanges ?? [])].filter(Boolean))),
+    });
+  };
+
+  const canonical = source.match(/\baccept(?:s|ed|ing)?\b[^.;]*(?:canonical)?/i);
+  if (canonical) add('accepted', canonical[0], input.laterEpisodeChange || canonical[0], input.stateChanges);
+  const refusal = source.match(/\b(?:declin(?:es|ed|ing)|refus(?:es|ed|ing))\b[^.;]*/i);
+  if (refusal) add('refused', refusal[0], input.laterEpisodeChange || refusal[0], input.stateChanges);
+  const lost = source.match(/\b(?:lost|discard(?:s|ed|ing)|toss(?:es|ed|ing))\b[^.;]*/i);
+  if (lost) add('lost', lost[0], input.laterEpisodeChange || lost[0], input.stateChanges);
+  const buy = source.match(/\bbuy(?:s|ing)?\b[^.;]*/i);
+  if (buy) add('bought_or_discarded', buy[0], input.laterEpisodeChange || buy[0], input.stateChanges);
+
+  const withClauses = [...source.matchAll(/\bWith\s+([^.;]+?)(?=(?:\.\s+With\b|$))/gi)];
+  for (const match of withClauses) {
+    const clause = match[1]?.trim();
+    if (!clause) continue;
+    const label = clause.slice(0, 48);
+    add(label, `With ${clause}`, `With ${clause}`, splitBranchStateChanges(clause));
+  }
+  const withoutClauses = [...source.matchAll(/\bWith(?:out)?\s+([^.;]+?)(?:,|\s+the\s+)([^.;]+?)(?=(?:\.\s+With|$))/gi)];
+  for (const match of withoutClauses) {
+    const clause = match[0]?.trim();
+    if (!clause) continue;
+    add(clause.slice(0, 48), clause, clause, splitBranchStateChanges(clause));
+  }
+
+  if (variants.length === 0 && input.createdBy?.trim()) {
+    add('authored', input.createdBy, input.laterEpisodeChange || input.createdBy, input.stateChanges);
+  }
+  return variants;
+}
+
 function parseBranches(section: string): TreatmentBranchGuidance[] {
   return splitByMatches(section, BRANCH_HEADING_RE, (match, body) => {
     const name = (match[1] || '').trim();
     const searchable = `${name}\n${body}`;
+    const createdBy = getFlexibleBulletValue(body, ['What creates it', 'Created by', 'Trigger', 'Origin choice']);
+    const laterEpisodeChange = getFlexibleBulletValue(body, [
+      'How it changes a later episode',
+      'How it changes later episode',
+      'Later episode change',
+      'Later change',
+    ]);
     const originEpisode = getFlexibleBulletValue(body, ['Origin episode', 'Created episode', 'Created in episode'])
       ? firstEpisodeMention(getFlexibleBulletValue(body, ['Origin episode', 'Created episode', 'Created in episode'])!)
       : firstEpisodeMention(searchable);
@@ -428,12 +523,38 @@ function parseBranches(section: string): TreatmentBranchGuidance[] {
       ? lastEpisodeMention(explicitReconvergence)
       : lastEpisodeMention(searchable.match(/(?:reconverges?|rejoins?|bottlenecks?).{0,120}/i)?.[0] || '')
         || lastEpisodeMention(searchable.match(/(?:→|to|through)\s*(?:Episodes?|Eps?\.?|E)\s*\d+(?:\s*[-–—]\s*(?:Episodes?|Eps?\.?|E)?\s*\d+)?/i)?.[0] || '');
+    const reconvergenceResidue = getFlexibleBulletValue(body, [
+      'What residue remains after reconvergence',
+      'Residue after reconvergence',
+      'Reconvergence residue',
+      'Residue',
+    ]);
+    const stateChanges = splitBranchStateChanges(getFlexibleBulletValue(body, [
+      'What state it changes',
+      'Which state it changes',
+      'State it changes',
+      'State changes',
+    ]));
+    const branchId = `treatment-branch-${slugify(name)}`;
+    const pathVariants = branchPathVariantsFromText({
+      branchId,
+      createdBy,
+      laterEpisodeChange,
+      stateChanges,
+    });
     return {
-      id: `treatment-branch-${slugify(name)}`,
+      id: branchId,
       name,
       summary: body.replace(/\s+/g, ' ').trim(),
+      sourceText: `${match[0]}\n${body}`.trim(),
       originEpisode,
+      createdBy,
+      laterEpisodeChange,
       reconvergenceEpisode: Number.isFinite(reconvergenceEpisode) ? reconvergenceEpisode : undefined,
+      reconvergenceResidue,
+      stateChanges,
+      pathVariants,
+      canonicalPathId: pathVariants.find((variant) => /canonical|accept/i.test(`${variant.label} ${variant.conditionText}`))?.id,
     };
   });
 }
@@ -476,30 +597,503 @@ function parseEndings(section: string): StoryEndingTarget[] {
         details: driver,
       })),
       targetConditions: splitSentences(getFlexibleBulletValue(body, ['Target conditions', 'Target conditions in plain language'])),
+      repeatedChoicePattern: getFlexibleBulletValue(body, [
+        'What repeated choice pattern this ending pays off',
+        'Repeated choice pattern this ending pays off',
+        'Repeated choice pattern',
+      ]),
+      finalVoiceoverLine: getFlexibleBulletValue(body, ['Final voiceover line', 'Final line', 'Voiceover line']),
+      sourceText: `${match[0]}\n${body}`.trim(),
       sourceConfidence: 'explicit',
     };
   });
+}
+
+const FAILURE_MODE_LABELS: Array<{
+  code: NonNullable<TreatmentSeasonGuidance['failureModeAuditGuidance']>['rows'][number]['code'];
+  patterns: RegExp[];
+}> = [
+  { code: 'escalation_trap', patterns: [/escalation trap/i] },
+  { code: 'mystery_box_collapse', patterns: [/mystery box/i] },
+  { code: 'character_drift', patterns: [/character drift/i] },
+  { code: 'shaggy_dog', patterns: [/shaggy dog/i] },
+  { code: 'passive_protagonist', patterns: [/passive protagonist/i] },
+  { code: 'reset_disease', patterns: [/reset disease/i] },
+  { code: 'theme_drift', patterns: [/theme drift/i] },
+  { code: 'unmotivated_escalation', patterns: [/unmotivated escalation/i] },
+  { code: 'snowglobe_arc', patterns: [/snowglobe arcs?/i] },
+  { code: 'inverted_thematic_rhyme', patterns: [/inverted thematic rhyme/i] },
+  { code: 'convenient_coincidence', patterns: [/convenient coincidence/i] },
+  { code: 'telegraphed_twist', patterns: [/telegraphed twist/i] },
+  { code: 'cheating_twist', patterns: [/cheating twist/i] },
+];
+
+function failureModeCodeForLabel(label: string): NonNullable<TreatmentSeasonGuidance['failureModeAuditGuidance']>['rows'][number]['code'] {
+  return FAILURE_MODE_LABELS.find((entry) => entry.patterns.some((pattern) => pattern.test(label)))?.code
+    ?? 'unmotivated_escalation';
+}
+
+function parseFailureModeStatus(value: string): NonNullable<TreatmentSeasonGuidance['failureModeAuditGuidance']>['rows'][number]['status'] {
+  if (/^\s*watch\s+item\b/i.test(value)) return 'watch_item';
+  if (/^\s*avoided\b/i.test(value)) return 'avoided';
+  return 'unknown';
+}
+
+function parseFailureModeMitigation(value: string): string | undefined {
+  const watch = value.match(/\bmitigated\s+by\s+([\s\S]+)$/i);
+  if (watch?.[1]?.trim()) return watch[1].trim();
+  const because = value.match(/\b(?:because|driven by|flows from|fixed by|earned by)\s+([\s\S]+)$/i);
+  if (because?.[1]?.trim()) return because[1].trim();
+  const dash = value.match(/(?:avoided|watch item)\s*[—–-]\s*([\s\S]+)$/i);
+  return dash?.[1]?.trim();
+}
+
+function parseFailureModeAuditGuidance(section: string | undefined): TreatmentSeasonGuidance['failureModeAuditGuidance'] | undefined {
+  if (!section?.trim()) return undefined;
+  const rows: NonNullable<TreatmentSeasonGuidance['failureModeAuditGuidance']>['rows'] = [];
+  const bulletRe = /^\s*-\s+(?:\*\*([^:\n]+):\*\*|([^:\n]{1,120}):)\s*([\s\S]*?)(?=\n\s*-\s+(?:\*\*[^:\n]+:\*\*|[^:\n]{1,120}:)|$)/gm;
+  for (const match of section.matchAll(bulletRe)) {
+    const label = (match[1] || match[2] || '').replace(/\*\*/g, '').trim();
+    const body = (match[3] || '').trim();
+    if (!label || !body) continue;
+    rows.push({
+      label,
+      code: failureModeCodeForLabel(label),
+      status: parseFailureModeStatus(body),
+      sourceText: `${label}: ${body}`.replace(/\s+/g, ' ').trim(),
+      episodeMentions: Array.from(new Set(episodeMentions(body))),
+      mitigationText: parseFailureModeMitigation(body),
+    });
+  }
+  return rows.length > 0 ? { rawSection: section, rows } : undefined;
 }
 
 function inferEpisodeStructureMode(markdown: string): TreatmentSeasonGuidance['episodeStructureMode'] {
   return /\bscene\s*episodes?\b|\bsceneepisodes?\b/i.test(markdown) ? 'sceneEpisodes' : 'standard';
 }
 
+function parseTopLevelSeasonPromiseFields(markdown: string): Partial<TreatmentSeasonGuidance> {
+  return {
+    genre: getFlexibleBulletValue(markdown, ['Genre']),
+    tone: getFlexibleBulletValue(markdown, ['Tone']),
+    logline: getFlexibleBulletValue(markdown, ['Logline']),
+    coreFantasy: getFlexibleBulletValue(markdown, ['Core fantasy', 'Core Fantasy']),
+    audiencePromise: getFlexibleBulletValue(markdown, ['Audience promise', 'Audience Promise']),
+    premisePromise: getFlexibleBulletValue(markdown, ['Premise promise', 'Premise Promise']),
+    themeQuestion: getFlexibleBulletValue(markdown, ['Theme question', 'Theme Question']),
+    inactionPressure: getFlexibleBulletValue(markdown, [
+      'What pressure makes inaction impossible',
+      'Pressure makes inaction impossible',
+      'Inaction pressure',
+    ]),
+  };
+}
+
+function parseSeasonPromiseEngineFields(section: string): Partial<TreatmentSeasonGuidance> {
+  if (!section.trim()) return {};
+  return {
+    seasonDramaticQuestion: getFlexibleBulletValue(section, [
+      "Season dramatic question framed around the protagonist's Lie",
+      'Season dramatic question',
+    ]),
+    centralPressure: getFlexibleBulletValue(section, ['Central pressure']),
+    playerPromise: getFlexibleBulletValue(section, ['Player promise']),
+    emotionalPromise: getFlexibleBulletValue(section, ['Emotional promise']),
+    freshVariationPlan: getFlexibleBulletValue(section, ['Fresh variation plan']),
+    typicalEpisodeDeliverables: getFlexibleBulletValue(section, [
+      'What a typical episode delivers after the pilot',
+      'Typical episode delivers after the pilot',
+      'Typical episode delivers',
+    ]),
+    seasonMustResolve: getFlexibleBulletValue(section, ['What the season must resolve', 'Season must resolve']),
+    futureOpenThreads: getFlexibleBulletValue(section, [
+      'What can remain open for future seasons',
+      'Can remain open for future seasons',
+      'Future seasons',
+    ]),
+  };
+}
+
+function parseProtagonistGuidance(markdown: string): ProtagonistTreatmentGuidance | undefined {
+  const protagonistSection = getFlexibleHeadingSection(markdown, ['protagonist']);
+  if (!protagonistSection.trim()) return undefined;
+  const guidance: ProtagonistTreatmentGuidance = {
+    rawSection: protagonistSection,
+    nameAndPronouns: getFlexibleBulletValue(protagonistSection, ['Name and pronouns', 'Name/pronouns', 'Name']),
+    roleInWorld: getFlexibleBulletValue(protagonistSection, ['Role in the world', 'Role']),
+    want: getFlexibleBulletValue(protagonistSection, ['Want']),
+    need: getFlexibleBulletValue(protagonistSection, ['Need']),
+    lie: getFlexibleBulletValue(protagonistSection, ['Lie']),
+    wound: getFlexibleBulletValue(protagonistSection, ['Wound', 'Origin pressure']),
+    truth: getFlexibleBulletValue(protagonistSection, ['Truth']),
+    arcMode: getFlexibleBulletValue(protagonistSection, ['Arc mode', 'Arc']),
+    startingIdentity: getFlexibleBulletValue(protagonistSection, ['Starting identity', 'Starting state']),
+    possibleEndStates: getFlexibleInlineOrIndentedList(protagonistSection, ['Possible end states']),
+    climaxChoice: getFlexibleBulletValue(protagonistSection, ['Climax choice', 'Final choice']),
+    pressurePoints: getFlexibleInlineOrIndentedList(protagonistSection, ['Pressure points']),
+    visualIdentity: getFlexibleBulletValue(protagonistSection, ['Visual identity', 'Visual profile']),
+  };
+  const hasField = Object.entries(guidance).some(([key, value]) =>
+    key !== 'rawSection' && (Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value.trim().length > 0)
+  );
+  return hasField ? guidance : undefined;
+}
+
+function splitListish(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  return value
+    .split(/\s*(?:\n|;|\s+\|\s+)\s*/g)
+    .map((part) => part.trim().replace(/^-\s+/, ''))
+    .filter((part) => part.length > 0);
+}
+
+function sectionListWithIntro(section: string, labels: string[]): string[] {
+  const out: string[] = [];
+  const intro = getFlexibleBulletValue(section, labels);
+  out.push(...splitListish(intro));
+  out.push(...getFlexibleInlineOrIndentedList(section, labels));
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const labelRe = new RegExp(`^-\\s+(?:\\*\\*${escaped}[^:]*:\\*\\*|${escaped}[^:]*:).*?$`, 'im');
+    const match = labelRe.exec(section);
+    if (!match) continue;
+    const rest = section.slice(match.index + match[0].length);
+    const nextTopLevel = rest.search(new RegExp(`${TOP_LEVEL_BULLET_FIELD_RE.source}|\\n#{3,5}\\s+`));
+    const block = nextTopLevel >= 0 ? rest.slice(0, nextTopLevel) : rest;
+    out.push(...block
+      .split('\n')
+      .map((line) => line.match(/^\s{2,}-\s+(.+)$/)?.[1]?.trim())
+      .filter(Boolean) as string[]);
+  }
+  return Array.from(new Set(out.map((item) => item.trim()).filter(Boolean)));
+}
+
+function fieldFromLocationLine(line: string, label: string): string | undefined {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = line.match(new RegExp(`${escaped}\\s*:\\s*([\\s\\S]*?)(?=\\s+(?:Purpose|Mood|History|Choice pressure)\\s*:|$)`, 'i'));
+  return match?.[1]?.trim().replace(/\s+$/, '') || undefined;
+}
+
+function parseWorldLocationLine(line: string): WorldLocationTreatmentLocationGuidance | undefined {
+  const cleaned = line.trim().replace(/^-\s+/, '');
+  if (!cleaned) return undefined;
+  const split = cleaned.split(/\s+[—–-]\s+/);
+  const rawName = (split[0] || '').replace(/\*\*/g, '').trim();
+  if (!rawName || rawName.length > 120) return undefined;
+  return {
+    name: rawName,
+    sourceText: cleaned,
+    purpose: fieldFromLocationLine(cleaned, 'Purpose'),
+    mood: fieldFromLocationLine(cleaned, 'Mood'),
+    history: fieldFromLocationLine(cleaned, 'History'),
+    choicePressure: fieldFromLocationLine(cleaned, 'Choice pressure'),
+  };
+}
+
+function parseWorldLocationGuidance(markdown: string): WorldLocationTreatmentGuidance | undefined {
+  const section = getFlexibleSection(markdown, [
+    'world and location brief',
+    'world + location brief',
+    'world + location',
+    'location brief',
+  ]);
+  if (!section.trim()) return undefined;
+
+  const keyLocationLines = getFlexibleInlineOrIndentedList(section, ['3-6 key locations', 'Key locations', 'Locations']);
+  const keyLocations = keyLocationLines
+    .map(parseWorldLocationLine)
+    .filter(Boolean) as WorldLocationTreatmentLocationGuidance[];
+
+  const guidance: WorldLocationTreatmentGuidance = {
+    rawSection: section,
+    worldPremise: getFlexibleBulletValue(section, ['World premise', 'World']),
+    timePeriod: getFlexibleBulletValue(section, ['Time period', 'Period']),
+    supernaturalRules: sectionListWithIntro(section, [
+      'Technology/magic/supernatural rules, if any',
+      'Technology/magic/supernatural rules',
+      'Magic/supernatural rules',
+      'World rules',
+    ]),
+    powerStructures: splitListish(getFlexibleBulletValue(section, ['Power structures', 'Factions'])),
+    dramaticRules: sectionListWithIntro(section, ['Rules that create drama', 'Drama rules']),
+    costsAndTaboos: splitListish(getFlexibleBulletValue(section, [
+      'What is forbidden, scarce, dangerous, sacred, expensive, humiliating, or socially costly',
+      'Forbidden, scarce, dangerous, sacred, expensive, humiliating, or socially costly',
+      'Forbidden or scarce',
+      'Taboos and costs',
+    ])),
+    keyLocations,
+  };
+  const hasField = Boolean(
+    guidance.worldPremise?.trim()
+    || guidance.timePeriod?.trim()
+    || guidance.supernaturalRules?.length
+    || guidance.powerStructures?.length
+    || guidance.dramaticRules?.length
+    || guidance.costsAndTaboos?.length
+    || guidance.keyLocations?.length
+  );
+  return hasField ? guidance : undefined;
+}
+
+function splitStakeList(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const arrowExpanded = value.replace(/\s*(?:→|->)\s*/g, '\n');
+  return Array.from(new Set(arrowExpanded
+    .split(/\s*(?:\n|;|\s+\|\s+)\s*/g)
+    .flatMap((part) => {
+      const trimmed = part.trim().replace(/^-\s+/, '');
+      if (!trimmed) return [];
+      // Keep long explanatory clauses intact; split compact list fields.
+      if (trimmed.length > 180) return [trimmed];
+      return trimmed.split(/\s*,\s+(?=(?:the\s+)?[A-Z0-9"']|[a-z]+(?:'s)?\s+(?:freedom|trust|humanity|voice|life|legacy|friendship|blog|apartment|letter|line|readership|column|sanctuary|choice|promise|name))/);
+    })
+    .map((part) => part.trim().replace(/\.$/, ''))
+    .filter((part) => part.length > 0)));
+}
+
+function parseStakesArchitectureGuidance(markdown: string): TreatmentSeasonGuidance['stakesArchitectureGuidance'] | undefined {
+  const section = getFlexibleSection(markdown, ['stakes architecture']);
+  if (!section.trim()) return undefined;
+  const guidance: NonNullable<TreatmentSeasonGuidance['stakesArchitectureGuidance']> = {
+    rawSection: section,
+    primaryMaterialStakes: splitStakeList(getFlexibleBulletValue(section, ['Primary material stakes', 'Material stakes'])),
+    primaryRelationalStakes: splitStakeList(getFlexibleBulletValue(section, ['Primary relational stakes', 'Relational stakes'])),
+    primaryIdentityStakes: splitStakeList(getFlexibleBulletValue(section, ['Primary identity stakes', 'Identity stakes'])),
+    primaryExistentialStakes: splitStakeList(getFlexibleBulletValue(section, ['Primary existential stakes', 'Existential stakes'])),
+    escalationLadder: splitStakeList(getFlexibleBulletValue(section, ['How stakes escalate gradually', 'Stakes escalate gradually', 'Stakes escalation'])),
+    personalBeforeLarger: getFlexibleBulletValue(section, [
+      'How personal stakes are established before larger stakes',
+      'Personal stakes are established before larger stakes',
+      'Personal before larger stakes',
+    ]),
+    emotionalLegibilityAnchors: splitStakeList(getFlexibleBulletValue(section, [
+      'Which relationships/places/promises make the stakes emotionally legible',
+      'Relationships/places/promises make the stakes emotionally legible',
+      'Emotionally legible stakes',
+      'Emotional stakes anchors',
+    ])),
+  };
+  const hasField = Boolean(
+    guidance.primaryMaterialStakes?.length
+    || guidance.primaryRelationalStakes?.length
+    || guidance.primaryIdentityStakes?.length
+    || guidance.primaryExistentialStakes?.length
+    || guidance.escalationLadder?.length
+    || guidance.personalBeforeLarger?.trim()
+    || guidance.emotionalLegibilityAnchors?.length
+  );
+  return hasField ? guidance : undefined;
+}
+
+function parseArcEpisodeRange(value: string | undefined): { start: number; end: number } | undefined {
+  if (!value?.trim()) return undefined;
+  const match = value.match(/\b(?:Episodes?|Eps?|Ep\.?)?\s*(\d+)\s*[-–—]\s*(\d+)\b/i)
+    || value.match(/\b(\d+)\s*[-–—]\s*(\d+)\b/);
+  if (!match) return undefined;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < start) return undefined;
+  return { start, end };
+}
+
+function inferArcTurnoutType(value: string | undefined): string | undefined {
+  const text = value ?? '';
+  if (/\brevelation|reveals?|revealed|discovery|discovers?\b/i.test(text)) return 'revelation';
+  if (/\bescalat|second suitor|more dangerous|tighten|raises?\b/i.test(text)) return 'escalation';
+  if (/\bwrong-note|wrong note|cost|crack|lost|loss|warning|missing\b/i.test(text)) return 'cost';
+  if (/\bchoice|chooses?|decision\b/i.test(text)) return 'choice';
+  if (/\bcrisis|all-is-lost|collapse|failure|betray\b/i.test(text)) return 'crisis';
+  if (/\brecontextual|reframe|actually|underneath|really\b/i.test(text)) return 'recontextualization';
+  if (/\bfinale|answer|returns?|ends?\b/i.test(text)) return 'finale';
+  if (/\bhandoff|carry forward|next arc|next\b/i.test(text)) return 'handoff';
+  return undefined;
+}
+
+function parseArcTurnouts(block: string): Array<{ episodeNumber: number; sourceText: string; description: string; turnType?: string }> {
+  const lines = getFlexibleInlineOrIndentedList(block, ['Episode turnouts', 'Episode turnout']);
+  const out: Array<{ episodeNumber: number; sourceText: string; description: string; turnType?: string }> = [];
+  for (const line of lines) {
+    const match = line.match(/^(?:E|Ep(?:isode)?\.?\s*)\s*(\d+)\s+(?:ends?\s+on\s+)?(.+)$/i)
+      || line.match(/\b(?:E|Ep(?:isode)?\.?\s*)\s*(\d+)\b[:\s-]+(.+)$/i);
+    if (!match) continue;
+    const episodeNumber = Number(match[1]);
+    if (!Number.isFinite(episodeNumber)) continue;
+    const description = (match[2] || line).trim();
+    out.push({
+      episodeNumber,
+      sourceText: line.trim(),
+      description,
+      turnType: inferArcTurnoutType(description),
+    });
+  }
+  return out;
+}
+
+function splitArcBlocks(section: string): Array<{ index: number; heading: string; block: string }> {
+  const headingRe = /^#{3,5}\s+Arc\s+(\d+)\s*:?\s*(.+?)\s*$/gim;
+  const matches = [...section.matchAll(headingRe)];
+  return matches.map((match, idx) => {
+    const start = (match.index ?? 0) + match[0].length;
+    const end = idx + 1 < matches.length ? matches[idx + 1].index ?? section.length : section.length;
+    return {
+      index: Number(match[1]) || idx + 1,
+      heading: (match[2] || '').trim(),
+      block: section.slice(start, end).trim(),
+    };
+  });
+}
+
+function parseArcPlanGuidance(markdown: string): TreatmentSeasonGuidance['arcGuidance'] | undefined {
+  const section = getFlexibleSection(markdown, ['arc plan', 'arc-level rules']) || markdown;
+  const blocks = splitArcBlocks(section);
+  if (blocks.length === 0) return undefined;
+  const arcs = blocks.map(({ index, heading, block }) => {
+    const headingRange = parseArcEpisodeRange(heading);
+    const range = parseArcEpisodeRange(getFlexibleBulletValue(block, ['Episode range', 'Episodes'])) ?? headingRange;
+    const cleanHeadingTitle = heading
+      .replace(/\([^)]*Episodes?\s+\d+\s*[-–—]\s*\d+[^)]*\)/i, '')
+      .replace(/^[-:–—\s]+|[-:–—\s]+$/g, '')
+      .trim();
+    const title = getFlexibleBulletValue(block, ['Arc title', 'Title']) || cleanHeadingTitle || `Arc ${index}`;
+    return {
+      arcIndex: index,
+      title,
+      sourceText: [`Arc ${index}: ${heading}`, block].filter(Boolean).join('\n').trim(),
+      episodeRange: range,
+      arcDramaticQuestion: getFlexibleBulletValue(block, ['Arc dramatic question', 'Dramatic question']),
+      relationToSeasonQuestion: getFlexibleBulletValue(block, ['Relation to season question', 'Relation to season dramatic question']),
+      lieFacet: getFlexibleBulletValue(block, [
+        'Facet of protagonist Lie under pressure',
+        "Facet of protagonist's Lie under pressure",
+        'Lie facet',
+      ]),
+      midpointRecontextualization: getFlexibleBulletValue(block, ['Midpoint recontextualization']),
+      lateArcCrisis: getFlexibleBulletValue(block, [
+        'Late-arc crisis / all-is-lost beat',
+        'Late arc crisis / all-is-lost beat',
+        'Late-arc crisis',
+        'All-is-lost beat',
+      ]),
+      finaleAnswer: getFlexibleBulletValue(block, ['Arc finale answer', 'Finale answer']),
+      handoffPressure: getFlexibleBulletValue(block, ['Handoff pressure to next arc or finale', 'Handoff pressure']),
+      episodeTurnouts: parseArcTurnouts(block),
+    };
+  }).filter((arc) => Boolean(
+    arc.episodeRange
+    || arc.arcDramaticQuestion
+    || arc.relationToSeasonQuestion
+    || arc.lieFacet
+    || arc.midpointRecontextualization
+    || arc.lateArcCrisis
+    || arc.finaleAnswer
+    || arc.handoffPressure
+    || (arc.episodeTurnouts?.length ?? 0) > 0
+  ));
+
+  return arcs.length > 0 ? { rawSection: section, arcs } : undefined;
+}
+
+function cleanScenePlanningTitle(raw: string): string {
+  return raw
+    .replace(/\*\*/g, '')
+    .replace(/\([^)]*\bEpisode\s+\d+[^)]*\)/i, '')
+    .replace(/\([^)]*\bEp\.?\s*\d+[^)]*\)/i, '')
+    .replace(/^[-:–—\s]+|[-:–—\s]+$/g, '')
+    .trim();
+}
+
+function splitScenePlanningStakesLayers(values: string[]): string[] {
+  return Array.from(new Set(values
+    .flatMap((value) => value.split(/\s*,\s*/g))
+    .map((value) => value.trim())
+    .filter(Boolean)));
+}
+
+function parseScenePlanningGuidance(markdown: string): TreatmentSeasonGuidance['scenePlanningGuidance'] | undefined {
+  const section = getFlexibleSection(markdown, ['scene planning notes']);
+  if (!section.trim()) return undefined;
+
+  const sceneStartRe = /^\s*-\s+(?:\*\*)?Scene\s*:\s*(.+?)\s*$/gim;
+  const matches = [...section.matchAll(sceneStartRe)];
+  if (matches.length === 0) return undefined;
+
+  const scenes = matches.map((match, index) => {
+    const header = (match[1] || '').trim();
+    const start = (match.index ?? 0) + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index ?? section.length : section.length;
+    const rawBody = section.slice(start, end).trim();
+    const body = rawBody
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .join('\n');
+    return {
+      sceneTitle: cleanScenePlanningTitle(header) || `Scene ${index + 1}`,
+      episodeNumber: firstEpisodeMention(header) ?? firstEpisodeMention(body),
+      sourceText: [match[0].trim(), rawBody].filter(Boolean).join('\n'),
+      entryGoal: getFlexibleBulletValue(body, ['Entry goal']),
+      obstacle: getFlexibleBulletValue(body, ['Obstacle']),
+      forcedChoice: getFlexibleBulletValue(body, ['Forced choice']),
+      exitShift: getFlexibleBulletValue(body, ['Exit shift']),
+      powerShift: getFlexibleBulletValue(body, ['Power shift', 'Power dynamic shift']),
+      subtextGap: getFlexibleBulletValue(body, ['Subtext gap', 'Subtext']),
+      stakesLayers: splitScenePlanningStakesLayers(getFlexibleInlineOrIndentedList(body, ['Stakes layers present in the major scene/encounter', 'Stakes layers present', 'Stakes layers'])),
+      connectsBy: getFlexibleBulletValue(body, ['Connects by', 'Connects through', 'Connection', 'Branch connection']),
+    };
+  }).filter((scene) => Boolean(
+    scene.sceneTitle
+    && (scene.entryGoal
+      || scene.obstacle
+      || scene.forcedChoice
+      || scene.exitShift
+      || scene.powerShift
+      || scene.subtextGap
+      || scene.stakesLayers.length > 0
+      || scene.connectsBy)
+  ));
+
+  return scenes.length > 0 ? { rawSection: section, scenes } : undefined;
+}
+
 function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefined {
   if (!looksLikeTreatmentMarkdown(markdown)) return undefined;
+  const topLevelPromiseFields = parseTopLevelSeasonPromiseFields(markdown);
+  const seasonPromiseAndDramaticEngine = getFlexibleSection(markdown, ['season promise and dramatic engine', 'season promise']);
+  const engineFields = parseSeasonPromiseEngineFields(seasonPromiseAndDramaticEngine);
+  const protagonistGuidance = parseProtagonistGuidance(markdown);
+  const worldLocationGuidance = parseWorldLocationGuidance(markdown);
+  const stakesArchitecture = getFlexibleSection(markdown, ['stakes architecture']);
+  const stakesArchitectureGuidance = parseStakesArchitectureGuidance(markdown);
+  const informationLedger = getFlexibleSection(markdown, ['information ledger']);
+  const informationLedgerGuidance = parseInformationLedgerGuidance(informationLedger);
+  const arcPlan = getFlexibleSection(markdown, ['arc plan', 'arc-level rules']);
+  const arcGuidance = parseArcPlanGuidance(markdown);
+  const scenePlanningNotes = getFlexibleSection(markdown, ['scene planning notes']);
+  const scenePlanningGuidance = parseScenePlanningGuidance(markdown);
+  const failureModeAudit = getFlexibleSection(markdown, ['failure mode audit']);
+  const failureModeAuditGuidance = parseFailureModeAuditGuidance(failureModeAudit);
   const sections: TreatmentSeasonGuidance = {
     episodeStructureMode: inferEpisodeStructureMode(markdown),
-    seasonPromiseAndDramaticEngine: getFlexibleSection(markdown, ['season promise and dramatic engine', 'season promise']),
+    seasonPromiseAndDramaticEngine,
+    ...topLevelPromiseFields,
+    ...engineFields,
+    protagonistGuidance,
+    worldLocationGuidance,
     characterArchitecture: getFlexibleSection(markdown, ['character architecture', 'protagonist brief']),
-    stakesArchitecture: getFlexibleSection(markdown, ['stakes architecture']),
-    informationLedger: getFlexibleSection(markdown, ['information ledger']),
+    stakesArchitecture,
+    stakesArchitectureGuidance,
+    informationLedger,
+    informationLedgerGuidance,
     seasonSpine: getFlexibleSection(markdown, ['3-act / 7-point season spine', '7-point season spine']),
-    arcPlan: getFlexibleSection(markdown, ['arc plan', 'arc-level rules']),
-    scenePlanningNotes: getFlexibleSection(markdown, ['scene planning notes']),
+    arcPlan,
+    arcGuidance,
+    scenePlanningNotes,
+    scenePlanningGuidance,
     branchAndConsequenceChains: getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains']),
     failForward: getFlexibleSection(markdown, ['capability, growth, and fail-forward']),
     endings: getFlexibleSection(markdown, ['alternate endings']),
-    failureModeAudit: getFlexibleSection(markdown, ['failure mode audit']),
+    failureModeAudit,
+    failureModeAuditGuidance,
   };
   // Step 1.1: decompose the Section-7 free-text spine (e.g. `Plot turn 1 (Ep3)`)
   // into a structured beat→episode anchor map. Reuses the Phase-0 parser so the
@@ -511,7 +1105,79 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
   sections.rawSectionSummary = Object.entries(sections)
     .filter(([key, value]) => key !== 'episodeStructureMode' && key !== 'rawSectionSummary' && typeof value === 'string' && value.trim().length > 0)
     .map(([key]) => key);
+  if (protagonistGuidance) sections.rawSectionSummary.push('protagonistGuidance');
+  if (worldLocationGuidance) sections.rawSectionSummary.push('worldLocationGuidance');
+  if (stakesArchitectureGuidance) sections.rawSectionSummary.push('stakesArchitectureGuidance');
+  if (informationLedgerGuidance) sections.rawSectionSummary.push('informationLedgerGuidance');
+  if (arcGuidance) sections.rawSectionSummary.push('arcGuidance');
+  if (scenePlanningGuidance) sections.rawSectionSummary.push('scenePlanningGuidance');
+  if (failureModeAuditGuidance) sections.rawSectionSummary.push('failureModeAuditGuidance');
   return sections.rawSectionSummary.length > 0 || Object.keys(beatEpisodeAnchors).length > 0 ? sections : undefined;
+}
+
+function appendUnique(values: string[] | undefined, value: string | undefined): string[] | undefined {
+  const cleaned = value?.trim();
+  if (!cleaned) return values;
+  const existing = values ?? [];
+  if (existing.some((candidate) => candidate.trim().toLowerCase() === cleaned.toLowerCase())) return existing;
+  return [...existing, cleaned];
+}
+
+function mergeScalar(existing: string | undefined, value: string | undefined): string | undefined {
+  const cleaned = value?.trim();
+  if (!cleaned) return existing;
+  if (!existing?.trim()) return cleaned;
+  if (existing.toLowerCase().includes(cleaned.toLowerCase())) return existing;
+  return `${existing} Scene note: ${cleaned}`;
+}
+
+function shouldTreatConnectsByAsInformation(value: string | undefined): boolean {
+  return /\b(lie|truth|confess|confession|reveal|reveals|learn|learns|know|knows|warning|warned|secret|tell|tells|information|clue|suspect|suspects|read|catchable)\b/i
+    .test(value ?? '');
+}
+
+function mergeScenePlanningGuidanceIntoEpisodes(
+  episodes: Record<number, TreatmentEpisodeGuidance>,
+  seasonGuidance: TreatmentSeasonGuidance | undefined,
+): Record<number, TreatmentEpisodeGuidance> {
+  const sceneNotes = seasonGuidance?.scenePlanningGuidance?.scenes ?? [];
+  if (sceneNotes.length === 0) return episodes;
+
+  const merged: Record<number, TreatmentEpisodeGuidance> = { ...episodes };
+  for (const note of sceneNotes) {
+    if (!note.episodeNumber || !Number.isFinite(note.episodeNumber)) continue;
+    const existing = merged[note.episodeNumber] ?? {};
+    const next: TreatmentEpisodeGuidance = { ...existing };
+    next.scenePlanningTargets = appendUnique(next.scenePlanningTargets, note.sceneTitle);
+    next.entryGoal = mergeScalar(next.entryGoal, note.entryGoal);
+    next.obstacle = mergeScalar(next.obstacle, note.obstacle);
+    next.forcedChoice = mergeScalar(next.forcedChoice, note.forcedChoice);
+    next.exitShift = mergeScalar(next.exitShift, note.exitShift);
+    next.powerShift = mergeScalar(next.powerShift, note.powerShift);
+    next.subtextGap = mergeScalar(next.subtextGap, note.subtextGap);
+    next.connectsBy = mergeScalar(next.connectsBy, note.connectsBy);
+
+    for (const layer of note.stakesLayers ?? []) {
+      next.stakesLayers = appendUnique(next.stakesLayers, layer);
+    }
+
+    // Reuse existing enforcement surfaces. A scene note's forced choice should
+    // become real major choice pressure; its connection/residue should become
+    // branch/consequence/information pressure rather than prompt-only prose.
+    next.majorChoicePressures = appendUnique(next.majorChoicePressures, note.forcedChoice);
+    next.alternativePaths = appendUnique(next.alternativePaths, note.connectsBy);
+    next.consequenceSeeds = appendUnique(next.consequenceSeeds, note.connectsBy);
+    next.consequenceResidue = mergeScalar(next.consequenceResidue, note.connectsBy);
+    if (shouldTreatConnectsByAsInformation(note.connectsBy)) {
+      next.informationMovement = mergeScalar(next.informationMovement, note.connectsBy);
+    }
+    next.bPressure = mergeScalar(next.bPressure, note.powerShift);
+    next.liePressure = mergeScalar(next.liePressure, note.subtextGap);
+    next.themePressure = mergeScalar(next.themePressure, note.subtextGap);
+
+    merged[note.episodeNumber] = next;
+  }
+  return merged;
 }
 
 function getEpisodeHeadingNumbers(section: string): number[] {
@@ -638,10 +1304,11 @@ export function extractTreatmentFromMarkdown(
   const branchSection = getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
   const endingSection = getFlexibleSection(markdown, ['alternate endings', 'episode endings', 'endings']);
   const looksLikeTreatment = looksLikeTreatmentMarkdown(markdown);
-  const episodes = episodeSection ? parseEpisodeGuidance(episodeSection) : {};
+  let episodes = episodeSection ? parseEpisodeGuidance(episodeSection) : {};
   const endings = endingSection ? parseEndings(endingSection) : [];
   const branches = parseBranches(branchSection);
   const seasonGuidance = parseSeasonGuidance(markdown);
+  episodes = mergeScenePlanningGuidanceIntoEpisodes(episodes, seasonGuidance);
   const warnings: string[] = [];
   if (looksLikeTreatment && Object.keys(episodes).length === 0) warnings.push('No episode guidance could be parsed from the treatment.');
   if (looksLikeTreatment && endings.length === 0) warnings.push('No ending targets could be parsed from the treatment.');
@@ -693,6 +1360,11 @@ export function extractTreatmentFromMarkdown(
 export function looksLikeTreatmentMarkdown(markdown: string): boolean {
   if (isPromptGuideMarkdown(markdown)) return false;
   const markerCount = TREATMENT_MARKERS.reduce((count, marker) => count + (marker.test(markdown) ? 1 : 0), 0);
+  const hasWorldLocationBrief = /\bWorld\s+(?:And|\+)\s+Location Brief\b/i.test(markdown);
+  const hasTreatmentContext = /\bSeason Promise\b/i.test(markdown)
+    || resettableTest(EPISODE_HEADING_RE, markdown)
+    || /^###\s+Protagonist\b/im.test(markdown);
+  if (hasWorldLocationBrief && hasTreatmentContext) return true;
   return markerCount >= 3 || (
     /story treatment/i.test(markdown)
     && (resettableTest(EPISODE_HEADING_RE, markdown) || /\*\*(?:Episode|SceneEpisode) promise(?:\s*\([^)]*\))?:\*\*/i.test(markdown))

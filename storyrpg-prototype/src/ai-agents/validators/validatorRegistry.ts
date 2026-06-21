@@ -220,6 +220,19 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // encounter content, choice pressure, information movement, consequence
   // residue, ending turnout, or cliffhanger pressure.
   { validator: 'TreatmentFieldUtilizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_TREATMENT_FIELD_UTILIZATION', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract via runFidelityValidators)' },
+  // Season promise realization: top-level treatment promises must become
+  // visible scenes, choices, encounters, information movement, consequence
+  // pressure, tonal progression, and changed state rather than metadata-only
+  // guidance.
+  { validator: 'SeasonPromiseRealizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SEASON_PROMISE_REALIZATION', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract via runFidelityValidators)' },
+  // Character treatment realization: authored protagonist fields must become
+  // concrete character-bible, scene-turn, choice, mechanic-pressure, visual, and
+  // ending-route obligations, then show up fiction-first on-page.
+  { validator: 'CharacterTreatmentRealizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_CHARACTER_TREATMENT_REALIZATION', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract via runFidelityValidators)' },
+  // Failure-mode audit realization: authored Section 15 avoided/watch-item claims
+  // are treated as QA contracts and routed through concrete setup/payoff, agency,
+  // causality, state-change, fair-play reveal, and theme-rhyme surfaces.
+  { validator: 'NarrativeFailureModeValidator (failure-mode-audit contracts)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Characters without on-page introduction: cold prose name-drops before any cast
   // presence, and cast-in-metadata-only NPCs the prose never names. Backstop for the
   // first-appearance directive / notYetIntroducedNames ban-list / introduction key beats.

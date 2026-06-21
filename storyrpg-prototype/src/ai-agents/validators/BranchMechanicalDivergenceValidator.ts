@@ -1,7 +1,9 @@
 import type { Choice, Consequence, Scene } from '../../types';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
+import type { BranchConsequenceRealizationContract } from '../../types/scenePlan';
+import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
 
-export interface BranchMechanicalScene extends Pick<Scene, 'id' | 'name' | 'beats' | 'leadsTo'> {}
+export interface BranchMechanicalScene extends Pick<Scene, 'id' | 'name' | 'beats' | 'leadsTo' | 'branchConsequenceContracts'> {}
 
 export interface BranchMechanicalDivergenceInput {
   scenes: BranchMechanicalScene[];
@@ -44,6 +46,14 @@ export class BranchMechanicalDivergenceValidator extends BaseValidator {
         const residue = collectResidue(choice);
         if (residue.size > 0) {
           branchesWithResidue++;
+          const authoredContracts = scene.branchConsequenceContracts ?? [];
+          if (authoredContracts.length > 0 && !choiceResidueMatchesAuthoredBranch(choice, authoredContracts)) {
+            issues.push(this.warning(
+              `Branch choice "${choice.id}" has residue, but it does not match the authored branch pressure assigned to scene "${scene.id}".`,
+              `${scene.id}:${beatId}:${choice.id}`,
+              'Align the choice consequences, residue hints, route flags, or reminder plan with the authored branch origin/path/payoff/residue contract.',
+            ));
+          }
         } else {
           branchesWithoutResidue++;
           issues.push(this.warning(
@@ -76,6 +86,28 @@ export class BranchMechanicalDivergenceValidator extends BaseValidator {
       metrics: { branchChoices, branchesWithResidue, branchesWithoutResidue },
     };
   }
+}
+
+function choiceResidueMatchesAuthoredBranch(choice: Choice, contracts: BranchConsequenceRealizationContract[]): boolean {
+  const text = [
+    choice.text,
+    choice.lockedText,
+    choice.reactionText,
+    choice.visualResidueHint,
+    choice.tintFlag,
+    choice.feedbackCue?.echoSummary,
+    choice.feedbackCue?.progressSummary,
+    choice.reminderPlan?.immediate,
+    choice.reminderPlan?.shortTerm,
+    choice.reminderPlan?.later,
+    ...(choice.residueHints ?? []).map((hint) => hint.description),
+    ...(choice.consequences ?? []).map((consequence) => JSON.stringify(consequence)),
+    ...(choice.delayedConsequences ?? []).map((delayed) => `${delayed.description} ${JSON.stringify(delayed.consequence)}`),
+  ].filter(Boolean).join(' ');
+  return contracts.some((contract) =>
+    treatmentFieldCloseMatch(contract.sourceText, text, 0.2)
+    || contract.stateDomains.some((domain) => new RegExp(`\\b${domain}\\b`, 'i').test(text))
+  );
 }
 
 function isBranchingChoice(choice: Choice): boolean {

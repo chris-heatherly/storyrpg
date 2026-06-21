@@ -436,6 +436,43 @@ export function infoRevealFlag(infoId: string): string {
   return `${infoId}_reveal`;
 }
 
+export function infoSetupFlag(infoId: string): string {
+  return `${infoId}_setup`;
+}
+
+export function infoPayoffFlag(infoId: string): string {
+  return `${infoId}_payoff`;
+}
+
+export function emitSceneInfoMarkers(
+  scene: { setsUpInfoIds?: string[]; revealsInfoIds?: string[]; paysOffInfoIds?: string[]; id?: string },
+  choices: Choice[],
+): Choice[] {
+  const markers = [
+    ...(scene.setsUpInfoIds ?? []).map((id) => infoSetupFlag(id)),
+    ...(scene.revealsInfoIds ?? []).map((id) => infoRevealFlag(id)),
+    ...(scene.paysOffInfoIds ?? []).map((id) => infoPayoffFlag(id)),
+  ].filter((flag): flag is string => Boolean(flag));
+  if (!choices.length || markers.length === 0) return choices;
+
+  const alreadySet = new Set<string>();
+  for (const choice of choices) {
+    for (const c of choice.consequences ?? []) {
+      if (c.type === 'setFlag' && typeof c.flag === 'string') alreadySet.add(c.flag);
+    }
+  }
+
+  let roundRobin = 0;
+  for (const flag of markers) {
+    if (alreadySet.has(flag)) continue;
+    const choice = choices[roundRobin % choices.length];
+    roundRobin += 1;
+    choice.consequences = [...(choice.consequences ?? []), { type: 'setFlag', flag, value: true }];
+    alreadySet.add(flag);
+  }
+  return choices;
+}
+
 /**
  * Step 3 (info-reveal): for a scene StoryArchitect assigned INFO reveals to
  * (`scene.revealsInfoIds`), set the detectable `<id>_reveal` flag via a setFlag
@@ -448,24 +485,5 @@ export function emitSceneInfoReveals(
   scene: { revealsInfoIds?: string[]; id?: string },
   choices: Choice[],
 ): Choice[] {
-  const ids = (scene.revealsInfoIds ?? []).filter((id): id is string => Boolean(id));
-  if (!choices.length || ids.length === 0) return choices;
-
-  const alreadySet = new Set<string>();
-  for (const choice of choices) {
-    for (const c of choice.consequences ?? []) {
-      if (c.type === 'setFlag' && typeof c.flag === 'string') alreadySet.add(c.flag);
-    }
-  }
-
-  let roundRobin = 0;
-  for (const id of ids) {
-    const flag = infoRevealFlag(id);
-    if (alreadySet.has(flag)) continue;
-    const choice = choices[roundRobin % choices.length];
-    roundRobin += 1;
-    choice.consequences = [...(choice.consequences ?? []), { type: 'setFlag', flag, value: true }];
-    alreadySet.add(flag);
-  }
-  return choices;
+  return emitSceneInfoMarkers(scene, choices);
 }

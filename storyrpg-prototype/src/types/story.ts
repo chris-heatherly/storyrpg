@@ -15,10 +15,19 @@ import type { Beat, MediaRef, NarrativeSequenceIntent, SceneVisualSequencePlan }
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
 import type {
+  ArcPressureTreatmentContract,
   AuthoredTreatmentFieldContract,
+  BranchConsequenceRealizationContract,
+  CharacterTreatmentRealizationContract,
+  EndingRealizationContract,
+  FailureModeAuditContract,
   MechanicPressureContract,
   RelationshipPacingContract,
   SceneTurnContract,
+  SeasonPromiseRealizationContract,
+  SevenPointBeatRealizationContract,
+  StakesArchitectureContract,
+  WorldTreatmentRealizationContract,
 } from './scenePlan';
 
 export type EpisodeStructureMode = 'standard' | 'sceneEpisodes';
@@ -102,6 +111,69 @@ export interface Scene {
    * became reader-facing scene/choice/encounter/ending pressure.
    */
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
+
+  /**
+   * Generator-only top-level season promise obligations assigned to this
+   * scene. Playback ignores this; final validators use it to ensure the
+   * promised show is staged on-page rather than only stored in metadata.
+   */
+  seasonPromiseContracts?: SeasonPromiseRealizationContract[];
+
+  /**
+   * Generator-only stakes architecture obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure Section 5 stakes
+   * are staged on-page rather than only stored in treatment metadata.
+   */
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+
+  /**
+   * Generator-only 7-point beat realization obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored Hook /
+   * Midpoint / Climax / Resolution content was staged on-page.
+   */
+  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+
+  /**
+   * Generator-only arc-pressure treatment obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored arc
+   * pressure lands as reader-facing story movement.
+   */
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+
+  /**
+   * Generator-only cross-episode branch / consequence-chain obligations
+   * assigned to this scene. Playback ignores this; final validators use it to
+   * ensure authored Section 11 branch state and reconvergence residue survive.
+   */
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+
+  /**
+   * Generator-only alternate-ending obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure Section 14 ending
+   * drivers, route conditions, and finale payoff land on-page.
+   */
+  endingRealizationContracts?: EndingRealizationContract[];
+
+  /**
+   * Generator-only failure-mode audit obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure Section 15
+   * mitigations become staged story material rather than prompt-only QA notes.
+   */
+  failureModeAuditContracts?: FailureModeAuditContract[];
+
+  /**
+   * Generator-only character treatment obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored
+   * protagonist/core-character fields become staged story material.
+   */
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+
+  /**
+   * Generator-only world/location treatment obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored setting
+   * rules and location purpose/choice pressure become staged story material.
+   */
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
 }
 
 export interface Episode {

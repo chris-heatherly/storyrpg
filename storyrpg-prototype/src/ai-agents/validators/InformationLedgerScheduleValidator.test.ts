@@ -133,7 +133,68 @@ describe('InformationLedgerScheduleValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.metrics.missingRevealCount).toBe(1);
-    expect(result.issues.some((i) => i.severity === 'error' && /no reveal landed/.test(i.message))).toBe(true);
+    expect(result.issues.some((i) => i.severity === 'error' && /no reveal\/payoff landed/.test(i.message))).toBe(true);
+  });
+
+  it('blocks treatment-authored entries when a scheduled setup touch is missing', () => {
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({
+        id: 'INFO-A',
+        authoredId: 'INFO-A',
+        sourceText: 'INFO-A source',
+        factualAtoms: [{ id: 'reveal-1', text: 'Mika was contracted before Kylie arrived.', phase: 'reveal', blockingLevel: 'treatment' }],
+        introducedEpisode: 1,
+        setupTouchEpisodes: [1, 2],
+        setupTouchDetails: [
+          { episodeNumber: 1, requiredSurface: 'Mika tell' },
+          { episodeNumber: 2, requiredSurface: 'Mika tell again' },
+        ],
+        plannedRevealEpisode: 3,
+      })],
+      story(
+        {
+          1: ['INFO-A_setup'],
+          3: ['INFO-A_reveal'],
+        },
+        [1, 2, 3],
+        { 3: 'Mika admits she was contracted before Kylie arrived.' },
+      ),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.metrics.missingSetupTouchCount).toBe(1);
+    expect(result.issues.some((i) => i.severity === 'error' && /setup touch/.test(i.message))).toBe(true);
+  });
+
+  it('blocks treatment-authored entries when a separate payoff episode is missing', () => {
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({
+        id: 'INFO-A',
+        authoredId: 'INFO-A',
+        sourceText: 'INFO-A source',
+        factualAtoms: [
+          { id: 'reveal-1', text: 'Mika was contracted before Kylie arrived.', phase: 'reveal', blockingLevel: 'treatment' },
+          { id: 'payoff-1', text: 'Mika loyalty unlocks the Witness ending.', phase: 'payoff', blockingLevel: 'treatment' },
+        ],
+        introducedEpisode: 1,
+        setupTouchEpisodes: [1],
+        setupTouchDetails: [{ episodeNumber: 1, requiredSurface: 'Mika tell' }],
+        plannedRevealEpisode: 2,
+        plannedPayoffEpisode: 3,
+      })],
+      story(
+        {
+          1: ['INFO-A_setup'],
+          2: ['INFO-A_reveal'],
+        },
+        [1, 2, 3],
+        { 2: 'Mika admits she was contracted before Kylie arrived.' },
+      ),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.metrics.missingPayoffCount).toBe(1);
+    expect(result.issues.some((i) => i.severity === 'error' && /authored payoff/.test(i.message))).toBe(true);
   });
 
   it('honors a caller-supplied observed schedule override', () => {

@@ -26,6 +26,7 @@
 import type {
   EncounterCategory,
   StructuralRole,
+  SevenPointBeat,
 } from './sourceAnalysis';
 import type { ChoiceType } from './choice';
 
@@ -251,6 +252,385 @@ export type AuthoredTreatmentFieldRealization =
   | 'final_prose'
   | 'next_episode_plan';
 
+export type SeasonPromiseRealizationKind =
+  | 'genre_progression'
+  | 'tone_progression'
+  | 'logline_engine'
+  | 'core_fantasy'
+  | 'audience_promise'
+  | 'premise_promise'
+  | 'theme_question'
+  | 'inaction_pressure'
+  | 'season_dramatic_question'
+  | 'central_pressure'
+  | 'player_promise'
+  | 'emotional_promise'
+  | 'fresh_variation_plan'
+  | 'typical_episode_engine'
+  | 'season_resolution_obligation'
+  | 'future_open_thread';
+
+export type SeasonPromiseRealizationTarget =
+  | 'metadata'
+  | 'episode_plan'
+  | 'scene_turn'
+  | 'choice'
+  | 'encounter'
+  | 'information_ledger'
+  | 'consequence_chain'
+  | 'mechanic_pressure'
+  | 'cliffhanger'
+  | 'episode_ending'
+  | 'final_prose'
+  | 'next_episode_plan';
+
+/**
+ * Generator-only season promise contract. These make top-level authored
+ * promises traceable as story obligations without changing playback rules.
+ */
+export interface SeasonPromiseRealizationContract {
+  id: string;
+  sourceText: string;
+  contractKind: SeasonPromiseRealizationKind;
+  requiredRealization: SeasonPromiseRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type StakesArchitectureContractKind =
+  | 'material_stake'
+  | 'relational_stake'
+  | 'identity_stake'
+  | 'existential_stake'
+  | 'stakes_escalation_step'
+  | 'personal_stakes_prerequisite'
+  | 'emotional_stakes_anchor';
+
+export type StakesArchitectureRealizationTarget =
+  | 'stakes_layer'
+  | 'scene_turn'
+  | 'choice'
+  | 'mechanic_pressure'
+  | 'relationship_pacing'
+  | 'character_treatment'
+  | 'world_location'
+  | 'information_ledger'
+  | 'episode_ending'
+  | 'final_prose';
+
+/**
+ * Generator-only stakes architecture contract. These make top-level authored
+ * material/relational/identity/existential stakes traceable without changing
+ * reader playback rules or duplicating the dramatic-structure validators.
+ */
+export interface StakesArchitectureContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  fieldName: string;
+  sourceText: string;
+  contractKind: StakesArchitectureContractKind;
+  stakeLayer?: 'material' | 'relational' | 'identity' | 'existential';
+  requiredRealization: StakesArchitectureRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  prerequisiteContractIds: string[];
+  linkedContractIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type BranchConsequenceContractKind =
+  | 'branch_origin_choice'
+  | 'branch_path_state'
+  | 'branch_later_payoff'
+  | 'branch_reconvergence_residue'
+  | 'branch_state_change'
+  | 'branch_ending_eligibility';
+
+export type BranchConsequenceRealizationTarget =
+  | 'choice'
+  | 'season_flag'
+  | 'consequence_chain'
+  | 'mechanic_pressure'
+  | 'information_ledger'
+  | 'scene_turn'
+  | 'text_variant'
+  | 'ending_target'
+  | 'final_prose';
+
+export interface BranchConsequenceRealizationContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  branchId: string;
+  branchName: string;
+  fieldName: string;
+  sourceText: string;
+  contractKind: BranchConsequenceContractKind;
+  requiredRealization: BranchConsequenceRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  targetEndingIds: string[];
+  stateDomains: MechanicPressureDomain[];
+  linkedContractIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type EndingRealizationContractKind =
+  | 'ending_identity'
+  | 'ending_summary'
+  | 'ending_emotional_register'
+  | 'ending_theme_payoff'
+  | 'ending_state_driver'
+  | 'ending_target_condition'
+  | 'ending_choice_pattern'
+  | 'ending_final_line';
+
+export type EndingRealizationTarget =
+  | 'resolved_ending'
+  | 'season_flag'
+  | 'choice_moment'
+  | 'condition'
+  | 'mechanic_pressure'
+  | 'finale_choice'
+  | 'ending_route'
+  | 'final_prose';
+
+export interface EndingRealizationContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  endingId: string;
+  endingName: string;
+  fieldName: string;
+  sourceText: string;
+  contractKind: EndingRealizationContractKind;
+  requiredRealization: EndingRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  targetEndingIds: string[];
+  stateDomains: MechanicPressureDomain[];
+  linkedContractIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type FailureModeAuditCode =
+  | 'escalation_trap'
+  | 'mystery_box_collapse'
+  | 'character_drift'
+  | 'shaggy_dog'
+  | 'passive_protagonist'
+  | 'reset_disease'
+  | 'theme_drift'
+  | 'unmotivated_escalation'
+  | 'snowglobe_arc'
+  | 'inverted_thematic_rhyme'
+  | 'convenient_coincidence'
+  | 'telegraphed_twist'
+  | 'cheating_twist';
+
+export type FailureModeAuditContractKind =
+  | 'avoidance_claim'
+  | 'watch_item'
+  | 'mitigation'
+  | 'setup_payoff_claim'
+  | 'agency_claim'
+  | 'causality_claim'
+  | 'theme_rhyme_claim'
+  | 'episode_state_change_claim'
+  | 'arc_state_change_claim'
+  | 'reveal_fair_play_claim';
+
+export type FailureModeAuditRealizationTarget =
+  | 'season_plan'
+  | 'scene_turn'
+  | 'choice'
+  | 'mechanic_pressure'
+  | 'information_ledger'
+  | 'setup_payoff'
+  | 'arc_pressure'
+  | 'season_promise'
+  | 'character_treatment'
+  | 'branch_consequence'
+  | 'ending_route'
+  | 'final_prose';
+
+export interface FailureModeAuditContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  code: FailureModeAuditCode;
+  label: string;
+  status: 'avoided' | 'watch_item' | 'unknown';
+  sourceText: string;
+  contractKind: FailureModeAuditContractKind;
+  requiredRealization: FailureModeAuditRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  linkedContractIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type SevenPointBeatRealizationTarget =
+  | 'season_plan'
+  | 'scene_turn'
+  | 'mechanic_pressure'
+  | 'information_ledger'
+  | 'episode_ending'
+  | 'final_prose';
+
+/**
+ * Generator-only realization contract for authored 3-act / 7-point beat text.
+ * The existing seven-point validators prove placement and order; this contract
+ * makes the authored beat content traceable into scene turns and final prose.
+ */
+export interface SevenPointBeatRealizationContract {
+  id: string;
+  beat: SevenPointBeat;
+  sourceText: string;
+  targetEpisodeNumber?: number;
+  requiredRealization: SevenPointBeatRealizationTarget[];
+  eventAtoms: string[];
+  stateChange?: string;
+  targetSceneIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type ArcPressureTreatmentContractKind =
+  | 'arc_identity'
+  | 'arc_question'
+  | 'season_relation'
+  | 'lie_facet'
+  | 'arc_midpoint_recontextualization'
+  | 'arc_late_crisis'
+  | 'arc_finale_answer'
+  | 'arc_handoff_pressure'
+  | 'arc_episode_turnout';
+
+export type ArcPressureTreatmentRealizationTarget =
+  | 'season_arc'
+  | 'scene_turn'
+  | 'choice'
+  | 'mechanic_pressure'
+  | 'information_ledger'
+  | 'episode_ending'
+  | 'next_arc_plan'
+  | 'final_prose';
+
+/**
+ * Generator-only realization contract for authored arc-plan fields. Acts and
+ * seven-point beats keep positional authority; these contracts make each
+ * authored arc's question, reframe, crisis, answer, handoff, and per-episode
+ * turnout traceable into scene pressure and final prose.
+ */
+export interface ArcPressureTreatmentContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  arcId: string;
+  arcTitle: string;
+  fieldName: string;
+  sourceText: string;
+  contractKind: ArcPressureTreatmentContractKind;
+  requiredRealization: ArcPressureTreatmentRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  eventAtoms: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type CharacterTreatmentSubject = 'protagonist' | 'supporting_character';
+
+export type CharacterTreatmentFieldKind =
+  | 'canonical_identity'
+  | 'role_fact'
+  | 'origin_pressure'
+  | 'conscious_want'
+  | 'dramatic_need'
+  | 'lie_pressure'
+  | 'wound_pressure'
+  | 'truth_target'
+  | 'arc_mode'
+  | 'starting_identity'
+  | 'ending_state'
+  | 'climax_choice'
+  | 'pressure_point'
+  | 'visual_identity';
+
+export type CharacterTreatmentRealizationTarget =
+  | 'character_bible'
+  | 'season_arc'
+  | 'scene_turn'
+  | 'choice'
+  | 'mechanic_pressure'
+  | 'information_ledger'
+  | 'ending_target'
+  | 'finale_choice'
+  | 'visual_profile'
+  | 'final_prose';
+
+/**
+ * Generator-only character treatment contract. These make authored protagonist
+ * facts traceable obligations without changing playback rules.
+ */
+export interface CharacterTreatmentRealizationContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  subject: CharacterTreatmentSubject;
+  characterId?: string;
+  characterName: string;
+  fieldName: string;
+  sourceText: string;
+  contractKind: CharacterTreatmentFieldKind;
+  requiredRealization: CharacterTreatmentRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  targetEndingIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
+export type WorldTreatmentFieldKind =
+  | 'world_premise'
+  | 'time_period'
+  | 'supernatural_rule'
+  | 'dramatic_rule'
+  | 'faction_power'
+  | 'taboo_or_cost'
+  | 'scarcity'
+  | 'sacred_object'
+  | 'danger_zone'
+  | 'location_identity'
+  | 'location_purpose'
+  | 'location_mood'
+  | 'location_history'
+  | 'location_choice_pressure';
+
+export type WorldTreatmentRealizationTarget =
+  | 'world_bible'
+  | 'season_plan'
+  | 'location_introduction'
+  | 'scene_turn'
+  | 'choice'
+  | 'mechanic_pressure'
+  | 'information_ledger'
+  | 'encounter'
+  | 'final_prose';
+
+/**
+ * Generator-only world/location treatment contract. These make authored setting
+ * rules, factions, taboos, and per-location purpose/choice pressure traceable
+ * without adding reader-visible mechanics.
+ */
+export interface WorldTreatmentRealizationContract {
+  id: string;
+  source: 'treatment' | 'analysis_fallback';
+  fieldName: string;
+  sourceText: string;
+  contractKind: WorldTreatmentFieldKind;
+  requiredRealization: WorldTreatmentRealizationTarget[];
+  targetEpisodeNumbers: number[];
+  targetSceneIds: string[];
+  locationId?: string;
+  locationName?: string;
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
 /**
  * Generator-only treatment-field utilization contract. These are the parsed
  * authored treatment fields that must be consumed by planning artifacts and
@@ -436,6 +816,71 @@ export interface PlannedScene {
    */
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
 
+  /**
+   * Top-level season-promise obligations assigned to this scene. These are
+   * broader than per-episode treatment fields: genre/tone movement, logline
+   * engine, premise/core fantasy, theme question, and inaction pressure.
+   */
+  seasonPromiseContracts?: SeasonPromiseRealizationContract[];
+
+  /**
+   * Authored stakes-architecture obligations assigned to this scene. These
+   * preserve load-bearing material, relational, identity, existential,
+   * escalation, prerequisite, and emotional-anchor stakes as staged pressure.
+   */
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+
+  /**
+   * Authored cross-episode branch / consequence-chain obligations assigned to
+   * this scene. These keep Section 11 branches from becoming generic route
+   * labels by preserving origin choice, path state, later payoff,
+   * reconvergence residue, state domains, and ending eligibility.
+   */
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+
+  /**
+   * Authored alternate-ending obligations assigned to this scene. These keep
+   * Section 14 ending summaries, state drivers, target conditions, choice
+   * patterns, theme payoffs, and final lines traceable into finale/route prose.
+   */
+  endingRealizationContracts?: EndingRealizationContract[];
+
+  /**
+   * Authored failure-mode audit obligations assigned to this scene. These keep
+   * Section 15 from remaining a prose-only QA note by preserving concrete
+   * mitigations for escalation, mystery, passivity, reset, coincidence, and
+   * twist fairness as staged story pressure.
+   */
+  failureModeAuditContracts?: FailureModeAuditContract[];
+
+  /**
+   * Authored 7-point beat realization obligations assigned to this scene. These
+   * ensure a scene that carries Hook/Midpoint/Climax/etc. stages the authored
+   * beat events and state change, not only the structural label.
+   */
+  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+
+  /**
+   * Authored arc-pressure obligations assigned to this scene. These ensure an
+   * arc's question, midpoint reframe, late crisis, finale answer, handoff, and
+   * episode turnout are staged as story movement, not only stored on SeasonArc.
+   */
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+
+  /**
+   * Authored protagonist/core-character obligations assigned to this scene.
+   * These keep character fields such as starting identity, Lie, Want/Need,
+   * pressure points, climax choice, and ending states from remaining prompt-only.
+   */
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+
+  /**
+   * Authored world/location obligations assigned to this scene. These keep
+   * load-bearing setting rules, factions, location purpose/history, and location
+   * choice pressure from remaining prompt-only.
+   */
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
+
   // --- Season choice/consequence budget (allocated at plan time) ---
 
   /**
@@ -513,6 +958,24 @@ export interface SeasonScenePlan {
   setupPayoffEdges: SetupPayoffEdge[];
   /** Parsed treatment-field obligations assigned across the scene plan. */
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
+  /** Top-level season-promise obligations assigned across the scene plan. */
+  seasonPromiseContracts?: SeasonPromiseRealizationContract[];
+  /** Top-level stakes architecture obligations assigned across the scene plan. */
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+  /** Authored cross-episode branch / consequence-chain obligations assigned across the scene plan. */
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+  /** Authored alternate-ending obligations assigned across the scene plan. */
+  endingRealizationContracts?: EndingRealizationContract[];
+  /** Authored failure-mode audit obligations assigned across the scene plan. */
+  failureModeAuditContracts?: FailureModeAuditContract[];
+  /** Authored 7-point beat realization obligations assigned across the scene plan. */
+  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  /** Authored arc-pressure obligations assigned across the scene plan. */
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+  /** Protagonist/core-character obligations assigned across the scene plan. */
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+  /** World/location obligations assigned across the scene plan. */
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
 }
 
 /**

@@ -41,6 +41,12 @@ import {
   MIN_SCENES_PER_EPISODE,
 } from './seasonScenePlanBuilder';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
+import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
+import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
+import { assignStakesArchitectureContractsToScenes } from '../utils/stakesArchitectureContracts';
+import { assignArcPressureContractsToScenes } from '../utils/arcPressureContracts';
+import { assignWorldTreatmentContractsToScenes } from '../utils/worldTreatmentContracts';
+import { assignSevenPointBeatContractsToScenes } from '../utils/sevenPointBeatContracts';
 
 const VALID_ROLES: ReadonlySet<SceneNarrativeRole> = new Set([
   'setup',
@@ -127,6 +133,21 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
   const chains = (plan.consequenceChains ?? [])
     .flatMap((c) => (c.consequences ?? []).map((q) => `  - Episode ${c.origin.episodeNumber} plants "${c.origin.description}" → pays off Episode ${q.episodeNumber}`))
     .join('\n');
+  const seasonPromiseContracts = (plan.seasonPromiseContracts ?? [])
+    .map((contract) => `  - ${contract.contractKind}: ${contract.sourceText} (target episodes ${contract.targetEpisodeNumbers.join(', ') || 'infer from story pressure'})`)
+    .join('\n');
+  const stakesArchitectureContracts = (plan.stakesArchitectureContracts ?? [])
+    .map((contract) => `  - ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText} (target episodes ${contract.targetEpisodeNumbers.join(', ') || 'infer from stakes pressure'})`)
+    .join('\n');
+  const sevenPointBeatContracts = (plan.sevenPointBeatContracts ?? [])
+    .map((contract) => `  - ${contract.beat}: ${contract.sourceText} (target episode ${contract.targetEpisodeNumber ?? 'infer from spine'}; atoms: ${contract.eventAtoms.join(' | ') || contract.sourceText})`)
+    .join('\n');
+  const arcPressureContracts = (plan.arcPressureContracts ?? [])
+    .map((contract) => `  - ${contract.arcTitle} / ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText} (target episodes ${contract.targetEpisodeNumbers.join(', ') || 'infer from arc pressure'}; atoms: ${contract.eventAtoms.join(' | ') || contract.sourceText})`)
+    .join('\n');
+  const worldTreatmentContracts = (plan.worldTreatmentContracts ?? [])
+    .map((contract) => `  - ${contract.fieldName} (${contract.contractKind}${contract.locationName ? ` @ ${contract.locationName}` : ''}): ${contract.sourceText} (target episodes ${contract.targetEpisodeNumbers.join(', ') || 'infer from location use'})`)
+    .join('\n');
 
   const framing = isTreatmentSourced
     ? `You are dramatizing an ALREADY-AUTHORED season into scenes. The episodes, their order and
@@ -164,10 +185,30 @@ ${episodeBlocks}
 CROSS-EPISODE SETUP → PAYOFF (wire these via scene setsUp/paysOff):
 ${chains || '  - (none specified; infer reasonable setups/payoffs from synopses)'}
 
+TOP-LEVEL SEASON PROMISE CONTRACTS (assign these to concrete scenes, choices, encounters, information moves, consequences, or endings):
+${seasonPromiseContracts || '  - (none explicit; infer promise pressure from the season architecture)'}
+
+STAKES ARCHITECTURE CONTRACTS (assign these to concrete scenes, choices, encounters, information moves, consequence chains, or endings):
+${stakesArchitectureContracts || '  - (none explicit; infer material/relational/identity/existential stakes from the season architecture)'}
+
+SEVEN-POINT BEAT REALIZATION CONTRACTS (assign authored beat content to concrete scenes; the structural label alone is not enough):
+${sevenPointBeatContracts || '  - (none explicit; use the season spine text as guidance)'}
+
+ARC PRESSURE TREATMENT CONTRACTS (assign authored arc question/reframe/crisis/finale/handoff/turnout pressure to concrete scenes):
+${arcPressureContracts || '  - (none explicit; use SeasonArc pressure architecture as guidance)'}
+
+WORLD/LOCATION TREATMENT CONTRACTS (assign these to concrete locations, scene turns, choices, encounters, information moves, or mechanic pressure):
+${worldTreatmentContracts || '  - (none explicit; infer setting pressure from the world bible)'}
+
 RULES:
 - Author 3–8 scenes per episode (honor the target). Order them as they will be played.
 - Each scene: a SPECIFIC dramatic event, not a placeholder. Give the WHY relative to other scenes.
 - narrativeRole ∈ {setup, development, turn, payoff, release}.
+- Each season-promise contract must become staged evidence somewhere: visible premise/core fantasy, genre/tone movement, theme pressure, or inaction cost. Do not copy contract labels into prose.
+- Each stakes architecture contract must become staged pressure somewhere: material cost/access/resource, relational risk, identity test, existential threat, escalation step, prerequisite setup, or emotional anchor. Do not copy stake labels into prose.
+- Each seven-point beat realization contract must become a specific scene event/state change. Hook/Plot Turn/Pinch/Midpoint/Climax/Resolution labels are not prose; stage the authored beat atoms.
+- Each arc pressure contract must become causal story movement somewhere in its target episode: the arc question is tested, the Lie facet is pressured, the midpoint reframes, the late crisis costs/narrows options, the finale answers, the handoff leaves residue, or the episode turnout changes state.
+- Each world/location contract must become staged evidence where relevant: location purpose, authored rule pressure, faction leverage, taboo/cost, or choice pressure. Do not use authored locations as generic backdrops.
 - Every planned encounter must appear as exactly one scene with kind:"encounter" and its encounterId.
 - setsUp/paysOff reference OTHER scene ids. A setup must pay off in the SAME or a LATER episode — never earlier.
 - Use stable scene ids like "s<episode>-<n>" for standard scenes; use the encounterId for encounter scenes.
@@ -548,8 +589,24 @@ export function normalizeAuthoredScenePlan(
     byEpisode[ep.episodeNumber] = epScenes.map((s) => s.id);
     scenes.push(...epScenes);
   }
+  const seasonPromiseContracts = assignSeasonPromiseContractsToScenes(plan, scenes);
+  const sevenPointBeatContracts = assignSevenPointBeatContractsToScenes(plan, scenes);
+  const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
+  const characterTreatmentContracts = assignCharacterTreatmentContractsToScenes(plan, scenes);
+  const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
+  const stakesArchitectureContracts = assignStakesArchitectureContractsToScenes(plan, scenes);
 
-  const scenePlan: SeasonScenePlan = { scenes, byEpisode, setupPayoffEdges: edges };
+  const scenePlan: SeasonScenePlan = {
+    scenes,
+    byEpisode,
+    setupPayoffEdges: edges,
+    seasonPromiseContracts,
+    sevenPointBeatContracts,
+    arcPressureContracts,
+    stakesArchitectureContracts,
+    characterTreatmentContracts,
+    worldTreatmentContracts,
+  };
 
   // Reject an unrecoverable plan so the caller keeps the deterministic one.
   const result = new SceneSpineValidator().validate(scenePlan);

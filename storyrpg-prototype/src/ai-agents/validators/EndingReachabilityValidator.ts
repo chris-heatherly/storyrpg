@@ -22,9 +22,12 @@
 import type { Episode, Scene } from '../../types';
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
 import { resolveSceneBranchAxes } from '../pipeline/episodePlantContext';
+import type { SeasonPlan } from '../../types/seasonPlan';
+import type { EndingRealizationContract } from '../../types/scenePlan';
+import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
 
 export interface EndingReachabilityIssue {
-  type: 'ending_axis_not_set_on_page';
+  type: 'ending_axis_not_set_on_page' | 'ending_target_condition_unreachable';
   severity: 'warning' | 'error';
   message: string;
   flag: string;
@@ -61,6 +64,44 @@ function collectSetFlags(episode: Episode): Set<string> {
 }
 
 export class EndingReachabilityValidator {
+  validateSeasonPlan(
+    plan: Pick<SeasonPlan, 'endingRealizationContracts' | 'branchConsequenceContracts' | 'seasonFlags' | 'choiceMoments' | 'crossEpisodeBranches' | 'resolvedEndings'>,
+    options: EndingReachabilityOptions = {},
+  ): EndingReachabilityResult {
+    const severity: 'warning' | 'error' = options.blocking ? 'error' : 'warning';
+    const issues: EndingReachabilityIssue[] = [];
+    const conditionContracts = (plan.endingRealizationContracts ?? [])
+      .filter((contract: EndingRealizationContract) => contract.contractKind === 'ending_target_condition');
+    const supportText = [
+      ...(plan.branchConsequenceContracts ?? []).map((contract) => contract.sourceText),
+      ...(plan.seasonFlags ?? []).map((flag) => `${flag.flag} ${flag.description}`),
+      ...(plan.choiceMoments ?? []).map((moment) => `${moment.id} ${moment.anchor} ${moment.flag ?? ''}`),
+      ...(plan.crossEpisodeBranches ?? []).map((branch) => `${branch.name} ${branch.trigger.description} ${branch.paths.map((path) => `${path.condition} ${path.affectedEpisodes.map((episode) => episode.description).join(' ')}`).join(' ')}`),
+    ].join(' ');
+
+    for (const contract of conditionContracts) {
+      const supportedByLinkedBranch = contract.linkedContractIds.some((id) =>
+        (plan.branchConsequenceContracts ?? []).some((branch) => branch.id === id)
+      );
+      const supportedByText = treatmentFieldCloseMatch(contract.sourceText, supportText, 0.22);
+      if (!supportedByLinkedBranch && !supportedByText) {
+        issues.push({
+          type: 'ending_target_condition_unreachable',
+          severity,
+          message: `Ending "${contract.endingName}" target condition is not reachable from any planned branch state, season flag, choice moment, or cross-episode path: "${contract.sourceText}".`,
+          flag: contract.id,
+        });
+      }
+    }
+
+    const errorCount = issues.filter((x) => x.severity === 'error').length;
+    return {
+      valid: errorCount === 0,
+      issues,
+      metrics: { declaredAxes: conditionContracts.length, setAxes: conditionContracts.length - issues.length, missingAxes: issues.length },
+    };
+  }
+
   validateEpisode(
     episode: Episode,
     blueprint?: EpisodeBlueprint,

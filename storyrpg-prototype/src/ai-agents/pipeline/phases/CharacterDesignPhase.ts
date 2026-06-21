@@ -87,6 +87,7 @@ export class CharacterDesignPhase {
       seasonAnchors: brief.seasonPlan?.anchors,
       seasonSevenPoint: brief.seasonPlan?.sevenPoint,
       characterArchitecture: brief.seasonPlan?.characterArchitecture,
+      characterTreatmentContracts: brief.seasonPlan?.characterTreatmentContracts,
       informationLedger: brief.seasonPlan?.informationLedger,
     }), PIPELINE_TIMEOUTS.llmAgent, 'CharacterDesigner.execute');
 

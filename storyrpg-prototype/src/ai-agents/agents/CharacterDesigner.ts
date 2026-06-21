@@ -18,6 +18,7 @@ import type {
   CharacterArchitecture,
 } from '../../types/sourceAnalysis';
 import type { InformationLedgerEntry } from '../../types/seasonPlan';
+import type { CharacterTreatmentRealizationContract } from '../../types/scenePlan';
 import { resolveAuthoredContext } from '../utils/documentSectionSlice';
 import { buildCharacterBibleJsonSchema } from '../schemas/characterBibleSchema';
 
@@ -73,6 +74,7 @@ export interface CharacterDesignerInput {
    * Want/Fear/Flaw from prose.
    */
   characterArchitecture?: CharacterArchitecture;
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
 
   /**
    * Authored information ledger (treatment Section 6). Forwarded as context so
@@ -662,6 +664,14 @@ ${
 `
       : '';
 
+    const characterTreatmentBlock = input.characterTreatmentContracts?.length
+      ? `
+## Authored Protagonist Treatment Contracts
+Preserve these authored protagonist facts in the character bible. Use them to fill role, want, need, wound, truth, flaw, typicalAttire, secrets, and arc fields where appropriate. Do not invent contradictions.
+${input.characterTreatmentContracts.map((c) => `- ${c.fieldName} (${c.contractKind}): ${c.sourceText}`).join('\n')}
+`
+      : '';
+
     const ledger = input.informationLedger;
     const ledgerBlock = ledger?.length
       ? `
@@ -692,7 +702,7 @@ ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.story
 
 ## World Context
 ${input.worldContext}
-${architectureBlock}${ledgerBlock}${authoredContext.text ? `
+${architectureBlock}${characterTreatmentBlock}${ledgerBlock}${authoredContext.text ? `
 ## Original Source Document (Reference for Additional Context)
 Use this to extract character details, personalities, relationships, or backstory mentioned in the original document:
 

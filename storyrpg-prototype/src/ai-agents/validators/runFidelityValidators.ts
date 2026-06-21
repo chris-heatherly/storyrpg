@@ -49,6 +49,9 @@ import { RequiredBeatRealizationValidator } from './RequiredBeatRealizationValid
 import { RelationshipPacingValidator } from './RelationshipPacingValidator';
 import { NarrativeMechanicPressureValidator } from './NarrativeMechanicPressureValidator';
 import { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
+import { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';
+import { CharacterTreatmentRealizationValidator } from './CharacterTreatmentRealizationValidator';
+import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
@@ -174,6 +177,9 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   RelationshipPacingValidator: 'GATE_RELATIONSHIP_PACING',
   NarrativeMechanicPressureValidator: 'GATE_NARRATIVE_MECHANIC_PRESSURE',
   TreatmentFieldUtilizationValidator: 'GATE_TREATMENT_FIELD_UTILIZATION',
+  SeasonPromiseRealizationValidator: 'GATE_SEASON_PROMISE_REALIZATION',
+  CharacterTreatmentRealizationValidator: 'GATE_CHARACTER_TREATMENT_REALIZATION',
+  NarrativeFailureModeValidator: 'GATE_FAILURE_MODE_AUDIT_REALIZATION',
 };
 
 /**
@@ -327,6 +333,58 @@ function collectFidelityFindings(
     });
   }
 
+  // Season promise realization: top-level treatment promises (genre/tone
+  // progression, logline engine, core fantasy, audience/premise promise, theme
+  // question, and inaction pressure) must be consumed by planning and show up
+  // as staged story material, not metadata-only guidance.
+  if (isGateEnabled('GATE_SEASON_PROMISE_REALIZATION')) {
+    guard(() => {
+      const result = new SeasonPromiseRealizationValidator().validate({
+        story,
+        seasonPlan,
+        sourceAnalysis,
+        treatmentSourced,
+        phase: 'final',
+      });
+      return toFindings('SeasonPromiseRealizationValidator', result.issues);
+    });
+  }
+
+  // Protagonist treatment realization: authored protagonist fields (identity,
+  // role facts, Want/Need/Lie/Wound/Truth, starting identity, pressure points,
+  // climax choice, end states, visual identity) must be consumed into plan
+  // artifacts and realized fiction-first.
+  if (isGateEnabled('GATE_CHARACTER_TREATMENT_REALIZATION')) {
+    guard(() => {
+      const result = new CharacterTreatmentRealizationValidator().validate({
+        story,
+        seasonPlan,
+        sourceAnalysis,
+        treatmentSourced,
+        phase: 'final',
+      });
+      return toFindings('CharacterTreatmentRealizationValidator', result.issues);
+    });
+  }
+
+  // Failure-mode audit realization: Section 15 "avoided"/"watch item" rows are
+  // binding only when they name concrete story mechanisms. The validator keeps
+  // its generic narrative diagnostics advisory elsewhere; this route enforces the
+  // authored audit contracts against the generated story.
+  if (isGateEnabled('GATE_FAILURE_MODE_AUDIT_REALIZATION') && treatmentSourced) {
+    const failureModeAuditContracts = seasonPlan?.failureModeAuditContracts ?? sourceAnalysis?.failureModeAuditContracts ?? [];
+    if (failureModeAuditContracts.length > 0) {
+      guard(() => {
+        const result = new NarrativeFailureModeValidator().validate({
+          story,
+          seasonPlan,
+          failureModeAuditContracts,
+        });
+        return toFindings('NarrativeFailureModeValidator', result.issues);
+      });
+    }
+  }
+
   // 2026-06-09 — characters surfacing without on-page introduction: a roster NPC
   // name-dropped in prose before any scene casts them, or cast in a scene whose prose
   // never names them. Gated separately (GATE_CHARACTER_INTRODUCTION).
@@ -452,6 +510,40 @@ export function runPlanTimeFidelityChecks(input: {
         sourceAnalysis,
       });
       return toFindings('TreatmentFieldUtilizationValidator', result.issues);
+    });
+  }
+
+  if (isGateEnabled('GATE_SEASON_PROMISE_REALIZATION')) {
+    guard(() => {
+      const result = new SeasonPromiseRealizationValidator().validatePlan({
+        seasonPlan,
+        sourceAnalysis,
+        treatmentSourced,
+      });
+      return toFindings('SeasonPromiseRealizationValidator', result.issues);
+    });
+  }
+
+  if (isGateEnabled('GATE_CHARACTER_TREATMENT_REALIZATION')) {
+    guard(() => {
+      const result = new CharacterTreatmentRealizationValidator().validatePlan({
+        seasonPlan,
+        sourceAnalysis,
+        treatmentSourced,
+      });
+      return toFindings('CharacterTreatmentRealizationValidator', result.issues);
+    });
+  }
+
+  if (isGateEnabled('GATE_FAILURE_MODE_AUDIT_REALIZATION') && !isGateEnabled('GATE_TREATMENT_FIELD_UTILIZATION')) {
+    guard(() => {
+      const result = new TreatmentFieldUtilizationValidator().validatePlan({
+        seasonPlan,
+        sourceAnalysis,
+      });
+      return toFindings('TreatmentFieldUtilizationValidator', result.issues.filter((issue) =>
+        issue.location?.startsWith('failureModeAudit:') || issue.message.includes('Failure mode audit field')
+      ));
     });
   }
 

@@ -23,7 +23,19 @@ import {
 import type { CliffhangerType } from './story';
 import type { EpisodeRouteMeta, EpisodeStructureMode } from './story';
 import type { ConditionExpression } from './conditions';
-import type { PlannedScene, SeasonScenePlan } from './scenePlan';
+import type {
+  ArcPressureTreatmentContract,
+  BranchConsequenceRealizationContract,
+  CharacterTreatmentRealizationContract,
+  EndingRealizationContract,
+  FailureModeAuditContract,
+  PlannedScene,
+  SeasonPromiseRealizationContract,
+  SeasonScenePlan,
+  SevenPointBeatRealizationContract,
+  StakesArchitectureContract,
+  WorldTreatmentRealizationContract,
+} from './scenePlan';
 
 // ========================================
 // SEASON PLAN CORE TYPES
@@ -224,6 +236,38 @@ export type InformationKnowledgeHolder =
   | 'antagonist'
   | 'world';
 
+export type InformationLedgerPhase = 'setup' | 'reveal' | 'payoff';
+
+export interface InformationFactualAtom {
+  id: string;
+  text: string;
+  phase: InformationLedgerPhase;
+  blockingLevel?: 'treatment' | 'structural' | 'warning';
+}
+
+export interface InformationNamedKnowledge {
+  knownByNames: string[];
+  withheldFromNames?: string[];
+  suspectByEpisode?: Array<{
+    characterName: string;
+    episodeNumber: number;
+    evidence?: string;
+  }>;
+}
+
+export interface InformationKnowledgePhase {
+  episodeNumber: number;
+  audienceKnowledgeState: AudienceKnowledgeState;
+  tensionMode: InformationTensionMode;
+  allowedSurface: 'hint' | 'misread' | 'dramatic_irony' | 'confirmation' | 'revelation' | 'payoff';
+}
+
+export interface InformationSetupTouchDetail {
+  episodeNumber: number;
+  requiredSurface: string;
+  atomIds?: string[];
+}
+
 export interface InformationLedgerEntry {
   id: string;
   label: string;
@@ -240,6 +284,17 @@ export interface InformationLedgerEntry {
   isBoxQuestion: boolean;
   closesQuestionIds?: string[];
   opensQuestionIds?: string[];
+  /**
+   * Generator-only authored-treatment metadata. These fields preserve the source
+   * Section-6 obligation behind the compact information ledger entry so validators
+   * can enforce setup/reveal/payoff realization without changing reader playback.
+   */
+  sourceText?: string;
+  authoredId?: string;
+  factualAtoms?: InformationFactualAtom[];
+  namedKnowledge?: InformationNamedKnowledge;
+  knowledgePhases?: InformationKnowledgePhase[];
+  setupTouchDetails?: InformationSetupTouchDetail[];
 }
 
 /**
@@ -308,6 +363,46 @@ export interface SeasonPlan {
   seasonPromiseArchitecture?: SeasonPromiseArchitecture;
 
   /**
+   * Generator-only obligations derived from explicit top-level treatment
+   * promises or, when absent, from SeasonPromiseArchitecture. Playback ignores
+   * this; planning/writing/validation use it to make the promised show visible.
+   */
+  seasonPromiseContracts?: SeasonPromiseRealizationContract[];
+  /**
+   * Generator-only authored stakes architecture contracts. These preserve
+   * Section 5 stakes as staged obligations while playback ignores them.
+   */
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+  /**
+   * Generator-only authored 7-point beat realization contracts. These preserve
+   * Section 7 beat content as staged obligations while playback ignores them.
+   */
+  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  /**
+   * Generator-only authored arc-pressure contracts. These preserve Arc Plan
+   * fields as staged obligations while playback ignores them.
+   */
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+  /**
+   * Generator-only authored cross-episode branch / consequence-chain contracts.
+   * These preserve Section 11 branch semantics as staged obligations while
+   * playback ignores them.
+   */
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+  /**
+   * Generator-only authored alternate-ending realization contracts. These
+   * preserve Section 14 ending drivers and target conditions as route/finale
+   * obligations while playback ignores them.
+   */
+  endingRealizationContracts?: EndingRealizationContract[];
+  /**
+   * Generator-only authored failure-mode audit contracts. These preserve
+   * Section 15's concrete mitigation claims as staged obligations while
+   * playback ignores them.
+   */
+  failureModeAuditContracts?: FailureModeAuditContract[];
+
+  /**
    * Planning-only ledger for major secrets, threats, mysteries, reveals, and
    * payoff questions. Runtime remains fiction-first; this prevents accidental
    * early reveals, unsupported surprises, and unresolved question sprawl.
@@ -354,6 +449,18 @@ export interface SeasonPlan {
    * choices, and climax decisions without exposing mechanics to the player.
    */
   characterArchitecture?: CharacterArchitecture;
+  /**
+   * Generator-only authored protagonist/core-character contracts. Stored on the
+   * season plan so planning, authoring, validation, and repair can trace
+   * character fields beyond the compact Lie/Want/Need architecture.
+   */
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+  /**
+   * Generator-only authored world/location contracts. These preserve setting
+   * rules, factions, taboos, and per-location purpose/choice pressure as
+   * traceable obligations while keeping reader playback unchanged.
+   */
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
   
   // Character introduction order
   characterIntroductions: Array<{

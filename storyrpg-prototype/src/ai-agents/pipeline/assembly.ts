@@ -249,6 +249,15 @@ export class Assembly {
         relationshipPacing: sceneBlueprint.relationshipPacing,
         mechanicPressure: sceneBlueprint.mechanicPressure,
         authoredTreatmentFields: sceneBlueprint.authoredTreatmentFields,
+        seasonPromiseContracts: sceneBlueprint.seasonPromiseContracts,
+        stakesArchitectureContracts: sceneBlueprint.stakesArchitectureContracts,
+        sevenPointBeatContracts: sceneBlueprint.sevenPointBeatContracts,
+        arcPressureContracts: sceneBlueprint.arcPressureContracts,
+        branchConsequenceContracts: sceneBlueprint.branchConsequenceContracts,
+        endingRealizationContracts: sceneBlueprint.endingRealizationContracts,
+        failureModeAuditContracts: sceneBlueprint.failureModeAuditContracts,
+        characterTreatmentContracts: sceneBlueprint.characterTreatmentContracts,
+        worldTreatmentContracts: sceneBlueprint.worldTreatmentContracts,
       };
     });
 
@@ -522,6 +531,15 @@ export class Assembly {
         relationshipPacing: sb.relationshipPacing,
         mechanicPressure: sb.mechanicPressure,
         authoredTreatmentFields: sb.authoredTreatmentFields,
+        seasonPromiseContracts: sb.seasonPromiseContracts,
+        stakesArchitectureContracts: sb.stakesArchitectureContracts,
+        sevenPointBeatContracts: sb.sevenPointBeatContracts,
+        arcPressureContracts: sb.arcPressureContracts,
+        branchConsequenceContracts: sb.branchConsequenceContracts,
+        endingRealizationContracts: sb.endingRealizationContracts,
+        failureModeAuditContracts: sb.failureModeAuditContracts,
+        characterTreatmentContracts: sb.characterTreatmentContracts,
+        worldTreatmentContracts: sb.worldTreatmentContracts,
       });
     }
 

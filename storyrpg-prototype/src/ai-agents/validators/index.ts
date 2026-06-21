@@ -78,6 +78,10 @@ export type {
 } from './TreatmentFidelityValidator';
 export { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
 export type { TreatmentFieldUtilizationInput } from './TreatmentFieldUtilizationValidator';
+export { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';
+export type { SeasonPromiseRealizationInput } from './SeasonPromiseRealizationValidator';
+export { CharacterTreatmentRealizationValidator } from './CharacterTreatmentRealizationValidator';
+export type { CharacterTreatmentRealizationInput } from './CharacterTreatmentRealizationValidator';
 export { DramaticStructureValidator } from './DramaticStructureValidator';
 export type {
   DramaticStructureMetrics,

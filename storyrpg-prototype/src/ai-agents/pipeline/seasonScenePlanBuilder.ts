@@ -33,6 +33,15 @@ import type {
 import type { StructuralRole } from '../../types/sourceAnalysis';
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
 import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldContracts';
+import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
+import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
+import { assignStakesArchitectureContractsToScenes } from '../utils/stakesArchitectureContracts';
+import { assignArcPressureContractsToScenes } from '../utils/arcPressureContracts';
+import { assignWorldTreatmentContractsToScenes } from '../utils/worldTreatmentContracts';
+import { assignBranchConsequenceContractsToScenes } from '../utils/branchConsequenceContracts';
+import { assignEndingRealizationContractsToScenes } from '../utils/endingRealizationContracts';
+import { assignFailureModeAuditContractsToScenes } from '../utils/failureModeAuditContracts';
+import { assignSevenPointBeatContractsToScenes } from '../utils/sevenPointBeatContracts';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -1388,12 +1397,33 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     byEpisode[ep.episodeNumber] = epScenes.map((s) => s.id);
     scenes.push(...epScenes);
   }
+  const seasonPromiseContracts = assignSeasonPromiseContractsToScenes(plan, scenes);
+  const sevenPointBeatContracts = assignSevenPointBeatContractsToScenes(plan, scenes);
+  const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
+  const characterTreatmentContracts = assignCharacterTreatmentContractsToScenes(plan, scenes);
+  const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
+  const stakesArchitectureContracts = assignStakesArchitectureContractsToScenes(plan, scenes);
+  const branchConsequenceContracts = assignBranchConsequenceContractsToScenes(plan, scenes);
+  const endingRealizationContracts = assignEndingRealizationContractsToScenes({
+    ...plan,
+    branchConsequenceContracts,
+  }, scenes);
+  const failureModeAuditContracts = assignFailureModeAuditContractsToScenes(plan, scenes);
 
   return {
     scenes,
     byEpisode,
     setupPayoffEdges: edges,
     authoredTreatmentFields: scenes.flatMap((scene) => scene.authoredTreatmentFields ?? []),
+    seasonPromiseContracts,
+    sevenPointBeatContracts,
+    arcPressureContracts,
+    stakesArchitectureContracts,
+    branchConsequenceContracts,
+    endingRealizationContracts,
+    failureModeAuditContracts,
+    characterTreatmentContracts,
+    worldTreatmentContracts,
   };
 }
 

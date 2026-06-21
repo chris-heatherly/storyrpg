@@ -41,6 +41,17 @@ import {
   buildAnalysisFromEndingSeeds,
   normalizeEndingTargets,
 } from '../utils/endingResolver';
+import { buildCharacterTreatmentContracts } from '../utils/characterTreatmentContracts';
+import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
+import { buildSevenPointBeatContracts } from '../utils/sevenPointBeatContracts';
+import {
+  arcGuidanceId,
+  buildArcPressureContracts,
+} from '../utils/arcPressureContracts';
+import { buildWorldTreatmentContracts } from '../utils/worldTreatmentContracts';
+import { buildBranchConsequenceContracts } from '../utils/branchConsequenceContracts';
+import { buildEndingRealizationContracts } from '../utils/endingRealizationContracts';
+import { buildFailureModeAuditContracts } from '../utils/failureModeAuditContracts';
 import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
 import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import {
@@ -1275,6 +1286,33 @@ Return ONLY valid JSON.
       startChapter: arc.chapters,
         estimatedEpisodeRange: this.estimateArcEpisodeRange(arc, totalEpisodes, idx, structure.storyArcs.length),
     }));
+    for (const authoredArc of treatmentSeasonGuidance?.arcGuidance?.arcs ?? []) {
+      const range = authoredArc.episodeRange ?? { start: 1, end: Math.min(totalEpisodes, 3) };
+      const existingIndex = storyArcs.findIndex((arc) =>
+        arc.name.toLowerCase() === authoredArc.title.toLowerCase()
+        || (arc.estimatedEpisodeRange.start === range.start && arc.estimatedEpisodeRange.end === range.end)
+      );
+      const authoredStoryArc: StoryArc = {
+        id: arcGuidanceId(authoredArc),
+        name: authoredArc.title,
+        description: authoredArc.arcDramaticQuestion
+          || authoredArc.relationToSeasonQuestion
+          || authoredArc.sourceText,
+        startChapter: `Episodes ${range.start}-${range.end}`,
+        estimatedEpisodeRange: {
+          start: Math.max(1, Math.min(totalEpisodes, range.start)),
+          end: Math.max(range.start, Math.min(totalEpisodes, range.end)),
+        },
+      };
+      if (existingIndex >= 0) {
+        storyArcs[existingIndex] = {
+          ...storyArcs[existingIndex],
+          ...authoredStoryArc,
+        };
+      } else {
+        storyArcs.push(authoredStoryArc);
+      }
+    }
 
     // Build major characters list with first appearances
     const majorCharacters = structure.majorCharacters.map((char, idx) => ({
@@ -1369,6 +1407,69 @@ Return ONLY valid JSON.
     const resolvedEndingMode = treatmentEndings.length === 3
       ? 'multiple'
       : endingFields.resolvedEndingMode;
+    const characterTreatmentContracts = buildCharacterTreatmentContracts({
+      guidance: treatmentSeasonGuidance?.protagonistGuidance,
+      characterArchitecture,
+      protagonist: {
+        id: protagonistId,
+        name: structure.protagonist.name,
+        description: structure.protagonist.description,
+        fashionStyle: normalizeCharacterFashionStyle(structure.protagonist.fashionStyle),
+      },
+      endings: treatmentEndings.length === 3 ? treatmentEndings : endingFields.resolvedEndings,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+    });
+    const worldTreatmentContracts = buildWorldTreatmentContracts({
+      guidance: treatmentSeasonGuidance?.worldLocationGuidance,
+      keyLocations,
+      setting: structure.setting,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+    });
+    const stakesArchitectureContracts = buildStakesArchitectureContracts({
+      guidance: treatmentSeasonGuidance,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+    });
+    const sevenPointBeatContracts = buildSevenPointBeatContracts({
+      guidance: treatmentSeasonGuidance,
+      sevenPoint,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+    });
+    const arcPressureContracts = buildArcPressureContracts({
+      guidance: treatmentSeasonGuidance,
+      arcs: [],
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+    });
+    const branchConsequenceContracts = buildBranchConsequenceContracts({
+      branches: treatment.branches,
+      endings: treatmentEndings.length === 3 ? treatmentEndings : endingFields.resolvedEndings,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+    });
+    const endingRealizationContracts = buildEndingRealizationContracts({
+      endings: treatmentEndings.length === 3 ? treatmentEndings : endingFields.resolvedEndings,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+      branchContracts: branchConsequenceContracts,
+    });
+    const failureModeAuditContracts = buildFailureModeAuditContracts({
+      guidance: treatmentSeasonGuidance,
+      totalEpisodes,
+      treatmentSourced: treatment.isTreatment,
+      linkedContracts: [
+        characterTreatmentContracts,
+        worldTreatmentContracts,
+        stakesArchitectureContracts,
+        sevenPointBeatContracts,
+        arcPressureContracts,
+        branchConsequenceContracts,
+        endingRealizationContracts,
+      ],
+    });
 
     return {
       sourceTitle: input.title || 'Untitled',
@@ -1419,6 +1520,14 @@ Return ONLY valid JSON.
       },
       majorCharacters,
       characterArchitecture,
+      characterTreatmentContracts,
+      stakesArchitectureContracts,
+      branchConsequenceContracts,
+      endingRealizationContracts,
+      failureModeAuditContracts,
+      sevenPointBeatContracts,
+      arcPressureContracts,
+      worldTreatmentContracts,
       keyLocations,
 
       analysisTimestamp: new Date(),

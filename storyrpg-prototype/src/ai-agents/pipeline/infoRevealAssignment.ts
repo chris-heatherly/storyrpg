@@ -29,8 +29,16 @@ export interface RevealAssignableEntry {
   id: string;
   label?: string;
   description?: string;
+  introducedEpisode?: number;
+  setupTouchEpisodes?: number[];
   plannedRevealEpisode?: number;
   plannedPayoffEpisode?: number;
+}
+
+export interface InfoPhaseAssignments {
+  setupInfoIds?: string[];
+  revealInfoIds?: string[];
+  payoffInfoIds?: string[];
 }
 
 /** Scene roles/functions that read as the natural home for a reveal. */
@@ -74,6 +82,7 @@ function sceneText(scene: RevealAssignableScene): string {
 function pickScene(
   scenes: RevealAssignableScene[],
   entry: RevealAssignableEntry,
+  phase: 'setup' | 'reveal' | 'payoff' = 'reveal',
 ): RevealAssignableScene | undefined {
   const want = contentTokens(`${entry.label ?? ''} ${entry.description ?? ''}`);
   let best: RevealAssignableScene | undefined;
@@ -87,7 +96,7 @@ function pickScene(
       score += 2;
     }
     if (scene.isEncounter) score -= 1; // a discrete reveal prefers a prose scene, but encounters are allowed
-    score += index * 0.01; // tie-break: later scene wins (reveals land late)
+    score += phase === 'setup' ? -index * 0.01 : index * 0.01; // setup early, reveal/payoff late
     if (score > bestScore) {
       bestScore = score;
       best = scene;
@@ -113,11 +122,46 @@ export function assignInfoRevealsToScenes(
     if (!entry?.id || ARC_REFRAME_ID.test(entry.id)) continue;
     const revealEp = entry.plannedRevealEpisode ?? entry.plannedPayoffEpisode;
     if (revealEp !== episodeNumber) continue;
-    const scene = pickScene(scenes, entry);
+    const scene = pickScene(scenes, entry, 'reveal');
     if (!scene) continue;
     const list = result.get(scene.id) ?? [];
     if (!list.includes(entry.id)) list.push(entry.id);
     result.set(scene.id, list);
+  }
+  return result;
+}
+
+export function assignInfoLedgerPhasesToScenes(
+  scenes: RevealAssignableScene[],
+  entries: RevealAssignableEntry[] | undefined,
+  episodeNumber: number,
+): Map<string, InfoPhaseAssignments> {
+  const result = new Map<string, InfoPhaseAssignments>();
+  if (!Array.isArray(entries) || entries.length === 0 || scenes.length === 0) return result;
+
+  const push = (scene: RevealAssignableScene | undefined, phase: keyof InfoPhaseAssignments, id: string): void => {
+    if (!scene) return;
+    const existing = result.get(scene.id) ?? {};
+    const list = existing[phase] ?? [];
+    if (!list.includes(id)) list.push(id);
+    result.set(scene.id, { ...existing, [phase]: list });
+  };
+
+  for (const entry of entries) {
+    if (!entry?.id || ARC_REFRAME_ID.test(entry.id)) continue;
+    const setupEpisodes = new Set<number>([
+      ...(typeof entry.introducedEpisode === 'number' ? [entry.introducedEpisode] : []),
+      ...(entry.setupTouchEpisodes ?? []),
+    ]);
+    if (setupEpisodes.has(episodeNumber)) {
+      push(pickScene(scenes, entry, 'setup'), 'setupInfoIds', entry.id);
+    }
+    if (entry.plannedRevealEpisode === episodeNumber) {
+      push(pickScene(scenes, entry, 'reveal'), 'revealInfoIds', entry.id);
+    }
+    if (entry.plannedPayoffEpisode === episodeNumber && entry.plannedPayoffEpisode !== entry.plannedRevealEpisode) {
+      push(pickScene(scenes, entry, 'payoff'), 'payoffInfoIds', entry.id);
+    }
   }
   return result;
 }

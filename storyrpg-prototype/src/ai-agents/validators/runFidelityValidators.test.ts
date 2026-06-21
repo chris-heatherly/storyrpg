@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { runFidelityValidators } from './runFidelityValidators';
 import { TREATMENT_FIDELITY_GATE_FLAGS } from './treatmentFidelityGate';
+import type { FailureModeAuditContract } from '../../types/scenePlan';
 import type { SeasonPlan } from '../../types/seasonPlan';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types/story';
@@ -46,6 +47,8 @@ const ALL_FLAGS = Object.values(TREATMENT_FIDELITY_GATE_FLAGS);
 
 afterEach(() => {
   for (const flag of ALL_FLAGS) delete process.env[flag];
+  delete process.env.GATE_TREATMENT_FIELD_UTILIZATION;
+  delete process.env.GATE_FAILURE_MODE_AUDIT_REALIZATION;
 });
 
 describe('runFidelityValidators (GAP-D dispatch)', () => {
@@ -99,21 +102,19 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.fidelityFindings).toEqual([]);
   });
 
-  it('keeps the info-ledger schedule VISIBLE as an advisory warning while its gate is off (demoted)', () => {
-    // GATE_INFORMATION_LEDGER_SCHEDULE is default-off (demoted), so an unset env must
-    // still RUN the schedule check on a treatment run and surface the unlanded reveal —
-    // but as a non-blocking WARNING, never an error.
+  it('hard-blocks the info-ledger schedule by default on treatment runs', () => {
+    const result = runFidelityValidators({ story, seasonPlan: ledgerSeasonPlan(), sourceAnalysis: treatmentAnalysis() });
+    const info = result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator');
+    expect(info.length).toBeGreaterThan(0);
+    expect(info.some((f) => f.severity === 'error')).toBe(true);
+  });
+
+  it('keeps the info-ledger schedule visible as advisory when the gate is explicitly disabled', () => {
+    process.env[TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule] = '0';
     const result = runFidelityValidators({ story, seasonPlan: ledgerSeasonPlan(), sourceAnalysis: treatmentAnalysis() });
     const info = result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator');
     expect(info.length).toBeGreaterThan(0);
     expect(info.every((f) => f.severity === 'warning')).toBe(true);
-  });
-
-  it('hard-blocks the info-ledger schedule (error) when its gate is explicitly on', () => {
-    process.env[TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule] = '1';
-    const result = runFidelityValidators({ story, seasonPlan: ledgerSeasonPlan(), sourceAnalysis: treatmentAnalysis() });
-    const info = result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator');
-    expect(info.some((f) => f.severity === 'error')).toBe(true);
   });
 
   it('does NOT run the info-ledger schedule on a non-treatment run', () => {
@@ -136,6 +137,27 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
       sourceAnalysis: treatmentAnalysis(),
     });
     expect(result.fidelityFindings).toEqual([]);
+  });
+
+  it('dispatches authored failure-mode audit contracts through the final fidelity gate', () => {
+    process.env.GATE_TREATMENT_FIELD_UTILIZATION = '0';
+    process.env.GATE_FAILURE_MODE_AUDIT_REALIZATION = '1';
+    const result = runFidelityValidators({
+      story,
+      seasonPlan: {
+        ...ledgerSeasonPlan(),
+        informationLedger: [],
+        failureModeAuditContracts: [failureModeContract()],
+      } as SeasonPlan,
+      sourceAnalysis: {
+        ...treatmentAnalysis(),
+        treatmentSeasonGuidance: {},
+        failureModeAuditContracts: [failureModeContract()],
+      } as SourceMaterialAnalysis,
+    });
+
+    expect(result.treatmentSourced).toBe(true);
+    expect(result.fidelityFindings.some((finding) => finding.validator === 'NarrativeFailureModeValidator')).toBe(true);
   });
 });
 
@@ -176,3 +198,20 @@ describe('runPlanTimeFidelityChecks (WS1 plan placement)', () => {
     expect(result.blockingErrors).toEqual([]);
   });
 });
+
+function failureModeContract(): FailureModeAuditContract {
+  return {
+    id: 'failure-mode-passive-protagonist-agency',
+    source: 'treatment',
+    code: 'passive_protagonist',
+    label: 'Passive protagonist',
+    status: 'watch_item',
+    sourceText: 'Mara must choose to use the map she earned instead of being rescued by guards.',
+    contractKind: 'agency_claim',
+    requiredRealization: ['choice', 'scene_turn', 'ending_route', 'mechanic_pressure', 'final_prose'],
+    targetEpisodeNumbers: [1],
+    targetSceneIds: ['s1'],
+    linkedContractIds: [],
+    blockingLevel: 'treatment',
+  };
+}

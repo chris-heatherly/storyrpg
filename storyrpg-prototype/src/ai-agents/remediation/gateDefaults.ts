@@ -320,6 +320,24 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // concrete scene/choice/encounter/info/consequence/ending/cliffhanger
   // obligations and then show up fiction-first in final prose. Reversible via =0.
   GATE_TREATMENT_FIELD_UTILIZATION: true,
+  // Season promise realization: explicit top-level treatment promises (genre/tone
+  // progression, logline engine, core fantasy, audience/premise promise, theme
+  // question, inaction pressure) must become visible story material instead of
+  // metadata-only guidance. Reversible via =0.
+  GATE_SEASON_PROMISE_REALIZATION: true,
+  GATE_SEASON_PROMISE_REPAIR: true,
+  // Protagonist treatment realization: authored protagonist fields (canonical
+  // identity, role facts, Want/Need/Lie/Wound/Truth, starting identity, pressure
+  // points, climax choice, end states, visual identity) must become traceable
+  // plan artifacts and reader-facing character pressure. Reversible via =0.
+  GATE_CHARACTER_TREATMENT_REALIZATION: true,
+  GATE_CHARACTER_TREATMENT_REPAIR: true,
+  // Failure-mode audit realization: authored Section 15 QA claims (avoided traps
+  // and watch-item mitigations) must be converted into concrete setup/payoff,
+  // agency, causality, state-change, fair-play reveal, or thematic-rhyme
+  // obligations instead of remaining prompt-only confidence notes. Reversible via =0.
+  GATE_FAILURE_MODE_AUDIT_REALIZATION: true,
+  GATE_FAILURE_MODE_AUDIT_REPAIR: true,
   GATE_MECHANIC_PRESSURE_REPAIR: true,
   // Cluster repair for structural flow defects: when a turn/transition failure is
   // bigger than one missing sentence, rewrite the failed scene plus its immediate
@@ -445,17 +463,12 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // `<FLAG>=0` (kill-switch) if a real treatment run surfaces a false positive.
   GATE_AUTHORED_EPISODE_CONFORMANCE: true,
   GATE_ENCOUNTER_ANCHOR_CONTENT: true,
-  // DEMOTED to default-off after endsong-gen-7 surfaced it as un-satisfiable: the gate
-  // requires each authored INFO reveal to "land" on-page, detected via an
-  // `info_<id>_reveal`/`payoff` flag (prose can't carry the internal id like "info-A").
-  // But there is NO generative half — no emitter sets those flags (cf. the
-  // emitSceneTreatmentSeeds / emitSceneBranchAxes backstops that DO exist for seeds and
-  // branch axes), and InformationLedgerEntry carries no scene mapping. So every treatment
-  // run with declared reveals false-fails. Re-promote once the generative half lands: a
-  // SceneWriter directive that dramatizes the authored reveal in its episode AND an
-  // emitSceneInfoReveals backstop that sets the detectable flag. (Detection still runs as
-  // shadow telemetry while off.)
-  GATE_INFORMATION_LEDGER_SCHEDULE: false,
+  // Re-promoted after the Section-6 generative half landed: authored ledger entries are
+  // parsed into durable metadata, StoryArchitect assigns setup/reveal/payoff phases to
+  // scenes, SceneWriter receives fiction-first information-movement directives, and the
+  // choice backstop emits detectable setup/reveal/payoff flags. Partial-season scoping
+  // still suppresses future-episode obligations that have not been generated yet.
+  GATE_INFORMATION_LEDGER_SCHEDULE: true,
   GATE_SIGNATURE_DEVICE_PRESENCE: true,
   GATE_SEVEN_POINT_ANCHOR_CONFORMANCE: true,
   // WS2a (CONSISTENCY_PLAN 2026-06-09): reconvergence-residue repair + degrade.

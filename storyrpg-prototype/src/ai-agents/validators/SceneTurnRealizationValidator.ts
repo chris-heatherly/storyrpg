@@ -1,5 +1,11 @@
 import type { Beat, Scene, Story } from '../../types';
-import type { PlannedScene, SceneTurnContract, SeasonScenePlan } from '../../types/scenePlan';
+import type {
+  ArcPressureTreatmentContract,
+  PlannedScene,
+  SceneTurnContract,
+  SeasonScenePlan,
+  SevenPointBeatRealizationContract,
+} from '../../types/scenePlan';
 import { momentDepicted } from '../remediation/realizationScoring';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
@@ -136,6 +142,26 @@ function contractFor(scene: Scene, planned?: PlannedScene): SceneTurnContract | 
   return scene.turnContract || planned?.turnContract;
 }
 
+function sevenPointContractsFor(scene: Scene, planned?: PlannedScene): SevenPointBeatRealizationContract[] {
+  const byId = new Map<string, SevenPointBeatRealizationContract>();
+  for (const contract of planned?.sevenPointBeatContracts ?? []) byId.set(contract.id, contract);
+  for (const contract of scene.sevenPointBeatContracts ?? []) byId.set(contract.id, contract);
+  return Array.from(byId.values());
+}
+
+function arcPressureContractsFor(scene: Scene, planned?: PlannedScene): ArcPressureTreatmentContract[] {
+  const byId = new Map<string, ArcPressureTreatmentContract>();
+  for (const contract of planned?.arcPressureContracts ?? []) byId.set(contract.id, contract);
+  for (const contract of scene.arcPressureContracts ?? []) byId.set(contract.id, contract);
+  return Array.from(byId.values()).filter((contract) =>
+    contract.contractKind === 'arc_midpoint_recontextualization'
+    || contract.contractKind === 'arc_late_crisis'
+    || contract.contractKind === 'arc_finale_answer'
+    || contract.contractKind === 'arc_handoff_pressure'
+    || contract.contractKind === 'arc_episode_turnout'
+  );
+}
+
 function isEncounterScene(scene: Scene, planned?: PlannedScene): boolean {
   return Boolean(scene.encounter) || planned?.kind === 'encounter' || contractFor(scene, planned)?.source === 'encounter';
 }
@@ -151,8 +177,62 @@ export class SceneTurnRealizationValidator extends BaseValidator {
 
     for (const { episodeNumber, scene, planned } of refs) {
       const contract = contractFor(scene, planned);
-      if (!contract?.centralTurn?.trim()) continue;
-      if (isEncounterScene(scene, planned)) continue;
+      if (!contract?.centralTurn?.trim()) {
+        for (const beatContract of sevenPointContractsFor(scene, planned)) {
+          const prose = sceneProse(scene);
+          if (!prose.trim()) {
+            issues.push(this.createIssue(
+              beatContract.blockingLevel === 'treatment' ? 'error' : 'warning',
+              `Scene "${scene.id}" has a seven-point ${beatContract.beat} realization contract but no reader-facing prose to realize it: "${beatContract.sourceText}".`,
+              `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
+              'Generate reader-facing scene prose that stages the authored seven-point beat event and resulting state change.',
+            ));
+          }
+        }
+        for (const arcContract of arcPressureContractsFor(scene, planned)) {
+          const prose = sceneProse(scene);
+          if (!prose.trim()) {
+            issues.push(this.createIssue(
+              arcContract.blockingLevel === 'treatment' ? 'error' : 'warning',
+              `Scene "${scene.id}" has an arc pressure contract but no reader-facing prose to realize it: "${arcContract.sourceText}".`,
+              `sceneTurn:ep${episodeNumber}:${scene.id}:${arcContract.id}`,
+              'Generate reader-facing scene prose that stages the authored arc pressure as event, reframe, cost, episode turnout, or handoff.',
+            ));
+          }
+        }
+        continue;
+      }
+      if (isEncounterScene(scene, planned)) {
+        for (const beatContract of sevenPointContractsFor(scene, planned)) {
+          const prose = sceneProse(scene);
+          const eventDepicted = beatContract.eventAtoms.some((atom) =>
+            momentDepicted('RequiredBeatRealizationValidator', atom, prose)
+          ) || momentDepicted('RequiredBeatRealizationValidator', beatContract.sourceText, prose);
+          if (!eventDepicted) {
+            issues.push(this.createIssue(
+              beatContract.blockingLevel === 'treatment' ? 'error' : 'warning',
+              `Encounter scene "${scene.id}" carries seven-point ${beatContract.beat} but does not stage its authored event: "${beatContract.sourceText}".`,
+              `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
+              'Repair the encounter setup, phase action, choice, or outcome so the authored seven-point beat is visible on-page.',
+            ));
+          }
+        }
+        for (const arcContract of arcPressureContractsFor(scene, planned)) {
+          const prose = sceneProse(scene);
+          const eventDepicted = arcContract.eventAtoms.some((atom) =>
+            momentDepicted('RequiredBeatRealizationValidator', atom, prose)
+          ) || momentDepicted('RequiredBeatRealizationValidator', arcContract.sourceText, prose);
+          if (!eventDepicted) {
+            issues.push(this.createIssue(
+              arcContract.blockingLevel === 'treatment' ? 'error' : 'warning',
+              `Encounter scene "${scene.id}" carries arc pressure but does not stage its authored event: "${arcContract.sourceText}".`,
+              `sceneTurn:ep${episodeNumber}:${scene.id}:${arcContract.id}`,
+              'Repair the encounter setup, phase action, choice, or outcome so the authored arc pressure is visible on-page.',
+            ));
+          }
+        }
+        continue;
+      }
 
       const prose = sceneProse(scene);
       const beats = scene.beats || [];
@@ -194,6 +274,72 @@ export class SceneTurnRealizationValidator extends BaseValidator {
           `sceneTurn:ep${episodeNumber}:${scene.id}:${contract.turnId}`,
           'Build the scene around setup/pre-turn pressure, the turn event, and an immediate consequence or grounded handoff before routing onward.',
         ));
+      }
+
+      for (const beatContract of sevenPointContractsFor(scene, planned)) {
+        const atomIndex = beats.findIndex((beat) =>
+          beatContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, textOfBeat(beat)))
+        );
+        const beatTurnIndex = atomIndex >= 0
+          ? atomIndex
+          : beats.findIndex((beat) => momentDepicted('RequiredBeatRealizationValidator', beatContract.sourceText, textOfBeat(beat)));
+        const eventDepicted = beatTurnIndex >= 0
+          || beatContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, prose))
+          || momentDepicted('RequiredBeatRealizationValidator', beatContract.sourceText, prose);
+        const beatSeverity: 'error' | 'warning' = beatContract.blockingLevel === 'treatment' ? 'error' : 'warning';
+        if (!eventDepicted) {
+          issues.push(this.createIssue(
+            beatSeverity,
+            `Scene "${scene.id}" carries seven-point ${beatContract.beat} structurally but does not dramatize its authored beat event on-page: "${beatContract.sourceText}".`,
+            `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
+            'Stage the authored seven-point beat as visible action, reveal, choice, cost, changed state, or handoff, not as structural metadata.',
+          ));
+          continue;
+        }
+        const beatMissing: string[] = [];
+        if (!hasBeforeEvidence(scene, beatTurnIndex)) beatMissing.push('before-state setup');
+        if (!hasAfterEvidence(scene, beatTurnIndex)) beatMissing.push('after-state aftermath/handoff');
+        if (beatMissing.length > 0) {
+          issues.push(this.createIssue(
+            beatSeverity,
+            `Scene "${scene.id}" stages seven-point ${beatContract.beat} but does not give it complete scene shape (${beatMissing.join(', ')} missing): "${beatContract.sourceText}".`,
+            `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
+            'Build the authored seven-point beat around setup/pre-turn pressure, the beat event, and an immediate consequence or grounded handoff.',
+          ));
+        }
+      }
+
+      for (const arcContract of arcPressureContractsFor(scene, planned)) {
+        const atomIndex = beats.findIndex((beat) =>
+          arcContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, textOfBeat(beat)))
+        );
+        const arcTurnIndex = atomIndex >= 0
+          ? atomIndex
+          : beats.findIndex((beat) => momentDepicted('RequiredBeatRealizationValidator', arcContract.sourceText, textOfBeat(beat)));
+        const eventDepicted = arcTurnIndex >= 0
+          || arcContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, prose))
+          || momentDepicted('RequiredBeatRealizationValidator', arcContract.sourceText, prose);
+        const arcSeverity: 'error' | 'warning' = arcContract.blockingLevel === 'treatment' ? 'error' : 'warning';
+        if (!eventDepicted) {
+          issues.push(this.createIssue(
+            arcSeverity,
+            `Scene "${scene.id}" carries arc pressure "${arcContract.fieldName}" but does not dramatize the authored arc event on-page: "${arcContract.sourceText}".`,
+            `sceneTurn:ep${episodeNumber}:${scene.id}:${arcContract.id}`,
+            'Stage the authored arc pressure as visible action, reveal, cost, changed footing, episode turnout, or grounded handoff.',
+          ));
+          continue;
+        }
+        const arcMissing: string[] = [];
+        if (!hasBeforeEvidence(scene, arcTurnIndex)) arcMissing.push('before-state setup');
+        if (!hasAfterEvidence(scene, arcTurnIndex)) arcMissing.push('after-state aftermath/handoff');
+        if (arcMissing.length > 0) {
+          issues.push(this.createIssue(
+            arcSeverity,
+            `Scene "${scene.id}" stages arc pressure "${arcContract.fieldName}" but does not give it complete scene shape (${arcMissing.join(', ')} missing): "${arcContract.sourceText}".`,
+            `sceneTurn:ep${episodeNumber}:${scene.id}:${arcContract.id}`,
+            'Build the authored arc pressure around setup/pre-turn pressure, the event/reframe/cost, and immediate consequence or handoff.',
+          ));
+        }
       }
     }
 

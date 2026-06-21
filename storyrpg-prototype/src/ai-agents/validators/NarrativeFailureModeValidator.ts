@@ -1,5 +1,10 @@
 import type { SceneContent } from '../agents/SceneWriter';
+import type { SeasonPlan } from '../../types/seasonPlan';
+import type { Story } from '../../types/story';
+import type { FailureModeAuditContract } from '../../types/scenePlan';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
+import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
+import { failureModeAuditMatchThreshold } from '../utils/failureModeAuditContracts';
 
 export type NarrativeFailureModeCode =
   | 'escalation_trap'
@@ -24,12 +29,16 @@ export interface NarrativeFailureModeIssue extends ValidationIssue {
 export interface NarrativeFailureModeInput {
   sceneContents?: SceneContent[];
   baseIssues?: Array<Pick<ValidationIssue, 'severity' | 'message' | 'location' | 'suggestion'> & { source?: string }>;
+  failureModeAuditContracts?: FailureModeAuditContract[];
+  seasonPlan?: SeasonPlan;
+  story?: Story;
 }
 
 export interface NarrativeFailureModeMetrics {
   mappedIssueCount: number;
   convenientCoincidenceSignals: number;
   telegraphedTwistSignals: number;
+  authoredContractIssues: number;
 }
 
 export interface NarrativeFailureModeResult extends ValidationResult {
@@ -139,6 +148,9 @@ export class NarrativeFailureModeValidator extends BaseValidator {
     const telegraphSignals = this.detectTelegraphedTwist(input.sceneContents ?? []);
     issues.push(...telegraphSignals);
 
+    const contractIssues = this.validateAuthoredContracts(input);
+    issues.push(...contractIssues);
+
     const errorCount = issues.filter((issue) => issue.severity === 'error').length;
     const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
 
@@ -151,6 +163,7 @@ export class NarrativeFailureModeValidator extends BaseValidator {
         mappedIssueCount: mapped.length,
         convenientCoincidenceSignals: coincidenceSignals.length,
         telegraphedTwistSignals: telegraphSignals.length,
+        authoredContractIssues: contractIssues.length,
       },
     };
   }
@@ -227,6 +240,29 @@ export class NarrativeFailureModeValidator extends BaseValidator {
   private formatCode(code: NarrativeFailureModeCode): string {
     return code.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ');
   }
+
+  private validateAuthoredContracts(input: NarrativeFailureModeInput): NarrativeFailureModeIssue[] {
+    const contracts = input.failureModeAuditContracts ?? input.seasonPlan?.failureModeAuditContracts ?? [];
+    if (contracts.length === 0) return [];
+    return contracts.flatMap((contract) => {
+      if (contract.blockingLevel === 'warning') return [];
+      const storyText = contractStoryText(input, contract);
+      const planText = contractPlanText(input.seasonPlan, contract);
+      const supportText = [storyText, planText].filter(Boolean).join(' ');
+      if (treatmentFieldCloseMatch(contract.sourceText, supportText, failureModeAuditMatchThreshold(contract))) return [];
+      if (contract.linkedContractIds.length > 0 && planText.trim() && !input.story) return [];
+      if (failureModeContractSatisfied(contract, supportText)) return [];
+      const severity: 'error' | 'warning' = contract.blockingLevel === 'treatment' ? 'error' : 'warning';
+      return [{
+        code: contract.code,
+        severity,
+        message: `[${this.formatCode(contract.code)}] Authored failure-mode audit mitigation was not realized: "${contract.sourceText}".`,
+        location: contract.targetSceneIds[0] ?? `failureModeAudit:${contract.id}`,
+        suggestion: suggestionForContract(contract),
+        source: 'failure_mode_audit_contract',
+      }];
+    });
+  }
 }
 
 function collectSceneText(scene: SceneContent): string {
@@ -257,4 +293,108 @@ function collectSceneText(scene: SceneContent): string {
   }
 
   return parts.join('\n');
+}
+
+function contractStoryText(input: NarrativeFailureModeInput, contract: FailureModeAuditContract): string {
+  if (input.story) {
+    const targetIds = new Set(contract.targetSceneIds);
+    const parts: string[] = [];
+    for (const episode of input.story.episodes ?? []) {
+      if (contract.targetEpisodeNumbers.length > 0 && !contract.targetEpisodeNumbers.includes(episode.number)) continue;
+      for (const scene of episode.scenes ?? []) {
+        if (targetIds.size > 0 && !targetIds.has(scene.id)) continue;
+        parts.push([
+          scene.name,
+          scene.sequenceIntent?.startState,
+          scene.sequenceIntent?.turningPoint,
+          scene.sequenceIntent?.endState,
+          scene.turnContract?.centralTurn,
+          scene.turnContract?.afterState,
+          JSON.stringify(scene.mechanicPressure ?? []),
+          JSON.stringify(scene.failureModeAuditContracts ?? []),
+          ...(scene.beats ?? []).map((beat) => [
+            beat.text,
+            beat.visualMoment,
+            beat.primaryAction,
+            beat.emotionalRead,
+            ...(beat.textVariants ?? []).map((variant) => variant.text),
+            ...(beat.choices ?? []).map((choice) => [
+              choice.text,
+              choice.feedbackCue?.echoSummary,
+              choice.feedbackCue?.progressSummary,
+              choice.visualResidueHint,
+              ...(choice.residueHints ?? []).map((hint) => hint.description),
+            ].filter(Boolean).join(' ')),
+          ].filter(Boolean).join(' ')),
+        ].filter(Boolean).join(' '));
+      }
+    }
+    return parts.join(' ');
+  }
+  const targetIds = new Set(contract.targetSceneIds);
+  return (input.sceneContents ?? [])
+    .filter((scene) => targetIds.size === 0 || targetIds.has(scene.sceneId))
+    .map(collectSceneText)
+    .join(' ');
+}
+
+function contractPlanText(plan: SeasonPlan | undefined, contract: FailureModeAuditContract): string {
+  if (!plan) return '';
+  const targetIds = new Set(contract.targetSceneIds);
+  const targetScenes = (plan.scenePlan?.scenes ?? []).filter((scene) =>
+    targetIds.has(scene.id) || (scene.failureModeAuditContracts ?? []).some((candidate) => candidate.id === contract.id)
+  );
+  return [
+    JSON.stringify(plan.informationLedger ?? []),
+    JSON.stringify(plan.consequenceChains ?? []),
+    JSON.stringify(plan.choiceMoments ?? []),
+    JSON.stringify(plan.arcs ?? []),
+    JSON.stringify(plan.episodes?.map((episode) => [episode.cliffhangerPlan, episode.endingRoutes]) ?? []),
+    JSON.stringify(plan.stakesArchitectureContracts ?? []),
+    JSON.stringify(plan.arcPressureContracts ?? []),
+    JSON.stringify(plan.branchConsequenceContracts ?? []),
+    JSON.stringify(plan.endingRealizationContracts ?? []),
+    JSON.stringify(targetScenes),
+  ].join(' ');
+}
+
+function failureModeContractSatisfied(contract: FailureModeAuditContract, text: string): boolean {
+  if (!text.trim()) return false;
+  switch (contract.contractKind) {
+    case 'agency_claim':
+      return /\b(choose|chooses|decide|decides|refuse|refuses|accept|accepts|confront|confronts|publish|publishes|use|uses|prepared|because of (?:you|her|his|their)|through (?:choice|preparation|sacrifice|leverage|action|information))\b/i.test(text);
+    case 'setup_payoff_claim':
+    case 'reveal_fair_play_claim':
+      return /\b(setup|payoff|pays off|returns?|again|earlier|clue|foreshadow|plant|seed|reveal|truth|because|recognizes?|remembers?)\b/i.test(text);
+    case 'episode_state_change_claim':
+    case 'arc_state_change_claim':
+      return /\b(changed|now|no longer|cannot|keeps?|loses?|left with|afterward|from now on|irreversible|opens?|blocks?|carries?|residue|ends? with)\b/i.test(text);
+    case 'theme_rhyme_claim':
+      return /\b(voice|choice|known|owned|truth|lie|self|want|need|love|trust|freedom|refuse|belong|same question|again)\b/i.test(text);
+    case 'watch_item':
+    case 'mitigation':
+    case 'causality_claim':
+      return /\b(because|planned|prepared|watching|set up|loosened|sent|deliberate|earned|caused|warned|followed|already|before|so that|therefore)\b/i.test(text);
+    default:
+      return /\b(because|choice|changed|reveals?|pays?|returns?|now|after|therefore|cannot)\b/i.test(text);
+  }
+}
+
+function suggestionForContract(contract: FailureModeAuditContract): string {
+  switch (contract.contractKind) {
+    case 'agency_claim':
+      return 'Rewrite the scene/choice/ending so the protagonist causes the decisive turn through choice, preparation, sacrifice, leverage, or earned information.';
+    case 'setup_payoff_claim':
+    case 'reveal_fair_play_claim':
+      return 'Plant or pay off the authored clue/setup on-page before the reveal or payoff; avoid unearned surprise.';
+    case 'episode_state_change_claim':
+    case 'arc_state_change_claim':
+      return 'Leave visible durable state change: access, relationship posture, information, route pressure, changed identity, or episode/arc residue.';
+    case 'watch_item':
+    case 'mitigation':
+    case 'causality_claim':
+      return 'Stage the authored mitigation before or during the risky event so it reads as in-world causality, not coincidence or explanation.';
+    default:
+      return 'Stage the failure-mode audit claim as concrete fiction-first mitigation rather than metadata or commentary.';
+  }
 }

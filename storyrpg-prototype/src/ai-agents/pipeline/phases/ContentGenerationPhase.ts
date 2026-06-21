@@ -71,7 +71,7 @@ import { assignChoiceTypes } from '../choiceTypePlanner';
 import {
   EpisodePlant,
   emitSceneBranchAxes,
-  emitSceneInfoReveals,
+  emitSceneInfoMarkers,
   emitSceneTreatmentSeeds,
   extractBranchResidueFromChoiceSet,
   extractPlantsFromChoiceSet,
@@ -843,13 +843,32 @@ export class ContentGenerationPhase {
           sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneBlueprint),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
-          // Step 2 (info-reveal): resolve the INFO ids assigned to this scene (Step 1)
-          // to their authored fact text so SceneWriter dramatizes each reveal on-page.
-          // Empty when no reveal is scheduled here, so the prompt is unchanged otherwise.
+          // Step 2 (info-ledger): resolve the INFO ids assigned to this scene to their
+          // authored fact text so SceneWriter plants/reveals/pays off each phase on-page.
+          setupDirectives: (sceneBlueprint.setsUpInfoIds ?? [])
+            .map((infoId) => {
+              const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
+              const touch = entry?.setupTouchDetails?.find((detail) => detail.episodeNumber === (brief.episode?.number ?? 1));
+              const fact = touch?.requiredSurface || entry?.label || entry?.description;
+              return fact ? { infoId, fact } : undefined;
+            })
+            .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
           revealDirectives: (sceneBlueprint.revealsInfoIds ?? [])
             .map((infoId) => {
               const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
-              const fact = entry?.label || entry?.description;
+              const fact = entry?.factualAtoms?.filter((atom) => atom.phase === 'reveal').map((atom) => atom.text).join('; ')
+                || entry?.label
+                || entry?.description;
+              return fact ? { infoId, fact } : undefined;
+            })
+            .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
+          payoffDirectives: (sceneBlueprint.paysOffInfoIds ?? [])
+            .map((infoId) => {
+              const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
+              const fact = entry?.factualAtoms?.filter((atom) => atom.phase === 'payoff').map((atom) => atom.text).join('; ')
+                || entry?.payoffPlan
+                || entry?.label
+                || entry?.description;
               return fact ? { infoId, fact } : undefined;
             })
             .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
@@ -859,7 +878,7 @@ export class ContentGenerationPhase {
           forbiddenReveals: buildForbiddenReveals(
             brief.seasonPlan?.informationLedger,
             brief.episode?.number ?? 1,
-            sceneBlueprint.revealsInfoIds,
+            [...(sceneBlueprint.revealsInfoIds ?? []), ...(sceneBlueprint.paysOffInfoIds ?? [])],
           ),
           // B1 (Season Canon read-back): serve the sealed canon as authoritative
           // "do not contradict" context so prior-episode facts constrain this prose.
@@ -1412,10 +1431,10 @@ export class ContentGenerationPhase {
               // so the finale's ending-route logic can read them and each named ending is
               // mechanically reachable. No-op off treatment runs.
               emitSceneBranchAxes(sceneBlueprint, choices);
-              // Step 3 (info-reveal): SET the detectable <id>_reveal flag for each INFO
-              // reveal assigned to this scene, so the schedule validator can confirm the
-              // reveal landed. No-op when the scene has no assigned reveals.
-              emitSceneInfoReveals(sceneBlueprint, choices);
+              // Step 3 (info-ledger): SET detectable setup/reveal/payoff flags for each
+              // INFO phase assigned to this scene, so the schedule validator can confirm
+              // authored information movement landed. No-op when the scene has no phases.
+              emitSceneInfoMarkers(sceneBlueprint, choices);
             };
 
             if (!choiceResult.success || !choiceResult.data) {
@@ -2358,7 +2377,7 @@ export class ContentGenerationPhase {
           forbiddenReveals: buildForbiddenReveals(
             brief.seasonPlan?.informationLedger,
             brief.episode?.number ?? 1,
-            sceneBlueprint.revealsInfoIds,
+            [...(sceneBlueprint.revealsInfoIds ?? []), ...(sceneBlueprint.paysOffInfoIds ?? [])],
           ),
           memoryContext: this.deps.cachedPipelineMemory || undefined,
           storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),

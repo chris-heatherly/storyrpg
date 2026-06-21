@@ -127,6 +127,12 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_SCENE_TURN_CLUSTER_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
   { id: 'GATE_NARRATIVE_MECHANIC_PRESSURE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_TREATMENT_FIELD_UTILIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SEASON_PROMISE_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SEASON_PROMISE_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_CHARACTER_TREATMENT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_FAILURE_MODE_AUDIT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
   { id: 'GATE_MECHANIC_PRESSURE_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: false },
   { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
@@ -151,7 +157,13 @@ export const GATE_REGISTRY: GateSpec[] = [
   // scene-prose repair handler now re-authors the encounter's phase/storylet prose to depict a
   // confirmed-missing central conflict / required beat (bite-me-g18), so this no longer hard-aborts.
   { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_INFORMATION_LEDGER_SCHEDULE', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  {
+    id: 'GATE_INFORMATION_LEDGER_SCHEDULE',
+    placement: 'season-final',
+    kind: 'blocking',
+    defaultOn: true,
+    policyException: 'Information ledger schedule remediation is currently plan-time assignment plus authored info-reveal generation. Planned fix: add a dedicated final-stage ledger repair route before removing this exception.',
+  },
   { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_RELATIONSHIP_PACING', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // WS1 (2026-06-12): relocated from season-final to plan placement — anchors

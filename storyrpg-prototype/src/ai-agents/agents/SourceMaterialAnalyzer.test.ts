@@ -474,6 +474,50 @@ A StoryRPG branching-narrative season treatment.
     expect(extracted.metadata.warnings.join(' ')).not.toContain('Episode 1 is missing a cliffhanger question');
   });
 
+  it('merges Section 10 scene planning notes into episode guidance and residue contracts', () => {
+    const treatment = `
+# Bite Me Treatment
+
+## 9. Episode Outline
+
+### Episode 1: Dating After Dusk
+- **Episode promise:** Kylie tries to start over in Bucharest.
+- **Structural role:** hook
+
+## 10. Scene Planning Notes
+
+- Scene: The Rooftop Dusk Club Lock-In (Episode 1)
+  - Entry goal: Kylie wants one easy, glamorous night with her two new friends to prove she can start over in a city that doesn't know her ex's name.
+  - Obstacle: Two men watch her from across the room — Victor in charcoal, the rougher man by the kitchen — and Mika goes very still for a half-second before steering Kylie toward food.
+  - Forced choice: Follow Mika's lead away from the charcoal-suited man, or excuse yourself and walk over.
+  - Exit shift: From a tourist ordering second and watching the room to a woman who has just been seen, and who liked it.
+  - Power shift: Mika quietly takes control of the night (the door, the dress, the steering); Kylie reads it as friendship, not handling.
+  - Subtext gap: The friends toast to never dating a man with a podcast; underneath, Kylie is testing whether she's allowed to want anyone at all again.
+  - Stakes layers: Relational, Identity.
+  - Connects by: Choice residue — walking over to Victor forces Mika to invent a reason she warned Kylie off, opening the first catchable Mika lie; holding the kitchen man's look moves Radu's confession earlier.
+`;
+
+    const extracted = extractTreatmentFromMarkdown(treatment);
+    const ep1 = extracted.episodes[1];
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(extracted.seasonGuidance?.scenePlanningGuidance?.scenes[0]?.sceneTitle).toContain('Rooftop Dusk Club');
+    expect(ep1?.scenePlanningTargets?.join(' ')).toContain('Rooftop Dusk Club');
+    expect(ep1?.entryGoal).toContain('one easy, glamorous night');
+    expect(ep1?.obstacle).toContain('Victor in charcoal');
+    expect(ep1?.forcedChoice).toContain("Follow Mika's lead");
+    expect(ep1?.majorChoicePressures?.join(' ')).toContain('excuse yourself and walk over');
+    expect(ep1?.powerShift).toContain('Mika quietly takes control');
+    expect(ep1?.bPressure).toContain('Mika quietly takes control');
+    expect(ep1?.subtextGap).toContain('allowed to want anyone');
+    expect(ep1?.liePressure).toContain('allowed to want anyone');
+    expect(ep1?.stakesLayers).toEqual(expect.arrayContaining(['Relational', 'Identity.']));
+    expect(ep1?.connectsBy).toContain('catchable Mika lie');
+    expect(ep1?.alternativePaths?.join(' ')).toContain('walking over to Victor');
+    expect(ep1?.consequenceSeeds?.join(' ')).toContain("Radu's confession earlier");
+    expect(ep1?.informationMovement).toContain('catchable Mika lie');
+  });
+
   it('extracts sceneEpisode treatment fields and marks the treatment as sceneEpisodes', () => {
     const sceneEpisodeTreatment = `
 # Harbor Debt SceneEpisode Treatment
@@ -773,6 +817,68 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
     expect(analysis.treatmentBranches.map((branch: any) => branch.name)).toEqual(
       expect.arrayContaining([expect.stringContaining('The Blog War')]),
     );
+  });
+
+  it('extracts structured branch-chain and alternate-ending fields from authored treatment text', () => {
+    const extracted = extractTreatmentFromMarkdown(`
+# Bite Me
+
+## 11. Cross-Episode Branches And Consequence Chains
+
+### Branch A: The Quartz (Sanctuary vs. Open Threshold)
+
+- **Origin episode:** Episode 1.
+- **What creates it:** At Lumina Books, Kylie either accepts the rose quartz Stela presses into her palm (canonical), declines it politely, or buys it for cash and tosses it in her bag without looking.
+- **How it changes a later episode:** With the quartz accepted and the candle ritual completed in Episode 4, the apartment holds at Episode 6. With the quartz refused or lost, Victor walks into Kylie's apartment uninvited in Episode 6.
+- **Reconvergence episode:** Episode 5.
+- **What residue remains after reconvergence:** Whether the Lipscani apartment is full sanctuary, partial sanctuary, or compromised carries forward.
+- **What state it changes:** Access (apartment as warded sanctuary), resource (Stela's protection footing), and ending eligibility — the quartz must be accepted and kept for both the Mountain Wife and the Witness endings.
+
+## 14. Alternate Endings
+
+### Ending 1: The Consort
+
+- **Name:** The Consort ("The Last Sunrise")
+- **Summary:** Kylie accepts Victor's offer at Casa Stelarum on the Hunter's Moon and winds down Dating After Dusk.
+- **Emotional register:** Tragic-glamorous.
+- **Theme payoff:** The Lie wins, beautifully.
+- **State drivers:** Victor-aligned choices across the season. The quartz refused or lost (Branch A), leaving the apartment unwarded.
+- **Target conditions:** Victor-aligned pattern across at least five of the eight episode-level major choices. The quartz must be refused or lost.
+- **What repeated choice pattern this ending pays off:** A pattern of being courted over being known.
+- **Final voiceover line:** Some women are loved. Some women are owned.
+
+### Episode 1: Dating After Dusk
+- **Structural role:** hook
+- **Episode promise:** Kylie chooses whether to accept Stela's quartz.
+`);
+
+    const quartz = extracted.branches[0];
+    expect(quartz.name).toContain('The Quartz');
+    expect(quartz.originEpisode).toBe(1);
+    expect(quartz.createdBy).toContain('accepts the rose quartz');
+    expect(quartz.laterEpisodeChange).toContain('Episode 6');
+    expect(quartz.reconvergenceEpisode).toBe(5);
+    expect(quartz.reconvergenceResidue).toContain('full sanctuary');
+    expect(quartz.stateChanges).toEqual(expect.arrayContaining([
+      expect.stringContaining('Access'),
+      expect.stringContaining('resource'),
+      expect.stringContaining('ending eligibility'),
+    ]));
+    expect(quartz.pathVariants?.map((variant) => variant.label)).toEqual(expect.arrayContaining([
+      'accepted',
+      'refused',
+      'lost',
+    ]));
+
+    const consort = extracted.endings[0];
+    expect(consort.name).toContain('The Consort');
+    expect(consort.targetConditions).toEqual(expect.arrayContaining([
+      expect.stringContaining('Victor-aligned pattern'),
+      expect.stringContaining('quartz must be refused or lost'),
+    ]));
+    expect(consort.repeatedChoicePattern).toContain('being courted over being known');
+    expect(consort.finalVoiceoverLine).toContain('Some women are loved');
+    expect(consort.sourceText).toContain('Ending 1');
   });
 
   it('stamps a swept off-page relation with a marker description so it is never staged present', () => {

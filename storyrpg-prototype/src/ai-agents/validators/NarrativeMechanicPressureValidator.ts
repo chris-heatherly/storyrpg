@@ -74,8 +74,50 @@ function relationshipPressure(contract: RelationshipPacingContract, sceneId: str
 function contractsFor(ref: SceneRef): MechanicPressureContract[] {
   const contracts = ref.scene.mechanicPressure ?? ref.planned?.mechanicPressure ?? [];
   const pacing = ref.scene.relationshipPacing ?? ref.planned?.relationshipPacing ?? [];
+  const branchPressure: MechanicPressureContract[] = (ref.scene.branchConsequenceContracts ?? ref.planned?.branchConsequenceContracts ?? []).map((contract) => ({
+    id: `${contract.id}-mechanic-pressure`,
+    source: contract.source === 'treatment' ? 'treatment' : 'planner',
+    domain: contract.stateDomains[0] ?? 'flag',
+    mechanicRef: { flag: contract.id, routeId: contract.branchId },
+    function: contract.contractKind === 'branch_origin_choice' ? 'plant' : contract.contractKind === 'branch_later_payoff' || contract.contractKind === 'branch_reconvergence_residue' ? 'payoff' : 'intensify',
+    storyPressure: contract.sourceText,
+    evidenceRequired: ['Show the authored branch event or state as on-page pressure.'],
+    visibleResidue: ['branch-specific access, resource, relationship, information, route, reputation, identity, or ending-eligibility residue'],
+    allowedPayoffs: ['conditional prose, text variant, route permission, consequence chain, choice wording, callback, or ending condition'],
+    blockedPayoffs: ['generic route label, cosmetic reconvergence, or payoff with no origin pressure'],
+    originatingSceneId: ref.scene.id,
+  }));
+  const endingPressure: MechanicPressureContract[] = (ref.scene.endingRealizationContracts ?? ref.planned?.endingRealizationContracts ?? []).map((contract) => ({
+    id: `${contract.id}-mechanic-pressure`,
+    source: contract.source === 'treatment' ? 'treatment' : 'planner',
+    domain: contract.stateDomains[0] ?? 'route',
+    mechanicRef: { flag: contract.id, routeId: contract.endingId },
+    function: contract.contractKind === 'ending_target_condition' ? 'gate' : 'payoff',
+    storyPressure: contract.sourceText,
+    evidenceRequired: ['Tie the ending state to prior choices, branch residue, target conditions, or finale agency.'],
+    visibleResidue: ['route-specific final state, emotional register, theme payoff, or changed protagonist condition'],
+    allowedPayoffs: ['finale choice, ending route condition, ending prose, route-specific state, or callback'],
+    blockedPayoffs: ['unearned ending transformation or ending prose unsupported by route mechanics'],
+    originatingSceneId: ref.scene.id,
+  }));
+  const failureModePressure: MechanicPressureContract[] = (ref.scene.failureModeAuditContracts ?? ref.planned?.failureModeAuditContracts ?? []).map((contract) => ({
+    id: `${contract.id}-mechanic-pressure`,
+    source: contract.source === 'treatment' ? 'treatment' : 'planner',
+    domain: 'flag' as MechanicPressureDomain,
+    mechanicRef: { flag: contract.id },
+    function: contract.contractKind === 'mitigation' || contract.contractKind === 'causality_claim' ? 'plant' : 'payoff',
+    storyPressure: contract.sourceText,
+    evidenceRequired: ['Show the authored failure-mode mitigation as on-page cause, agency, setup/payoff, fair-play clue, or durable state change.'],
+    visibleResidue: ['agency, causal setup, visible mitigation, fair-play clue, changed state, theme rhyme, or irreversible residue'],
+    allowedPayoffs: ['scene turn, choice pressure, information movement, setup/payoff, route condition, or ending state'],
+    blockedPayoffs: ['metadata-only avoidance claim, explanatory QA sentence, outside rescue, unplanted reveal, or reset to opening state'],
+    originatingSceneId: ref.scene.id,
+  }));
   return [
     ...contracts,
+    ...branchPressure,
+    ...endingPressure,
+    ...failureModePressure,
     ...pacing.map((contract) => relationshipPressure(contract, ref.scene.id)),
   ];
 }

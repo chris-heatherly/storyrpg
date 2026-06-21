@@ -5,6 +5,17 @@
  * into episode-sized chunks for interactive fiction generation.
  */
 
+import type {
+  ArcPressureTreatmentContract,
+  BranchConsequenceRealizationContract,
+  CharacterTreatmentRealizationContract,
+  EndingRealizationContract,
+  FailureModeAuditCode,
+  FailureModeAuditContract,
+  SevenPointBeatRealizationContract,
+  StakesArchitectureContract,
+  WorldTreatmentRealizationContract,
+} from './scenePlan';
 import type { CliffhangerType } from './story';
 
 // ========================================
@@ -261,6 +272,9 @@ export interface StoryEndingTarget {
   themePayoff: string;
   stateDrivers: EndingStateDriver[];
   targetConditions: string[];
+  repeatedChoicePattern?: string;
+  finalVoiceoverLine?: string;
+  sourceText?: string;
   sourceConfidence: EndingSourceConfidence;
 }
 
@@ -289,12 +303,14 @@ export interface TreatmentEpisodeGuidance {
   aPressure?: string;
   bPressure?: string;
   cSeed?: string;
+  scenePlanningTargets?: string[];
   entryGoal?: string;
   obstacle?: string;
   forcedChoice?: string;
   exitShift?: string;
   powerShift?: string;
   subtextGap?: string;
+  connectsBy?: string;
   informationMovement?: string;
   majorChoicePressures?: string[];
   alternativePaths?: string[];
@@ -320,9 +336,57 @@ export interface TreatmentEpisodeGuidance {
 export interface TreatmentSeasonGuidance {
   episodeStructureMode: import('./story').EpisodeStructureMode;
   seasonPromiseAndDramaticEngine?: string;
+  genre?: string;
+  tone?: string;
+  logline?: string;
+  coreFantasy?: string;
+  audiencePromise?: string;
+  premisePromise?: string;
+  themeQuestion?: string;
+  inactionPressure?: string;
+  seasonDramaticQuestion?: string;
+  centralPressure?: string;
+  playerPromise?: string;
+  emotionalPromise?: string;
+  freshVariationPlan?: string;
+  typicalEpisodeDeliverables?: string;
+  seasonMustResolve?: string;
+  futureOpenThreads?: string;
+  protagonistGuidance?: ProtagonistTreatmentGuidance;
+  worldLocationGuidance?: WorldLocationTreatmentGuidance;
   characterArchitecture?: string;
   stakesArchitecture?: string;
+  stakesArchitectureGuidance?: {
+    rawSection: string;
+    primaryMaterialStakes?: string[];
+    primaryRelationalStakes?: string[];
+    primaryIdentityStakes?: string[];
+    primaryExistentialStakes?: string[];
+    escalationLadder?: string[];
+    personalBeforeLarger?: string;
+    emotionalLegibilityAnchors?: string[];
+  };
   informationLedger?: string;
+  informationLedgerGuidance?: {
+    rawSection: string;
+    entries: Array<{
+      id: string;
+      label: string;
+      sourceText: string;
+      description?: string;
+      audienceKnowledgeState?: string;
+      tensionMode?: string;
+      knownByNames?: string[];
+      withheldFromNames?: string[];
+      introducedEpisode?: number;
+      setupTouchEpisodes?: number[];
+      plannedRevealEpisode?: number;
+      plannedPayoffEpisode?: number;
+      opensQuestionIds?: string[];
+      closesQuestionIds?: string[];
+      payoffPlan?: string;
+    }>;
+  };
   seasonSpine?: string;
   /**
    * Section-7 per-beat episode anchors parsed from the season-spine free text
@@ -332,20 +396,120 @@ export interface TreatmentSeasonGuidance {
    */
   beatEpisodeAnchors?: Partial<Record<SevenPointBeat, number>>;
   arcPlan?: string;
+  arcGuidance?: {
+    rawSection: string;
+    arcs: Array<{
+      arcIndex: number;
+      title: string;
+      sourceText: string;
+      episodeRange?: { start: number; end: number };
+      arcDramaticQuestion?: string;
+      relationToSeasonQuestion?: string;
+      lieFacet?: string;
+      midpointRecontextualization?: string;
+      lateArcCrisis?: string;
+      finaleAnswer?: string;
+      handoffPressure?: string;
+      episodeTurnouts?: Array<{
+        episodeNumber: number;
+        sourceText: string;
+        description: string;
+        turnType?: string;
+      }>;
+    }>;
+  };
   scenePlanningNotes?: string;
+  scenePlanningGuidance?: {
+    rawSection: string;
+    scenes: Array<{
+      sceneTitle: string;
+      episodeNumber?: number;
+      sourceText: string;
+      entryGoal?: string;
+      obstacle?: string;
+      forcedChoice?: string;
+      exitShift?: string;
+      powerShift?: string;
+      subtextGap?: string;
+      stakesLayers?: string[];
+      connectsBy?: string;
+    }>;
+  };
   branchAndConsequenceChains?: string;
   failForward?: string;
   endings?: string;
   failureModeAudit?: string;
+  failureModeAuditGuidance?: {
+    rawSection: string;
+    rows: Array<{
+      label: string;
+      code: FailureModeAuditCode;
+      status: 'avoided' | 'watch_item' | 'unknown';
+      sourceText: string;
+      episodeMentions: number[];
+      mitigationText?: string;
+    }>;
+  };
   rawSectionSummary?: string[];
+}
+
+export interface ProtagonistTreatmentGuidance {
+  rawSection?: string;
+  nameAndPronouns?: string;
+  roleInWorld?: string;
+  want?: string;
+  need?: string;
+  lie?: string;
+  wound?: string;
+  truth?: string;
+  arcMode?: string;
+  startingIdentity?: string;
+  possibleEndStates?: string[];
+  climaxChoice?: string;
+  pressurePoints?: string[];
+  visualIdentity?: string;
+}
+
+export interface WorldLocationTreatmentGuidance {
+  rawSection?: string;
+  worldPremise?: string;
+  timePeriod?: string;
+  supernaturalRules?: string[];
+  powerStructures?: string[];
+  dramaticRules?: string[];
+  costsAndTaboos?: string[];
+  keyLocations?: WorldLocationTreatmentLocationGuidance[];
+}
+
+export interface WorldLocationTreatmentLocationGuidance {
+  name: string;
+  sourceText: string;
+  purpose?: string;
+  mood?: string;
+  history?: string;
+  choicePressure?: string;
 }
 
 export interface TreatmentBranchGuidance {
   id: string;
   name: string;
   summary: string;
+  sourceText?: string;
   originEpisode?: number;
+  createdBy?: string;
+  laterEpisodeChange?: string;
   reconvergenceEpisode?: number;
+  reconvergenceResidue?: string;
+  stateChanges?: string[];
+  pathVariants?: Array<{
+    id: string;
+    label: string;
+    conditionText: string;
+    resultText: string;
+    stateChanges: string[];
+    targetEndingIds?: string[];
+  }>;
+  canonicalPathId?: string;
 }
 
 // ========================================
@@ -643,6 +807,14 @@ export interface SourceMaterialAnalysis {
    * mechanics or labels.
    */
   characterArchitecture?: CharacterArchitecture;
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+  endingRealizationContracts?: EndingRealizationContract[];
+  failureModeAuditContracts?: FailureModeAuditContract[];
+  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
 
   // Key locations identified
   keyLocations: Array<{

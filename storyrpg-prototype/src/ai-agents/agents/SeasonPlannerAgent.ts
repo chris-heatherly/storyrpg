@@ -23,6 +23,7 @@ import {
   SevenPointStructure,
   StructuralRole,
   SEVEN_POINT_BEATS,
+  TreatmentSeasonGuidance,
 } from '../../types/sourceAnalysis';
 import {
   SeasonPlan,
@@ -47,6 +48,20 @@ import {
   backfillMissingBeats,
 } from '../utils/sevenPointDistribution';
 import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import { buildSeasonPromiseContracts } from '../utils/seasonPromiseContracts';
+import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
+import { buildSevenPointBeatContracts } from '../utils/sevenPointBeatContracts';
+import {
+  buildArcPressureContracts,
+  findAuthoredArcGuidanceForArc,
+} from '../utils/arcPressureContracts';
+import { buildBranchConsequenceContracts } from '../utils/branchConsequenceContracts';
+import { buildEndingRealizationContracts } from '../utils/endingRealizationContracts';
+import { buildFailureModeAuditContracts } from '../utils/failureModeAuditContracts';
+import {
+  authoredInformationLedgerEntries,
+  mergeAuthoredInformationLedger,
+} from '../utils/informationLedgerContracts';
 import {
   SevenPointCoverageValidator,
   seasonPlanToCoverageInput,
@@ -109,6 +124,7 @@ type MutablePlanData = Partial<SeasonPlan> & {
   difficultyCurve?: any[];
   seasonPromiseArchitecture?: Partial<SeasonPromiseArchitecture>;
   informationLedger?: any[];
+  choiceMoments?: any[];
 };
 
 // ========================================
@@ -420,20 +436,21 @@ Your plans must define:
       }
     }
 
-    // Bucket D: ArcPressure architecture gate (opt-in, default OFF). The validator
-    // already ran advisory inside buildSeasonPlan (findings collected into
-    // plan.warnings); this only HARD-BLOCKS on error-severity findings when
-    // GATE_ARC_PRESSURE=1. The validator is re-run here ONLY when the flag is set,
-    // so with the flag unset there is no added cost and behavior is unchanged.
-    if (gateEnabledPredicate(PLAN_GATE_FLAGS.arcPressure)) {
+    // Bucket D: ArcPressure architecture gate. Inferred arcs remain advisory
+    // unless the rollout flag is enabled. Treatment-authored arc plans are
+    // binding because the parsed arc fields now carry authored contracts.
+    const treatmentArcPlanSourced = (seasonPlan.arcPressureContracts ?? []).some((contract) => contract.source === 'treatment');
+    if (gateEnabledPredicate(PLAN_GATE_FLAGS.arcPressure) || treatmentArcPlanSourced) {
       const arcPressureGateResult = new ArcPressureArchitectureValidator().validate(seasonPlan, {
         episodeStructureMode:
           preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard',
+        treatmentSourced: treatmentArcPlanSourced,
+        arcPressureContracts: seasonPlan.arcPressureContracts,
       });
       const arcPressureGate = shouldGate(
         PLAN_GATE_FLAGS.arcPressure,
         arcPressureGateResult.issues,
-        gateEnabledPredicate,
+        treatmentArcPlanSourced ? () => true : gateEnabledPredicate,
       );
       if (arcPressureGate.gate) {
         // S3: remediation-ledger recording is DEFERRED for plan-stage gates — the
@@ -444,7 +461,9 @@ Your plans must define:
         throw new Error(
           `[ArcPressureGate] Season arc architecture failed the blocking gate (${arcPressureGate.blockingCount} issue(s)): ` +
             arcErrors.map((i) => i.message).join('; ') +
-            '. Unset GATE_ARC_PRESSURE to downgrade to advisory.',
+            (treatmentArcPlanSourced
+              ? '. Treatment-authored arc plans are binding; repair the arc plan assignments instead of downgrading.'
+              : '. Unset GATE_ARC_PRESSURE to downgrade to advisory.'),
         );
       }
     }
@@ -570,7 +589,17 @@ Your plans must define:
 The source document is a StoryRPG treatment. Preserve these authored sections as planning constraints; do not treat them as optional flavor.
 - Treatment mode: ${analysis.treatmentSeasonGuidance.episodeStructureMode}
 - Parsed sections: ${analysis.treatmentSeasonGuidance.rawSectionSummary?.join(', ') || 'season guidance'}
+${analysis.treatmentSeasonGuidance.genre ? `\n### Authored Genre\n${analysis.treatmentSeasonGuidance.genre}` : ''}
+${analysis.treatmentSeasonGuidance.tone ? `\n### Authored Tone\n${analysis.treatmentSeasonGuidance.tone}` : ''}
+${analysis.treatmentSeasonGuidance.logline ? `\n### Authored Logline Engine\n${analysis.treatmentSeasonGuidance.logline}` : ''}
+${analysis.treatmentSeasonGuidance.coreFantasy ? `\n### Authored Core Fantasy\n${analysis.treatmentSeasonGuidance.coreFantasy}` : ''}
+${analysis.treatmentSeasonGuidance.audiencePromise ? `\n### Authored Audience Promise\n${analysis.treatmentSeasonGuidance.audiencePromise}` : ''}
+${analysis.treatmentSeasonGuidance.premisePromise ? `\n### Authored Premise Promise\n${analysis.treatmentSeasonGuidance.premisePromise}` : ''}
+${analysis.treatmentSeasonGuidance.themeQuestion ? `\n### Authored Theme Question\n${analysis.treatmentSeasonGuidance.themeQuestion}` : ''}
+${analysis.treatmentSeasonGuidance.inactionPressure ? `\n### Authored Inaction Pressure\n${analysis.treatmentSeasonGuidance.inactionPressure}` : ''}
 ${analysis.treatmentSeasonGuidance.seasonPromiseAndDramaticEngine ? `\n### Season Promise / Dramatic Engine\n${analysis.treatmentSeasonGuidance.seasonPromiseAndDramaticEngine}` : ''}
+${analysis.treatmentSeasonGuidance.protagonistGuidance?.rawSection ? `\n### Authored Protagonist Treatment Fields\n${analysis.treatmentSeasonGuidance.protagonistGuidance.rawSection}` : ''}
+${analysis.treatmentSeasonGuidance.worldLocationGuidance?.rawSection ? `\n### Authored World And Location Fields\n${analysis.treatmentSeasonGuidance.worldLocationGuidance.rawSection}` : ''}
 ${analysis.treatmentSeasonGuidance.stakesArchitecture ? `\n### Stakes Architecture\n${analysis.treatmentSeasonGuidance.stakesArchitecture}` : ''}
 ${analysis.treatmentSeasonGuidance.informationLedger ? `\n### Information Ledger\n${analysis.treatmentSeasonGuidance.informationLedger}` : ''}
 ${analysis.treatmentSeasonGuidance.arcPlan ? `\n### Arc Plan\n${analysis.treatmentSeasonGuidance.arcPlan}` : ''}
@@ -1126,6 +1155,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       crossEpisodeBranches: [...(planData.crossEpisodeBranches || [])],
       consequenceChains: [...(planData.consequenceChains || [])],
       seasonFlags: [...(planData.seasonFlags || [])],
+      choiceMoments: [...(planData.choiceMoments || [])],
     };
     const endingIds = (analysis.resolvedEndings || []).map((ending) => ending.id);
 
@@ -1154,7 +1184,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
           npcsInvolved: ep.mainCharacters,
           stakes: guidance.stakesLayers?.join(' | ') || guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
           centralConflict: guidance.encounterCentralConflict || guidance.dramaticQuestion || guidance.obstacle,
-          aftermathConsequence: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceResidue,
+          aftermathConsequence: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceResidue || guidance.connectsBy,
           relevantSkills: this.inferRelevantSkills(anchor),
           encounterBuildup: guidance.encounterBuildup || guidance.entryGoal || guidance.openingSituation,
           encounterSetupContext: [
@@ -1163,6 +1193,9 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
             ...(guidance.obstacle ? [`obstacle:treatment_ep${ep.episodeNumber} — ${guidance.obstacle}`] : []),
             ...(guidance.forcedChoice ? [`forced_choice:treatment_ep${ep.episodeNumber} — ${guidance.forcedChoice}`] : []),
             ...(guidance.exitShift ? [`exit_shift:treatment_ep${ep.episodeNumber} — ${guidance.exitShift}`] : []),
+            ...(guidance.powerShift ? [`power_shift:treatment_ep${ep.episodeNumber} — ${guidance.powerShift}`] : []),
+            ...(guidance.subtextGap ? [`subtext_gap:treatment_ep${ep.episodeNumber} — ${guidance.subtextGap}`] : []),
+            ...(guidance.connectsBy ? [`connects_by:treatment_ep${ep.episodeNumber} — ${guidance.connectsBy}`] : []),
             ...(guidance.themePressure ? [`theme:treatment_ep${ep.episodeNumber} — ${guidance.themePressure}`] : []),
             ...(guidance.liePressure ? [`lie_pressure:treatment_ep${ep.episodeNumber} — ${guidance.liePressure}`] : []),
             ...(guidance.informationMovement ? [`information:treatment_ep${ep.episodeNumber} — ${guidance.informationMovement}`] : []),
@@ -1248,37 +1281,75 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     for (const branch of analysis.treatmentBranches || []) {
       if (merged.crossEpisodeBranches!.some((existing: any) => existing.name === branch.name || existing.id === branch.id)) continue;
       const originEpisode = branch.originEpisode || 1;
+      const reconvergenceEpisode = branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2);
+      const branchContracts = (analysis.branchConsequenceContracts || []).filter((contract) => contract.branchId === branch.id);
+      const eligibilityEndingIds = Array.from(new Set(branchContracts.flatMap((contract) => contract.targetEndingIds || [])))
+        .filter((endingId) => endingIds.includes(endingId));
+      const pathVariants = (branch.pathVariants && branch.pathVariants.length > 0)
+        ? branch.pathVariants
+        : [{
+            id: `${branch.id}-authored`,
+            label: branch.name,
+            conditionText: branch.createdBy || branch.summary,
+            resultText: branch.laterEpisodeChange || branch.summary,
+            stateChanges: branch.stateChanges || [],
+            targetEndingIds: eligibilityEndingIds,
+          }];
       merged.crossEpisodeBranches!.push({
         id: branch.id,
         name: branch.name,
         originEpisode,
-        trigger: { type: 'story_choice', description: branch.summary },
-        paths: [
-          {
-            id: `${branch.id}-authored`,
-            name: branch.name,
-            condition: branch.summary,
-            targetEndingIds: endingIds.length > 0 ? endingIds : undefined,
-            affectedEpisodes: [
-              {
-                episodeNumber: branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2),
-                impact: 'major',
-                description: branch.summary,
-              },
-            ],
-          },
-        ],
+        trigger: { type: 'story_choice', description: branch.createdBy || branch.summary },
+        paths: pathVariants.map((variant) => ({
+          id: variant.id,
+          name: variant.label,
+          condition: variant.conditionText,
+          targetEndingIds: (variant.targetEndingIds?.length ? variant.targetEndingIds : eligibilityEndingIds).filter((endingId) => endingIds.includes(endingId)),
+          affectedEpisodes: [
+            {
+              episodeNumber: reconvergenceEpisode,
+              impact: 'major',
+              description: variant.resultText || branch.laterEpisodeChange || branch.summary,
+            },
+          ],
+        })),
         reconvergence: branch.reconvergenceEpisode ? {
-          episodeNumber: branch.reconvergenceEpisode,
-          description: `Authored treatment reconvergence for ${branch.name}.`,
+          episodeNumber: reconvergenceEpisode,
+          description: branch.reconvergenceResidue || `Authored treatment reconvergence for ${branch.name}.`,
         } : undefined,
       });
-      merged.seasonFlags!.push({
-        flag: branch.id.replace(/-/g, '_'),
-        description: branch.summary,
-        setInEpisode: originEpisode,
-        checkedInEpisodes: [branch.reconvergenceEpisode || Math.min(analysis.totalEstimatedEpisodes, originEpisode + 2)],
-      });
+      for (const variant of pathVariants) {
+        const flag = variant.id.replace(/-/g, '_');
+        if (!merged.seasonFlags!.some((existing: any) => existing.flag === flag)) {
+          merged.seasonFlags!.push({
+            flag,
+            description: [branch.name, variant.conditionText, variant.resultText, ...(variant.stateChanges || [])].filter(Boolean).join(' — '),
+            setInEpisode: originEpisode,
+            checkedInEpisodes: [reconvergenceEpisode],
+          });
+        }
+      }
+      const chainId = `${branch.id}-chain`;
+      if (!merged.consequenceChains!.some((chain: any) => chain.id === chainId)) {
+        merged.consequenceChains!.push({
+          id: chainId,
+          origin: { episodeNumber: originEpisode, description: branch.createdBy || branch.summary },
+          consequences: [
+            ...(branch.laterEpisodeChange ? [{ episodeNumber: reconvergenceEpisode, description: branch.laterEpisodeChange, severity: 'dramatic' }] : []),
+            ...(branch.reconvergenceResidue ? [{ episodeNumber: reconvergenceEpisode, description: branch.reconvergenceResidue, severity: 'noticeable' }] : []),
+          ],
+        });
+      }
+      const choiceMomentId = `${branch.id}-choice`;
+      if (!merged.choiceMoments!.some((moment: any) => moment.id === choiceMomentId)) {
+        merged.choiceMoments!.push({
+          id: choiceMomentId,
+          episode: originEpisode,
+          anchor: branch.createdBy || branch.summary,
+          paysOffEpisode: reconvergenceEpisode,
+          flag: pathVariants[0]?.id.replace(/-/g, '_') || branch.id.replace(/-/g, '_'),
+        });
+      }
     }
 
     return merged;
@@ -1661,9 +1732,14 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       status: 'not_started' as const,
       completionPercentage: 0,
     }))).map(arc => {
+      const authoredArc = this.applyAuthoredArcGuidance(
+        arc as Partial<SeasonArc>,
+        findAuthoredArcGuidanceForArc(arc as Partial<SeasonArc>, analysis.treatmentSeasonGuidance),
+        analysis.totalEstimatedEpisodes,
+      );
       const beats: StructuralRole[] = [];
-      if (arc.episodeRange) {
-        for (let epNum = arc.episodeRange.start; epNum <= arc.episodeRange.end; epNum++) {
+      if (authoredArc.episodeRange) {
+        for (let epNum = authoredArc.episodeRange.start; epNum <= authoredArc.episodeRange.end; epNum++) {
           const roles = structuralRoleByEpisode.get(epNum) || [];
           for (const r of roles) {
             if (r !== 'rising' && r !== 'falling' && !beats.includes(r)) beats.push(r);
@@ -1671,12 +1747,16 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         }
       }
       return {
-        ...arc,
-        id: arc.id || `arc-${arc.episodeRange?.start || 1}-${arc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
+        ...authoredArc,
+        id: authoredArc.id || `arc-${authoredArc.episodeRange?.start || 1}-${authoredArc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
+        name: authoredArc.name || `Arc ${authoredArc.episodeRange?.start || 1}-${authoredArc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
+        description: authoredArc.description || `Episodes ${authoredArc.episodeRange?.start || 1}-${authoredArc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
+        episodeRange: authoredArc.episodeRange || { start: 1, end: analysis.totalEstimatedEpisodes },
+        keyMoments: authoredArc.keyMoments || [],
         status: 'not_started' as const,
         completionPercentage: 0,
         beats: beats.length > 0 ? beats : undefined,
-        ...this.normalizeArcPressureArchitecture(arc as SeasonArc, analysis, episodes, beats),
+        ...this.normalizeArcPressureArchitecture(authoredArc as SeasonArc, analysis, episodes, beats),
       };
     });
 
@@ -1685,6 +1765,71 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       analysis,
       routedEpisodes,
     );
+    const seasonPromiseContracts = buildSeasonPromiseContracts({
+      guidance: analysis.treatmentSeasonGuidance,
+      architecture: seasonPromiseArchitecture,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || Boolean(analysis.treatmentSeasonGuidance),
+    });
+    const characterTreatmentContracts = analysis.characterTreatmentContracts ?? [];
+    const worldTreatmentContracts = analysis.worldTreatmentContracts ?? [];
+    const stakesArchitectureContracts = analysis.stakesArchitectureContracts ?? buildStakesArchitectureContracts({
+      guidance: analysis.treatmentSeasonGuidance,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || Boolean(analysis.treatmentSeasonGuidance?.stakesArchitecture),
+    });
+    const sevenPointBeatContracts = analysis.sevenPointBeatContracts ?? buildSevenPointBeatContracts({
+      guidance: analysis.treatmentSeasonGuidance,
+      sevenPoint: analysis.sevenPoint,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || Boolean(analysis.treatmentSeasonGuidance?.seasonSpine),
+    });
+    const arcPressureContracts = analysis.arcPressureContracts ?? buildArcPressureContracts({
+      guidance: analysis.treatmentSeasonGuidance,
+      arcs,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || Boolean(analysis.treatmentSeasonGuidance?.arcGuidance?.arcs?.length),
+    });
+    const branchConsequenceContracts = analysis.branchConsequenceContracts ?? buildBranchConsequenceContracts({
+      branches: analysis.treatmentBranches,
+      endings: analysis.resolvedEndings,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || Boolean(analysis.treatmentBranches?.length),
+    });
+    const endingRealizationContracts = analysis.endingRealizationContracts ?? buildEndingRealizationContracts({
+      endings: analysis.resolvedEndings,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || (analysis.resolvedEndings || []).some((ending) => ending.sourceConfidence === 'explicit'),
+      branchContracts: branchConsequenceContracts,
+    });
+    const failureModeAuditContracts = analysis.failureModeAuditContracts ?? buildFailureModeAuditContracts({
+      guidance: analysis.treatmentSeasonGuidance,
+      totalEpisodes: routedEpisodes.length,
+      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+        || analysis.treatmentMetadata?.detected
+        || Boolean(analysis.treatmentSeasonGuidance?.failureModeAuditGuidance),
+      linkedContracts: [
+        characterTreatmentContracts,
+        worldTreatmentContracts,
+        stakesArchitectureContracts,
+        sevenPointBeatContracts,
+        arcPressureContracts,
+        branchConsequenceContracts,
+        endingRealizationContracts,
+      ],
+    });
     const informationLedger = this.normalizeInformationLedger(
       planData.informationLedger,
       analysis,
@@ -1734,6 +1879,15 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       anchors: analysis.anchors,
       sevenPoint: analysis.sevenPoint,
       seasonPromiseArchitecture,
+      seasonPromiseContracts,
+      stakesArchitectureContracts,
+      sevenPointBeatContracts,
+      arcPressureContracts,
+      branchConsequenceContracts,
+      endingRealizationContracts,
+      failureModeAuditContracts,
+      characterTreatmentContracts,
+      worldTreatmentContracts,
       informationLedger,
       choiceMoments,
       endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
@@ -1795,6 +1949,8 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     }
     const arcPressureResult = new ArcPressureArchitectureValidator().validate(plan, {
       episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' : 'standard',
+      treatmentSourced: arcPressureContracts.some((contract) => contract.source === 'treatment'),
+      arcPressureContracts,
     });
     for (const issue of arcPressureResult.issues) {
       plan.warnings.push(`[ArcPressure:${issue.severity}] ${issue.message}`);
@@ -1891,6 +2047,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     const normalizedRaw = Array.isArray(rawEntries)
       ? rawEntries.map((entry, index) => this.normalizeInformationLedgerEntry(entry, index, totalEpisodes))
       : [];
+    const authoredEntries = authoredInformationLedgerEntries(analysis, totalEpisodes);
 
     const fallbackEntries: InformationLedgerEntry[] = [
       {
@@ -1935,7 +2092,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     }
 
     const byId = new Map<string, InformationLedgerEntry>();
-    for (const entry of [...normalizedRaw, ...fallbackEntries]) {
+    for (const entry of [...mergeAuthoredInformationLedger(normalizedRaw, authoredEntries), ...fallbackEntries]) {
       if (!byId.has(entry.id)) byId.set(entry.id, entry);
     }
     const entries = [...byId.values()];
@@ -1985,6 +2142,12 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       isBoxQuestion: Boolean(raw?.isBoxQuestion || raw?.tensionMode === 'mystery'),
       closesQuestionIds: Array.isArray(raw?.closesQuestionIds) ? raw.closesQuestionIds.filter((id: unknown): id is string => typeof id === 'string') : [],
       opensQuestionIds: Array.isArray(raw?.opensQuestionIds) ? raw.opensQuestionIds.filter((id: unknown): id is string => typeof id === 'string') : [],
+      sourceText: typeof raw?.sourceText === 'string' ? raw.sourceText : undefined,
+      authoredId: typeof raw?.authoredId === 'string' ? raw.authoredId : undefined,
+      factualAtoms: Array.isArray(raw?.factualAtoms) ? raw.factualAtoms : undefined,
+      namedKnowledge: raw?.namedKnowledge && typeof raw.namedKnowledge === 'object' ? raw.namedKnowledge : undefined,
+      knowledgePhases: Array.isArray(raw?.knowledgePhases) ? raw.knowledgePhases : undefined,
+      setupTouchDetails: Array.isArray(raw?.setupTouchDetails) ? raw.setupTouchDetails : undefined,
     };
   }
 
@@ -2094,6 +2257,72 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
 
   private cleanSeasonPromiseText(value: unknown, fallback: string): string {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+  }
+
+  private applyAuthoredArcGuidance(
+    rawArc: Partial<SeasonArc>,
+    guidance: NonNullable<TreatmentSeasonGuidance['arcGuidance']>['arcs'][number] | undefined,
+    totalEpisodes: number,
+  ): Partial<SeasonArc> {
+    if (!guidance) return rawArc;
+    const range = guidance.episodeRange
+      ? {
+        start: Math.max(1, Math.min(totalEpisodes, guidance.episodeRange.start)),
+        end: Math.max(guidance.episodeRange.start, Math.min(totalEpisodes, guidance.episodeRange.end)),
+      }
+      : rawArc.episodeRange;
+    const midpointEpisode = range
+      ? Math.max(range.start, Math.min(range.end, Math.round((range.start + range.end) / 2)))
+      : rawArc.midpointRecontextualization?.episodeNumber;
+    const crisisEpisode = range
+      ? Math.max(range.start, Math.min(range.end, Math.round(range.start + Math.max(1, range.end - range.start) * (2 / 3))))
+      : rawArc.lateArcCrisis?.episodeNumber;
+    const turnouts = guidance.episodeTurnouts?.map((turnout) => ({
+      episodeNumber: turnout.episodeNumber,
+      turnType: this.normalizeAuthoredArcTurnoutType(turnout.turnType),
+      description: turnout.description || turnout.sourceText,
+      leavesProtagonistWith: turnout.description || turnout.sourceText,
+      whyThisCannotMoveLater: `Authored turnout from the treatment for Episode ${turnout.episodeNumber}: ${turnout.sourceText}`,
+    })) as ArcEpisodeTurnout[] | undefined;
+    return {
+      ...rawArc,
+      id: rawArc.id || `arc-${guidance.arcIndex}`,
+      name: guidance.title || rawArc.name,
+      description: guidance.arcDramaticQuestion || rawArc.description || guidance.sourceText,
+      episodeRange: range,
+      arcQuestion: guidance.arcDramaticQuestion || rawArc.arcQuestion,
+      seasonQuestionRelation: guidance.relationToSeasonQuestion || rawArc.seasonQuestionRelation,
+      identityPressureFacet: guidance.lieFacet || rawArc.identityPressureFacet,
+      midpointRecontextualization: guidance.midpointRecontextualization
+        ? {
+          episodeNumber: midpointEpisode || rawArc.midpointRecontextualization?.episodeNumber || 1,
+          questionBefore: rawArc.midpointRecontextualization?.questionBefore || `Before the arc midpoint, ${guidance.title} appears to be one kind of pressure.`,
+          questionAfter: rawArc.midpointRecontextualization?.questionAfter || `After the arc midpoint, ${guidance.title} is recontextualized by the authored reveal.`,
+          description: guidance.midpointRecontextualization,
+        }
+        : rawArc.midpointRecontextualization,
+      lateArcCrisis: guidance.lateArcCrisis
+        ? {
+          episodeNumber: crisisEpisode || rawArc.lateArcCrisis?.episodeNumber || range?.end || 1,
+          apparentFailure: rawArc.lateArcCrisis?.apparentFailure || guidance.lateArcCrisis,
+          irreversibleCost: rawArc.lateArcCrisis?.irreversibleCost || guidance.lateArcCrisis,
+          description: guidance.lateArcCrisis,
+        }
+        : rawArc.lateArcCrisis,
+      finaleAnswer: guidance.finaleAnswer || rawArc.finaleAnswer,
+      handoffPressure: guidance.handoffPressure || rawArc.handoffPressure,
+      episodeTurnouts: turnouts?.length ? turnouts : rawArc.episodeTurnouts,
+    };
+  }
+
+  private normalizeAuthoredArcTurnoutType(value: unknown): ArcEpisodeTurnoutType {
+    const text = typeof value === 'string' ? value : '';
+    if (text === 'setup' || text === 'escalation' || text === 'reversal' || text === 'revelation'
+      || text === 'cost' || text === 'choice' || text === 'recontextualization' || text === 'crisis'
+      || text === 'finale' || text === 'handoff') {
+      return text;
+    }
+    return 'escalation';
   }
 
   private normalizeArcPressureArchitecture(

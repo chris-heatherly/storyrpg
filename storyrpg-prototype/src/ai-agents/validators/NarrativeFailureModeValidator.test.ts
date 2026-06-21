@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import type { SceneContent } from '../agents/SceneWriter';
+import type { Story } from '../../types/story';
+import type { FailureModeAuditContract } from '../../types/scenePlan';
 
 describe('NarrativeFailureModeValidator', () => {
   it('flags external rescue at the ending as convenient coincidence', () => {
@@ -75,6 +77,32 @@ describe('NarrativeFailureModeValidator', () => {
 
     expect(result.issues[0]?.code).toBe('theme_drift');
   });
+
+  it('fails authored failure-mode audit contracts that are never realized', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      failureModeAuditContracts: [failureContract({
+        contractKind: 'agency_claim',
+        sourceText: 'The climax is avoided as passive because Mara chooses to burn the ledger using the clue she planted.',
+      })],
+      story: storyWithScene('s1', 'The guards arrive out of nowhere and open the gate while Mara watches.'),
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.source === 'failure_mode_audit_contract')).toBe(true);
+    expect(result.metrics.authoredContractIssues).toBe(1);
+  });
+
+  it('passes authored failure-mode audit contracts when the mitigation is staged on-page', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      failureModeAuditContracts: [failureContract({
+        contractKind: 'agency_claim',
+        sourceText: 'The climax is avoided as passive because Mara chooses to burn the ledger using the clue she planted.',
+      })],
+      story: storyWithScene('s1', 'Mara chooses to burn the ledger, uses the clue she planted, and the rescue arrives because of her preparation.'),
+    });
+
+    expect(result.issues.filter((issue) => issue.source === 'failure_mode_audit_contract')).toEqual([]);
+  });
 });
 
 function scene(sceneId: string, texts: string[]): SceneContent {
@@ -88,4 +116,37 @@ function scene(sceneId: string, texts: string[]): SceneContent {
     keyMoments: [],
     continuityNotes: [],
   };
+}
+
+function failureContract(overrides: Partial<FailureModeAuditContract>): FailureModeAuditContract {
+  return {
+    id: 'failure-mode-passive-protagonist-agency',
+    source: 'treatment',
+    code: 'passive_protagonist',
+    label: 'Passive protagonist',
+    status: 'watch_item',
+    sourceText: 'The climax is avoided as passive because Mara uses the map she earned to open the gate herself.',
+    contractKind: 'agency_claim',
+    requiredRealization: ['choice', 'scene_turn', 'ending_route', 'mechanic_pressure', 'final_prose'],
+    targetEpisodeNumbers: [1],
+    targetSceneIds: ['s1'],
+    linkedContractIds: [],
+    blockingLevel: 'treatment',
+    ...overrides,
+  };
+}
+
+function storyWithScene(sceneId: string, text: string): Story {
+  return {
+    episodes: [{
+      number: 1,
+      id: 'ep1',
+      title: 'Episode 1',
+      scenes: [{
+        id: sceneId,
+        name: 'Gate',
+        beats: [{ id: `${sceneId}-b1`, text }],
+      }],
+    }],
+  } as unknown as Story;
 }

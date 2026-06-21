@@ -88,6 +88,11 @@ export type FinalStoryContractIssueType =
   | 'protagonist_as_npc'
   | 'encounter_outcome_desync'
   | 'continuity_error'
+  | 'transition_continuity_violation'
+  | 'scene_turn_realization_violation'
+  | 'relationship_pacing_violation'
+  | 'mechanic_pressure_violation'
+  | 'treatment_field_utilization_violation'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -1549,9 +1554,12 @@ export class FinalStoryContractValidator {
    * (`input.treatmentSourced`), a fidelity error means the pipeline re-cut /
    * dropped / inverted authored content — that must HARD-FAIL, not downgrade.
    *
-   * When NOT treatment-sourced (no authored spine to conform to), the findings are
-   * recorded as advisory warnings. Default-off ⇒ with no `fidelityFindings` passed
-   * (the validators not yet dispatched), this is a no-op.
+   * When NOT treatment-sourced (no authored spine to conform to), treatment fidelity
+   * findings are recorded as advisory warnings. Scene-transition continuity and
+   * treatment-sourced scene-turn realization are promoted generator gates, so their
+   * error findings remain blocking when they represent structural flow failures.
+   * With no `fidelityFindings` passed (the validators not yet dispatched), this is
+   * a no-op.
    */
   private validateFidelityFindings(
     input: FinalStoryContractInput,
@@ -1560,14 +1568,31 @@ export class FinalStoryContractValidator {
     for (const finding of input.fidelityFindings || []) {
       // Defensive: only treat known §4 validators as a fidelity class.
       const isFidelity = isTreatmentFidelityFinding(finding);
+      const isTransitionContinuity = finding.validator === 'SceneTransitionContinuityValidator';
+      const isSceneTurn = finding.validator === 'SceneTurnRealizationValidator';
+      const isRelationshipPacing = finding.validator === 'RelationshipPacingValidator';
+      const isMechanicPressure = finding.validator === 'NarrativeMechanicPressureValidator';
+      const isTreatmentFieldUtilization = finding.validator === 'TreatmentFieldUtilizationValidator';
       const severity: 'error' | 'warning' =
-        finding.severity === 'error' && isFidelity && input.treatmentSourced
+        finding.severity === 'error' && (isTransitionContinuity || isSceneTurn || isRelationshipPacing || isMechanicPressure || isTreatmentFieldUtilization)
+          ? 'error'
+          : finding.severity === 'error' && isFidelity && input.treatmentSourced
           ? 'error'
           : finding.severity === 'error' && !input.treatmentSourced
           ? 'warning'
           : finding.severity;
       issues.push({
-        type: 'treatment_fidelity_violation',
+        type: isTransitionContinuity
+          ? 'transition_continuity_violation'
+          : isSceneTurn
+          ? 'scene_turn_realization_violation'
+          : isRelationshipPacing
+          ? 'relationship_pacing_violation'
+          : isMechanicPressure
+          ? 'mechanic_pressure_violation'
+          : isTreatmentFieldUtilization
+          ? 'treatment_field_utilization_violation'
+          : 'treatment_fidelity_violation',
         severity,
         message: finding.message,
         validator: finding.validator,

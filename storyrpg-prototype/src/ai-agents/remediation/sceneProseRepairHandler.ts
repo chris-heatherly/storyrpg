@@ -60,6 +60,20 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   // G24: planning-register/task prose leaking into beats, variants, encounter prose,
   // or visual metadata is a localized authoring-scaffold leak.
   'PlanningRegisterLeakValidator',
+  // Turn and transition failures are scene-flow defects. The existing per-scene
+  // pass is still useful for a cheap first rewrite; the cluster handler below
+  // gives them a wider repair window when the issue is structural.
+  'SceneTurnRealizationValidator',
+  'SceneTransitionContinuityValidator',
+  'RelationshipPacingValidator',
+  'NarrativeMechanicPressureValidator',
+]);
+
+const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
+  'SceneTurnRealizationValidator',
+  'SceneTransitionContinuityValidator',
+  'RelationshipPacingValidator',
+  'NarrativeMechanicPressureValidator',
 ]);
 
 type RepairableIssue = ContractRepairReport['blockingIssues'][number];
@@ -126,6 +140,18 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
         '  NON-NEGOTIABLE: remove planning-register/task language such as "Open the episode", ' +
         '"Introduce X on-page", "Authored treatment choice", and "Decide how to handle". ' +
         'Rewrite the affected field as in-world second-person prose or concrete visual direction, preserving the intended story event.',
+      );
+      continue;
+    }
+    if (issue.validator === 'RelationshipPacingValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: preserve instant chemistry if it is present, but downgrade unearned friendship, trust, intimacy, or group-membership labels into behavior: invitation, testing, guarded warmth, teasing, changed distance, vulnerability, or a fragile beginning.',
+      );
+      continue;
+    }
+    if (issue.validator === 'NarrativeMechanicPressureValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: hidden mechanics must become visible story pressure. Rewrite bare state changes as on-page evidence plus residue: access, leverage, clue, debt, suspicion, vulnerability, identity pressure, changed NPC posture, or route permission. Do not expose flags, scores, thresholds, or contract labels.',
       );
       continue;
     }
@@ -246,6 +272,25 @@ function findStoryScene(story: Story, sceneId: string, episodeNumber?: number): 
     }
   }
   return undefined;
+}
+
+function findSceneCluster(
+  story: Story,
+  centerSceneId: string,
+  episodeNumber?: number,
+): Array<{ scene: RepairableStoryScene; role: 'previous' | 'center' | 'next' }> {
+  for (const episode of (story as { episodes?: Array<{ number?: number; scenes?: RepairableStoryScene[] }> }).episodes ?? []) {
+    if (episodeNumber !== undefined && episode.number !== undefined && episode.number !== episodeNumber) continue;
+    const scenes = episode.scenes ?? [];
+    const index = scenes.findIndex((scene) => scene.id === centerSceneId);
+    if (index < 0) continue;
+    const out: Array<{ scene: RepairableStoryScene; role: 'previous' | 'center' | 'next' }> = [];
+    if (scenes[index - 1]) out.push({ scene: scenes[index - 1], role: 'previous' });
+    out.push({ scene: scenes[index], role: 'center' });
+    if (scenes[index + 1]) out.push({ scene: scenes[index + 1], role: 'next' });
+    return out;
+  }
+  return [];
 }
 
 /** Adapt an assembled-story scene to the SceneContent shape SceneCritic reads. */
@@ -374,6 +419,101 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         blocked: false,
         attempts: criticCalls,
         details: `Rewrote ${totalMerged} beat(s) across ${repairedScenes.join(', ')}; ${clearedScenes.length}/${groups.size} scene(s) predicted to clear`,
+      },
+    };
+  };
+}
+
+export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): ContractRepairHandler {
+  const attemptedCenters = new Set<string>();
+  return async ({ story, blockingIssues }) => {
+    const candidates = blockingIssues.filter(
+      (issue) => issue.sceneId && issue.validator && SCENE_CLUSTER_REPAIRABLE_VALIDATORS.has(issue.validator),
+    );
+    if (candidates.length === 0) return { story, changed: false };
+
+    const critic = opts.critic();
+    if (!critic) {
+      opts.emit?.('Scene-cluster contract repair skipped: no SceneCritic available.');
+      return { story, changed: false };
+    }
+
+    const centers = candidates
+      .filter((issue) => !attemptedCenters.has(`${issue.episodeNumber ?? ''}:${issue.sceneId}`))
+      .slice(0, opts.maxScenesPerRound ?? 2);
+    if (centers.length === 0) return { story, changed: false };
+
+    let totalMerged = 0;
+    let criticCalls = 0;
+    const repairedCenters: string[] = [];
+
+    for (const issue of centers) {
+      const centerId = issue.sceneId!;
+      attemptedCenters.add(`${issue.episodeNumber ?? ''}:${centerId}`);
+      const cluster = findSceneCluster(story, centerId, issue.episodeNumber);
+      if (cluster.length === 0) {
+        opts.emit?.(`Scene-cluster contract repair: scene ${centerId} not found; skipping.`);
+        continue;
+      }
+      const clusterSummary = cluster
+        .map(({ scene, role }) => `${role}: ${scene.id || '(unknown)'} — ${scene.name || ''}`)
+        .join(' | ');
+      const sharedNotes = [
+        'The final-story contract flagged a scene-flow failure. Repair this cluster so the center scene has a complete dramatic turn: setup/pre-turn pressure -> turn event -> aftermath or handoff.',
+        `Flagged finding: ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`,
+        `Cluster order: ${clusterSummary}`,
+        issue.validator === 'NarrativeMechanicPressureValidator'
+          ? 'Mechanic-pressure repair goal: plant, intensify, and spend hidden state as visible fiction. Show evidence before the mechanic changes, show residue immediately after, and only let later choices/routes/payoffs use pressure that the cluster has earned.'
+          : '',
+        'Preserve scene ids, beat ids where possible, choices, nextSceneId routes, and established facts. Do not invent a new plot branch. Add or rewrite only enough prose to make the turn earned and the transition grounded.',
+      ].filter(Boolean).join('\n');
+
+      for (const { scene, role } of cluster) {
+        const sceneId = scene.id;
+        if (!sceneId) continue;
+        const beats = repairableBeatsFor(scene);
+        if (beats.length === 0) continue;
+        const isEncounterScene = !scene.beats?.length;
+        try {
+          const critique = await withTimeout(
+            critic.execute({
+              scene: adaptSceneForCritic(scene, beats),
+              directorNotes: `${sharedNotes}\n\nThis is the ${role} scene in the repair cluster. ${role === 'center'
+                ? 'Make the central turn visible and followed through.'
+                : 'Make this neighbor support continuity into or out of the central turn without stealing the turn.'}`,
+            }),
+            PIPELINE_TIMEOUTS.llmAgent,
+            `SceneCritic.clusterRepair(${centerId}:${sceneId})`,
+          );
+          criticCalls += 1;
+          if (critique.success && critique.data) {
+            const warnUnmatched = (ids: string[]) => opts.emit?.(
+              `Scene-cluster contract repair: ${ids.length} rewritten beat(s) [${ids.join(', ')}] in ${sceneId} matched no beat.`,
+            );
+            totalMerged += isEncounterScene
+              ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
+              : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
+          }
+        } catch (err) {
+          opts.emit?.(`Scene-cluster contract repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      repairedCenters.push(centerId);
+    }
+
+    if (totalMerged === 0) return { story, changed: false };
+    return {
+      story,
+      changed: true,
+      record: {
+        rule: 'final_contract_scene_cluster',
+        scope: 'scene',
+        attempted: repairedCenters.length,
+        succeeded: true,
+        degraded: false,
+        blocked: false,
+        attempts: criticCalls,
+        details: `Cluster-rewrote ${totalMerged} beat(s) around ${repairedCenters.join(', ')}`,
       },
     };
   };

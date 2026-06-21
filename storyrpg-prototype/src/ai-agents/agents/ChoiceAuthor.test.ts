@@ -633,6 +633,133 @@ describe('ChoiceAuthor relationship consequence repair', () => {
     expect(result.choices.flatMap((choice: any) => choice.consequences.map((c: any) => c.npcId)))
       .toEqual(['char-mihaela-mika-dragan', 'char-mihaela-mika-dragan']);
   });
+
+  it('caps first-meeting relationship deltas from the pacing contract', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Trust Mika immediately',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 20 }],
+        },
+        {
+          id: 'c2',
+          text: 'Pull away hard',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: -14 }],
+        },
+      ],
+    });
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Door',
+        relationshipPacing: [{
+          id: 'scene-1-rel-mika',
+          source: 'treatment',
+          npcId: 'mika',
+          startStage: 'unmet',
+          targetStage: 'spark',
+          allowedLabels: ['spark'],
+          blockedLabels: ['friend'],
+          requiredEvidence: ['show behavior'],
+          minScenesSinceIntroduction: 1,
+          maxDeltaThisScene: 6,
+          mechanicDimensions: ['trust', 'affection'],
+        }],
+        choicePoint: { stakes: { want: 'w', cost: 'c', identity: 'i' }, optionHints: [] },
+      },
+      npcsInScene: [{ id: 'mika', name: 'Mika', pronouns: 'she/her', description: 'Stranger' }],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    expect(choiceSet.choices[0].consequences[0].change).toBe(6);
+    expect(choiceSet.choices[1].consequences[0].change).toBe(-6);
+  });
+
+  it('adds mechanic pressure metadata and residue to non-expression consequences', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'strategic',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Take Mika\'s key card',
+          choiceType: 'strategic',
+          consequences: [{ type: 'addItem', itemId: 'key-card', name: 'Side card', description: 'Opens a side entrance.' }],
+        },
+        {
+          id: 'c2',
+          text: 'Leave the card on the bar',
+          choiceType: 'strategic',
+          consequences: [{ type: 'setFlag', flag: 'refused_key_card', value: true }],
+        },
+        {
+          id: 'c3',
+          text: 'Ask why she trusts you',
+          choiceType: 'strategic',
+          consequences: [{ type: 'changeScore', score: 'curiosity', change: 4 }],
+        },
+      ],
+    });
+    const input = makeInput({
+      plannedConsequenceTier: 'tint',
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Club Door',
+        wantVsNeed: 'Kylie wants access but needs to understand the cost.',
+        mechanicPressure: [{
+          id: 'scene-1-pressure-keycard',
+          source: 'treatment',
+          domain: 'item',
+          mechanicRef: { itemId: 'key-card' },
+          function: 'plant',
+          storyPressure: 'The key card creates access leverage and obligation.',
+          evidenceRequired: ['show Mika testing Kylie'],
+          visibleResidue: ['the card remains visible'],
+          allowedPayoffs: ['access route'],
+          blockedPayoffs: ['instant friendship'],
+        }],
+        choicePoint: { stakes: { want: 'get inside', cost: 'owe Mika', identity: 'decide how much to risk' }, optionHints: [] },
+      },
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    expect(choiceSet.choices[0].mechanicPressure?.[0].domain).toBe('item');
+    expect(choiceSet.choices.every((choice: any) => choice.residueHints?.length)).toBe(true);
+    expect(choiceSet.choices.every((choice: any) => choice.reminderPlan?.shortTerm)).toBe(true);
+  });
+
+  it('maps arc bond targets to affection relationship consequences', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        { id: 'c1', text: 'Share the secret gently', choiceType: 'relationship', consequences: [] },
+        { id: 'c2', text: 'Refuse to share it', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      npcsInScene: [{ id: 'mika', name: 'Mika', pronouns: 'she/her', description: 'Stranger' }],
+      arcTargets: {
+        relationshipTrajectory: [{ npcId: 'mika', dimension: 'bond', direction: 'positive', hint: 'spark grows slowly' }],
+      },
+    });
+
+    author.addRelationshipConsequences(choiceSet, input);
+
+    expect(choiceSet.choices[0].consequences[0]).toEqual(
+      expect.objectContaining({ type: 'relationship', npcId: 'mika', dimension: 'affection' }),
+    );
+  });
 });
 
 describe('ChoiceAuthor skill rotation (1.7)', () => {

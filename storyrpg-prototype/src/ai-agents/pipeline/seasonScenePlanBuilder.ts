@@ -20,13 +20,19 @@ import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type {
   PlannedScene,
   PlannedSceneEncounter,
+  MechanicPressureContract,
+  MechanicPressureDomain,
+  MechanicPressureSource,
+  RelationshipPacingContract,
   RequiredBeat,
   SceneNarrativeRole,
+  SceneTurnContract,
   SeasonScenePlan,
   SetupPayoffEdge,
 } from '../../types/scenePlan';
 import type { StructuralRole } from '../../types/sourceAnalysis';
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
+import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldContracts';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -147,6 +153,493 @@ function requiredBeatFromTurn(sceneId: string, beatIndex: number, turnText: stri
     mustDepict: turnText,
     tier: 'authored',
   };
+}
+
+function roleAfterState(role: SceneNarrativeRole): string {
+  switch (role) {
+    case 'setup':
+      return 'A concrete question, pressure, promise, or relationship imbalance has been planted on-page.';
+    case 'development':
+      return 'The pressure is sharper, more specific, or harder to avoid than when the scene opened.';
+    case 'turn':
+      return 'The scene has reversed, revealed, or recontextualized the situation.';
+    case 'payoff':
+      return 'An earlier setup has discharged into visible consequence.';
+    case 'release':
+      return 'The fallout has settled into a changed emotional, social, or logistical state.';
+    default:
+      return 'The scene ends in a changed state.';
+  }
+}
+
+function roleHandoff(role: SceneNarrativeRole): string {
+  switch (role) {
+    case 'setup':
+      return 'Hand the player to the next pressure with a clear reason to continue.';
+    case 'development':
+      return 'Hand off the escalated pressure rather than resetting the scene.';
+    case 'turn':
+      return 'Let the turn land before the story moves on.';
+    case 'payoff':
+      return 'Show the consequence of the payoff before moving to the next scene.';
+    case 'release':
+      return 'Bridge cleanly into the next episode or scene pressure.';
+    default:
+      return 'End with forward pressure and continuity.';
+  }
+}
+
+function makeTurnContract(
+  scene: PlannedScene,
+  source: SceneTurnContract['source'],
+  centralTurn: string,
+  overrides: Partial<Omit<SceneTurnContract, 'turnId' | 'source' | 'centralTurn'>> = {},
+): SceneTurnContract {
+  const cleanTurn = centralTurn.trim() || scene.dramaticPurpose || scene.title;
+  return {
+    turnId: `${scene.id}-turn`,
+    source,
+    centralTurn: cleanTurn,
+    beforeState: overrides.beforeState || `Before the turn, the scene is still governed by: ${scene.dramaticPurpose || scene.stakes || scene.title}.`,
+    turnEvent: overrides.turnEvent || cleanTurn,
+    afterState: overrides.afterState || roleAfterState(scene.narrativeRole),
+    handoff: overrides.handoff || roleHandoff(scene.narrativeRole),
+  };
+}
+
+function inferPlannerTurnContract(scene: PlannedScene): SceneTurnContract {
+  if (scene.kind === 'encounter') {
+    const central =
+      scene.encounter?.centralConflict
+      || scene.encounter?.description
+      || scene.dramaticPurpose
+      || scene.title;
+    return makeTurnContract(scene, 'encounter', central, {
+      beforeState: `Before the encounter turns, the player understands the stakes: ${scene.stakes || scene.dramaticPurpose}.`,
+      afterState: scene.encounter?.aftermathConsequence || 'The encounter outcome leaves visible fallout, cost, or changed leverage.',
+      handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or next-scene pressure.',
+    });
+  }
+  if (scene.hasChoice) {
+    return makeTurnContract(scene, 'choice', scene.stakes || scene.dramaticPurpose || scene.title, {
+      turnEvent: `The player-facing choice changes the scene pressure: ${scene.stakes || scene.dramaticPurpose || scene.title}.`,
+      handoff: 'After the choice, show the immediate consequence or residue before routing onward.',
+    });
+  }
+  return makeTurnContract(scene, 'planner', scene.dramaticPurpose || scene.stakes || scene.title);
+}
+
+function applyPlannerTurnContract(scene: PlannedScene): void {
+  if (scene.turnContract?.centralTurn?.trim()) return;
+  scene.turnContract = inferPlannerTurnContract(scene);
+}
+
+function applyAuthoredTurnContract(scene: PlannedScene, beat: RequiredBeat): void {
+  scene.turnContract = makeTurnContract(scene, 'treatment', beat.mustDepict, {
+    beforeState: `Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.`,
+    turnEvent: beat.mustDepict,
+    afterState: `After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.`,
+    handoff: `Do not leave immediately after "${beat.mustDepict}"; provide aftermath or a grounded transition into the next scene.`,
+  });
+}
+
+function applySceneTurnContracts(scenes: PlannedScene[]): void {
+  for (const scene of scenes) {
+    const authored = (scene.requiredBeats ?? []).find((beat) => beat.tier === 'authored' && beat.mustDepict?.trim());
+    if (authored) applyAuthoredTurnContract(scene, authored);
+    else applyPlannerTurnContract(scene);
+  }
+}
+
+const RELATIONSHIP_TURN_RE =
+  /\b(friend|friends|ally|allies|trust|trusted|bond|belong|club|crew|circle|adopts?|invites?|joins?|together|with you|love|lover|kiss|date|romance|protects?|rescues?|vow|promise)\b/i;
+const HIGH_RELATIONSHIP_LABEL_RE =
+  /\b(friend|friends|ally|allies|trusted|trusts|inner circle|lover|lovers|family|crew|club|is now|are now|becomes?|joined|joins)\b/i;
+const MAJOR_EVIDENCE_RE =
+  /\b(rescue|rescues|saves|protects|sacrifice|bleeds?|wound|secret|confess|confesses|risk|risks|vow|promise|key|card|threshold)\b/i;
+const GROUP_RE = /\b(dusk club|club|crew|circle|group)\b/i;
+
+function slugId(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'relationship';
+}
+
+function relationshipTextForScene(scene: PlannedScene): string {
+  return [
+    scene.title,
+    scene.dramaticPurpose,
+    scene.stakes,
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+    ...(scene.requiredBeats ?? []).map((beat) => beat.mustDepict || beat.sourceTurn),
+  ].filter(Boolean).join(' ');
+}
+
+function pacingTargetStage(priorScenes: number, text: string): RelationshipPacingContract['targetStage'] {
+  if (priorScenes <= 0) return MAJOR_EVIDENCE_RE.test(text) ? 'acquaintance' : 'spark';
+  if (priorScenes === 1) return 'acquaintance';
+  if (priorScenes === 2) return 'tentative_ally';
+  return HIGH_RELATIONSHIP_LABEL_RE.test(text) ? 'friend' : 'tentative_ally';
+}
+
+function pacingStartStage(priorScenes: number): RelationshipPacingContract['startStage'] {
+  if (priorScenes <= 0) return 'unmet';
+  if (priorScenes === 1) return 'spark';
+  if (priorScenes === 2) return 'acquaintance';
+  return 'tentative_ally';
+}
+
+function pacingMaxDelta(priorScenes: number, text: string): number {
+  if (priorScenes <= 0) return MAJOR_EVIDENCE_RE.test(text) ? 8 : 6;
+  if (priorScenes === 1) return 8;
+  return 12;
+}
+
+function relationshipSourceForScene(scene: PlannedScene): RelationshipPacingContract['source'] {
+  if ((scene.requiredBeats ?? []).some((beat) => beat.tier === 'authored' && RELATIONSHIP_TURN_RE.test(beat.mustDepict || beat.sourceTurn))) {
+    return 'treatment';
+  }
+  if (scene.kind === 'encounter') return 'encounter';
+  if (scene.choiceType === 'relationship' || scene.hasChoice) return 'choice';
+  return 'planner';
+}
+
+function buildNpcPacingContract(
+  scene: PlannedScene,
+  npcId: string,
+  priorScenes: number,
+  text: string,
+): RelationshipPacingContract {
+  const targetStage = pacingTargetStage(priorScenes, text);
+  const early = priorScenes <= 1 && targetStage !== 'friend';
+  return {
+    id: `${scene.id}-rel-${slugId(npcId)}`,
+    source: relationshipSourceForScene(scene),
+    npcId,
+    startStage: pacingStartStage(priorScenes),
+    targetStage,
+    allowedLabels: early
+      ? ['spark', 'connection', 'new acquaintance', 'invitation', 'guarded warmth', 'testing trust']
+      : ['tentative ally', 'earned friend', 'trusted help', 'bond with history'],
+    blockedLabels: early
+      ? ['friend', 'best friend', 'trusted ally', 'inner circle', 'lover', 'family', 'one of us']
+      : ['best friend', 'soulmate', 'family', 'trusts completely'],
+    requiredEvidence: [
+      'show behavior before naming the bond',
+      'show reciprocity, testing, vulnerability, protection, or remembered detail',
+      'show aftermath or changed behavior after the relationship turn',
+    ],
+    minScenesSinceIntroduction: early ? 1 : 0,
+    maxDeltaThisScene: pacingMaxDelta(priorScenes, text),
+    mechanicDimensions: ['trust', 'affection', 'respect'],
+  };
+}
+
+function buildGroupPacingContract(scene: PlannedScene, priorScenes: number, text: string): RelationshipPacingContract {
+  const groupId = /dusk club/i.test(text) ? 'dusk-club' : `${slugId(scene.title)}-group`;
+  const early = priorScenes <= 1;
+  return {
+    id: `${scene.id}-rel-${groupId}`,
+    source: relationshipSourceForScene(scene),
+    groupId,
+    startStage: pacingStartStage(priorScenes),
+    targetStage: early ? 'spark' : 'tentative_ally',
+    allowedLabels: early
+      ? ['invitation', 'dare', 'inside joke', 'provisional name', 'fragile beginning']
+      : ['tentative group', 'earned circle', 'shared ritual'],
+    blockedLabels: early
+      ? ['inner circle', 'one of us', 'family', 'permanent member', 'trusted club', 'friends now']
+      : ['family', 'unbreakable circle', 'trusted completely'],
+    requiredEvidence: [
+      'make the group label provisional unless prior scenes earned it',
+      'show how each person tests, invites, or withholds belonging',
+      'tie any group-name payoff to a visible choice, gift, joke, or risk',
+    ],
+    minScenesSinceIntroduction: early ? 1 : 0,
+    maxDeltaThisScene: pacingMaxDelta(priorScenes, text),
+    mechanicDimensions: ['trust', 'affection', 'respect'],
+  };
+}
+
+function applyRelationshipPacingContracts(scenes: PlannedScene[]): void {
+  const npcSeen = new Map<string, number>();
+  const groupSeen = new Map<string, number>();
+  for (const scene of [...scenes].sort((a, b) => (a.episodeNumber - b.episodeNumber) || (a.order - b.order))) {
+    const text = relationshipTextForScene(scene);
+    const relationshipRelevant =
+      scene.choiceType === 'relationship'
+      || RELATIONSHIP_TURN_RE.test(text)
+      || scene.kind === 'encounter';
+    if (!relationshipRelevant) {
+      for (const npc of scene.npcsInvolved ?? []) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
+      continue;
+    }
+
+    const contracts = [...(scene.relationshipPacing ?? [])];
+    const npcs = (scene.npcsInvolved ?? []).filter((npc) => npc && !contracts.some((c) => c.npcId === npc)).slice(0, 3);
+    for (const npc of npcs) {
+      contracts.push(buildNpcPacingContract(scene, npc, npcSeen.get(npc) ?? 0, text));
+    }
+
+    if (GROUP_RE.test(text) && !contracts.some((c) => c.groupId)) {
+      const groupKey = /dusk club/i.test(text) ? 'dusk-club' : `${slugId(scene.title)}-group`;
+      contracts.push(buildGroupPacingContract(scene, groupSeen.get(groupKey) ?? 0, text));
+      groupSeen.set(groupKey, (groupSeen.get(groupKey) ?? 0) + 1);
+    }
+
+    if (contracts.length > 0) scene.relationshipPacing = contracts;
+    for (const npc of scene.npcsInvolved ?? []) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
+  }
+}
+
+const ITEM_PRESSURE_RE = /\b(key\s*card|keycard|card|key|quartz|crystal|ring|knife|letter|book|map|phone|object|gift|token|weapon|access)\b/i;
+const INFORMATION_PRESSURE_RE = /\b(secret|learns?|discovers?|reveal|clue|tell|knows?|information|evidence|truth|message|blog|post|reads?|rumor)\b/i;
+const ROUTE_PRESSURE_RE = /\b(side entrance|entrance|door|threshold|route|path|access|opens?|unlock|inside|outside|crosses?|moves?|walks?)\b/i;
+const IDENTITY_PRESSURE_RE = /\b(identity|becomes?|chooses?|vows?|promise|need|want|fear|hunger|lonely|cannot sleep|posts?|names? only)\b/i;
+const REPUTATION_PRESSURE_RE = /\b(reputation|public|viral|reads?|crowd|club|social|humiliation|risk|exposed|gossip)\b/i;
+const SKILL_PRESSURE_RE = /\b(investigate|notice|perceive|persuade|sneak|survive|fight|escape|track|decode|read|perform)\b/i;
+
+function mechanicPressureText(scene: PlannedScene): string {
+  return [
+    scene.title,
+    scene.dramaticPurpose,
+    scene.stakes,
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+    scene.encounter?.centralConflict,
+    scene.encounter?.aftermathConsequence,
+    ...(scene.requiredBeats ?? []).map((beat) => beat.mustDepict || beat.sourceTurn),
+  ].filter(Boolean).join(' ');
+}
+
+function pressureSourceForScene(scene: PlannedScene): MechanicPressureSource {
+  if ((scene.requiredBeats ?? []).some((beat) => beat.tier === 'authored')) return 'treatment';
+  if (scene.kind === 'encounter') return 'encounter';
+  if (scene.hasChoice || scene.choiceType) return 'choice';
+  return 'planner';
+}
+
+function inferPressureDomain(scene: PlannedScene, text: string): MechanicPressureDomain {
+  if (scene.kind === 'encounter') return 'encounter';
+  if (RELATIONSHIP_TURN_RE.test(text) || scene.choiceType === 'relationship') return 'relationship';
+  if (ITEM_PRESSURE_RE.test(text)) return 'item';
+  if (INFORMATION_PRESSURE_RE.test(text)) return 'information';
+  if (ROUTE_PRESSURE_RE.test(text) || scene.consequenceTier === 'branch' || scene.consequenceTier === 'branchlet') return 'route';
+  if (REPUTATION_PRESSURE_RE.test(text)) return 'reputation';
+  if (SKILL_PRESSURE_RE.test(text) || scene.choiceType === 'strategic') return 'skill';
+  if (IDENTITY_PRESSURE_RE.test(text) || scene.choiceType === 'dilemma') return 'identity';
+  if (scene.hasChoice) return 'flag';
+  return 'resource';
+}
+
+function pressureFunctionForScene(scene: PlannedScene): MechanicPressureContract['function'] {
+  if (scene.paysOff?.length) return scene.setsUp?.length ? 'payoff' : 'spend';
+  if (scene.narrativeRole === 'payoff') return 'payoff';
+  if (scene.narrativeRole === 'turn') return 'intensify';
+  if (scene.kind === 'encounter') return 'complicate';
+  if (scene.consequenceTier === 'branch' || scene.consequenceTier === 'branchlet') return 'gate';
+  return 'plant';
+}
+
+function pressureRefForScene(
+  scene: PlannedScene,
+  domain: MechanicPressureDomain,
+  index: number,
+): MechanicPressureContract['mechanicRef'] {
+  switch (domain) {
+    case 'relationship':
+      return { npcId: scene.npcsInvolved?.[index] || scene.npcsInvolved?.[0], relationshipDimension: 'trust' };
+    case 'item':
+      return { itemId: ITEM_PRESSURE_RE.test(mechanicPressureText(scene)) ? slugId((ITEM_PRESSURE_RE.exec(mechanicPressureText(scene))?.[1] || scene.title)) : undefined };
+    case 'route':
+      return { routeId: scene.setsUp?.[0] || scene.paysOff?.[0] || scene.id };
+    case 'encounter':
+      return { encounterOutcome: scene.encounter?.isBranchPoint ? 'branching_outcome' : 'encounter_aftermath' };
+    case 'skill':
+      return { skill: scene.encounter?.relevantSkills?.[0] };
+    case 'information':
+      return { infoId: scene.requiredBeats?.[0]?.id || scene.id };
+    case 'flag':
+      return { flag: `${slugId(scene.id)}_pressure` };
+    case 'score':
+      return { score: `${slugId(scene.id)}_pressure` };
+    case 'identity':
+      return { identityAxis: slugId(scene.stakes || scene.title) };
+    default:
+      return {};
+  }
+}
+
+function evidenceForDomain(domain: MechanicPressureDomain): string[] {
+  switch (domain) {
+    case 'relationship':
+      return ['show testing, generosity, guarded warmth, refusal, vulnerability, protection, or reciprocity before the relationship moves'];
+    case 'item':
+      return ['show the object physically exchanged, noticed, withheld, used, or carried as obligation/access'];
+    case 'route':
+      return ['show why the route becomes available, costly, suspicious, or blocked'];
+    case 'information':
+      return ['show the clue, secret, tell, overheard line, discovery, or public signal on-page'];
+    case 'skill':
+      return ['show what the player perceives, practices, risks, fails, or proves'];
+    case 'encounter':
+      return ['show how success, partial success, failure, or escape changes danger, cost, access, or posture'];
+    case 'identity':
+      return ['show the pressure on who the protagonist is becoming through action, compromise, vow, fear, or desire'];
+    default:
+      return ['show the fictional event that creates the hidden state residue'];
+  }
+}
+
+function residueForDomain(domain: MechanicPressureDomain): string[] {
+  switch (domain) {
+    case 'relationship':
+      return ['changed distance, invitation, teasing, withholding, remembered detail, challenge, or protection'];
+    case 'item':
+      return ['the object remains visible as access, burden, clue, debt, danger, or callback'];
+    case 'route':
+      return ['the next path feels earned by movement, access, cost, or a grounded transition'];
+    case 'information':
+      return ['dialogue, choice wording, later text variant, secrecy risk, or altered interpretation remembers the information'];
+    case 'skill':
+      return ['later tactic, clue read, failed scar, or confidence/limitation reflects the demonstrated skill'];
+    case 'encounter':
+      return ['injury, danger, reputation, ally posture, route condition, or aftermath changes later scenes'];
+    case 'identity':
+      return ['self-description, vow, hesitation, appetite, fear, or future choice framing shifts'];
+    default:
+      return ['changed behavior, access, tone, clue, cost, memory, or narrowed option'];
+  }
+}
+
+function allowedPayoffsForDomain(domain: MechanicPressureDomain): string[] {
+  switch (domain) {
+    case 'relationship':
+      return ['small private warning', 'tentative invitation', 'withheld or offered help', 'changed NPC posture'];
+    case 'item':
+      return ['access leverage', 'callback object', 'obligation', 'danger', 'suspicion', 'supernatural tell'];
+    case 'route':
+      return ['believable route split', 'new access', 'blocked access complication', 'grounded transition'];
+    case 'information':
+      return ['reveal interpretation', 'choice wording', 'investigation affordance', 'secret cost'];
+    case 'skill':
+      return ['earned tactic', 'noticed clue', 'partial workaround', 'fail-forward complication'];
+    case 'encounter':
+      return ['outcome-specific aftermath', 'changed danger', 'access shift', 'injury or reputation consequence'];
+    case 'identity':
+      return ['identity-framed choice', 'vow payoff', 'temptation', 'self-recognition'];
+    default:
+      return ['callback, text variant, altered tone, choice affordance, or later complication'];
+  }
+}
+
+function blockedPayoffsForDomain(domain: MechanicPressureDomain): string[] {
+  switch (domain) {
+    case 'relationship':
+      return ['instant loyalty', 'settled friendship', 'trusted ally status', 'romance without staged vulnerability'];
+    case 'item':
+      return ['instant intimacy', 'unearned mastery', 'unexplained teleport', 'access unrelated to the object'];
+    case 'route':
+      return ['location jump without movement or elapsed-time language', 'route skip that bypasses required setup'];
+    case 'information':
+      return ['prose claiming knowledge the player never learned'];
+    case 'skill':
+      return ['automatic success or hidden information without demonstrated competence'];
+    default:
+      return ['payoff not supported by on-page evidence or prior pressure'];
+  }
+}
+
+function contractFromRelationshipPacing(scene: PlannedScene, contract: RelationshipPacingContract): MechanicPressureContract {
+  const ref: MechanicPressureContract['mechanicRef'] = {
+    npcId: contract.npcId,
+    relationshipDimension: contract.mechanicDimensions[0] ?? 'trust',
+  };
+  return {
+    id: `${contract.id}-pressure`,
+    source: contract.source,
+    domain: 'relationship',
+    mechanicRef: ref,
+    function: 'intensify',
+    storyPressure: contract.groupId
+      ? `Group belonging is moving only as far as ${contract.targetStage}.`
+      : `Relationship with ${contract.npcId ?? 'the NPC'} is moving only as far as ${contract.targetStage}.`,
+    evidenceRequired: contract.requiredEvidence,
+    visibleResidue: residueForDomain('relationship'),
+    allowedPayoffs: contract.allowedLabels,
+    blockedPayoffs: contract.blockedLabels,
+    originatingSceneId: scene.id,
+    maxMagnitudeThisScene: contract.maxDeltaThisScene,
+    payoffWindow: { minScenesLater: Math.max(1, contract.minScenesSinceIntroduction) },
+  };
+}
+
+function buildMechanicPressureContract(scene: PlannedScene, index = 0, domainOverride?: MechanicPressureDomain): MechanicPressureContract {
+  const text = mechanicPressureText(scene);
+  const domain = domainOverride ?? inferPressureDomain(scene, text);
+  return {
+    id: `${scene.id}-pressure-${index + 1}-${domain}`,
+    source: pressureSourceForScene(scene),
+    domain,
+    mechanicRef: pressureRefForScene(scene, domain, index),
+    function: pressureFunctionForScene(scene),
+    storyPressure: scene.stakes || scene.turnContract?.centralTurn || scene.dramaticPurpose || scene.title,
+    evidenceRequired: evidenceForDomain(domain),
+    visibleResidue: residueForDomain(domain),
+    allowedPayoffs: allowedPayoffsForDomain(domain),
+    blockedPayoffs: blockedPayoffsForDomain(domain),
+    originatingSceneId: scene.id,
+    payoffWindow: scene.setsUp?.length ? { minScenesLater: 1 } : undefined,
+    maxMagnitudeThisScene: domain === 'relationship' ? 6 : domain === 'score' || domain === 'identity' || domain === 'skill' ? 10 : undefined,
+    requiredBeforeSpend: scene.paysOff?.length ? [{ domain, description: 'Earlier scenes must have planted this pressure before this scene spends it.' }] : undefined,
+  };
+}
+
+function applyMechanicPressureContracts(scenes: PlannedScene[]): void {
+  for (const scene of [...scenes].sort((a, b) => (a.episodeNumber - b.episodeNumber) || (a.order - b.order))) {
+    const contracts = new Map<string, MechanicPressureContract>();
+    for (const contract of scene.mechanicPressure ?? []) contracts.set(contract.id, contract);
+    for (const rel of scene.relationshipPacing ?? []) {
+      const converted = contractFromRelationshipPacing(scene, rel);
+      contracts.set(converted.id, converted);
+    }
+
+    const text = mechanicPressureText(scene);
+    const shouldHavePressure =
+      scene.hasChoice
+      || scene.kind === 'encounter'
+      || (scene.requiredBeats ?? []).some((beat) => beat.tier === 'authored')
+      || ITEM_PRESSURE_RE.test(text)
+      || INFORMATION_PRESSURE_RE.test(text)
+      || ROUTE_PRESSURE_RE.test(text)
+      || IDENTITY_PRESSURE_RE.test(text);
+    if (shouldHavePressure && contracts.size === 0) {
+      contracts.set(`${scene.id}-pressure-1`, buildMechanicPressureContract(scene));
+    } else if (shouldHavePressure && !Array.from(contracts.values()).some((contract) => contract.source === 'treatment') && (scene.requiredBeats ?? []).some((beat) => beat.tier === 'authored')) {
+      const domain = inferPressureDomain(scene, text);
+      contracts.set(`${scene.id}-pressure-authored-${domain}`, buildMechanicPressureContract(scene, contracts.size, domain));
+    }
+
+    if (scene.choiceType === 'relationship' && !Array.from(contracts.values()).some((contract) => contract.domain === 'relationship')) {
+      contracts.set(`${scene.id}-pressure-relationship`, buildMechanicPressureContract(scene, contracts.size, 'relationship'));
+    }
+    if (ITEM_PRESSURE_RE.test(text) && !Array.from(contracts.values()).some((contract) => contract.domain === 'item')) {
+      contracts.set(`${scene.id}-pressure-item`, buildMechanicPressureContract(scene, contracts.size, 'item'));
+    }
+    if (INFORMATION_PRESSURE_RE.test(text) && !Array.from(contracts.values()).some((contract) => contract.domain === 'information')) {
+      contracts.set(`${scene.id}-pressure-information`, buildMechanicPressureContract(scene, contracts.size, 'information'));
+    }
+    if ((scene.consequenceTier === 'branch' || scene.consequenceTier === 'branchlet') && !Array.from(contracts.values()).some((contract) => contract.domain === 'route')) {
+      contracts.set(`${scene.id}-pressure-route`, buildMechanicPressureContract(scene, contracts.size, 'route'));
+    }
+
+    if (contracts.size > 0) scene.mechanicPressure = Array.from(contracts.values());
+  }
 }
 
 /**
@@ -655,6 +1148,11 @@ export function bindAuthoredTurnsToScenes(
       ]);
     }
   }
+
+  applySceneTurnContracts(scenes);
+  applyRelationshipPacingContracts(scenes);
+  applyMechanicPressureContracts(scenes);
+  assignTreatmentFieldContractsToScenes(ep, scenes);
 }
 
 /** Resolve the 7-point beat text an episode carries (undefined for buffer roles). */
@@ -720,6 +1218,7 @@ export function buildEpisodeScenes(
       hasChoice: CHOICE_BEARING_ROLES.has(role),
       budgetWeight: SCENE_BUDGET_WEIGHT,
     });
+    applyPlannerTurnContract(scenes[scenes.length - 1]);
     order += 1;
   };
 
@@ -751,11 +1250,13 @@ export function buildEpisodeScenes(
       hasChoice: true,
       budgetWeight: ENCOUNTER_BUDGET_WEIGHT,
     });
+    applyPlannerTurnContract(scenes[scenes.length - 1]);
     order += 1;
   };
 
   // Standard-mode spine: setup -> development(s) -> encounter(s) -> release.
-  const standardSlots = Math.max(2, desired - standaloneEncounterCount);
+  let standardSlots = Math.max(2, desired - standaloneEncounterCount);
+  if (turnCount > 0) standardSlots = Math.max(standardSlots, turnCount + 1);
   const hasRelease = standardSlots >= 2 && desired > standaloneEncounterCount + 1;
   const openingCount = 1;
   const closingCount = hasRelease ? 1 : 0;
@@ -888,7 +1389,12 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     scenes.push(...epScenes);
   }
 
-  return { scenes, byEpisode, setupPayoffEdges: edges };
+  return {
+    scenes,
+    byEpisode,
+    setupPayoffEdges: edges,
+    authoredTreatmentFields: scenes.flatMap((scene) => scene.authoredTreatmentFields ?? []),
+  };
 }
 
 /** Return just the scenes belonging to a given episode, in order. */

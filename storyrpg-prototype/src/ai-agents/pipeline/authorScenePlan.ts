@@ -18,7 +18,12 @@
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type {
   ConsequenceTier,
+  MechanicPressureContract,
+  MechanicPressureDomain,
+  MechanicPressureFunction,
+  MechanicPressureSource,
   PlannedScene,
+  SceneTurnContract,
   SceneNarrativeRole,
   SeasonScenePlan,
   SetupPayoffEdge,
@@ -166,6 +171,7 @@ RULES:
 - Every planned encounter must appear as exactly one scene with kind:"encounter" and its encounterId.
 - setsUp/paysOff reference OTHER scene ids. A setup must pay off in the SAME or a LATER episode — never earlier.
 - Use stable scene ids like "s<episode>-<n>" for standard scenes; use the encounterId for encounter scenes.
+- If a scene forms or advances a bond, author it as paced relationship movement: instant chemistry, joke, attraction, invitation, or testing is allowed; friendship, trust, intimacy, and group membership must be earned by prior scene evidence and relationship consequences.
 
 BUDGET INTENT (declare the dramatic "diet" of each unit — the season balances these later):
 - Not every scene carries a player choice. Set "hasChoice": true ONLY where the scene presents a real
@@ -200,6 +206,38 @@ Return ONLY JSON in this exact shape:
           "kind": "standard",
           "title": "short scene title",
           "dramaticPurpose": "what happens and why it matters relative to other scenes",
+          "centralTurn": "the one dramatic turn this scene is built around: before-state changes because of a concrete event, reveal, choice, or consequence",
+          "beforeState": "what is true at the start before the turn lands",
+          "turnEvent": "the visible action/reveal/choice that bends the scene",
+          "afterState": "what has changed after the turn",
+          "handoff": "how this scene's changed state leads into the next scene",
+          "relationshipPacing": [
+            {
+              "npcId": "npcId or omit for a group contract",
+              "groupId": "groupId only for named group identity",
+              "startStage": "unmet|noticed|spark|acquaintance|tentative_ally|friend|trusted_ally|intimate",
+              "targetStage": "spark",
+              "allowedLabels": ["spark", "invitation", "new acquaintance"],
+              "blockedLabels": ["friend", "trusted ally", "inner circle"],
+              "requiredEvidence": ["show behavior before naming the bond"],
+              "minScenesSinceIntroduction": 1,
+              "maxDeltaThisScene": 6,
+              "mechanicDimensions": ["trust", "affection"]
+            }
+          ],
+          "mechanicPressure": [
+            {
+              "id": "s1-1-pressure-keycard",
+              "source": "treatment|planner|choice|encounter|arc|callback",
+              "domain": "relationship|identity|skill|flag|score|item|route|encounter|information|resource|reputation",
+              "function": "plant|intensify|gate|spend|payoff|complicate|resolve",
+              "storyPressure": "what fictional pressure the hidden mechanic tracks",
+              "evidenceRequired": ["what must be shown on-page to earn it"],
+              "visibleResidue": ["what changes immediately in prose/choice wording/NPC posture"],
+              "allowedPayoffs": ["what future turn/route/affordance this permits"],
+              "blockedPayoffs": ["what this pressure cannot justify yet"]
+            }
+          ],
           "narrativeRole": "setup",
           "location": "where",
           "npcs": ["npcId"],
@@ -229,12 +267,121 @@ interface RawScene {
   location?: unknown;
   npcs?: unknown;
   stakes?: unknown;
+  centralTurn?: unknown;
+  beforeState?: unknown;
+  turnEvent?: unknown;
+  afterState?: unknown;
+  handoff?: unknown;
   setsUp?: unknown;
   paysOff?: unknown;
   encounterId?: unknown;
   hasChoice?: unknown;
   choiceType?: unknown;
   consequenceTier?: unknown;
+  mechanicPressure?: unknown;
+}
+
+function rawTurnContract(sceneId: string, rs: RawScene, source: SceneTurnContract['source']): SceneTurnContract | undefined {
+  const centralTurn = str(rs.centralTurn) || str(rs.turnEvent);
+  if (!centralTurn) return undefined;
+  return {
+    turnId: `${sceneId}-turn`,
+    source,
+    centralTurn,
+    beforeState: str(rs.beforeState) || `Before the turn, the scene is still governed by: ${str(rs.dramaticPurpose) || str(rs.stakes) || str(rs.title) || centralTurn}.`,
+    turnEvent: str(rs.turnEvent) || centralTurn,
+    afterState: str(rs.afterState) || 'The scene ends in a changed state.',
+    handoff: str(rs.handoff) || 'Hand the changed state into the next scene.',
+  };
+}
+
+const MECHANIC_PRESSURE_DOMAINS: ReadonlySet<MechanicPressureDomain> = new Set([
+  'relationship', 'identity', 'skill', 'flag', 'score', 'item', 'route', 'encounter', 'information', 'resource', 'reputation',
+]);
+const MECHANIC_PRESSURE_FUNCTIONS: ReadonlySet<MechanicPressureFunction> = new Set([
+  'plant', 'intensify', 'gate', 'spend', 'payoff', 'complicate', 'resolve',
+]);
+const MECHANIC_PRESSURE_SOURCES: ReadonlySet<MechanicPressureSource> = new Set([
+  'treatment', 'planner', 'choice', 'encounter', 'arc', 'callback',
+]);
+
+function rawMechanicPressure(sceneId: string, rs: RawScene): MechanicPressureContract[] | undefined {
+  const raw = Array.isArray(rs.mechanicPressure) ? rs.mechanicPressure : [];
+  const contracts: MechanicPressureContract[] = [];
+  raw.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object') return;
+    const rec = entry as Record<string, unknown>;
+    const domain = str(rec.domain) as MechanicPressureDomain | undefined;
+    const fn = str(rec.function) as MechanicPressureFunction | undefined;
+    const source = str(rec.source) as MechanicPressureSource | undefined;
+    const storyPressure = str(rec.storyPressure);
+    if (!domain || !MECHANIC_PRESSURE_DOMAINS.has(domain) || !storyPressure) return;
+    contracts.push({
+      id: str(rec.id) || `${sceneId}-pressure-${index + 1}-${domain}`,
+      source: source && MECHANIC_PRESSURE_SOURCES.has(source) ? source : 'planner',
+      domain,
+      mechanicRef: {},
+      function: fn && MECHANIC_PRESSURE_FUNCTIONS.has(fn) ? fn : 'plant',
+      storyPressure,
+      evidenceRequired: strArray(rec.evidenceRequired),
+      visibleResidue: strArray(rec.visibleResidue),
+      allowedPayoffs: strArray(rec.allowedPayoffs),
+      blockedPayoffs: strArray(rec.blockedPayoffs),
+      originatingSceneId: sceneId,
+    });
+  });
+  return contracts.length > 0 ? contracts : undefined;
+}
+
+function nextUnusedStandardSceneId(ep: SeasonEpisode, scenes: PlannedScene[]): string {
+  const used = new Set(scenes.map((s) => s.id));
+  for (let i = 1; i < 99; i += 1) {
+    const id = `s${ep.episodeNumber}-${i}`;
+    if (!used.has(id)) return id;
+  }
+  return `s${ep.episodeNumber}-turn-${used.size + 1}`;
+}
+
+function ensureAuthoredTurnSceneCapacity(ep: SeasonEpisode, scenes: PlannedScene[]): void {
+  const turns = ep.treatmentGuidance?.episodeTurns?.filter((turn) => turn.trim()) ?? [];
+  if (turns.length === 0) return;
+  const eligible = () => scenes.filter((s) => s.kind !== 'encounter' && s.narrativeRole !== 'release');
+  while (eligible().length < turns.length) {
+    const turn = turns[eligible().length];
+    const id = nextUnusedStandardSceneId(ep, scenes);
+    const insertAt = scenes.findIndex((s) => s.narrativeRole === 'release');
+    const order = insertAt >= 0 ? insertAt : scenes.length;
+    const added: PlannedScene = {
+      id,
+      episodeNumber: ep.episodeNumber,
+      order,
+      kind: 'standard',
+      title: `Authored turn ${eligible().length + 1}`,
+      dramaticPurpose: `Dramatize the authored episode turn as the dramatic center: ${turn}`,
+      narrativeRole: 'turn',
+      locations: (ep.locations ?? []).slice(0, 1),
+      npcsInvolved: (ep.mainCharacters ?? []).slice(0, 3),
+      setsUp: [],
+      paysOff: [],
+      stakes: ep.synopsis,
+      actLabel: ep.treatmentGuidance?.actLabel,
+      arcLabel: ep.treatmentGuidance?.arcLabel,
+      hasChoice: true,
+      budgetWeight: SCENE_BUDGET_WEIGHT,
+      turnContract: {
+        turnId: `${id}-turn`,
+        source: 'treatment',
+        centralTurn: turn,
+        beforeState: 'Establish where the player is, who is present, and what pressure makes the authored turn happen.',
+        turnEvent: turn,
+        afterState: 'Show the immediate emotional, social, practical, or informational consequence of the authored turn.',
+        handoff: 'Provide aftermath or a grounded transition into the next scene.',
+      },
+    };
+    if (insertAt >= 0) scenes.splice(insertAt, 0, added);
+    else scenes.push(added);
+    scenes.forEach((scene, index) => { scene.order = index; });
+  }
 }
 
 function str(value: unknown): string | undefined {
@@ -457,6 +604,8 @@ function normalizeEpisodeScenes(
       setsUp: strArray(rs.setsUp),
       paysOff: strArray(rs.paysOff),
       stakes: str(rs.stakes) || ep.synopsis,
+      turnContract: rawTurnContract(id, rs, isEncounter ? 'encounter' : (budget.hasChoice ? 'choice' : 'planner')),
+      mechanicPressure: rawMechanicPressure(id, rs),
       actLabel,
       arcLabel,
       encounter,
@@ -490,6 +639,15 @@ function normalizeEpisodeScenes(
       setsUp: [],
       paysOff: [],
       stakes: enc.stakes,
+      turnContract: {
+        turnId: `${enc.id}-turn`,
+        source: 'encounter',
+        centralTurn: enc.centralConflict || enc.description || enc.stakes || `Encounter ${enc.id}`,
+        beforeState: `Before the encounter turns, the player understands the stakes: ${enc.stakes || enc.description}.`,
+        turnEvent: enc.centralConflict || enc.description || enc.stakes || `Encounter ${enc.id}`,
+        afterState: enc.aftermathConsequence || 'The encounter outcome leaves visible fallout, cost, or changed leverage.',
+        handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or next-scene pressure.',
+      },
       actLabel,
       arcLabel,
       encounter: sceneEncounter,
@@ -505,6 +663,7 @@ function normalizeEpisodeScenes(
   built.forEach((s, i) => {
     s.order = i;
   });
+  ensureAuthoredTurnSceneCapacity(ep, built);
 
   // Bind the authored turns + signature device deterministically onto the LLM
   // scenes. The model's prose framing of the turns rides in dramaticPurpose; the

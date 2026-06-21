@@ -76,6 +76,8 @@ export type {
   TreatmentFidelityValidationResult,
   TreatmentFinalStoryValidationInput,
 } from './TreatmentFidelityValidator';
+export { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
+export type { TreatmentFieldUtilizationInput } from './TreatmentFieldUtilizationValidator';
 export { DramaticStructureValidator } from './DramaticStructureValidator';
 export type {
   DramaticStructureMetrics,
@@ -236,3 +238,9 @@ export type { PovClarityIssue, PovClarityResult, PovClarityContext } from './Pov
 export type { SceneCraftOptions, SceneCraftResult } from './SceneCraftValidator';
 export { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
 export type { PlanningRegisterLeakFinding, PlanningRegisterLeakResult } from './PlanningRegisterLeakValidator';
+export { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
+export type { SceneTurnRealizationInput } from './SceneTurnRealizationValidator';
+export { RelationshipPacingValidator } from './RelationshipPacingValidator';
+export type { RelationshipPacingInput } from './RelationshipPacingValidator';
+export { NarrativeMechanicPressureValidator } from './NarrativeMechanicPressureValidator';
+export type { NarrativeMechanicPressureInput } from './NarrativeMechanicPressureValidator';

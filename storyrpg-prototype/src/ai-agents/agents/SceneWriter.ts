@@ -36,6 +36,7 @@ import {
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
 import { canonicalizeHookId, isStructuralFlag } from '../pipeline/callbackLedger';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
+import type { MechanicPressureContract, RelationshipPacingContract, SceneTurnContract } from '../../types/scenePlan';
 import { enumeratedItems } from '../utils/enumeratedObjective';
 import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
 import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
@@ -423,6 +424,9 @@ export interface SceneContent {
   // authored moment away — the season-final realization validators block on it.
   requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
   signatureMoment?: string;
+  turnContract?: SceneTurnContract;
+  relationshipPacing?: RelationshipPacingContract[];
+  mechanicPressure?: MechanicPressureContract[];
 
   // Threads planted/paid off in this scene (Phase 5.3).
   plantedThreadIds?: string[];
@@ -510,6 +514,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 
 ### Scene Craft
 - Every scene needs a purpose players can feel: plot pressure, relationship movement, theme pressure, information gain, or meaningful aftermath.
+- Every scene has one dramatic center. Build the beat sequence around the supplied Scene Turn Contract when present: setup/pre-turn pressure -> turn event -> aftermath or handoff. Do not merely mention the turn and leave.
 - If the blueprint supplies themePressure, express it through action, cost, choice, subtext, relationship pressure, information, or identity movement. Never have dialogue state the theme question directly.
 - Every scene must have a purpose in emotional, action, or character-related content that advances the story.
 - Start as late as possible and leave as soon as the turn, decision, consequence, or handoff lands.
@@ -1812,6 +1817,40 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Want vs Need**: ${input.sceneBlueprint.wantVsNeed}
 - **Conflict Engine**: ${input.sceneBlueprint.conflictEngine}
 - **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
+${input.sceneBlueprint.turnContract ? `
+### Scene Turn Contract
+- **Central turn**: ${input.sceneBlueprint.turnContract.centralTurn}
+- **Before state**: ${input.sceneBlueprint.turnContract.beforeState}
+- **Turn event**: ${input.sceneBlueprint.turnContract.turnEvent}
+- **After state**: ${input.sceneBlueprint.turnContract.afterState}
+- **Handoff**: ${input.sceneBlueprint.turnContract.handoff}
+
+This is the dramatic center of the scene. The prose must make the before-state readable, dramatize the turn event on-page, and show the after-state or handoff before the scene routes onward.
+` : ''}
+${input.sceneBlueprint.relationshipPacing?.length ? `
+### Relationship Pacing Contracts
+Write the relationship at the earned stage, not the future desired stage. Instant chemistry is allowed; instant friendship, trust, intimacy, or settled group membership is not.
+${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; allowed labels: ${c.allowedLabels.join(', ')}; blocked labels: ${c.blockedLabels.join(', ')}; evidence required: ${c.requiredEvidence.join('; ')}`).join('\n')}
+- Show relationship movement through behavior: proximity, eye contact, teasing, withholding, invitation, remembered detail, vulnerability, challenge, refusal, protection, or changed access.
+- If a group name appears early, make it a dare, joke, invitation, or fragile beginning unless prior scenes have earned settled membership.
+- Do not use blocked labels in narration, scene takeaways, visual metadata, relationshipDynamic, or transition/bridge prose.
+` : ''}
+${input.sceneBlueprint.mechanicPressure?.length ? `
+### Narrative Mechanic Pressure Contracts
+Mechanics are hidden story-dynamics accounting. Do not state flags, scores, thresholds, or contract labels. Dramatize what each mechanic means in the fiction: access, leverage, memory, suspicion, vulnerability, debt, identity pressure, learned pattern, changed permission, or narrowed options.
+${input.sceneBlueprint.mechanicPressure.map((c) => `- ${c.id}: ${c.domain}/${c.function} — ${c.storyPressure}; evidence: ${c.evidenceRequired.join('; ') || 'show the on-page event that earns it'}; visible residue: ${c.visibleResidue.join('; ') || 'show changed behavior, access, cost, clue, posture, or aftermath'}; allowed payoffs: ${c.allowedPayoffs.join('; ') || 'small believable future permission'}; blocked payoffs: ${c.blockedPayoffs.join('; ') || 'payoffs not yet earned'}`).join('\n')}
+- If this scene creates pressure, show the event that earns it and the immediate residue before routing onward.
+- If this scene spends prior pressure, make the payoff visible on-page as behavior, access, a clue, cost, altered tone, route permission, or changed NPC posture.
+- A bridge/payoff beat may carry mechanics only if it also contains aftermath/residue and grounded movement or elapsed-time language when it routes to a new scene.
+` : ''}
+${input.sceneBlueprint.authoredTreatmentFields?.length ? `
+### Authored Treatment Field Contracts
+These authored treatment fields are binding for this scene. Do not copy them as labels or planning notes; stage what they mean as reader-facing action, choice pressure, encounter behavior, information movement, consequence residue, ending turnout, or cliffhanger pressure.
+${input.sceneBlueprint.authoredTreatmentFields.map((c) => `- ${c.fieldName}: ${c.sourceText}; must realize through ${c.requiredRealization.join(', ')}`).join('\n')}
+- Pressure lanes must become visible pressure, not abstract summary.
+- Encounter fields must show up inside setup, phase action, choices, or outcome prose.
+- Ending/cliffhanger fields must land as a changed state plus forward question or pressure, not vague mood.
+` : ''}
 
 ### Key Beats to Hit
 ${input.sceneBlueprint.keyBeats

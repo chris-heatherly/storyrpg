@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import type { Scene, Story } from '../../types/story';
+import type { SeasonScenePlan } from '../../types/scenePlan';
 
 function makeScene(overrides: Partial<Scene> & { id: string }): Scene {
   return {
@@ -24,6 +25,29 @@ function makeStory(scenes: Scene[]): Story {
       { id: 'ep-1', number: 1, title: 'Ep 1', synopsis: '', coverImage: '', scenes, startingSceneId: scenes[0]?.id ?? '' },
     ],
   } as unknown as Story;
+}
+
+function makeScenePlan(
+  scenes: Array<{ id: string; episodeNumber?: number; location: string; timeOfDay?: string }>,
+): SeasonScenePlan {
+  return {
+    scenes: scenes.map((scene, order) => ({
+      id: scene.id,
+      episodeNumber: scene.episodeNumber ?? 1,
+      order,
+      kind: 'standard',
+      title: scene.id,
+      dramaticPurpose: '',
+      narrativeRole: 'development',
+      locations: [scene.location],
+      npcsInvolved: [],
+      timeOfDay: scene.timeOfDay,
+      setsUp: [],
+      paysOff: [],
+    })),
+    byEpisode: { 1: scenes.map((scene) => scene.id) },
+    setupPayoffEdges: [],
+  };
 }
 
 const validator = new SceneTransitionContinuityValidator();
@@ -52,6 +76,53 @@ describe('SceneTransitionContinuityValidator', () => {
     expect(result.issues[0].severity).toBe('error');
     expect(result.issues[0].message).toContain('s1-4');
     expect(result.issues[0].message).toContain('bookshop → rooftop');
+  });
+
+  it('flags a choice bridge that teleports from the club to the bookshop', () => {
+    const story = makeStory([
+      makeScene({
+        id: 's1-1',
+        leadsTo: ['s1-2'],
+        beats: [
+          beat('Mika presses the private card into your hand.'),
+          { id: 's1-1-b7-payoff-1', text: 'The card feels heavier than it should.', nextSceneId: 's1-2', isChoiceBridge: true } as never,
+        ],
+        timeline: { location: 'Vâlcescu Club', timeOfDay: 'night' },
+      }),
+      makeScene({
+        id: 's1-2',
+        beats: [beat('The bookshop smells of old paper, bay leaf, and woodsmoke.')],
+        timeline: { location: 'Lumina Books', timeOfDay: 'afternoon' },
+      }),
+    ]);
+
+    const result = validator.validate({ story });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].message).toContain('choice bridge');
+    expect(result.issues[0].message).toContain('Vâlcescu Club → Lumina Books');
+  });
+
+  it('accepts a location jump when the choice bridge itself grounds the movement', () => {
+    const story = makeStory([
+      makeScene({
+        id: 's1-1',
+        leadsTo: ['s1-2'],
+        beats: [
+          beat('Mika presses the private card into your hand.'),
+          { id: 's1-1-b7-payoff-1', text: 'The next morning, Mika walks you across town to the bookshop.', nextSceneId: 's1-2', isChoiceBridge: true } as never,
+        ],
+        timeline: { location: 'Vâlcescu Club', timeOfDay: 'night' },
+      }),
+      makeScene({
+        id: 's1-2',
+        beats: [beat('The bookshop smells of old paper, bay leaf, and woodsmoke.')],
+        timeline: { location: 'Lumina Books', timeOfDay: 'morning' },
+      }),
+    ]);
+
+    expect(validator.validate({ story }).issues).toEqual([]);
   });
 
   it('accepts a transitionIn as acknowledgment', () => {
@@ -99,6 +170,32 @@ describe('SceneTransitionContinuityValidator', () => {
       }),
     ]);
     expect(validator.validate({ story }).issues).toEqual([]);
+  });
+
+  it('uses scene-plan locations when packaged Scene.timeline is missing', () => {
+    const story = makeStory([
+      makeScene({
+        id: 's1-1',
+        leadsTo: ['s1-2'],
+        beats: [
+          beat('Mika presses the private card into your hand.'),
+          { id: 's1-1-b7-payoff-1', text: 'The card feels heavier than it should.', nextSceneId: 's1-2', isChoiceBridge: true } as never,
+        ],
+      }),
+      makeScene({
+        id: 's1-2',
+        beats: [beat('The bookshop smells of old paper, bay leaf, and woodsmoke.')],
+      }),
+    ]);
+    const scenePlan = makeScenePlan([
+      { id: 's1-1', location: 'Vâlcescu Club', timeOfDay: 'night' },
+      { id: 's1-2', location: 'Lumina Books', timeOfDay: 'afternoon' },
+    ]);
+
+    const result = validator.validate({ story, scenePlan });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].message).toContain('Vâlcescu Club → Lumina Books');
   });
 
   it('is inert on scenes without timeline metadata (legacy stories)', () => {

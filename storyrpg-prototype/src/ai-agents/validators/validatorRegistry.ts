@@ -202,7 +202,24 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Unacknowledged time/place jump between adjacent scenes: planned Scene.timeline
   // changed but the arriving scene has no transitionIn / transition prose. Backstop for
   // the plan-time timeline + SceneWriter/EncounterArchitect transition-handoff fix.
-  { validator: 'SceneTransitionContinuityValidator', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_SCENE_TRANSITION_CONTINUITY', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  { validator: 'SceneTransitionContinuityValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SCENE_TRANSITION_CONTINUITY', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Scene turn realization: generated scenes must orbit one central dramatic turn
+  // and show before-state -> turn event -> aftermath/handoff instead of checking off
+  // outline moments as isolated mentions.
+  { validator: 'SceneTurnRealizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SCENE_TURN_REALIZATION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Relationship pacing: generated prose may show instant chemistry, but earned
+  // labels like friend/trusted ally/inner circle must match scene history and
+  // relationship mechanics.
+  { validator: 'RelationshipPacingValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_RELATIONSHIP_PACING', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Narrative mechanic pressure: hidden flags/scores/skills/items/routes/relationships
+  // must originate in visible story evidence, leave residue, and be spent as earned
+  // narrative permission.
+  { validator: 'NarrativeMechanicPressureValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_NARRATIVE_MECHANIC_PRESSURE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Treatment field utilization: every parsed authored treatment field must be
+  // consumed into a plan artifact and realized on-page as story pressure,
+  // encounter content, choice pressure, information movement, consequence
+  // residue, ending turnout, or cliffhanger pressure.
+  { validator: 'TreatmentFieldUtilizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_TREATMENT_FIELD_UTILIZATION', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract via runFidelityValidators)' },
   // Characters without on-page introduction: cold prose name-drops before any cast
   // presence, and cast-in-metadata-only NPCs the prose never names. Backstop for the
   // first-appearance directive / notYetIntroducedNames ban-list / introduction key beats.

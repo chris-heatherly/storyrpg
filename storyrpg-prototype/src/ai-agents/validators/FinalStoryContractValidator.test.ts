@@ -640,6 +640,31 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('keeps scene-transition continuity findings blocking at the final contract', async () => {
+    const story = validStory();
+
+    const report = await new FinalStoryContractValidator().validate({
+      story,
+      fidelityFindings: [{
+        validator: 'SceneTransitionContinuityValidator',
+        severity: 'error',
+        message: 'Unacknowledged location jump into scene "s1-2" via choice bridge.',
+        episodeNumber: 1,
+        sceneId: 's1-2',
+        suggestion: 'Add bridge prose or transitionIn.',
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'transition_continuity_violation',
+        validator: 'SceneTransitionContinuityValidator',
+        sceneId: 's1-2',
+      }),
+    ]));
+  });
+
   it('blocks planning-register prose leaked into beats, variants, encounters, and visual metadata', async () => {
     const story = validStory();
     const scene = story.episodes[0].scenes[0] as any;
@@ -1015,6 +1040,74 @@ describe('FinalStoryContractValidator', () => {
 
     expect(report.passed).toBe(false);
     expect(report.blockingIssues.some((i) => i.type === 'treatment_fidelity_violation')).toBe(true);
+  });
+
+  it('hard-fails a scene-turn realization finding as its own contract type', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'SceneTurnRealizationValidator',
+        severity: 'error',
+        message: 'Scene "s1-1" mentions its central turn but lacks aftermath.',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'scene_turn_realization_violation')).toBe(true);
+  });
+
+  it('hard-fails a relationship pacing finding as its own contract type', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'RelationshipPacingValidator',
+        severity: 'error',
+        message: 'Scene "s1-1" declares friendship before the bond is earned.',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'relationship_pacing_violation')).toBe(true);
+  });
+
+  it('hard-fails a narrative mechanic pressure finding as its own contract type', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'NarrativeMechanicPressureValidator',
+        severity: 'error',
+        message: 'A key-card gate spends access pressure that was never planted.',
+        sceneId: 's1-2',
+        episodeNumber: 1,
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'mechanic_pressure_violation')).toBe(true);
+  });
+
+  it('hard-fails a treatment field utilization finding as its own contract type', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'TreatmentFieldUtilizationValidator',
+        severity: 'error',
+        message: 'A pressure lane was copied into metadata but never realized on-page.',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      }],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'treatment_field_utilization_violation')).toBe(true);
   });
 
   it('downgrades a fidelity finding to advisory when the source is NOT a treatment', async () => {

@@ -100,6 +100,173 @@ export interface RequiredBeat {
   tier: 'signature' | 'authored' | 'seed' | 'coldopen' | 'connective';
 }
 
+export type SceneTurnSource = 'treatment' | 'planner' | 'encounter' | 'choice';
+
+/**
+ * Generator-only scene craft contract. A scene is built around one dramatic
+ * turn: the state before, the event/reveal/choice that bends it, and the state
+ * after. Runtime playback ignores this metadata; validators and repair passes
+ * use it to prevent scenes from checking off outline moments without earning
+ * them on-page.
+ */
+export interface SceneTurnContract {
+  turnId: string;
+  source: SceneTurnSource;
+  centralTurn: string;
+  beforeState: string;
+  turnEvent: string;
+  afterState: string;
+  handoff: string;
+}
+
+export type RelationshipPacingStage =
+  | 'unmet'
+  | 'noticed'
+  | 'spark'
+  | 'acquaintance'
+  | 'tentative_ally'
+  | 'friend'
+  | 'trusted_ally'
+  | 'intimate';
+
+export type RelationshipPacingSource = 'treatment' | 'planner' | 'encounter' | 'choice';
+
+/**
+ * Generator-only relationship pacing contract. It lets planning, prose,
+ * choices, validators, and repair agree on what level of relationship has
+ * actually been earned on-page. Playback ignores this metadata.
+ */
+export interface RelationshipPacingContract {
+  id: string;
+  source: RelationshipPacingSource;
+  npcId?: string;
+  groupId?: string;
+  startStage: RelationshipPacingStage;
+  targetStage: RelationshipPacingStage;
+  allowedLabels: string[];
+  blockedLabels: string[];
+  requiredEvidence: string[];
+  minScenesSinceIntroduction: number;
+  maxDeltaThisScene: number;
+  mechanicDimensions: Array<'trust' | 'affection' | 'respect' | 'fear'>;
+}
+
+export type MechanicPressureDomain =
+  | 'relationship'
+  | 'identity'
+  | 'skill'
+  | 'flag'
+  | 'score'
+  | 'item'
+  | 'route'
+  | 'encounter'
+  | 'information'
+  | 'resource'
+  | 'reputation';
+
+export type MechanicPressureFunction =
+  | 'plant'
+  | 'intensify'
+  | 'gate'
+  | 'spend'
+  | 'payoff'
+  | 'complicate'
+  | 'resolve';
+
+export type MechanicPressureSource =
+  | 'treatment'
+  | 'planner'
+  | 'choice'
+  | 'encounter'
+  | 'arc'
+  | 'callback';
+
+export interface MechanicPressureRef {
+  flag?: string;
+  score?: string;
+  npcId?: string;
+  relationshipDimension?: 'trust' | 'affection' | 'respect' | 'fear';
+  identityAxis?: string;
+  skill?: string;
+  itemId?: string;
+  routeId?: string;
+  encounterOutcome?: string;
+  infoId?: string;
+}
+
+/**
+ * Generator-only mechanics-as-story-pressure contract. Playback ignores this
+ * metadata; planning, authoring, validation, and repair use it to ensure hidden
+ * state changes are earned by on-page events and later spent as narrative
+ * permission rather than raw numeric cause/effect.
+ */
+export interface MechanicPressureContract {
+  id: string;
+  source: MechanicPressureSource;
+  domain: MechanicPressureDomain;
+  mechanicRef: MechanicPressureRef;
+  function: MechanicPressureFunction;
+  storyPressure: string;
+  evidenceRequired: string[];
+  visibleResidue: string[];
+  allowedPayoffs: string[];
+  blockedPayoffs: string[];
+  originatingSceneId?: string;
+  payoffWindow?: { minEpisode?: number; maxEpisode?: number; minScenesLater?: number };
+  maxMagnitudeThisScene?: number;
+  requiredBeforeSpend?: Array<{ domain: MechanicPressureDomain; description: string }>;
+}
+
+export type AuthoredTreatmentFieldKind =
+  | 'pressure_lane'
+  | 'encounter_anchor'
+  | 'encounter_conflict'
+  | 'stakes_layer'
+  | 'theme_angle'
+  | 'lie_pressure'
+  | 'encounter_buildup'
+  | 'major_choice_pressure'
+  | 'alternative_path'
+  | 'information_movement'
+  | 'consequence_seed'
+  | 'ending_turnout'
+  | 'resolved_episode_tension'
+  | 'cliffhanger_hook'
+  | 'cliffhanger_question'
+  | 'next_episode_pressure'
+  | 'cliffhanger_setup'
+  | 'cliffhanger_type'
+  | 'emotional_charge'
+  | 'end_state_change';
+
+export type AuthoredTreatmentFieldRealization =
+  | 'scene_turn'
+  | 'encounter'
+  | 'choice'
+  | 'information_ledger'
+  | 'consequence'
+  | 'mechanic_pressure'
+  | 'cliffhanger'
+  | 'episode_ending'
+  | 'final_prose'
+  | 'next_episode_plan';
+
+/**
+ * Generator-only treatment-field utilization contract. These are the parsed
+ * authored treatment fields that must be consumed by planning artifacts and
+ * realized fiction-first on the page. Playback ignores this metadata.
+ */
+export interface AuthoredTreatmentFieldContract {
+  id: string;
+  episodeNumber: number;
+  fieldName: string;
+  sourceText: string;
+  contractKind: AuthoredTreatmentFieldKind;
+  requiredRealization: AuthoredTreatmentFieldRealization[];
+  targetSceneIds: string[];
+  blockingLevel: 'treatment' | 'structural' | 'warning';
+}
+
 /**
  * Encounter detail carried by a `kind: 'encounter'` scene. Absorbs the fields
  * of the legacy season-level PlannedEncounter so encounters no longer need a
@@ -237,6 +404,38 @@ export interface PlannedScene {
    */
   signatureMoment?: string;
 
+  /**
+   * The dramatic center of this scene. For treatment runs this is usually the
+   * authored episode turn bound to the scene; otherwise it is inferred from the
+   * planned scene purpose, role, stakes, encounter, or choice pressure.
+   */
+  turnContract?: SceneTurnContract;
+
+  /**
+   * Relationship pacing contracts for NPC/group bonds this scene is allowed to
+   * advance. Writer/choice agents use these to keep instant chemistry distinct
+   * from earned friendship, trust, intimacy, or inner-circle membership.
+   *
+   * Relationship pacing is now relationship-specific sugar over the broader
+   * mechanicPressure layer; validators may read both during the migration.
+   */
+  relationshipPacing?: RelationshipPacingContract[];
+
+  /**
+   * Hidden state changes expressed as story pressure: what on-page evidence
+   * earns the state residue, what permission it creates, and what later payoffs
+   * it can or cannot justify. Generator-only; never rendered to players.
+   */
+  mechanicPressure?: MechanicPressureContract[];
+
+  /**
+   * Treatment-field obligations assigned to this scene. This is stricter than a
+   * prompt hint: validators use it to ensure authored pressure lanes, encounter
+   * shape, choices, information movement, endings, and cliffhangers are consumed
+   * structurally and then realized in reader-facing prose.
+   */
+  authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
+
   // --- Season choice/consequence budget (allocated at plan time) ---
 
   /**
@@ -312,6 +511,8 @@ export interface SeasonScenePlan {
   byEpisode: Record<number, string[]>;
   /** Resolved setup -> payoff edges across the whole season. */
   setupPayoffEdges: SetupPayoffEdge[];
+  /** Parsed treatment-field obligations assigned across the scene plan. */
+  authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
 }
 
 /**

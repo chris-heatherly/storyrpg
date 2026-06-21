@@ -245,6 +245,10 @@ export class Assembly {
         // Planned time/place + the writer's transition phrase, persisted so the
         // SceneTransitionContinuityValidator can verify the prose honored them.
         timeline: sceneTimelineMetaForScene(sceneBlueprint, content.transitionIn),
+        turnContract: sceneBlueprint.turnContract,
+        relationshipPacing: sceneBlueprint.relationshipPacing,
+        mechanicPressure: sceneBlueprint.mechanicPressure,
+        authoredTreatmentFields: sceneBlueprint.authoredTreatmentFields,
       };
     });
 
@@ -511,6 +515,13 @@ export class Assembly {
         leadsTo: sb.leadsTo,
         isBottleneck,
         isConvergencePoint,
+        // Keep the multi-episode assembly path aligned with assembleStory so
+        // final-gate transition validators can read planned time/place.
+        timeline: sceneTimelineMetaForScene(sb, content.transitionIn),
+        turnContract: sb.turnContract,
+        relationshipPacing: sb.relationshipPacing,
+        mechanicPressure: sb.mechanicPressure,
+        authoredTreatmentFields: sb.authoredTreatmentFields,
       });
     }
 

@@ -18,13 +18,33 @@ function makeAssembly() {
   return { report, emit, events };
 }
 
+function makeFullAssembly() {
+  return new Assembly({
+    config: { generation: {} },
+    emit: vi.fn(),
+    throwIfFailFast: vi.fn(),
+    imageAgentTeam: { getReferenceSheet: vi.fn() },
+    styleAnchorPaths: {},
+    buildPersistedNpc: vi.fn(),
+    ensureBlueprintFidelityText: vi.fn(),
+    ensureChoiceBridgeBeats: vi.fn(),
+    getEpisodeScopedBeatKey: (_brief: unknown, sceneId: string, beatId: string) => `${sceneId}:${beatId}`,
+    getEpisodeScopedSceneId: (_brief: unknown, sceneId: string) => sceneId,
+    sanitizeReaderFacingSceneName: (name: string | undefined, fallback?: string) => name || fallback || '',
+    sanitizeSceneContentForReader: vi.fn(),
+    validateMicroEpisodeSeason: vi.fn(),
+    validateMicroEpisodeStructure: vi.fn(),
+    wireEncounterTreeImages: vi.fn(() => ({ setupCount: 0, outcomeCount: 0 })),
+  } as unknown as AssemblyDeps);
+}
+
 const sceneWith = (id: string, beats: Array<{ id: string; choices?: unknown[] }>) => ({ id, beats });
 const linearBlueprint = (id: string, leadsTo: string[]) => ({ scenes: [{ id, leadsTo }] });
 
 describe('Assembly.assembleBeatChoices (shared attachment for both assembly paths)', () => {
   const assembly = new Assembly({ emit: () => {} } as unknown as AssemblyDeps);
   const attach = (sceneBlueprint: any, blueprint: any, beatId: string, choiceMap: Map<string, any>) =>
-    (assembly as any).assembleBeatChoices(sceneBlueprint, blueprint, beatId, choiceMap);
+    (assembly as any).assembleBeatChoices(sceneBlueprint, blueprint, { id: beatId, text: 'Choose.', isChoicePoint: true }, choiceMap);
 
   it('returns undefined when no choice set exists for the beat', () => {
     expect(attach({ id: 's2', leadsTo: ['s3'] }, linearBlueprint('s2', ['s3']), 'b1', new Map())).toBeUndefined();
@@ -97,5 +117,86 @@ describe('Assembly.reportOrphanedChoiceSets', () => {
     const choiceSets = [{ sceneId: 's2-1', beatId: 'b2', choices: [{ id: 'c1' }] }];
     report(scenes, choiceSets, linearBlueprint('s2-1', ['s2-2']));
     expect(emit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Assembly timeline persistence', () => {
+  it('persists planned timeline metadata in assembleEpisode', () => {
+    const assembly = makeFullAssembly();
+    const episode = assembly.assembleEpisode(
+      { episode: { number: 1, title: 'Ep 1', synopsis: '' }, seasonPlan: { episodes: [] } } as any,
+      {} as any,
+      { characters: [] } as any,
+      {
+        startingSceneId: 's1',
+        bottleneckScenes: [],
+        scenes: [{
+          id: 's1',
+          name: 'Club Door',
+          description: '',
+          location: 'Vâlcescu Club',
+          timeOfDay: 'night',
+          timeJumpFromPrevious: 'later that night',
+          leadsTo: [],
+          npcsPresent: [],
+          purpose: 'setup',
+          mood: 'tense',
+          keyBeats: [],
+          turnContract: {
+            turnId: 's1-turn',
+            source: 'treatment',
+            centralTurn: 'Mika hands Kylie the side-door key card.',
+            beforeState: 'Kylie waits outside.',
+            turnEvent: 'Mika gives Kylie the card.',
+            afterState: 'Kylie has access.',
+            handoff: 'Show what the card changes.',
+          },
+          relationshipPacing: [{
+            id: 's1-rel-mika',
+            source: 'treatment',
+            npcId: 'mika',
+            startStage: 'unmet',
+            targetStage: 'spark',
+            allowedLabels: ['spark'],
+            blockedLabels: ['friend'],
+            requiredEvidence: ['show behavior'],
+            minScenesSinceIntroduction: 1,
+            maxDeltaThisScene: 6,
+            mechanicDimensions: ['trust'],
+          }],
+          mechanicPressure: [{
+            id: 's1-pressure-keycard',
+            source: 'treatment',
+            domain: 'item',
+            mechanicRef: { itemId: 'key-card' },
+            function: 'plant',
+            storyPressure: 'The key card creates access leverage and obligation.',
+            evidenceRequired: ['show Mika testing Kylie'],
+            visibleResidue: ['the card remains visible'],
+            allowedPayoffs: ['access route'],
+            blockedPayoffs: ['instant friendship'],
+          }],
+        }],
+      } as any,
+      [{
+        sceneId: 's1',
+        sceneName: 'Club Door',
+        startingBeatId: 'b1',
+        beats: [{ id: 'b1', text: 'You wait by the side entrance.' }],
+        charactersInvolved: [],
+        transitionIn: 'Later that night, outside the club',
+      }] as any,
+      [],
+    );
+
+    expect(episode.scenes[0].timeline).toEqual({
+      location: 'Vâlcescu Club',
+      timeOfDay: 'night',
+      timeJumpFromPrevious: 'later that night',
+      transitionIn: 'Later that night, outside the club',
+    });
+    expect(episode.scenes[0].turnContract?.centralTurn).toBe('Mika hands Kylie the side-door key card.');
+    expect(episode.scenes[0].relationshipPacing?.[0].targetStage).toBe('spark');
+    expect(episode.scenes[0].mechanicPressure?.[0].storyPressure).toContain('access leverage');
   });
 });

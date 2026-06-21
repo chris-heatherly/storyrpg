@@ -42,7 +42,7 @@ export interface RequiredBeatsSource {
 
 const TIER_FRAMING: Record<RequiredBeat['tier'], string> = {
   signature: 'MUST be depicted on-page, exactly as staged — never invert, soften, or omit it',
-  authored: 'must occur, in order — do not drop, re-order, or re-interpret it',
+  authored: 'is the dramatic center of its scene — build setup before it and aftermath/handoff after it; do not drop, re-order, or re-interpret it',
   seed: 'plant this detail on-page if the scene can carry it (a small recurring object, a quiet tell) — advisory, not a fixed turn',
   coldopen: 'OPEN the episode on this — dramatize the hook and every named character it introduces on-page before moving on; do not skip or summarize it',
   connective: 'tie the fixed beats together; you may freely author this connective tissue',
@@ -83,7 +83,9 @@ export function buildRequiredBeatsSection(scene: RequiredBeatsSource | undefined
 ### REQUIRED BEATS — depict each, in order; do not drop, re-order, or invert
 This scene dramatizes an already-authored episode. The beats below are FIXED.
 Depict every required beat in the order given, inventing only the connective
-tissue, transitions, sensory texture, and prose around them. Do NOT add, drop,
+tissue, transitions, sensory texture, and prose around them. An authored turn
+is the scene's dramatic center: establish why it happens, dramatize it on-page,
+then show its immediate aftermath or handoff before routing onward. Do NOT add, drop,
 re-order, or re-interpret a required beat. (Authoring guidance only — never
 expose this list, its labels, or any system framing in player-facing prose.)
 

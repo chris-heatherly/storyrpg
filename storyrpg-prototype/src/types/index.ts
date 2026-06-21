@@ -9,6 +9,7 @@
  *   - `./content`      — Beat, TextVariant, VideoAnimationInstruction
  *   - `./encounter`    — Encounter, cinematic visual contract, storylets
  *   - `./story`        — Scene, Episode, Story, GameSession, season planning
+ *   - `./scenePlan`    — generator scene-plan metadata and turn contracts
  *
  * New code should import directly from the specific submodule for clarity;
  * existing imports from `../types` continue to work via these re-exports.
@@ -21,4 +22,5 @@ export * from './choice';
 export * from './content';
 export * from './encounter';
 export * from './story';
+export * from './scenePlan';
 export * from './narrativeThread';

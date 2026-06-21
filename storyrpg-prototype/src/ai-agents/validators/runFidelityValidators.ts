@@ -46,7 +46,11 @@ import { InformationLedgerScheduleValidator } from './InformationLedgerScheduleV
 import { SignatureDevicePresenceValidator } from './SignatureDevicePresenceValidator';
 import { EncounterSetPieceDepthValidator } from './EncounterSetPieceDepthValidator';
 import { RequiredBeatRealizationValidator } from './RequiredBeatRealizationValidator';
+import { RelationshipPacingValidator } from './RelationshipPacingValidator';
+import { NarrativeMechanicPressureValidator } from './NarrativeMechanicPressureValidator';
+import { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
+import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
@@ -165,6 +169,11 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   InformationLedgerScheduleValidator: TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule,
   SignatureDevicePresenceValidator: TREATMENT_FIDELITY_GATE_FLAGS.signatureDevicePresence,
   SevenPointAnchorConformanceValidator: TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance,
+  SceneTransitionContinuityValidator: 'GATE_SCENE_TRANSITION_CONTINUITY',
+  SceneTurnRealizationValidator: 'GATE_SCENE_TURN_REALIZATION',
+  RelationshipPacingValidator: 'GATE_RELATIONSHIP_PACING',
+  NarrativeMechanicPressureValidator: 'GATE_NARRATIVE_MECHANIC_PRESSURE',
+  TreatmentFieldUtilizationValidator: 'GATE_TREATMENT_FIELD_UTILIZATION',
 };
 
 /**
@@ -266,8 +275,55 @@ function collectFidelityFindings(
   // without timeline metadata. Gated separately (GATE_SCENE_TRANSITION_CONTINUITY).
   if (isGateEnabled('GATE_SCENE_TRANSITION_CONTINUITY')) {
     guard(() => {
-      const result = new SceneTransitionContinuityValidator().validate({ story });
+      const result = new SceneTransitionContinuityValidator().validate({ story, scenePlan });
       return toFindings('SceneTransitionContinuityValidator', result.issues);
+    });
+  }
+
+  // Turn-centered scene realization: every scene with a generated turn contract must
+  // show setup/pre-turn pressure, the central turn, and aftermath/handoff. Treatment
+  // central-turn misses are blocking; non-treatment misses remain warning unless the
+  // validator identifies structural risk.
+  if (isGateEnabled('GATE_SCENE_TURN_REALIZATION')) {
+    guard(() => {
+      const result = new SceneTurnRealizationValidator().validate({ story, scenePlan, treatmentSourced });
+      return toFindings('SceneTurnRealizationValidator', result.issues);
+    });
+  }
+
+  // Relationship pacing: instant chemistry is allowed, but friendship, trust,
+  // intimacy, and group membership must be earned by prior scenes, visible
+  // behavior, and relationship consequences.
+  if (isGateEnabled('GATE_RELATIONSHIP_PACING')) {
+    guard(() => {
+      const result = new RelationshipPacingValidator().validate({ story, scenePlan, treatmentSourced });
+      return toFindings('RelationshipPacingValidator', result.issues);
+    });
+  }
+
+  // Narrative mechanic pressure: hidden state must originate in on-page events,
+  // leave visible residue, and be spent as earned story permission.
+  if (isGateEnabled('GATE_NARRATIVE_MECHANIC_PRESSURE')) {
+    guard(() => {
+      const result = new NarrativeMechanicPressureValidator().validate({ story, scenePlan, treatmentSourced });
+      return toFindings('NarrativeMechanicPressureValidator', result.issues);
+    });
+  }
+
+  // Treatment field utilization: every parsed authored field (pressure lanes,
+  // encounter shape, stakes/theme/lie pressure, information/consequence seeds,
+  // ending turnout, and cliffhanger pressure) must be consumed into a concrete
+  // planning artifact and realized fiction-first in the final story.
+  if (isGateEnabled('GATE_TREATMENT_FIELD_UTILIZATION') && treatmentSourced && sourceAnalysis) {
+    guard(() => {
+      const result = new TreatmentFieldUtilizationValidator().validate({
+        story,
+        seasonPlan,
+        sourceAnalysis,
+        treatmentSourced,
+        phase: 'final',
+      });
+      return toFindings('TreatmentFieldUtilizationValidator', result.issues);
     });
   }
 
@@ -386,6 +442,16 @@ export function runPlanTimeFidelityChecks(input: {
         seasonPlanToAnchorConformanceInput(seasonPlan, beatEpisodeAnchors),
       );
       return toFindings('SevenPointAnchorConformanceValidator', result.issues);
+    });
+  }
+
+  if (isGateEnabled('GATE_TREATMENT_FIELD_UTILIZATION')) {
+    guard(() => {
+      const result = new TreatmentFieldUtilizationValidator().validatePlan({
+        seasonPlan,
+        sourceAnalysis,
+      });
+      return toFindings('TreatmentFieldUtilizationValidator', result.issues);
     });
   }
 

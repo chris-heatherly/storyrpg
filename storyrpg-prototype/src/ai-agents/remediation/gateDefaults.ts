@@ -296,15 +296,35 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // a watched run showed the exact class again (missing blog counter + roses/card)
   // and the gate already routes to the season-final scene regen path. Reversible via =0.
   GATE_TREATMENT_SEED_REALIZATION: true,
-  // 2026-06-09 storytelling-quality audit: unacknowledged time/place jumps between
-  // adjacent scenes (bite-me-g10 bookshop-afternoon → 4am-rooftop hard cut). The
-  // generative half is live (plan-time SceneBlueprint.timeOfDay/timeJumpFromPrevious,
-  // SceneWriter/EncounterArchitect transition handoff, Scene.timeline persistence);
-  // SceneTransitionContinuityValidator is the deterministic backstop over the persisted
-  // metadata. Default-OFF per the gate-promotion discipline: needs one live `=1` run to
-  // confirm the opening-prose transition-marker heuristic's false-positive profile
-  // (it only reads scenes that CARRY timeline metadata, so legacy stories are inert).
-  GATE_SCENE_TRANSITION_CONTINUITY: false,
+  // Bite Me hard-cut remediation: unacknowledged time/place jumps between adjacent
+  // scenes or choice-bridge payoffs are now blocking. The validator remains inert
+  // for legacy stories with no persisted timeline/scene-plan metadata, but any
+  // planned location/time jump must be grounded in bridge prose, transitionIn, or
+  // the arriving scene's opening.
+  GATE_SCENE_TRANSITION_CONTINUITY: true,
+  // Turn-centered scene realization: every generated scene with a turn contract
+  // must show setup/pre-turn pressure, the central turn, and aftermath/handoff.
+  // Treatment-authored turns block; non-treatment misses start as warnings unless
+  // the validator detects structural risk. Reversible via =0.
+  GATE_SCENE_TURN_REALIZATION: true,
+  // Relationship pacing: instant chemistry is allowed, but friendship, trust,
+  // intimacy, and group membership must be earned through scene time, visible
+  // behavior, and relationship consequences. Reversible via =0.
+  GATE_RELATIONSHIP_PACING: true,
+  // Narrative mechanic pressure: flags, scores, skills, items, routes,
+  // relationships, information, and encounter outcomes must be earned as
+  // on-page pressure and spent as future story permission, not bare state math.
+  // Routes through final-contract regen/cluster repair. Reversible via =0.
+  GATE_NARRATIVE_MECHANIC_PRESSURE: true,
+  // Treatment field utilization: parsed authored treatment fields must become
+  // concrete scene/choice/encounter/info/consequence/ending/cliffhanger
+  // obligations and then show up fiction-first in final prose. Reversible via =0.
+  GATE_TREATMENT_FIELD_UTILIZATION: true,
+  GATE_MECHANIC_PRESSURE_REPAIR: true,
+  // Cluster repair for structural flow defects: when a turn/transition failure is
+  // bigger than one missing sentence, rewrite the failed scene plus its immediate
+  // neighbors with shared director notes. Runs only inside final-contract repair.
+  GATE_SCENE_TURN_CLUSTER_REPAIR: true,
   // 2026-06-09 storytelling-quality audit: characters surfacing without on-page
   // introduction — cold name-drops (bite-me-g10 Victor, prose names him before any
   // scene casts him) and metadata-only presence (endsong-g10 Sylvanor, cast +

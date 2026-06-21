@@ -32,7 +32,16 @@ import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
-import type { PlannedScene, SetupPayoffEdge, SceneNarrativeRole, RequiredBeat } from '../../types/scenePlan';
+import type {
+  PlannedScene,
+  SetupPayoffEdge,
+  SceneNarrativeRole,
+  RequiredBeat,
+  AuthoredTreatmentFieldContract,
+  MechanicPressureContract,
+  RelationshipPacingContract,
+  SceneTurnContract,
+} from '../../types/scenePlan';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 import { DramaticStructureValidator } from '../validators/DramaticStructureValidator';
@@ -433,6 +442,10 @@ export interface SceneBlueprint {
   // scenes the treatment is silent on — the SceneWriter prompt is then unchanged.
   requiredBeats?: RequiredBeat[];
   signatureMoment?: string;
+  turnContract?: SceneTurnContract;
+  relationshipPacing?: RelationshipPacingContract[];
+  mechanicPressure?: MechanicPressureContract[];
+  authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
   // Treatment invariants — lines the prose must HOLD (events the episode states must
   // NOT happen, e.g. "she does not go home with him"). Advisory SceneWriter guidance;
   // empty for from-scratch runs and episodes with no stated negative constraint.
@@ -2457,6 +2470,10 @@ ${sceneEpisodeMode}
         // beats) and the signature moment so SceneWriter can depict them in order.
         requiredBeats,
         signatureMoment: p.signatureMoment,
+        turnContract: p.turnContract,
+        relationshipPacing: p.relationshipPacing,
+        mechanicPressure: p.mechanicPressure,
+        authoredTreatmentFields: p.authoredTreatmentFields,
         keyBeats: [p.dramaticPurpose],
         leadsTo: nextId ? [nextId] : [],
       };

@@ -174,10 +174,43 @@ describe('buildSeasonScenePlan', () => {
       expect(beat.mustDepict.length).toBeGreaterThan(0);
       expect(beat.id).toMatch(/-rb\d+$/);
     }
+    const turnContracts = scenes.map((s) => s.turnContract).filter(Boolean);
+    expect(turnContracts.some((contract) => contract?.source === 'treatment' && contract.centralTurn === 'Darian assaults the battlement')).toBe(true);
+    expect(turnContracts.some((contract) => contract?.source === 'treatment' && contract.centralTurn === 'Aethavyr leaps to the rescue on instinct')).toBe(true);
+    expect(turnContracts.some((contract) => contract?.source === 'treatment' && contract.centralTurn === 'Lysandra names him Aethavyr')).toBe(true);
     // The dramaticPurpose no longer folds the turn text in.
     for (const s of scenes) {
       expect(s.dramaticPurpose).not.toContain('Darian assaults the battlement');
     }
+  });
+
+  it('infers turn contracts for non-treatment planned scenes', () => {
+    const sp = buildSeasonScenePlan(plan([episode(1, ['hook'])]));
+    const scenes = scenesForEpisode(sp, 1);
+
+    expect(scenes.length).toBeGreaterThan(0);
+    expect(scenes.every((s) => s.turnContract?.centralTurn)).toBe(true);
+    expect(scenes.some((s) => s.turnContract?.source === 'planner' || s.turnContract?.source === 'choice')).toBe(true);
+  });
+
+  it('paces first-meeting treatment relationship turns below earned friendship', () => {
+    const ep = episode(1, ['hook'], {
+      mainCharacters: ['kylie', 'mika', 'stela'],
+      treatmentGuidance: {
+        episodeTurns: [
+          'Mika adopts Kylie at the door of Vâlcescu Club, swaps out her American shoes, and hands her a key card to the side entrance.',
+          'At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie’s hand — this one wants to be with you, love — and the Dusk Club is now three.',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const scenes = scenesForEpisode(sp, 1);
+
+    const firstMeetingContracts = scenes.flatMap((s) => s.relationshipPacing ?? []);
+    expect(firstMeetingContracts.some((c) => c.npcId === 'mika' && ['spark', 'acquaintance'].includes(c.targetStage))).toBe(true);
+    expect(firstMeetingContracts.some((c) => c.npcId === 'mika' && c.blockedLabels.includes('friend'))).toBe(true);
+    expect(firstMeetingContracts.some((c) => c.groupId === 'dusk-club' && c.allowedLabels.includes('provisional name'))).toBe(true);
+    expect(firstMeetingContracts.every((c) => c.targetStage !== 'trusted_ally' && c.targetStage !== 'intimate')).toBe(true);
   });
 
   it('produces a signature device on the anchor scene from the visual anchor', () => {
@@ -259,6 +292,8 @@ describe('buildSeasonScenePlan', () => {
     // All 9 turns are bound, none dropped.
     const allBeats = scenes.flatMap((s) => s.requiredBeats ?? []);
     expect(allBeats).toHaveLength(9);
+    const treatmentContracts = scenes.filter((s) => s.turnContract?.source === 'treatment');
+    expect(treatmentContracts).toHaveLength(9);
     // Scene count grew beyond the estimate (and the normal 8 cap) to fit them.
     expect(scenes.length).toBeGreaterThan(3);
   });
@@ -483,5 +518,39 @@ describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bit
     expect(encounters[0].encounter?.description).toContain('Cișmigiu at 1am');
     expect(encounters[0].encounter?.description).not.toContain('rooftop bar at sunset');
     expect(scenes.filter((scene) => scene.id === 'treatment-enc-1-1')).toHaveLength(1);
+  });
+});
+
+describe('mechanic pressure contracts', () => {
+  it('turns treatment mechanics such as key cards and quartz into story-pressure contracts', () => {
+    const ep = episode(1, ['hook'], {
+      locations: ['Vâlcescu Club', 'Lumina Books'],
+      mainCharacters: ['mika', 'stela'],
+      treatmentGuidance: {
+        episodeTurns: [
+          'Mika adopts Kylie at the door of Vâlcescu Club, swaps out her American shoes, and hands her a key card to the side entrance.',
+          'At Lumina Books, Stela presses rose quartz into Kylie\'s hand and calls the Dusk Club three.',
+        ],
+      },
+    } as Partial<SeasonEpisode>);
+
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const pressure = scenes.flatMap((scene) => scene.mechanicPressure ?? []);
+
+    expect(pressure.some((contract) => contract.source === 'treatment' && contract.domain === 'item')).toBe(true);
+    expect(pressure.some((contract) => contract.domain === 'relationship' && contract.blockedPayoffs.some((payoff) => /friend|trusted|inner/i.test(payoff)))).toBe(true);
+  });
+
+  it('adds pressure contracts to non-treatment choice scenes', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 3,
+      synopsis: 'A decision about the locked archive changes what the player can learn.',
+    } as Partial<SeasonEpisode>);
+
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const choiceScenes = scenes.filter((scene) => scene.hasChoice);
+
+    expect(choiceScenes.length).toBeGreaterThan(0);
+    expect(choiceScenes.every((scene) => (scene.mechanicPressure ?? []).length > 0)).toBe(true);
   });
 });

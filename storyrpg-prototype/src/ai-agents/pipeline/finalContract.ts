@@ -33,7 +33,7 @@ import type { ComprehensiveValidationReport } from '../../types/validation';
 import { runFidelityValidators } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
-import { buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
+import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
@@ -296,6 +296,22 @@ export class FinalContract {
               }
             },
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          }),
+        );
+      }
+      if (isGateEnabled('GATE_SCENE_TURN_CLUSTER_REPAIR')) {
+        handlers.push(
+          buildSceneClusterRepairHandler({
+            critic: () => {
+              try {
+                return this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
+              } catch (err) {
+                console.warn(`[Pipeline] Scene-cluster contract repair: SceneCritic unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+            maxScenesPerRound: 2,
           }),
         );
       }

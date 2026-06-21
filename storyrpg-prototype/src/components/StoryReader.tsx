@@ -77,6 +77,22 @@ function debugLog(...args: unknown[]): void {
   }
 }
 
+function formatDevSceneNumber(sceneId?: string | null): string | null {
+  return (
+    sceneId?.match(/scene-([0-9]+[a-z]?)/i)?.[1] ||
+    sceneId?.match(/\bs([0-9]+-[0-9]+[a-z]?)\b/i)?.[1] ||
+    null
+  );
+}
+
+function formatDevBeatNumber(beatId?: string | null): string | null {
+  return (
+    beatId?.match(/beat-([0-9]+[a-z]?)/i)?.[1] ||
+    beatId?.match(/\bb([0-9]+[a-z]?)\b/i)?.[1] ||
+    null
+  );
+}
+
 const REFLECTION_PROSE: Record<string, string[]> = {
   victory: [
     'You take a breath. The dust settles, and you feel the weight of what you\'ve done.',
@@ -1457,7 +1473,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Dev overlay: compute contextual label and render helpers shared by every beat type
   const getDevLabel = (currentImageUrl?: string | null) => {
     if (!developerMode || !currentScene) return null;
-    const sn = currentScene.id?.match(/scene-([0-9]+[a-z]?)/i)?.[1];
+    const sn = formatDevSceneNumber(currentScene.id);
     const withImagePanel = (baseLabel: string | null) => {
       const panelNumber = getImagePanelNumberFromStory(currentStory, currentImageUrl);
       if (!panelNumber) return baseLabel;
@@ -1471,8 +1487,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const sl = idx >= 0 ? `SL·B${idx + 1}` : 'SL';
       return withImagePanel(sn ? `S${sn}  ${sl}` : sl);
     }
-    const bn = currentBeatId?.match(/beat-([0-9]+)/i)?.[1];
-    return withImagePanel(sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : null);
+    const bn = formatDevBeatNumber(currentBeatId);
+    return withImagePanel(sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : bn ? `B${bn}` : null);
   };
 
   const renderDevBadgeOverlay = (currentImageUrl?: string | null) => {
@@ -1936,42 +1952,42 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       {renderDevBadgeOverlay(imageUrl)}
 
       {/* Dev Mode: Toolbar (rendered as overlay so it wins stacking on web) */}
-      {developerMode && imageUrl && (
+      {developerMode && (
           <View style={styles.feedbackToolbar}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.feedbackButton,
+                styles.navButton,
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Previous beat"
+              onPress={devGoPrev}
+              {...(Platform.OS === 'web' ? ({ onClick: devGoPrev } as any) : {})}
+            >
+              <ArrowLeft size={18} color={TERMINAL.colors.muted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.feedbackButton,
+                styles.navButton,
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Next beat"
+              onPress={devGoNext}
+              {...(Platform.OS === 'web' ? ({ onClick: devGoNext } as any) : {})}
+            >
+              <ArrowRight size={18} color={TERMINAL.colors.muted} />
+            </Pressable>
+
             {feedbackSubmitted ? (
               <View style={styles.feedbackSubmittedIndicator}>
                 <Text style={styles.feedbackSubmittedText}>FEEDBACK SAVED</Text>
               </View>
-            ) : (
+            ) : imageUrl ? (
               <>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.feedbackButton,
-                    styles.navButton,
-                    pressed && { opacity: 0.7 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Previous beat"
-                  onPress={devGoPrev}
-                  {...(Platform.OS === 'web' ? ({ onClick: devGoPrev } as any) : {})}
-                >
-                  <ArrowLeft size={18} color={TERMINAL.colors.muted} />
-                </Pressable>
-
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.feedbackButton,
-                    styles.navButton,
-                    pressed && { opacity: 0.7 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Next beat"
-                  onPress={devGoNext}
-                  {...(Platform.OS === 'web' ? ({ onClick: devGoNext } as any) : {})}
-                >
-                  <ArrowRight size={18} color={TERMINAL.colors.muted} />
-                </Pressable>
-
                 <Pressable
                   style={({ pressed }) => [
                     styles.feedbackButton,
@@ -2036,7 +2052,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
                   <ThumbsDown size={18} color={currentImageFeedback?.rating === 'negative' ? '#fff' : TERMINAL.colors.error} />
                 </Pressable>
               </>
-            )}
+            ) : null}
           </View>
         )}
 

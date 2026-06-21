@@ -14,9 +14,10 @@
  * This validator is the deterministic backstop over that metadata: for every
  * scene-graph edge prev → next INSIDE an episode where the planned location or
  * time-of-day changes, the arriving scene must acknowledge the shift —
- * a non-empty `timeline.transitionIn`, OR temporal/movement language in its
- * opening prose. Episode boundaries are skipped (an episode opener
- * legitimately re-establishes time and place from scratch).
+ * a non-empty `timeline.transitionIn`, temporal/movement language in the choice
+ * bridge that routes there, OR temporal/movement language in its opening prose.
+ * Episode boundaries are skipped (an episode opener legitimately re-establishes
+ * time and place from scratch).
  *
  * Scenes with no `timeline` metadata (legacy stories, pre-fix runs) are
  * skipped entirely — the validator only asserts against what was planned.
@@ -25,15 +26,15 @@
  * dedicated finding: an empty encounter scaffold sitting exactly where a jump
  * happens is the worst version of the defect (the g10 pattern).
  *
- * Pure, deterministic, generator-internal. Registration is DEFAULT-OFF behind
- * `GATE_SCENE_TRANSITION_CONTINUITY`, dispatched from {@link runFidelityValidators};
- * per the gate-promotion discipline it ships advisory until one live `=1` run
- * confirms the false-positive profile.
+ * Pure, deterministic, generator-internal. Registration is enabled by
+ * `GATE_SCENE_TRANSITION_CONTINUITY`, dispatched from {@link runFidelityValidators}.
  */
 
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
+import type { PlannedScene, SeasonScenePlan } from '../../types/scenePlan';
+import { normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
 
 /**
  * Opening-prose markers that count as acknowledging a time/place shift.
@@ -80,9 +81,10 @@ function openingProse(scene: Scene): string {
   return '';
 }
 
-/** True when the arriving scene acknowledges the shift. */
-function acknowledgesTransition(scene: Scene): boolean {
+/** True when the bridge or arriving scene acknowledges the shift. */
+function acknowledgesTransition(scene: Scene, bridgeProse?: string): boolean {
   if (String(scene.timeline?.transitionIn || '').trim()) return true;
+  if (bridgeProse && TRANSITION_MARKERS.test(bridgeProse.slice(0, 400))) return true;
   const opening = openingProse(scene);
   if (!opening) return false;
   // Only the opening stretch counts — a marker buried five beats in does not
@@ -95,6 +97,92 @@ const norm = (s: string | undefined): string =>
 
 export interface SceneTransitionContinuityInput {
   story: Story;
+  /** Optional plan fallback when legacy package mirrors dropped Scene.timeline. */
+  scenePlan?: SeasonScenePlan;
+}
+
+interface TimelineMeta {
+  location?: string;
+  timeOfDay?: SceneTimeOfDay;
+  transitionIn?: string;
+}
+
+interface TransitionEdge {
+  targetId: string;
+  kind: 'scene' | 'choiceBridge';
+  beatId?: string;
+  bridgeProse?: string;
+}
+
+const isChoiceBridgeNode = (node: unknown): boolean => {
+  const data = node as { isChoiceBridge?: unknown; sourceChoiceId?: unknown } | undefined;
+  return Boolean(data?.isChoiceBridge || data?.sourceChoiceId);
+};
+
+const plannedLocation = (scene: PlannedScene | undefined): string | undefined => {
+  const first = scene?.locations?.find((location) => String(location || '').trim());
+  return first ? String(first).trim() : undefined;
+};
+
+const buildPlannedSceneMap = (scenePlan: SeasonScenePlan | undefined): Map<string, PlannedScene> => {
+  const map = new Map<string, PlannedScene>();
+  for (const planned of scenePlan?.scenes || []) {
+    map.set(`${planned.episodeNumber}:${planned.id}`, planned);
+  }
+  return map;
+};
+
+function timelineForScene(
+  scene: Scene,
+  episode: Episode,
+  plannedScenes: Map<string, PlannedScene>,
+): TimelineMeta | undefined {
+  const planned = plannedScenes.get(`${episode.number}:${scene.id}`);
+  const timeline = scene.timeline;
+  const meta: TimelineMeta = {};
+  const location = String(timeline?.location || plannedLocation(planned) || '').trim();
+  if (location) meta.location = location;
+
+  const timeOfDay = normalizeTimeOfDay(timeline?.timeOfDay || planned?.timeOfDay);
+  if (timeOfDay) meta.timeOfDay = timeOfDay;
+
+  const transitionIn = String(timeline?.transitionIn || '').trim();
+  if (transitionIn) meta.transitionIn = transitionIn;
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
+}
+
+function collectTransitionEdges(scene: Scene): TransitionEdge[] {
+  const byTarget = new Map<string, TransitionEdge>();
+  for (const targetId of scene.leadsTo || []) {
+    if (!targetId) continue;
+    byTarget.set(targetId, { targetId, kind: 'scene' });
+  }
+
+  for (const beat of scene.beats || []) {
+    const beatTarget = String(beat.nextSceneId || '').trim();
+    if (beatTarget && isChoiceBridgeNode(beat)) {
+      byTarget.set(beatTarget, {
+        targetId: beatTarget,
+        kind: 'choiceBridge',
+        beatId: beat.id,
+        bridgeProse: String(beat.text || '').trim(),
+      });
+    }
+
+    for (const choice of beat.choices || []) {
+      const choiceTarget = String(choice.nextSceneId || '').trim();
+      if (!choiceTarget || !isChoiceBridgeNode(choice)) continue;
+      byTarget.set(choiceTarget, {
+        targetId: choiceTarget,
+        kind: 'choiceBridge',
+        beatId: beat.id,
+        bridgeProse: String(choice.text || '').trim(),
+      });
+    }
+  }
+
+  return [...byTarget.values()];
 }
 
 export class SceneTransitionContinuityValidator extends BaseValidator {
@@ -108,17 +196,18 @@ export class SceneTransitionContinuityValidator extends BaseValidator {
    */
   validate(input: SceneTransitionContinuityInput): ValidationResult {
     const issues: ValidationIssue[] = [];
+    const plannedScenes = buildPlannedSceneMap(input.scenePlan);
 
     for (const episode of input.story.episodes || []) {
       const byId = new Map<string, Scene>();
       for (const scene of episode.scenes || []) byId.set(scene.id, scene);
 
       for (const from of episode.scenes || []) {
-        const fromMeta = from.timeline;
+        const fromMeta = timelineForScene(from, episode, plannedScenes);
         if (!fromMeta) continue;
-        for (const targetId of from.leadsTo || []) {
-          const to = byId.get(targetId);
-          const toMeta = to?.timeline;
+        for (const edge of collectTransitionEdges(from)) {
+          const to = byId.get(edge.targetId);
+          const toMeta = to ? timelineForScene(to, episode, plannedScenes) : undefined;
           if (!to || !toMeta) continue;
 
           const locationChanged = Boolean(
@@ -134,22 +223,25 @@ export class SceneTransitionContinuityValidator extends BaseValidator {
             locationChanged ? `location ${fromMeta.location} → ${toMeta.location}` : '',
             timeChanged ? `time ${fromMeta.timeOfDay} → ${toMeta.timeOfDay}` : '',
           ].filter(Boolean).join(', ');
-          const where = `transition:ep${episode.number}:${from.id}->${to.id}`;
+          const where = `transition:ep${episode.number}:${to.id}:from:${from.id}`;
+          const viaBridge = edge.kind === 'choiceBridge'
+            ? ` via choice bridge${edge.beatId ? ` "${edge.beatId}"` : ''}`
+            : '';
 
           if (!openingProse(to)) {
             issues.push(this.error(
-              `Scene "${to.id}" (episode ${episode.number}) follows a planned shift (${shift}) but carries NO opening prose at all to bridge it — the reader gets a hard cut with nothing on-page.`,
+              `Scene "${to.id}" (episode ${episode.number}) follows a planned shift (${shift})${viaBridge} but carries NO opening prose at all to bridge it — the reader gets a hard cut with nothing on-page.`,
               where,
               'Give the scene (or its encounter setup) opening prose that grounds the new time/place and how the protagonist got there.',
             ));
             continue;
           }
 
-          if (!acknowledgesTransition(to)) {
+          if (!acknowledgesTransition(to, edge.bridgeProse)) {
             issues.push(this.error(
-              `Unacknowledged ${timeChanged && locationChanged ? 'time-and-place' : timeChanged ? 'time' : 'location'} jump into scene "${to.id}" (episode ${episode.number}): planned shift (${shift}) but the scene has no transitionIn and its opening prose carries no transition or arrival language. The reader cannot follow how the story moved.`,
+              `Unacknowledged ${timeChanged && locationChanged ? 'time-and-place' : timeChanged ? 'time' : 'location'} jump into scene "${to.id}" (episode ${episode.number})${viaBridge}: planned shift (${shift}) but neither the bridge nor the arriving scene carries transition or arrival language. The reader cannot follow how the story moved.`,
               where,
-              'Add a transitionIn phrase and let the opening beat acknowledge the jump — name the new time/place and how (or why) the protagonist is now here.',
+              'Add a transitionIn phrase, bridge prose, or opening beat that acknowledges the jump — name the new time/place and how (or why) the protagonist is now here.',
             ));
           }
         }

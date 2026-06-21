@@ -14,6 +14,12 @@ import type {
 import type { Beat, MediaRef, NarrativeSequenceIntent, SceneVisualSequencePlan } from './content';
 import type { Encounter, EncounterType } from './encounter';
 import type { ResolutionTier } from './choice';
+import type {
+  AuthoredTreatmentFieldContract,
+  MechanicPressureContract,
+  RelationshipPacingContract,
+  SceneTurnContract,
+} from './scenePlan';
 
 export type EpisodeStructureMode = 'standard' | 'sceneEpisodes';
 
@@ -67,6 +73,35 @@ export interface Scene {
     timeJumpFromPrevious?: string;
     transitionIn?: string;
   };
+
+  /**
+   * Generator-only dramatic-turn metadata. Playback ignores this; validators use
+   * it to verify the scene actually earns its central turn with setup,
+   * event/reveal/choice, and aftermath/handoff.
+   */
+  turnContract?: SceneTurnContract;
+
+  /**
+   * Generator-only relationship pacing metadata. Playback ignores this; final
+   * validators and repair passes use it to prevent premature friendship,
+   * trust, romance, or group-membership declarations.
+   */
+  relationshipPacing?: RelationshipPacingContract[];
+
+  /**
+   * Generator-only hidden mechanics pressure metadata. Playback ignores this;
+   * validators and repair use it to ensure flags, items, scores, relationships,
+   * skills, routes, and information states have visible story evidence and
+   * earned payoffs.
+   */
+  mechanicPressure?: MechanicPressureContract[];
+
+  /**
+   * Generator-only treatment-field obligations assigned to this scene. Playback
+   * ignores this; final validators use it to verify authored treatment fields
+   * became reader-facing scene/choice/encounter/ending pressure.
+   */
+  authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
 }
 
 export interface Episode {

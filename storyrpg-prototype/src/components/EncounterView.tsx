@@ -468,6 +468,22 @@ const ENCOUNTER_TIER_FALLBACKS: Record<EncounterOutcomeTier, string> = {
   failure: 'The move collapses, and danger closes in.',
 };
 
+function formatDevBeatLabel(beatId?: string | null): string | null {
+  if (!beatId) return null;
+  const beatNum =
+    beatId.match(/beat-([0-9]+[a-z]?)/i)?.[1] ||
+    beatId.match(/\bb([0-9]+[a-z]?)\b/i)?.[1];
+  return beatNum ? `B${beatNum}` : beatId;
+}
+
+function formatDevSceneLabel(sceneId?: string | null): string | null {
+  if (!sceneId) return null;
+  const sceneNum =
+    sceneId.match(/scene-([0-9]+[a-z]?)/i)?.[1] ||
+    sceneId.match(/\bs([0-9]+-[0-9]+[a-z]?)\b/i)?.[1];
+  return sceneNum ? `Scene ${sceneNum}` : null;
+}
+
 function tierFromEncounterOutcome(outcome: EncounterOutcome): EncounterOutcomeTier {
   if (outcome === 'victory') return 'success';
   if (outcome === 'defeat') return 'failure';
@@ -592,8 +608,8 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
 
   const encounterSceneId = encounter.id?.replace(/-encounter$/, '') || '';
   const encounterSceneLabel = useMemo(() => {
-    const sceneNum = encounter.id?.match(/scene-([0-9]+[a-z]?)/i)?.[1];
-    return sceneNum ? `Scene ${sceneNum} • Encounter` : 'Encounter';
+    const sceneLabel = formatDevSceneLabel(encounter.id);
+    return sceneLabel ? `${sceneLabel} • Encounter` : 'Encounter';
   }, [encounter.id]);
 
   // Detect if this encounter uses the new branching tree format
@@ -842,6 +858,26 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
     }
   };
   const currentPhase = encounter.phases.find((p) => p.id === getPhaseId());
+
+  const encounterDevLabel = useMemo(() => {
+    const numberedBeat = encounterState?.beatNumber ? `B${encounterState.beatNumber}` : null;
+    switch (screenState.type) {
+      case 'phase':
+        return [encounterSceneLabel, formatDevBeatLabel(screenState.beatId)].filter(Boolean).join(' • ');
+      case 'beat_outcome':
+        return [encounterSceneLabel, formatDevBeatLabel(screenState.nextBeatId || screenState.beatId), 'Result'].filter(Boolean).join(' • ');
+      case 'phase_outcome':
+      case 'encounter_outcome':
+      case 'terminal':
+        return [encounterSceneLabel, 'Result'].filter(Boolean).join(' • ');
+      case 'outcome_result':
+        return [encounterSceneLabel, numberedBeat, 'Result'].filter(Boolean).join(' • ');
+      case 'active':
+        return [encounterSceneLabel, numberedBeat].filter(Boolean).join(' • ');
+      default:
+        return encounterSceneLabel;
+    }
+  }, [encounterSceneLabel, encounterState?.beatNumber, screenState]);
 
   // Initialize encounter on mount
   useEffect(() => {
@@ -1756,7 +1792,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(displayImage) ?? encounterSceneLabel, displayImage)}
+            {renderEncounterDevBadge(encounterDevLabel, displayImage)}
           </>
         }
       >
@@ -1875,7 +1911,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(resolvedOutcomeImage) ?? encounterSceneLabel, resolvedOutcomeImage)}
+            {renderEncounterDevBadge(encounterDevLabel, resolvedOutcomeImage)}
           </>
         }
       >
@@ -1935,7 +1971,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • Result`, terminalImage)}
+            {renderEncounterDevBadge(encounterDevLabel, terminalImage)}
           </>
         }
       >
@@ -2135,7 +2171,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
         overlays={
           <>
             {renderEncounterDevPromptPanel()}
-            {renderEncounterDevBadge(`${encounterSceneLabel ?? ''} • Result`, finalImage)}
+            {renderEncounterDevBadge(encounterDevLabel, finalImage)}
           </>
         }
       >
@@ -2269,7 +2305,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       overlays={
         <>
           {renderEncounterDevPromptPanel()}
-          {renderEncounterDevBadge(getSceneBeatLabelFromImageUrl(currentImage) ?? encounterSceneLabel, currentImage)}
+          {renderEncounterDevBadge(encounterDevLabel, currentImage)}
         </>
       }
       onImageError={(e) => {

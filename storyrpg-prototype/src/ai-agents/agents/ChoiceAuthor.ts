@@ -34,7 +34,7 @@ import {
   SevenPointStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
-import type { ConsequenceTier } from '../../types/scenePlan';
+import type { ConsequenceTier, MechanicPressureContract, RelationshipPacingContract } from '../../types/scenePlan';
 // Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
 // via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
 // longer re-embedded here, to eliminate token duplication and drift risk.
@@ -1707,6 +1707,21 @@ Tag any such consequence with \`arcDriving: true\` so downstream validators can 
 ${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity \`${h.dimension}\`: target ${h.direction} (${h.magnitude}). A consequence like \`{ type: "setFlag", name: "arc:${h.dimension}:${h.direction}", arcDriving: true }\` is ideal.`).join('\n')}
 ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
 ` : ''}
+${input.sceneBlueprint.relationshipPacing?.length ? `
+## Relationship Pacing Contracts
+Design relationship consequences and aftermath at the earned stage, not the future desired stage.
+${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; max relationship delta this scene ${c.maxDeltaThisScene}; allowed labels: ${c.allowedLabels.join(', ')}; blocked labels: ${c.blockedLabels.join(', ')}; evidence: ${c.requiredEvidence.join('; ')}`).join('\n')}
+- Relationship choices must show behavioral aftermath: changed distance, invitation, withholding, teasing, remembered detail, vulnerability, challenge, or refusal.
+- Do not use blocked labels in choice text, outcome text, feedback, reminder plans, or residue.
+` : ''}
+${input.sceneBlueprint.mechanicPressure?.length ? `
+## Narrative Mechanic Pressure Contracts
+Treat mechanics as hidden story pressure, not numbers that directly cause results. Every non-expression consequence should declare or inherit a pressure contract and answer: what changed in the fiction, what future affordance it creates, what residue appears now, what payoff is allowed later, and what payoff is blocked until more evidence exists.
+${input.sceneBlueprint.mechanicPressure.map((c) => `- ${c.id}: ${c.domain}/${c.function} — ${c.storyPressure}; evidence: ${c.evidenceRequired.join('; ') || 'show what earns it'}; residue: ${c.visibleResidue.join('; ') || 'show immediate behavior/access/cost/clue/posture'}; allowed payoffs: ${c.allowedPayoffs.join('; ') || 'earned future permission'}; blocked payoffs: ${c.blockedPayoffs.join('; ') || 'unsupported payoff'}`).join('\n')}
+- Use \`residueHints\`, \`reminderPlan\`, \`feedbackCue\`, or \`witnessReactions\` to make hidden pressure visible.
+- Bare state math is not enough unless the consequence is purely infrastructural.
+- Conditions/gates should spend pressure that has already been planted or is reachable through prior choices.
+` : ''}
 ## Requirements
 - Create ${input.optionCount} distinct choices
 - Each choice must have the complete Stakes Triangle
@@ -2061,7 +2076,12 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
           `consequences — ${repaired > 0 ? `repaired ${repaired} option(s)` : 'no suitable NPC found for repair'}.`
         );
       }
+      this.capRelationshipConsequences(choiceSet, input);
     }
+    if (choiceSet.choiceType !== 'relationship' && input.sceneBlueprint.relationshipPacing?.length) {
+      this.capRelationshipConsequences(choiceSet, input);
+    }
+    this.ensureMechanicPressureMetadata(choiceSet, input);
 
     if (sceneCallsForRelationshipPayoff) {
       const hasRelationshipPayoff = choiceSet.choices.some(choice =>
@@ -2337,6 +2357,269 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     return validNpcs[0];
   }
 
+  private relationshipPacingForNpc(input: ChoiceAuthorInput, npcId?: string): RelationshipPacingContract | undefined {
+    const contracts = input.sceneBlueprint.relationshipPacing ?? [];
+    if (npcId) {
+      const exact = contracts.find((contract) => contract.npcId === npcId);
+      if (exact) return exact;
+    }
+    return contracts.find((contract) => contract.npcId) ?? contracts[0];
+  }
+
+  private relationshipConsequenceDimension(input: ChoiceAuthorInput): 'trust' | 'affection' | 'respect' | 'fear' {
+    const trajectoryDimension = input.arcTargets?.relationshipTrajectory?.[0]?.dimension;
+    if (trajectoryDimension === 'bond') return 'affection';
+    if (
+      trajectoryDimension === 'trust'
+      || trajectoryDimension === 'affection'
+      || trajectoryDimension === 'respect'
+      || trajectoryDimension === 'fear'
+    ) {
+      return trajectoryDimension;
+    }
+    const pacingDimension = input.sceneBlueprint.relationshipPacing?.[0]?.mechanicDimensions?.[0];
+    return pacingDimension ?? 'trust';
+  }
+
+  private capRelationshipConsequences(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+    let capped = 0;
+    for (const choice of choiceSet.choices) {
+      for (const consequence of choice.consequences ?? []) {
+        if (consequence.type !== 'relationship' || typeof consequence.change !== 'number') continue;
+        const contract = this.relationshipPacingForNpc(input, consequence.npcId);
+        if (!contract || !Number.isFinite(contract.maxDeltaThisScene) || contract.maxDeltaThisScene <= 0) continue;
+        const max = Math.abs(contract.maxDeltaThisScene);
+        if (consequence.change > max) {
+          consequence.change = max;
+          capped += 1;
+        } else if (consequence.change < -max) {
+          consequence.change = -max;
+          capped += 1;
+        }
+      }
+    }
+    if (capped > 0) {
+      console.warn(`[ChoiceAuthor] Capped ${capped} relationship consequence delta(s) to scene pacing contract.`);
+    }
+    return capped;
+  }
+
+  private ensureMechanicPressureMetadata(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+    if (choiceSet.choiceType === 'expression') return 0;
+    const sceneContracts = input.sceneBlueprint.mechanicPressure ?? [];
+    let repaired = 0;
+
+    for (const choice of choiceSet.choices) {
+      const meaningful = this.meaningfulConsequences(choice.consequences ?? []);
+      if (meaningful.length === 0 && !choice.conditions && !choice.statCheck && !choice.nextSceneId) continue;
+
+      if (!choice.mechanicPressure?.length) {
+        const inherited = this.matchMechanicPressureContracts(meaningful, sceneContracts);
+        choice.mechanicPressure = inherited.length > 0
+          ? inherited
+          : [this.fallbackMechanicPressureContract(choice, choiceSet, input, meaningful[0])];
+        repaired += 1;
+      }
+
+      if (!choice.residueHints?.length) {
+        choice.residueHints = [{
+          kind: choice.nextSceneId ? 'later_text_variant' : 'immediate_prose_echo',
+          description: this.residueDescriptionForChoice(choice, choice.mechanicPressure[0]),
+        }];
+        repaired += 1;
+      }
+
+      if (!choice.reminderPlan) {
+        const pressure = choice.mechanicPressure[0]?.storyPressure || input.sceneBlueprint.choicePoint?.stakes.want || choice.text;
+        choice.reminderPlan = {
+          immediate: `The choice leaves visible pressure around ${pressure}.`,
+          shortTerm: `Later scenes should remember how this changed access, posture, information, risk, or trust.`,
+        };
+        repaired += 1;
+      }
+
+      repaired += this.capUnsupportedMechanicMagnitude(choice, choice.mechanicPressure);
+    }
+
+    if (repaired > 0) {
+      console.warn(`[ChoiceAuthor] Added narrative mechanic pressure metadata/residue to ${repaired} choice field(s).`);
+    }
+    return repaired;
+  }
+
+  private meaningfulConsequences(consequences: Consequence[]): Consequence[] {
+    return consequences.filter((consequence) => {
+      if (!consequence || typeof consequence !== 'object') return false;
+      if (consequence.type === 'setFlag') {
+        return Boolean((consequence as Consequence & { flag?: string }).flag)
+          && !/^(_|ui_|debug_|choice_seen_|visited_)/i.test((consequence as Consequence & { flag?: string }).flag || '');
+      }
+      return [
+        'relationship',
+        'attribute',
+        'skill',
+        'changeScore',
+        'setScore',
+        'addItem',
+        'removeItem',
+        'addTag',
+        'removeTag',
+      ].includes(consequence.type);
+    });
+  }
+
+  private matchMechanicPressureContracts(
+    consequences: Consequence[],
+    contracts: MechanicPressureContract[],
+  ): MechanicPressureContract[] {
+    const matches: MechanicPressureContract[] = [];
+    for (const consequence of consequences) {
+      const match = contracts.find((contract) => this.contractMatchesConsequence(contract, consequence));
+      if (match) matches.push(match);
+    }
+    return matches.length > 0 ? Array.from(new Map(matches.map((c) => [c.id, c])).values()) : contracts.slice(0, 1);
+  }
+
+  private contractMatchesConsequence(contract: MechanicPressureContract, consequence: Consequence): boolean {
+    switch (consequence.type) {
+      case 'relationship':
+        return contract.domain === 'relationship'
+          && (!contract.mechanicRef.npcId || contract.mechanicRef.npcId === consequence.npcId)
+          && (!contract.mechanicRef.relationshipDimension || contract.mechanicRef.relationshipDimension === consequence.dimension);
+      case 'skill':
+        return contract.domain === 'skill' && (!contract.mechanicRef.skill || contract.mechanicRef.skill === consequence.skill);
+      case 'attribute':
+        return contract.domain === 'identity' && (!contract.mechanicRef.identityAxis || contract.mechanicRef.identityAxis === consequence.attribute);
+      case 'setFlag':
+        return contract.domain === 'flag' && (!contract.mechanicRef.flag || contract.mechanicRef.flag === consequence.flag);
+      case 'changeScore':
+      case 'setScore':
+        return contract.domain === 'score' && (!contract.mechanicRef.score || contract.mechanicRef.score === consequence.score);
+      case 'addItem':
+      case 'removeItem':
+        return contract.domain === 'item';
+      case 'addTag':
+      case 'removeTag':
+        return contract.domain === 'identity';
+      default:
+        return false;
+    }
+  }
+
+  private fallbackMechanicPressureContract(
+    choice: Choice,
+    choiceSet: ChoiceSet,
+    input: ChoiceAuthorInput,
+    consequence?: Consequence,
+  ): MechanicPressureContract {
+    const domain = this.domainForConsequence(consequence, choice);
+    const id = `${input.sceneBlueprint.id}-${choice.id}-pressure`;
+    return {
+      id,
+      source: 'choice',
+      domain,
+      mechanicRef: this.mechanicRefForConsequence(consequence, choice),
+      function: choice.nextSceneId ? 'gate' : 'plant',
+      storyPressure: input.sceneBlueprint.choicePoint?.stakes.cost || input.sceneBlueprint.wantVsNeed || choice.text,
+      evidenceRequired: ['show what the player does, risks, learns, gives, withholds, or proves'],
+      visibleResidue: ['show immediate changed behavior, access, posture, clue, cost, memory, or narrowed option'],
+      allowedPayoffs: [input.plannedConsequenceTier === 'branch' ? 'route permission with visible cost' : 'later callback, text variant, small access shift, or NPC posture change'],
+      blockedPayoffs: ['instant intimacy, loyalty, mastery, full trust, or information the player did not earn'],
+      originatingSceneId: input.sceneBlueprint.id,
+      maxMagnitudeThisScene: domain === 'relationship' ? 6 : 10,
+    };
+  }
+
+  private domainForConsequence(consequence: Consequence | undefined, choice: Choice): MechanicPressureContract['domain'] {
+    if (!consequence) {
+      if (choice.statCheck) return 'skill';
+      if (choice.nextSceneId) return 'route';
+      return 'flag';
+    }
+    switch (consequence.type) {
+      case 'relationship': return 'relationship';
+      case 'skill': return 'skill';
+      case 'attribute':
+      case 'addTag':
+      case 'removeTag': return 'identity';
+      case 'setFlag': return 'flag';
+      case 'changeScore':
+      case 'setScore': return 'score';
+      case 'addItem':
+      case 'removeItem': return 'item';
+      default: return 'resource';
+    }
+  }
+
+  private mechanicRefForConsequence(
+    consequence: Consequence | undefined,
+    choice: Choice,
+  ): MechanicPressureContract['mechanicRef'] {
+    if (!consequence) {
+      const skill = choice.statCheck?.skill || Object.keys(choice.statCheck?.skillWeights ?? {})[0];
+      return skill ? { skill } : choice.nextSceneId ? { routeId: choice.nextSceneId } : {};
+    }
+    switch (consequence.type) {
+      case 'relationship':
+        return { npcId: consequence.npcId, relationshipDimension: consequence.dimension };
+      case 'skill':
+        return { skill: consequence.skill };
+      case 'attribute':
+        return { identityAxis: String(consequence.attribute) };
+      case 'setFlag':
+        return { flag: consequence.flag };
+      case 'changeScore':
+      case 'setScore':
+        return { score: consequence.score };
+      case 'addItem':
+        return { itemId: 'itemId' in consequence ? consequence.itemId : consequence.item.name };
+      case 'removeItem':
+        return { itemId: consequence.itemId };
+      case 'addTag':
+      case 'removeTag':
+        return { identityAxis: consequence.tag };
+      default:
+        return {};
+    }
+  }
+
+  private residueDescriptionForChoice(choice: Choice, contract?: MechanicPressureContract): string {
+    const pressure = contract?.storyPressure || choice.text;
+    switch (contract?.domain) {
+      case 'relationship':
+        return `Show the NPC's changed distance, testing, warmth, withholding, or remembered detail after "${choice.text}".`;
+      case 'item':
+        return `Show the object as access, burden, clue, obligation, or callback pressure after "${choice.text}".`;
+      case 'information':
+      case 'flag':
+        return `Show what the player now knows, hides, risks exposing, or can act on after "${choice.text}".`;
+      case 'skill':
+        return `Show what the player proves, fails, learns, or notices so later tactics feel earned.`;
+      default:
+        return `Show immediate residue from ${pressure}: changed access, posture, tone, cost, clue, memory, or narrowed options.`;
+    }
+  }
+
+  private capUnsupportedMechanicMagnitude(choice: Choice, contracts: MechanicPressureContract[] | undefined): number {
+    let capped = 0;
+    const maxByDomain = new Map(contracts?.map((contract) => [contract.domain, contract.maxMagnitudeThisScene]) ?? []);
+    for (const consequence of choice.consequences ?? []) {
+      const domain = this.domainForConsequence(consequence, choice);
+      const max = maxByDomain.get(domain);
+      if (!max || max <= 0) continue;
+      if ((consequence.type === 'relationship' || consequence.type === 'skill' || consequence.type === 'attribute' || consequence.type === 'changeScore') && typeof consequence.change === 'number') {
+        if (consequence.change > max) {
+          consequence.change = max;
+          capped += 1;
+        } else if (consequence.change < -max) {
+          consequence.change = -max;
+          capped += 1;
+        }
+      }
+    }
+    return capped;
+  }
+
   private repairRelationshipTargets(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
     const targetNpc = this.selectRelationshipNpc(input);
     if (!targetNpc) return 0;
@@ -2362,11 +2645,11 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
   }
 
   private addRelationshipConsequences(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
-    const trajectory = input.arcTargets?.relationshipTrajectory?.[0];
     const npc = this.selectRelationshipNpc(input);
     if (!npc) return 0;
 
-    const dimension = (trajectory?.dimension || 'trust') as 'trust' | 'affection' | 'respect' | 'fear';
+    const dimension = this.relationshipConsequenceDimension(input);
+    const maxDelta = Math.abs(this.relationshipPacingForNpc(input, npc.id)?.maxDeltaThisScene ?? 6);
     let repaired = 0;
     for (let i = 0; i < choiceSet.choices.length; i += 1) {
       const choice = choiceSet.choices[i];
@@ -2380,7 +2663,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
         type: 'relationship',
         npcId: npc.id,
         dimension,
-        change: positive ? 5 : -3,
+        change: positive ? Math.min(5, maxDelta) : -Math.min(3, maxDelta),
       }];
       repaired += 1;
     }

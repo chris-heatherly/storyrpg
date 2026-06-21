@@ -70,8 +70,12 @@ export function formatSceneBeatLabelFromImageUrl(
       : `Scene ${scene} • Shot ${number}`;
   }
 
-  const sceneFromId = fallbackSceneId?.match(/scene-([0-9]+[a-z]?)/i)?.[1];
-  const beatFromId = fallbackBeatId?.match(/beat-([0-9]+)/i)?.[1];
+  const sceneFromId =
+    fallbackSceneId?.match(/scene-([0-9]+[a-z]?)/i)?.[1] ||
+    fallbackSceneId?.match(/\bs([0-9]+-[0-9]+[a-z]?)\b/i)?.[1];
+  const beatFromId =
+    fallbackBeatId?.match(/beat-([0-9]+[a-z]?)/i)?.[1] ||
+    fallbackBeatId?.match(/\bb([0-9]+[a-z]?)\b/i)?.[1];
   if (sceneFromId && beatFromId) return `Scene ${sceneFromId} • Beat ${beatFromId}`;
   if (sceneFromId) return `Scene ${sceneFromId}`;
   return null;

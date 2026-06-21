@@ -5,6 +5,7 @@
 import type { PlayerAttributes } from './player';
 import type { ConditionExpression } from './conditions';
 import type { Consequence } from './consequences';
+import type { MechanicPressureContract } from './scenePlan';
 
 // Choice types describe the PLAYER EXPERIENCE, not the structural effect.
 // Branching (routing to different scenes via nextSceneId) is a property of
@@ -191,6 +192,7 @@ export interface Choice {
   witnessReactions?: WitnessReaction[];
   failureResidue?: FailureResidue;
   visualResidueHint?: string;
+  mechanicPressure?: MechanicPressureContract[];
 
   consequences?: Consequence[];
 

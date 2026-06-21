@@ -1503,6 +1503,50 @@ describe('SceneWriter structural guards', () => {
     expect(prompt.indexOf('Darian assaults')).toBeLessThan(prompt.indexOf('instinctive rescue leap'));
   });
 
+  it('injects narrative mechanic pressure contracts into the prompt without exposing them as player-facing mechanics', () => {
+    const writer = createWriter();
+    const input = {
+      sceneBlueprint: {
+        id: 's1-1',
+        name: 'Club Door',
+        description: 'Mika tests Kylie at the door.',
+        location: 'Vâlcescu Club',
+        mood: 'charged',
+        purpose: 'transition',
+        narrativeFunction: 'The key card becomes access leverage.',
+        dramaticQuestion: 'What does accepting the card cost?',
+        wantVsNeed: 'Kylie wants inside but needs to understand the obligation.',
+        conflictEngine: 'Mika offers access as a test.',
+        npcsPresent: ['mika'],
+        keyBeats: ['Mika offers the side-door card.'],
+        leadsTo: ['s1-2'],
+        mechanicPressure: [{
+          id: 's1-1-pressure-keycard',
+          source: 'treatment',
+          domain: 'item',
+          mechanicRef: { itemId: 'key-card' },
+          function: 'plant',
+          storyPressure: 'The key card creates access leverage and obligation.',
+          evidenceRequired: ['show Mika testing Kylie'],
+          visibleResidue: ['the card remains visible as access and obligation'],
+          allowedPayoffs: ['side entrance access'],
+          blockedPayoffs: ['instant friendship'],
+        }],
+      },
+      storyContext: { title: 'Bite Me', genre: 'urban fantasy', tone: 'sensual', worldContext: 'Bucharest nightlife.' },
+      protagonistInfo: { name: 'Kylie', pronouns: 'she/her', description: 'New in the city.' },
+      npcs: [],
+      targetBeatCount: 4,
+      dialogueHeavy: false,
+    } as any;
+
+    const prompt = (writer as any).buildPrompt(input);
+    expect(prompt).toContain('Narrative Mechanic Pressure Contracts');
+    expect(prompt).toContain('The key card creates access leverage and obligation.');
+    expect(prompt).toContain('Do not state flags, scores, thresholds, or contract labels.');
+    expect(prompt).toContain('access, leverage, memory, suspicion');
+  });
+
   it('forbids a competing terminal cliffhanger object when a cliffhanger plan is supplied', () => {
     const writer = createWriter();
     const input = {

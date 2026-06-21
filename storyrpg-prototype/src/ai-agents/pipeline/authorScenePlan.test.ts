@@ -68,9 +68,42 @@ describe('normalizeAuthoredScenePlan', () => {
     const s11 = sp.scenes.find((s) => s.id === 's1-1')!;
     const s21 = sp.scenes.find((s) => s.id === 's2-1')!;
     expect(s11.setsUp).toContain('s2-1');
+    expect(s11.turnContract?.centralTurn).toBe('establish');
     // reciprocal paysOff rebuilt from setsUp
     expect(s21.paysOff).toContain('s1-1');
     expect(sp.setupPayoffEdges.some((e) => e.from === 's1-1' && e.to === 's2-1' && e.span === 'cross_episode')).toBe(true);
+  });
+
+  it('preserves raw scene turn contract fields from the LLM-authored plan', () => {
+    const p = plan([episode(1, ['hook'])]);
+    const raw = {
+      episodes: [{
+        episodeNumber: 1,
+        scenes: [{
+          id: 's1-1',
+          kind: 'standard',
+          title: 'Open',
+          dramaticPurpose: 'Kylie reaches the club door',
+          centralTurn: 'Mika claims Kylie as hers at the rope.',
+          beforeState: 'Kylie is alone outside the club.',
+          turnEvent: 'Mika steps in and claims Kylie.',
+          afterState: 'Kylie now has protection and access.',
+          handoff: 'The side door becomes available.',
+          narrativeRole: 'turn',
+        }],
+      }],
+    };
+
+    const sp = normalizeAuthoredScenePlan(raw, p)!;
+    const s = sp.scenes.find((scene) => scene.id === 's1-1')!;
+    expect(s.turnContract).toMatchObject({
+      source: 'planner',
+      centralTurn: 'Mika claims Kylie as hers at the rope.',
+      beforeState: 'Kylie is alone outside the club.',
+      turnEvent: 'Mika steps in and claims Kylie.',
+      afterState: 'Kylie now has protection and access.',
+      handoff: 'The side door becomes available.',
+    });
   });
 
   it('drops a backward (earlier-episode) setup', () => {
@@ -158,6 +191,34 @@ describe('normalizeAuthoredScenePlan', () => {
     // The release scene stays free of authored content turns.
     const release = scenes.find((s) => s.narrativeRole === 'release')!;
     expect((release.requiredBeats ?? []).filter((b) => b.tier === 'authored')).toHaveLength(0);
+  });
+
+  it('adds turn-centered standard scenes when authored turns outnumber LLM scenes', () => {
+    const ep = episode(1, ['hook'], {
+      treatmentGuidance: {
+        episodeTurns: ['Turn one at the door', 'Turn two in the bookshop', 'Turn three on the rooftop'],
+      },
+    });
+    const raw = {
+      episodes: [{
+        episodeNumber: 1,
+        scenes: [
+          { id: 's1-1', kind: 'standard', title: 'Door', dramaticPurpose: 'Turn one at the door', narrativeRole: 'turn' },
+          { id: 's1-2', kind: 'standard', title: 'Aftermath', dramaticPurpose: 'settle', narrativeRole: 'release' },
+        ],
+      }],
+    };
+
+    const sp = normalizeAuthoredScenePlan(raw, plan([ep]))!;
+    const scenes = sp.scenes.filter((s) => s.episodeNumber === 1);
+    const authored = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'authored'));
+
+    expect(authored.map((b) => b.sourceTurn).sort()).toEqual([
+      'Turn one at the door',
+      'Turn three on the rooftop',
+      'Turn two in the bookshop',
+    ]);
+    expect(scenes.filter((s) => s.turnContract?.source === 'treatment')).toHaveLength(3);
   });
 
   it('gap-fills an episode the model omitted with deterministic scenes', () => {

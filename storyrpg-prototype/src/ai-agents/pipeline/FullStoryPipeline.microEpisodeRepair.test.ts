@@ -198,7 +198,7 @@ describe('FullStoryPipeline sceneEpisode playable contract repair', () => {
       isChoicePoint: true,
     });
 
-    expect(choiceSet.choices).toHaveLength(2);
+    expect(choiceSet.choices).toHaveLength(3);
     for (const choice of choiceSet.choices) {
       expect(choice.text).not.toMatch(/Decide how to handle|release scene 6|Advance the goal/i);
       expect(choice.consequenceTier).toBe('sceneTint');

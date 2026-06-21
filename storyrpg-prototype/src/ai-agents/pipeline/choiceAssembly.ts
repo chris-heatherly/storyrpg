@@ -163,11 +163,6 @@ function compactFragment(text: string | undefined, maxWords = 8): string {
     .trim();
   if (!cleaned || isUnsafeFallbackText(cleaned)) return '';
 
-  const named = cleaned.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b/);
-  if (named?.[0] && !/^(The|A|An|This|That|Then|When|Before|After)$/.test(named[0])) {
-    return `${named[0]}'s signal`;
-  }
-
   const concrete = cleaned.match(/\b(?:the|a|an|her|his|their|this|that)\s+[a-z][a-z'-]+(?:\s+[a-z][a-z'-]+){0,5}/i);
   const source = concrete?.[0] || cleaned.split(/[.!?;:]/)[0] || '';
   const words = source.split(/\s+/).filter(Boolean).slice(0, maxWords);
@@ -198,13 +193,7 @@ export function buildReaderFacingFallbackChoiceOptions(input: ReaderFacingFallba
   const hinted = uniqueSafeOptions(contextual.map((fragment) => fragment.text));
   if (hinted.length >= 3) return hinted.slice(0, 4);
 
-  const anchor =
-    compactFragment(input.choiceBeatText) ||
-    compactFragment(input.choiceBeatVisualMoment) ||
-    compactFragment(input.dramaticQuestion) ||
-    compactFragment(input.dramaticPurpose) ||
-    compactFragment(input.conflictEngine) ||
-    compactFragment(input.sceneName);
+  const anchor = compactFragment(input.choicePointDescription);
 
   const derived = anchor
     ? [

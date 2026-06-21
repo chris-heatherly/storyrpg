@@ -643,6 +643,7 @@ describe('FinalStoryContractValidator', () => {
   it('blocks planning-register prose leaked into beats, variants, encounters, and visual metadata', async () => {
     const story = validStory();
     const scene = story.episodes[0].scenes[0] as any;
+    scene.geography = 'Aftermath that resettles stakes; serves the plotTurn1 beat ("The post goes viral.").';
     scene.visualMetadata = {
       prompt: 'Introduce Victor on-page with a clear silhouette before the reveal.',
     };
@@ -667,8 +668,9 @@ describe('FinalStoryContractValidator', () => {
     const leaks = report.blockingIssues.filter((issue) => issue.type === 'planning_register_prose');
 
     expect(report.passed).toBe(false);
-    expect(leaks).toHaveLength(4);
+    expect(leaks).toHaveLength(6);
     expect(leaks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-1' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-2' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1' }),

@@ -5,6 +5,9 @@ export const PLANNING_REGISTER_LEAK_PATTERNS: Array<{ label: string; pattern: Re
   { label: 'Authored choice pressure', pattern: /\bauthored\s+choice\s+pressure\b/i },
   { label: 'Next beat response', pattern: /\bnext\s+beat\s+visibly\s+responds\b/i },
   { label: 'Decide how to handle', pattern: /\bDecide\s+how\s+to\s+handle\b/i },
+  { label: 'Aftermath stakes reset', pattern: /\bAftermath\s+that\s+resettles\s+stakes\b/i },
+  { label: 'Structural beat service', pattern: /\bserves\s+the\s+(?:hook|plotTurn1|pinch1|midpoint|pinch2|climax|resolution)\s+beat\b/i },
+  { label: 'Forward pressure', pattern: /\bForward\s+pressure\s*:/i },
 ];
 
 export function isPlanningRegisterText(text: string | undefined): boolean {

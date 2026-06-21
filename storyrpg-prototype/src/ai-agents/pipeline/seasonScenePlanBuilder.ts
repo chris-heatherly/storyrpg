@@ -118,22 +118,20 @@ function composeDramaticPurpose(
   ep: SeasonEpisode,
   sevenPointText: string | undefined,
 ): string {
-  const serves = sevenPointText
-    ? `serves the ${roleLabel(ep.structuralRole)} beat ("${sevenPointText}")`
-    : `serves the ${roleLabel(ep.structuralRole)} purpose of the episode`;
+  const structuralPressure = sevenPointText || `${roleLabel(ep.structuralRole)} pressure`;
   switch (role) {
     case 'setup':
-      return `Open the episode and plant its question; ${serves}.`;
+      return `Open the episode through its immediate question: ${structuralPressure}.`;
     case 'development':
-      return `Escalate the episode's pressure; ${serves}.`;
+      return `Escalate the episode pressure through a concrete turn: ${structuralPressure}.`;
     case 'turn':
-      return `The scene's hinge — reverse or reveal; ${serves}.`;
+      return `Reverse or reveal something the scene can no longer hide: ${structuralPressure}.`;
     case 'payoff':
-      return `Discharge a setup planted earlier; ${serves}.`;
+      return `Pay off an earlier setup through visible action: ${structuralPressure}.`;
     case 'release':
-      return `Aftermath that resettles stakes; ${serves}.`;
+      return `Let the fallout settle into the next pressure: ${structuralPressure}.`;
     default:
-      return serves;
+      return structuralPressure;
   }
 }
 

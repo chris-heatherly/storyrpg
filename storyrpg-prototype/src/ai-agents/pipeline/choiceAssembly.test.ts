@@ -13,17 +13,19 @@ import {
 } from './choiceAssembly';
 
 describe('buildReaderFacingFallbackChoiceOptions', () => {
-  it('filters planning-register option hints and derives in-world choices from the beat', () => {
+  it('filters planning-register option hints instead of inventing choices from narration', () => {
     const options = buildReaderFacingFallbackChoiceOptions({
       optionHints: ['Decide how to handle release scene 6.', 'Advance the goal of Rooftop Exit'],
       choiceBeatText: 'Stela lowers her voice and points to the black roses waiting on the table.',
       sceneName: 'release scene 6',
     });
 
-    expect(options).toHaveLength(3);
+    expect(options).toEqual([
+      'Act before the moment closes.',
+      'Wait long enough to read the danger.',
+      'Ask what is really at stake.',
+    ]);
     expect(options.join(' ')).not.toMatch(/Decide how to handle|Advance the goal|release scene 6/i);
-    expect(options[0]).toMatch(/Stela/);
-    expect(options[1]).toMatch(/Stela/);
   });
 
   it('keeps authored reader-facing option hints and pads to the reader minimum', () => {
@@ -106,6 +108,24 @@ describe('buildReaderFacingFallbackChoiceOptions', () => {
     });
 
     expect(options.join(' ')).not.toMatch(/Radu's lift|tow|2am|Mountain|Wolf|foreshadowing|Cab Whisperer/i);
+  });
+
+  it('does not invent named signal choices from warning-message prose', () => {
+    const options = buildReaderFacingFallbackChoiceOptions({
+      choiceBeatText:
+        "The no-profile account writes: Ileana is missing. She was at his last party. Don't go.",
+      choiceBeatVisualMoment: 'Extreme close-up on the anonymous warning message.',
+      dramaticPurpose:
+        'Aftermath that resettles stakes; serves the plotTurn1 beat ("The post goes viral.").',
+      sceneName: 'release scene 6',
+    });
+
+    expect(options).toEqual([
+      'Act before the moment closes.',
+      'Wait long enough to read the danger.',
+      'Ask what is really at stake.',
+    ]);
+    expect(options.join(' ')).not.toMatch(/Ileana's signal|Respond to|Hold back and study/i);
   });
 });
 

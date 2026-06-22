@@ -133,7 +133,7 @@ import {
 } from './seasonChoicePlan';
 import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
-import { partitionResumableEpisodes } from './episodeCheckpoints';
+import { findResumedEpisodeInvalidationReasons, loadResumedEpisodeDiagnostics, partitionResumableEpisodes } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
@@ -1161,6 +1161,7 @@ export class FullStoryPipeline {
     qaReport?: QAReport;
     bestPracticesReport?: ComprehensiveValidationReport;
     phase: string;
+    validationScope?: import('../validators/runFidelityValidators').FidelityValidationScope;
   }): Promise<FinalStoryContractReport | undefined> {
     return this.finalContract().enforceFinalStoryContract(input);
   }
@@ -3963,6 +3964,12 @@ export class FullStoryPipeline {
         qaReport,
         bestPracticesReport,
         phase: 'final_story_contract',
+        validationScope: {
+          mode: 'generated-slice',
+          requestedEpisodeNumbers: [brief.episode.number],
+          generatedEpisodeNumbers: story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? [brief.episode.number],
+          generatedThroughEpisode: brief.episode.number,
+        },
       });
 
       this.addCheckpoint('Final Story', story, false);
@@ -5242,19 +5249,44 @@ export class FullStoryPipeline {
       // WS1a episode-granularity resume: episodes that already fully assembled
       // in this output directory (valid watermark + assembled artifact) are
       // rehydrated instead of regenerated.
-      const { pending: pendingEpisodeSpecs, resumed: resumedEpisodes } = partitionResumableEpisodes(
+      const resumablePartition = partitionResumableEpisodes(
         episodeSpecs,
         <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
       );
+      const pendingEpisodeSpecs = [...resumablePartition.pending];
+      const resumedEpisodes = resumablePartition.resumed;
       for (const { spec, episode, watermark } of resumedEpisodes) {
+        const resumedDiagnostics = loadResumedEpisodeDiagnostics<QAReport, ComprehensiveValidationReport>(
+          spec.episodeNumber,
+          <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+        );
+        const invalidationReasons = findResumedEpisodeInvalidationReasons({
+          episode,
+          qaReport: resumedDiagnostics.qaReport,
+          bestPracticesReport: resumedDiagnostics.bestPracticesReport,
+          incrementalContract: resumedDiagnostics.incrementalContract,
+          requireQaReport: baseBrief.options?.runQA !== false,
+          requireBestPracticesReport: this.config.validation.enabled === true,
+        });
+        if (invalidationReasons.length > 0) {
+          pendingEpisodeSpecs.push(spec);
+          this.emit({
+            type: 'warning',
+            phase: `episode_${spec.episodeNumber}`,
+            message: `Invalidated resumed episode ${spec.episodeNumber} checkpoint (${invalidationReasons.join(', ')}) — regenerating instead of reusing stale content.`,
+          });
+          continue;
+        }
         episodes.push(episode);
         episodeResults.push({ episodeNumber: spec.episodeNumber, title: spec.outline.title, success: true });
+        if (resumedDiagnostics.qaReport) episodeQAReports.push(resumedDiagnostics.qaReport);
+        if (resumedDiagnostics.bestPracticesReport) episodeBPReports.push(resumedDiagnostics.bestPracticesReport);
         completedEpisodeCount += 1;
         if (this.generationPlan) markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
         this.emit({
           type: 'debug',
           phase: `episode_${spec.episodeNumber}`,
-          message: `Resumed episode ${spec.episodeNumber} from completion watermark (${watermark.sceneCount} scenes) — skipping regeneration`,
+          message: `Resumed episode ${spec.episodeNumber} from completion watermark (${watermark.sceneCount} scenes) — skipping regeneration${resumedDiagnostics.qaReport ? ' with QA diagnostics' : ''}${resumedDiagnostics.bestPracticesReport ? ' and validation diagnostics' : ''}`,
         });
       }
       if (completedEpisodeCount > 0) {
@@ -5805,6 +5837,12 @@ export class FullStoryPipeline {
         qaReport: aggregatedQAReport,
         bestPracticesReport: aggregatedBPReport,
         phase: 'final_story_contract',
+        validationScope: {
+          mode: story.episodes.length >= analysis.totalEstimatedEpisodes ? 'full-season' : 'generated-slice',
+          requestedEpisodeNumbers: episodesToGenerate,
+          generatedEpisodeNumbers: story.episodes.map((episode) => episode.number).filter((n): n is number => typeof n === 'number'),
+          generatedThroughEpisode: Math.max(0, ...story.episodes.map((episode) => episode.number).filter((n): n is number => typeof n === 'number')),
+        },
       });
 
       this.addCheckpoint('Final Story', story, false);
@@ -6016,6 +6054,12 @@ export class FullStoryPipeline {
         story: oneEpisodeStory,
         seasonPlan: episodeBrief.seasonPlan,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
+        scope: {
+          mode: 'episode-incremental',
+          requestedEpisodeNumbers: [i],
+          generatedEpisodeNumbers: [i],
+          generatedThroughEpisode: i,
+        },
       });
       const plannedChoiceTypes = plannedChoiceTypesByScene(episodeBrief.seasonPlan);
       const plannedConsequenceTiers = plannedConsequenceTiersByScene(episodeBrief.seasonPlan);
@@ -6056,6 +6100,12 @@ export class FullStoryPipeline {
           qaReport,
           bestPracticesReport,
           phase: `incremental_contract_ep_${i}`,
+          validationScope: {
+            mode: 'episode-incremental',
+            requestedEpisodeNumbers: [i],
+            generatedEpisodeNumbers: [i],
+            generatedThroughEpisode: i,
+          },
         });
         if (repairedReport) {
           report = repairedReport;

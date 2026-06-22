@@ -31,6 +31,7 @@ import { assignInfoLedgerPhasesToScenes } from '../pipeline/infoRevealAssignment
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
+import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type {
   PlannedScene,
@@ -1089,6 +1090,8 @@ export class StoryArchitect extends BaseAgent {
     const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters || [];
     if (plannedEncounters.length === 0 || blueprint.scenes.length === 0) return;
 
+    this.repairPreEncounterSpentEvents(blueprint, plannedEncounters);
+
     for (const plannedEncounter of plannedEncounters) {
       const matchedScene = this.findSceneForPlannedEncounter(blueprint, plannedEncounter);
       if (!matchedScene) continue;
@@ -1104,6 +1107,89 @@ export class StoryArchitect extends BaseAgent {
           `[StoryArchitect] Repaired planned encounter "${plannedEncounter.id}" by binding it to scene "${matchedScene.id}"`
         );
       }
+    }
+  }
+
+  private sceneEventSignatureText(scene: SceneBlueprint): string[] {
+    return [
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.narrativeFunction,
+      scene.encounterDescription,
+      ...(scene.keyBeats || []),
+      ...(scene.requiredBeats || []).flatMap((beat) => [beat.mustDepict, beat.sourceTurn]),
+      scene.turnContract?.centralTurn,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.afterState,
+      scene.turnContract?.handoff,
+      ...(scene.npcsPresent || []),
+    ].filter((value): value is string => Boolean(value?.trim()));
+  }
+
+  private repairPreEncounterSpentEvents(
+    blueprint: EpisodeBlueprint,
+    plannedEncounters: NonNullable<StoryArchitectInput['seasonPlanDirectives']>['plannedEncounters'],
+  ): void {
+    if (!plannedEncounters?.length) return;
+    for (const plannedEncounter of plannedEncounters) {
+      const encounterIndex = blueprint.scenes.findIndex((scene) =>
+        scene.plannedEncounterId === plannedEncounter.id
+        || scene.id === plannedEncounter.id
+        || (scene.isEncounter && this.sceneMatchesPlannedEncounter(scene, plannedEncounter))
+      );
+      if (encounterIndex < 0) continue;
+      const encounterScene = blueprint.scenes[encounterIndex];
+      const encounterSignature = buildEncounterEventSignature([
+        plannedEncounter.description,
+        plannedEncounter.centralConflict,
+        plannedEncounter.stakes,
+        plannedEncounter.aftermathConsequence,
+        ...(plannedEncounter.npcsInvolved || []),
+      ]);
+      if (encounterSignature.pressureActions.size === 0) continue;
+
+      let owner: { scene: SceneBlueprint; index: number; score: number; matchedSignals: string[] } | undefined;
+      for (let index = 0; index < encounterIndex; index += 1) {
+        const scene = blueprint.scenes[index];
+        if (scene.isEncounter || scene.plannedEncounterId) continue;
+        const match = compareEncounterEventSignatures(
+          encounterSignature,
+          buildEncounterEventSignature(this.sceneEventSignatureText(scene)),
+        );
+        if (!match.matched) continue;
+        if (!owner || match.score > owner.score || (match.score === owner.score && index > owner.index)) {
+          owner = { scene, index, score: match.score, matchedSignals: match.matchedSignals };
+        }
+      }
+      if (!owner) continue;
+
+      this.applyPlannedEncounterToScene(owner.scene, plannedEncounter);
+      const duplicateTargets = encounterScene.leadsTo || [];
+      for (const scene of blueprint.scenes) {
+        const repairedTargets: string[] = [];
+        for (const target of scene.leadsTo || []) {
+          if (target === encounterScene.id) {
+            repairedTargets.push(...duplicateTargets);
+          } else {
+            repairedTargets.push(target);
+          }
+        }
+        scene.leadsTo = repairedTargets.filter((target, index, arr) =>
+          target && target !== scene.id && arr.indexOf(target) === index,
+        );
+      }
+      blueprint.scenes.splice(encounterIndex, 1);
+      blueprint.bottleneckScenes = Array.from(new Set(
+        (blueprint.bottleneckScenes || [])
+          .map((id) => id === encounterScene.id ? owner!.scene.id : id)
+          .filter((id) => blueprint.scenes.some((scene) => scene.id === id)),
+      ));
+      console.warn(
+        `[StoryArchitect] Repaired pre-encounter spend for "${plannedEncounter.id}": ` +
+        `promoted scene "${owner.scene.id}" and removed duplicate "${encounterScene.id}" ` +
+        `(${owner.matchedSignals.join(', ') || 'event signature'}).`,
+      );
     }
   }
 

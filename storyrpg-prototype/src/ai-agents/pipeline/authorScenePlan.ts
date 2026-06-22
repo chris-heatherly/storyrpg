@@ -36,9 +36,12 @@ import type { ChoiceType } from '../../types/choice';
 import {
   bindAuthoredTurnsToScenes,
   buildEpisodeScenes,
+  encounterIsCoveredByAuthoredTurns,
+  getAuthoredEpisodeEventTexts,
   sevenPointTextForEpisode,
   toSceneEncounter,
   MIN_SCENES_PER_EPISODE,
+  promoteCoveredAuthoredEncounters,
 } from './seasonScenePlanBuilder';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
@@ -622,6 +625,12 @@ function normalizeEpisodeScenes(
 ): PlannedScene[] {
   const encountersById = new Map((ep.plannedEncounters ?? []).map((e) => [e.id, e]));
   const usedEncounterIds = new Set<string>();
+  const authoredEventTexts = getAuthoredEpisodeEventTexts(ep);
+  const coveredEncounterIds = new Set(
+    (ep.plannedEncounters ?? [])
+      .filter((enc) => encounterIsCoveredByAuthoredTurns(enc, authoredEventTexts))
+      .map((enc) => enc.id),
+  );
   const actLabel = ep.treatmentGuidance?.actLabel;
   const arcLabel = ep.treatmentGuidance?.arcLabel;
   const built: PlannedScene[] = [];
@@ -676,6 +685,7 @@ function normalizeEpisodeScenes(
   // Guarantee every planned encounter appears as a scene (append any the model dropped).
   for (const enc of ep.plannedEncounters ?? []) {
     if (usedEncounterIds.has(enc.id)) continue;
+    if (coveredEncounterIds.has(enc.id)) continue;
     const sceneEncounter = toSceneEncounter(enc);
     // No authored intent for a dropped encounter: derive encounter defaults, but
     // honor isBranchPoint by preferring a hard 'branch' tier for branch-point encounters.
@@ -729,6 +739,7 @@ function normalizeEpisodeScenes(
   // regardless of what the model returned (§3.2 / §5). Shared with the
   // deterministic path via the same helper.
   bindAuthoredTurnsToScenes(ep, built, infoLedger);
+  promoteCoveredAuthoredEncounters(ep, built, coveredEncounterIds);
   return built;
 }
 

@@ -37,7 +37,7 @@ function makeStory(): Story {
 const beatFinding = (sceneId: string) => ({
   type: 'treatment_fidelity_violation',
   severity: 'error',
-  message: `Authored required beat is missing from the final prose of episode 2 scene "${sceneId}": "A strategy argument over the route sharpens the old hostility."`,
+  message: `Authored required beat is missing from the final prose of episode 2 scene "${sceneId}": "Rorik and Lysandra argue over the river crossing route and tear the map.". The authored turn must be dramatized on-page, not dropped or truncated.`,
   validator: 'RequiredBeatRealizationValidator',
   sceneId,
   episodeNumber: 2,
@@ -66,6 +66,37 @@ describe('confirmHeuristicFidelityFindings', () => {
     // The judge saw the scene's actual prose.
     const claims = judge.execute.mock.calls[0][0];
     expect(claims[0].prose).toContain('map tears');
+    expect(claims[0].authoredMoment).toBe('Rorik and Lysandra argue over the river crossing route and tear the map.');
+  });
+
+  it('keeps RequiredBeat findings blocking when the judge is looser than deterministic scoring', async () => {
+    const judge = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: { verdicts: [{ id: 'claim-0', dramatized: true, evidence: 'privacy pressure' }] },
+      }),
+    };
+    const report = {
+      passed: false,
+      blockingIssues: [{
+        type: 'treatment_fidelity_violation',
+        severity: 'error',
+        message: 'Authored required beat is missing from the final prose of episode 2 scene "s2-4": "Over Sunday breakfast, Victor asks Kylie to keep his face out of her viral blog for privacy.". The authored turn must be dramatized on-page, not dropped or truncated.',
+        validator: 'RequiredBeatRealizationValidator',
+        sceneId: 's2-4',
+        episodeNumber: 2,
+      }],
+      warnings: [] as unknown[],
+    };
+    const outcome = await confirmHeuristicFidelityFindings({
+      report: report as never,
+      story: makeStory(),
+      judge: () => judge as never,
+    });
+
+    expect(outcome).toEqual({ judged: 1, downgraded: 0 });
+    expect(report.blockingIssues).toHaveLength(1);
+    expect(report.passed).toBe(false);
   });
 
   it('keeps judge-confirmed misses blocking', async () => {

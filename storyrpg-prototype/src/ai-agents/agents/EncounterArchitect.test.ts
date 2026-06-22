@@ -616,6 +616,28 @@ describe('assemblePhasedEncounter', () => {
     expect(structure.storylets.defeat.name).toBe('Custom Defeat');
   });
 
+  it('recovers nameless generated storylet flags with deterministic encounter outcome names', () => {
+    const phase1 = makePhase1();
+    const phase4 = makeAuthoredStorylets();
+    phase4.victory.consequences = [
+      { type: 'flag', value: 'true' } as never,
+    ];
+    phase4.defeat.consequences = [
+      { type: 'flag', value: false } as never,
+    ];
+
+    const phase2Results = phase1.openingBeat.choices.map(c => makePhase2(c.id));
+    const assembled = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, phase4, emptyBrief);
+    const structure = (architect as any).normalizeStructure(assembled, input);
+
+    expect(structure.storylets.victory.consequences).toEqual([
+      { type: 'flag', name: 'encounter_scene-3_victory', change: true },
+    ]);
+    expect(structure.storylets.defeat.consequences).toEqual([
+      { type: 'flag', name: 'encounter_scene-3_defeat', change: false },
+    ]);
+  });
+
   it('refuses default storylets when Phase 4 fails', () => {
     const phase1 = makePhase1();
     expect(() => architect.assemblePhasedEncounter(input, phase1, [], null, null, emptyBrief))

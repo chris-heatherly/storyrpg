@@ -8,6 +8,8 @@ export const PLANNING_REGISTER_LEAK_PATTERNS: Array<{ label: string; pattern: Re
   { label: 'Aftermath stakes reset', pattern: /\bAftermath\s+that\s+resettles\s+stakes\b/i },
   { label: 'Structural beat service', pattern: /\bserves\s+the\s+(?:hook|plotTurn1|pinch1|midpoint|pinch2|climax|resolution)\s+beat\b/i },
   { label: 'Forward pressure', pattern: /\bForward\s+pressure\s*:/i },
+  { label: 'Episode pressure instruction', pattern: /\bEscalate\s+the\s+episode\s+pressure\s+through\s+a\s+concrete\s+turn\s*:/i },
+  { label: 'Fallout pressure instruction', pattern: /\bLet\s+the\s+fallout\s+settle\s+into\s+the\s+next\s+pressure\s*:/i },
 ];
 
 export function isPlanningRegisterText(text: string | undefined): boolean {

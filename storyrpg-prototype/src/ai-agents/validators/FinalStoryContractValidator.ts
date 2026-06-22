@@ -27,12 +27,14 @@ import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
+import { TreatmentEventLedgerValidator } from './TreatmentEventLedgerValidator';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
 import { applyResidueConsumption } from '../pipeline/residueConsumption';
 import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
 import { rebalanceStoryEncounterSkills } from '../utils/encounterSkillRebalance';
+import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
 
 /**
@@ -93,9 +95,12 @@ export type FinalStoryContractIssueType =
   | 'relationship_pacing_violation'
   | 'mechanic_pressure_violation'
   | 'treatment_field_utilization_violation'
+  | 'treatment_event_ledger_violation'
   | 'season_promise_realization_violation'
   | 'character_treatment_realization_violation'
   | 'narrative_failure_mode_violation'
+  | 'duplicate_high_pressure_event'
+  | 'scene_location_event_mismatch'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -436,6 +441,32 @@ export class FinalStoryContractValidator {
           beatId: finding.beatId,
           validator: 'PlanningRegisterLeakValidator',
           suggestion: 'Rewrite this field as in-world prose or visual direction; remove planning-register instructions and authorial task labels.',
+        });
+      }
+    }
+
+    // Treatment event ledger: seven-point treatment contracts are authoritative
+    // event atoms. A scene cannot satisfy a must-dramatize hook/midpoint/climax
+    // by mentioning it as memory, later recap, or metadata; the event has to be
+    // staged in reader-facing prose in its assigned scene.
+    {
+      const ledgerResult = new TreatmentEventLedgerValidator().validate({
+        story: input.story,
+        treatmentSourced: input.treatmentSourced,
+      });
+      if (ledgerResult.findings.length > 0) {
+        console.info(`[FinalStoryContract] treatment-event ledger: ${ledgerResult.findings.length} finding(s)`);
+      }
+      for (const finding of ledgerResult.findings) {
+        issues.push({
+          type: 'treatment_event_ledger_violation',
+          severity: finding.severity,
+          message: finding.message,
+          episodeId: finding.episodeId,
+          episodeNumber: finding.episodeNumber,
+          sceneId: finding.sceneId,
+          validator: 'TreatmentEventLedgerValidator',
+          suggestion: finding.suggestion,
         });
       }
     }
@@ -804,6 +835,8 @@ export class FinalStoryContractValidator {
         });
       }
 
+      this.validateRepeatedHighPressureEvents(episode, reachableSceneIds, issues);
+
       // Cross-scene beat-id collisions (exact or hierarchical-prefix). The
       // StructuralValidator autofix namespaces these before the gate; anything
       // reaching here is unrepaired and blocks (it corrupts any global/prefix
@@ -1067,6 +1100,87 @@ export class FinalStoryContractValidator {
     return reachable;
   }
 
+  private validateRepeatedHighPressureEvents(
+    episode: Episode,
+    reachableSceneIds: Set<string>,
+    issues: FinalStoryContractIssue[],
+  ): void {
+    const staged = (episode.scenes || [])
+      .filter((scene) => reachableSceneIds.has(scene.id))
+      .map((scene, index) => {
+        const readerTexts = collectReaderFacingTexts(scene);
+        const encounterMetaTexts = scene.encounter ? collectEncounterMetaTexts(scene) : [];
+        const eventOnlySignature = buildEncounterEventSignature([
+          ...readerTexts,
+          ...encounterMetaTexts,
+        ]);
+        const proseSignature = buildEncounterEventSignature([
+          scene.name,
+          ...readerTexts,
+          ...encounterMetaTexts,
+        ]);
+        return {
+          scene,
+          index,
+          signature: proseSignature,
+          eventOnlySignature,
+          textCount: readerTexts.length + encounterMetaTexts.length,
+        };
+      })
+      .filter((entry) =>
+        entry.textCount > 0
+        && entry.signature.pressureActions.size > 0
+        && !entry.signature.isSetupOnly
+        && !entry.signature.isReferenceOnly
+      );
+
+    for (const entry of staged) {
+      const plannedLocation = entry.scene.timeline?.location;
+      if (!plannedLocation) continue;
+      const plannedSignature = buildEncounterEventSignature([plannedLocation]);
+      if (plannedSignature.locations.size === 0 || entry.eventOnlySignature.locations.size === 0) continue;
+      const sharedLocation = [...plannedSignature.locations].some((location) => entry.eventOnlySignature.locations.has(location));
+      if (sharedLocation) continue;
+      issues.push({
+        type: 'scene_location_event_mismatch',
+        severity: 'error',
+        message:
+          `Scene "${entry.scene.name || entry.scene.id}" is planned at "${plannedLocation}" but its staged high-pressure event ` +
+          `names a different location signal (${[...entry.eventOnlySignature.locations].join(', ')}).`,
+        episodeId: episode.id,
+        episodeNumber: episode.number,
+        sceneId: entry.scene.id,
+        validator: 'FinalStoryContractValidator',
+        suggestion: 'Move the event to the scene whose planned location matches it, or rewrite this scene as aftermath/recap rather than restaging the event.',
+      });
+    }
+
+    const seenPairs = new Set<string>();
+    for (let i = 0; i < staged.length; i += 1) {
+      for (let j = i + 1; j < staged.length; j += 1) {
+        const first = staged[i];
+        const second = staged[j];
+        const pairKey = `${first.scene.id}->${second.scene.id}`;
+        if (seenPairs.has(pairKey)) continue;
+        const match = compareEncounterEventSignatures(first.signature, second.signature);
+        if (!match.matched) continue;
+        seenPairs.add(pairKey);
+        issues.push({
+          type: 'duplicate_high_pressure_event',
+          severity: 'error',
+          message:
+            `Reachable scenes "${first.scene.id}" and "${second.scene.id}" appear to restage the same high-pressure event ` +
+            `(${match.matchedSignals.join(', ') || 'shared event signature'}). Recaps, warnings, dreams, and blog aftermath are allowed; this reads as a second staged event.`,
+          episodeId: episode.id,
+          episodeNumber: episode.number,
+          sceneId: second.scene.id,
+          validator: 'FinalStoryContractValidator',
+          suggestion: `Merge the event into one encounter/scene, or rewrite "${second.scene.id}" as consequence, recap, warning, or a distinct escalation.`,
+        });
+      }
+    }
+  }
+
   private getSceneTargets(scene: Scene): string[] {
     const targets = new Set<string>();
     for (const target of scene.leadsTo || []) {
@@ -1324,7 +1438,9 @@ export class FinalStoryContractValidator {
     const vampireNames = (story.npcs || [])
       .filter((npc) => {
         const haystack = JSON.stringify(npc).toLowerCase();
-        return /\b(?:vampire|strigoi)\b/.test(haystack);
+        if (!/\b(?:vampire|strigoi)\b/.test(haystack)) return false;
+        return !/\b(?:vampire|strigoi)[-\s]*(?:hunter|hunting|slayer|warder|warding)\b/.test(haystack)
+          && !/\b(?:hunter|hunting|slayer|warder|warding|wards|ward)\b[^.!?]{0,50}\b(?:vampire|strigoi)\b/.test(haystack);
       })
       .flatMap((npc) => {
         const full = typeof npc.name === 'string' ? npc.name.trim() : '';
@@ -1490,9 +1606,10 @@ export class FinalStoryContractValidator {
       // playability gate — advisory by default so the story ships with the score
       // recorded rather than producing zero output. GATE_QA_CRITICAL_BLOCK promotes
       // it to blocking once an auto-repair path exists (default-off ⇒ unchanged).
+      const hasCriticalIssues = qaReport.criticalIssues.length > 0;
       issues.push({
         type: 'qa_blocker_present',
-        severity: treatmentSourced || isGateEnabledAt('GATE_QA_CRITICAL_BLOCK', 'season-final') ? 'error' : 'warning',
+        severity: hasCriticalIssues && (treatmentSourced || isGateEnabledAt('GATE_QA_CRITICAL_BLOCK', 'season-final')) ? 'error' : 'warning',
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });

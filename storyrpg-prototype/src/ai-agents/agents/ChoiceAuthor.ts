@@ -2445,10 +2445,10 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
         repaired += 1;
       }
 
-      if (!choice.reminderPlan) {
-        const pressure = choice.mechanicPressure[0]?.storyPressure || input.sceneBlueprint.choicePoint?.stakes.want || choice.text;
+      if (!choice.reminderPlan || this.isMechanicalReminderPlan(choice.reminderPlan.immediate)) {
+        const pressure = choice.mechanicPressure[0];
         choice.reminderPlan = {
-          immediate: `The choice leaves visible pressure around ${pressure}.`,
+          immediate: this.fictionFirstImmediateReminder(choice, pressure, input),
           shortTerm: `Later scenes should remember how this changed access, posture, information, risk, or trust.`,
         };
         repaired += 1;
@@ -2461,6 +2461,68 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       console.warn(`[ChoiceAuthor] Added narrative mechanic pressure metadata/residue to ${repaired} choice field(s).`);
     }
     return repaired;
+  }
+
+  private isMechanicalReminderPlan(text: string | undefined): boolean {
+    const value = String(text || '');
+    return /\bchoice leaves visible pressure around\b/i.test(value)
+      || /\bRelationship with\b[\s\S]{0,160}\bmoving only as far as\b/i.test(value)
+      || /\bGroup belonging\b[\s\S]{0,160}\bmoving only as far as\b/i.test(value);
+  }
+
+  private fictionFirstImmediateReminder(
+    choice: Choice,
+    contract: MechanicPressureContract | undefined,
+    input: ChoiceAuthorInput,
+  ): string {
+    switch (contract?.domain) {
+      case 'relationship':
+        return this.relationshipImmediateReminder(choice, contract, input);
+      case 'item':
+        return `The object stays in the scene as more than a prop; someone has to carry what it opens, costs, or proves.`;
+      case 'information':
+      case 'flag':
+        return `The answer changes what can be safely said next, and what has to stay hidden a little longer.`;
+      case 'skill':
+        return `The attempt leaves proof in the room: what worked, what failed, and what the next risk will demand.`;
+      case 'identity':
+        return `Your answer settles into your posture before anyone names what it says about you.`;
+      case 'route':
+        return `The choice changes the path in a way the next scene can feel before it explains.`;
+      case 'score':
+      case 'resource':
+        return `The moment leaves a visible cost behind: less room to bluff, delay, or pretend nothing changed.`;
+      default:
+        return `The next beat should show the choice in posture, access, tone, cost, clue, memory, or narrowed options.`;
+    }
+  }
+
+  private relationshipImmediateReminder(
+    choice: Choice,
+    contract: MechanicPressureContract,
+    input: ChoiceAuthorInput,
+  ): string {
+    const npcId = contract.mechanicRef.npcId;
+    const npc = input.npcsInScene.find((candidate) => candidate.id === npcId && !this.isProtagonistNpc(candidate, input));
+    const relationship = (choice.consequences ?? []).find((consequence): consequence is Consequence & {
+      type: 'relationship';
+      change?: number;
+    } => consequence.type === 'relationship' && (!npcId || consequence.npcId === npcId));
+    const change = relationship?.change ?? 0;
+
+    if (!npc) {
+      return change < 0
+        ? `Your answer leaves a little more distance in the room, visible before anyone says why.`
+        : `Your answer changes your posture by a fraction, enough for the next room to read it.`;
+    }
+
+    if (change < 0) {
+      return `${npc.name}'s attention cools by a fraction; the next words have to cross a little more distance.`;
+    }
+    if (change > 0) {
+      return `${npc.name} softens by a fraction, not trust yet, but enough to change the next silence.`;
+    }
+    return `${npc.name} clocks the answer and adjusts by inches, careful enough that the room can feel it.`;
   }
 
   private meaningfulConsequences(consequences: Consequence[]): Consequence[] {

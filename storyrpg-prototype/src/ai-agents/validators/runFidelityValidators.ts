@@ -27,6 +27,7 @@
 
 import type { Story } from '../../types/story';
 import type { SeasonPlan, InformationLedgerEntry } from '../../types/seasonPlan';
+import type { SeasonScenePlan, PlannedScene } from '../../types/scenePlan';
 import type {
   SourceMaterialAnalysis,
   TreatmentEpisodeGuidance,
@@ -89,9 +90,179 @@ export interface RunFidelityValidatorsInput {
   seasonPlan?: SeasonPlan;
   /** The source analysis (authored episode titles, anchors, treatment metadata). */
   sourceAnalysis?: SourceMaterialAnalysis;
+  /** Which generated scope this final-contract pass is validating. */
+  scope?: FidelityValidationScope;
 }
 
 const EMPTY: RunFidelityValidatorsResult = { fidelityFindings: [], treatmentSourced: false };
+
+export type FidelityValidationScopeMode = 'episode-incremental' | 'generated-slice' | 'full-season';
+
+export interface FidelityValidationScope {
+  mode: FidelityValidationScopeMode;
+  generatedEpisodeNumbers?: number[];
+  requestedEpisodeNumbers?: number[];
+  generatedThroughEpisode?: number;
+}
+
+function uniqueNumbers(values: Array<number | undefined> | undefined): number[] {
+  return [...new Set((values ?? []).filter((value): value is number => typeof value === 'number' && Number.isFinite(value)))].sort((a, b) => a - b);
+}
+
+function storyEpisodeNumbers(story: Story): number[] {
+  return uniqueNumbers((story.episodes ?? []).map((episode) => episode.number));
+}
+
+function activeEpisodesFor(input: RunFidelityValidatorsInput): Set<number> | undefined {
+  if (!input.scope || input.scope.mode === 'full-season') return undefined;
+  const explicit = uniqueNumbers(input.scope.generatedEpisodeNumbers);
+  const requested = uniqueNumbers(input.scope.requestedEpisodeNumbers);
+  const fromStory = storyEpisodeNumbers(input.story);
+  const active = explicit.length > 0 ? explicit : requested.length > 0 ? requested : fromStory;
+  return active.length > 0 ? new Set(active) : undefined;
+}
+
+function scopedEpisodeArray<T>(items: T[] | undefined, active: Set<number> | undefined, getEpisode: (item: T) => number | undefined): T[] | undefined {
+  if (!items || !active) return items;
+  return items.filter((item) => {
+    const episodeNumber = getEpisode(item);
+    return typeof episodeNumber !== 'number' || active.has(episodeNumber);
+  });
+}
+
+type EpisodeTargeted = {
+  episodeNumber?: number;
+  targetEpisodeNumber?: number;
+  targetEpisodeNumbers?: number[];
+  targetSceneIds?: string[];
+};
+
+function scopedContracts<T extends EpisodeTargeted>(
+  items: T[] | undefined,
+  active: Set<number> | undefined,
+  activeSceneIds?: Set<string>,
+): T[] | undefined {
+  if (!items || !active) return items;
+  return items.filter((item) => {
+    const episodeTargets = uniqueNumbers([
+      item.episodeNumber,
+      item.targetEpisodeNumber,
+      ...(item.targetEpisodeNumbers ?? []),
+    ]);
+    if (episodeTargets.length > 0) return episodeTargets.some((episodeNumber) => active.has(episodeNumber));
+    const sceneTargets = item.targetSceneIds ?? [];
+    if (sceneTargets.length > 0 && activeSceneIds) return sceneTargets.some((sceneId) => activeSceneIds.has(sceneId));
+    return true;
+  });
+}
+
+function scopedPlannedScene(scene: PlannedScene, active: Set<number> | undefined, activeSceneIds: Set<string>): PlannedScene {
+  if (!active) return scene;
+  return {
+    ...scene,
+    requiredBeats: scene.requiredBeats,
+    relationshipPacing: scene.relationshipPacing,
+    mechanicPressure: scene.mechanicPressure,
+    authoredTreatmentFields: scopedContracts(scene.authoredTreatmentFields, active, activeSceneIds),
+    seasonPromiseContracts: scopedContracts(scene.seasonPromiseContracts, active, activeSceneIds),
+    stakesArchitectureContracts: scopedContracts(scene.stakesArchitectureContracts, active, activeSceneIds),
+    branchConsequenceContracts: scopedContracts(scene.branchConsequenceContracts, active, activeSceneIds),
+    endingRealizationContracts: scopedContracts(scene.endingRealizationContracts, active, activeSceneIds),
+    failureModeAuditContracts: scopedContracts(scene.failureModeAuditContracts, active, activeSceneIds),
+    sevenPointBeatContracts: scopedContracts(scene.sevenPointBeatContracts, active, activeSceneIds),
+    arcPressureContracts: scopedContracts(scene.arcPressureContracts, active, activeSceneIds),
+    characterTreatmentContracts: scopedContracts(scene.characterTreatmentContracts, active, activeSceneIds),
+    worldTreatmentContracts: scopedContracts(scene.worldTreatmentContracts, active, activeSceneIds),
+  };
+}
+
+function scopedScenePlan(scenePlan: SeasonScenePlan | undefined, active: Set<number> | undefined): SeasonScenePlan | undefined {
+  if (!scenePlan || !active) return scenePlan;
+  const scenes = (scenePlan.scenes ?? []).filter((scene) => active.has(scene.episodeNumber));
+  const activeSceneIds = new Set(scenes.map((scene) => scene.id));
+  const scopedScenes = scenes.map((scene) => scopedPlannedScene(scene, active, activeSceneIds));
+  const byEpisode: Record<number, string[]> = {};
+  for (const [key, ids] of Object.entries(scenePlan.byEpisode ?? {})) {
+    const episodeNumber = Number(key);
+    if (!active.has(episodeNumber)) continue;
+    byEpisode[episodeNumber] = ids.filter((id) => activeSceneIds.has(id));
+  }
+  return {
+    ...scenePlan,
+    scenes: scopedScenes,
+    byEpisode,
+    setupPayoffEdges: (scenePlan.setupPayoffEdges ?? []).filter((edge) => activeSceneIds.has(edge.from) && activeSceneIds.has(edge.to)),
+    authoredTreatmentFields: scopedContracts(scenePlan.authoredTreatmentFields, active, activeSceneIds),
+    seasonPromiseContracts: scopedContracts(scenePlan.seasonPromiseContracts, active, activeSceneIds),
+    stakesArchitectureContracts: scopedContracts(scenePlan.stakesArchitectureContracts, active, activeSceneIds),
+    branchConsequenceContracts: scopedContracts(scenePlan.branchConsequenceContracts, active, activeSceneIds),
+    endingRealizationContracts: scopedContracts(scenePlan.endingRealizationContracts, active, activeSceneIds),
+    failureModeAuditContracts: scopedContracts(scenePlan.failureModeAuditContracts, active, activeSceneIds),
+    sevenPointBeatContracts: scopedContracts(scenePlan.sevenPointBeatContracts, active, activeSceneIds),
+    arcPressureContracts: scopedContracts(scenePlan.arcPressureContracts, active, activeSceneIds),
+    characterTreatmentContracts: scopedContracts(scenePlan.characterTreatmentContracts, active, activeSceneIds),
+    worldTreatmentContracts: scopedContracts(scenePlan.worldTreatmentContracts, active, activeSceneIds),
+  };
+}
+
+function entryTouchesActiveEpisode(entry: InformationLedgerEntry, active: Set<number> | undefined): boolean {
+  if (!active) return true;
+  return uniqueNumbers([
+    entry.introducedEpisode,
+    entry.plannedRevealEpisode,
+    entry.plannedPayoffEpisode,
+    ...(entry.setupTouchEpisodes ?? []),
+    ...(entry.setupTouchDetails ?? []).map((touch) => touch.episodeNumber),
+  ]).some((episodeNumber) => active.has(episodeNumber));
+}
+
+function scopeSeasonPlan(seasonPlan: SeasonPlan | undefined, active: Set<number> | undefined): SeasonPlan | undefined {
+  if (!seasonPlan || !active) return seasonPlan;
+  const scenePlan = scopedScenePlan(seasonPlan.scenePlan, active);
+  const activeSceneIds = new Set((scenePlan?.scenes ?? []).map((scene) => scene.id));
+  return {
+    ...seasonPlan,
+    episodes: scopedEpisodeArray(seasonPlan.episodes, active, (episode) => episode.episodeNumber) ?? [],
+    scenePlan,
+    informationLedger: (seasonPlan.informationLedger ?? []).filter((entry) => entryTouchesActiveEpisode(entry, active)),
+    choiceMoments: (seasonPlan.choiceMoments ?? []).filter((moment) => active.has(moment.episode) || active.has(moment.paysOffEpisode ?? -1)),
+    seasonPromiseContracts: scopedContracts(seasonPlan.seasonPromiseContracts, active, activeSceneIds),
+    stakesArchitectureContracts: scopedContracts(seasonPlan.stakesArchitectureContracts, active, activeSceneIds),
+    sevenPointBeatContracts: scopedContracts(seasonPlan.sevenPointBeatContracts, active, activeSceneIds),
+    arcPressureContracts: scopedContracts(seasonPlan.arcPressureContracts, active, activeSceneIds),
+    branchConsequenceContracts: scopedContracts(seasonPlan.branchConsequenceContracts, active, activeSceneIds),
+    endingRealizationContracts: scopedContracts(seasonPlan.endingRealizationContracts, active, activeSceneIds),
+    failureModeAuditContracts: scopedContracts(seasonPlan.failureModeAuditContracts, active, activeSceneIds),
+    characterTreatmentContracts: scopedContracts(seasonPlan.characterTreatmentContracts, active, activeSceneIds),
+    worldTreatmentContracts: scopedContracts(seasonPlan.worldTreatmentContracts, active, activeSceneIds),
+  };
+}
+
+function scopeSourceAnalysis(analysis: SourceMaterialAnalysis | undefined, active: Set<number> | undefined): SourceMaterialAnalysis | undefined {
+  if (!analysis || !active) return analysis;
+  return {
+    ...analysis,
+    episodeBreakdown: scopedEpisodeArray(analysis.episodeBreakdown, active, (episode) => episode.episodeNumber) ?? [],
+    stakesArchitectureContracts: scopedContracts(analysis.stakesArchitectureContracts, active),
+    sevenPointBeatContracts: scopedContracts(analysis.sevenPointBeatContracts, active),
+    arcPressureContracts: scopedContracts(analysis.arcPressureContracts, active),
+    branchConsequenceContracts: scopedContracts(analysis.branchConsequenceContracts, active),
+    endingRealizationContracts: scopedContracts(analysis.endingRealizationContracts, active),
+    failureModeAuditContracts: scopedContracts(analysis.failureModeAuditContracts, active),
+    characterTreatmentContracts: scopedContracts(analysis.characterTreatmentContracts, active),
+    worldTreatmentContracts: scopedContracts(analysis.worldTreatmentContracts, active),
+  } as SourceMaterialAnalysis;
+}
+
+function scopedFidelityInput(input: RunFidelityValidatorsInput): RunFidelityValidatorsInput {
+  const active = activeEpisodesFor(input);
+  if (!active) return input;
+  return {
+    ...input,
+    seasonPlan: scopeSeasonPlan(input.seasonPlan, active),
+    sourceAnalysis: scopeSourceAnalysis(input.sourceAnalysis, active),
+  };
+}
 
 /**
  * Reconstruct the `ExtractedTreatment`-shaped input the
@@ -112,13 +283,40 @@ function treatmentFromAnalysis(
   return { episodes, seasonGuidance: analysis.treatmentSeasonGuidance };
 }
 
+type AuthoredTreatmentContractSource = {
+  characterTreatmentContracts?: unknown[];
+  worldTreatmentContracts?: unknown[];
+  failureModeAuditContracts?: unknown[];
+  endingRealizationContracts?: unknown[];
+  branchConsequenceContracts?: unknown[];
+};
+
+function hasAuthoredTreatmentContractArrays(source: AuthoredTreatmentContractSource | undefined): boolean {
+  if (!source) return false;
+  return [
+    source.characterTreatmentContracts,
+    source.worldTreatmentContracts,
+    source.failureModeAuditContracts,
+    source.endingRealizationContracts,
+    source.branchConsequenceContracts,
+  ].some((contracts) => Array.isArray(contracts) && contracts.length > 0);
+}
+
 /** True when the run was sourced from an authored treatment (drives §4.6 blocking). */
-function isTreatmentSourced(analysis: SourceMaterialAnalysis | undefined): boolean {
-  if (!analysis) return false;
+function isTreatmentSourced(
+  analysis: SourceMaterialAnalysis | undefined,
+  seasonPlan?: SeasonPlan,
+): boolean {
+  if (!analysis) return hasAuthoredTreatmentContractArrays(seasonPlan);
   if (analysis.sourceFormat === 'story_treatment') return true;
   if (analysis.treatmentMetadata?.detected) return true;
   // Defensive: any parsed authored episode guidance also implies a treatment source.
-  return Object.values(analysis.treatmentSeasonGuidance ?? {}).length > 0;
+  if (Object.values(analysis.treatmentSeasonGuidance ?? {}).length > 0) return true;
+  // Some UX-driven document runs arrive as `sourceFormat: "prompt"` after the
+  // treatment parser has already materialized authored-treatment contracts onto
+  // the analysis/season plan. Those contracts are the source-of-record even when
+  // the coarse format tag is stale, so they must keep §4.6 fail-closed.
+  return hasAuthoredTreatmentContractArrays(analysis) || hasAuthoredTreatmentContractArrays(seasonPlan);
 }
 
 /**
@@ -191,10 +389,14 @@ function collectFidelityFindings(
   isEnabled: (flag: TreatmentFidelityGateFlag) => boolean,
   treatmentSourced: boolean,
 ): FidelityFinding[] {
-  const { story, seasonPlan, sourceAnalysis } = input;
+  const scopedInput = scopedFidelityInput(input);
+  const { story, seasonPlan, sourceAnalysis } = scopedInput;
+  const unscopedSeasonPlan = input.seasonPlan;
+  const unscopedSourceAnalysis = input.sourceAnalysis;
+  const incrementalEpisodeSeal = input.scope?.mode === 'episode-incremental';
   const findings: FidelityFinding[] = [];
 
-  const beatEpisodeAnchors = sourceAnalysis?.treatmentSeasonGuidance?.beatEpisodeAnchors as
+  const beatEpisodeAnchors = unscopedSourceAnalysis?.treatmentSeasonGuidance?.beatEpisodeAnchors as
     | Partial<Record<SevenPointBeat, number>>
     | undefined;
   const scenePlan = seasonPlan?.scenePlan;
@@ -209,11 +411,11 @@ function collectFidelityFindings(
   };
 
   // 4.1 — authored episode identity (count/order/title/anchor). Needs the treatment + plan.
-  if (isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance) && sourceAnalysis && seasonPlan) {
+  if (!incrementalEpisodeSeal && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance) && unscopedSourceAnalysis && unscopedSeasonPlan) {
     guard(() => {
       const result = new AuthoredEpisodeConformanceValidator().validate({
-        treatment: treatmentFromAnalysis(sourceAnalysis),
-        seasonPlan,
+        treatment: treatmentFromAnalysis(unscopedSourceAnalysis),
+        seasonPlan: unscopedSeasonPlan,
       });
       return toFindings('AuthoredEpisodeConformanceValidator', result.issues);
     });
@@ -309,7 +511,7 @@ function collectFidelityFindings(
 
   // Narrative mechanic pressure: hidden state must originate in on-page events,
   // leave visible residue, and be spent as earned story permission.
-  if (isGateEnabled('GATE_NARRATIVE_MECHANIC_PRESSURE')) {
+  if (!incrementalEpisodeSeal && isGateEnabled('GATE_NARRATIVE_MECHANIC_PRESSURE')) {
     guard(() => {
       const result = new NarrativeMechanicPressureValidator().validate({ story, scenePlan, treatmentSourced });
       return toFindings('NarrativeMechanicPressureValidator', result.issues);
@@ -320,7 +522,7 @@ function collectFidelityFindings(
   // encounter shape, stakes/theme/lie pressure, information/consequence seeds,
   // ending turnout, and cliffhanger pressure) must be consumed into a concrete
   // planning artifact and realized fiction-first in the final story.
-  if (isGateEnabled('GATE_TREATMENT_FIELD_UTILIZATION') && treatmentSourced && sourceAnalysis) {
+  if (!incrementalEpisodeSeal && isGateEnabled('GATE_TREATMENT_FIELD_UTILIZATION') && treatmentSourced && sourceAnalysis) {
     guard(() => {
       const result = new TreatmentFieldUtilizationValidator().validate({
         story,
@@ -399,10 +601,10 @@ function collectFidelityFindings(
   }
 
   // 4.5 — each authored beat→episode anchor is honored in the final season.
-  if (isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance) && seasonPlan && beatEpisodeAnchors) {
+  if (!incrementalEpisodeSeal && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance) && unscopedSeasonPlan && beatEpisodeAnchors) {
     guard(() => {
       const result = new SevenPointAnchorConformanceValidator().validate(
-        seasonPlanToAnchorConformanceInput(seasonPlan, beatEpisodeAnchors),
+        seasonPlanToAnchorConformanceInput(unscopedSeasonPlan, beatEpisodeAnchors),
       );
       return toFindings('SevenPointAnchorConformanceValidator', result.issues);
     });
@@ -412,7 +614,7 @@ function collectFidelityFindings(
 }
 
 export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFidelityValidatorsResult {
-  const treatmentSourced = isTreatmentSourced(input.sourceAnalysis);
+  const treatmentSourced = isTreatmentSourced(input.sourceAnalysis, input.seasonPlan);
   const findings = collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced);
   if (findings.length === 0 && !treatmentSourced) return EMPTY;
   return { fidelityFindings: findings, treatmentSourced };
@@ -469,7 +671,7 @@ export function runPlanTimeFidelityChecks(input: {
   sourceAnalysis?: SourceMaterialAnalysis;
 }): PlanTimeFidelityResult {
   const { seasonPlan, sourceAnalysis } = input;
-  const treatmentSourced = isTreatmentSourced(sourceAnalysis);
+  const treatmentSourced = isTreatmentSourced(sourceAnalysis, seasonPlan);
   if (!treatmentSourced || !seasonPlan || !sourceAnalysis) return EMPTY_PLAN_TIME;
 
   const findings: FidelityFinding[] = [];

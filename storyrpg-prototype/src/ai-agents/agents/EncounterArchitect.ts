@@ -2546,7 +2546,10 @@ RULES:
           for (const tier of ['success', 'complicated', 'failure'] as const) {
             const outcome = choice.outcomes[tier];
             if (!outcome) continue;
-            outcome.consequences = this.sanitizeStateChanges(outcome.consequences) || [];
+            outcome.consequences = this.sanitizeStateChanges(
+              outcome.consequences,
+              this.buildEncounterOutcomeFlagName(structure.sceneId, outcome.encounterOutcome || tier),
+            ) || [];
             if (outcome.cost?.consequences) {
               outcome.cost.consequences = this.sanitizeRuntimeConsequences(outcome.cost.consequences);
             }
@@ -2604,7 +2607,10 @@ RULES:
     this.requireAuthoredStorylets(structure.storylets, input, 'normalizeStructure');
     for (const storylet of Object.values(structure.storylets || {})) {
       if (!storylet) continue;
-      storylet.consequences = this.sanitizeStateChanges(storylet.consequences) || [];
+      storylet.consequences = this.sanitizeStateChanges(
+        storylet.consequences,
+        this.buildEncounterOutcomeFlagName(structure.sceneId, storylet.triggerOutcome || storylet.id || storylet.name),
+      ) || [];
     }
 
     if (!structure.partialVictoryCost) {
@@ -2889,7 +2895,13 @@ RULES:
     }
   }
 
-  private sanitizeStateChanges(changes?: StateChange[]): StateChange[] | undefined {
+  private buildEncounterOutcomeFlagName(sceneId: string, outcome: string): string {
+    const safeSceneId = sceneId.replace(/[^a-zA-Z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '') || 'encounter';
+    const safeOutcome = outcome.replace(/[^a-zA-Z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '') || 'outcome';
+    return `encounter_${safeSceneId}_${safeOutcome}`;
+  }
+
+  private sanitizeStateChanges(changes?: StateChange[], fallbackFlagName?: string): StateChange[] | undefined {
     if (!Array.isArray(changes)) return changes;
     const slugFromDescription = (description: string, fallback: string): string => {
       const words = description
@@ -2940,10 +2952,41 @@ RULES:
           } as StateChange;
         }
       }
+      if (
+        raw
+        && typeof raw === 'object'
+        && raw.type === 'flag'
+        && typeof raw.name !== 'string'
+        && typeof raw.flag !== 'string'
+        && (raw.change !== undefined || raw.value !== undefined)
+      ) {
+        const description = typeof raw.description === 'string' ? raw.description : '';
+        const name = description
+          ? slugFromDescription(description, fallbackFlagName || 'encounter_flag')
+          : fallbackFlagName;
+        if (name) {
+          const value = raw.change ?? raw.value;
+          const loweredValue = typeof value === 'string' ? value.toLowerCase().trim() : value;
+          return {
+            type: 'flag',
+            name,
+            change: loweredValue === false || loweredValue === 'false' || loweredValue === 0 ? false : true,
+          } as StateChange;
+        }
+      }
       return change;
     }).filter((change) => {
       const raw = change as unknown as Record<string, unknown>;
       if (!raw || typeof raw !== 'object') return false;
+      if (
+        raw.type === 'flag'
+        && typeof raw.name !== 'string'
+        && typeof raw.flag !== 'string'
+        && raw.change === undefined
+        && raw.value === undefined
+      ) {
+        return false;
+      }
       if (
         raw.type === 'score'
         && typeof raw.name !== 'string'

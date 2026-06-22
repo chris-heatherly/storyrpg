@@ -166,6 +166,28 @@ describe('InformationLedgerScheduleValidator', () => {
     expect(result.issues.some((i) => i.severity === 'error' && /setup touch/.test(i.message))).toBe(true);
   });
 
+  it('accepts a scheduled setup touch when its authored surface lands in prose without the INFO id', () => {
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({
+        id: 'INFO-F',
+        authoredId: 'INFO-F',
+        sourceText: 'Radu was at the rooftop bar.',
+        introducedEpisode: 1,
+        setupTouchEpisodes: [1],
+        setupTouchDetails: [{ episodeNumber: 1, requiredSurface: 'Radu was at the rooftop bar' }],
+        plannedRevealEpisode: 6,
+      })],
+      story(
+        {},
+        [1],
+        { 1: 'Across the room, Radu watches from the rooftop bar and looks away first.' },
+      ),
+    );
+
+    expect(result.metrics.missingSetupTouchCount).toBe(0);
+    expect(result.issues.some((i) => /setup touch/.test(i.message))).toBe(false);
+  });
+
   it('blocks treatment-authored entries when a separate payoff episode is missing', () => {
     const result = new InformationLedgerScheduleValidator().validate(
       [infoEntry({

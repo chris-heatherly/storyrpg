@@ -113,6 +113,7 @@ describe('buildPipelineConfig', () => {
 
     expect(config.agents.storyArchitect.provider).toBe('anthropic');
     expect(config.agents.storyArchitect.model).toBe('claude-sonnet-4-20250514');
+    expect(config.agents.storyArchitect.maxTokens).toBe(32768);
     expect(config.agents.imagePlanner?.provider).toBe('gemini');
     expect(config.agents.imagePlanner?.model).toBe('gemini-2.5-flash');
     expect(config.agents.imagePlanner?.apiKey).toBe('shared-gemini-key');

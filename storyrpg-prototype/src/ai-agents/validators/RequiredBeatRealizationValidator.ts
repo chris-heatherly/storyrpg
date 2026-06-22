@@ -102,6 +102,29 @@ function overlapScore(needle: string, haystack: string): number {
   return hits / needed.length;
 }
 
+function splitCompoundClauses(mustDepict: string): string[] {
+  const colonList = /:\s*([\s\S]+)$/.exec(mustDepict)?.[1];
+  const commaCount = (mustDepict.match(/,/g) || []).length;
+  const listSource = colonList || (commaCount >= 2 && /\b(?:and|or)\b/i.test(mustDepict) ? mustDepict : '');
+  if (!listSource) return [];
+
+  const clauses = listSource
+    .split(/\s*(?:;|,|\band\b)\s*/i)
+    .map((clause) => clause
+      .replace(/^\s*(?:and|or|including|include|includes|collects?|shows?|depicts?)\s+/i, '')
+      .replace(/^[\s:—-]+|[\s.]+$/g, '')
+      .trim())
+    .filter((clause) => contentTokens(clause).length >= 2);
+
+  return clauses.length >= 3 ? clauses : [];
+}
+
+function compoundBeatDepicted(mustDepict: string, prose: string): boolean | undefined {
+  const clauses = splitCompoundClauses(mustDepict);
+  if (clauses.length === 0) return undefined;
+  return clauses.every((clause) => normalize(prose).includes(normalize(clause)) || overlapScore(clause, prose) >= PRESENCE_MIN_SCORE);
+}
+
 /**
  * Treatments mark a beat's load-bearing entities with markdown emphasis — the
  * bite-me three-dates beat is *"Three terrible dates fail in a row — *The Lawyer*,
@@ -130,7 +153,11 @@ function spanPresent(span: string, prose: string): boolean {
 function beatDepicted(mustDepict: string, prose: string): boolean {
   const normalizedBeat = normalize(mustDepict);
   if (normalizedBeat.length === 0) return true;
+  const concreteDepicted = concreteSeedDepicted(normalizedBeat, prose);
+  if (typeof concreteDepicted === 'boolean') return concreteDepicted;
   if (normalize(prose).includes(normalizedBeat)) return true;
+  const compoundDepicted = compoundBeatDepicted(mustDepict, prose);
+  if (typeof compoundDepicted === 'boolean') return compoundDepicted;
   if (overlapScore(mustDepict, prose) >= PRESENCE_MIN_SCORE) return true;
   // Enumeration credit: a beat that emphasizes ≥2 named entities is depicted when
   // ALL of them land on-page. This is strictly additive (it can only mark MORE

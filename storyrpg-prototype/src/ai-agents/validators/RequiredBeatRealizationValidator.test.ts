@@ -222,6 +222,78 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('PASS: paraphrased rose-quartz warding consent counts when the object transfer lands on-page', () => {
+    const moment = "Stela presses a piece of rose quartz into Kylie's hand at Lumina Books, quietly establishing her first warding consent.";
+    const result = run({
+      plan: plan([plannedScene('s1-3', 1, { requiredBeats: [requiredBeat('rb1', moment, 'authored')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-3', [
+            beat('b1', "Stela's hand hovers over a chipped ceramic bowl filled with stones."),
+            beat('b2', "Her fingers close around a pinkish stone. 'For your new apartment,' she says."),
+            beat('b3', 'She closes your fingers around the quartz, and the words hang there as a quiet warning.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('PASS: paraphrased protective-herb warding counts when the brunch gift lands on-page', () => {
+    const moment = 'Stela gifts Kylie a protective bag of herbs during brunch, continuing her quiet, consent-based warding.';
+    const result = run({
+      plan: plan([plannedScene('s2-2', 2, { requiredBeats: [requiredBeat('rb1', moment, 'authored')] })]),
+      story: story([
+        episode(2, [
+          generatedScene('s2-2', [
+            beat('b1', "Mika slides her phone across the polished table. 'Five hundred thousand impressions, and that's just since breakfast.'"),
+            beat('b2', "Stela pushes a small muslin bag across the table, lavender and crushed pine cutting through the cafe's coffee smell."),
+            beat('b3', "'For the apartment,' she says. 'Against... drafts.' The word she does not say - protection - settles between you."),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('FAIL: a compound treatment list cannot pass when only some listed splinters land', () => {
+    const moment = "Kylie's 'noticer' instinct collects unsettling splinters: Ileana crying in the powder room, a mantle photograph that seems to omit Victor, Mika's unexplained missing hour, and a guest who knows the Marinescu maiden name.";
+    const result = run({
+      plan: plan([plannedScene('s3-3', 3, { requiredBeats: [requiredBeat('rb1', moment, 'authored')] })]),
+      story: story([
+        episode(3, [
+          generatedScene('s3-3', [
+            beat('b1', 'A photograph over the marble mantle omits Victor from the place of honor.'),
+            beat('b2', "An older guest says you have your grandmother's eyes and probes the Marinescu legacy you carry."),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues[0]?.message).toContain('Ileana crying');
+  });
+
+  it('PASS: a compound treatment list passes when every listed splinter is dramatized', () => {
+    const moment = "Kylie's 'noticer' instinct collects unsettling splinters: Ileana crying in the powder room, a mantle photograph that seems to omit Victor, Mika's unexplained missing hour, and a guest who knows the Marinescu maiden name.";
+    const result = run({
+      plan: plan([plannedScene('s3-3', 3, { requiredBeats: [requiredBeat('rb1', moment, 'authored')] })]),
+      story: story([
+        episode(3, [
+          generatedScene('s3-3', [
+            beat('b1', 'In the powder room, Ileana cries into a towel before rebuilding her smile.'),
+            beat('b2', 'A mantle photograph seems to omit Victor from the place of honor.'),
+            beat('b3', 'Mika returns after an unexplained missing hour and refuses to say where he went.'),
+            beat('b4', "A guest knows the Marinescu maiden name before you offer it."),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
   it('valid when the plan carries no authored standard beats', () => {
     const result = run({
       plan: plan([plannedScene('s1-1', 1, {})]),

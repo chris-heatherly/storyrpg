@@ -26,6 +26,7 @@ import { AgentConfig } from '../config';
 import { AgentResponse, BaseAgent } from '../agents/BaseAgent';
 import type { Story } from '../../types/story';
 import { collectEncounterProseStrings } from './EncounterQualityValidator';
+import { momentDepicted, requiredMomentFromMessage } from '../remediation/realizationScoring';
 
 /** Heuristic validators whose blocking findings need judge confirmation. */
 const JUDGE_CONFIRMABLE_VALIDATORS = new Set([
@@ -44,6 +45,8 @@ export interface RealizationClaim {
   authoredMoment: string;
   /** The scene's actual player-facing prose. */
   prose: string;
+  /** Validator that produced this claim. */
+  validator?: string;
 }
 
 export interface RealizationVerdict {
@@ -185,7 +188,12 @@ export async function confirmHeuristicFidelityFindings(opts: {
   for (const { issue, index } of candidates) {
     const prose = collectScenePlayerProse(opts.story, issue.sceneId as string, issue.episodeNumber);
     if (!prose) continue; // no prose to judge against — stays blocking
-    claims.push({ id: `claim-${index}`, authoredMoment: issue.message ?? '', prose });
+    claims.push({
+      id: `claim-${index}`,
+      authoredMoment: requiredMomentFromMessage(issue.message) ?? issue.message ?? '',
+      prose,
+      validator: issue.validator,
+    });
   }
   if (claims.length === 0) return { judged: 0, downgraded: 0 };
 
@@ -194,7 +202,13 @@ export async function confirmHeuristicFidelityFindings(opts: {
 
   const refutedIndices = new Set(
     result.data.verdicts
-      .filter((v) => v.dramatized)
+      .filter((v) => {
+        if (!v.dramatized) return false;
+        const claim = claims.find((c) => c.id === v.id);
+        if (!claim) return false;
+        if (claim.validator !== 'RequiredBeatRealizationValidator') return true;
+        return momentDepicted(claim.validator, claim.authoredMoment, claim.prose);
+      })
       .map((v) => Number(v.id.replace('claim-', '')))
       .filter((n) => Number.isInteger(n)),
   );

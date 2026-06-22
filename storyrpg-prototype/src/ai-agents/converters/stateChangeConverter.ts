@@ -104,6 +104,16 @@ function tryNormalizeStateChange(raw: Record<string, unknown>): StateChange | nu
     return 0;
   };
 
+  const coerceScoreDelta = (value: unknown, name: string): number => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    if (/\b(decrease|loss|lost|reduce|reduced|worsen|worse|damage)\b/i.test(name)) return -1;
+    return 1;
+  };
+
   const slugFromDescription = (fallback: string): string => {
     const description = typeof raw.description === 'string' ? raw.description : '';
     const words = description
@@ -147,6 +157,24 @@ function tryNormalizeStateChange(raw: Record<string, unknown>): StateChange | nu
       return { type: 'relationship', name: target.includes(':') ? target : `${target}:trust`, change: coerceChange(raw.change ?? raw.value) };
     }
     return { type: 'score', name: slugFromDescription('encounter_relationship_pressure'), change: coerceChange(raw.change ?? raw.value) };
+  }
+
+  // { type: 'changeScore', value: 'survival_instincts_increase_victory' }
+  // is app-facing Consequence vocabulary emitted inside an LLM StateChange slot.
+  // Normalize it back to the LLM boundary shape before conversion.
+  if (raw.type === 'changeScore') {
+    const name =
+      (typeof raw.score === 'string' && raw.score) ||
+      (typeof raw.name === 'string' && raw.name) ||
+      (typeof raw.flag === 'string' && raw.flag) ||
+      (typeof raw.value === 'string' && raw.value);
+    if (name) {
+      return { type: 'score', name, change: coerceScoreDelta(raw.change, name) };
+    }
+    if (typeof raw.description === 'string') {
+      const fallbackName = slugFromDescription('encounter_score');
+      return { type: 'score', name: fallbackName, change: coerceScoreDelta(raw.change ?? raw.value, fallbackName) };
+    }
   }
 
   // { type: 'score', score: 'X', ... } or { type: 'score', flag: 'X', ... }

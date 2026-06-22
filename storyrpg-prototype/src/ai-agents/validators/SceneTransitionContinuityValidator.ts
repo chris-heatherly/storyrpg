@@ -223,7 +223,9 @@ export class SceneTransitionContinuityValidator extends BaseValidator {
             locationChanged ? `location ${fromMeta.location} → ${toMeta.location}` : '',
             timeChanged ? `time ${fromMeta.timeOfDay} → ${toMeta.timeOfDay}` : '',
           ].filter(Boolean).join(', ');
-          const where = `transition:ep${episode.number}:${to.id}:from:${from.id}`;
+          const where = edge.kind === 'choiceBridge'
+            ? `transitionBridge:ep${episode.number}:${from.id}:to:${to.id}${edge.beatId ? `:beat:${edge.beatId}` : ''}`
+            : `transition:ep${episode.number}:${to.id}:from:${from.id}`;
           const viaBridge = edge.kind === 'choiceBridge'
             ? ` via choice bridge${edge.beatId ? ` "${edge.beatId}"` : ''}`
             : '';

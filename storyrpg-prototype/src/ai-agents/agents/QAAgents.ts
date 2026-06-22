@@ -436,6 +436,18 @@ export function deriveVoiceScore(
   return null;
 }
 
+export function extractQuotedDialogueLines(text: string): string[] {
+  const source = String(text || '');
+  const lines: string[] = [];
+  const quotePattern = /["“]([^"”]{2,})["”]/g;
+  let match: RegExpExecArray | null;
+  while ((match = quotePattern.exec(source)) !== null) {
+    const line = match[1].replace(/\s+/g, ' ').trim();
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
 export class VoiceValidator extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Voice Validator', config);
@@ -565,20 +577,27 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
   }
 
   private buildPrompt(input: VoiceValidatorInput): string {
-    // Extract all dialogue
+    // Extract actual quoted dialogue only. Generated beats often carry a
+    // speaker/focal-character field even when the text is narration or a
+    // treatment instruction; validating those as "dialogue" creates false
+    // critical voice failures.
     const dialogueByCharacter: Record<string, Array<{ sceneId: string; beatId: string; line: string }>> = {};
 
     for (const scene of input.sceneContents) {
       for (const beat of scene.beats) {
         if (beat.speaker) {
+          const dialogueLines = extractQuotedDialogueLines(beat.text);
+          if (dialogueLines.length === 0) continue;
           if (!dialogueByCharacter[beat.speaker]) {
             dialogueByCharacter[beat.speaker] = [];
           }
-          dialogueByCharacter[beat.speaker].push({
-            sceneId: scene.sceneId,
-            beatId: beat.id,
-            line: beat.text,
-          });
+          for (const line of dialogueLines) {
+            dialogueByCharacter[beat.speaker].push({
+              sceneId: scene.sceneId,
+              beatId: beat.id,
+              line,
+            });
+          }
         }
       }
     }
@@ -588,7 +607,7 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
         const lineList = lines.map(l => `    "${l.line.slice(0, 150)}..." (${l.sceneId}/${l.beatId})`).join('\n');
         return `  ${speaker}:\n${lineList}`;
       })
-      .join('\n\n');
+      .join('\n\n') || 'No quoted character dialogue found in the provided scenes.';
 
     const profileSummary = input.characterProfiles
       .map(cp => `
@@ -1191,7 +1210,7 @@ export class QARunner {
       );
     } else {
       const voiceResult = results[voiceIdx] as Awaited<ReturnType<VoiceValidator['execute']>>;
-      voice = voiceResult?.data || this.getDefaultVoiceReport();
+      voice = voiceResult?.data || this.getDefaultVoiceReport(voiceResult?.error);
     }
     
     let stakes: StakesReport;
@@ -1353,13 +1372,28 @@ export class QARunner {
     };
   }
 
-  private getDefaultVoiceReport(): VoiceReport {
+  private getDefaultVoiceReport(errorMessage?: string): VoiceReport {
+    const failureIssue = errorMessage
+      ? {
+          severity: 'error' as const,
+          characterId: 'unknown',
+          characterName: 'Unknown',
+          location: { sceneId: 'qa', beatId: 'voice-validator-failure' },
+          dialogueLine: '',
+          issue: `Voice validator failed: ${errorMessage}`,
+          suggestion: 'Retry voice validation after simplifying the voice QA prompt or regenerating the episode prose.',
+        }
+      : undefined;
     return {
       overallScore: 0,
       characterScores: [],
-      issues: [],
+      issues: failureIssue ? [failureIssue] : [],
       distinctionScore: 0,
-      recommendations: ['Voice check failed - manual review required'],
+      recommendations: [
+        errorMessage
+          ? `Voice check failed - manual review required: ${errorMessage}`
+          : 'Voice check failed - manual review required',
+      ],
     };
   }
 

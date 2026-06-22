@@ -99,6 +99,10 @@ export class PlanningRegisterLeakValidator {
           const beatCtx = { ...sceneCtx, beatId: beat.id };
           const beatPath = `episodes[${episodeIndex}].scenes[${sceneIndex}].beats[${beatIndex}]`;
           scanText(beat.text, `${beatPath}.text`, beatCtx);
+          scanText(beat.visualMoment, `${beatPath}.visualMoment`, beatCtx);
+          scanText(beat.primaryAction, `${beatPath}.primaryAction`, beatCtx);
+          scanText(beat.emotionalRead, `${beatPath}.emotionalRead`, beatCtx);
+          scanText(beat.relationshipDynamic, `${beatPath}.relationshipDynamic`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).textVariants, `${beatPath}.textVariants`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).visualMetadata, `${beatPath}.visualMetadata`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).visualContract, `${beatPath}.visualContract`, beatCtx);

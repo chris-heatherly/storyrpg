@@ -424,6 +424,12 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
             additionalProperties: true,
             properties: { note: { type: 'string' } },
           },
+          items: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 4,
+            items: { type: 'string' },
+          },
         },
         required: ['ok'],
       },
@@ -446,6 +452,10 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
         nested: {
           type: 'object',
           properties: { note: { type: 'string' } },
+        },
+        items: {
+          type: 'array',
+          items: { type: 'string' },
         },
       },
       required: ['ok'],

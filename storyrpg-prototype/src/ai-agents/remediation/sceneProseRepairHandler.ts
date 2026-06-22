@@ -33,8 +33,10 @@ import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
+import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
 import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
-import { missingMomentTokens, momentDepicted, requiredMomentFromMessage } from './realizationScoring';
+import { evaluateMomentRealization } from './realizationEvaluator';
+import { missingMomentTokens, requiredMomentFromMessage } from './realizationScoring';
 
 /**
  * Validators whose blocking findings are fixable by a localized scene-prose
@@ -67,6 +69,7 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   'SceneTransitionContinuityValidator',
   'RelationshipPacingValidator',
   'NarrativeMechanicPressureValidator',
+  'TreatmentEventLedgerValidator',
 ]);
 
 const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
@@ -74,6 +77,14 @@ const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
   'SceneTransitionContinuityValidator',
   'RelationshipPacingValidator',
   'NarrativeMechanicPressureValidator',
+]);
+
+const MOMENT_REALIZATION_VALIDATORS = new Set([
+  'RequiredBeatRealizationValidator',
+  'SignatureDevicePresenceValidator',
+  'EncounterAnchorContentValidator',
+  'SceneTurnRealizationValidator',
+  'TreatmentEventLedgerValidator',
 ]);
 
 type RepairableIssue = ContractRepairReport['blockingIssues'][number];
@@ -154,6 +165,11 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
         '  NON-NEGOTIABLE: hidden mechanics must become visible story pressure. Rewrite bare state changes as on-page evidence plus residue: access, leverage, clue, debt, suspicion, vulnerability, identity pressure, changed NPC posture, or route permission. Do not expose flags, scores, thresholds, or contract labels.',
       );
       continue;
+    }
+    if (issue.validator === 'TreatmentEventLedgerValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: this is an authoritative treatment event. Stage it as immediate reader-facing action in THIS scene. Do not satisfy it through memory, backstory, later recap, "weeks ago" phrasing, or a character recalling what had happened.',
+      );
     }
     if (sceneProseText !== undefined) {
       const moment = requiredMomentFromMessage(issue.message);
@@ -257,9 +273,11 @@ function allMomentsDepicted(scene: RepairableStoryScene, issues: RepairableIssue
   const prose = sceneProseForScoring(scene);
   return issues.every((issue) => {
     const moment = requiredMomentFromMessage(issue.message);
-    // No extractable moment → can't predict; treat as cleared (the loop's full
-    // re-validation is still the source of truth).
-    return !moment || momentDepicted(issue.validator, moment, prose);
+    if (!moment) return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
+    if (issue.validator === 'TreatmentEventLedgerValidator') {
+      return hasDirectTreatmentEventRealization(moment, prose);
+    }
+    return evaluateMomentRealization(issue.validator, moment, prose).depicted;
   });
 }
 
@@ -374,7 +392,11 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
             }),
             PIPELINE_TIMEOUTS.llmAgent,
             `SceneCritic.contractRepair(${sceneId}#${attempt})`,
-          );
+          ).catch((err) => {
+            opts.emit?.(`Scene-prose contract repair for ${sceneId} attempt ${attempt} failed (keeping latest merged prose): ${err instanceof Error ? err.message : String(err)}`);
+            return undefined;
+          });
+          if (!critique) break;
           criticCalls += 1;
           if (critique.success && critique.data) {
             // Surface rewrites that matched NO beat (drifted ids) — otherwise the

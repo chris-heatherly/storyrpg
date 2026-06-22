@@ -6,10 +6,13 @@ import {
 } from './sceneProseRepairHandler';
 import type { Story } from '../../types/story';
 
+const SIGNATURE =
+  'Two anchors, light then dark — the rooftop bar at sunset on night three where the Dusk Club locks into place and Kylie catches both men watching her; then Cișmigiu at 1am, eight seconds of fog, a shadow, a scream, and a rescue.';
+
 const requiredBeatIssue = (sceneId: string, episodeNumber = 2) => ({
   type: 'treatment_fidelity_violation',
   severity: 'error',
-  message: `Authored required beat is missing from the final prose of episode ${episodeNumber} scene "${sceneId}": "A strategy argument over the route sharpens the old hostility."`,
+  message: `Authored required beat is missing from the final prose of episode ${episodeNumber} scene "${sceneId}": "A strategy argument over the route sharpens the old hostility.". The authored turn must be dramatized on-page, not dropped or truncated.`,
   validator: 'RequiredBeatRealizationValidator',
   suggestion: 'Dramatize this authored beat on-page in its scene.',
   sceneId,
@@ -19,7 +22,7 @@ const requiredBeatIssue = (sceneId: string, episodeNumber = 2) => ({
 const signatureIssue = (sceneId: string) => ({
   type: 'treatment_fidelity_violation',
   severity: 'error',
-  message: `Signature device is missing from the final prose of episode 1 scene "${sceneId}".`,
+  message: `Signature device is missing from the final prose of episode 1 scene "${sceneId}": "${SIGNATURE}". The staged signature moment must be depicted, not summarized away.`,
   validator: 'SignatureDevicePresenceValidator',
   suggestion: 'Dramatize the signature device on-page in this scene.',
   sceneId,
@@ -124,7 +127,7 @@ describe('buildSceneProseRepairHandler', () => {
         success: true,
         data: {
           sceneId: 's2-1',
-          rewrittenBeats: [{ id: 'b1', text: 'Rorik jabs the map; the old hostility sharpens into a route argument neither will lose.' }],
+          rewrittenBeats: [{ id: 'b1', text: 'A strategy argument over the route sharpens the old hostility.' }],
           critiqueNotes: [],
           overallCommentary: '',
         },
@@ -139,7 +142,7 @@ describe('buildSceneProseRepairHandler', () => {
     const callArg = critic.execute.mock.calls[0][0];
     expect(callArg.scene.sceneId).toBe('s2-1');
     expect(callArg.directorNotes).toContain('strategy argument');
-    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('route argument');
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('strategy argument over the route');
     expect(result.record).toMatchObject({ rule: 'final_contract_scene_prose', scope: 'scene', succeeded: true });
   });
 
@@ -195,6 +198,16 @@ describe('buildSceneProseRepairHandler', () => {
     episodeNumber,
   });
   const MOMENT = 'Kylie posts the rooftop story to the blog before dawn while Mika watches the stairwell.';
+  const NOTICER_SPLINTERS = "Kylie's 'noticer' instinct collects unsettling splinters: Ileana crying in the powder room, a mantle photograph that seems to omit Victor, Mika's unexplained missing hour, and a guest who knows the Marinescu maiden name.";
+  const sceneTurnIssue = (sceneId: string, episodeNumber: number, moment: string) => ({
+    type: 'scene_turn_realization_violation',
+    severity: 'error',
+    message: `Scene "${sceneId}" does not dramatize its central turn on-page: "${moment}".`,
+    validator: 'SceneTurnRealizationValidator',
+    suggestion: 'Generate reader-facing scene prose that establishes, dramatizes, and follows through on the scene turn.',
+    sceneId,
+    episodeNumber,
+  });
 
   it('verifies the merge against the scoring mirror and retries ONCE with the still-missing checklist', async () => {
     const critic = {
@@ -238,6 +251,55 @@ describe('buildSceneProseRepairHandler', () => {
     const result = await handler({ story: makeStory(), blockingIssues: [momentIssue('s2-1', 2, MOMENT)] });
     expect(critic.execute).toHaveBeenCalledTimes(1);
     expect(result.record).toMatchObject({ succeeded: true, attempts: 1 });
+  });
+
+  it('does not report a SceneTurn repair as succeeded when the rewrite only lands part of the central turn', async () => {
+    const partial =
+      "The mantle photograph bothers you because Victor seems omitted from the family arrangement. A guest smiles too knowingly and uses the Marinescu maiden name before you offer it.";
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: partial }], critiqueNotes: [], overallCommentary: '' },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [sceneTurnIssue('s2-1', 2, NOTICER_SPLINTERS)] });
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(result.changed).toBe(true);
+    expect(result.record).toMatchObject({ succeeded: false, degraded: true, attempts: 2 });
+  });
+
+  it('reports a SceneTurn repair as succeeded only after every listed splinter is on-page', async () => {
+    const partial =
+      "The mantle photograph bothers you because Victor seems omitted from the family arrangement. A guest smiles too knowingly and uses the Marinescu maiden name before you offer it.";
+    const complete = [
+      'In the powder room, Ileana cries into a monogrammed towel and freezes when you see her.',
+      'The mantle photograph omits Victor from a family arrangement that otherwise accounts for everyone.',
+      "Mika returns from an unexplained missing hour and deflects when you ask where he's been.",
+      'A guest knows the Marinescu maiden name before you give him any reason to know it.',
+    ].join(' ');
+    const critic = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: partial }], critiqueNotes: [], overallCommentary: '' },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: complete }], critiqueNotes: [], overallCommentary: '' },
+        }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [sceneTurnIssue('s2-1', 2, NOTICER_SPLINTERS)] });
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(result.changed).toBe(true);
+    expect(result.record).toMatchObject({ succeeded: true, degraded: false, attempts: 2 });
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('Ileana cries');
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('missing hour');
   });
 
   it('prioritizes never-attempted scenes in later rounds instead of re-claiming slots', async () => {

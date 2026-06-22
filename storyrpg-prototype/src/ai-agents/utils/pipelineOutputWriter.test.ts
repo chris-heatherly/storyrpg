@@ -352,4 +352,55 @@ describe('pipelineOutputWriter', () => {
       }),
     });
   });
+
+  it('supersedes stale failure diagnostics when a later successful package is written', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-writer-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+    await writeFile(`${outputDir}07b-final-story-contract.failed.json`, JSON.stringify({ passed: false }));
+    await writeFile(`${outputDir}99-pipeline-errors.json`, JSON.stringify({ errorCount: 1 }));
+
+    await savePipelineOutputs(outputDir, {
+      brief: {
+        story: {
+          id: 'story-writer-test',
+          title: 'Story Writer Test',
+          genre: 'Mystery',
+          synopsis: 'A tiny story package fixture.',
+          themes: [],
+        },
+      },
+      finalStory: makeStory(),
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [],
+        metrics: {
+          episodesChecked: 1,
+          scenesChecked: 1,
+          beatsChecked: 1,
+          encounterScenesChecked: 0,
+          validEncounterScenes: 0,
+          requestedEpisodesMissing: 0,
+          failedIncrementalResults: 0,
+          callbackIssues: 0,
+          mechanicsLeaks: 0,
+        },
+        generatedAt: '2026-05-28T00:00:00.000Z',
+      },
+    } as any, 123);
+
+    await expect(readFile(`${outputDir}07b-final-story-contract.failed.json`, 'utf8')).rejects.toThrow();
+    await expect(readFile(`${outputDir}99-pipeline-errors.json`, 'utf8')).rejects.toThrow();
+
+    const supersededRoot = join(outputDir, 'superseded-failures');
+    const { readdir } = await import('fs/promises');
+    const dirs = await readdir(supersededRoot);
+    expect(dirs).toHaveLength(1);
+    const marker = JSON.parse(await readFile(join(supersededRoot, dirs[0], 'superseded-by-success.json'), 'utf8'));
+    expect(marker.moved.map((entry: { from: string }) => entry.from)).toEqual(expect.arrayContaining([
+      '07b-final-story-contract.failed.json',
+      '99-pipeline-errors.json',
+    ]));
+  });
 });

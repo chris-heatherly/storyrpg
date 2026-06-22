@@ -100,6 +100,45 @@ function makeAnalysis() {
 }
 
 describe('SeasonPlannerAgent treatment handoff', () => {
+  it('re-samples malformed planner JSON before falling back', async () => {
+    const planner = makePlanner();
+    let calls = 0;
+    (planner as any).callLLM = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return '{"arcs":["Bucharest",Secrecy"],"episodeEncounters":{}';
+      }
+      return JSON.stringify({
+        seasonTitle: 'Bite Me',
+        seasonSynopsis: 'A retry-preserved authored plan.',
+        arcs: [{
+          id: 'llm-arc',
+          name: 'Retry Arc',
+          description: 'Authored after JSON correction.',
+          episodeRange: { start: 1, end: 8 },
+          keyMoments: [],
+        }],
+        episodeEncounters: {},
+        crossEpisodeBranches: [],
+        episodeEndingRoutes: {},
+      });
+    };
+
+    const result = await planner.execute({
+      sourceAnalysis: makeAnalysis() as any,
+      preferences: {
+        targetScenesPerEpisode: 6,
+        targetChoicesPerEpisode: 4,
+        pacing: 'moderate',
+      },
+      sevenPointBlocking: false,
+    });
+
+    expect(result.success).toBe(true);
+    expect(calls).toBe(2);
+    expect(result.data!.arcs[0].id).toBe('llm-arc');
+  });
+
   it('does not replace treatment-bound required beats with an LLM-authored scene spine', async () => {
     const planner = makePlanner();
     (planner as any).callLLM = async () => '{}';

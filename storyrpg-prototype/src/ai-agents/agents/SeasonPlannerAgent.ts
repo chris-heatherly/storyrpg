@@ -229,8 +229,11 @@ Your plans must define:
 
     try {
       const prompt = this.buildPlanningPrompt(sourceAnalysis, preferences);
-      const response = await this.callLLM([{ role: 'user', content: prompt }]);
-      planData = this.parseJSON(response);
+      const { data: parsedPlan, rawResponse } = await this.callLLMForJson<MutablePlanData>([
+        { role: 'user', content: prompt },
+      ]);
+      const response = rawResponse;
+      planData = parsedPlan;
       const topKeys = Object.keys(planData);
       console.log(`[SeasonPlanner] LLM plan received with ${topKeys.length} top-level keys: ${topKeys.join(', ')}`);
       

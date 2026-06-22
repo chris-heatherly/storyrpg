@@ -737,6 +737,52 @@ describe('ChoiceAuthor relationship consequence repair', () => {
     expect(choiceSet.choices.every((choice: any) => choice.reminderPlan?.shortTerm)).toBe(true);
   });
 
+  it('keeps fallback reminder plans fiction-first when pressure contracts contain relationship stage labels', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Let Mika change the subject',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 3 }],
+          reminderPlan: {
+            immediate: 'The choice leaves visible pressure around Relationship with Mika Drăgan is moving only as far as friend..',
+            shortTerm: 'Later scenes should remember how this changed access, posture, information, risk, or trust.',
+          },
+        },
+      ],
+    });
+    const input = makeInput({
+      npcsInScene: [{ id: 'mika', name: 'Mika', pronouns: 'she/her', description: 'Kylie’s new friend' }],
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Club Door',
+        mechanicPressure: [{
+          id: 'scene-1-pressure-mika',
+          source: 'treatment',
+          domain: 'relationship',
+          mechanicRef: { npcId: 'mika', relationshipDimension: 'trust' },
+          function: 'plant',
+          storyPressure: 'Relationship with Mika Drăgan is moving only as far as friend.',
+          evidenceRequired: ['show Mika testing Kylie'],
+          visibleResidue: ['Mika holds back full trust'],
+          allowedPayoffs: ['small warmth'],
+          blockedPayoffs: ['instant friendship'],
+        }],
+        choicePoint: { stakes: { want: 'belong', cost: 'stay exposed', identity: 'decide what to admit' }, optionHints: [] },
+      },
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    const immediate = choiceSet.choices[0].reminderPlan?.immediate;
+    expect(immediate).toContain('Mika');
+    expect(immediate).not.toMatch(/Relationship with|moving only as far|friend|visible pressure around/i);
+  });
+
   it('maps arc bond targets to affection relationship consequences', () => {
     const author: any = new ChoiceAuthor(config);
     const choiceSet = makeChoiceSet({

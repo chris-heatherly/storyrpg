@@ -102,6 +102,7 @@ describe('SceneTransitionContinuityValidator', () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].message).toContain('choice bridge');
     expect(result.issues[0].message).toContain('Vâlcescu Club → Lumina Books');
+    expect(result.issues[0].location).toBe('transitionBridge:ep1:s1-1:to:s1-2:beat:s1-1-b7-payoff-1');
   });
 
   it('accepts a location jump when the choice bridge itself grounds the movement', () => {

@@ -48,7 +48,9 @@ const ALL_FLAGS = Object.values(TREATMENT_FIDELITY_GATE_FLAGS);
 afterEach(() => {
   for (const flag of ALL_FLAGS) delete process.env[flag];
   delete process.env.GATE_TREATMENT_FIELD_UTILIZATION;
+  delete process.env.GATE_SEASON_PROMISE_REALIZATION;
   delete process.env.GATE_FAILURE_MODE_AUDIT_REALIZATION;
+  delete process.env.GATE_NARRATIVE_MECHANIC_PRESSURE;
 });
 
 describe('runFidelityValidators (GAP-D dispatch)', () => {
@@ -100,6 +102,55 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.treatmentSourced).toBe(false);
     // No anchor map on a non-treatment source → the anchor validator is skipped.
     expect(result.fidelityFindings).toEqual([]);
+  });
+
+  it('treats prompt-tagged runs with authored treatment contracts as treatment-sourced', () => {
+    const result = runFidelityValidators({
+      story,
+      seasonPlan: {
+        ...misanchoredSeasonPlan(),
+        characterTreatmentContracts: [{
+          id: 'char-treatment-kylie-voice',
+          characterId: 'kylie',
+          sourceText: 'Kylie must protect her authorial voice.',
+          requiredRealization: ['final_prose'],
+          targetEpisodeNumbers: [1],
+          blockingLevel: 'warning',
+        }],
+      } as unknown as SeasonPlan,
+      sourceAnalysis: {
+        sourceFormat: 'prompt',
+        episodeBreakdown: [],
+        worldTreatmentContracts: [{
+          id: 'world-treatment-club',
+          sourceText: 'Vâlcescu Club is a glamorous funnel.',
+          requiredRealization: ['final_prose'],
+          targetEpisodeNumbers: [1],
+          blockingLevel: 'warning',
+        }],
+      } as unknown as SourceMaterialAnalysis,
+    });
+
+    expect(result.treatmentSourced).toBe(true);
+  });
+
+  it('treats surviving season-plan treatment contracts as treatment-sourced even without source analysis', () => {
+    const result = runFidelityValidators({
+      story,
+      seasonPlan: {
+        ...misanchoredSeasonPlan(),
+        characterTreatmentContracts: [{
+          id: 'char-treatment-kylie-voice',
+          characterId: 'kylie',
+          sourceText: 'Kylie must protect her authorial voice.',
+          requiredRealization: ['final_prose'],
+          targetEpisodeNumbers: [1],
+          blockingLevel: 'warning',
+        }],
+      } as unknown as SeasonPlan,
+    });
+
+    expect(result.treatmentSourced).toBe(true);
   });
 
   it('hard-blocks the info-ledger schedule by default on treatment runs', () => {
@@ -158,6 +209,163 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
 
     expect(result.treatmentSourced).toBe(true);
     expect(result.fidelityFindings.some((finding) => finding.validator === 'NarrativeFailureModeValidator')).toBe(true);
+  });
+
+  it('does not run plan-only season conformance validators during an episode-incremental seal', () => {
+    const result = runFidelityValidators({
+      story: {
+        episodes: [{ number: 1, scenes: [] }],
+      } as unknown as Story,
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'episode-incremental',
+        requestedEpisodeNumbers: [1],
+        generatedEpisodeNumbers: [1],
+        generatedThroughEpisode: 1,
+      },
+    });
+
+    expect(result.treatmentSourced).toBe(true);
+    expect(result.fidelityFindings.some((finding) =>
+      finding.validator === 'AuthoredEpisodeConformanceValidator'
+      || finding.validator === 'SevenPointAnchorConformanceValidator'
+    )).toBe(false);
+  });
+
+  it('filters future-episode season promise contracts out of an episode-incremental seal', () => {
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
+    process.env.GATE_SEASON_PROMISE_REALIZATION = '1';
+
+    const result = runFidelityValidators({
+      story: {
+        episodes: [{ number: 1, scenes: [] }],
+      } as unknown as Story,
+      seasonPlan: {
+        ...ledgerSeasonPlan(),
+        episodes: [
+          { episodeNumber: 1, structuralRole: ['hook'] },
+          { episodeNumber: 8, structuralRole: ['resolution'] },
+        ],
+        seasonPromiseContracts: [{
+          id: 'season-resolution',
+          sourceText: 'Kylie must resolve whether chosen safety is worth the price of authorship.',
+          contractKind: 'season_resolution_obligation',
+          requiredRealization: ['final_prose'],
+          targetEpisodeNumbers: [8],
+          targetSceneIds: ['s8-1'],
+          blockingLevel: 'treatment',
+        }],
+      } as unknown as SeasonPlan,
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'episode-incremental',
+        requestedEpisodeNumbers: [1],
+        generatedEpisodeNumbers: [1],
+        generatedThroughEpisode: 1,
+      },
+    });
+
+    expect(result.fidelityFindings.filter((finding) => finding.validator === 'SeasonPromiseRealizationValidator')).toEqual([]);
+  });
+
+  it('keeps in-slice season promise contracts active for a generated-slice seal', () => {
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
+    process.env.GATE_SEASON_PROMISE_REALIZATION = '1';
+
+    const result = runFidelityValidators({
+      story: {
+        episodes: [{ number: 1, scenes: [] }],
+      } as unknown as Story,
+      seasonPlan: {
+        ...ledgerSeasonPlan(),
+        episodes: [{ episodeNumber: 1, structuralRole: ['hook'] }],
+        seasonPromiseContracts: [{
+          id: 'episode-one-pressure',
+          sourceText: 'Kylie must feel the cost of mistaking Victor for safety.',
+          contractKind: 'central_pressure',
+          requiredRealization: ['final_prose'],
+          targetEpisodeNumbers: [1],
+          targetSceneIds: ['s1-1'],
+          blockingLevel: 'treatment',
+        }],
+      } as unknown as SeasonPlan,
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'generated-slice',
+        requestedEpisodeNumbers: [1],
+        generatedEpisodeNumbers: [1],
+        generatedThroughEpisode: 1,
+      },
+    });
+
+    expect(result.fidelityFindings.some((finding) => finding.validator === 'SeasonPromiseRealizationValidator')).toBe(true);
+  });
+
+  it('does not run broad mechanic-pressure validators during an episode-incremental seal', () => {
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
+    process.env.GATE_NARRATIVE_MECHANIC_PRESSURE = '1';
+
+    const pressureStory = {
+      episodes: [{
+        number: 1,
+        scenes: [{
+          id: 's1-1',
+          name: 'Quiet Room',
+          startingBeatId: 's1-1-b1',
+          mechanicPressure: [{
+            id: 'treatment-pressure',
+            source: 'treatment',
+            domain: 'flag',
+            mechanicRef: { flag: 'forbidden_key_known' },
+            function: 'plant',
+            storyPressure: 'The forbidden key should change who can enter the archive.',
+            evidenceRequired: ['show the forbidden key changing access'],
+            visibleResidue: ['access pressure or route permission'],
+            allowedPayoffs: ['route permission'],
+            blockedPayoffs: ['metadata-only pressure'],
+            originatingSceneId: 's1-1',
+          }],
+          beats: [{ id: 's1-1-b1', text: 'Mara waits in a quiet room.' }],
+        }],
+      }],
+    } as unknown as Story;
+
+    const incremental = runFidelityValidators({
+      story: pressureStory,
+      seasonPlan: {
+        ...ledgerSeasonPlan(),
+        informationLedger: [],
+        scenePlan: { scenes: [{ id: 's1-1', episodeNumber: 1, order: 1 }] },
+      } as unknown as SeasonPlan,
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'episode-incremental',
+        requestedEpisodeNumbers: [1],
+        generatedEpisodeNumbers: [1],
+        generatedThroughEpisode: 1,
+      },
+    });
+
+    expect(incremental.fidelityFindings.filter((finding) => finding.validator === 'NarrativeMechanicPressureValidator')).toEqual([]);
+
+    const slice = runFidelityValidators({
+      story: pressureStory,
+      seasonPlan: {
+        ...ledgerSeasonPlan(),
+        informationLedger: [],
+        scenePlan: { scenes: [{ id: 's1-1', episodeNumber: 1, order: 1 }] },
+      } as unknown as SeasonPlan,
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'generated-slice',
+        requestedEpisodeNumbers: [1],
+        generatedEpisodeNumbers: [1],
+        generatedThroughEpisode: 1,
+      },
+    });
+
+    expect(slice.fidelityFindings.some((finding) => finding.validator === 'NarrativeMechanicPressureValidator')).toBe(true);
   });
 });
 

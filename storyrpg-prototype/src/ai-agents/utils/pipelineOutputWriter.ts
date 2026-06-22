@@ -1119,6 +1119,44 @@ export async function saveFinalStoryContractFailure(
   }
 }
 
+async function supersedeFailureArtifactsOnSuccessfulPackage(outputDir: string): Promise<void> {
+  if (!outputDir || !hasNodeFs()) return;
+  const fs = nodeRequire<typeof import('fs')>('fs');
+  const path = nodeRequire<typeof import('path')>('path');
+  const candidates = [
+    '07b-final-story-contract.failed.json',
+    '99-pipeline-errors.json',
+  ];
+  const existing = candidates.filter((name) => fs.existsSync(path.join(outputDir, name)));
+  if (existing.length === 0) return;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const supersededDir = path.join(outputDir, 'superseded-failures', stamp);
+  fs.mkdirSync(supersededDir, { recursive: true });
+  const moved: Array<{ from: string; to: string }> = [];
+  for (const name of existing) {
+    const from = path.join(outputDir, name);
+    const to = path.join(supersededDir, name);
+    try {
+      fs.renameSync(from, to);
+      moved.push({ from: name, to: path.relative(outputDir, to) });
+    } catch (error) {
+      console.warn(`[OutputWriter] Failed to supersede stale failure artifact ${name}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  if (moved.length > 0) {
+    atomicWriteNodeSync(
+      path.join(supersededDir, 'superseded-by-success.json'),
+      JSON.stringify({
+        supersededAt: new Date().toISOString(),
+        reason: 'A later successful final package was written for this run directory.',
+        moved,
+      }, null, 2),
+    );
+    console.info(`[OutputWriter] Superseded ${moved.length} stale failure artifact(s) after successful package save`);
+  }
+}
+
 export async function saveVideoDiagnosticsLog(
   outputDir: string,
   diagnostics: VideoGenerationDiagnostic[],
@@ -1684,6 +1722,9 @@ export async function savePipelineOutputs(
     files.push({ name: 'Final Story (v3 package)', path: storyJsonPath, type: 'story', size: storySize });
     files.push({ name: 'Story Manifest', path: mPath, type: 'manifest', size: 0 });
     files.push({ name: 'Final Story (legacy)', path: legacyStoryPath, type: 'story', size: storySize });
+    if (outputs.finalStoryContractReport?.passed === true) {
+      await supersedeFailureArtifactsOnSuccessfulPackage(outputDir);
+    }
     
     // 9b. Save beat images as separate files
     if (!isWebRuntime()) {

@@ -18,87 +18,18 @@
  * cross-check test pins the constants against the validator behavior.
  */
 
-import { concreteSeedDepicted, concreteSeedRuleFor, normalizeSeedText } from '../utils/concreteSeedRealization';
+import { evaluateMomentRealization, PRESENCE_MIN_SCORE } from './realizationEvaluator';
 
-/** Shared base both validators use, before their per-validator extras. */
-const BASE_STOPWORDS = [
-  'about', 'after', 'again', 'against', 'also', 'and', 'because', 'become', 'before', 'being', 'between',
-  'choice', 'chooses', 'could', 'during', 'episode', 'every', 'from', 'have', 'into', 'keeps', 'later',
-  'leave', 'leaves', 'major', 'make', 'makes', 'must', 'opens', 'paths', 'player', 'pressure', 'scene',
-  'should', 'that', 'their', 'them', 'then', 'there', 'this', 'through', 'when', 'where', 'with', 'without',
-];
-
-const STOPWORDS_BY_VALIDATOR: Record<string, Set<string>> = {
-  RequiredBeatRealizationValidator: new Set([
-    ...BASE_STOPWORDS,
-    'staged', 'moment', 'beat', 'depict', 'depicts', 'show', 'shows',
-  ]),
-  SignatureDevicePresenceValidator: new Set([
-    ...BASE_STOPWORDS,
-    'staged', 'moment', 'signature', 'device', 'image', 'show', 'shows', 'depict', 'depicts',
-  ]),
-};
-
-export const PRESENCE_MIN_SCORE = 0.5;
-
-function normalize(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function contentTokens(value: string | undefined, stopwords: Set<string>): string[] {
-  if (!value) return [];
-  return normalize(value)
-    .split(' ')
-    .filter((token) => token.length >= 4 && !stopwords.has(token));
-}
-
-function tokenPresent(token: string, hayTokens: string[], haySet: Set<string>): boolean {
-  if (haySet.has(token)) return true;
-  for (const h of hayTokens) {
-    if (h.startsWith(token) || token.startsWith(h)) return true;
-  }
-  return false;
-}
-
-function stopwordsFor(validator: string | undefined): Set<string> {
-  return STOPWORDS_BY_VALIDATOR[validator ?? ''] ?? STOPWORDS_BY_VALIDATOR.RequiredBeatRealizationValidator;
-}
+export { PRESENCE_MIN_SCORE };
 
 /** The validator's presence check: normalized-substring OR ≥0.5 content-word overlap. */
 export function momentDepicted(validator: string | undefined, moment: string, prose: string): boolean {
-  const normalizedMoment = normalize(moment);
-  if (normalizedMoment.length === 0) return true;
-  if ((validator ?? 'RequiredBeatRealizationValidator') === 'RequiredBeatRealizationValidator') {
-    const concreteDepicted = concreteSeedDepicted(normalizedMoment, prose);
-    if (typeof concreteDepicted === 'boolean') return concreteDepicted;
-  }
-  if (normalize(prose).includes(normalizedMoment)) return true;
-  const stopwords = stopwordsFor(validator);
-  const needed = [...new Set(contentTokens(moment, stopwords))];
-  if (needed.length === 0) return true;
-  const hayTokens = [...new Set(contentTokens(prose, stopwords))];
-  const haySet = new Set(hayTokens);
-  const hits = needed.filter((token) => tokenPresent(token, hayTokens, haySet)).length;
-  return hits / needed.length >= PRESENCE_MIN_SCORE;
+  return evaluateMomentRealization(validator, moment, prose).depicted;
 }
 
 /** Content words of the authored moment the prose does NOT yet carry. */
 export function missingMomentTokens(validator: string | undefined, moment: string, prose: string): string[] {
-  if ((validator ?? 'RequiredBeatRealizationValidator') === 'RequiredBeatRealizationValidator') {
-    const rule = concreteSeedRuleFor(normalizeSeedText(moment));
-    if (rule && !rule.depicted(prose)) return rule.missingTokens;
-  }
-  const stopwords = stopwordsFor(validator);
-  const needed = [...new Set(contentTokens(moment, stopwords))];
-  const hayTokens = [...new Set(contentTokens(prose, stopwords))];
-  const haySet = new Set(hayTokens);
-  return needed.filter((token) => !tokenPresent(token, hayTokens, haySet));
+  return evaluateMomentRealization(validator, moment, prose).missingTokens;
 }
 
 /**
@@ -106,9 +37,19 @@ export function missingMomentTokens(validator: string | undefined, moment: strin
  * RequiredBeat / Signature validators emit:
  *   `… scene "<id>": "<MOMENT>". The authored turn must be dramatized …`
  *   `… scene "<id>": "<MOMENT>". The staged signature moment must be depicted …`
- * and EncounterAnchorContentValidator (now also routed to the scene-prose repair):
+ * SceneTurnRealizationValidator emits:
+ *   `… does not dramatize its central turn on-page: "<MOMENT>".`
+ *   `… mentions its central turn but does not give it a complete scene shape …: "<MOMENT>".`
+ *   `… does not dramatize its authored beat event on-page: "<MOMENT>".`
+ *   `… stages seven-point … but does not give it complete scene shape …: "<MOMENT>".`
+ *   `… does not dramatize the authored arc event on-page: "<MOMENT>".`
+ *   `… stages arc pressure … but does not give it complete scene shape …: "<MOMENT>".`
+ * EncounterAnchorContentValidator (now also routed to the scene-prose repair):
  *   `… does not depict its central conflict on-page: "<MOMENT>".`
  *   `… does not depict required beat <id> (<tier>): "<MOMENT>".`
+ * TreatmentEventLedgerValidator:
+ *   `Treatment event ledger miss …: "<MOMENT>".`
+ *   `Treatment event ledger summary-only realization …: "<MOMENT>".`
  * RequiredBeat seed/cold-open forms:
  *   `Treatment plant not found …: "<MOMENT>". A cold open…`
  *   `Cold open not found …: "<MOMENT>". The episode-opening hook…`
@@ -119,6 +60,10 @@ export function requiredMomentFromMessage(message: string | undefined): string |
   if (turn?.[1]) return turn[1].trim();
   const treatmentPlant = /(?:Treatment plant|Cold open) not found[\s\S]*?: "([\s\S]*?)"\. (?:A cold open|The episode-opening hook)/.exec(message);
   if (treatmentPlant?.[1]) return treatmentPlant[1].trim();
+  const sceneTurn = /(?:does not dramatize (?:its central turn|its authored beat event|the authored arc event) on-page|(?:mentions its central turn|stages seven-point [^:]+|stages arc pressure [^:]+) but does not give it (?:a )?complete scene shape[\s\S]*?): "([\s\S]*)"\.\s*$/.exec(message);
+  if (sceneTurn?.[1]) return sceneTurn[1].trim();
+  const treatmentLedger = /Treatment event ledger (?:miss|summary-only realization)[\s\S]*?: "([\s\S]*)"\.\s*$/.exec(message);
+  if (treatmentLedger?.[1]) return treatmentLedger[1].trim();
   // EncounterAnchorContent forms: the moment is the FINAL quoted span at end of message.
   const anchor = /does not depict (?:its central conflict on-page|required beat [^:]+): "([\s\S]*)"\.\s*$/.exec(message);
   return anchor?.[1]?.trim() || undefined;

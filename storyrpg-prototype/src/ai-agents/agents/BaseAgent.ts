@@ -133,6 +133,11 @@ function toGeminiResponseSchema(schema: Record<string, unknown>): Record<string,
       // rejects `additionalProperties` even though our deterministic registry
       // uses it for provider-neutral JSON Schema. Strip it only for Gemini.
       if (key === 'additionalProperties') continue;
+      // Gemini rejects some otherwise-valid nested array bounds with
+      // INVALID_ARGUMENT / "too many states for serving". Keep those bounds in
+      // our canonical schemas and local validators; only remove them from the
+      // provider-specific responseSchema sent over the wire.
+      if (key === 'minItems' || key === 'maxItems') continue;
       // Strip JSON-Schema annotation text, but keep real output properties named
       // "description" under a `properties` map.
       if (key === 'description' && parentKey !== 'properties') continue;

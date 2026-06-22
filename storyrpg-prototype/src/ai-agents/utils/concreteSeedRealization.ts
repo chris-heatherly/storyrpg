@@ -41,6 +41,10 @@ function hasRaduDistinguishingSign(window: string): boolean {
   return /\b(?:rougher|woodsmoke|sweater|hand knit|hand knitted|bay leaf)\b/.test(window);
 }
 
+function hasAny(value: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
 const CONCRETE_SEED_RULES: ConcreteSeedRule[] = [
   {
     matches: (seed) => /\brougher\s+man\b.*\bkitchen\s+entrance\b/.test(seed),
@@ -50,6 +54,31 @@ const CONCRETE_SEED_RULES: ConcreteSeedRule[] = [
       && hasRaduPlacement(window)
       && hasRaduDistinguishingSign(window)
     )),
+  },
+  {
+    matches: (seed) => /\brose\s+quartz\b/.test(seed) && /\bwarding\s+consent\b/.test(seed),
+    missingTokens: ['Stela', 'rose quartz', 'hand', 'warding consent'],
+    depicted: (prose) => {
+      const hay = normalizeSeedText(prose);
+      return /\bstela\b/.test(hay)
+        && (
+          hasAny(hay, [/\brose\s+quartz\b/, /\bpink(?:ish)?\s+(?:stone|quartz)\b/, /\brough\s+surfaced\s+pink\b/])
+          || (/\bquartz\b/.test(hay) && /\bpink(?:ish)?\b/.test(hay))
+        )
+        && hasAny(hay, [/\bhand\b/, /\bpalm\b/, /\bfingers?\b/])
+        && hasAny(hay, [/\bward/, /\bprotection\b/, /\bprotective\b/, /\bwarning\b/, /\bconsent\b/, /\bnew\s+apartment\b/]);
+    },
+  },
+  {
+    matches: (seed) => /\bprotective\s+bag\s+of\s+herbs\b/.test(seed) || (/\bbag\s+of\s+herbs\b/.test(seed) && /\bwarding\b/.test(seed)),
+    missingTokens: ['Stela', 'herb bag', 'brunch', 'protection'],
+    depicted: (prose) => {
+      const hay = normalizeSeedText(prose);
+      return /\bstela\b/.test(hay)
+        && hasAny(hay, [/\bherbs?\b/, /\bmuslin\s+bag\b/, /\bsmall\s+bag\b/, /\bsachet\b/, /\blavender\b/, /\bcrushed\s+pine\b/])
+        && hasAny(hay, [/\bbrunch\b/, /\bbreakfast\b/, /\btable\b/, /\bcafe\b/, /\bcoffee\b/])
+        && hasAny(hay, [/\bprotect/, /\bward/, /\bshield\b/, /\bagainst\s+drafts\b/, /\bagainst\s+draft\b/]);
+    },
   },
 ];
 

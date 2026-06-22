@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildSeasonScenePlan, scenesForEpisode, edgesForEpisode, bindAuthoredTurnsToScenes } from './seasonScenePlanBuilder';
+import {
+  buildSeasonScenePlan,
+  scenesForEpisode,
+  edgesForEpisode,
+  bindAuthoredTurnsToScenes,
+  encounterIsCoveredByAuthoredTurns,
+} from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
 import type { StructuralRole } from '../../types/sourceAnalysis';
@@ -407,6 +413,91 @@ describe('buildSeasonScenePlan', () => {
     expect(sceneOf('Vâlcescu')?.locations).toEqual(['Vâlcescu Club']);
     expect(sceneOf('rose quartz')?.locations).toEqual(['Lumina Books']);
     expect(sceneOf('Cișmigiu')?.locations).toEqual(['Cișmigiu Gardens']);
+  });
+
+  it('promotes a treatment-covered Bite Me attack encounter instead of appending a repeat', () => {
+    const biteEncounter = {
+      id: 'enc-1',
+      type: 'chase',
+      description: "A terrifying flight through the fog-choked Cișmigiu Gardens to escape unseen attackers, ending in Victor's staged rescue.",
+      difficulty: 'moderate',
+      npcsInvolved: ['Victor'],
+      stakes: "Kylie's physical safety and her fragile new start in Bucharest.",
+      relevantSkills: ['athletics', 'awareness'],
+      isBranchPoint: false,
+      branchOutcomes: {
+        victory: 'Kylie gets away with Victor controlling the story.',
+        defeat: 'Kylie is rescued but shaken badly.',
+      },
+    } as any;
+    const authoredTurns = [
+      'Kylie unpacks, calls Sadie, and tries to make Romania feel temporary.',
+      'Mika adopts Kylie at the door of Vâlcescu Club and hands her a key card.',
+      'At Lumina Books, Stela presses rose quartz into Kylie’s hand.',
+      'On the rooftop bar, Victor and Radu watch Kylie too carefully.',
+      'Walking home through Cișmigiu Gardens at 1am, Kylie is attacked by a shadow, pinned to a tree, and rescued by a man in a charcoal suit who walks her home and vanishes.',
+      'Unable to sleep, Kylie writes the first Dating After Dusk post about Mr. Midnight; by morning it has gone viral.',
+      'Black roses and a cream-stock card arrive at Kylie’s apartment door just as Stela calls with a nightmare and an herb warning.',
+    ];
+    expect(encounterIsCoveredByAuthoredTurns(biteEncounter, authoredTurns)).toBe(true);
+
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 7,
+      locations: ["Kylie's Lipscani Apartment", 'Vâlcescu Club', 'Lumina Books', 'Rooftop Bar', 'Cișmigiu Gardens'],
+      mainCharacters: ['Kylie', 'Mika', 'Stela', 'Victor', 'Radu'],
+      treatmentGuidance: { episodeTurns: authoredTurns },
+      plannedEncounters: [biteEncounter],
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    const encounterScenes = scenes.filter((s) => s.kind === 'encounter');
+    expect(encounterScenes).toHaveLength(1);
+    expect(encounterScenes[0].id).toBe('enc-1');
+    expect(encounterScenes[0].encounter?.description).toContain('Cișmigiu Gardens');
+    expect((encounterScenes[0].requiredBeats ?? []).some((beat) => beat.mustDepict.includes('pinned to a tree'))).toBe(true);
+
+    const encounterIndex = scenes.findIndex((s) => s.id === 'enc-1');
+    const rosesIndex = scenes.findIndex((s) =>
+      (s.requiredBeats ?? []).some((beat) => beat.mustDepict.includes('Black roses')),
+    );
+    expect(encounterIndex).toBeGreaterThanOrEqual(0);
+    expect(rosesIndex).toBeGreaterThan(encounterIndex);
+    expect(scenes.filter((s) => s.encounter?.description?.includes('Cișmigiu Gardens'))).toHaveLength(1);
+  });
+
+  it('keeps an uncovered planned encounter as a standalone encounter scene', () => {
+    const ep = episode(1, ['hook'], {
+      treatmentGuidance: {
+        episodeTurns: ['Mika gives Kylie a key card at the club.', 'Stela sells Kylie a chunk of rose quartz.'],
+      },
+      plannedEncounters: [{
+        id: 'enc-later',
+        type: 'chase',
+        description: 'A midnight chase through the old park ends in a rescue.',
+        difficulty: 'moderate',
+        npcsInvolved: ['Victor'],
+        stakes: 'Survival',
+        relevantSkills: ['athletics'],
+        isBranchPoint: false,
+      } as any],
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+    expect(scenes.filter((s) => s.kind === 'encounter' && s.id === 'enc-later')).toHaveLength(1);
+  });
+
+  it('does not treat setup-only foreshadowing as encounter coverage', () => {
+    const encounter = {
+      id: 'enc-park',
+      type: 'chase',
+      description: 'The park attack forces Kylie to flee until Victor rescues her.',
+      difficulty: 'moderate',
+      npcsInvolved: ['Victor'],
+      stakes: 'Survival',
+      relevantSkills: ['athletics'],
+      isBranchPoint: false,
+    } as any;
+    expect(encounterIsCoveredByAuthoredTurns(encounter, [
+      'Victor watches from the rooftop while danger in the park is foreshadowed.',
+    ])).toBe(false);
   });
 
   it('distributes information-ledger entries touching the episode as advisory seed beats', () => {

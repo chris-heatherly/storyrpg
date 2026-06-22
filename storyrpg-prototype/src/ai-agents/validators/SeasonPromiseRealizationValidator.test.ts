@@ -261,6 +261,23 @@ describe('SeasonPromiseRealizationValidator', () => {
     expect(plan.scenePlan?.scenes.some((scene) => (scene.seasonPromiseContracts ?? []).length > 0)).toBe(true);
   });
 
+  it('recognizes authoritative treatment genre and tone text when metadata is condensed', () => {
+    const plan = plannedSeasonPlan();
+    plan.genre = 'Paranormal Romance / Dark Urban Fantasy';
+    plan.tone = 'witty, gothic, suspenseful';
+
+    const result = new SeasonPromiseRealizationValidator().validatePlan({
+      sourceAnalysis: analysis(),
+      seasonPlan: plan,
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.filter((issue) =>
+      issue.severity === 'error'
+      && /genre_progression|tone_progression/.test(issue.message)
+    )).toEqual([]);
+  });
+
   it('fails final validation when a theme or inaction promise stays metadata-only', () => {
     const seasonGuidance = {
       episodeStructureMode: 'standard',

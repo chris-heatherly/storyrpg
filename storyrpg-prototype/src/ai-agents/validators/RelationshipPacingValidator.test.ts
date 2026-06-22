@@ -34,7 +34,7 @@ function scene(id: string, text: string, pacing: RelationshipPacingContract[] = 
   };
 }
 
-function story(scenes: any[]): any {
+function story(scenes: any[], npcs: any[] = [{ id: 'mika', name: 'Mika' }]): any {
   return {
     id: 'story',
     title: 'Story',
@@ -46,7 +46,7 @@ function story(scenes: any[]): any {
       scenes,
       startingSceneId: scenes[0]?.id,
     }],
-    npcs: [{ id: 'mika', name: 'Mika' }],
+    npcs,
   };
 }
 
@@ -63,6 +63,91 @@ describe('RelationshipPacingValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.some((issue) => issue.severity === 'error' && issue.message.includes('unearned relationship label'))).toBe(true);
+  });
+
+  it('does not fail on blocked labels that appear only in hidden beat metadata', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-1', 'Mika offers the key card like a test, not a promise.', [contract({ blockedLabels: ['family'] })], {
+          beats: [beat('s1-1-b1', 'Mika offers the key card like a test, not a promise.', {
+            relationshipDynamic: 'Kylie performs confidence for her family, and maybe for herself.',
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('unearned relationship label'))).toBe(false);
+  });
+
+  it('does not treat lore phrases like family rivalries as relationship-label claims', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-7', 'Stela warns you over the phone.', [contract({
+          blockedLabels: ['best friend', 'soulmate', 'family', 'trusts completely'],
+          targetStage: 'friend',
+          minScenesSinceIntroduction: 0,
+        })], {
+          beats: [beat('s1-7-b1', 'Stela warns you over the phone.', {
+            choices: [{
+              id: 'c1',
+              text: 'Ask about the old houses',
+              outcomeTexts: {
+                success: 'Mika offers a cryptic but useful hint about old family rivalries.',
+                partial: 'She deflects, but her tone tells you this is serious.',
+                failure: 'She goes cold.',
+              },
+            }],
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('unearned relationship label'))).toBe(false);
+  });
+
+  it('does not treat hidden choice-planning summaries as visible relationship-stage claims', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-5', 'Mika changes the subject before the danger can name itself.', [contract({
+          targetStage: 'friend',
+          blockedLabels: ['best friend', 'family', 'trusts completely'],
+          minScenesSinceIntroduction: 0,
+        })], {
+          beats: [beat('s1-5-b1', 'Mika changes the subject before the danger can name itself.', {
+            choices: [{
+              id: 'c1',
+              text: 'Let her redirect you',
+              feedbackCue: {
+                progressSummary: 'Relationship with Mika is moving only as far as friend.',
+              },
+              reminderPlan: {
+                immediate: 'The choice leaves visible pressure around Relationship with Mika is moving only as far as friend.',
+              },
+            }],
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('claims a high relationship stage'))).toBe(false);
+  });
+
+  it('does not fail only because a hidden pacing contract targets friend', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-4', 'Mika sees the man watching you and turns her body to block your view.', [contract({
+          targetStage: 'friend',
+          blockedLabels: ['best friend', 'soulmate', 'family', 'trusts completely'],
+          minScenesSinceIntroduction: 0,
+        })]),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('claims a high relationship stage'))).toBe(false);
   });
 
   it('fails when Dusk Club is treated as settled membership too early', () => {
@@ -125,6 +210,30 @@ describe('RelationshipPacingValidator', () => {
         }),
         scene('s1-3', 'After two nights of tests and favors, Mika calls herself your friend and makes it sound like a dare.', [earned]),
       ]),
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
+  it('counts app-shaped relationship consequences toward named NPC pacing evidence', () => {
+    const earned = contract({
+      id: 's1-2-rel-mika',
+      npcId: 'Mika Drăgan',
+      targetStage: 'friend',
+      allowedLabels: ['friend'],
+      blockedLabels: ['best friend', 'family', 'trusts completely'],
+      minScenesSinceIntroduction: 1,
+    });
+    const result = validator.validate({
+      story: story([
+        scene('s1-1', 'Mika notices your fear and chooses to help.', [], {
+          beats: [beat('s1-1-b1', 'Mika notices your fear and chooses to help.', {
+            choices: [{ id: 'c1', text: 'Let her help', consequences: [{ type: 'relationship', npcId: 'char-mika-drgan', score: 'trust', value: 12 }] }],
+          })],
+        }),
+        scene('s1-2', 'After the warning and the help, Mika calls herself your friend like she is daring you to object.', [earned]),
+      ], [{ id: 'char-mika-drgan', name: 'Mika Drăgan' }]),
+      treatmentSourced: true,
     });
 
     expect(result.valid).toBe(true);

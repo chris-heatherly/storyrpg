@@ -9,6 +9,9 @@ import {
   deriveQAOutcome,
   recomputeQAReportDerived,
   buildQAReportSummary,
+  extractQuotedDialogueLines,
+  VoiceValidator,
+  QARunner,
   type ContinuityIssue,
   type QAReport,
 } from './QAAgents';
@@ -83,6 +86,66 @@ describe('deriveVoiceScore', () => {
   });
 });
 
+describe('extractQuotedDialogueLines', () => {
+  it('extracts straight and curly quoted speech', () => {
+    expect(extractQuotedDialogueLines('Mika smiles. "Careful." Stela adds, “Listen closely, child.”')).toEqual([
+      'Careful.',
+      'Listen closely, child.',
+    ]);
+  });
+
+  it('ignores narrative and treatment instructions without quoted dialogue', () => {
+    expect(
+      extractQuotedDialogueLines(
+        "Escalate the episode pressure through a concrete turn: The 'Mr. Midnight' post goes viral, and Kylie lets herself be courted by Victor.",
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps VoiceValidator prompt dialogue-scoped even when beats have speakers', () => {
+    const validator = new VoiceValidator({} as any);
+    const prompt = (validator as any).buildPrompt({
+      sceneContents: [
+        {
+          sceneId: 's2-2',
+          sceneName: 'Club',
+          beats: [
+            {
+              id: 'b1',
+              speaker: 'Mika',
+              text: "Escalate the episode pressure through a concrete turn: The 'Mr. Midnight' post goes viral.",
+            },
+            {
+              id: 'b2',
+              speaker: 'Mika',
+              text: 'Mika taps the phone once. “Darling, you just became interesting.”',
+            },
+          ],
+        },
+      ],
+      characterProfiles: [
+        {
+          id: 'char-mika',
+          name: 'Mika',
+          voiceProfile: {
+            vocabulary: 'sharp',
+            sentenceLength: 'short',
+            formality: 'casual',
+            verbalTics: [],
+            favoriteExpressions: [],
+            whenHappy: 'teasing',
+            whenAngry: 'cutting',
+            greetingExamples: [],
+          },
+        },
+      ],
+    });
+
+    expect(prompt).toContain('Darling, you just became interesting.');
+    expect(prompt).not.toContain('Escalate the episode pressure');
+  });
+});
+
 describe('deriveEvidenceLimitedScore', () => {
   it('caps clean incremental-only evidence below excellent quality', () => {
     expect(deriveEvidenceLimitedScore({ scores: [100, 95], evidenceCount: 2 })).toBe(75);
@@ -139,7 +202,7 @@ describe('deriveQAOutcome / recomputeQAReportDerived', () => {
 
   it('uses the QA pass threshold in summary text so passing 70s are not labeled revision failures', () => {
     const summary = buildQAReportSummary(
-      { overallScore: 79, issueCount: { errors: 0, warnings: 2, suggestions: 0 } },
+      { overallScore: 79, issueCount: { errors: 0, warnings: 2, suggestions: 0 }, issues: [], passedChecks: [], recommendations: [] },
       { overallScore: 80, distinctionScore: 80, issues: [] } as never,
       { overallScore: 78, metrics: { falseChoiceCount: 0 }, issues: [] } as never,
       79,
@@ -147,5 +210,58 @@ describe('deriveQAOutcome / recomputeQAReportDerived', () => {
 
     expect(summary).toContain('Content passes QA');
     expect(summary).not.toContain('needs revision before publishing');
+  });
+});
+
+describe('QARunner failure evidence', () => {
+  it('preserves VoiceValidator failure text in the fail-closed voice report', async () => {
+    const runner = new QARunner({} as any);
+    (runner as any).continuityChecker = {
+      execute: async () => ({
+        success: true,
+        data: {
+          overallScore: 100,
+          issueCount: { errors: 0, warnings: 0, suggestions: 0 },
+          issues: [],
+          passedChecks: ['ok'],
+          recommendations: [],
+        },
+      }),
+    };
+    (runner as any).voiceValidator = {
+      execute: async () => ({ success: false, error: 'Unexpected token after JSON at position 12' }),
+    };
+    (runner as any).stakesAnalyzer = {
+      execute: async () => ({
+        success: true,
+        data: {
+          overallScore: 90,
+          choiceSetAnalysis: [],
+          metrics: { averageStakesScore: 90, falseChoiceCount: 0, dilemmaQuality: 90, varietyScore: 90 },
+          issues: [],
+          strengths: [],
+          recommendations: [],
+        },
+      }),
+    };
+
+    const report = await runner.runFullQA({
+      sceneContents: [],
+      choiceSets: [],
+      characterProfiles: [],
+      knownFlags: [],
+      knownScores: [],
+      establishedFacts: [],
+      sceneContexts: [],
+      storyThemes: [],
+      targetTone: '',
+    });
+
+    expect(report.voice.overallScore).toBe(0);
+    expect(report.voice.issues[0]).toMatchObject({
+      severity: 'error',
+      issue: 'Voice validator failed: Unexpected token after JSON at position 12',
+    });
+    expect(report.voice.recommendations[0]).toContain('Unexpected token after JSON');
   });
 });

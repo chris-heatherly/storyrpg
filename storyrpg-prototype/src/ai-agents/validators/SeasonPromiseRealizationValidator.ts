@@ -211,8 +211,17 @@ function targetedStoryText(input: SeasonPromiseRealizationInput, contract: Seaso
 function hasMetadataPreservation(input: SeasonPromiseRealizationInput, contract: SeasonPromiseRealizationContract): boolean {
   if (contract.contractKind !== 'genre_progression' && contract.contractKind !== 'tone_progression') return true;
   const fieldText = contract.contractKind === 'genre_progression'
-    ? [input.story?.genre, input.seasonPlan?.genre, input.sourceAnalysis?.genre].filter(Boolean).join(' ')
-    : [input.seasonPlan?.tone, input.sourceAnalysis?.tone].filter(Boolean).join(' ');
+    ? [
+        input.story?.genre,
+        input.seasonPlan?.genre,
+        input.sourceAnalysis?.genre,
+        input.sourceAnalysis?.treatmentSeasonGuidance?.genre,
+      ].filter(Boolean).join(' ')
+    : [
+        input.seasonPlan?.tone,
+        input.sourceAnalysis?.tone,
+        input.sourceAnalysis?.treatmentSeasonGuidance?.tone,
+      ].filter(Boolean).join(' ');
   return treatmentFieldCloseMatch(contract.sourceText, fieldText, seasonPromiseMatchThreshold(contract));
 }
 

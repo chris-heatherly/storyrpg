@@ -250,6 +250,21 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((issue) => issue.type === 'supernatural_canon_contradiction')).toBe(false);
   });
 
+  it('allows daytime meals with vampire hunters or warding allies', async () => {
+    const story = validStory({
+      npcs: [
+        { id: 'victor', name: 'Victor Valcescu', description: 'A vampire patron and romantic stranger.' } as any,
+        { id: 'stela', name: 'Stela Pavel', description: 'A Romani folk practitioner from a strigoi-hunting clan who quietly wards the apartment.' } as any,
+      ],
+    });
+    story.episodes[0].scenes[0].beats[1].text =
+      'The brunch spot is all reclaimed wood and wilting flowers. You slide into the booth across from Stela and Mika.';
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'supernatural_canon_contradiction')).toBe(false);
+  });
+
   it('fails an empty non-encounter scene', async () => {
     const story = validStory({
       episodes: [{
@@ -688,16 +703,33 @@ describe('FinalStoryContractValidator', () => {
       condition: { type: 'flag', flag: 'opened_carefully', value: true },
       text: 'The next beat visibly responds to the authored choice: take the careful opening or rush through.',
     }];
+    scene.beats.push({
+      id: 'beat-3',
+      text: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+    });
+    scene.beats.push({
+      id: 'beat-4',
+      text: 'Let the fallout settle into the next pressure: rising pressure.',
+    });
+    scene.beats.push({
+      id: 'beat-5',
+      text: 'The door closes behind you.',
+      primaryAction: 'Let the fallout settle into the next pressure: rising pressure.',
+      visualMoment: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+    });
 
     const report = await new FinalStoryContractValidator().validate({ story });
     const leaks = report.blockingIssues.filter((issue) => issue.type === 'planning_register_prose');
 
     expect(report.passed).toBe(false);
-    expect(leaks).toHaveLength(6);
+    expect(leaks).toHaveLength(10);
     expect(leaks).toEqual(expect.arrayContaining([
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-1' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-2' }),
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-3' }),
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-4' }),
+      expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-5' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1' }),
     ]));
   });
@@ -903,6 +935,19 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('does NOT block treatment-sourced output on score-only QA failures', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      qaReport: { passesQA: false, overallScore: 52, criticalIssues: [] } as any,
+    });
+
+    expect(report.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'qa_blocker_present', validator: 'QARunner' }),
+    ]));
+    expect(report.blockingIssues.some((issue) => issue.type === 'qa_blocker_present')).toBe(false);
+  });
+
   it('blocks callback debt from best-practices reports for treatment-sourced output only', async () => {
     const bestPracticesReport = {
       overallPassed: false,
@@ -974,9 +1019,10 @@ describe('FinalStoryContractValidator', () => {
       generatedThroughEpisode: 1,
       callbackLedger: {
         version: 1,
-        config: { defaultWindowSpan: 3, resolveAfterPayoffs: 2 },
+        config: { payoffThreshold: 2, defaultWindowSpan: 3, maxActiveHooks: 24 },
         hooks: [{
           id: 'flag:treatment_seed_ep1_1',
+          createdAt: '2026-06-22T00:00:00.000Z',
           sourceEpisode: 1,
           sourceSceneId: 'scene-1',
           sourceChoiceId: 'choice-1',
@@ -1212,5 +1258,111 @@ describe('FinalStoryContractValidator', () => {
         else process.env.GATE_CONTINUITY_REMEDIATION = prev;
       }
     });
+  });
+});
+
+describe('FinalStoryContractValidator repeated high-pressure event gate', () => {
+  it('blocks a reachable standard attack scene followed by a duplicate encounter restaging', async () => {
+    const encounter = validEncounter() as any;
+    encounter.description = 'A Cișmigiu Gardens chase where unseen attackers lunge from the fog and Victor rescues you.';
+    encounter.phases[0].beats[0].setupText = 'Fog closes over Cișmigiu Gardens. Unseen attackers lunge, and Victor rescues you from the chase.';
+
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-5',
+        scenes: [
+          {
+            id: 's1-5',
+            name: 'Cișmigiu Attack',
+            startingBeatId: 's1-5-b1',
+            leadsTo: ['enc-1'],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            beats: [{
+              id: 's1-5-b1',
+              text: 'In Cișmigiu Gardens, a shadow attacks you, pins you to a tree, and a man in a charcoal suit rescues you.',
+            } as any],
+          },
+          {
+            id: 'enc-1',
+            name: 'Cișmigiu Chase',
+            startingBeatId: '',
+            leadsTo: [],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            beats: [],
+            encounter,
+          },
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'duplicate_high_pressure_event', sceneId: 'enc-1' }),
+    ]));
+  });
+
+  it('allows a later blog recap of the attack', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-5',
+        scenes: [
+          {
+            id: 's1-5',
+            name: 'Cișmigiu Attack',
+            startingBeatId: 's1-5-b1',
+            leadsTo: ['s1-6'],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            beats: [{
+              id: 's1-5-b1',
+              text: 'In Cișmigiu Gardens, a shadow attacks you, pins you to a tree, and a man in a charcoal suit rescues you.',
+            } as any],
+          },
+          {
+            id: 's1-6',
+            name: 'Mr. Midnight Goes Viral',
+            startingBeatId: 's1-6-b1',
+            leadsTo: [],
+            timeline: { location: "Kylie's Lipscani Apartment", timeOfDay: 'morning' },
+            beats: [{
+              id: 's1-6-b1',
+              text: 'You write the blog post about the Cișmigiu attack and the charcoal-suited rescue; by morning, Mr. Midnight is viral.',
+            } as any],
+          },
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'duplicate_high_pressure_event')).toBe(false);
+  });
+
+  it('blocks a high-pressure scene whose prose contradicts its planned location', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-7',
+        scenes: [{
+          id: 's1-7',
+          name: 'Apartment Door',
+          startingBeatId: 's1-7-b1',
+          leadsTo: [],
+          timeline: { location: "Kylie's Lipscani Apartment", timeOfDay: 'night' },
+          beats: [{
+            id: 's1-7-b1',
+            text: 'Fog swallows Cișmigiu Gardens as unseen attackers chase you until Victor rescues you under the trees.',
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'scene_location_event_mismatch', sceneId: 's1-7' }),
+    ]));
   });
 });

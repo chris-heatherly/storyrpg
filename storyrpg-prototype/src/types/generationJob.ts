@@ -267,14 +267,15 @@ export function getVisibleGenerationJobs(jobs: GenerationJob[]): GenerationJob[]
 
   return Array.from(groups.entries()).map(([projectId, attempts]) => {
     const sortedByUpdated = [...attempts].sort((a, b) => getJobTime(b, 'updatedAt') - getJobTime(a, 'updatedAt'));
+    const sortedByStartedDesc = [...attempts].sort((a, b) => getJobTime(b, 'startedAt') - getJobTime(a, 'startedAt'));
     const activeAttempt = sortedByUpdated.find(isActiveGenerationJob);
-    const visible = activeAttempt || sortedByUpdated[0];
+    const visible = activeAttempt || sortedByStartedDesc[0] || sortedByUpdated[0];
     const sortedByStarted = [...attempts].sort((a, b) => getJobTime(a, 'startedAt') - getJobTime(b, 'startedAt'));
 
     return {
       ...visible,
       projectId,
-      projectJobIds: sortedByUpdated.map((attempt) => attempt.id),
+      projectJobIds: sortedByStartedDesc.map((attempt) => attempt.id),
       attemptCount: attempts.length,
       startedAt: sortedByStarted[0]?.startedAt || visible.startedAt,
     };

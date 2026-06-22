@@ -206,7 +206,10 @@ export function buildPipelineConfig(
 
   return {
     agents: {
-      storyArchitect: buildAgentConfig('architect', { maxTokens: 8192, temperature: 0.7 }),
+      // 32768: SeasonPlanner reuses the architect config and can emit large
+      // treatment-derived season plans. Bite Me's 8-episode plan can exceed
+      // 16k once Gemini thinking tokens are counted, causing MAX_TOKENS fallback.
+      storyArchitect: buildAgentConfig('architect', { maxTokens: 32768, temperature: 0.7 }),
       // 16384: SceneWriter emits full multi-beat scenes and the validation/revision
       // loop can legitimately need more than 8192 tokens. Keep this aligned with
       // the default agent config; structured provider calls may floor low values,

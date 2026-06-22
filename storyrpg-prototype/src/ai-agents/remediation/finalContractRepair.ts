@@ -22,6 +22,9 @@ import type { RemediationLedgerRecord } from './remediationLedger';
 import { StructuralValidator } from '../validators/StructuralValidator';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
 import { buildDesignNoteLeakStripHandler } from './designNoteLeakHandler';
+import { buildPlanningRegisterMetadataRepairHandler } from './planningRegisterMetadataRepairHandler';
+import { buildTransitionBridgeRepairHandler } from './transitionBridgeRepairHandler';
+import { buildContinuityBlogPublishRepairHandler } from './continuityBlogPublishRepairHandler';
 
 /** Minimal shape this loop needs from a contract report (FinalStoryContractReport-compatible). */
 export interface ContractRepairReport {
@@ -38,6 +41,8 @@ export interface ContractRepairReport {
     suggestion?: string;
     /** Scene the finding points at — the unit of surgical repair. */
     sceneId?: string;
+    /** Beat the finding points at when the validator can localize it. */
+    beatId?: string;
     episodeNumber?: number;
   }>;
 }
@@ -151,5 +156,18 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // verbatim feedback-cue/reminder one-liner, so a meta-narration leak repairs
     // instead of hard-aborting (the GATE_DESIGN_NOTE_LEAK planned fix).
     buildDesignNoteLeakStripHandler(),
+    // Planning-register leak in metadata fields: strip authoring directives from
+    // beat/scene metadata that image planning and the reader may consume, without
+    // changing story text, choices, encounters, or navigation.
+    buildPlanningRegisterMetadataRepairHandler(),
+    // Transition continuity bridge miss: when the validator names the exact
+    // choice-bridge beat and planned location jump, add a short in-fiction
+    // travel/arrival sentence to that bridge beat before spending LLM repair.
+    buildTransitionBridgeRepairHandler(),
+    // Continuity duplicate-publish miss: when an earlier scene writes the blog
+    // post but prematurely hits Publish before the planned publish scene, keep
+    // the authored writing moment and convert the earlier beat into saved-draft
+    // prose. Choices, encounters, ids, and navigation are untouched.
+    buildContinuityBlogPublishRepairHandler(),
   ];
 }

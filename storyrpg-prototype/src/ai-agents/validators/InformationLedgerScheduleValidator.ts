@@ -161,6 +161,23 @@ function referencesEntry(text: string, entry: InformationLedgerEntry): boolean {
   return false;
 }
 
+function depictsAuthoredSetupTouch(prose: string, entry: InformationLedgerEntry): boolean {
+  const candidates = [
+    ...(entry.setupTouchDetails ?? []).map((detail) => detail.requiredSurface),
+    ...(entry.factualAtoms ?? []).filter((atom) => atom.phase === 'setup').map((atom) => atom.text),
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  if (candidates.length === 0) return false;
+  const present = contentWords(prose);
+  if (present.size === 0) return false;
+  return candidates.some((candidate) => {
+    const want = contentWords(candidate);
+    if (want.size === 0) return false;
+    let shared = 0;
+    for (const word of want) if (present.has(word)) shared += 1;
+    return shared >= Math.min(3, want.size);
+  });
+}
+
 interface ScanMarker {
   episode: number;
   phase: InfoSchedulePhase;
@@ -527,6 +544,8 @@ export class InformationLedgerScheduleValidator extends BaseValidator {
     for (const prose of proseFields) {
       if (typeof prose === 'string' && referencesEntry(prose, entry)) {
         markers.push({ episode: epNum, phase: PAYOFF_TOKEN.test(prose) ? 'payoff' : REVEAL_TOKEN.test(prose) ? 'reveal' : 'setup' });
+      } else if (typeof prose === 'string' && depictsAuthoredSetupTouch(prose, entry)) {
+        markers.push({ episode: epNum, phase: 'setup' });
       }
     }
   }

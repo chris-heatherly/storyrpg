@@ -42,6 +42,10 @@ import { assignBranchConsequenceContractsToScenes } from '../utils/branchConsequ
 import { assignEndingRealizationContractsToScenes } from '../utils/endingRealizationContracts';
 import { assignFailureModeAuditContractsToScenes } from '../utils/failureModeAuditContracts';
 import { assignSevenPointBeatContractsToScenes } from '../utils/sevenPointBeatContracts';
+import {
+  buildEncounterEventSignature,
+  compareEncounterEventSignatures,
+} from '../utils/encounterEventSignature';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -770,7 +774,26 @@ function tokenHitCount(sourceTokens: string[], targetTokenSet: Set<string>): num
 }
 
 function plannedEncounterCoverageText(enc: EpisodePlannedEncounter): string {
-  return enc.description || enc.centralConflict || enc.stakes || '';
+  return [
+    enc.description,
+    enc.centralConflict,
+    enc.stakes,
+    enc.aftermathConsequence,
+    ...(enc.npcsInvolved ?? []),
+    ...(enc.relevantSkills ?? []),
+    enc.branchOutcomes?.victory,
+    enc.branchOutcomes?.partialVictory,
+    enc.branchOutcomes?.defeat,
+    enc.branchOutcomes?.escape,
+  ].filter(Boolean).join(' ');
+}
+
+export function getAuthoredEpisodeEventTexts(ep: SeasonEpisode): string[] {
+  const guidance = ep.treatmentGuidance;
+  if (guidance?.episodeTurns?.length) return guidance.episodeTurns.filter((turn) => turn?.trim());
+  if (guidance?.majorChoicePressures?.length) return guidance.majorChoicePressures.filter((turn) => turn?.trim());
+  if (guidance?.encounterAnchors?.length) return guidance.encounterAnchors.filter((turn) => turn?.trim());
+  return [];
 }
 
 /**
@@ -778,10 +801,17 @@ function plannedEncounterCoverageText(enc: EpisodePlannedEncounter): string {
  * turns already listed under `episodeTurns` (Bite Me Ep1: rooftop + Cismigiu).
  * In that case, allocating a separate encounter scene duplicates the same event.
  */
-function encounterIsCoveredByAuthoredTurns(enc: EpisodePlannedEncounter, authoredTurns: string[]): boolean {
+export function encounterIsCoveredByAuthoredTurns(enc: EpisodePlannedEncounter, authoredTurns: string[]): boolean {
   if (authoredTurns.length === 0) return false;
   const encounterTokens = bindTokens(plannedEncounterCoverageText(enc));
   if (encounterTokens.length < 4) return false;
+  const encounterSignature = buildEncounterEventSignature([plannedEncounterCoverageText(enc)]);
+  if (encounterSignature.pressureActions.size > 0) {
+    for (const turn of authoredTurns) {
+      const match = compareEncounterEventSignatures(encounterSignature, buildEncounterEventSignature([turn]));
+      if (match.matched) return true;
+    }
+  }
   const encounterTokenSet = new Set(encounterTokens);
   const turnMatches = authoredTurns.map((turn) => {
     const turnTokens = bindTokens(turn);
@@ -819,19 +849,27 @@ function pressureTermHits(text: string): number {
 function findAuthoredEncounterOwnerScene(scenes: PlannedScene[], enc: EpisodePlannedEncounter): PlannedScene | undefined {
   const encounterTokenSet = new Set(bindTokens(plannedEncounterCoverageText(enc)));
   const encounterPressure = pressureTermHits(plannedEncounterCoverageText(enc));
-  let best: { scene: PlannedScene; index: number; pressure: number } | undefined;
+  const encounterSignature = buildEncounterEventSignature([plannedEncounterCoverageText(enc)]);
+  let best: { scene: PlannedScene; index: number; pressure: number; signatureScore: number; tokenScore: number } | undefined;
   scenes.forEach((scene, index) => {
     if (scene.kind === 'encounter' || scene.narrativeRole === 'release') return;
     const authoredText = authoredRequiredBeatText(scene);
     if (!authoredText) return;
-    const score = tokenHitCount(bindTokens(authoredText), encounterTokenSet);
-    if (score < 2) return;
+    const tokenScore = tokenHitCount(bindTokens(authoredText), encounterTokenSet);
+    const signature = compareEncounterEventSignatures(encounterSignature, buildEncounterEventSignature([authoredText]));
+    if (tokenScore < 2 && !signature.matched) return;
     const pressure = encounterPressure > 0 ? pressureTermHits(authoredText) : 0;
     // Composite treatment anchors usually name setup + payoff ("rooftop, then
     // park attack"). The encounter owner is the last matching authored turn, not
     // the earlier setup half whose wording may overlap more heavily.
-    if (!best || pressure > best.pressure || (pressure === best.pressure && index > best.index)) {
-      best = { scene, index, pressure };
+    if (
+      !best
+      || signature.score > best.signatureScore
+      || (signature.score === best.signatureScore && pressure > best.pressure)
+      || (signature.score === best.signatureScore && pressure === best.pressure && tokenScore > best.tokenScore)
+      || (signature.score === best.signatureScore && pressure === best.pressure && tokenScore === best.tokenScore && index > best.index)
+    ) {
+      best = { scene, index, pressure, signatureScore: signature.score, tokenScore };
     }
   });
   return best?.scene;
@@ -853,6 +891,32 @@ function promoteAuthoredSceneToEncounter(scene: PlannedScene, enc: EpisodePlanne
   };
   scene.hasChoice = true;
   scene.budgetWeight = ENCOUNTER_BUDGET_WEIGHT;
+}
+
+export function promoteCoveredAuthoredEncounters(
+  ep: SeasonEpisode,
+  scenes: PlannedScene[],
+  coveredEncounterIds: ReadonlySet<string>,
+): void {
+  for (const enc of ep.plannedEncounters ?? []) {
+    if (!coveredEncounterIds.has(enc.id)) continue;
+    const owner = findAuthoredEncounterOwnerScene(scenes, enc);
+    if (!owner) continue;
+
+    for (let i = scenes.length - 1; i >= 0; i -= 1) {
+      const scene = scenes[i];
+      if (scene === owner) continue;
+      const isStandaloneDuplicate =
+        scene.kind === 'encounter'
+        && (scene.id === enc.id || scene.encounter?.description === enc.description);
+      if (isStandaloneDuplicate) scenes.splice(i, 1);
+    }
+
+    promoteAuthoredSceneToEncounter(owner, enc);
+  }
+  scenes.forEach((scene, index) => {
+    scene.order = index;
+  });
 }
 
 /**
@@ -1022,8 +1086,7 @@ export function bindAuthoredTurnsToScenes(
   // pressure" beats — so fall back to those when `episodeTurns` is empty. Without this
   // fallback the expand-not-rewrite binding would silently no-op on those formats,
   // leaving requiredBeats empty even though the episode is fully authored.
-  const turns = (guidance?.episodeTurns?.length ? guidance.episodeTurns : guidance?.majorChoicePressures) ?? [];
-  const authoredEpisodeTurns = guidance?.episodeTurns ?? [];
+  const turns = getAuthoredEpisodeEventTexts(ep);
   // Signature device: the explicit `Visual anchor` if authored, else the episode's
   // first `Encounter anchor` (its staged hinge), which well-formed treatments carry
   // even when they omit a dedicated visual-anchor line.
@@ -1031,8 +1094,8 @@ export function bindAuthoredTurnsToScenes(
   const fallbackEncounterAnchor = guidance?.encounterAnchors?.[0]?.trim();
   const fallbackAnchorAlreadyCovered = Boolean(
     fallbackEncounterAnchor
-    && authoredEpisodeTurns.length > 0
-    && encounterIsCoveredByAuthoredTurns({ description: fallbackEncounterAnchor } as EpisodePlannedEncounter, authoredEpisodeTurns)
+    && turns.length > 0
+    && encounterIsCoveredByAuthoredTurns({ description: fallbackEncounterAnchor } as EpisodePlannedEncounter, turns)
   );
   const visualAnchor = explicitVisualAnchor || (fallbackAnchorAlreadyCovered ? undefined : fallbackEncounterAnchor);
 
@@ -1178,7 +1241,7 @@ export function buildEpisodeScenes(
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
 ): PlannedScene[] {
   const encounters = ep.plannedEncounters ?? [];
-  const turns = ep.treatmentGuidance?.episodeTurns ?? [];
+  const turns = getAuthoredEpisodeEventTexts(ep);
   const coveredEncounterIds = new Set(
     encounters
       .filter((enc) => encounterIsCoveredByAuthoredTurns(enc, turns))
@@ -1290,13 +1353,7 @@ export function buildEpisodeScenes(
   // Bind authored turns + the signature device deterministically (shared with the
   // LLM-authored path). This is the single source of truth for turn→scene binding.
   bindAuthoredTurnsToScenes(ep, scenes, infoLedger);
-  for (const enc of encounters) {
-    if (!coveredEncounterIds.has(enc.id)) continue;
-    const owner = findAuthoredEncounterOwnerScene(scenes, enc);
-    if (owner) {
-      promoteAuthoredSceneToEncounter(owner, enc);
-    }
-  }
+  promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
 
   return scenes;
 }

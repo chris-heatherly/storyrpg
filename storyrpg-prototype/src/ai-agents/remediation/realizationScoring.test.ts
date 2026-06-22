@@ -25,6 +25,30 @@ describe('requiredMomentFromMessage', () => {
     expect(requiredMomentFromMessage(msg)).toBe('A FaceTime to her niece Sadie about vampires in Romania');
   });
 
+  it('extracts the quoted moment from a SceneTurn central-turn finding', () => {
+    const moment = "Kylie's 'noticer' instinct collects unsettling splinters: Ileana crying in the powder room, a mantle photograph that seems to omit Victor, Mika's unexplained missing hour, and a guest who knows the Marinescu maiden name.";
+    const msg = `Scene "s3-3" does not dramatize its central turn on-page: "${moment}".`;
+    expect(requiredMomentFromMessage(msg)).toBe(moment);
+  });
+
+  it('extracts the quoted moment from a SceneTurn seven-point event finding', () => {
+    const moment = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is rescued by a mysterious man in the park.';
+    const msg = `Scene "s1-1" carries seven-point hook structurally but does not dramatize its authored beat event on-page: "${moment}".`;
+    expect(requiredMomentFromMessage(msg)).toBe(moment);
+  });
+
+  it('extracts the quoted moment from a TreatmentEventLedger finding', () => {
+    const moment = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is rescued by a mysterious man in the park.';
+    const msg = `Treatment event ledger summary-only realization in scene "s1-1": must dramatize on-page, not summarize as memory/backstory: "${moment}".`;
+    expect(requiredMomentFromMessage(msg)).toBe(moment);
+  });
+
+  it('extracts the quoted moment from a SceneTurn incomplete-shape finding', () => {
+    const moment = 'Victor reframes the blog as bait, not confession.';
+    const msg = `Scene "s3-3" mentions its central turn but does not give it a complete scene shape (before, turn, aftermath): "${moment}".`;
+    expect(requiredMomentFromMessage(msg)).toBe(moment);
+  });
+
   it('returns undefined for non-realization messages', () => {
     expect(requiredMomentFromMessage('Witness npc id "None" is invalid.')).toBeUndefined();
     expect(requiredMomentFromMessage(undefined)).toBeUndefined();
@@ -71,6 +95,49 @@ describe('momentDepicted (mirror of the validators’ presence check)', () => {
     const prose =
       'The scent of woodsmoke leads you toward the building kitchen. Radu is pinned against the doorframe. Opposite him stands a rougher man, his heavy hand-knit sweater straining at the shoulders.';
     expect(momentDepicted('RequiredBeatRealizationValidator', "The rougher man at the kitchen entrance who didn't fit.", prose)).toBe(true);
+  });
+
+  it('credits paraphrased rose-quartz warding consent when the object transfer is on-page', () => {
+    const moment = "Stela presses a piece of rose quartz into Kylie's hand at Lumina Books, quietly establishing her first warding consent.";
+    const prose = [
+      "Stela's hand hovers over a chipped ceramic bowl on the counter, one filled with stones like river-tumbled sweets.",
+      "Her fingers close around a single pinkish stone. 'For your new apartment,' she says.",
+      "She turns, closing your fingers around the quartz. Her words hang in the air, not a sales pitch but a quiet warning.",
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
+  it('credits paraphrased protective-herb warding when the bag, brunch context, and protection meaning land', () => {
+    const moment = 'Stela gifts Kylie a protective bag of herbs during brunch, continuing her quiet, consent-based warding.';
+    const prose = [
+      "Mika slides her phone across the polished table. 'Five hundred thousand impressions, and that's just since breakfast.'",
+      "Stela's hand enters your vision, pushing a small muslin bag across the table.",
+      "The scent of lavender and crushed pine cuts through the cafe's aroma. 'For the apartment,' she says. 'Against... drafts.'",
+      "The word she didn't say - protection - settles between you.",
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
+  it('does not let one half of a compound treatment list satisfy the whole authored beat', () => {
+    const moment = "Kylie's 'noticer' instinct collects unsettling splinters: Ileana crying in the powder room, a mantle photograph that seems to omit Victor, Mika's unexplained missing hour, and a guest who knows the Marinescu maiden name.";
+    const prose = [
+      'Your eyes catch on a photograph over the marble mantle. Victor should be in the place of honor, but the center of the frame is empty.',
+      "An older guest smiles. 'You have your grandmother's eyes.' He probes the Marinescu legacy you carry.",
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(false);
+    const missing = missingMomentTokens('RequiredBeatRealizationValidator', moment, prose);
+    expect(missing).toEqual(expect.arrayContaining(['ileana', 'crying', 'powder', 'mika', 'missing', 'hour', 'maiden', 'name']));
+  });
+
+  it('passes a compound treatment list only when each listed splinter is depicted', () => {
+    const moment = "Kylie's 'noticer' instinct collects unsettling splinters: Ileana crying in the powder room, a mantle photograph that seems to omit Victor, Mika's unexplained missing hour, and a guest who knows the Marinescu maiden name.";
+    const prose = [
+      'In the powder room, Ileana cries silently into a towel before composing her face.',
+      'A mantle photograph catches your eye because Victor has been omitted from the place of honor.',
+      'Mika is gone for an unexplained missing hour, and no one will tell you where he went.',
+      "An elderly guest knows your grandmother's Marinescu maiden name before you offer it.",
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
   });
 
   it('treats an empty/unextractable moment as depicted', () => {

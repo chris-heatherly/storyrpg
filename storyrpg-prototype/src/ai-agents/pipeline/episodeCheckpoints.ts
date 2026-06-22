@@ -15,6 +15,7 @@
  */
 
 import type { Episode } from '../../types';
+import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import {
   ArtifactRevisionStore,
   type ArtifactRef,
@@ -246,4 +247,118 @@ export function partitionResumableEpisodes<S extends { episodeNumber: number }>(
     else pending.push(spec);
   }
   return { pending, resumed };
+}
+
+export function loadResumedEpisodeDiagnostics<Q = unknown, B = unknown>(
+  episodeNumber: number,
+  load: ArtifactLoader,
+): { qaReport?: Q; bestPracticesReport?: B; incrementalContract?: ResumedIncrementalContractShape } {
+  const qaReport =
+    load<Q>(`episode-${episodeNumber}-qa-report.post-repair.json`) ??
+    load<Q>(`episode-${episodeNumber}-qa-report.json`) ??
+    undefined;
+  const bestPracticesReport =
+    load<B>(`episode-${episodeNumber}-best-practices-report.json`) ??
+    undefined;
+  const incrementalContract =
+    load<ResumedIncrementalContractShape>(`episode-${episodeNumber}-incremental-contract.json`) ??
+    undefined;
+  return { qaReport, bestPracticesReport, incrementalContract };
+}
+
+interface ResumedQAReportShape {
+  overallScore?: number;
+  passesQA?: boolean;
+  criticalIssues?: unknown[];
+  voice?: {
+    overallScore?: number;
+    recommendations?: unknown[];
+  };
+}
+
+interface ResumedBestPracticesShape {
+  overallPassed?: boolean;
+  blockingIssues?: unknown[];
+}
+
+interface ResumedContractIssueShape {
+  validator?: string;
+  severity?: string;
+  type?: string;
+  message?: string;
+}
+
+interface ResumedIncrementalContractShape {
+  passed?: boolean;
+  blockingCount?: number;
+  blockingIssues?: ResumedContractIssueShape[];
+  warnings?: ResumedContractIssueShape[];
+}
+
+export interface ResumedEpisodeInvalidationInput {
+  episode?: Episode;
+  qaReport?: ResumedQAReportShape;
+  bestPracticesReport?: ResumedBestPracticesShape;
+  incrementalContract?: ResumedIncrementalContractShape;
+  requireQaReport?: boolean;
+  requireBestPracticesReport?: boolean;
+}
+
+const QUALITY_SCAN_SKIPPED_KEY = /(id|flag|next|starting|imageData|base64|url|path|uri|sha|hash)$/i;
+
+function hasPlanningRegisterLeak(value: unknown, key = ''): boolean {
+  if (typeof value === 'string') {
+    if (QUALITY_SCAN_SKIPPED_KEY.test(key)) return false;
+    return isPlanningRegisterText(value);
+  }
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((item) => hasPlanningRegisterLeak(item, key));
+  return Object.entries(value as Record<string, unknown>).some(([childKey, child]) =>
+    !QUALITY_SCAN_SKIPPED_KEY.test(childKey) && hasPlanningRegisterLeak(child, childKey),
+  );
+}
+
+export function findResumedEpisodeInvalidationReasons(input: ResumedEpisodeInvalidationInput): string[] {
+  const reasons: string[] = [];
+  const qa = input.qaReport;
+  const bp = input.bestPracticesReport;
+
+  if (input.requireQaReport && !qa) {
+    reasons.push('missing_qa_report');
+  }
+  if (qa) {
+    if (qa.passesQA === false) reasons.push('qa_failed');
+    if ((qa.criticalIssues?.length ?? 0) > 0) reasons.push('qa_critical_issues');
+    const voiceRecommendations = (qa.voice?.recommendations ?? []).join(' ');
+    if ((qa.voice?.overallScore ?? 0) <= 0 && /voice check failed|manual review required/i.test(voiceRecommendations)) {
+      reasons.push('voice_validation_failed_closed');
+    }
+  }
+
+  if (input.requireBestPracticesReport && !bp) {
+    reasons.push('missing_best_practices_report');
+  }
+  if (bp) {
+    if (bp.overallPassed === false) reasons.push('best_practices_failed');
+    if ((bp.blockingIssues?.length ?? 0) > 0) reasons.push('best_practices_blocking_issues');
+  }
+
+  const contract = input.incrementalContract;
+  if (contract) {
+    if (contract.passed === false || (contract.blockingCount ?? 0) > 0 || (contract.blockingIssues?.length ?? 0) > 0) {
+      reasons.push('incremental_contract_failed');
+    }
+    const treatmentWarnings = (contract.warnings ?? []).filter((issue) =>
+      issue.validator === 'RequiredBeatRealizationValidator'
+      || issue.type === 'treatment_fidelity_violation'
+      || /authored required beat is missing/i.test(issue.message ?? ''),
+    );
+    if (treatmentWarnings.length > 0) reasons.push('treatment_realization_warning');
+  }
+
+  if (input.episode && hasPlanningRegisterLeak(input.episode)) {
+    reasons.push('planning_register_prose');
+  }
+
+  return Array.from(new Set(reasons));
 }

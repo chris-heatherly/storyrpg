@@ -6,6 +6,8 @@ import {
   writeEpisodeCompletion,
   loadCompletedEpisode,
   detectCompletedEpisodes,
+  findResumedEpisodeInvalidationReasons,
+  loadResumedEpisodeDiagnostics,
   partitionResumableEpisodes,
   type ArtifactLoader,
 } from './episodeCheckpoints';
@@ -98,6 +100,72 @@ describe('episodeCheckpoints', () => {
     expect(resumed[0].spec.episodeNumber).toBe(2);
     expect(resumed[0].episode.number).toBe(2);
     expect(resumed[0].watermark.title).toBe('Two');
+  });
+
+  it('loads saved QA and validation diagnostics for resumed episodes', async () => {
+    const store = makeStore();
+    await store.save('episode-2-qa-report.json', { overallScore: 70, stale: true });
+    await store.save('episode-2-qa-report.post-repair.json', { overallScore: 91, stale: false });
+    await store.save('episode-2-best-practices-report.json', { overallScore: 94, overallPassed: true });
+    await store.save('episode-2-incremental-contract.json', { passed: true, warnings: [{ validator: 'RequiredBeatRealizationValidator' }] });
+
+    const diagnostics = loadResumedEpisodeDiagnostics<any, any>(2, store.load);
+
+    expect(diagnostics.qaReport).toEqual({ overallScore: 91, stale: false });
+    expect(diagnostics.bestPracticesReport).toEqual({ overallScore: 94, overallPassed: true });
+    expect(diagnostics.incrementalContract).toEqual({ passed: true, warnings: [{ validator: 'RequiredBeatRealizationValidator' }] });
+  });
+
+  it('invalidates resumed episodes with failed quality evidence or planning-register prose', () => {
+    const episode = makeEpisode(3);
+    episode.scenes[0].beats = [{
+      id: 'b1',
+      text: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+    }] as any;
+
+    const reasons = findResumedEpisodeInvalidationReasons({
+      episode,
+      requireQaReport: true,
+      requireBestPracticesReport: true,
+      qaReport: {
+        overallScore: 64,
+        passesQA: false,
+        criticalIssues: [],
+        voice: {
+          overallScore: 0,
+          recommendations: ['Voice check failed - manual review required'],
+        },
+      },
+      bestPracticesReport: {
+        overallPassed: false,
+        blockingIssues: [{ category: 'npc_depth' }],
+      },
+      incrementalContract: {
+        passed: true,
+        warnings: [{
+          type: 'treatment_fidelity_violation',
+          validator: 'RequiredBeatRealizationValidator',
+          message: 'Authored required beat is missing from the final prose of episode 3 scene "s3-3": "...".',
+        }],
+      },
+    });
+
+    expect(reasons).toEqual(expect.arrayContaining([
+      'qa_failed',
+      'voice_validation_failed_closed',
+      'best_practices_failed',
+      'best_practices_blocking_issues',
+      'treatment_realization_warning',
+      'planning_register_prose',
+    ]));
+  });
+
+  it('invalidates resumed episodes when required quality sidecars are missing', () => {
+    expect(findResumedEpisodeInvalidationReasons({
+      episode: makeEpisode(1),
+      requireQaReport: true,
+      requireBestPracticesReport: true,
+    })).toEqual(['missing_qa_report', 'missing_best_practices_report']);
   });
 
   it('detectCompletedEpisodes reports only valid completions among requested numbers', async () => {

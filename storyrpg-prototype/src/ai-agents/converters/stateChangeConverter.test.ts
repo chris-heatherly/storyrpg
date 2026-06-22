@@ -73,4 +73,22 @@ describe('stateChangeConverter normalization', () => {
 
     warn.mockRestore();
   });
+
+  it('normalizes app-facing changeScore consequences emitted in StateChange slots', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const consequence = convertStateChangeToConsequence({
+      type: 'changeScore',
+      value: 'survival_instincts_increase_victory',
+    } as never);
+
+    expect(consequence).toEqual({
+      type: 'changeScore',
+      score: 'survival_instincts_increase_victory',
+      change: 1,
+    });
+    expect(warn).not.toHaveBeenCalledWith('[Converter] Invalid StateChange object:', expect.anything());
+
+    warn.mockRestore();
+  });
 });

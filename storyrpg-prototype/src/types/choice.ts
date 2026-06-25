@@ -6,6 +6,7 @@ import type { PlayerAttributes } from './player';
 import type { ConditionExpression } from './conditions';
 import type { Consequence } from './consequences';
 import type { MechanicPressureContract } from './scenePlan';
+import type { RelationshipValueEvidence } from './relationshipValue';
 
 // Choice types describe the PLAYER EXPERIENCE, not the structural effect.
 // Branching (routing to different scenes via nextSceneId) is a property of
@@ -192,6 +193,7 @@ export interface Choice {
   witnessReactions?: WitnessReaction[];
   failureResidue?: FailureResidue;
   visualResidueHint?: string;
+  relationshipValueEvidence?: RelationshipValueEvidence[];
   mechanicPressure?: MechanicPressureContract[];
   /** Planned season residue obligations this choice creates or pays. */
   residueObligationIds?: string[];

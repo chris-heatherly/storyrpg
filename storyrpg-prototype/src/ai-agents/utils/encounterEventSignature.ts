@@ -28,7 +28,7 @@ const STOPWORDS = new Set([
 const LOCATION_ALIASES: Array<[string, RegExp]> = [
   ['cismigiu', /\b(?:cismigiu|cișmigiu|cismigiu\s+gardens?|gardens?|park)\b/i],
   ['apartment', /\b(?:apartment|flat|walk-up|deadbolt|welcome\s+mat|lipscani\s+apartment)\b/i],
-  ['club', /\b(?:valcescu|vâlcescu|booth|(?<!girls' )(?<!girls )(?<!book )club)\b/i],
+  ['club', /\b(?:valcescu|vâlcescu|booth|velvet\s+rope|front\s+line|side\s+entrance|the\s+club)\b/i],
   ['rooftop', /\b(?:rooftop|roof|terrace)\b/i],
   ['bookshop', /\b(?:bookshop|bookstore|book\s+shop|lumina|books)\b/i],
   ['street', /\b(?:street|sidewalk|alley|courtyard|boulevard)\b/i],
@@ -46,10 +46,10 @@ const PARTICIPANT_ALIASES: Array<[string, RegExp]> = [
 ];
 
 const PRESSURE_ACTIONS: Array<[string, RegExp]> = [
-  ['attack', /\b(?:attack|attacks|attacked|attacker|attackers|ambush|assault|strike|strikes|struck|lunges?|grab|grabs|grabbed|hand\s+closes|(?:hand|hands|finger|fingers|grip)\s+(?:closes?|tightens?|clamps?|wraps?)\s+(?:around|on)\s+(?:your|her|his|their|the)?\s*throat)\b/i],
+  ['attack', /\b(?:attack|attacks|attacked|attacker|attackers|ambush|assault|strike|strikes|struck|lunges?|grab|grabs|grabbed|(?:hand|hands|finger|fingers|grip)\s+(?:closes?|tightens?|clamps?|wraps?)\s+(?:around|on)\s+(?:your|her|his|their|the)?\s*throat)\b/i],
   ['chase', /\b(?:chase|chases|chased|pursue|pursues|pursued|pursuit)\b/i],
   ['escape', /\b(?:escaped|get\s+away|breaks?\s+free|escapes?\s+(?:from|through|into|out|past|before|after|him|her|them|attacker|attackers|shadow|fog|park|maze|street|garden|club|room|night))\b/i],
-  ['pinned', /\b(?:pin|pins|pinned|trap|traps|trapped|cornered|corners?\s+(?!(?:of|booth|table|seat|room|bar|street|hall|corridor)\b)(?:you|her|him|them|[A-Z][a-z]+)|pressed\s+against)\b/i],
+  ['pinned', /\b(?:pin|pins|pinned|trap|traps|trapped|cornered|corners?\s+(?!(?:of|booth|table|seat|room|bar|street|hall|corridor|with|onto|into|near|beside|by|at|in|on|from|toward|towards)\b)(?:you|her|him|them|[A-Z][a-z]+|kylie|mika|stela|victor|radu|attacker|the\s+(?:protagonist|woman|man|figure|shadow))|pressed\s+against)\b/i],
   ['confront', /\b(?:confront|confronts|showdown|duel)\b/i],
 ];
 
@@ -74,7 +74,7 @@ const TEMPORAL_MARKERS: Array<[string, RegExp]> = [
 ];
 
 const SETUP_ONLY_PATTERN = /\b(?:foreshadow|warns?|warning|dream|nightmare|mentions?|remembers?|recalls?|blog|post|article|viral|retells?|reported|watches?|watching|prepares?|sets?\s+up)\b/i;
-const REFERENCE_ONLY_PATTERN = /\b(?:blog|post|article|viral|writes?|wrote|recap|recaps?|retell|retells?|memory|remembers?|recalls?|dream|nightmare|warns?|warning|mentions?|reported|tells?\s+(?:you|her|him|them)\s+about)\b/i;
+const REFERENCE_ONLY_PATTERN = /\b(?:blog|post|article|viral|writes?|wrote|recap|recaps?|retell|retells?|memory|remembers?|recalls?|dream|nightmare|warns?|warning|mentions?|reported|tells?\s+(?:you|her|him|them)\s+about|ghost\s+of|phantom\s+(?:cold|grip|touch|pain)|away\s+from\s+the\s+(?:park|fog|attack|shadow)|behind\s+you)\b/i;
 
 function normalize(value: string): string {
   return value

@@ -21,6 +21,7 @@
 import type { Story, PlayerState, VisitRecord, Consequence } from '../types';
 import { createInitialPlayerState } from '../stores/playerStatePersistence';
 import { executeChoice } from './storyEngine';
+import { applyRelationshipEvidence } from './relationshipValueLadder';
 
 export interface RewindOptions {
   /** Character name to preserve across rewind (default: from original state). */
@@ -42,6 +43,7 @@ function applyConsequencesToState(state: PlayerState, consequences: Consequence[
     scores: { ...state.scores },
     tags: new Set(state.tags),
     relationships: { ...state.relationships },
+    relationshipValueStates: { ...(state.relationshipValueStates ?? {}) },
   };
 
   for (const c of consequences) {
@@ -77,6 +79,9 @@ function applyConsequencesToState(state: PlayerState, consequences: Consequence[
         next.relationships[npcId] = { ...existing, [dim]: (existing[dim] ?? 0) + change };
         break;
       }
+      case 'relationshipEvidence':
+        next.relationshipValueStates = applyRelationshipEvidence(next, c).relationshipValueStates ?? {};
+        break;
       default:
         break;
     }
@@ -169,4 +174,3 @@ export function rewindToBeat(
   if (index < 0) return null;
   return replayToBeat(story, visitLog, index, options);
 }
-

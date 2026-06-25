@@ -3,6 +3,7 @@
 // ========================================
 
 import type { PlayerAttributes, IdentityProfile } from './player';
+import type { RelationshipRungCondition } from './relationshipValue';
 
 export type ComparisonOperator = '==' | '!=' | '>' | '<' | '>=' | '<=';
 
@@ -67,6 +68,7 @@ export type Condition =
   | AttributeCondition
   | SkillCondition
   | RelationshipCondition
+  | RelationshipRungCondition
   | FlagCondition
   | ScoreCondition
   | TagCondition

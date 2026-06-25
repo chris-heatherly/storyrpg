@@ -50,6 +50,42 @@ describe('encounterEventSignature', () => {
     expect(signature.locations.has('club')).toBe(false);
   });
 
+  it('does not treat a friend-group Dusk Club toast as the club location', () => {
+    const signature = buildEncounterEventSignature([
+      'Mika drapes an arm over your shoulders. "We are christening our club. The Dusk Club. Very exclusive."',
+    ]);
+
+    expect(signature.locations.has('club')).toBe(false);
+  });
+
+  it('does not treat ordinary corners as pinning pressure', () => {
+    const bookshop = buildEncounterEventSignature([
+      'Stela sits tucked into a corner with a cup of tea and smiles.',
+    ]);
+    const street = buildEncounterEventSignature([
+      'As you round the corner onto your street, the courtyard doors come into view.',
+    ]);
+
+    expect(bookshop.pressureActions.has('pinned')).toBe(false);
+    expect(street.pressureActions.has('pinned')).toBe(false);
+  });
+
+  it('does not treat hand-holding as an attack', () => {
+    const signature = buildEncounterEventSignature([
+      "Stela's hand closes over yours, her thumb pressing the smooth stone into your palm.",
+    ]);
+
+    expect(signature.pressureActions.has('attack')).toBe(false);
+  });
+
+  it('treats ghosted assault language as aftermath rather than a new staged attack', () => {
+    const signature = buildEncounterEventSignature([
+      'You can still feel the ghost of a freezing grip around your throat as Victor guides you away from the park.',
+    ]);
+
+    expect(signature.isReferenceOnly).toBe(true);
+  });
+
   it('does not treat ordinary doors as apartment locations for event matching', () => {
     const signature = buildEncounterEventSignature([
       'The bell over the door of Lumina Books chimes as Stela presses rose quartz into your hand.',

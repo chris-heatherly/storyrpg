@@ -15,6 +15,7 @@ import {
   StructuralRole,
   SEVEN_POINT_BEATS,
   TreatmentEpisodeGuidance,
+  ThemeArgumentContract,
 } from '../../types/sourceAnalysis';
 import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
 import {
@@ -246,6 +247,7 @@ export interface StoryArchitectInput {
     incomingResidue?: SeasonResidueObligation[];
     outgoingResidue?: SeasonResidueObligation[];
     dueResidue?: SeasonResidueObligation[];
+    themeArgument?: ThemeArgumentContract;
     seasonPromiseArchitecture?: SeasonPromiseArchitecture;
     seasonPromiseContracts?: SeasonPromiseRealizationContract[];
     informationLedgerEntries?: InformationLedgerEntry[];
@@ -3886,6 +3888,10 @@ Populate \`dramaticAudit\` at the episode level and \`dramaticStructure\`,
 - \`dramaticAudit.themePressure\`: how this episode tests the season theme as plot pressure.
 - \`dramaticAudit.themeAngle\`: the specific angle this episode takes on the theme question. Avoid repeating the same angle as nearby episodes unless it escalates or reverses it.
 - \`dramaticAudit.themeChoicePressure\`: how protagonist/player choices can answer, complicate, refuse, or distort the theme question.
+- \`dramaticAudit.themeArgumentRole\`: one of establish, counter, complicate, invert, crisis, answer, aftermath.
+- \`dramaticAudit.controllingIdeaPressure\`: what in this episode makes the controlling idea more plausible or costly.
+- \`dramaticAudit.counterIdeaPressure\`: what in this episode makes the counter-idea persuasive.
+- \`dramaticAudit.valueLadderPressure\`: which value rung is tested and how it appears through action, relationship behavior, visual motif, or consequence.
 - \`dramaticAudit.openingPromise\`: hook, episodePromise, activePressure, and optionalStakes. In \`sceneEpisodes\`, this is carried by the first beat or first 1-2 beats, not a separate cold-open scene.
 - \`dramaticAudit.episodePressureLanes\`: A/B/C pressure architecture. A-plot is required external pressure; B-plot is protagonist-facing relationship/identity pressure; C-plot is a future seed.
 - \`dramaticAudit.episodeEndStateDelta\`: what is different by episode end: identity, relationship, leverage, knowledge, danger, reputation, access, resource, future option, or emotional footing.
@@ -3967,6 +3973,10 @@ ${this.buildCliffhangerPlanSection(input)}
     "themePressure": "How the episode tests the season theme through conflict, cost, choice, information, relationship, or identity",
     "themeAngle": "The distinct angle this episode takes on the theme question",
     "themeChoicePressure": "How protagonist/player choices answer, complicate, refuse, or distort the theme question",
+    "themeArgumentRole": "establish|counter|complicate|invert|crisis|answer|aftermath",
+    "controllingIdeaPressure": "What makes the controlling idea more plausible or costly here",
+    "counterIdeaPressure": "What makes the counter-idea genuinely persuasive here",
+    "valueLadderPressure": "Which value rung is tested and how it becomes visible",
     "openingPromise": {
       "hook": "Immediate hook for the first scene or first sceneEpisode beat",
       "episodePromise": "The kind of pressure/play this episode promises",
@@ -4405,6 +4415,25 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         }
       }
       section += 'Episode scenes should pressure one clean slice of the Lie/Truth gap. In sceneEpisodes mode, the single sceneEpisode should expose, reward, punish, tempt, reframe, or force a choice around one aspect of this gap.\n\n';
+    }
+
+    if (directives.themeArgument) {
+      const argument = directives.themeArgument;
+      section += '### Theme Argument / Resonance Pressure\n';
+      section += 'Use this as generator-only story logic. Do not write labels such as controlling idea, counter-idea, value ladder, or negation-of-negation in player-facing prose.\n\n';
+      section += `- Theme question: ${argument.themeQuestion}\n`;
+      section += `- Controlling idea: ${argument.controllingIdea.sentence}\n`;
+      section += `- Counter-idea: ${argument.counterIdea.sentence}\n`;
+      section += `- Value ladder: positive=${argument.valueLadder.positive}; contrary=${argument.valueLadder.contrary}; contradiction=${argument.valueLadder.contradiction}; negation=${argument.valueLadder.negationOfNegation}\n`;
+      section += `- Climax resonant event: ${argument.climaxResonantEvent}\n`;
+      section += `- Retroactive reframe: ${argument.retroactiveReframe}\n`;
+      if (argument.imageSystem?.length) {
+        section += 'Image-system motifs to plant/pay off through existing visual fields:\n';
+        for (const motif of argument.imageSystem.slice(0, 4)) {
+          section += `- ${motif.motifId}: ${motif.motif} => ${motif.thematicMeaning}; climax treatment: ${motif.climaxTreatment}\n`;
+        }
+      }
+      section += 'This episode should explicitly test the theme question through conflict, cost, choice, relationship pressure, information movement, or identity movement. Major choices should either support, challenge, corrupt, or repair the central value.\n\n';
     }
 
     if (directives.characterTreatmentContracts?.length) {

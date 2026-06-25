@@ -24,6 +24,7 @@ import { applyIdentityShifts } from '../engine/identityEngine';
 import { evaluateCondition } from '../engine/conditionEvaluator';
 import { getRelationshipDescription } from '../engine/storyEngine';
 import { normalizeConsequenceShape } from '../engine/consequenceNormalize';
+import { applyRelationshipEvidence } from '../engine/relationshipValueLadder';
 import {
   createInitialPlayerState,
   DEFAULT_ATTRIBUTES,
@@ -601,6 +602,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 };
               }
               break;
+            case 'relationshipEvidence':
+              updatedPlayer.relationshipValueStates =
+                applyRelationshipEvidence(updatedPlayer, consequence).relationshipValueStates;
+              break;
             // Other types applied as-is
             default:
               console.log(`[GameStore] Delayed consequence of type "${consequence.type}" fired (generic apply)`);
@@ -760,6 +765,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 },
               };
             }
+            break;
+          }
+
+          case 'relationshipEvidence': {
+            const stateBefore = newPlayer;
+            const stateAfter = applyRelationshipEvidence(stateBefore, consequence);
+            newPlayer.relationshipValueStates = stateAfter.relationshipValueStates;
             break;
           }
 

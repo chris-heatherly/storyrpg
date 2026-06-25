@@ -15,6 +15,8 @@
  */
 
 import { Episode, Scene, Beat, Choice, Consequence } from '../../types';
+import type { RelationshipValueState } from '../../types/relationshipValue';
+import { classifyRelationshipValueState, relationshipValueKey } from '../../engine/relationshipValueLadder';
 
 export interface TerminalState {
   /** Canonical fingerprint of the terminal state (used for divergence checks). */
@@ -54,6 +56,7 @@ interface SimState {
   flags: Record<string, boolean>;
   scores: Record<string, number>;
   relationships: Record<string, { trust?: number; affection?: number; respect?: number; fear?: number }>;
+  relationshipValueStates: Record<string, RelationshipValueState>;
   tags: Set<string>;
   path: string[];
   visited: Set<string>;
@@ -92,6 +95,19 @@ function simConditionMatches(cond: unknown, state: SimState): boolean {
     }
     case 'tag':
       return state.tags.has(String(c.tag ?? '')) === (c.hasTag === undefined ? true : Boolean(c.hasTag));
+    case 'relationshipRung': {
+      const npcId = String(c.npcId ?? '');
+      const axis = String(c.axis ?? 'love') as RelationshipValueState['axis'];
+      const rung = String(c.rung ?? '');
+      const key = relationshipValueKey(npcId, axis);
+      const derived = classifyRelationshipValueState({
+        npcId,
+        axis,
+        relationship: state.relationships[npcId],
+        previousState: state.relationshipValueStates[key],
+      });
+      return derived.rung === rung;
+    }
     case 'and':
       return Array.isArray(c.conditions) && c.conditions.every((x) => simConditionMatches(x, state));
     case 'or':
@@ -149,6 +165,7 @@ export function simulateEpisodePaths(
     flags: {},
     scores: {},
     relationships: {},
+    relationshipValueStates: {},
     tags: new Set(),
     path: [],
     visited: new Set(),
@@ -182,6 +199,7 @@ export function simulateEpisodePaths(
     const localState = {
       ...state,
       tags: new Set(state.tags),
+      relationshipValueStates: { ...state.relationshipValueStates },
       visited: new Set(state.visited),
     };
     localState.visited.add(scene.id);
@@ -224,6 +242,7 @@ export function simulateEpisodePaths(
         flags: { ...localState.flags },
         scores: { ...localState.scores },
         relationships: cloneRels(localState.relationships),
+        relationshipValueStates: { ...localState.relationshipValueStates },
         tags: new Set(localState.tags),
         path: [...localState.path, choice.id],
         visited: new Set(localState.visited),
@@ -266,6 +285,16 @@ export function simulateEpisodePaths(
 
 function applyChoice(state: SimState, choice: Choice): void {
   if (choice.consequences) applyConsequences(state, choice.consequences);
+  if (choice.relationshipValueEvidence?.length) {
+    applyConsequences(state, choice.relationshipValueEvidence.map(evidence => ({
+      type: 'relationshipEvidence',
+      npcId: evidence.npcId,
+      axis: evidence.axis,
+      evidenceTags: evidence.evidenceTags,
+      reason: evidence.reason,
+      intendedSurface: evidence.intendedSurface,
+    })));
+  }
   const statCheck = (choice as unknown as { statCheck?: { outcomes?: { success?: { consequences?: Consequence[] } } } }).statCheck;
   if (statCheck?.outcomes?.success?.consequences) {
     applyConsequences(state, statCheck.outcomes.success.consequences);
@@ -288,6 +317,17 @@ function applyConsequences(state: SimState, consequences: Consequence[]): void {
         const rel = state.relationships[c.npcId] || {};
         rel[c.dimension] = (rel[c.dimension] || 0) + c.change;
         state.relationships[c.npcId] = rel;
+        break;
+      }
+      case 'relationshipEvidence': {
+        const key = relationshipValueKey(c.npcId, c.axis);
+        state.relationshipValueStates[key] = classifyRelationshipValueState({
+          npcId: c.npcId,
+          axis: c.axis,
+          relationship: state.relationships[c.npcId],
+          previousState: state.relationshipValueStates[key],
+          evidenceTags: c.evidenceTags,
+        });
         break;
       }
       case 'addTag':

@@ -4,6 +4,7 @@
 
 import type { PlayerAttributes, InventoryItem } from './player';
 import type { ConditionExpression } from './conditions';
+import type { RelationshipEvidenceConsequence } from './relationshipValue';
 
 export interface AttributeChange {
   type: 'attribute';
@@ -73,6 +74,7 @@ export type Consequence =
   | AttributeChange
   | SkillChange
   | RelationshipChange
+  | RelationshipEvidenceConsequence
   | SetFlag
   | ChangeScore
   | SetScore

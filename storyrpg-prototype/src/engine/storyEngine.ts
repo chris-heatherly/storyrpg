@@ -405,6 +405,16 @@ export function executeChoice(
 
   let resolution: ResolutionResult | undefined;
   const consequences = [...(choice.consequences ?? [])];
+  for (const evidence of choice.relationshipValueEvidence ?? []) {
+    consequences.push({
+      type: 'relationshipEvidence',
+      npcId: evidence.npcId,
+      axis: evidence.axis,
+      evidenceTags: evidence.evidenceTags,
+      reason: evidence.reason,
+      intendedSurface: evidence.intendedSurface,
+    });
+  }
 
   // Perform stat check if required
   if (choice.statCheck) {

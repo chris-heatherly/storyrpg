@@ -22,6 +22,7 @@ import {
   StoryAnchors,
   SevenPointStructure,
   StorySchemaAbstraction,
+  ThemeArgumentContract,
   WritingStyleGuide,
   DirectLanguageFragmentGroups,
   CharacterFashionStyle,
@@ -220,6 +221,7 @@ interface StoryStructureAnalysis {
    */
   sevenPoint?: SevenPointStructure;
   schemaAbstraction?: StorySchemaAbstraction;
+  themeArgument?: Partial<ThemeArgumentContract>;
   endingAnalysis?: {
     detectedMode: EndingMode;
     reasoning: string;
@@ -374,6 +376,16 @@ Encounter contracts.
   Cost, Climax, and Legacy when they apply.
 - Generalize time/place/IP-specific elements into flexible roles.
 - Never let {Variable} placeholders appear in final player-facing prose.
+
+## Theme Argument / Resonance Contract
+
+Infer one consolidated theme argument, not separate competing concepts:
+- themeQuestion asks what the story tests through pressure and choice.
+- controllingIdea is the value + cause answer earned at the climax.
+- counterIdea is the strongest opposing answer and must be genuinely persuasive.
+- valueLadder names positive, contrary, contradiction, and negation-of-negation.
+- resonance is the climax/payoff/image-system result, not a standalone plot lane.
+- Do not put these labels in player-facing prose; they guide downstream agents.
 
 ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
 `;
@@ -757,6 +769,42 @@ Keep any additional supporting themes concise.
       "<how to preserve the story pattern without copying time/place/IP-specific details>"
     ],
     "reusablePatternSummary": "<1-2 sentence summary of the transferable story engine>"
+  },
+  "themeArgument": {
+    "themeQuestion": "<playable theme question, not a noun; answerable by protagonist/player action>",
+    "controllingIdea": {
+      "value": "<positive value the story ultimately argues for>",
+      "cause": "<why/how that value prevails by the climax>",
+      "sentence": "<value + cause sentence that the climax earns>"
+    },
+    "counterIdea": {
+      "value": "<opposing or tempting value argument>",
+      "cause": "<why/how the counter-idea appears persuasive>",
+      "sentence": "<counter-argument sentence the story genuinely tests>"
+    },
+    "valueLadder": {
+      "positive": "<healthy expression of the central value>",
+      "contrary": "<milder negative / absence of the value>",
+      "contradiction": "<direct opposite of the value>",
+      "negationOfNegation": "<the value corrupted into its own poisonous mask>"
+    },
+    "archetypalCore": "<universal human pressure underneath the story>",
+    "uniqueSurface": "<fresh specific surface that prevents stereotype>",
+    "climaxResonantEvent": "<specific climactic action/choice where meaning and emotion fuse>",
+    "retroactiveReframe": "<what earlier scenes mean differently after the climax>",
+    "aestheticEmotionTarget": "<what the reader should understand and feel at once>",
+    "imageSystem": [
+      {
+        "motifId": "<slug>",
+        "motif": "<recurring image, object, color, blocking, wound, gesture, or place>",
+        "thematicMeaning": "<meaning the story trains into the motif>",
+        "positiveTreatment": "<how it appears when the value is healthy>",
+        "contraryTreatment": "<how it appears when the value is absent>",
+        "contradictionTreatment": "<how it appears when the value is opposed>",
+        "negationTreatment": "<how it appears when the value is corrupted>",
+        "climaxTreatment": "<how the climax transforms or pays off the motif>"
+      }
+    ]
   },
   "endingAnalysis": {
     "detectedMode": "<single/multiple based on the source material itself>",
@@ -1486,6 +1534,12 @@ Return ONLY valid JSON.
       anchors,
       sevenPoint,
       schemaAbstraction: normalizeSchemaAbstraction(structure.schemaAbstraction, anchors),
+      themeArgument: normalizeThemeArgument(structure.themeArgument, {
+        themes: structure.themes,
+        anchors,
+        sevenPoint,
+        schemaAbstraction: structure.schemaAbstraction,
+      }),
       writingStyleGuide: normalizeWritingStyleGuide(
         structure.writingStyleGuide,
         detectExplicitWritingStyleInstruction(input.userPrompt),
@@ -2278,4 +2332,91 @@ export function normalizeSchemaAbstraction(
       : [],
     reusablePatternSummary: String(abstraction.reusablePatternSummary || ''),
   };
+}
+
+export function normalizeThemeArgument(
+  raw: Partial<ThemeArgumentContract> | undefined,
+  context: {
+    themes: string[];
+    anchors: StoryAnchors;
+    sevenPoint: SevenPointStructure;
+    schemaAbstraction?: StorySchemaAbstraction;
+  },
+): ThemeArgumentContract {
+  const themeQuestion = cleanText(
+    raw?.themeQuestion
+      || context.themes.find(theme => theme.includes('?'))
+      || `What must the protagonist become to protect ${context.anchors.stakes}?`,
+  );
+  const controllingSentence = cleanText(
+    raw?.controllingIdea?.sentence
+      || `${context.anchors.stakes} can be preserved because the protagonist changes under pressure.`,
+  );
+  const counterSentence = cleanText(
+    raw?.counterIdea?.sentence
+      || `${context.anchors.stakes} can only be preserved by refusing that change.`,
+  );
+  const centralValue = cleanText(raw?.controllingIdea?.value || context.themes[0] || 'change');
+  const counterValue = cleanText(raw?.counterIdea?.value || `fear of ${centralValue}`);
+
+  return {
+    themeQuestion,
+    controllingIdea: {
+      value: centralValue,
+      cause: cleanText(raw?.controllingIdea?.cause || context.anchors.climax),
+      sentence: controllingSentence,
+    },
+    counterIdea: {
+      value: counterValue,
+      cause: cleanText(raw?.counterIdea?.cause || 'the old pattern appears safer than transformation'),
+      sentence: counterSentence,
+    },
+    valueLadder: {
+      positive: cleanText(raw?.valueLadder?.positive || centralValue),
+      contrary: cleanText(raw?.valueLadder?.contrary || `absence of ${centralValue}`),
+      contradiction: cleanText(raw?.valueLadder?.contradiction || `opposition to ${centralValue}`),
+      negationOfNegation: cleanText(raw?.valueLadder?.negationOfNegation || `${centralValue} used as its own mask`),
+    },
+    archetypalCore: cleanText(
+      raw?.archetypalCore
+        || context.schemaAbstraction?.archetype
+        || `A person is forced to choose what ${context.anchors.stakes} is worth.`,
+    ),
+    uniqueSurface: cleanText(
+      raw?.uniqueSurface
+        || context.schemaAbstraction?.reusablePatternSummary
+        || context.anchors.incitingIncident,
+    ),
+    climaxResonantEvent: cleanText(raw?.climaxResonantEvent || context.anchors.climax),
+    retroactiveReframe: cleanText(
+      raw?.retroactiveReframe
+        || `Earlier choices are re-read as preparation for ${context.sevenPoint.climax}.`,
+    ),
+    aestheticEmotionTarget: cleanText(
+      raw?.aestheticEmotionTarget
+        || `The reader understands and feels why ${controllingSentence}`,
+    ),
+    imageSystem: Array.isArray(raw?.imageSystem)
+      ? raw.imageSystem
+          .filter(motif => motif?.motifId && motif?.motif)
+          .map(motif => ({
+            motifId: cleanSlug(motif.motifId),
+            motif: cleanText(motif.motif),
+            thematicMeaning: cleanText(motif.thematicMeaning),
+            positiveTreatment: cleanText(motif.positiveTreatment),
+            contraryTreatment: cleanText(motif.contraryTreatment),
+            contradictionTreatment: cleanText(motif.contradictionTreatment),
+            negationTreatment: cleanText(motif.negationTreatment),
+            climaxTreatment: cleanText(motif.climaxTreatment),
+          }))
+      : undefined,
+  };
+}
+
+function cleanText(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function cleanSlug(value: unknown): string {
+  return slugify(cleanText(value) || 'motif');
 }

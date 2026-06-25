@@ -19,6 +19,7 @@ import {
   SevenPointStructure,
   StructuralRole,
   CharacterArchitecture,
+  ThemeArgumentContract,
 } from './sourceAnalysis';
 import type { CliffhangerType } from './story';
 import type { EpisodeRouteMeta, EpisodeStructureMode } from './story';
@@ -417,6 +418,14 @@ export interface SeasonPlan {
    * textual description of a beat carried by a given episode.
    */
   sevenPoint: SevenPointStructure;
+
+  /**
+   * Generator-only theme argument contract copied from source analysis. This is
+   * the single home for McKee-style resonance pressure: theme question,
+   * controlling/counter idea, value ladder, climax reframe, and optional image
+   * system motifs. Playback ignores it.
+   */
+  themeArgument?: ThemeArgumentContract;
 
   /**
    * Season promise / completeness contract. This captures the useful part of

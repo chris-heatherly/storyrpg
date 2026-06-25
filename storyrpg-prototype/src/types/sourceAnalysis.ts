@@ -17,6 +17,7 @@ import type {
   WorldTreatmentRealizationContract,
 } from './scenePlan';
 import type { CliffhangerType } from './story';
+import type { ThemeImageSystemMotif } from './relationshipValue';
 
 // ========================================
 // 7-POINT STORY STRUCTURE
@@ -86,6 +87,32 @@ export interface StorySchemaAbstraction {
   schemaVariables: StorySchemaVariable[];
   generalizationGuidance: string[];
   reusablePatternSummary: string;
+}
+
+export interface ThemeArgumentContract {
+  themeQuestion: string;
+  controllingIdea: {
+    value: string;
+    cause: string;
+    sentence: string;
+  };
+  counterIdea: {
+    value: string;
+    cause: string;
+    sentence: string;
+  };
+  valueLadder: {
+    positive: string;
+    contrary: string;
+    contradiction: string;
+    negationOfNegation: string;
+  };
+  archetypalCore: string;
+  uniqueSurface: string;
+  climaxResonantEvent: string;
+  retroactiveReframe: string;
+  aestheticEmotionTarget: string;
+  imageSystem?: ThemeImageSystemMotif[];
 }
 
 export interface WritingStyleGuide {
@@ -750,6 +777,14 @@ export interface SourceMaterialAnalysis {
    * StoryRPG Story/Episode/Scene/Beat/Choice schema.
    */
   schemaAbstraction?: StorySchemaAbstraction;
+
+  /**
+   * Generator-only theme argument contract. Consolidates McKee-style resonance
+   * under StoryRPG's existing theme/pressure/climax architecture. Runtime output
+   * still flows through Story/Episode/Scene/Beat/Choice; these labels must never
+   * be rendered to the player.
+   */
+  themeArgument?: ThemeArgumentContract;
 
   /**
    * Prose contract for generated beats. If the user explicitly requested a

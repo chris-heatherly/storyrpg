@@ -673,6 +673,13 @@ ${analysis.schemaAbstraction ? `## Reusable Pattern Abstraction
 - Mode: ${analysis.schemaAbstraction.adaptationMode}
 - Pattern: ${analysis.schemaAbstraction.reusablePatternSummary}
 - Guidance: ${analysis.schemaAbstraction.generalizationGuidance.join('; ')}
+` : ''}${analysis.themeArgument ? `## Theme Argument / Resonance Contract
+- Theme question: ${analysis.themeArgument.themeQuestion}
+- Controlling idea: ${analysis.themeArgument.controllingIdea.sentence}
+- Counter-idea: ${analysis.themeArgument.counterIdea.sentence}
+- Value ladder: positive=${analysis.themeArgument.valueLadder.positive}; contrary=${analysis.themeArgument.valueLadder.contrary}; contradiction=${analysis.themeArgument.valueLadder.contradiction}; negation=${analysis.themeArgument.valueLadder.negationOfNegation}
+- Climax resonant event: ${analysis.themeArgument.climaxResonantEvent}
+Use this as planning metadata only. Do not copy labels like controlling idea, counter-idea, or negation-of-negation into player-facing prose.
 ` : ''}${treatmentSeasonBlock}${SEASON_PLANNER_CRAFT_EXAMPLE}
 
 ## Episode Breakdown
@@ -1909,6 +1916,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       arcs,
       anchors: analysis.anchors,
       sevenPoint: analysis.sevenPoint,
+      themeArgument: analysis.themeArgument,
       seasonPromiseArchitecture,
       seasonPromiseContracts,
       stakesArchitectureContracts,

@@ -4,6 +4,7 @@
 
 import type { ConditionExpression } from './conditions';
 import type { DelayedConsequence } from './consequences';
+import type { RelationshipValueState } from './relationshipValue';
 
 // Core attributes (hidden from player)
 export interface PlayerAttributes {
@@ -123,6 +124,7 @@ export interface PlayerState {
 
   // Relationships
   relationships: Record<string, Relationship>;
+  relationshipValueStates?: Record<string, RelationshipValueState>;
 
   // Three-layer state architecture
   flags: PlayerFlags;   // Boolean flags

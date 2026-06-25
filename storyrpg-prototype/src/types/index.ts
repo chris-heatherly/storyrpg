@@ -24,3 +24,4 @@ export * from './encounter';
 export * from './story';
 export * from './scenePlan';
 export * from './narrativeThread';
+export * from './relationshipValue';

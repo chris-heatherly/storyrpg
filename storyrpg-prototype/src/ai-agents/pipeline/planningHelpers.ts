@@ -173,6 +173,7 @@ export function buildSeasonPlanDirectives(
     incomingResidue: residueDirectives.incomingResidue.length > 0 ? residueDirectives.incomingResidue : undefined,
     outgoingResidue: residueDirectives.outgoingResidue.length > 0 ? residueDirectives.outgoingResidue : undefined,
     dueResidue: residueDirectives.dueResidue.length > 0 ? residueDirectives.dueResidue : undefined,
+    themeArgument: plan.themeArgument,
     seasonPromiseArchitecture: plan.seasonPromiseArchitecture,
     seasonPromiseContracts: seasonPromiseContracts.length > 0 ? seasonPromiseContracts : undefined,
     informationLedgerEntries: informationLedgerEntries.length > 0 ? informationLedgerEntries : undefined,

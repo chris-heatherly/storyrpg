@@ -101,6 +101,19 @@ export type {
   ThemePressureMetrics,
   ThemePressureValidationResult,
 } from './ThemePressureValidator';
+export { ThemeArgumentContractValidator } from './ThemeArgumentContractValidator';
+export type {
+  ThemeArgumentContractInput,
+  ThemeArgumentContractMetrics,
+  ThemeArgumentContractResult,
+} from './ThemeArgumentContractValidator';
+export { RelationshipValueLadderValidator } from './RelationshipValueLadderValidator';
+export type {
+  RelationshipValueLadderInput,
+  RelationshipValueLadderMetrics,
+  RelationshipValueLadderResult,
+  RelationshipValueTransitionCheck,
+} from './RelationshipValueLadderValidator';
 export { SceneTurnContractValidator } from './SceneTurnContractValidator';
 export type {
   SceneTurnContractMetrics,

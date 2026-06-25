@@ -1547,6 +1547,117 @@ describe('StoryArchitect planned encounter repair', () => {
       'flag:noticed_andrei — Andrei reacts if Lena clocks him before the attack',
     ]));
   });
+
+  it('does not promote an incompatible authored-turn scene over the real planned encounter', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Dating After Dusk',
+      synopsis: 'Kylie arrives in Bucharest and is attacked in the park.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      scenes: [
+        {
+          id: 's1-1',
+          name: 'Lipscani Arrival',
+          description: 'Kylie unpacks in her Lipscani sublet.',
+          location: 'Lipscani',
+          mood: 'charged',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['mika', 'stela'],
+          narrativeFunction: 'Introduces the new life.',
+          keyBeats: ['Kylie meets Mika and Stela.'],
+          requiredBeats: [{ id: 's1-1-rb1', tier: 'authored', mustDepict: 'Kylie unpacks in her Lipscani sublet and meets Mika and Stela.' }],
+          leadsTo: ['s1-2'],
+        },
+        {
+          id: 's1-2',
+          name: 'Dusk Club Rooftop',
+          description: 'The Dusk Club is christened at a rooftop bar where Kylie catches the eyes of two very different men.',
+          location: 'Cișmigiu Gardens',
+          mood: 'charged',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['mika', 'stela'],
+          narrativeFunction: 'The social spark before the danger.',
+          keyBeats: ['The rooftop gets named the Dusk Club.'],
+          requiredBeats: [{
+            id: 's1-2-rb1',
+            tier: 'authored',
+            mustDepict: 'The Dusk Club is christened at a rooftop bar where Kylie catches the eyes of two very different men.',
+          }],
+          turnContract: {
+            turnId: 's1-2-turn',
+            source: 'treatment',
+            centralTurn: 'The Dusk Club is christened at a rooftop bar where Kylie catches the eyes of two very different men.',
+            beforeState: '',
+            turnEvent: 'The Dusk Club is christened at a rooftop bar where Kylie catches the eyes of two very different men.',
+            afterState: '',
+            handoff: '',
+          },
+          leadsTo: ['s1-3'],
+        },
+        {
+          id: 's1-3',
+          name: 'Cișmigiu Park Attack',
+          description: 'A mysterious attacker corners Kylie in Cismigiu Park while Andrei watches from shadows.',
+          location: 'Cișmigiu Gardens',
+          mood: 'terrifying',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['mysterious_attacker'],
+          narrativeFunction: 'The supernatural predator tests Kylie.',
+          keyBeats: ['Kylie must decide whether to fight, flee, or freeze.'],
+          leadsTo: ['s1-4'],
+          isEncounter: true,
+          encounterType: 'exploration',
+          encounterDescription: 'A park confrontation with the mysterious attacker.',
+          encounterDifficulty: 'hard',
+        },
+        {
+          id: 's1-4',
+          name: 'Blog Post',
+          description: 'Kylie writes her first Mr. Midnight post.',
+          location: 'Lipscani',
+          mood: 'electric',
+          purpose: 'transition',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['mika'],
+          narrativeFunction: 'The aftermath becomes public.',
+          keyBeats: ['The post goes viral.'],
+          leadsTo: [],
+        },
+      ],
+      startingSceneId: 's1-1',
+      bottleneckScenes: ['s1-1', 's1-2', 's1-3'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairPlannedEncounterCoverage(blueprint, makePlannedEncounterInput());
+
+    const rooftop = blueprint.scenes.find((scene: any) => scene.id === 's1-2');
+    const encounter = blueprint.scenes.find((scene: any) => scene.id === 's1-3');
+    expect(rooftop.isEncounter).not.toBe(true);
+    expect(rooftop.requiredBeats[0].mustDepict).toContain('Dusk Club');
+    expect(encounter).toMatchObject({
+      isEncounter: true,
+      plannedEncounterId: 'enc-1-1',
+      encounterType: 'social',
+    });
+    expect(blueprint.scenes.map((scene: any) => scene.id)).toEqual(['s1-1', 's1-2', 's1-3', 's1-4']);
+  });
 });
 
 describe('StoryArchitect opening agency requirements', () => {
@@ -2111,5 +2222,266 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
     expect(blueprint.scenes[1].location).toBe('Lumina Books');
     expect(blueprint.scenes[2].location).toBe('Cișmigiu Gardens');
+  });
+
+  it('does not treat a character surname as the matching venue location', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      currentLocation: "Kylie's Lipscani Apartment",
+      seasonPlanDirectives: {
+        plannedScenes: [{
+          ...plannedStandard('s1-threshold', 0, 'release'),
+          locations: ["Kylie's Apartment Threshold"],
+          requiredBeats: [{
+            id: 'threshold-refusal',
+            tier: 'authored',
+            sourceTurn: "Victor Vâlcescu kisses Kylie's hand, declines to come in, and vanishes at the threshold.",
+            mustDepict: "Victor Vâlcescu kisses Kylie's hand, declines to come in, and vanishes at the threshold.",
+          }],
+        }],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes[0].location).toBe("Kylie's Apartment Threshold");
+  });
+
+  it('adds known NPC ids when planned scene required beats name a character', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      availableNPCs: [
+        { id: 'char-victor-vlcescu', name: 'Victor Vâlcescu', description: 'A courtly stranger.' },
+      ],
+      seasonPlanDirectives: {
+        plannedScenes: [{
+          ...plannedStandard('s1-threshold', 0, 'release'),
+          locations: ["Kylie's Apartment Threshold"],
+          npcsInvolved: ['Mika Drăgan'],
+          requiredBeats: [{
+            id: 'threshold-refusal',
+            tier: 'authored',
+            sourceTurn: "Victor kisses Kylie's hand at the threshold, declines to come in, and vanishes.",
+            mustDepict: "Victor kisses Kylie's hand at the threshold, declines to come in, and vanishes.",
+          }],
+        }],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes[0].npcsPresent).toContain('char-victor-vlcescu');
+    expect(blueprint.scenes[0].npcsPresent).toContain('Mika Drăgan');
+  });
+
+  it('does not add placeholder choicePoints to planned scenes that explicitly opt out', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          plannedStandard('s1-1', 0, 'setup'),
+          {
+            ...plannedStandard('s1-1-threshold', 1, 'release'),
+            hasChoice: false,
+            requiredBeats: [
+              {
+                id: 'threshold-kiss',
+                tier: 'authored',
+                sourceTurn: "Victor kisses Kylie's hand at the threshold.",
+                mustDepict: "Victor kisses Kylie's hand at the threshold.",
+              },
+            ],
+          },
+          plannedStandard('s1-2', 2, 'development'),
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes.find((scene: any) => scene.id === 's1-1')?.choicePoint).toBeDefined();
+    expect(blueprint.scenes.find((scene: any) => scene.id === 's1-1-threshold')?.choicePoint).toBeUndefined();
+  });
+
+  it('honors recommended beat budget for valid dense planned scenes', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({ episodeNumber: 2 });
+    const denseScene: any = {
+      id: 's2-4',
+      name: 'Road scene',
+      description: 'The road scene carries several concrete treatment obligations.',
+      location: 'Mountain road',
+      requiredBeats: [
+        { id: 'rb1', tier: 'authored', mustDepict: 'The cab breaks down on the road.' },
+        { id: 'rb2', tier: 'authored', mustDepict: 'The chef fixes the engine.' },
+        { id: 'rb3', tier: 'authored', mustDepict: 'The sweater becomes visible.' },
+      ],
+      authoredTreatmentFields: Array.from({ length: 9 }, (_, index) => ({
+        id: `field-${index + 1}`,
+        fieldName: 'pressure_lane',
+        sourceText: `Soft treatment detail ${index + 1} attached to the road scene.`,
+        contractKind: 'pressure_lane',
+        requiredRealization: ['final_prose'],
+      })),
+      choicePoint: {
+        type: 'strategic',
+        description: 'Choose how to handle the road pressure.',
+        stakes: {},
+        optionHints: [],
+      },
+      recommendedBeatCount: 10,
+    };
+    const blueprint: any = {
+      scenes: [
+        {
+          id: 's2-1',
+          name: 'Opening scene',
+          requiredBeats: [{ id: 'opening-rb', tier: 'authored', mustDepict: 'The episode opens with a local dashboard beat.' }],
+        },
+        denseScene,
+      ],
+    };
+
+    expect((architect as any).collectTreatmentDensityIssues(blueprint, input)).toEqual([]);
+
+    denseScene.recommendedBeatCount = undefined;
+    expect((architect as any).collectTreatmentDensityIssues(blueprint, input).join('\n')).toContain('Treatment density overload');
+  });
+
+  it('repairs stale planned encounter locations from encounter descriptions', () => {
+    const architect = new StoryArchitect(config);
+    const stale = "Kylie's Lipscani Apartment";
+    const input = makeInput({
+      episodeNumber: 1,
+      currentLocation: stale,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          {
+            ...plannedEncounter('enc-1-1', 0),
+            locations: [stale],
+            dramaticPurpose: 'The two-hour verbal sparring match and seduction with Victor at his VIP table.',
+            encounter: {
+              type: 'social',
+              difficulty: 'moderate',
+              relevantSkills: [],
+              isBranchPoint: false,
+              description: 'The two-hour verbal sparring match and seduction with Victor at his VIP table inside Vâlcescu Club.',
+            },
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
+  });
+
+  it('localizes broad treatment summaries before planned scenes reach SceneWriter', () => {
+    const architect = new StoryArchitect(config);
+    const broadEpisodeSummary = 'Kylie lands in Bucharest, forms the Dusk Club, is attacked in the park, rescued by Victor, and writes the viral Mr. Midnight post.';
+    const makeScene = (id: string, order: number, localBeat: string, contractText: string, extras: Record<string, unknown> = {}) => ({
+      ...plannedStandard(id, order, 'setup'),
+      title: id,
+      dramaticPurpose: broadEpisodeSummary,
+      locations: ['Cișmigiu Gardens'],
+      npcsInvolved: [],
+      setsUp: [],
+      paysOff: [],
+      requiredBeats: [{ id: `${id}-rb1`, tier: 'authored', sourceTurn: localBeat, mustDepict: localBeat }],
+      turnContract: {
+        turnId: `${id}-turn`,
+        source: 'treatment',
+        centralTurn: localBeat,
+        beforeState: 'Before',
+        turnEvent: localBeat,
+        afterState: 'After',
+        handoff: 'Next',
+      },
+      authoredTreatmentFields: [{
+        id: `${id}-choice`,
+        episodeNumber: 1,
+        fieldName: 'choice',
+        sourceText: contractText,
+        contractKind: 'major_choice_pressure',
+        requiredRealization: ['choice'],
+        targetSceneIds: [id],
+        blockingLevel: 'treatment',
+      }],
+      ...extras,
+    });
+    const input = makeInput({
+      episodeNumber: 1,
+      currentLocation: "Kylie's Lipscani Apartment",
+      introducesCharacters: [
+        { id: 'victor', name: 'Victor Vâlcescu' },
+      ],
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          majorChoicePressures: [
+            'Follow Victor into the park or run back to the apartment.',
+            'Ask Mika for the key card or bluff past the Vâlcescu door.',
+          ],
+        },
+        plannedScenes: [
+          makeScene('s1-1', 0, 'Mika adopts Kylie at the side entrance of Vâlcescu Club and the key card becomes a small act of trust.', 'Ask Mika for the key card or bluff past the Vâlcescu door.'),
+          makeScene('s1-2', 1, 'At Lumina Books, Stela presses rose quartz into Kylie\'s palm and warns that Victor wants to be with her.', 'Accept Stela\'s quartz or leave it on the counter.'),
+          makeScene('s1-3', 2, 'In Cișmigiu Gardens at 1am, the shadow pins Kylie before Victor intervenes.', 'Freeze under the willow or fight back.', {
+            npcsInvolved: ['Victor Vâlcescu'],
+          }),
+          {
+            ...plannedStandard('s1-blog', 2.5, 'development'),
+            title: 'blog scene',
+            dramaticPurpose: 'She writes about him as Mr. Midnight, and the post does 80,000 reads in a week.',
+            locations: ['loc-vâlcescu-club'],
+            npcsInvolved: [],
+            requiredBeats: [{
+              id: 'blog-rb',
+              tier: 'authored',
+              sourceTurn: 'At 4am, unable to sleep, Kylie launches Dating After Dusk with a post about Mr. Midnight.',
+              mustDepict: 'At 4am, unable to sleep, Kylie launches Dating After Dusk with a post about Mr. Midnight.',
+            }],
+          },
+          {
+            ...plannedStandard('s1-4', 3, 'release'),
+            title: 'release scene',
+            dramaticPurpose: 'release scene',
+            locations: ['Cișmigiu Gardens'],
+            npcsInvolved: [],
+            authoredTreatmentFields: [{
+              id: 'ending-hook',
+              episodeNumber: 1,
+              fieldName: 'cliffhanger',
+              sourceText: 'Kylie scrolling the Mr. Midnight DM pile at 9am — black roses on the counter, the blog ticking past 84,000 — when her phone buzzes: Stela. Are you home, love? I had a horrible dream. I am coming over with herbs.',
+              contractKind: 'cliffhanger_hook',
+              requiredRealization: ['episode_ending'],
+              targetSceneIds: ['s1-4'],
+              blockingLevel: 'treatment',
+            }],
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    (architect as any).ensureCharacterIntroductionBeats(blueprint, input);
+    (architect as any).repairTreatmentMajorChoicePressure(blueprint, input);
+    (architect as any).seedChoiceMenusFromTreatment(blueprint, input);
+
+    expect(blueprint.scenes[0].description).toContain('Vâlcescu Club');
+    expect(blueprint.scenes[0].description).not.toContain('attacked in the park');
+    expect(blueprint.scenes[0].narrativeFunction).not.toContain('viral');
+    expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
+    expect(blueprint.scenes[0].choicePoint.optionHints.join(' ')).toContain('key card');
+    expect(blueprint.scenes[0].choicePoint.optionHints.join(' ')).not.toContain('park');
+    expect(blueprint.scenes[0].keyBeats.join(' ')).not.toContain('Introduce Victor Vâlcescu');
+    expect(blueprint.scenes[2].keyBeats.join(' ')).toContain('Introduce Victor Vâlcescu');
+    expect(blueprint.scenes.find((scene: any) => scene.id === 's1-blog')?.location).toBe("Kylie's Lipscani Apartment");
+    const release = blueprint.scenes.find((scene: any) => scene.id === 's1-4');
+    expect(release?.description).toContain('DM pile');
+    expect(release?.location).toBe("Kylie's Lipscani Apartment");
   });
 });

@@ -19,7 +19,12 @@
 
 import type { Story } from '../../types';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
-import type { CallbackHook, SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import type { SeasonResidueObligation } from '../../types/seasonPlan';
+import {
+  classifyLedgerFlag,
+  classifyPlannedFlag,
+} from '../pipeline/choiceMemoryDebt';
 
 export interface FlagContractInput {
   story: Story;
@@ -29,6 +34,7 @@ export interface FlagContractInput {
   callbackLedger?: SerializedCallbackLedger;
   /** Highest generated episode number in the current slice/season. Defaults to the story max. */
   generatedThroughEpisode?: number;
+  seasonResiduePlan?: SeasonResidueObligation[];
 }
 
 /** Engine-set namespaces a story condition may legitimately read without an in-story setter. */
@@ -84,16 +90,18 @@ export function nearestSetter(flag: string, setters: Set<string>): string | unde
 export interface FlagContractMetrics {
   settersTotal: number;
   consumersTotal: number;
+  readWithoutSetFlags: number;
   unsetConditionFlags: number;
+  terminalWriteOnlyFlags: number;
+  crossSliceWriteOnlyFlags: number;
   futureWindowFlags: number;
   resolvedLedgerFlags: number;
   writeOnlyFlags: number;
-}
-
-type LedgerFlagClassification = 'future-window' | 'resolved-or-abandoned' | 'due-or-orphan';
-
-function hookCarriesFlag(hook: CallbackHook, flag: string): boolean {
-  return hook.id === `flag:${flag}` || hook.flags?.includes(flag) === true || hook.conditionKeys?.includes(flag) === true;
+  plannedPaidFlags: number;
+  plannedDueMissingFlags: number;
+  plannedFutureWindowFlags: number;
+  plannedTerminalSliceOkFlags: number;
+  unplannedOrphanFlags: number;
 }
 
 function generatedThroughEpisode(story: Story, override?: number): number {
@@ -102,21 +110,6 @@ function generatedThroughEpisode(story: Story, override?: number): number {
     .map((episode) => episode.number)
     .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
   return numbers.length > 0 ? Math.max(...numbers) : 0;
-}
-
-export function classifyLedgerFlag(
-  flag: string,
-  ledger: SerializedCallbackLedger | undefined,
-  generatedThrough: number,
-): LedgerFlagClassification | undefined {
-  const hooks = (ledger?.hooks || []).filter((hook) => hookCarriesFlag(hook, flag));
-  if (hooks.length === 0) return undefined;
-  if (hooks.every((hook) => hook.resolved || hook.abandoned)) return 'resolved-or-abandoned';
-  const open = hooks.filter((hook) => !hook.resolved && !hook.abandoned);
-  if (open.some((hook) => (hook.payoffEpisode ?? hook.payoffWindow?.maxEpisode ?? 0) > generatedThrough)) {
-    return 'future-window';
-  }
-  return 'due-or-orphan';
 }
 
 export class FlagContractValidator extends BaseValidator {
@@ -189,12 +182,21 @@ export class FlagContractValidator extends BaseValidator {
 
     for (const episode of input.story.episodes || []) {
       for (const scene of episode.scenes || []) {
-        walk(scene, `${episode.id}/${scene.id}`, new Set(), false);
+        walk(scene, `ep${episode.number}/${scene.id}`, new Set(), false);
       }
     }
 
     const issues: ValidationIssue[] = [];
     const setterNames = new Set(setters.keys());
+    const terminalSceneIds = new Set(
+      (input.story.episodes || [])
+        .filter((episode) => episode.number === generatedThrough)
+        .flatMap((episode) => {
+          const scenes = episode.scenes || [];
+          const terminal = scenes[scenes.length - 1];
+          return terminal?.id ? [`ep${episode.number}/${terminal.id}`] : [];
+        }),
+    );
 
     let unsetCount = 0;
     for (const [flag, refs] of consumers) {
@@ -215,6 +217,12 @@ export class FlagContractValidator extends BaseValidator {
     // out-of-band (tints → identity engine, treatment branch markers, ledger hooks).
     let futureWindowFlags = 0;
     let resolvedLedgerFlags = 0;
+    let terminalWriteOnlyFlags = 0;
+    let plannedPaidFlags = 0;
+    let plannedDueMissingFlags = 0;
+    let plannedFutureWindowFlags = 0;
+    let plannedTerminalSliceOkFlags = 0;
+    let unplannedOrphanFlags = 0;
     const writeOnly = [...setters.keys()].filter((f) => {
       if (consumers.has(f)) return false;
       if (f.startsWith('tint:') || f.startsWith('route_') || f.startsWith('treatment_') || /^encounter[_.]/.test(f)) return false;
@@ -225,6 +233,29 @@ export class FlagContractValidator extends BaseValidator {
       }
       if (ledgerClass === 'resolved-or-abandoned') {
         resolvedLedgerFlags += 1;
+        return false;
+      }
+      const plannedClass = classifyPlannedFlag(f, input.seasonResiduePlan, new Set(consumers.keys()), generatedThrough);
+      if (plannedClass === 'planned_paid') {
+        plannedPaidFlags += 1;
+        return false;
+      }
+      if (plannedClass === 'future_window') {
+        plannedFutureWindowFlags += 1;
+        return false;
+      }
+      if (plannedClass === 'terminal_slice_ok') {
+        plannedTerminalSliceOkFlags += 1;
+        return false;
+      }
+      if (plannedClass === 'planned_due_missing') {
+        plannedDueMissingFlags += 1;
+        return true;
+      }
+      unplannedOrphanFlags += 1;
+      const refs = setters.get(f) ?? [];
+      if (refs.some((ref) => terminalSceneIds.has(ref.location))) {
+        terminalWriteOnlyFlags += 1;
         return false;
       }
       return true;
@@ -247,10 +278,18 @@ export class FlagContractValidator extends BaseValidator {
       metrics: {
         settersTotal: setters.size,
         consumersTotal: consumers.size,
+        readWithoutSetFlags: unsetCount,
         unsetConditionFlags: unsetCount,
+        terminalWriteOnlyFlags,
+        crossSliceWriteOnlyFlags: futureWindowFlags,
         futureWindowFlags,
         resolvedLedgerFlags,
         writeOnlyFlags: writeOnly.length,
+        plannedPaidFlags,
+        plannedDueMissingFlags,
+        plannedFutureWindowFlags,
+        plannedTerminalSliceOkFlags,
+        unplannedOrphanFlags,
       },
     };
   }

@@ -193,6 +193,8 @@ export interface Choice {
   failureResidue?: FailureResidue;
   visualResidueHint?: string;
   mechanicPressure?: MechanicPressureContract[];
+  /** Planned season residue obligations this choice creates or pays. */
+  residueObligationIds?: string[];
 
   consequences?: Consequence[];
 

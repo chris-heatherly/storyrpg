@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildSceneClusterRepairHandler,
   buildSceneProseRepairHandler,
   buildSceneRepairDirectorNotes,
   selectSceneProseRepairs,
@@ -76,7 +77,7 @@ describe('selectSceneProseRepairs', () => {
     expect(groups.get('s2-1')).toHaveLength(2);
   });
 
-  it('routes planning-register prose leaks to scene-prose repair', () => {
+  it('does not route planning-register prose leaks to SceneCritic prose repair', () => {
     const groups = selectSceneProseRepairs([
       {
         type: 'planning_register_prose',
@@ -88,7 +89,7 @@ describe('selectSceneProseRepairs', () => {
       },
     ]);
 
-    expect([...groups.keys()]).toEqual(['s1-4']);
+    expect([...groups.keys()]).toEqual([]);
   });
 
   it('caps the number of scenes per round but keeps extra findings for capped scenes', () => {
@@ -240,6 +241,229 @@ describe('buildSceneProseRepairHandler', () => {
     expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('stairwell');
   });
 
+  it('carries previously repaired authored moments into later repair notes for the same scene', async () => {
+    const firstMoment = 'Kylie opens the blue door with the brass key before dawn.';
+    const secondMoment = 'Mika waits on the landing with a folded club invitation.';
+    const critic = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: firstMoment }], critiqueNotes: [], overallCommentary: '' },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: `${firstMoment} ${secondMoment}` }], critiqueNotes: [], overallCommentary: '' },
+        }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+
+    await handler({ story, blockingIssues: [momentIssue('s2-1', 2, firstMoment)] });
+    await handler({ story, blockingIssues: [momentIssue('s2-1', 2, secondMoment)] });
+
+    const secondNotes: string = critic.execute.mock.calls[1][0].directorNotes;
+    expect(secondNotes).toContain(firstMoment);
+    expect(secondNotes).toContain(secondMoment);
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain(firstMoment);
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toContain(secondMoment);
+  });
+
+  it('appends a required-beat fallback when SceneCritic keeps omitting Bite Me blog-orbit tokens', async () => {
+    const biteMeMoment = "Kylie publishes the pre-weekend post, planting the blog squarely in Victor's orbit before leaving the city.";
+    const partial = [
+      "His fussiness isn't what has you on edge. Your apartment smelled of stale coffee and ozone from the laptop.",
+      'You remember the decisive click of publishing the post. It was aimed like a torpedo at this very house.',
+    ].join(' ');
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: partial }], critiqueNotes: [], overallCommentary: '' },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [momentIssue('s2-1', 2, biteMeMoment)] });
+    const text = (story as any).episodes[1].scenes[0].beats[0].text;
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(text).toContain("blog squarely in Victor's orbit");
+    expect(text).toContain('before leaving the city');
+    expect(result.changed).toBe(true);
+    expect(result.record).toMatchObject({ succeeded: true, degraded: false, attempts: 2 });
+  });
+
+  it('appends the full required beat when a stylish paraphrase still omits validator-critical words', async () => {
+    const appetiteMoment = "That her job is to observe and describe other people's lives, ordering second and writing the piece later, rather than claiming her own appetite.";
+    const paraphrase = [
+      'The tremor in your hand feels alien, a twitch you can only observe.',
+      'Always watching, tasting second-hand, curating an appetite for others.',
+      'Always describing the meal, never taking the first bite yourself.',
+    ].join(' ');
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: { sceneId: 's2-1', rewrittenBeats: [{ id: 'b1', text: paraphrase }], critiqueNotes: [], overallCommentary: '' },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [momentIssue('s2-1', 2, appetiteMoment)] });
+    const text = (story as any).episodes[1].scenes[0].beats[0].text;
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(text).toContain('ordering second');
+    expect(text).toContain('writing the piece later');
+    expect(text).toContain('claiming her own appetite');
+    expect(result.changed).toBe(true);
+    expect(result.record).toMatchObject({ succeeded: true, degraded: false, attempts: 2 });
+  });
+
+  it('keeps an appended required-beat fallback when a later cluster rewrite touches the same scene', async () => {
+    const moment = 'Three terrible dates provide blog material, while Mika pushes Kylie to finally visit Vâlcescu Club.';
+    const story = makeStory() as any;
+    story.episodes[1].scenes = [
+      { id: 's2-1', name: 'Before', beats: [{ id: 's2-1-b1', text: 'The apartment is all phone glow and coffee.' }] },
+      { id: 's2-2', name: 'Dates', beats: [{ id: 's2-2-b1', text: 'Mika taps the invitation and mentions Vâlcescu Club.' }] },
+      { id: 's2-3', name: 'After', beats: [{ id: 's2-3-b1', text: 'The street outside is wet with reflected neon.' }] },
+    ];
+    const proseCritic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-2',
+          rewrittenBeats: [{ id: 's2-2-b1', text: 'Mika pushes Kylie to finally visit Vâlcescu Club.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const clusterCritic = {
+      execute: vi.fn().mockImplementation(async ({ scene }: { scene: { sceneId: string; beats: Array<{ id?: string }> } }) => ({
+        success: true,
+        data: {
+          sceneId: scene.sceneId,
+          rewrittenBeats: scene.beats.map((beat) => ({
+            id: beat.id,
+            text: scene.sceneId === 's2-2'
+              ? 'Inside the club, Mika points out the velvet rope and tells you to smile.'
+              : 'The transition stays grounded.',
+          })),
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      })),
+    };
+    const requiredIssue = momentIssue('s2-2', 2, moment);
+    const turnIssue = sceneTurnIssue('s2-2', 2, moment);
+
+    await buildSceneProseRepairHandler({ critic: () => proseCritic as never })({
+      story,
+      blockingIssues: [requiredIssue, turnIssue],
+    });
+    expect(story.episodes[1].scenes[1].beats[0].text).toContain('Three terrible dates provide blog material');
+
+    const clusterResult = await buildSceneClusterRepairHandler({ critic: () => clusterCritic as never })({
+      story,
+      blockingIssues: [requiredIssue, turnIssue],
+    });
+
+    expect(clusterResult.changed).toBe(true);
+    expect(story.episodes[1].scenes[1].beats[0].text).toContain('Three terrible dates provide blog material');
+    expect(story.episodes[1].scenes[1].beats[0].text).toContain('Mika pushes you to finally visit Vâlcescu Club');
+  });
+
+  it('cluster-repairs RequiredBeat findings routed away from same-scene repair', async () => {
+    const critic = {
+      execute: vi.fn().mockImplementation(async ({ scene }: { scene: { sceneId: string; beats: Array<{ id?: string }> } }) => ({
+        success: true,
+        data: {
+          sceneId: scene.sceneId,
+          rewrittenBeats: scene.beats.map((beat) => ({
+            id: beat.id,
+            text: scene.sceneId === 's2-1'
+              ? 'On night two, Mika swaps out your American shoes and hands you the key card.'
+              : 'The neighboring scene supports the turn.',
+          })),
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      })),
+    };
+    const handler = buildSceneClusterRepairHandler({
+      critic: () => critic as never,
+      routeIssue: (repairIssue) => ({
+        kind: 'scene_cluster_rewrite',
+        validator: repairIssue.validator,
+        episodeNumber: repairIssue.episodeNumber,
+        sceneIds: repairIssue.sceneId ? [repairIssue.sceneId] : [],
+        reason: 'time-coded authored beat needs adjacent context',
+        attemptBudget: 2,
+        qualityFloor: { overall: 90, voice: 85, stakes: 85, rejectDrop: 5 },
+        unsafeForProsePatch: true,
+      }),
+    });
+    const story = makeStory();
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        ...requiredBeatIssue('s2-1', 2),
+        message: 'Authored required beat is missing from scene "s2-1": "On night two, Mika swaps out your American shoes and hands you the key card."',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(critic.execute).toHaveBeenCalled();
+    expect(story.episodes[1].scenes[0].beats[0].text).toContain('key card');
+  });
+
+  it('re-appends compact SceneTurn fragments after cluster repair leaves a residual state change missing', async () => {
+    const centralTurn =
+      'At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie\'s hand — "this one wants to be with you, love" — and the Dusk Club is now three.';
+    const critic = {
+      execute: vi.fn().mockImplementation(async ({ scene }: { scene: { sceneId: string; beats: Array<{ id?: string }> } }) => ({
+        success: true,
+        data: {
+          sceneId: scene.sceneId,
+          rewrittenBeats: scene.beats.map((beat) => ({
+            id: beat.id,
+            text: scene.sceneId === 's2-1'
+              ? 'Stela presses a chunk of rose quartz into your hand. "This one wants to be with you, love," she says.'
+              : 'The neighboring scene supports the turn.',
+          })),
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      })),
+    };
+    const story = makeStory() as any;
+    story.episodes[1].scenes = [
+      { id: 'before', name: 'Before', beats: [{ id: 'before-b1', text: 'The bell over the bookshop door rings.' }] },
+      { id: 's2-1', name: 'Bookshop', beats: [{ id: 'b1', text: 'Stela studies the bowl of stones.' }] },
+      { id: 'after', name: 'After', beats: [{ id: 'after-b1', text: 'The street outside waits.' }] },
+    ];
+    const handler = buildSceneClusterRepairHandler({
+      critic: () => critic as never,
+      routeIssue: (repairIssue) => ({
+        kind: 'scene_cluster_rewrite',
+        validator: repairIssue.validator,
+        episodeNumber: repairIssue.episodeNumber,
+        sceneIds: repairIssue.sceneId ? [repairIssue.sceneId] : [],
+        reason: 'central turn needs adjacent context',
+        attemptBudget: 2,
+        qualityFloor: { overall: 90, voice: 85, stakes: 85, rejectDrop: 5 },
+        unsafeForProsePatch: false,
+      }),
+    });
+
+    const result = await handler({
+      story,
+      blockingIssues: [sceneTurnIssue('s2-1', 2, centralTurn)],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(story.episodes[1].scenes[1].beats[0].text).toContain('Dusk Club is now three.');
+  });
+
   it('does not retry when the first rewrite already depicts the full moment', async () => {
     const critic = {
       execute: vi.fn().mockResolvedValue({
@@ -269,6 +493,128 @@ describe('buildSceneProseRepairHandler', () => {
     expect(critic.execute).toHaveBeenCalledTimes(2);
     expect(result.changed).toBe(true);
     expect(result.record).toMatchObject({ succeeded: false, degraded: true, attempts: 2 });
+  });
+
+  it('rejects a scene repair rewrite that loses an already-realized required beat', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{ id: 'b1', text: 'Stela presses the quartz into your hand but says something too cryptic to catch.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const scene = story.episodes[1].scenes[0] as any;
+    scene.requiredBeats = [{ tier: 'authored', mustDepict: '"this one wants to be with you, love"' }];
+    scene.beats[0].text = 'Stela presses the quartz into your hand. "This one wants to be with you, love."';
+
+    const result = await handler({
+      story,
+      blockingIssues: [sceneTurnIssue('s2-1', 2, 'Stela tests whether Kylie will accept protection.')],
+    });
+
+    expect(result.changed).toBe(false);
+    expect(story.episodes[1].scenes[0].beats[0].text).toContain('This one wants to be with you, love');
+  });
+
+  it('rejects a scene repair rewrite that loses planned required beats absent from assembled scene metadata', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{
+            id: 'b1',
+            text: 'Stela presses the quartz into your hand and says the stone has been waiting.',
+            textVariants: [{ text: '"This one wants to be with you, love."' }],
+          }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const plannedMomentSources = new Map([
+      ['s2-1', { requiredBeats: [{ tier: 'authored', mustDepict: '"This one wants to be with you, love."' }] }],
+    ]);
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      plannedMomentSources,
+    });
+    const story = makeStory();
+    const scene = story.episodes[1].scenes[0] as any;
+    delete scene.requiredBeats;
+    scene.beats[0].text = 'Stela presses the quartz into your hand. "This one wants to be with you, love."';
+
+    const result = await handler({
+      story,
+      blockingIssues: [sceneTurnIssue('s2-1', 2, 'Stela tests whether Kylie will accept protection.')],
+    });
+
+    expect(result.changed).toBe(false);
+    expect(story.episodes[1].scenes[0].beats[0].text).toContain('This one wants to be with you, love');
+  });
+
+  it('does not paste a dense required beat fallback when fallback policy disallows it', async () => {
+    const denseMoment =
+      'Walking home through Cișmigiu at 1am, Kylie is pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks her home, kisses her hand at the threshold, declines to come in, and vanishes.';
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{ id: 'b1', text: 'By 1am, you are walking home through Cișmigiu when a shadow pins you to a willow.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      allowRequiredBeatFallback: () => false,
+    });
+    const story = makeStory();
+    const result = await handler({ story, blockingIssues: [momentIssue('s1-4', 1, denseMoment)] });
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(result.changed).toBe(true);
+    expect(result.record).toMatchObject({ succeeded: false, degraded: true });
+    expect((story as any).episodes[0].scenes[0].beats[0].text).not.toContain('kisses her hand at the threshold');
+    expect((story as any).episodes[0].scenes[0].beats[0].text).not.toContain(denseMoment);
+  });
+
+  it('appends a compact required quote when the critic paraphrases it away', async () => {
+    const quote = '"this one wants to be with you, love"';
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{ id: 'b1', text: 'Stela presses the quartz into your palm and says the stone has been waiting.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      allowRequiredBeatFallback: () => true,
+    });
+    const story = makeStory();
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        ...momentIssue('s2-1', 2, quote),
+        message: `Authored required beat is missing from scene "s2-1": ${quote}.`,
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(story.episodes[1].scenes[0].beats[0].text).toContain('this one wants to be with you, love');
   });
 
   it('reports a SceneTurn repair as succeeded only after every listed splinter is on-page', async () => {
@@ -351,6 +697,31 @@ describe('buildSceneProseRepairHandler', () => {
     const handler = buildSceneProseRepairHandler({ critic: () => null });
     const result = await handler({ story: makeStory(), blockingIssues: [requiredBeatIssue('s2-1')] });
     expect(result.changed).toBe(false);
+  });
+
+  it('skips same-scene repair when the repair router classifies the issue as unsafe for prose patching', async () => {
+    const critic = { execute: vi.fn() };
+    const routedAway: string[] = [];
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      routeIssue: (repairIssue) => ({
+        kind: 'blueprint_rebalance',
+        validator: repairIssue.validator,
+        episodeNumber: repairIssue.episodeNumber,
+        sceneIds: repairIssue.sceneId ? [repairIssue.sceneId] : [],
+        reason: 'scene overloaded',
+        attemptBudget: 1,
+        qualityFloor: { overall: 90, voice: 85, stakes: 85, rejectDrop: 5 },
+        unsafeForProsePatch: true,
+      }),
+      emit: (message) => routedAway.push(message),
+    });
+
+    const result = await handler({ story: makeStory(), blockingIssues: [requiredBeatIssue('s2-1')] });
+
+    expect(result.changed).toBe(false);
+    expect(critic.execute).not.toHaveBeenCalled();
+    expect(routedAway.join('\n')).toContain('blueprint_rebalance');
   });
 });
 

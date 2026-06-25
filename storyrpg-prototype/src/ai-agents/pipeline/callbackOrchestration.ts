@@ -484,7 +484,12 @@ export function injectFallbackCallbacks(
         };
         beat.textVariants = [...(beat.textVariants || []), variant];
         beat.callbackHookIds = Array.from(new Set([...(beat.callbackHookIds || []), hook.id]));
-        ledger.recordPayoff(hook.id);
+        ledger.recordPayoff(hook.id, {
+          episode: episodeNumber,
+          sceneId: sceneContents[sIdx].sceneId,
+          beatId,
+          source: 'fallback_callback',
+        });
         alreadyReferenced.add(conditionKey);
         usedPerBeat.set(beatId, (usedPerBeat.get(beatId) ?? 0) + 1);
         usedPerScene.set(sIdx, (usedPerScene.get(sIdx) ?? 0) + 1);

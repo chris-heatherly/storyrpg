@@ -35,10 +35,12 @@ import {
   SceneValidationResult,
 } from '../validators';
 import type { ComprehensiveValidationReport } from '../../types/validation';
-import { runFidelityValidators } from '../validators/runFidelityValidators';
+import { runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
+import { GateRepairRouter } from '../remediation/gateRepairRouter';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
+import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import {
@@ -47,9 +49,11 @@ import {
   isBlogPublishContinuityResolved,
   repairBlogPublishContinuity,
 } from '../remediation/continuityBlogPublishRepairHandler';
+import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
 import type { FidelityValidationScope } from '../validators/runFidelityValidators';
+import type { ValidationPhaseBaseline } from '../validators/validationPhaseBaseline';
 import { RemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
@@ -65,13 +69,27 @@ import {
   canonicalizeRelationshipConsequences,
   canonicalizeStoryRelationshipConsequences,
 } from '../utils/witnessNpcResolver';
-import { normalizeChoiceSetStatChecks } from '../utils/statCheckNormalization';
+import { normalizeChoiceSetStatChecks, normalizeStoryStatChecks } from '../utils/statCheckNormalization';
 import { PipelineError } from './errors';
 import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
+import type { SeasonScenePlan } from '../../types/scenePlan';
 
 type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[number];
+
+function plannedMomentSourcesFromScenePlan(scenePlan: SeasonScenePlan | undefined) {
+  if (!scenePlan?.scenes?.length) return undefined;
+  const out = new Map<string, { requiredBeats?: Array<{ tier?: string; mustDepict?: string }>; signatureMoment?: string }>();
+  for (const scene of scenePlan.scenes) {
+    if (!scene.id) continue;
+    out.set(scene.id, {
+      requiredBeats: scene.requiredBeats,
+      signatureMoment: (scene as { signatureMoment?: string }).signatureMoment,
+    });
+  }
+  return out;
+}
 
 function treatmentSceneTurnWarningsForRepair(report: FinalStoryContractReport): ContractRepairReport['blockingIssues'] {
   return (report.warnings || [])
@@ -88,6 +106,19 @@ function treatmentSceneTurnWarningsForRepair(report: FinalStoryContractReport): 
 
 function cloneStoryForAdvisoryRepair(story: Story): Story {
   return JSON.parse(JSON.stringify(story)) as Story;
+}
+
+function allowsCompactRequiredBeatFallback(issue: ContractRepairReport['blockingIssues'][number]): boolean {
+  if (issue.validator !== 'RequiredBeatRealizationValidator') return false;
+  const moment = requiredMomentFromMessage(issue.message);
+  if (!moment) return false;
+  const trimmed = moment.trim();
+  const stripped = trimmed.replace(/^["'“”‘’]+/, '').replace(/["'“”‘’]+$/, '').trim();
+  const wasQuoted = stripped.length < trimmed.length;
+  if (!wasQuoted || !stripped) return false;
+  const words = stripped.split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 14) return false;
+  return !/[;—]|\b(?:by\s+\d|at\s+\d|walking?|walks?|pinned?|pins?|drops?|kisses?|declines?|vanishes?)\b/i.test(stripped);
 }
 
 export function applyTreatmentWarningRepairOutcome(
@@ -213,6 +244,8 @@ export interface FinalContractDeps {
   readonly callbackLedger?: CallbackLedger;
   readonly allEncounterTelemetry: EncounterTelemetry[];
   readonly remediationBudget: RemediationBudget | null;
+  readonly planTimeFidelityFindings?: FidelityFinding[];
+  readonly planTimeFidelityBaseline?: ValidationPhaseBaseline;
   /** The run's SceneCritic for the contract scene-prose repair handler (a one-off is constructed when absent). */
   readonly sceneCritic?: SceneCritic | null;
 }
@@ -240,6 +273,14 @@ export class FinalContract {
     // roster. Idempotent (resolvable ids already canonical → no-op); remaps stragglers and
     // drops the genuinely-unknown so GATE_RELATIONSHIP_ID_INTEGRITY fires only on real residue.
     canonicalizeStoryRelationshipConsequences(input.story);
+    const normalizedStatChecks = normalizeStoryStatChecks(input.story);
+    if (normalizedStatChecks > 0) {
+      this.deps.emit({
+        type: 'debug',
+        phase: input.phase,
+        message: `Final story stat checks normalized ${normalizedStatChecks} choice(s).`,
+      } as any);
+    }
 
     // Season-final skill rebalance (G10): the per-scene ChoiceAuthor rebalance can't hit a
     // SEASON coverage target (≥6/8 skills, <30% dominance), so a perception-heavy season
@@ -281,6 +322,7 @@ export class FinalContract {
       story: input.story,
       seasonPlan: input.brief.seasonPlan,
       sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis,
+      planTimeBaseline: this.deps.planTimeFidelityBaseline,
       scope: input.validationScope,
     });
 
@@ -346,6 +388,7 @@ export class FinalContract {
         story,
         seasonPlan: input.brief.seasonPlan,
         sourceAnalysis: input.brief.multiEpisode?.sourceAnalysis,
+        planTimeBaseline: this.deps.planTimeFidelityBaseline,
         scope: input.validationScope,
       });
       const plannedChoiceTypes = plannedChoiceTypesByScene(input.brief.seasonPlan);
@@ -366,6 +409,7 @@ export class FinalContract {
         validSkills: Object.keys(story.initialState?.skills || {}),
         mode: this.deps.config.validation.mode,
         fidelityFindings: freshFidelity.fidelityFindings,
+        planTimeFidelityFindings: this.deps.planTimeFidelityFindings,
         treatmentSourced: freshFidelity.treatmentSourced,
         // L2 conformance: each generated episode realizes the season plan's per-episode
         // choice-type budget and leans on its planned skills (balance itself is validated
@@ -375,6 +419,7 @@ export class FinalContract {
         plannedConsequenceTiersByScene: plannedConsequenceTiers,
         seasonSkillPlan: this.deps.seasonSkillPlan,
         callbackLedger: this.deps.callbackLedger?.serialize?.(),
+        seasonResiduePlan: input.brief.seasonPlan?.residuePlan,
         generatedThroughEpisode: Math.max(
           0,
           ...(story.episodes || [])
@@ -456,6 +501,38 @@ export class FinalContract {
     // so a prose-realization miss becomes a bounded repair instead of discarding
     // the entire generated season (2026-06-11 failure-cycle audit).
     if (!report.passed && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')) {
+      const generatedThroughEpisode = Math.max(
+        0,
+        ...(input.requestedEpisodeNumbers ?? input.story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? []),
+      ) || undefined;
+      const repairRouter = new GateRepairRouter({
+        story: input.story,
+        generatedThroughEpisode,
+      });
+      const plannedMomentSources = plannedMomentSourcesFromScenePlan(input.brief.seasonPlan?.scenePlan);
+      const routingSummary = repairRouter.summarize(report.blockingIssues as ContractRepairReport['blockingIssues']);
+      const routedKinds = Object.entries(routingSummary)
+        .filter(([, count]) => count > 0)
+        .map(([kind, count]) => `${kind}:${count}`)
+        .join(', ');
+      if (routedKinds) {
+        this.deps.emit({
+          type: 'checkpoint',
+          phase: input.phase,
+          message: `Final contract repair routing: ${routedKinds}`,
+          data: { routingSummary },
+        } as any);
+      }
+      const routeIssue = (issue: ContractRepairReport['blockingIssues'][number]) => repairRouter.routeIssue(issue);
+      const allowRequiredBeatFallback = (issue: ContractRepairReport['blockingIssues'][number]) => {
+        const route = repairRouter.routeIssue(issue);
+        return route.kind === 'same_scene_retry'
+          && !route.unsafeForProsePatch
+          && (
+            allowsCompactRequiredBeatFallback(issue)
+            || /compact time\/count wording is missing/i.test(route.reason)
+          );
+      };
       const handlers = buildDeterministicContractHandlers();
       if (isGateEnabled('GATE_FINAL_CONTRACT_SCENE_REGEN')) {
         handlers.push(
@@ -469,6 +546,9 @@ export class FinalContract {
               }
             },
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+            routeIssue,
+            allowRequiredBeatFallback,
+            plannedMomentSources,
           }),
         );
       }
@@ -485,6 +565,9 @@ export class FinalContract {
             },
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
             maxScenesPerRound: 2,
+            routeIssue,
+            allowRequiredBeatFallback,
+            plannedMomentSources,
           }),
         );
       }
@@ -503,10 +586,11 @@ export class FinalContract {
           }),
         );
       }
-      // SceneCritic can fix a continuity finding while reintroducing Bite Me's
-      // duplicate blog-publish/title ambiguity late in the same repair round.
-      // Run the deterministic cleanup again after LLM-backed handlers so the
-      // round revalidates the cleaned prose instead of needing another full pass.
+      // SceneCritic can fix one contract finding while reintroducing deterministic
+      // residue late in the same repair round. Run those cleanup passes again after
+      // LLM-backed handlers so the round revalidates cleaned prose instead of
+      // spending another full pass or failing on newly reintroduced labels.
+      handlers.push(buildRelationshipPacingLabelRepairHandler());
       handlers.push(buildContinuityBlogPublishRepairHandler());
       const outcome = await runFinalContractRepair({
         story: input.story,
@@ -544,6 +628,8 @@ export class FinalContract {
     ) {
       const repairableWarnings = treatmentSceneTurnWarningsForRepair(report);
       if (repairableWarnings.length > 0 && shouldAttemptRemediation(this.deps.remediationBudget)) {
+        const repairRouter = new GateRepairRouter({ story: input.story });
+        const plannedMomentSources = plannedMomentSourcesFromScenePlan(input.brief.seasonPlan?.scenePlan);
         const originalPassingReport = report;
         const repairCandidate = cloneStoryForAdvisoryRepair(input.story);
         const outcome = await runFinalContractRepair({
@@ -564,6 +650,17 @@ export class FinalContract {
                 }
               },
               emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+              routeIssue: (issue) => repairRouter.routeIssue(issue),
+              allowRequiredBeatFallback: (issue) => {
+                const route = repairRouter.routeIssue(issue);
+                return route.kind === 'same_scene_retry'
+                  && !route.unsafeForProsePatch
+                  && (
+                    allowsCompactRequiredBeatFallback(issue)
+                    || /compact time\/count wording is missing/i.test(route.reason)
+                  );
+              },
+              plannedMomentSources,
             }),
           ],
           revalidate: async (s) => (await runValidation(s)) as ContractRepairReport,

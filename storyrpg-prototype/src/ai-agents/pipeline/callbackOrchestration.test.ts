@@ -600,6 +600,40 @@ describe('injectFallbackCallbacks', () => {
     expect(injected).toBe(1);
     expect(laterBeat.textVariants[0].text).toContain('shared cup');
   });
+
+  it('rejects treatment-residue planning directives as callback prose', () => {
+    const ledger = new CallbackLedger();
+    const choiceSets = [
+      {
+        sceneId: 'scene-1',
+        choices: [
+          {
+            id: 'c1',
+            text: 'Follow Mika to the rooftop.',
+            consequences: [{ type: 'setFlag', flag: 'mika_rooftop_route', value: true } as any],
+            reminderPlan: {
+              immediate: 'Show immediate residue from the authored path: Mika invents a reason she warned you off.',
+              shortTerm: 'Keep this authored residue visible after reconvergence: Mika keeps watching the exits.',
+            },
+          } as any,
+        ],
+      },
+    ];
+    harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
+
+    const laterBeat = { id: 'scene-2-beat-1', textVariants: [] as any[] };
+    const { injected } = injectFallbackCallbacks(ledger, {
+      episodeNumber: 1,
+      sceneContents: [
+        { sceneId: 'scene-1', beats: [{ id: 'scene-1-beat-1' }] },
+        { sceneId: 'scene-2', beats: [laterBeat] },
+      ] as any,
+      choiceSets: choiceSets as any,
+    });
+
+    expect(injected).toBe(0);
+    expect(laterBeat.textVariants).toHaveLength(0);
+  });
 });
 
 describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, derived prose', () => {

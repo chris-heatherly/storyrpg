@@ -26,6 +26,10 @@ export interface OpenerBucketStats {
 export interface MonotonyPassage {
   /** Beat id or `${choiceId}:${tier}` for an outcome tier. */
   where: string;
+  /** Owning scene id, when available for scene-local repair. */
+  sceneId?: string;
+  /** Owning episode number, when available for scene-local repair. */
+  episodeNumber?: number;
   bucket: 'beat' | 'outcome';
   /** Longest run of consecutive second-person openers in this passage. */
   longestRun: number;
@@ -116,7 +120,13 @@ export function analyzeStory(story: Story): OpenerStats {
     },
   };
 
-  const consume = (text: string | undefined, bucket: 'beat' | 'outcome', where: string): void => {
+  const consume = (
+    text: string | undefined,
+    bucket: 'beat' | 'outcome',
+    where: string,
+    sceneId?: string,
+    episodeNumber?: number,
+  ): void => {
     const sentences = splitSentences(text);
     if (sentences.length === 0) return;
     for (const s of sentences) {
@@ -134,6 +144,8 @@ export function analyzeStory(story: Story): OpenerStats {
     if (longest >= MONOTONY_RUN_THRESHOLD) {
       stats.monotonyPassages.push({
         where,
+        sceneId,
+        episodeNumber,
         bucket,
         longestRun: longest,
         sentences: sentences.length,
@@ -145,15 +157,15 @@ export function analyzeStory(story: Story): OpenerStats {
   for (const ep of story.episodes || []) {
     for (const sc of ep.scenes || []) {
       for (const beat of sc.beats || []) {
-        consume(beat.text, 'beat', beat.id || '(beat)');
+        consume(beat.text, 'beat', beat.id || '(beat)', sc.id, ep.number);
         const choices = (beat as { choices?: ChoiceLike[] }).choices || [];
         for (const choice of choices) {
           const ot = choice.outcomeTexts;
           if (!ot) continue;
           const base = choice.id || '(choice)';
-          consume(ot.success, 'outcome', `${base}:success`);
-          consume(ot.partial, 'outcome', `${base}:partial`);
-          consume(ot.failure, 'outcome', `${base}:failure`);
+          consume(ot.success, 'outcome', `${base}:success`, sc.id, ep.number);
+          consume(ot.partial, 'outcome', `${base}:partial`, sc.id, ep.number);
+          consume(ot.failure, 'outcome', `${base}:failure`, sc.id, ep.number);
         }
       }
     }

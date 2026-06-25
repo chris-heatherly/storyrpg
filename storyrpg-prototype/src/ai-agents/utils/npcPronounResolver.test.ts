@@ -219,6 +219,29 @@ describe('protagonist-aware guards (bite-me-g16 false positives)', () => {
     expect(res.findings).toHaveLength(0);
   });
 
+  it('does NOT flag a named NPC when possessive cues refer to a third party', () => {
+    const res = findNpcPronounInconsistencies(
+      g16([
+        'Mika lunges forward, breaking his grip, but the damage is done.',
+        'Mika calls his name. He turns away completely.',
+      ]),
+      G16_ROSTER,
+      PROTAG,
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT scan visual primaryAction metadata as played prose', () => {
+    const story = g16(['Victor steps onto the path, adjusting his cuffs.']) as unknown as Record<string, unknown>;
+    story.visualPlan = { primaryAction: 'Victor Vâlcescu keeps their hands busy to hide the evasion' };
+
+    const res = findNpcPronounInconsistencies(story as unknown as Story, G16_ROSTER, PROTAG);
+    const conflicts = findInternalPronounConflicts(story as unknown as Story, PROTAG);
+
+    expect(res.findings).toHaveLength(0);
+    expect(conflicts.find((c) => c.name === 'Victor')).toBeUndefined();
+  });
+
   it('does NOT record the protagonist or choice-verb openers as internal conflicts', () => {
     const conflicts = findInternalPronounConflicts(
       g16([

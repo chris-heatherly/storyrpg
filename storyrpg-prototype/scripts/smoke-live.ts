@@ -5,6 +5,11 @@ import { findEncounterPovBreaks } from '../src/ai-agents/pipeline/encounterPovBa
 import { planResidueConsumption } from '../src/ai-agents/pipeline/residueConsumption';
 import { FlagContractValidator } from '../src/ai-agents/validators/FlagContractValidator';
 import { RequiredBeatRealizationValidator } from '../src/ai-agents/validators/RequiredBeatRealizationValidator';
+import { EncounterProseIntegrityValidator } from '../src/ai-agents/validators/EncounterProseIntegrityValidator';
+import {
+  canonicalizeProtagonistPronouns,
+  otherGenderNamesFromStory,
+} from '../src/ai-agents/utils/protagonistPronounResolver';
 import { extractMonotonicMetrics, episodeProseCorpus } from '../src/ai-agents/pipeline/knowledgeExtraction';
 
 /**
@@ -130,6 +135,87 @@ function checkTruncation(runDir: string): CheckResult {
   }
 }
 
+function checkProtagonistPronoun(story: Parameters<typeof canonicalizeProtagonistPronouns>[0]): CheckResult {
+  const protagonist = ((story as { npcs?: Array<{ role?: string; name?: string; pronouns?: string }> }).npcs ?? [])
+    .find((npc) => npc.role === 'protagonist' && npc.name && npc.pronouns);
+  if (!protagonist?.name || !protagonist.pronouns) {
+    return { name: 'protagonist pronoun', status: 'warn', detail: 'no protagonist identity/pronouns in story.npcs — skipped' };
+  }
+  const clone = JSON.parse(JSON.stringify(story)) as typeof story;
+  const result = canonicalizeProtagonistPronouns(
+    clone,
+    { names: [protagonist.name], pronouns: protagonist.pronouns },
+    otherGenderNamesFromStory(clone, protagonist.pronouns),
+  );
+  return {
+    name: 'protagonist pronoun',
+    status: result.ambiguous.length === 0 ? 'pass' : 'fail',
+    detail: result.ambiguous.length === 0
+      ? `0 ambiguous protagonist pronoun(s), ${result.fieldsScanned} field(s) scanned`
+      : `${result.ambiguous.length} ambiguous protagonist pronoun(s), e.g. "${result.ambiguous[0].sentence.slice(0, 90)}"`,
+  };
+}
+
+function checkEncounterProseIntegrity(story: Parameters<EncounterProseIntegrityValidator['validate']>[0]['story']): CheckResult {
+  const result = new EncounterProseIntegrityValidator().validate({ story });
+  return {
+    name: 'encounter prose integrity',
+    status: result.findings.length === 0 ? 'pass' : 'fail',
+    detail: result.findings.length === 0
+      ? 'no malformed second-person encounter prose'
+      : `${result.findings.length} malformed phrase(s), e.g. "${result.findings[0].excerpt.slice(0, 90)}"`,
+  };
+}
+
+function readJsonl(file: string): Array<Record<string, unknown>> {
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8')
+    .split(/\n+/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    });
+}
+
+function ledgerBase(runDir: string): { baseDir: string; runName: string } {
+  const normalized = runDir.replace(/\/+$/, '');
+  return { baseDir: path.dirname(normalized), runName: path.basename(normalized) };
+}
+
+function checkContinuityRemediationTelemetry(runDir: string): CheckResult {
+  const { baseDir, runName } = ledgerBase(runDir);
+  const rows = readJsonl(path.join(baseDir, 'remediation-ledger.jsonl'))
+    .filter((row) => row.runDir === runName && String(row.rule ?? '').toLowerCase().includes('continuity'));
+  if (rows.length === 0) {
+    return { name: 'continuity remediation', status: 'warn', detail: 'no continuity remediation ledger rows for this run' };
+  }
+  const blocked = rows.filter((row) => row.blocked === true).length;
+  return {
+    name: 'continuity remediation',
+    status: blocked === 0 ? 'pass' : 'fail',
+    detail: `${rows.length} continuity remediation row(s), ${blocked} blocked`,
+  };
+}
+
+function checkPropTelemetry(runDir: string): CheckResult {
+  const { baseDir, runName } = ledgerBase(runDir);
+  const rows = readJsonl(path.join(baseDir, 'gate-shadow-ledger.jsonl'))
+    .filter((row) => row.runDir === runName && row.gate === 'GATE_PROP_INTRODUCTION');
+  if (rows.length === 0) {
+    return { name: 'prop-intro telemetry', status: 'warn', detail: 'no GATE_PROP_INTRODUCTION shadow rows for this run' };
+  }
+  const latest = rows[rows.length - 1];
+  return {
+    name: 'prop-intro telemetry',
+    status: 'pass',
+    detail: `${rows.length} row(s); latest ${String(latest.details ?? '').slice(0, 120)}`,
+  };
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
   const runArg = argv[argv.indexOf('--run') + 1];
@@ -150,8 +236,12 @@ function main(): void {
 
   const results: CheckResult[] = [
     checkPov(ctx.story),
+    checkProtagonistPronoun(ctx.story),
+    checkEncounterProseIntegrity(ctx.story),
     checkResidue(ctx.story),
     checkColdOpen(ctx),
+    checkContinuityRemediationTelemetry(runDir),
+    checkPropTelemetry(runDir),
     checkNumeric(ctx.story),
     checkTruncation(runDir),
   ];

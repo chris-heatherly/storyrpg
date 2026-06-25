@@ -416,8 +416,11 @@ Use these docs in this order when orienting:
 4. `INSTALL.md` — local setup, provider setup, commands, troubleshooting.
 5. `TDD.md` — broad technical architecture.
 6. `GDD.md` — game/product design intent.
-7. `STORY_AGENT_SYSTEM_DETAIL.md` — deeper agent architecture.
-8. `STORY_PIPELINE_PROMPTING.md` and treatment prompt docs — prompt contracts.
-9. `IMAGE_PIPELINE_RUNTIME.md` and `LORA_TRAINING.md` — media generation details.
-10. `STORY_QUALITY_CONTRACT.md`, validation plans, and structure/adaptation plans — quality gates and pending design work.
-11. `TECH_DEBT_AUDIT.md` — current debt inventory and remediation backlog.
+7. `STORY_CONCEPTS_GUIDE.md` — accessible + technical map of story concepts, source analysis, structure, arcs, canon, choices, encounters, visuals, and treatment obligations.
+8. `GAMEPLAY_SYSTEMS_NARRATIVE_GUIDE.md` — accessible + technical map of hidden gameplay systems and how they surface through narrative.
+9. `BRANCHING_ARCS_NARRATIVE_GUIDE.md` — accessible + technical map of branching, reconvergence, player/NPC arcs, route state, information, endings, and validation.
+10. `STORY_AGENT_SYSTEM_DETAIL.md` — deeper agent architecture.
+11. `STORY_PIPELINE_PROMPTING.md` and treatment prompt docs — prompt contracts.
+12. `IMAGE_PIPELINE_RUNTIME.md` and `LORA_TRAINING.md` — media generation details.
+13. `STORY_QUALITY_CONTRACT.md`, validation plans, and structure/adaptation plans — quality gates and pending design work.
+14. `TECH_DEBT_AUDIT.md` — current debt inventory and remediation backlog.

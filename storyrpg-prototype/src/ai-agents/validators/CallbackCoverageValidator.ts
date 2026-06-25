@@ -7,7 +7,7 @@
 //
 //   - Were hooks authored with non-empty summaries? (authoring quality)
 //   - Did episodes 2+ actually pay off at least one hook?
-//     (i.e. did SceneWriter produce a TextVariant with `callbackHookId`?)
+//     (prefer exact payoffEvents; fall back to legacy payoffCount ledgers)
 //   - Are there unresolved hooks whose payoffWindow has closed? Those hooks
 //     will never pay off — emit a warning so authors can either widen the
 //     window or plan a payoff in the current episode.
@@ -63,13 +63,16 @@ export class CallbackCoverageValidator {
     const resolvedHooks = hooks.filter((h) => h.resolved).length;
     const unresolvedHooks = hooks.length - resolvedHooks;
 
-    // A hook "paid off this episode" means its payoffCount > 0 AND the current
-    // episode falls within its window. We don't have per-episode payoff counts
-    // in the ledger (only a total), so this check is a soft approximation:
-    // we count hooks that were created in a PRIOR episode AND have payoffCount > 0.
-    const hooksPaidOffThisEpisode = hooks.filter(
-      (h) => h.sourceEpisode < input.currentEpisode && h.payoffCount > 0,
-    ).length;
+    const paidHookIdsThisEpisode = new Set(
+      (input.ledger.payoffEvents || [])
+        .filter((event) => event.episode === input.currentEpisode)
+        .map((event) => event.hookId),
+    );
+    // Exact event history exists for new ledgers. Legacy ledgers only carried
+    // payoffCount, so preserve the old approximation instead of migrating packages.
+    const hooksPaidOffThisEpisode = (input.ledger.payoffEvents || []).length > 0
+      ? hooks.filter((h) => h.sourceEpisode < input.currentEpisode && paidHookIdsThisEpisode.has(h.id)).length
+      : hooks.filter((h) => h.sourceEpisode < input.currentEpisode && h.payoffCount > 0).length;
 
     const staleHooks = hooks.filter(
       (h) => !h.resolved && h.payoffWindow.maxEpisode < input.currentEpisode,

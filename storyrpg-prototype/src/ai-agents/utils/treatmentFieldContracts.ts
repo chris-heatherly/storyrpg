@@ -107,6 +107,92 @@ function tokenOverlapScore(needle: string, haystack: string): number {
   return hits / needed.length;
 }
 
+function containsInformationLedgerPlanningLanguage(value: string): boolean {
+  return /\bINFO[-_\s]*[A-Z0-9]+\b/i.test(value)
+    || /\binformation\s+ledger\b/i.test(value)
+    || /\bmystery\s+box\s+collapse\b/i.test(value)
+    || /\bcheating\s+twist\b/i.test(value)
+    || /\bplanned\s+(?:question|reveal|payoff)s?\b/i.test(value);
+}
+
+function cleanDirectiveSurface(value: string): string {
+  return value
+    .trim()
+    .replace(/^[\s:;,.—–-]+/, '')
+    .replace(/\bseed(?:ed|s|ing)?\s+by\s+/i, '')
+    .replace(/\b(?:hinted|planted)\s+by\s+/i, '')
+    .replace(/\bthrough\s+/i, '')
+    .replace(/\bINFO[-_\s]*[A-Z0-9]+\b/gi, 'the scheduled clue')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function readerSafeSetupSurface(body: string): string | undefined {
+  const parts = body
+    .split(/\s+[—–-]\s+/)
+    .map((part) => cleanDirectiveSurface(part))
+    .filter(Boolean);
+  if (parts.length >= 2) return parts.slice(1).join('; ');
+  return undefined;
+}
+
+function sanitizeInformationDirective(verb: string, body: string): string {
+  const setupOnly = /\b(?:plant|plants|setup|set\s+up|seed|foreshadow|hint)\b/i.test(verb);
+  if (setupOnly) {
+    const surface = readerSafeSetupSurface(body);
+    return surface
+      ? `Hint through ${surface} without confirming the underlying truth`
+      : 'Hint obliquely at the scheduled clue without confirming the underlying truth';
+  }
+  const cleaned = cleanDirectiveSurface(body);
+  return cleaned || 'Land the scheduled information movement on-page';
+}
+
+export function authorFacingInformationMovementText(value: string | undefined): string {
+  const raw = value?.trim();
+  if (!raw) return '';
+  let changed = false;
+  const replaced = raw.replace(
+    /\b(plant|plants|setup|set\s+up|seed|foreshadow|hint|reveal|reveals|pay\s*off|payoff)\s+INFO[-_\s]*[A-Z0-9]+\s*\(([^)]*)\)/gi,
+    (_match, verb: string, body: string) => {
+      changed = true;
+      return sanitizeInformationDirective(verb, body);
+    },
+  );
+  if (changed) {
+    return replaced
+      .replace(/\s*;\s*/g, '; ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (containsInformationLedgerPlanningLanguage(raw)) {
+    return 'Preserve the planned information rhythm: plant fair-play evidence now, keep setup oblique, and only confirm answers in their scheduled reveal or payoff scene.';
+  }
+  return raw;
+}
+
+export function authorFacingTreatmentFieldText(
+  contract: Pick<AuthoredTreatmentFieldContract, 'contractKind' | 'sourceText'>,
+): string {
+  if (contract.contractKind === 'information_movement') {
+    return authorFacingInformationMovementText(contract.sourceText);
+  }
+  return contract.sourceText;
+}
+
+export function authorFacingMechanicPressureText(
+  contract: Pick<MechanicPressureContract, 'domain' | 'function' | 'storyPressure'>,
+): string {
+  if (contract.domain === 'information' && contract.function === 'plant') {
+    const safe = authorFacingInformationMovementText(contract.storyPressure);
+    if (safe !== contract.storyPressure || containsInformationLedgerPlanningLanguage(contract.storyPressure)) {
+      return safe;
+    }
+    return 'Plant an information clue through reader-visible evidence without confirming the underlying answer.';
+  }
+  return authorFacingInformationMovementText(contract.storyPressure);
+}
+
 export function treatmentFieldCloseMatch(
   needle: string | undefined,
   haystack: string,
@@ -300,7 +386,7 @@ function addMechanicPressureArtifact(scene: PlannedScene, contract: AuthoredTrea
       ? { flag: contract.id }
       : {},
     function: pressureFunctionForContract(contract.contractKind),
-    storyPressure: contract.sourceText,
+    storyPressure: authorFacingTreatmentFieldText(contract),
     evidenceRequired: [`Dramatize treatment field: ${contract.fieldName}`],
     visibleResidue: ['show changed behavior, access, information, risk, posture, outcome, or forward pressure'],
     allowedPayoffs: contract.requiredRealization,

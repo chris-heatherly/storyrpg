@@ -211,12 +211,13 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   const { normalized: startupNormalized, changed: startupChanged } =
     lifecycle.normalizeStaleWorkerJobs(startupJobs);
   if (startupChanged) {
-    lifecycle.saveWorkerJobs(startupNormalized);
+    lifecycle.saveNormalizedWorkerJobs(startupJobs, startupNormalized);
     const orphaned = startupNormalized.filter((j) => j.deadLetter && j.error?.includes('orphaned'));
     if (orphaned.length > 0) {
       console.log(`[Proxy] Startup cleanup: marked ${orphaned.length} orphaned job(s) as failed`);
     }
   }
+  lifecycle.syncOutOfDateWorkerMirrors(lifecycle.loadWorkerJobs());
 
   setInterval(() => {
     try {
@@ -238,10 +239,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       });
 
       if (changed || pruned > 0) {
-        lifecycle.saveWorkerJobs(kept);
+        lifecycle.saveNormalizedWorkerJobs(jobs, kept);
         if (pruned > 0) console.log(`[Proxy] Periodic cleanup: pruned ${pruned} old completed worker job(s)`);
         if (changed) console.log('[Proxy] Periodic cleanup: updated stale/orphaned worker job(s)');
       }
+      lifecycle.syncOutOfDateWorkerMirrors(kept);
 
       // Prune checkpoints whose jobs no longer exist.
       const jobIds = new Set(kept.map((j) => j.id));

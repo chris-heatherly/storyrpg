@@ -14,9 +14,15 @@
 import { Story } from '../../types';
 import { runFidelityValidatorsShadow, FIDELITY_VALIDATOR_FLAGS } from '../validators/runFidelityValidators';
 import { recordRemediation, type RemediationLedgerRecord } from '../remediation/remediationLedger';
-import { recordGateShadow, buildGateShadowRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
+import {
+  recordGateShadow,
+  buildGateShadowRecord,
+  buildValidatorPromotionRecord,
+  type GateShadowRecord,
+} from '../remediation/gateShadowLedger';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { computePlanTimeShadow } from '../remediation/planTimeShadow';
+import { FlagContractValidator } from '../validators/FlagContractValidator';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
 
@@ -125,6 +131,39 @@ export class RunLedger {
       scope: 'scene', enabled: isGateEnabled('GATE_DESIGN_NOTE_LEAK'), blockingCount: designNoteLeaks, storyId: input.story.id,
     }));
     try {
+      const generatedThroughEpisode = Math.max(
+        0,
+        ...((input.story as unknown as { episodes?: Array<{ number?: number }> }).episodes ?? [])
+          .map((episode) => episode.number)
+          .filter((number): number is number => typeof number === 'number' && Number.isFinite(number)),
+      );
+      const flagResult = new FlagContractValidator().validate({
+        story: input.story,
+        callbackLedger: this.deps.serializeCallbackLedger() as never,
+        generatedThroughEpisode,
+      });
+      await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+        gate: 'GATE_FLAG_CONTRACT',
+        validator: 'FlagContractValidator',
+        scope: 'season',
+        placement: 'season-final',
+        enabled: isGateEnabled('GATE_FLAG_CONTRACT'),
+        blockingCount: flagResult.metrics.readWithoutSetFlags,
+        residualBlockingCount: flagResult.metrics.readWithoutSetFlags,
+        storyId: input.story.id,
+        issues: flagResult.issues,
+        details:
+          `read_without_set=${flagResult.metrics.readWithoutSetFlags}; ` +
+          `write_only=${flagResult.metrics.writeOnlyFlags}; ` +
+          `terminal_write_only=${flagResult.metrics.terminalWriteOnlyFlags}; ` +
+          `cross_slice_write_only=${flagResult.metrics.crossSliceWriteOnlyFlags}; ` +
+          `resolved_ledger=${flagResult.metrics.resolvedLedgerFlags}; generatedThroughEpisode=${generatedThroughEpisode}`,
+      }));
+    } catch {
+      /* shadow only — never load-bearing */
+    }
+
+    try {
       const shadow = runFidelityValidatorsShadow({
         story: input.story,
         seasonPlan: input.brief.seasonPlan,
@@ -152,9 +191,16 @@ export class RunLedger {
         totalEpisodes: (input.story as unknown as { episodes?: unknown[] }).episodes?.length ?? 0,
       });
       for (const r of planTime) {
-        await this.recordGateShadowSafe(buildGateShadowRecord({
+        await this.recordGateShadowSafe(buildValidatorPromotionRecord({
           gate: r.gate, validator: r.validator, scope: 'episode',
-          enabled: isGateEnabled(r.gate), blockingCount: r.blockingCount, storyId: input.story.id,
+          placement: 'plan',
+          enabled: isGateEnabled(r.gate),
+          blockingCount: r.blockingCount,
+          wouldRepairCount: r.wouldRepairCount,
+          repairAttempted: r.repairAttempted,
+          repairSucceeded: r.repairSucceeded,
+          residualBlockingCount: r.residualBlockingCount,
+          storyId: input.story.id,
           details: 'final-stage aggregate (resume-proof)',
         }));
       }

@@ -185,7 +185,7 @@ export class CharacterIntroductionValidator extends BaseValidator {
         const at = orderedScenes[firstProseIdx];
         issues.push(this.error(
           `"${npc.name}" is first named in the prose of scene "${at.scene.id}" (episode ${at.episodeNumber}) but no scene up to that point carries them in its cast — the reader has never met them and cannot know who this is.`,
-          `characterIntroduction:${npc.id}:${at.scene.id}`,
+          `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
           `Introduce ${npc.name} on-page (a scene with them present in the cast and an introduction beat) before any scene's prose names them casually.`,
         ));
       }
@@ -198,7 +198,7 @@ export class CharacterIntroductionValidator extends BaseValidator {
         if (!namedByThen && !namedInCastScene) {
           issues.push(this.warning(
             `"${npc.name}" first appears in the cast of scene "${at.scene.id}" (episode ${at.episodeNumber}) but the prose of that scene never names them, and no earlier scene introduced them — they exist in metadata only, not on-page.`,
-            `characterIntroduction:${npc.id}:${at.scene.id}`,
+            `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
             `Have the prose of "${at.scene.id}" actually present ${npc.name}: name them and let the protagonist register who they are.`,
           ));
         }
@@ -212,7 +212,7 @@ export class CharacterIntroductionValidator extends BaseValidator {
         if (at.episodeNumber < plannedEpisode) {
           issues.push(this.warning(
             `"${npc.name}" appears in episode ${at.episodeNumber} (scene "${at.scene.id}") but the season plan introduces them in episode ${plannedEpisode}.`,
-            `characterIntroduction:${npc.id}:${at.scene.id}`,
+            `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
             'Either move the appearance to the planned introduction episode or update the season plan introduction order.',
           ));
         }

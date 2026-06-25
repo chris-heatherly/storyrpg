@@ -110,6 +110,11 @@ export interface SeasonEpisode extends EpisodeOutline {
    * absent, downstream falls back to per-episode scene invention.
    */
   plannedScenes?: PlannedScene[];
+
+  /** Planned residue obligations this episode is responsible for paying off. */
+  incomingResidueIds?: string[];
+  /** Planned residue obligations this episode is responsible for creating. */
+  outgoingResidueIds?: string[];
 }
 
 export type ArcEpisodeTurnoutType =
@@ -315,6 +320,63 @@ export interface SeasonChoiceMomentSeed {
   flag?: string;
 }
 
+export type ResidueObligationKind =
+  | 'callback_line'
+  | 'relationship_behavior'
+  | 'information_recall'
+  | 'item_or_prop'
+  | 'reputation'
+  | 'danger'
+  | 'identity'
+  | 'branch_reconvergence'
+  | 'failure_residue'
+  | 'ending_eligibility';
+
+export type ResiduePayoffPolicy =
+  | 'same_scene'
+  | 'later_scene_same_episode'
+  | 'specific_episode'
+  | 'episode_window'
+  | 'terminal_slice_ok';
+
+export interface SeasonResidueObligation {
+  id: string;
+  source:
+    | 'season_planner'
+    | 'choice_moment'
+    | 'branch_contract'
+    | 'consequence_chain'
+    | 'treatment_guidance'
+    | 'deterministic_fallback';
+  sourceEpisodeNumber: number;
+  sourceSceneId?: string;
+  sourceChoiceMomentId?: string;
+  choiceAnchor: string;
+  flag: string;
+  conditionKey?: string;
+  kind: ResidueObligationKind;
+  consequenceDomain?: 'relationship' | 'reputation' | 'danger' | 'information' | 'identity' | 'leverage' | 'resource';
+  payoffPolicy: ResiduePayoffPolicy;
+  targetEpisodeNumbers: number[];
+  targetSceneIds?: string[];
+  targetNpcIds?: string[];
+  targetTopics?: string[];
+  treatmentContractIds?: string[];
+  sourceMaterial: {
+    choiceText?: string;
+    reminderImmediate?: string;
+    reminderShortTerm?: string;
+    reminderLater?: string;
+    feedbackEcho?: string;
+    feedbackProgress?: string;
+    residueHints?: string[];
+    witnessReactions?: string[];
+  };
+  authoringGuidance: string;
+  requiredSurface: Array<'beat_text' | 'text_variant' | 'choice_text' | 'dialogue' | 'encounter_outcome'>;
+  priority: 'minor' | 'moderate' | 'major';
+}
+
 export interface SeasonPlan {
   // Unique identifier
   id: string;
@@ -418,6 +480,14 @@ export interface SeasonPlan {
    * a deterministic derivation when absent.
    */
   choiceMoments?: SeasonChoiceMomentSeed[];
+
+  /**
+   * First-class planned residue obligations. These are generator-facing only:
+   * SeasonPlanner owns the contract, episode architecture assigns it, episode
+   * authoring fulfills it, and validators audit it. Reader playback ignores
+   * the metadata; every field is optional at package boundaries for back-compat.
+   */
+  residuePlan?: SeasonResidueObligation[];
 
   // Ending targets the season is steering toward
   endingMode: EndingMode;

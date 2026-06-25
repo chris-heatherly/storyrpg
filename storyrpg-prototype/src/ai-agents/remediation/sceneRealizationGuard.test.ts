@@ -57,9 +57,34 @@ describe('requiredMomentsFor', () => {
     expect(missing[0].missingTokens).toContain('watching');
   });
 
-  it('does not enforce abstract seed labels unless the scene declares it sets a treatment seed', () => {
+  it('flags a shoe-swap authored beat when prose only jokes about the shoes', () => {
+    const missing = missingRequiredMoments(
+      { requiredBeats: [{ tier: 'authored', mustDepict: 'Mika swaps out her "American shoes,"' }] },
+      [
+        { id: 'b1', text: 'Mika waves a dismissive hand at your shoes, calling them an international crime.' },
+        { id: 'b2', text: 'She opens a sleek black shoebox with a flourish.' },
+      ],
+    );
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0].missingTokens).toEqual(expect.arrayContaining(['swap-shoes', 'american-shoes']));
+  });
+
+  it('does not enforce abstract seed labels even when the scene declares it sets a treatment seed', () => {
     const moments = requiredMomentsFor({
       requiredBeats: [{ tier: 'seed', mustDepict: "Victor's Nature" }],
+      choicePoint: { setsTreatmentSeeds: ['treatment_seed_ep1_1'] },
+    });
+    expect(moments).toEqual([]);
+  });
+
+  it('does not enforce hidden backstory seeds as player-facing prose', () => {
+    const moments = requiredMomentsFor({
+      requiredBeats: [
+        { tier: 'seed', mustDepict: 'Mika is a succubus bound by a 57-year contract to Victor, assigned to reel Kylie in.' },
+        { tier: 'seed', mustDepict: 'Kylie arrives in Bucharest, starts her blog, gathers her friend group, and lets herself be courted by Victor.' },
+      ],
+      choicePoint: { setsTreatmentSeeds: ['treatment_seed_ep1_1'] },
     });
     expect(moments).toEqual([]);
   });
@@ -134,13 +159,22 @@ describe('improvesMissingRealization', () => {
 });
 
 describe('realizationRetryFeedback', () => {
-  it('names each moment and its missing words', () => {
+  it('names each moment and its missing requirements', () => {
     const feedback = realizationRetryFeedback([
       { moment: 'Cișmigiu at 1am: a scream and a rescue.', validator: 'SignatureDevicePresenceValidator', tier: 'signature', missingTokens: ['cismigiu', 'scream', 'rescue'] },
     ]);
     expect(feedback).toContain('[signature] Cișmigiu at 1am');
     expect(feedback).toContain('cismigiu, scream, rescue');
     expect(feedback).toContain('MUST be depicted concretely');
+  });
+
+  it('translates action-requirement tokens into prose instructions', () => {
+    const feedback = realizationRetryFeedback([
+      { moment: 'Victor declines to come in', validator: 'RequiredBeatRealizationValidator', tier: 'authored', missingTokens: ['decline-entry'] },
+    ]);
+    expect(feedback).toContain('Victor declines to come in');
+    expect(feedback).toContain('explicitly refusing to enter, come inside, or cross the threshold');
+    expect(feedback).not.toContain('decline-entry');
   });
 });
 
@@ -169,6 +203,156 @@ describe('insertMissingMomentBeats', () => {
       { requiredBeats: [{ tier: 'seed', mustDepict: 'The stray dog in the courtyard, watching.' }] },
       beats,
     )).toEqual([]);
+  });
+
+  it('skips a time-coded authored fallback by default so routing can escalate it', () => {
+    const beats = [
+      { id: 'b1', text: 'The last sunset warms the Lipscani apartment.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'Sadie asks whether Romania has vampires.', nextBeatId: 'b3' },
+      { id: 'b3', text: 'Three nights later, you are on a rooftop bar at sunset.', nextBeatId: 'b4' },
+      { id: 'b4', text: 'It is past 1 a.m. when you walk home through Cișmigiu.' },
+    ];
+    const missing = [{
+      moment: 'Mika adopts Kylie at the door of Vâlcescu Club on night two, swaps out her American shoes, and hands her a key card to the side entrance.',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['mika'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-1', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.id)).toEqual([
+      'b1',
+      'b2',
+      'b3',
+      'b4',
+    ]);
+    expect(skipped[0]).toContain('timeline or cross-scene cues');
+  });
+
+  it('skips terse action summaries instead of pasting planning labels into prose', () => {
+    const beats = [
+      { id: 'b1', text: 'Victor steadies you as the streetlights blur.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The apartment door waits at the top of the stairs.' },
+    ];
+    const missing = [{
+      moment: 'Victor walks her home',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['victor', 'walks', 'home'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-4', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.text)).toEqual([
+      'Victor steadies you as the streetlights blur.',
+      'The apartment door waits at the top of the stairs.',
+    ]);
+    expect(skipped[0]).toContain('terse action summary needs prose rewrite');
+  });
+
+  it('allows last-resort insertion for concrete action requirements even when the moment is terse', () => {
+    const beats = [
+      { id: 'b1', text: 'Victor stands outside the apartment door, patient and unreadable.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The hallway light flickers once.' },
+    ];
+    const missing = [{
+      moment: 'Victor declines to come in',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['decline-entry'],
+    }];
+
+    insertMissingMomentBeats('s1-4-threshold', beats, missing);
+
+    expect(beats.map((beat) => beat.text)).toEqual([
+      'Victor stands outside the apartment door, patient and unreadable.',
+      'The hallway light flickers once.',
+      'Victor declines to come in.',
+    ]);
+    expect(beats[1].nextBeatId).toBe(beats[2].id);
+  });
+
+  it('does not insert from a stale missing list when current prose already depicts the moment', () => {
+    const beats = [
+      { id: 'b1', text: 'Victor stops at the threshold, careful not to cross it.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'He lifts your hand and kisses your knuckles with impossible formality.' },
+    ];
+    const missing = [{
+      moment: 'Victor kisses her hand at the threshold',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['kiss-hand'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-4-threshold', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.text)).toEqual([
+      'Victor stops at the threshold, careful not to cross it.',
+      'He lifts your hand and kisses your knuckles with impossible formality.',
+    ]);
+    expect(skipped[0]).toContain('moment is already depicted in current prose');
+  });
+
+  it('skips compact object-swap action summaries instead of pasting planning labels into prose', () => {
+    const beats = [
+      { id: 'b1', text: 'The host studies your outfit with theatrical horror.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The club door hums behind her.' },
+    ];
+    const missing = [{
+      moment: 'Mika swaps out her American shoes',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['mika', 'swaps', 'american', 'shoes'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-1', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.text)).toEqual([
+      'The host studies your outfit with theatrical horror.',
+      'The club door hums behind her.',
+    ]);
+    expect(skipped[0]).toContain('terse action summary needs prose rewrite');
+  });
+
+  it('can still place an earlier night-two fallback before night-three when explicitly allowed', () => {
+    const beats = [
+      { id: 'b1', text: 'The last sunset warms the Lipscani apartment.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'Sadie asks whether Romania has vampires.', nextBeatId: 'b3' },
+      { id: 'b3', text: 'Three nights later, you are on a rooftop bar at sunset.', nextBeatId: 'b4' },
+      { id: 'b4', text: 'It is past 1 a.m. when you walk home through Cișmigiu.' },
+    ];
+    const missing = [{
+      moment: 'Mika adopts Kylie at the door of Vâlcescu Club on night two, swaps out her American shoes, and hands her a key card to the side entrance.',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['mika'],
+    }];
+
+    insertMissingMomentBeats('s1-1', beats, missing, { allowTimelineCuedInsertion: true });
+
+    expect(beats.map((beat) => beat.id)).toEqual([
+      'b1',
+      'b2',
+      expect.stringContaining('s1-1-authored-authored-mika-adopts-kylie'),
+      'b3',
+      'b4',
+    ]);
+    expect(beats[1].nextBeatId).toBe(beats[2].id);
+    expect(beats[2].nextBeatId).toBe('b3');
+    expect(beats[2].text).toContain('night two');
   });
 });
 

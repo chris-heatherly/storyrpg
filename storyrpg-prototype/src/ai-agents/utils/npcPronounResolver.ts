@@ -48,7 +48,7 @@ type Gender = 'm' | 'f';
 // encounter tree, including these fields).
 const TEXT_KEYS = new Set([
   'text', 'narrativeText', 'setupText', 'outcomeText', 'reactionText',
-  'lockedText', 'description', 'visualMoment', 'primaryAction',
+  'lockedText', 'description', 'visualMoment',
   'escalationText', 'victory', 'defeat',
 ]);
 
@@ -152,6 +152,14 @@ function isBareObjectPronoun(word: string, sentence: string, index: number): boo
     'skin', 'sleeve', 'smile', 'throat', 'voice', 'wrist',
   ]);
   return !likelyPossessedNouns.has(next);
+}
+
+function isThirdPartyPossessiveCue(word: string, sentence: string, index: number): boolean {
+  const w = word.toLowerCase();
+  if (w !== 'his' && w !== 'her') return false;
+  const after = sentence.slice(index + word.length).trimStart();
+  const next = /^\b([a-z]+)\b/i.exec(after)?.[1]?.toLowerCase();
+  return next === 'grip' || next === 'name';
 }
 
 /** Distinctive name/alias tokens (≥3 letters) for the protagonist, for exclusion matching. */
@@ -258,6 +266,7 @@ export function findNpcPronounInconsistencies(
     // ignored man. Keep subject/possessive/reflexive hits flaggable ("Lysandra tightens
     // his jaw", "Thorne lowers their shoulder"), but skip ambiguous object-only cases.
     if (isBareObjectPronoun(wrong, sentence, wrongIndex)) return;
+    if (isThirdPartyPossessiveCue(wrong, sentence, wrongIndex)) return;
 
     // Two-actor guard (precision): when the sentence ALSO contains an opposite-gender SUBJECT
     // pronoun doing its own action ("Mika tries to block him, but HE simply steps around her"),

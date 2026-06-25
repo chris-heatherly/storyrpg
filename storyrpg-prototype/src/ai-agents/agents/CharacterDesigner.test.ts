@@ -147,6 +147,95 @@ describe('CharacterDesigner relationship-dimension backfill (1.4)', () => {
   });
 });
 
+describe('CharacterDesigner low-weight voice sample backfill', () => {
+  const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+
+  const voice = (greetingExamples: string[]) => ({
+    vocabulary: 'educated',
+    sentenceLength: 'average',
+    formality: 'neutral',
+    verbalTics: [],
+    favoriteExpressions: [],
+    avoidedWords: [],
+    whenHappy: 'Warmer.',
+    whenAngry: 'Sharper.',
+    whenNervous: 'Quieter.',
+    whenLying: 'Too precise.',
+    greetingExamples,
+    farewellExamples: ['Goodbye.'],
+    underStressExamples: ['Not now.'],
+    writingGuidance: 'Brief and precise.',
+  });
+
+  const character = (id: string, greetingExamples: string[], tier = 'background') => ({
+    id,
+    name: id,
+    pronouns: 'she/her',
+    tier,
+    want: 'To get through the moment without drawing attention.',
+    fear: 'Being pulled into danger she does not understand.',
+    flaw: 'She withholds context when frightened.',
+    voiceProfile: voice(greetingExamples),
+  });
+
+  it('pads minor/background greeting examples before structural validation', () => {
+    const bible: any = {
+      characters: [character('char-ileana', ['Bună.'])],
+      keyDynamics: [],
+      gaps: [],
+      doNotForget: [],
+      voiceDistinctions: 'Each character has a distinct rhythm.',
+    };
+    const input: any = {
+      charactersToCreate: [
+        { id: 'char-ileana', name: 'Ileana', role: 'neutral', importance: 'minor', briefDescription: 'A brief phone contact.' },
+      ],
+    };
+
+    designer.backfillLowWeightVoiceSamples(bible, input);
+    expect(bible.characters[0].voiceProfile.greetingExamples).toHaveLength(2);
+    expect(() => designer.validateCharacterBible(bible, input)).not.toThrow();
+  });
+
+  it('pads supporting neutral greeting examples before structural validation', () => {
+    const bible: any = {
+      characters: [character('char-sadie', ['Hi, Aunt Kylie.'], 'supporting')],
+      keyDynamics: [],
+      gaps: [],
+      doNotForget: [],
+      voiceDistinctions: 'Each character has a distinct rhythm.',
+    };
+    const input: any = {
+      charactersToCreate: [
+        { id: 'char-sadie', name: 'Sadie', role: 'neutral', importance: 'supporting', briefDescription: 'A niece who appears as family pressure.' },
+      ],
+    };
+
+    designer.backfillLowWeightVoiceSamples(bible, input);
+    expect(bible.characters[0].voiceProfile.greetingExamples).toHaveLength(2);
+    expect(() => designer.validateCharacterBible(bible, input)).not.toThrow();
+  });
+
+  it('does not pad major character voice samples', () => {
+    const bible: any = {
+      characters: [character('char-kylie', ['Hi.'], 'core')],
+      keyDynamics: [],
+      gaps: [],
+      doNotForget: [],
+      voiceDistinctions: 'Each character has a distinct rhythm.',
+    };
+    const input: any = {
+      charactersToCreate: [
+        { id: 'char-kylie', name: 'Kylie', role: 'protagonist', importance: 'major', briefDescription: 'Lead.' },
+      ],
+    };
+
+    designer.backfillLowWeightVoiceSamples(bible, input);
+    expect(bible.characters[0].voiceProfile.greetingExamples).toHaveLength(1);
+    expect(() => designer.validateCharacterBible(bible, input)).toThrow('needs more greeting examples');
+  });
+});
+
 describe('CharacterDesigner.fillMissingCharacters (incomplete-cast backfill)', () => {
   afterEach(() => BaseAgent.setLlmTransportOverride(null));
   const designer: any = new CharacterDesigner({ provider: 'anthropic', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });

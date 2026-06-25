@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GATE_DEFAULTS } from './gateDefaults';
 import {
   GATE_REGISTRY,
+  gateExecutionsAtPlacement,
   gatesAtPlacement,
   isGateEnabledAt,
+  qualityGatesAtPlacement,
   resetGatePlacementWarnings,
   validateGateRegistry,
   type GateSpec,
@@ -51,6 +53,24 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
     }
   });
 
+  it('does NOT treat a season-final regression-net gate as a primary final blocker', () => {
+    const regressionNetGate: GateSpec = {
+      id: 'GATE_TEST_REGRESSION_NET',
+      placement: 'scene',
+      auditPlacements: ['season-final'],
+      finalRole: 'regression-net',
+      kind: 'blocking',
+      defaultOn: true,
+    };
+    GATE_REGISTRY.push(regressionNetGate);
+    try {
+      const violations = validateGateRegistry({ ...GATE_DEFAULTS, GATE_TEST_REGRESSION_NET: true });
+      expect(violations.filter((v) => v.gateId === 'GATE_TEST_REGRESSION_NET')).toEqual([]);
+    } finally {
+      GATE_REGISTRY.pop();
+    }
+  });
+
   it('every policy exception is substantive and names a planned fix', () => {
     const exceptions = GATE_REGISTRY.filter((g) => g.policyException);
     // Exceptions are allowed but must stay rare and explicit.
@@ -71,17 +91,23 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
 
   it('resolves enablement identically to isGateEnabled and stays silent at the registered placement', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // GATE_OUTCOME_TEXT_QUALITY: default-ON, registered season-final.
-    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'season-final')).toBe(true);
+    // GATE_OUTCOME_TEXT_QUALITY: default-ON, primary scene gate.
+    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'scene')).toBe(true);
     expect(warn).not.toHaveBeenCalled();
   });
 
   it('warns ONCE when an enabled gate executes away from its registered placement', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'scene')).toBe(true);
-    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'scene')).toBe(true);
+    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'episode')).toBe(true);
+    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'episode')).toBe(true);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain('registered at "season-final"');
+    expect(warn.mock.calls[0][0]).toContain('registered at "scene"');
+  });
+
+  it('stays silent when an enabled gate executes at an audit placement', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(isGateEnabledAt('GATE_OUTCOME_TEXT_QUALITY', 'season-final')).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('never warns for a disabled gate (placement is moot at runtime)', () => {
@@ -101,18 +127,36 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
 
   it('gatesAtPlacement enumerates the registered gates for routing', () => {
     const seasonFinal = gatesAtPlacement('season-final').map((g) => g.id);
-    expect(seasonFinal).toContain('GATE_OUTCOME_TEXT_QUALITY');
-    expect(seasonFinal).toContain('GATE_SIGNATURE_PRESENCE_STRICT');
+    expect(seasonFinal).toContain('GATE_ENCOUNTER_OUTCOME_VARIANT');
+    expect(seasonFinal).not.toContain('GATE_OUTCOME_TEXT_QUALITY');
     expect(gatesAtPlacement('plan').map((g) => g.id)).toContain('GATE_SETUP_PAYOFF');
     const all = (['plan', 'scene', 'episode', 'season-final'] as const).flatMap((p) => gatesAtPlacement(p));
     expect(all.length).toBe(GATE_REGISTRY.length);
   });
 
-  it('every gate the final-contract validator enforces is registered season-final (placement audit)', () => {
+  it('gateExecutionsAtPlacement includes primary and audit execution routes', () => {
+    const finalExecutions = gateExecutionsAtPlacement('season-final').map((g) => g.id);
+    expect(finalExecutions).toContain('GATE_OUTCOME_TEXT_QUALITY');
+    expect(finalExecutions).toContain('GATE_ENCOUNTER_OUTCOME_VARIANT');
+    expect(gatesAtPlacement('scene').map((g) => g.id)).toContain('GATE_OUTCOME_TEXT_QUALITY');
+  });
+
+  it('quality placement counts exclude repair infrastructure', () => {
+    const finalQuality = qualityGatesAtPlacement('season-final').map((g) => g.id);
+    expect(finalQuality).toContain('GATE_ENCOUNTER_OUTCOME_VARIANT');
+    expect(finalQuality).not.toContain('GATE_FINAL_CONTRACT_REPAIR');
+    expect(gatesAtPlacement('season-final').map((g) => g.id)).toContain('GATE_FINAL_CONTRACT_REPAIR');
+  });
+
+  it('every gate the final-contract validator enforces is registered for final execution', () => {
     // These are the enforcement sites in FinalStoryContractValidator.ts that
-    // were migrated to isGateEnabledAt(..., 'season-final'). If one moves,
-    // update BOTH the call site and the registry entry.
+    // execute at season-final. Some are now primary earlier gates with
+    // season-final audit placement, so final execution may be primary or audit.
     const enforced = [
+      'GATE_ENCOUNTER_POV',
+      'GATE_RESIDUE_CONSUME',
+      'GATE_ENCOUNTER_SKILL_REBALANCE',
+      'GATE_ENCOUNTER_PROSE_INTEGRITY',
       'GATE_PROTAGONIST_PRONOUN',
       'GATE_NPC_PRONOUN',
       'GATE_OUTCOME_TEXT_QUALITY',
@@ -122,13 +166,18 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
       'GATE_SENTENCE_OPENER_VARIETY',
       'GATE_REFERENCED_EVENT_PRESENCE',
       'GATE_CHOICE_TYPE_CONFORMANCE',
+      'GATE_CONSEQUENCE_TIER_CONFORMANCE',
       'GATE_SKILL_PLAN_CONFORMANCE',
       'GATE_ENCOUNTER_OUTCOME_VARIANT',
       'GATE_QA_CRITICAL_BLOCK',
     ];
     const byId = new Map(GATE_REGISTRY.map((g) => [g.id, g]));
     for (const id of enforced) {
-      expect(byId.get(id)?.placement, `${id} placement`).toBe('season-final');
+      const spec = byId.get(id);
+      expect(
+        spec?.placement === 'season-final' || spec?.auditPlacements?.includes('season-final'),
+        `${id} final execution route`,
+      ).toBe(true);
     }
   });
 });

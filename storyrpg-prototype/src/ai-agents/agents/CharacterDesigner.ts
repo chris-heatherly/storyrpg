@@ -37,7 +37,7 @@ export interface CharacterDesignerInput {
   charactersToCreate: Array<{
     id: string;
     name: string;
-    role: 'protagonist' | 'antagonist' | 'ally' | 'neutral' | 'wildcard';
+    role: 'protagonist' | 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral' | 'wildcard';
     briefDescription: string;
     importance: 'major' | 'supporting' | 'minor';
     fashionStyle?: CharacterFashionStyle;
@@ -469,6 +469,7 @@ Before finalizing:
       // whole bible. No-op when every requested character is present.
       await this.fillMissingCharacters(characterBible, input);
       this.preserveInputFashionStyle(characterBible, input);
+      this.backfillLowWeightVoiceSamples(characterBible, input);
 
       this.validateCharacterBible(characterBible, input);
       characterBible.gaps = [];
@@ -722,6 +723,7 @@ OUTPUT BUDGET:
 - Keep arrays to 1-2 items unless a requirement below asks for more.
 - Keep relationships to at most 2 per character and keyDynamics to at most 4 total.
 - If Fashion Style is provided above, reflect it in typicalAttire; do not emit a nested fashionStyle object unless the schema asks for it.
+- Preserve each requested role label exactly, including love_interest, mentor, rival, and wildcard.
 
 {
   "characters": [
@@ -730,7 +732,7 @@ OUTPUT BUDGET:
       "name": "Character Name",
       "pronouns": "he/him OR she/her (use they/them ONLY if character is explicitly non-binary or transgender)",
       "overview": "One sentence summary",
-      "role": "protagonist/antagonist/ally/neutral",
+      "role": "protagonist/antagonist/love_interest/mentor/rival/ally/neutral/wildcard",
       "importance": "major/supporting/minor",
       "tier": "core | supporting | background (NPC tier by narrative weight: 'core' = protagonist, primary antagonist, or recurring main cast with a full arc; 'supporting' = named secondary NPCs who appear in several scenes with a relationship dimension; 'background' = one-scene or ambient NPCs)",
       "physicalDescription": "Brief appearance",
@@ -1071,6 +1073,38 @@ CRITICAL REQUIREMENTS:
     // Check for voice distinction notes
     if (!bible.voiceDistinctions) {
       throw new Error('Character bible must include voice distinction notes');
+    }
+  }
+
+  private backfillLowWeightVoiceSamples(bible: CharacterBible, input: CharacterDesignerInput): void {
+    const requestedById = new Map(input.charactersToCreate.map((character) => [character.id, character]));
+
+    for (const character of bible.characters || []) {
+      const requested = requestedById.get(character.id);
+      const isSupportingNeutral = requested?.importance === 'supporting' && requested.role === 'neutral';
+      const isLowWeight = character.tier === 'background' || requested?.importance === 'minor' || isSupportingNeutral;
+      const voice = character.voiceProfile;
+      if (!isLowWeight || !voice) continue;
+
+      if (!Array.isArray(voice.greetingExamples)) {
+        voice.greetingExamples = voice.greetingExamples ? [String(voice.greetingExamples)] : [];
+      }
+
+      const greetings = voice.greetingExamples.map((line) => String(line || '').trim()).filter(Boolean);
+      const formal = voice.formality === 'formal';
+      const casual = voice.formality === 'casual';
+      const defaults = formal
+        ? ['Good evening.', 'Please, come in.']
+        : casual
+          ? ['Hey.', 'Come on in.']
+          : ['Hello.', 'Come in.'];
+
+      for (const fallback of defaults) {
+        if (greetings.length >= 2) break;
+        if (!greetings.includes(fallback)) greetings.push(fallback);
+      }
+
+      voice.greetingExamples = greetings;
     }
   }
 

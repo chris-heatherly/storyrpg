@@ -8,7 +8,13 @@ export { ChoiceDensityValidator } from './ChoiceDensityValidator';
 export type { BeatWithTiming, SceneWithTiming } from './ChoiceDensityValidator';
 
 export { ChoiceDistributionValidator } from './ChoiceDistributionValidator';
-export type { ChoiceDistributionTargets, ChoiceDistributionInput, ChoiceDistributionMetrics } from './ChoiceDistributionValidator';
+export type {
+  ChoiceDistributionPolicy,
+  ChoiceDistributionTargets,
+  ChoiceDistributionInput,
+  ChoiceDistributionMetrics,
+  ChoiceDistributionValidationOptions,
+} from './ChoiceDistributionValidator';
 export { SceneGraphBranchValidator } from './SceneGraphBranchValidator';
 export type {
   SceneGraphBranchIssue,
@@ -53,6 +59,8 @@ export type {
   FinalStoryContractIssueType,
   FinalStoryContractReport,
 } from './FinalStoryContractValidator';
+export { buildTreatmentObligationCanonicalReport } from './treatmentObligationCanonicalReport';
+export type { BuildTreatmentObligationCanonicalReportInput } from './treatmentObligationCanonicalReport';
 
 export { NPCDepthValidator } from './NPCDepthValidator';
 

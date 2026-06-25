@@ -81,7 +81,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
   return {
     name: 'choice_set',
     description: 'Compact playable choice set for a single choice-point beat.',
-    maxOutputTokens: 12000,
+    maxOutputTokens: 16384,
     schema: {
       type: 'object',
       additionalProperties: false,

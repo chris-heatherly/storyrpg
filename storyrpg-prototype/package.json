@@ -47,6 +47,7 @@
     "analyze:stat-balance": "npx ts-node --esm scripts/analyze-stat-balance.ts",
     "analyze:openers": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/analyze-sentence-openers.ts",
     "replay:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/replay-gates.ts",
+    "rollout:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/gate-rollout-status.ts",
     "corpus:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/defect-corpus/replay-corpus.ts",
     "smoke:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/smoke-live.ts",
     "invalidate:episode": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/invalidate-episode.ts",

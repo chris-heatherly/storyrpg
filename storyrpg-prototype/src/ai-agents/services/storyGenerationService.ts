@@ -92,8 +92,8 @@ function getSeasonPlannerConfig(config?: PipelineConfig): AgentConfig {
   }
 
   return {
-    provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
+    provider: 'gemini',
+    model: 'gemini-2.5-pro',
     apiKey: '',
     maxTokens: 32768,
     temperature: 0.7,

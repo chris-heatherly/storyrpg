@@ -6,6 +6,7 @@ import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 import { resolveSceneSettingContext } from '../utils/styleAdaptation';
 import { edgesForEpisode } from './seasonScenePlanBuilder';
+import { residueObligationsForEpisode } from './residueObligations';
 
 export function buildSeasonPlanDirectives(
   brief: FullCreativeBrief,
@@ -145,6 +146,7 @@ export function buildSeasonPlanDirectives(
     (contract.targetEpisodeNumbers ?? []).includes(epNum)
     || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
   );
+  const residueDirectives = residueObligationsForEpisode(plan.residuePlan, epNum);
 
   return {
     endingMode: plan.endingMode,
@@ -168,6 +170,9 @@ export function buildSeasonPlanDirectives(
     branchConsequenceContracts: branchConsequenceContracts.length > 0 ? branchConsequenceContracts : undefined,
     endingRealizationContracts: endingRealizationContracts.length > 0 ? endingRealizationContracts : undefined,
     failureModeAuditContracts: failureModeAuditContracts.length > 0 ? failureModeAuditContracts : undefined,
+    incomingResidue: residueDirectives.incomingResidue.length > 0 ? residueDirectives.incomingResidue : undefined,
+    outgoingResidue: residueDirectives.outgoingResidue.length > 0 ? residueDirectives.outgoingResidue : undefined,
+    dueResidue: residueDirectives.dueResidue.length > 0 ? residueDirectives.dueResidue : undefined,
     seasonPromiseArchitecture: plan.seasonPromiseArchitecture,
     seasonPromiseContracts: seasonPromiseContracts.length > 0 ? seasonPromiseContracts : undefined,
     informationLedgerEntries: informationLedgerEntries.length > 0 ? informationLedgerEntries : undefined,
@@ -261,11 +266,14 @@ export function createCharacterBriefFromAnalysis(
         id: char.id,
         name: char.name,
         role:
-          char.role === 'antagonist'
-            ? 'antagonist'
-            : char.role === 'ally' || char.role === 'love_interest' || char.role === 'mentor'
-              ? 'ally'
-              : 'neutral',
+          char.role === 'antagonist' ||
+          char.role === 'ally' ||
+          char.role === 'love_interest' ||
+          char.role === 'mentor' ||
+          char.role === 'rival' ||
+          char.role === 'neutral'
+            ? char.role
+            : 'neutral',
         description: char.description,
         fashionStyle: char.fashionStyle,
         importance:

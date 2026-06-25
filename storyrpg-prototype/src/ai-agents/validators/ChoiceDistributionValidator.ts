@@ -1,12 +1,14 @@
 /**
  * Choice Distribution Validator
  *
- * Validates two independent concerns:
+ * Reports two independent concerns:
  * 1. Choice TYPE distribution (expression, relationship, strategic, dilemma)
- *    matches configured percentage targets.
- * 2. Branching FREQUENCY (choices with nextSceneId) stays within the per-episode cap.
+ *    compared with configured percentage targets.
+ * 2. Branching FREQUENCY (choices with nextSceneId) compared with the per-episode cap.
  *
- * Branching is a property of any non-expression choice, not a type.
+ * Branching is a property of any non-expression choice, not a type. Exact percentages
+ * and branch caps are telemetry/advisory by default; expression choices with branching
+ * remain a strict semantic violation.
  */
 
 import { ChoiceType } from '../../types';
@@ -48,6 +50,22 @@ export interface ChoiceDistributionMetrics {
   branchingCap: number;
 }
 
+export type ChoiceDistributionPolicy = 'telemetry' | 'advisory' | 'strict';
+
+export interface ChoiceDistributionValidationOptions {
+  targetPolicy?: ChoiceDistributionPolicy;
+  branchCapPolicy?: ChoiceDistributionPolicy;
+  expressionBranchPolicy?: 'strict';
+  unknownTypePolicy?: 'advisory' | 'strict';
+}
+
+const DEFAULT_VALIDATION_OPTIONS: Required<ChoiceDistributionValidationOptions> = {
+  targetPolicy: 'telemetry',
+  branchCapPolicy: 'telemetry',
+  expressionBranchPolicy: 'strict',
+  unknownTypePolicy: 'advisory',
+};
+
 // How far off (in percentage points) a type can be before triggering an issue
 const DEFAULT_WARNING_TOLERANCE = 15;
 const DEFAULT_ERROR_TOLERANCE = 25;
@@ -71,39 +89,29 @@ export class ChoiceDistributionValidator extends BaseValidator {
   /**
    * Validate choice type distribution and branching frequency.
    */
-  validate(input: ChoiceDistributionInput): ValidationResult {
+  validate(
+    input: ChoiceDistributionInput,
+    options: ChoiceDistributionValidationOptions = {}
+  ): ValidationResult {
     const issues: ValidationIssue[] = [];
     const { choiceSets, targets, maxBranchingChoicesPerEpisode } = input;
+    const resolvedOptions: Required<ChoiceDistributionValidationOptions> = {
+      ...DEFAULT_VALIDATION_OPTIONS,
+      ...options,
+    };
     const totalChoiceSets = choiceSets.length;
 
     // === 1. Branching frequency check (always runs, even with few choice sets) ===
     const branchingCount = choiceSets.filter(cs => cs.hasBranching).length;
 
-    if (branchingCount > maxBranchingChoicesPerEpisode) {
-      issues.push(
-        this.error(
-          `${branchingCount} branching choice sets exceed the cap of ${maxBranchingChoicesPerEpisode} per episode. ` +
-          `Too many scene-routing choices creates excessive path divergence.`,
-          undefined,
-          `Remove nextSceneId from some choices, or increase the branching cap.`
-        )
-      );
-    }
+    issues.push(...this.evaluateBranchCap(
+      branchingCount,
+      maxBranchingChoicesPerEpisode,
+      resolvedOptions.branchCapPolicy
+    ));
 
     // Expression choices must never branch
-    const expressionBranching = choiceSets.filter(
-      cs => cs.choiceType === 'expression' && cs.hasBranching
-    );
-    for (const cs of expressionBranching) {
-      issues.push(
-        this.error(
-          `Expression choice set "${cs.beatId}" has branching (nextSceneId). ` +
-          `Expression choices are cosmetic and must not route to different scenes.`,
-          cs.sceneId ? `scene:${cs.sceneId}` : undefined,
-          `Remove nextSceneId or change the choice type to relationship/strategic/dilemma.`
-        )
-      );
-    }
+    issues.push(...this.evaluateExpressionBranching(choiceSets));
 
     // === 2. Type distribution check (needs enough data) ===
     if (totalChoiceSets < MIN_CHOICE_SETS_FOR_VALIDATION) {
@@ -112,7 +120,12 @@ export class ChoiceDistributionValidator extends BaseValidator {
         const hasErrors = issues.some(i => i.severity === 'error');
         return hasErrors
           ? buildFailureResult(issues, 50)
-          : buildSuccessResult(80, issues.map(i => i.message));
+          : {
+              valid: true,
+              score: 80,
+              issues,
+              suggestions: issues.map(i => i.message),
+            };
       }
       return buildSuccessResult(100, [
         `Only ${totalChoiceSets} choice sets — type distribution validation deferred (need ${MIN_CHOICE_SETS_FOR_VALIDATION}+).`,
@@ -131,8 +144,11 @@ export class ChoiceDistributionValidator extends BaseValidator {
       if (canonicalTypes.includes(type as ChoiceType)) {
         counts[type]++;
       } else {
+        const issue = resolvedOptions.unknownTypePolicy === 'strict'
+          ? this.error.bind(this)
+          : this.warning.bind(this);
         issues.push(
-          this.warning(
+          issue(
             `Choice set "${cs.beatId}" has unrecognized type "${type}". ` +
             `Expected one of: ${canonicalTypes.join(', ')}.`,
             cs.sceneId ? `scene:${cs.sceneId}` : undefined,
@@ -150,30 +166,13 @@ export class ChoiceDistributionValidator extends BaseValidator {
       deviations[t] = actualPercentages[t] - targets[t as keyof ChoiceDistributionTargets];
     }
 
-    // Check each type against its target
-    for (const t of canonicalTypes) {
-      const actual = actualPercentages[t];
-      const target = targets[t as keyof ChoiceDistributionTargets];
-      const deviation = Math.abs(deviations[t]);
-
-      if (deviation > this.errorTolerance) {
-        issues.push(
-          this.error(
-            `Choice type "${t}" is ${actual.toFixed(0)}% (target: ${target}%, deviation: ${deviations[t] > 0 ? '+' : ''}${deviations[t].toFixed(0)}pp).`,
-            undefined,
-            this.getSuggestion(t, deviations[t])
-          )
-        );
-      } else if (deviation > this.warningTolerance) {
-        issues.push(
-          this.warning(
-            `Choice type "${t}" is ${actual.toFixed(0)}% (target: ${target}%, deviation: ${deviations[t] > 0 ? '+' : ''}${deviations[t].toFixed(0)}pp).`,
-            undefined,
-            this.getSuggestion(t, deviations[t])
-          )
-        );
-      }
-    }
+    issues.push(...this.evaluateTargetDistribution(
+      canonicalTypes,
+      actualPercentages,
+      targets,
+      deviations,
+      resolvedOptions.targetPolicy
+    ));
 
     // Calculate score
     const totalDeviation = canonicalTypes.reduce((sum, t) => sum + Math.abs(deviations[t]), 0);
@@ -254,6 +253,93 @@ export class ChoiceDistributionValidator extends BaseValidator {
       default:
         return `Adjust the number of "${type}" choices.`;
     }
+  }
+
+  private evaluateExpressionBranching(
+    choiceSets: ChoiceDistributionInput['choiceSets']
+  ): ValidationIssue[] {
+    const issues: ValidationIssue[] = [];
+    const expressionBranching = choiceSets.filter(
+      cs => cs.choiceType === 'expression' && cs.hasBranching
+    );
+    for (const cs of expressionBranching) {
+      issues.push(
+        this.error(
+          `Expression choice set "${cs.beatId}" has branching (nextSceneId). ` +
+          `Expression choices are cosmetic and must not route to different scenes.`,
+          cs.sceneId ? `scene:${cs.sceneId}` : undefined,
+          `Remove nextSceneId or change the choice type to relationship/strategic/dilemma.`
+        )
+      );
+    }
+    return issues;
+  }
+
+  private evaluateBranchCap(
+    branchingCount: number,
+    maxBranchingChoicesPerEpisode: number,
+    policy: ChoiceDistributionPolicy
+  ): ValidationIssue[] {
+    if (branchingCount <= maxBranchingChoicesPerEpisode) {
+      return [];
+    }
+
+    const message =
+      `${branchingCount} branching choice sets exceed the cap of ${maxBranchingChoicesPerEpisode} per episode. ` +
+      `Too many scene-routing choices creates excessive path divergence.`;
+    const suggestion = `Remove nextSceneId from some choices, or increase the branching cap.`;
+
+    if (policy === 'strict') {
+      return [this.error(message, undefined, suggestion)];
+    }
+    if (policy === 'advisory') {
+      return [this.warning(message, undefined, suggestion)];
+    }
+    return [this.info(message, undefined, suggestion)];
+  }
+
+  private evaluateTargetDistribution(
+    canonicalTypes: ChoiceType[],
+    actualPercentages: Record<string, number>,
+    targets: ChoiceDistributionTargets,
+    deviations: Record<string, number>,
+    policy: ChoiceDistributionPolicy
+  ): ValidationIssue[] {
+    const issues: ValidationIssue[] = [];
+    for (const t of canonicalTypes) {
+      const actual = actualPercentages[t];
+      const target = targets[t as keyof ChoiceDistributionTargets];
+      const deviationValue = deviations[t];
+      const deviation = Math.abs(deviationValue);
+
+      if (policy === 'strict' && deviation > this.errorTolerance) {
+        issues.push(
+          this.error(
+            this.formatDeviationMessage(t, actual, target, deviationValue),
+            undefined,
+            this.getSuggestion(t, deviationValue)
+          )
+        );
+      } else if (deviation > this.warningTolerance) {
+        const message = this.formatDeviationMessage(t, actual, target, deviationValue);
+        const suggestion = this.getSuggestion(t, deviationValue);
+        if (policy === 'advisory' || policy === 'strict') {
+          issues.push(this.warning(message, undefined, suggestion));
+        } else {
+          issues.push(this.info(message, undefined, suggestion));
+        }
+      }
+    }
+    return issues;
+  }
+
+  private formatDeviationMessage(
+    type: string,
+    actual: number,
+    target: number,
+    deviation: number
+  ): string {
+    return `Choice type "${type}" is ${actual.toFixed(0)}% (target: ${target}%, deviation: ${deviation > 0 ? '+' : ''}${deviation.toFixed(0)}pp).`;
   }
 }
 

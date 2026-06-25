@@ -23,8 +23,14 @@ import { allocateChoiceTypeCounts, DEFAULT_CHOICE_TYPE_TARGET } from './choiceTy
 import { ChoiceDistributionValidator } from '../validators/ChoiceDistributionValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { gateEnabledPredicate } from '../remediation/gateDefaults';
+import {
+  buildValidatorPromotionRecord,
+  type GateShadowRecord,
+} from '../remediation/gateShadowLedger';
 
 const ORDER: ChoiceType[] = ['expression', 'relationship', 'strategic', 'dilemma'];
+
+export type SeasonChoiceShadowRecorder = (record: Omit<GateShadowRecord, 'timestamp' | 'runDir'>) => void;
 
 export type ChoicePayoff = 'immediate' | { payoffEpisode: number; payoffEpisodeLatest?: number };
 
@@ -51,6 +57,24 @@ function isLaterPayoff(p: ChoicePayoff): p is { payoffEpisode: number } {
   return typeof p === 'object' && p !== null && typeof (p as { payoffEpisode?: number }).payoffEpisode === 'number';
 }
 
+function swapExpressionOffLaterPayoffs(moments: SeasonChoiceMoment[], assignedById: Map<string, ChoiceType>): number {
+  let swaps = 0;
+  for (const later of moments) {
+    if (!isLaterPayoff(later.payoff) || assignedById.get(later.id) !== 'expression') continue;
+    const donor = moments.find((candidate) =>
+      candidate.id !== later.id &&
+      !isLaterPayoff(candidate.payoff) &&
+      assignedById.get(candidate.id) !== undefined &&
+      assignedById.get(candidate.id) !== 'expression');
+    if (!donor) continue;
+    const donorType = assignedById.get(donor.id)!;
+    assignedById.set(later.id, donorType);
+    assignedById.set(donor.id, 'expression');
+    swaps++;
+  }
+  return swaps;
+}
+
 /**
  * Assign a `choiceType` to every moment to hit the budget ACROSS the whole season —
  * while keeping each EPISODE's slice balanced. A naive type-ordered pool drain front-loads
@@ -67,6 +91,7 @@ function isLaterPayoff(p: ChoicePayoff): p is { payoffEpisode: number } {
 export function assignSeasonChoiceTypes(
   moments: SeasonChoiceMoment[],
   target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+  shadowRecorder?: SeasonChoiceShadowRecorder,
 ): SeasonChoicePlan {
   const n = moments.length;
   const counts = allocateChoiceTypeCounts(n, target);
@@ -106,6 +131,8 @@ export function assignSeasonChoiceTypes(
     assignedById.set(m.id, best);
   }
 
+  const latePayoffSwaps = swapExpressionOffLaterPayoffs(order.map(({ m }) => m), assignedById);
+
   const plan: SeasonChoicePlan = {
     moments: moments.map((m) => ({ ...m, choiceType: assignedById.get(m.id) })),
     counts,
@@ -126,7 +153,13 @@ export function assignSeasonChoiceTypes(
       })),
       targets: target,
       maxBranchingChoicesPerEpisode: Number.MAX_SAFE_INTEGER,
+    }, {
+      targetPolicy: 'advisory',
+      branchCapPolicy: 'telemetry',
     });
+    const errorIssues = distResult.issues.filter((i) => i.severity === 'error');
+    const advisoryIssues = distResult.issues.filter((i) => i.severity === 'warning');
+    const telemetryIssues = distResult.issues.filter((i) => i.severity === 'info');
     if (distResult.issues.length > 0) {
       console.info(
         `[ChoiceDistribution][shadow] season type-mix advisory (${distResult.issues.length} issue(s)): ` +
@@ -138,15 +171,31 @@ export function assignSeasonChoiceTypes(
       distResult.issues,
       gateEnabledPredicate,
     );
+    shadowRecorder?.(buildValidatorPromotionRecord({
+      gate: PLAN_GATE_FLAGS.choiceDistribution,
+      validator: 'ChoiceDistributionValidator',
+      scope: 'season',
+      placement: 'plan',
+      enabled: gateEnabledPredicate(PLAN_GATE_FLAGS.choiceDistribution),
+      blockingCount: distGate.blockingCount,
+      wouldRepairCount: distGate.blockingCount,
+      repairAttempted: true,
+      repairSucceeded: distGate.blockingCount === 0,
+      residualBlockingCount: distGate.blockingCount,
+      issues: distResult.issues,
+      details:
+        `moments=${plan.moments.length}; counts=${ORDER.map((t) => `${t}:${plan.counts[t]}`).join(',')}; ` +
+        `issues=${distResult.issues.length}; errorIssues=${errorIssues.length}; advisoryIssues=${advisoryIssues.length}; ` +
+        `telemetryIssues=${telemetryIssues.length}; latePayoffSwaps=${latePayoffSwaps}; planRetryCandidate=${distGate.blockingCount > 0}`,
+    }));
     if (distGate.gate) {
       // S3: remediation-ledger recording is DEFERRED for this plan-stage gate —
       // assignSeasonChoiceTypes is a pure function with no run output directory /
       // ledger baseDir to write to. The throw is observable upstream and folded
       // into the failed-run quality ledger.
-      const distErrors = distResult.issues.filter((i) => i.severity === 'error');
       throw new Error(
         `[ChoiceDistributionGate] Season choice-type distribution failed the blocking gate (${distGate.blockingCount} issue(s)): ` +
-          distErrors.map((i) => i.message).join('; ') +
+          errorIssues.map((i) => i.message).join('; ') +
           '. Unset GATE_CHOICE_DISTRIBUTION to downgrade to advisory.',
       );
     }
@@ -178,6 +227,7 @@ export interface SeasonChoiceStructureInput {
 export function buildSeasonChoicePlan(
   input: SeasonChoiceStructureInput,
   target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+  shadowRecorder?: SeasonChoiceShadowRecorder,
 ): SeasonChoicePlan {
   const moments: SeasonChoiceMoment[] = [];
   for (const [idx, c] of (input.crossEpisode ?? []).entries()) {
@@ -196,7 +246,7 @@ export function buildSeasonChoicePlan(
       moments.push({ id: `ep${ep}-c${k}`, episode: ep, anchor: 'episode decision', payoff: 'immediate' });
     }
   }
-  return assignSeasonChoiceTypes(moments, target);
+  return assignSeasonChoiceTypes(moments, target, shadowRecorder);
 }
 
 /** A planner-emitted choice-moment seed (E1 slice 4 — SeasonChoiceMomentSeed shape). */
@@ -225,6 +275,7 @@ interface SeasonPlanLike {
 export function seasonChoicePlanFromMoments(
   seeds: ChoiceMomentSeed[],
   target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+  shadowRecorder?: SeasonChoiceShadowRecorder,
 ): SeasonChoicePlan {
   const moments: SeasonChoiceMoment[] = seeds.map((s) => {
     const laterPayoff = typeof s.paysOffEpisode === 'number' && s.paysOffEpisode > s.episode;
@@ -236,7 +287,7 @@ export function seasonChoicePlanFromMoments(
       flag: s.flag,
     };
   });
-  return assignSeasonChoiceTypes(moments, target);
+  return assignSeasonChoiceTypes(moments, target, shadowRecorder);
 }
 
 /**
@@ -248,13 +299,14 @@ export function seasonChoicePlanFromSeasonPlan(
   seasonPlan: SeasonPlanLike | undefined,
   fallback: { episode: number; choicesPerEpisode: number },
   target: ChoiceTypeTarget = DEFAULT_CHOICE_TYPE_TARGET,
+  shadowRecorder?: SeasonChoiceShadowRecorder,
 ): SeasonChoicePlan {
   // E1 slice 4: prefer the planner's creatively-identified choice moments when present.
   const seeds = (seasonPlan?.choiceMoments ?? []).filter(
     (m): m is ChoiceMomentSeed => !!m && typeof m.episode === 'number' && typeof m.anchor === 'string' && !!m.id,
   );
   if (seeds.length > 0) {
-    return seasonChoicePlanFromMoments(seeds, target);
+    return seasonChoicePlanFromMoments(seeds, target, shadowRecorder);
   }
 
   const episodes = (seasonPlan?.episodes ?? [])
@@ -275,6 +327,7 @@ export function seasonChoicePlanFromSeasonPlan(
       crossEpisode,
     },
     target,
+    shadowRecorder,
   );
 }
 

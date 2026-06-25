@@ -4,6 +4,7 @@ import type { Episode, Story } from '../src/types';
 import type { SeasonScenePlan } from '../src/types/scenePlan';
 import type { EpisodeBlueprint } from '../src/ai-agents/agents/StoryArchitect';
 import { GATE_DEFAULTS } from '../src/ai-agents/remediation/gateDefaults';
+import { GATE_REGISTRY } from '../src/ai-agents/remediation/gateRegistry';
 import { OutcomeTextQualityValidator } from '../src/ai-agents/validators/OutcomeTextQualityValidator';
 import { SentenceOpenerVarietyValidator } from '../src/ai-agents/validators/SentenceOpenerVarietyValidator';
 import { RequiredBeatRealizationValidator } from '../src/ai-agents/validators/RequiredBeatRealizationValidator';
@@ -355,6 +356,38 @@ function printSummary(gates: GateEntry[], cells: CellResult[], runCount: number)
       + `${`${blockRuns}/${rows.length}`.padStart(12)}${String(threw).padStart(7)}`,
     );
   }
+
+  const cleanDefaultOff: string[] = [];
+  const defaultOffBlockers: string[] = [];
+  const repairPathNoProof: string[] = [];
+  for (const gate of gates) {
+    const rows = cells.filter((c) => c.validator === gate.validator);
+    const spec = GATE_REGISTRY.find((entry) => entry.id === gate.gateFlag);
+    if (GATE_DEFAULTS[gate.gateFlag]) continue;
+    const blockRuns = rows.filter((c) => c.wouldBlock).length;
+    if (rows.length === 0) {
+      if (spec?.repair) repairPathNoProof.push(`${gate.name} (${spec.repair})`);
+    } else if (blockRuns === 0) {
+      cleanDefaultOff.push(`${gate.name}${spec?.repair ? ` (${spec.repair})` : ''}`);
+    } else {
+      defaultOffBlockers.push(`${gate.name}: ${blockRuns}/${rows.length} run(s)`);
+    }
+  }
+
+  const advisoryOnlyReasons = [
+    'NPC_PRONOUN: advisory until an LLM coreference judge confirms the pronoun binds to the named NPC.',
+    'QA_CRITICAL_BLOCK: keep broad QA block advisory unless the proof run shows only classes with repair routes.',
+    'CHOICE_TYPE_CONFORMANCE: do not season-final block until deterministic episode-local rebalance runs before/during choice generation.',
+    'SKILL_PLAN_CONFORMANCE: do not season-final block until skill reassignment is bounded by prose-supported alternatives.',
+  ];
+
+  console.log('\nrollout buckets:');
+  console.log(`  default-off gates with clean replay data: ${cleanDefaultOff.length ? cleanDefaultOff.join(', ') : '(none)'}`);
+  console.log(`  default-off gates with blockers: ${defaultOffBlockers.length ? defaultOffBlockers.join(', ') : '(none)'}`);
+  console.log(`  gates with repair paths but no replay proof in this selection: ${repairPathNoProof.length ? repairPathNoProof.join(', ') : '(none)'}`);
+  console.log('  advisory-only / not-yet-enforceable:');
+  for (const reason of advisoryOnlyReasons) console.log(`    - ${reason}`);
+
   console.log('\nworst runs per gate (top 3 by findings):');
   for (const gate of gates) {
     const rows = cells

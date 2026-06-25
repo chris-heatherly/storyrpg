@@ -106,6 +106,15 @@ export interface CharacterArcTrackerInput {
   characterArchitecture?: CharacterArchitecture;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function truncatePromptString(value: unknown, maxLength = 600): unknown {
+  if (typeof value !== 'string') return value;
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+}
+
 export class CharacterArcTracker extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Character Arc Tracker', config);
@@ -198,7 +207,7 @@ Return ONLY JSON.
     const startingIdentity = input.startingIdentity
       ? `\n## Starting Identity\n${JSON.stringify(input.startingIdentity, null, 2)}\n`
       : '';
-    const arcPlan = (input.seasonArcPlan as Record<string, unknown>) || {};
+    const arcPlan = this.buildCompactSeasonArcPlan(input.seasonArcPlan, input.episodeIndex);
     const sceneSummary = input.episodeBlueprint.scenes
       .map(s => `- ${s.id} (${s.purpose}): ${s.description}`)
       .join('\n');
@@ -221,6 +230,97 @@ ${JSON.stringify(arcPlan, null, 2)}
 ${startingIdentity}
 ${input.characterArchitecture ? `\n## Character Architecture (agent-facing only)\n${JSON.stringify(input.characterArchitecture, null, 2)}\n` : ''}
 Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON.`;
+  }
+
+  /**
+   * The full SeasonPlanner output can carry megabytes of raw treatment text,
+   * ledgers, and validation contracts. CharacterArcTracker only needs the
+   * season spine plus the local episode's character pressure, so keep this
+   * prompt slice deliberately small and episode-local.
+   */
+  private buildCompactSeasonArcPlan(
+    plan: CharacterArcTrackerInput['seasonArcPlan'],
+    episodeIndex: number,
+  ): Record<string, unknown> {
+    if (!isRecord(plan)) return {};
+    const episodes = Array.isArray(plan.episodes) ? plan.episodes.filter(isRecord) : [];
+    const nearbyEpisodes = episodes
+      .filter((episode) => {
+        const n = Number(episode.episodeNumber);
+        return Number.isFinite(n) && Math.abs(n - episodeIndex) <= 1;
+      })
+      .map((episode) => this.compactEpisodeArcContext(episode));
+
+    return {
+      sourceTitle: truncatePromptString(plan.sourceTitle, 120),
+      seasonTitle: truncatePromptString(plan.seasonTitle, 120),
+      genre: truncatePromptString(plan.genre, 160),
+      tone: truncatePromptString(plan.tone, 240),
+      themes: this.compactValue(plan.themes, { depth: 1, maxArrayItems: 6, maxStringLength: 240 }),
+      anchors: this.compactValue(plan.anchors, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
+      sevenPoint: this.compactValue(plan.sevenPoint, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
+      characterArchitecture: this.compactValue(plan.characterArchitecture, {
+        depth: 3,
+        maxArrayItems: 8,
+        maxStringLength: 360,
+      }),
+      arcs: this.compactValue(plan.arcs, { depth: 3, maxArrayItems: 4, maxStringLength: 360 }),
+      totalEpisodes: plan.totalEpisodes,
+      currentWindow: nearbyEpisodes,
+    };
+  }
+
+  private compactEpisodeArcContext(episode: Record<string, unknown>): Record<string, unknown> {
+    const treatmentGuidance = isRecord(episode.treatmentGuidance) ? episode.treatmentGuidance : {};
+    return {
+      episodeNumber: episode.episodeNumber,
+      title: truncatePromptString(episode.title, 160),
+      synopsis: truncatePromptString(episode.synopsis, 420),
+      structuralRole: this.compactValue(episode.structuralRole, { depth: 1, maxArrayItems: 4, maxStringLength: 80 }),
+      narrativeFunction: this.compactValue(episode.narrativeFunction, {
+        depth: 2,
+        maxArrayItems: 6,
+        maxStringLength: 300,
+      }),
+      treatmentGuidance: this.compactValue({
+        dramaticQuestion: treatmentGuidance.dramaticQuestion,
+        themePressure: treatmentGuidance.themePressure,
+        liePressure: treatmentGuidance.liePressure,
+        entryGoal: treatmentGuidance.entryGoal,
+        obstacle: treatmentGuidance.obstacle,
+        forcedChoice: treatmentGuidance.forcedChoice,
+        exitShift: treatmentGuidance.exitShift,
+        emotionalCharge: treatmentGuidance.emotionalCharge,
+        consequenceResidue: treatmentGuidance.consequenceResidue,
+        endingTurnout: treatmentGuidance.endingTurnout,
+        majorChoicePressures: treatmentGuidance.majorChoicePressures,
+      }, {
+        depth: 2,
+        maxArrayItems: 6,
+        maxStringLength: 300,
+      }),
+    };
+  }
+
+  private compactValue(
+    value: unknown,
+    options: { depth: number; maxArrayItems: number; maxStringLength: number },
+  ): unknown {
+    if (typeof value === 'string') return truncatePromptString(value, options.maxStringLength);
+    if (typeof value !== 'object' || value === null) return value;
+    if (options.depth <= 0) return undefined;
+    if (Array.isArray(value)) {
+      return value
+        .slice(0, options.maxArrayItems)
+        .map((item) => this.compactValue(item, { ...options, depth: options.depth - 1 }))
+        .filter((item) => item !== undefined);
+    }
+    const compacted: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      const next = this.compactValue(child, { ...options, depth: options.depth - 1 });
+      if (next !== undefined) compacted[key] = next;
+    }
+    return compacted;
   }
 
   private normalizeTargets(targets: CharacterArcTargets, input: CharacterArcTrackerInput): CharacterArcTargets {

@@ -17,41 +17,12 @@ import {
   ValidationConfig,
 } from '../../types/validation';
 import { Consequence, ReminderPlan } from '../../types';
-import { isStructuralFlag, type SerializedCallbackLedger } from '../pipeline/callbackLedger';
-import { classifyLedgerFlag } from './FlagContractValidator';
-
-/**
- * One-shot / expressive flags (`tint:*`, `expr:*`/`expression:*`, `moment:*`) are
- * auto-generated per choice to color the immediate beat; they are NOT promises that
- * imply a future callback. Excluding them from the "should be referenced" set keeps
- * callback-debt detection focused on flags that genuinely set up a later payoff
- * (route_*, relationship/story flags), instead of inflating false positives.
- */
-function isReferentialFlag(flag: unknown): flag is string {
-  if (typeof flag !== 'string') return false;
-  const normalized = flag.trim();
-  return normalized.length > 0
-    && !/^(?:tint|expr|expression|moment):/i.test(normalized)
-    && !isStructuralFlag(normalized);
-}
-
-/**
- * Walk a (possibly compound) condition expression and return every flag name it
- * references. Recurses through `and`/`or`/`not`. Returns exact flag names so the
- * caller can match against the set of flags actually set (no substring matching).
- */
-function extractFlagNames(condition: unknown): string[] {
-  if (!condition || typeof condition !== 'object') return [];
-  const c = condition as Record<string, unknown>;
-  const out: string[] = [];
-  if (c.type === 'flag' && typeof c.flag === 'string') out.push(c.flag);
-  // Compound: { type: 'and'|'or', conditions: [...] } or { type: 'not', condition }
-  if (Array.isArray(c.conditions)) {
-    for (const child of c.conditions) out.push(...extractFlagNames(child));
-  }
-  if (c.condition) out.push(...extractFlagNames(c.condition));
-  return out;
-}
+import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import {
+  classifyLedgerFlag,
+  extractConditionKeys,
+  isReferentialChoiceFlag,
+} from '../pipeline/choiceMemoryDebt';
 
 export interface CallbackInput {
   // Scenes with their beats
@@ -132,7 +103,7 @@ export class CallbackOpportunitiesValidator {
     for (const choice of input.choices) {
       if (choice.consequences) {
         for (const consequence of choice.consequences) {
-          if (consequence.type === 'setFlag' && isReferentialFlag(consequence.flag)) {
+          if (consequence.type === 'setFlag' && isReferentialChoiceFlag(consequence.flag)) {
             flagsSet.add(consequence.flag);
           }
           if (consequence.type === 'changeScore') {
@@ -153,7 +124,7 @@ export class CallbackOpportunitiesValidator {
 
     // Add known flags/scores
     if (input.knownFlags) {
-      input.knownFlags.filter(isReferentialFlag).forEach(f => flagsSet.add(f));
+      input.knownFlags.filter(isReferentialChoiceFlag).forEach(f => flagsSet.add(f));
     }
     if (input.knownScores) {
       input.knownScores.forEach(s => scoresSet.add(s));
@@ -176,7 +147,7 @@ export class CallbackOpportunitiesValidator {
           // false-positives when one flag name is contained in another
           // (e.g. `andrei` inside `met_andrei_before_attack`).
           for (const variant of beat.textVariants) {
-            for (const flag of extractFlagNames(variant.condition)) {
+            for (const flag of extractConditionKeys(variant.condition)) {
               if (flagsSet.has(flag)) flagsReferenced.add(flag);
             }
           }

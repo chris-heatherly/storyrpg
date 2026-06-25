@@ -199,6 +199,24 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.some((s) => s.turnContract?.source === 'planner' || s.turnContract?.source === 'choice')).toBe(true);
   });
 
+  it('does not use broad episode synopsis text as a scene-local choice turn', () => {
+    const broadSynopsis = [
+      'The blog goes viral and turns the protagonist into public fodder.',
+      'After a failed date montage, she finally goes to the velvet club for a two-hour conversation.',
+      'Later her cab breaks down on a mountain road and a stranger fixes it before an anonymous warning arrives.',
+    ].join(' ');
+    const ep = episode(2, ['plotTurn1'], {
+      synopsis: broadSynopsis,
+      locations: ['city'],
+    });
+
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 2);
+    const opening = scenes[0];
+
+    expect(opening.turnContract?.centralTurn).toBe(opening.dramaticPurpose);
+    expect(opening.turnContract?.centralTurn).not.toContain('mountain road');
+  });
+
   it('paces first-meeting treatment relationship turns below earned friendship', () => {
     const ep = episode(1, ['hook'], {
       mainCharacters: ['kylie', 'mika', 'stela'],

@@ -517,6 +517,9 @@ export interface QualityScoreBasis {
   qaScore?: number;
   validationScore?: number;
   finalStoryContractScore?: number;
+  validatorComplianceScore?: number;
+  validatorBlockingIssues?: number;
+  validatorWarnings?: number;
   evidenceCoverage: number;
   caps: string[];
   penalties: string[];
@@ -971,7 +974,7 @@ function finalStoryContractScore(report?: FinalStoryContractReport): number | un
       warning.message,
     ].filter(value => value != null).join(':');
   })).size;
-  const warningPenalty = Math.min(uniqueWarningCount * 2, 15);
+  const warningPenalty = Math.min(uniqueWarningCount * 4, 30);
   const raw = 100
     - (report.blockingIssues?.length || 0) * 25
     - warningPenalty
@@ -982,6 +985,62 @@ function finalStoryContractScore(report?: FinalStoryContractReport): number | un
   return clampScore(raw);
 }
 
+export function reconcileBestPracticesReportForFinalStory(
+  report: ComprehensiveValidationReport | undefined,
+  story: Story | undefined,
+): ComprehensiveValidationReport | undefined {
+  if (!report || !story || !Array.isArray(report.blockingIssues)) return report;
+  const blockingIssues = report.blockingIssues.filter((issue) => {
+    return !isStaleRelationshipIdBestPracticeIssue(story, issue)
+      && !isStaleStatCheckBalanceIssue(story, issue);
+  });
+  if (blockingIssues.length === report.blockingIssues.length) return report;
+  return {
+    ...report,
+    blockingIssues,
+    overallPassed: blockingIssues.length === 0 ? true : report.overallPassed,
+  };
+}
+
+function isStaleRelationshipIdBestPracticeIssue(story: Story, issue: { message?: string }): boolean {
+  const match = (issue.message || '').match(
+    /Relationship consequence on choice "([^"]+)" targets unknown NPC "([^"]+)"/i,
+  );
+  if (!match) return false;
+  const choice = findChoiceInStory(story, match[1]);
+  if (!choice) return false;
+  return !(choice.consequences || []).some((consequence: any) => {
+    if (!consequence || consequence.type !== 'relationship') return false;
+    return consequence.npcId === match[2] || consequence.target === match[2];
+  });
+}
+
+function isStaleStatCheckBalanceIssue(story: Story, issue: { message?: string }): boolean {
+  const match = (issue.message || '').match(/Stat check "([^"]+)" has skillWeights totaling/i);
+  if (!match) return false;
+  const choice = findChoiceInStory(story, match[1]);
+  const weights = choice?.statCheck?.skillWeights;
+  if (!weights || typeof weights !== 'object' || Array.isArray(weights)) return false;
+  const values = Object.values(weights);
+  if (values.length === 0 || values.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+    return false;
+  }
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Math.abs(total - 1) <= 0.01;
+}
+
+function findChoiceInStory(story: Story, choiceId: string): any | undefined {
+  for (const episode of story.episodes || []) {
+    for (const scene of episode.scenes || []) {
+      for (const beat of scene.beats || []) {
+        const choice = (beat.choices || []).find((candidate: any) => candidate?.id === choiceId);
+        if (choice) return choice;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function deriveRunQualityScore(outputs: Pick<PipelineOutputs, 'qaReport' | 'bestPracticesReport' | 'finalStoryContractReport'>): {
   score: number;
   basis: QualityScoreBasis;
@@ -989,6 +1048,16 @@ export function deriveRunQualityScore(outputs: Pick<PipelineOutputs, 'qaReport' 
   const qaScore = outputs.qaReport?.overallScore;
   const validationScore = outputs.bestPracticesReport?.overallScore;
   const contractScore = finalStoryContractScore(outputs.finalStoryContractReport);
+  const validatorBlockingIssues =
+    (outputs.bestPracticesReport?.blockingIssues?.length || 0) +
+    (outputs.finalStoryContractReport?.blockingIssues?.length || 0);
+  const validatorWarnings =
+    (outputs.bestPracticesReport?.warnings?.length || 0) +
+    (outputs.finalStoryContractReport?.warnings?.length || 0);
+  const validatorComplianceScore = clampScore(
+    (validationScore ?? 0) * 0.40 +
+    (contractScore ?? 0) * 0.60,
+  );
   const caps: string[] = [];
   const penalties: string[] = [];
 
@@ -1013,15 +1082,18 @@ export function deriveRunQualityScore(outputs: Pick<PipelineOutputs, 'qaReport' 
     caps.push('final_contract_failed_cap_49');
   }
 
+  if (validatorBlockingIssues > 0) penalties.push(`validator_blocking_issues_${validatorBlockingIssues}`);
+  if (validatorWarnings > 0) penalties.push(`validator_warnings_${validatorWarnings}`);
+
   const evidenceCoverage = Math.round(
-    ((outputs.qaReport ? 0.30 : 0) +
-      (outputs.bestPracticesReport ? 0.45 : 0) +
-      (outputs.finalStoryContractReport ? 0.25 : 0)) * 100,
+    ((outputs.qaReport ? 0.20 : 0) +
+      (outputs.bestPracticesReport ? 0.30 : 0) +
+      (outputs.finalStoryContractReport ? 0.50 : 0)) * 100,
   );
   let score = clampScore(
-    (qaScore ?? 0) * 0.30 +
-    (validationScore ?? 0) * 0.45 +
-    (contractScore ?? 0) * 0.25,
+    (qaScore ?? 0) * 0.20 +
+    (validationScore ?? 0) * 0.30 +
+    (contractScore ?? 0) * 0.50,
   );
 
   for (const cap of caps) {
@@ -1035,6 +1107,9 @@ export function deriveRunQualityScore(outputs: Pick<PipelineOutputs, 'qaReport' 
       qaScore,
       validationScore,
       finalStoryContractScore: contractScore,
+      validatorComplianceScore,
+      validatorBlockingIssues,
+      validatorWarnings,
       evidenceCoverage,
       caps,
       penalties,
@@ -1427,6 +1502,10 @@ export async function savePipelineOutputs(
   const files: OutputManifest['files'] = [];
   const storyTitle = outputs.brief.story.title;
   const storyId = slugify(storyTitle);
+  outputs.bestPracticesReport = reconcileBestPracticesReportForFinalStory(
+    outputs.bestPracticesReport,
+    outputs.finalStory,
+  );
 
   console.log(`[OutputWriter] Saving pipeline outputs for "${storyTitle}"...`);
 

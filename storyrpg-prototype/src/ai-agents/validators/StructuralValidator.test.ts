@@ -355,8 +355,10 @@ describe('StructuralValidator routing prefers leadsTo over array neighbour', () 
     const result = new StructuralValidator().autoFix(story);
     const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
     const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
-    expect(lastBeat.choices?.[0]?.nextSceneId).toBe('scene-3');
-    expect(lastBeat.choices?.[0]?.nextSceneId).not.toBe('scene-2b');
+    expect(lastBeat.nextSceneId).toBe('scene-3');
+    expect(lastBeat.nextSceneId).not.toBe('scene-2b');
+    expect(lastBeat.choices).toBeUndefined();
+    expect(lastBeat.isChoicePoint).toBe(false);
   });
 
   it('corrects a contradictory synthetic continue (scene-2b) to the leadsTo bottleneck (scene-3)', () => {

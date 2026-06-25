@@ -36,6 +36,19 @@ export type GateKind =
   | 'remediation'  // an autofix/regen pass, not a detector
   | 'infra';       // wiring/arming flags (judge, repair loop, shadow plumbing)
 
+export type GateLifecycle =
+  | 'plan-contract'
+  | 'scene-contract'
+  | 'episode-contract'
+  | 'story-contract'
+  | 'repair-infra';
+
+export type GateFinalRole =
+  | 'primary'
+  | 'regression-net'
+  | 'repair-router'
+  | 'none';
+
 export type GateRepair =
   | 'autofix'       // deterministic in-place fix
   | 'regen'         // LLM regeneration route wired
@@ -48,6 +61,12 @@ export interface GateSpec {
   kind: GateKind;
   /** Mirror of GATE_DEFAULTS[id]; drift-checked by validateGateRegistry. */
   defaultOn: boolean;
+  /** Placements where the gate may still execute as an audit/regression net. */
+  auditPlacements?: GatePlacement[];
+  /** Lifecycle owner for reporting and policy checks. */
+  lifecycle?: GateLifecycle;
+  /** What role, if any, this gate plays at the final contract. */
+  finalRole?: GateFinalRole;
   /** How a hit gets fixed. Required for default-ON blocking season-final gates. */
   repair?: GateRepair;
   /**
@@ -58,7 +77,29 @@ export interface GateSpec {
   policyException?: string;
 }
 
-export const GATE_REGISTRY: GateSpec[] = [
+function defaultLifecycle(spec: Pick<GateSpec, 'placement' | 'kind'>): GateLifecycle {
+  if (spec.kind === 'infra') return 'repair-infra';
+  if (spec.placement === 'plan') return 'plan-contract';
+  if (spec.placement === 'scene') return 'scene-contract';
+  if (spec.placement === 'episode') return 'episode-contract';
+  return 'story-contract';
+}
+
+function defaultFinalRole(spec: Pick<GateSpec, 'placement' | 'kind'> & { auditPlacements?: GatePlacement[] }): GateFinalRole {
+  if (spec.kind === 'infra') return 'repair-router';
+  if (spec.placement === 'season-final') return 'primary';
+  return spec.auditPlacements?.includes('season-final') ? 'regression-net' : 'none';
+}
+
+function withGateMetadata(spec: GateSpec): GateSpec {
+  return {
+    ...spec,
+    lifecycle: spec.lifecycle ?? defaultLifecycle(spec),
+    finalRole: spec.finalRole ?? defaultFinalRole(spec),
+  };
+}
+
+const RAW_GATE_REGISTRY = [
   // ── Wave 1: deterministic in-place autofixes (episode assembly) ──
   { id: 'GATE_NPC_DEPTH', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_CHOICE_IMPACT', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'autofix' },
@@ -73,7 +114,7 @@ export const GATE_REGISTRY: GateSpec[] = [
   // echo_summary_variant leaks now REPAIR (buildDesignNoteLeakStripHandler strips the
   // bogus feedback-cue textVariant) instead of aborting — the planned fix the prior
   // policyException referenced is implemented.
-  { id: 'GATE_DESIGN_NOTE_LEAK', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_DESIGN_NOTE_LEAK', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
 
   // ── Wave 3: bounded LLM soft-gates (never abort) ──
   { id: 'GATE_JUDGE_STABILIZATION', placement: 'episode', kind: 'soft', defaultOn: true },
@@ -81,12 +122,12 @@ export const GATE_REGISTRY: GateSpec[] = [
 
   // ── Repair / judge infrastructure (the routes other gates rely on) ──
   { id: 'GATE_SCENE_REQUIRED_BEAT_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true },
-  { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', kind: 'infra', defaultOn: true },
-  { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', kind: 'infra', defaultOn: true },
-  { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', kind: 'infra', defaultOn: true },
+  { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_RECONVERGENCE_RESIDUE_REPAIR', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', kind: 'infra', defaultOn: true },
+  { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
 
   // ── Wave 4: plan-time gates (blocking is cheap fail-fast before prose) ──
   { id: 'GATE_SETUP_PAYOFF', placement: 'plan', kind: 'blocking', defaultOn: true },
@@ -95,52 +136,53 @@ export const GATE_REGISTRY: GateSpec[] = [
   { id: 'GATE_CONSEQUENCE_BUDGET', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_PROP_INTRODUCTION', placement: 'plan', kind: 'blocking', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_CHOICE_DISTRIBUTION', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', kind: 'blocking', defaultOn: true },
 
   // ── Wave 5: final-contract-class gates ──
-  { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false },
   // WS0.3: deterministic name-anchored coercion (with verb agreement) repairs the break in
   // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender
   // NPC ambiguity) is reported for the EncounterArchitect regen route.
-  { id: 'GATE_ENCOUNTER_POV', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_ENCOUNTER_POV', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   // bite-me-g22/g23: malformed second-person encounter prose ("you rooftop",
   // "You kiss takes"). Shadow by default until nested encounter outcome repair
   // can clear the gate without a season-final abort.
-  { id: 'GATE_ENCOUNTER_PROSE_INTEGRITY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_PLANNING_REGISTER_PROSE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_ENCOUNTER_PROSE_INTEGRITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_PLANNING_REGISTER_PROSE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // WS1.4: deterministic in-place reassignment of over-cap dominant-skill slots.
   { id: 'GATE_ENCOUNTER_SKILL_REBALANCE', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   // WS1.3: a dropped cold open routes to the existing season-final scene regen to re-author the opening.
   { id: 'GATE_COLD_OPEN_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SCENE_TURN_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SCENE_TURN_CLUSTER_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SCENE_TURN_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SCENE_TURN_CLUSTER_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },
   { id: 'GATE_NARRATIVE_MECHANIC_PRESSURE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_TREATMENT_FIELD_UTILIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SEASON_PROMISE_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SEASON_PROMISE_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_CHARACTER_TREATMENT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_FAILURE_MODE_AUDIT_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_MECHANIC_PRESSURE_REPAIR', placement: 'season-final', kind: 'infra', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_SKILL_PLAN_CONFORMANCE', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_TREATMENT_FIELD_UTILIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SEASON_PROMISE_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SEASON_PROMISE_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_CHARACTER_TREATMENT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_FAILURE_MODE_AUDIT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_MECHANIC_PRESSURE_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_CONSEQUENCE_TIER_CONFORMANCE', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_SKILL_PLAN_CONFORMANCE', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false },
   { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false },
   // WS0.2: deterministic generative half (inject a flag-gated read for every unread
   // consequential set-flag), so this is remediation + autofix, not a blocking abort.
-  { id: 'GATE_RESIDUE_CONSUME', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
+  { id: 'GATE_RESIDUE_CONSUME', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_WITNESS_BAKE', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_ENCOUNTER_OUTCOME_VARIANT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CONTINUITY_REMEDIATION', placement: 'episode', kind: 'remediation', defaultOn: false, repair: 'regen' },
@@ -152,29 +194,43 @@ export const GATE_REGISTRY: GateSpec[] = [
   // validator's inputs are plan-vs-treatment only, so a mismatch now fails
   // before any generation is spent (runPlanTimeFidelityChecks). The
   // season-final dispatch remains as a regression net for mid-run plan drift.
-  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true },
   // Repair-first: the fidelity judge refutes FPs (it is a treatment-fidelity finding) and the
   // scene-prose repair handler now re-authors the encounter's phase/storylet prose to depict a
   // confirmed-missing central conflict / required beat (bite-me-g18), so this no longer hard-aborts.
-  { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   {
     id: 'GATE_INFORMATION_LEDGER_SCHEDULE',
-    placement: 'season-final',
+    placement: 'plan',
+    auditPlacements: ['season-final'],
+    lifecycle: 'plan-contract',
+    finalRole: 'regression-net',
     kind: 'blocking',
     defaultOn: true,
-    policyException: 'Information ledger schedule remediation is currently plan-time assignment plus authored info-reveal generation. Planned fix: add a dedicated final-stage ledger repair route before removing this exception.',
   },
-  { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_RELATIONSHIP_PACING', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // WS1 (2026-06-12): relocated from season-final to plan placement — anchors
   // are fully known before generation (see GATE_AUTHORED_EPISODE_CONFORMANCE).
-  { id: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', placement: 'plan', kind: 'blocking', defaultOn: true },
-  { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-];
+  { id: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+] satisfies GateSpec[];
 
-/** All registered gates that execute at the given placement. */
+export const GATE_REGISTRY: GateSpec[] = RAW_GATE_REGISTRY.map(withGateMetadata);
+
+/** All registered gates whose primary lifecycle owner is the given placement. */
 export function gatesAtPlacement(placement: GatePlacement): GateSpec[] {
   return GATE_REGISTRY.filter((g) => g.placement === placement);
+}
+
+/** All gates allowed to execute at the given placement, including audit/regression nets. */
+export function gateExecutionsAtPlacement(placement: GatePlacement): GateSpec[] {
+  return GATE_REGISTRY.filter((g) => g.placement === placement || g.auditPlacements?.includes(placement));
+}
+
+/** Quality gates only; repair infrastructure is tracked separately from quality counts. */
+export function qualityGatesAtPlacement(placement: GatePlacement): GateSpec[] {
+  return gatesAtPlacement(placement).filter((g) => g.lifecycle !== 'repair-infra');
 }
 
 const placementWarned = new Set<string>();
@@ -203,7 +259,7 @@ export function isGateEnabledAt(flag: string, placement: GatePlacement): boolean
     if (!spec) {
       placementWarned.add(key);
       console.warn(`[gateRegistry] Gate "${flag}" executed at "${placement}" but is not in GATE_REGISTRY — classify it before shipping.`);
-    } else if (spec.placement !== placement) {
+    } else if (spec.placement !== placement && !spec.auditPlacements?.includes(placement)) {
       placementWarned.add(key);
       console.warn(`[gateRegistry] Gate "${flag}" executed at "${placement}" but is registered at "${spec.placement}" — fix the registry entry or the call site.`);
     }

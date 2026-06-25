@@ -51,6 +51,14 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     label: 'choice-response planning language',
     suggestion: 'Describe the consequence in-fiction; never reference authored choices or story beats.',
   },
+  {
+    // Treatment-residue reminders are planning directives for downstream agents,
+    // not prose. They can mention later reveals, scene order, or event anchors and
+    // poison event-signature validators if copied into textVariants.
+    pattern: /\bshow\s+immediate\s+residue\s+from\b|\bauthored\s+(?:path|residue)\b/i,
+    label: 'treatment-residue planning language',
+    suggestion: 'Show the consequence in-fiction; never ship treatment-residue instructions as prose.',
+  },
 ];
 
 /**
@@ -125,6 +133,8 @@ export const META_CALLBACK_REJECT_PATTERNS: RegExp[] = [
   /\bthe player chose\b/i,
   /\bthe\s+next\s+beat\s+visibly\s+responds\b/i,
   /\bauthored\s+choice\b/i,
+  /\bshow\s+immediate\s+residue\s+from\b/i,
+  /\bauthored\s+(?:path|residue)\b/i,
 ];
 
 /**

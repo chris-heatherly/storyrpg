@@ -18,7 +18,7 @@ export interface ModelOption {
   description?: string | null;
 }
 
-export const DEFAULT_LLM_PROVIDER: GeneratorLlmProvider = 'anthropic';
+export const DEFAULT_LLM_PROVIDER: GeneratorLlmProvider = 'gemini';
 export const DEFAULT_LLM_MODELS = {
   anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5',

@@ -94,6 +94,27 @@ describe('buildDesignNoteLeakStripHandler', () => {
     expect(repairedBeat.textVariants[0].text).toBe('A real alternate.');
   });
 
+  it('strips treatment-residue planning directives appended to textVariants', () => {
+    const leakedDirective = 'Show immediate residue from the authored path: Choosing the rooftop route changes who trusts you later.';
+    const story = {
+      episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{
+        id: 'b1',
+        text: 'Base prose.',
+        textVariants: [
+          { text: `A real alternate beat with grounded action.\n\n${leakedDirective}` },
+        ],
+        choices: [],
+      }] }] }],
+    } as unknown as Story;
+
+    const result = handler({ story, blockingIssues: [] }) as { story: Story; changed: boolean; record?: any };
+    const repairedBeat: any = (result.story as any).episodes[0].scenes[0].beats[0];
+
+    expect(result.changed).toBe(true);
+    expect(repairedBeat.textVariants).toHaveLength(1);
+    expect(repairedBeat.textVariants[0].text).toBe('A real alternate beat with grounded action.');
+  });
+
   it('is a no-op when no variant matches a feedback cue (clean run → golden parity)', () => {
     const story = {
       episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{

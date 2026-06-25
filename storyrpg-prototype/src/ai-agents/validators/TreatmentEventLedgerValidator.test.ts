@@ -171,6 +171,29 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(result.findings).toHaveLength(0);
   });
 
+  it('does not require abstract new-life trajectory wording when concrete hook clauses are staged', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [
+            beat('b1', 'Kylie lands in Bucharest with a one-way ticket softening in your hand.'),
+            beat('b2', 'The blank blog cursor blinks under the title Bucharest, Day One while you delete the engagement photo, block his number, and twist the diamond ring off your finger.'),
+            beat('b3', 'Mika lifts you into red heels and walks you past the velvet rope, turning the club into the first room of the life you came here to claim.'),
+          ],
+          sevenPointBeatContracts: [contract({
+            sourceText: 'Kylie lands in Bucharest fleeing a broken engagement, starts a blog, and begins building a glamorous new life.',
+            eventAtoms: ['Kylie lands in Bucharest fleeing a broken engagement, starts a blog, and begins building a glamorous new life'],
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
   it('does not accept episode-level realization when the episode only recaps the event as backstory', () => {
     const result = validator.validate({
       story: story([

@@ -141,15 +141,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // now risks hard-failing every run on residue the repair can't clear. Promote only
   // after one live `GATE_PROP_INTRODUCTION=1` run confirms the loop drives blocking→0.
   GATE_PROP_INTRODUCTION: false,
-  // STILL OFF — no structured shadow data. Unlike the gates above (logged via
-  // recordPlanGateShadow in FullStoryPipeline), these enforce at the season-planning
-  // seam (seasonChoicePlan / SeasonPlannerAgent), which has no run output directory /
-  // ledger baseDir to write a shadow record to. Their call sites now resolve through
-  // gateEnabledPredicate (registry-controlled, env-overridable) so a future flip is a
-  // one-liner here — but they cannot be promoted on data until that seam can emit a
-  // shadow record (requires threading a baseDir into the season planner).
+  // STILL OFF — current shadow telemetry shows repeated residual blockers. Keep
+  // advisory until the deterministic assignment/retry loop drives residualBlockingCount
+  // to 0 on a watched run.
   GATE_CHOICE_DISTRIBUTION: false,
-  GATE_ARC_PRESSURE: false,
+  // PROMOTED ON after plan-time shadow telemetry started recording this seam:
+  // the local ledger shows 84 records across 72 runs with 0 would-gate rows and
+  // 0 residual blockers. Plan placement means a true defect fails before prose is
+  // generated. Reversible via =0.
+  GATE_ARC_PRESSURE: true,
 
   // ── Gen-4 audit follow-ups ──
   // ENABLED: precise structural / backstop checks with a low false-positive profile
@@ -169,9 +169,10 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // (warnings + metrics); promoting to BLOCKING here would hard-fail runs until the
   // generative repair lands (or, for pronouns, false-positive on correct prose):
   //
-  // Duplicate establishing-beat: prose heuristic; needs shadow data before blocking
-  // (two scenes legitimately sharing a location could false-positive).
-  GATE_DUPLICATE_ESTABLISHING_BEAT: false,
+  // Duplicate establishing-beat: prose heuristic promoted after clean shadow +
+  // replay evidence (local ledger: 291 records across 129 runs, 0 would-gate rows;
+  // replay:gates clean). Registered with an autofix route and reversible via =0.
+  GATE_DUPLICATE_ESTABLISHING_BEAT: true,
   // Protagonist pronoun integrity: the deterministic resolver ALWAYS repairs the
   // safe (protagonist-only-sentence) wrong-gender cases (ungated). The regen route for
   // AMBIGUOUS residue now exists — when this gate is on, disambiguateProtagonistPronouns
@@ -268,14 +269,12 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // photograph, the maiden name, Mika's absence") must dramatize each listed item on
   // page; otherwise a later scene pays off a clue the reader never saw. Conservative
   // (only explicit ≥3-item enumerations).
-  // PROMOTED ON after the 2026-06-09 offline audit, then RETURNED TO SHADOW 2026-06-11
-  // (failure-cycle audit, repair-first policy): keyword-presence heuristic with NO repair
-  // handler and NO judge confirmation — the same paraphrase-blind failure shape that
-  // produced same-day season aborts from the other group-A heuristics. Findings still
-  // surface as warnings. Re-promote once its findings carry a sceneId (they currently
-  // don't reach the judge/repair selectors) and it joins the judge-confirmation set in
-  // fidelityRealizationJudge.ts.
-  GATE_REFERENCED_EVENT_PRESENCE: false,
+  // PROMOTED ON after the missing repair-first pieces landed: findings now carry
+  // scene locations, are judge-confirmable in fidelityRealizationJudge, and route
+  // through sceneProseRepairHandler/gateRepairRouter. Local replay is clean across
+  // the available archived corpus; any genuine miss gets same-scene regen before
+  // an abort. Reversible via =0.
+  GATE_REFERENCED_EVENT_PRESENCE: true,
   // G10: an `authored`-tier required beat on a STANDARD (non-encounter) scene must be
   // dramatized in that scene's prose. Closes the gap between SignatureDevicePresence
   // (signature-tier only) and EncounterAnchorContent (encounter scenes only): the audited
@@ -368,6 +367,7 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // stat-check skills within the episode toward its planned set, mirroring
   // rebalanceSeasonSkillCoverage), or move the check to scene/episode generation time.
   GATE_CHOICE_TYPE_CONFORMANCE: false,
+  GATE_CONSEQUENCE_TIER_CONFORMANCE: false,
   GATE_SKILL_PLAN_CONFORMANCE: false,
   // G12: flag setter/consumer contract. Deterministic (a condition reading a flag
   // nothing sets is dead content), but authored orphan conditions are common until

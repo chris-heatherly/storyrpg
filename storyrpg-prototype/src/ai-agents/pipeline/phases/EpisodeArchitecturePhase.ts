@@ -33,6 +33,7 @@ import {
   seasonChoicePlanFromSeasonPlan,
   type SeasonChoicePlan,
 } from '../seasonChoicePlan';
+import type { GateShadowRecord } from '../../remediation/gateShadowLedger';
 import { type GenerationPlan, setEpisodeScenes } from '../generationPlan';
 import { PipelineError } from '../errors';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
@@ -62,6 +63,7 @@ export interface EpisodeArchitecturePhaseDeps {
   // --- Helpers shared with other monolith regions (injected closures) ---
   emitPlanUpdate: (message: string) => void;
   getTargetBeatCountForScene: (sceneBlueprint: SceneBlueprint) => number;
+  recordGateShadowSafe?: (record: Omit<GateShadowRecord, 'timestamp' | 'runDir'>) => Promise<void> | void;
 }
 
 // ========================================
@@ -172,20 +174,31 @@ export class EpisodeArchitecturePhase {
         errorText.includes('scene-graph branching') ||
         errorText.includes('valid branch point') ||
         errorText.includes('branches=true');
-      if (!branchFailure || attempt >= maxArchitectureAttempts) break;
+      const densityFailure =
+        errorText.includes('TreatmentDensityGate') ||
+        errorText.includes('TreatmentBindingGate') ||
+        errorText.includes('Treatment density overload');
+      if ((!branchFailure && !densityFailure) || attempt >= maxArchitectureAttempts) break;
 
       context.emit({
         type: 'regeneration_triggered',
         phase: 'architecture',
-        message: `Retrying StoryArchitect for missing scene-graph branch (${attempt}/${maxArchitectureAttempts})`,
+        message: densityFailure
+          ? `Retrying StoryArchitect for treatment binding/density rebalance (${attempt}/${maxArchitectureAttempts})`
+          : `Retrying StoryArchitect for missing scene-graph branch (${attempt}/${maxArchitectureAttempts})`,
         data: { error: result.error },
       });
 
-      architectureInput.userPrompt =
-        `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT BRANCH REPAIR:\n` +
-        `The previous blueprint failed because it did not include a real scene-graph branch. ` +
-        `Add at least ${context.config.generation?.minSceneGraphBranchesPerEpisode ?? 1} non-expression choicePoint with branches=true, ` +
-        `at least two distinct future leadsTo scene IDs, branch scene incomingChoiceContext, and a later bottleneck/reconvergence scene.`;
+      architectureInput.userPrompt = densityFailure
+        ? `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT DENSITY REPAIR:\n` +
+          `The previous blueprint had invalid treatment-obligation bindings. ` +
+          `Do not default unplaced treatment fields, character introductions, encounter anchors, later/time-coded beats, or abstract future payoff seeds to the first scene. ` +
+          `Move encounter anchors to the planned encounter scene; bind later/night-three/1am/blog-payoff beats only to chronological matching scenes; keep abstract future payoffs as plan-level ledger obligations; add beats to valid dense scenes instead of forcing every scene to carry the same load. ` +
+          `Previous density failure: ${errorText}`
+        : `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT BRANCH REPAIR:\n` +
+          `The previous blueprint failed because it did not include a real scene-graph branch. ` +
+          `Add at least ${context.config.generation?.minSceneGraphBranchesPerEpisode ?? 1} non-expression choicePoint with branches=true, ` +
+          `at least two distinct future leadsTo scene IDs, branch scene incomingChoiceContext, and a later bottleneck/reconvergence scene.`;
     }
 
     if (!result!.success || !result!.data) {
@@ -209,6 +222,14 @@ export class EpisodeArchitecturePhase {
       message: `Created blueprint with ${result!.data.scenes.length} scenes`,
     });
 
+    if (result!.data.treatmentBindingReport) {
+      context.addCheckpoint(
+        `Episode ${brief.episode.number} Treatment Binding Rebalance`,
+        result!.data.treatmentBindingReport,
+        false,
+      );
+    }
+
     // Rebalance choice-point types before ChoiceAuthor. The 35/30/20/15 mix is a SEASON
     // budget (E1): build the season choice plan once from the season plan, then allocate
     // THIS episode against its season-assigned slice (episodeTypeCounts) rather than forcing
@@ -221,6 +242,8 @@ export class EpisodeArchitecturePhase {
         context.config.generation?.majorChoiceCount ||
         brief.options?.majorChoiceCount ||
         2,
+    }, undefined, (record) => {
+      void this.deps.recordGateShadowSafe?.(record);
     });
     const episodeSlice = episodeTypeCounts(this.deps.seasonChoicePlan, brief.episode.number);
     const choiceTypeChanges = assignChoiceTypes(result!.data.scenes as never, undefined, episodeSlice).filter((r) => r.from !== r.to);

@@ -27,8 +27,8 @@ const STOPWORDS = new Set([
 
 const LOCATION_ALIASES: Array<[string, RegExp]> = [
   ['cismigiu', /\b(?:cismigiu|cișmigiu|cismigiu\s+gardens?|gardens?|park)\b/i],
-  ['apartment', /\b(?:apartment|flat|door|deadbolt|lipscani\s+apartment)\b/i],
-  ['club', /\b(?:club|valcescu|vâlcescu|booth|bar)\b/i],
+  ['apartment', /\b(?:apartment|flat|walk-up|deadbolt|welcome\s+mat|lipscani\s+apartment)\b/i],
+  ['club', /\b(?:valcescu|vâlcescu|booth|(?<!girls' )(?<!girls )(?<!book )club)\b/i],
   ['rooftop', /\b(?:rooftop|roof|terrace)\b/i],
   ['bookshop', /\b(?:bookshop|bookstore|book\s+shop|lumina|books)\b/i],
   ['street', /\b(?:street|sidewalk|alley|courtyard|boulevard)\b/i],
@@ -42,21 +42,21 @@ const PARTICIPANT_ALIASES: Array<[string, RegExp]> = [
   ['mika', /\bmika\b/i],
   ['stela', /\bstela\b/i],
   ['radu', /\bradu\b/i],
-  ['attacker', /\b(?:attacker|attackers|shadow|shadows|adversary|enemy|unseen)\b/i],
+  ['attacker', /\b(?:attacker|attackers|adversary|enemy|unseen)\b/i],
 ];
 
 const PRESSURE_ACTIONS: Array<[string, RegExp]> = [
-  ['attack', /\b(?:attack|attacks|attacked|attacker|attackers|ambush|assault|strike|strikes|struck|lunges?|grab|grabs|grabbed|hand\s+closes|throat)\b/i],
-  ['chase', /\b(?:chase|chases|flight|flee|flees|fled|run|runs|running|pursue|pursues|pursuit)\b/i],
-  ['escape', /\b(?:escape|escapes|escaped|get\s+away|breaks?\s+free)\b/i],
-  ['pinned', /\b(?:pin|pins|pinned|trap|traps|trapped|corner|cornered|pressed\s+against)\b/i],
-  ['confront', /\b(?:confront|confronts|showdown|duel|fight|fights|fighting|struggle|struggles)\b/i],
+  ['attack', /\b(?:attack|attacks|attacked|attacker|attackers|ambush|assault|strike|strikes|struck|lunges?|grab|grabs|grabbed|hand\s+closes|(?:hand|hands|finger|fingers|grip)\s+(?:closes?|tightens?|clamps?|wraps?)\s+(?:around|on)\s+(?:your|her|his|their|the)?\s*throat)\b/i],
+  ['chase', /\b(?:chase|chases|chased|pursue|pursues|pursued|pursuit)\b/i],
+  ['escape', /\b(?:escaped|get\s+away|breaks?\s+free|escapes?\s+(?:from|through|into|out|past|before|after|him|her|them|attacker|attackers|shadow|fog|park|maze|street|garden|club|room|night))\b/i],
+  ['pinned', /\b(?:pin|pins|pinned|trap|traps|trapped|cornered|corners?\s+(?!(?:of|booth|table|seat|room|bar|street|hall|corridor)\b)(?:you|her|him|them|[A-Z][a-z]+)|pressed\s+against)\b/i],
+  ['confront', /\b(?:confront|confronts|showdown|duel)\b/i],
 ];
 
 const RESOLUTION_ACTIONS: Array<[string, RegExp]> = [
   ['rescue', /\b(?:rescue|rescues|rescued|save|saves|saved|intervene|intervenes|intervened)\b/i],
   ['walk_home', /\b(?:walks?\s+(?:you|her|him|them)?\s*home|takes?\s+(?:you|her|him|them)?\s*home|sees?\s+(?:you|her|him|them)?\s*home)\b/i],
-  ['vanish', /\b(?:vanish|vanishes|vanished|disappear|disappears|gone)\b/i],
+  ['vanish', /\b(?:vanish|vanishes|vanished|disappear|disappears)\b|\b(?:he|she|they|victor|mika|radu|stela|attacker|figure|shadow|man|woman)\s+(?:is\s+|are\s+|was\s+|were\s+)?gone\b/i],
   ['defeat', /\b(?:defeat|defeats|defeated|overcome|survive|survives|survived)\b/i],
 ];
 

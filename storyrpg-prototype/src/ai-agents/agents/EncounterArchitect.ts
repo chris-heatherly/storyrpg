@@ -20,10 +20,11 @@ import { shrinkClockToCoverage } from '../pipeline/encounterRemediation';
 import { deepenStructureRootWins } from '../utils/encounterDepthContract';
 import { rebalanceEncounterSkills } from '../utils/encounterSkillRebalance';
 import {
+  buildEncounterPhase1CompactJsonSchema,
   buildEncounterPhase1JsonSchema,
   buildEncounterPhase2JsonSchema,
   buildEncounterPhase3JsonSchema,
-  buildEncounterPhase4JsonSchema,
+  buildEncounterStoryletDraftJsonSchema,
   buildEncounterStructureJsonSchema,
 } from '../schemas/encounterSchemas';
 
@@ -458,7 +459,7 @@ export interface EncounterTelemetry {
 export interface EncounterPhaseError {
   phase: string;
   attempt: number;
-  reason: 'timeout' | 'parse' | 'empty' | 'other';
+  reason: 'timeout' | 'parse' | 'empty' | 'max_tokens' | 'safety' | 'recitation' | 'other';
   ms: number;
 }
 
@@ -466,10 +467,39 @@ export interface EncounterPhaseError {
 export function classifyPhaseError(err: unknown): EncounterPhaseError['reason'] {
   if (err instanceof TimeoutError) return 'timeout';
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (
+    msg.includes('finishreason=safety')
+    || msg.includes('"finishreason": "safety"')
+    || msg.includes('harm_category_sexually_explicit')
+    || (msg.includes('gemini returned empty content') && msg.includes('safety'))
+  ) return 'safety';
+  if (
+    msg.includes('finishreason=recitation')
+    || msg.includes('"finishreason": "recitation"')
+    || (msg.includes('gemini returned empty content') && msg.includes('recitation'))
+  ) return 'recitation';
+  if (msg.includes('max_tokens') || msg.includes('max tokens') || msg.includes('truncated llm response')) return 'max_tokens';
   if (msg.includes('timed out') || msg.includes('abort')) return 'timeout';
   if (msg.includes('json') || msg.includes('parse')) return 'parse';
   if (msg.includes('empty') || msg.includes('no response')) return 'empty';
   return 'other';
+}
+
+export class EncounterPhasedGenerationError extends Error {
+  constructor(
+    message: string,
+    readonly phaseErrors: EncounterPhaseError[],
+  ) {
+    super(message);
+    this.name = 'EncounterPhasedGenerationError';
+  }
+}
+
+export class EncounterPhase4GenerationError extends EncounterPhasedGenerationError {
+  constructor(message: string, phaseErrors: EncounterPhaseError[]) {
+    super(message, phaseErrors);
+    this.name = 'EncounterPhase4GenerationError';
+  }
 }
 
 /**
@@ -557,6 +587,20 @@ export interface Phase4Result {
   defeat: GeneratedStorylet;
   escape?: GeneratedStorylet;
   partialVictory?: GeneratedStorylet;
+}
+
+type Phase4StoryletSlot = keyof Phase4Result;
+
+const PHASE4_STORYLET_SLOTS: readonly Phase4StoryletSlot[] = Object.freeze([
+  'victory',
+  'partialVictory',
+  'defeat',
+  'escape',
+]);
+
+interface Phase4StoryletDraft {
+  beats?: Array<{ text?: string }>;
+  cost?: EncounterCost;
 }
 
 // ========================================
@@ -1695,6 +1739,10 @@ Outcomes should include consequences that match the skill being tested:
         return await this.executePhased(input, playerRelationships, allNpcs);
       } catch (phasedError) {
         const msg = phasedError instanceof Error ? phasedError.message : String(phasedError);
+        if (phasedError instanceof EncounterPhasedGenerationError && this.hasUnsafePhasedFallbackFailure(phasedError.phaseErrors)) {
+          console.error(`[EncounterArchitect] Phased generation failed for ${input.sceneId} because a structural phase hit a non-fallback Gemini failure; refusing larger legacy fallback: ${msg}`);
+          return { success: false, error: msg };
+        }
         console.warn(`[EncounterArchitect] Phased generation failed for ${input.sceneId}, falling back to legacy flow: ${msg}`);
       }
     }
@@ -2710,6 +2758,14 @@ RULES:
       this.convertFlatToTree(structure);
     }
 
+    const danglingRoutesRepaired = this.routeDanglingOutcomesToAuthoredStorylets(structure, input);
+    if (danglingRoutesRepaired > 0) {
+      console.warn(
+        `[EncounterArchitect] Routed ${danglingRoutesRepaired} dangling encounter outcome(s) in ${structure.sceneId} ` +
+        'to authored storylet aftermath.'
+      );
+    }
+
     if (!structure.payoffContext) {
       structure.payoffContext = this.buildDefaultPayoffContext(input);
     }
@@ -2836,8 +2892,86 @@ RULES:
         `left in place (flat-routed draft, embedded situation would be unplayable) — will be caught downstream.`
       );
     }
+    if (rootWinFix.skipped.length > 0) {
+      throw new Error(
+        `[EncounterArchitect] ${structure.sceneId} contains ${rootWinFix.skipped.length} root-terminal win outcome(s) ` +
+        `that could not be demoted into playable two-step branches. Refusing flat-routed draft before downstream validation.`
+      );
+    }
 
     return structure;
+  }
+
+  /**
+   * The LLM sometimes authors strong outcome prose and all four storylets, but
+   * omits the tiny route marker that tells playback whether an outcome proceeds
+   * to another situation or terminates into a storylet. Repair only that pointer:
+   * never create storylet prose here, and only route to storylets already
+   * authored by the encounter.
+   */
+  private routeDanglingOutcomesToAuthoredStorylets(
+    structure: EncounterStructure,
+    input: EncounterArchitectInput,
+  ): number {
+    const storylets = structure.storylets || {};
+    const hasStorylet = (outcome: EncounterOutcome): boolean =>
+      Boolean((storylets as Record<string, GeneratedStorylet | undefined>)[outcome]?.beats?.length);
+    const defaultByTier: Record<'success' | 'complicated' | 'failure', EncounterOutcome> = {
+      success: 'victory',
+      complicated: hasStorylet('partialVictory') ? 'partialVictory' : 'escape',
+      failure: 'defeat',
+    };
+    const chooseRoute = (
+      outcome: EncounterChoiceOutcome,
+      tier: 'success' | 'complicated' | 'failure',
+    ): EncounterOutcome | null => {
+      const explicit = outcome.encounterOutcome as EncounterOutcome | undefined;
+      if (explicit && hasStorylet(explicit)) return explicit;
+      const fallback = defaultByTier[tier];
+      return hasStorylet(fallback) ? fallback : null;
+    };
+
+    let repaired = 0;
+    const visitChoices = (choices?: Array<EncounterChoice | EmbeddedEncounterChoice>): void => {
+      for (const choice of choices || []) {
+        if (!choice.outcomes) continue;
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const outcome = choice.outcomes[tier] as EncounterChoiceOutcome | undefined;
+          if (!outcome) continue;
+          if (outcome.nextSituation) {
+            visitChoices(outcome.nextSituation.choices);
+            continue;
+          }
+          if (outcome.nextBeatId) continue;
+          if (outcome.isTerminal && outcome.encounterOutcome && hasStorylet(outcome.encounterOutcome)) continue;
+
+          const route = chooseRoute(outcome, tier);
+          if (!route) continue;
+          outcome.isTerminal = true;
+          outcome.encounterOutcome = route;
+          delete outcome.nextSituation;
+          delete outcome.nextBeatId;
+          if (route === 'partialVictory' && !outcome.cost) {
+            outcome.cost = this.buildDefaultEncounterCost(outcome.narrativeText, outcome.consequences, input.partialVictoryCost);
+          }
+          if (!outcome.visualContract) {
+            outcome.visualContract = this.buildDefaultVisualContract(
+              outcome.narrativeText,
+              tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising',
+            );
+          }
+          if (route === 'partialVictory' && outcome.cost && !outcome.visualContract.visibleCost) {
+            outcome.visualContract.visibleCost = outcome.cost.visibleComplication;
+          }
+          repaired++;
+        }
+      }
+    };
+
+    for (const beat of structure.beats || []) {
+      visitChoices(beat.choices);
+    }
+    return repaired;
   }
 
   /**
@@ -4466,6 +4600,8 @@ CRITICAL RULES:
       if (beat.choices) warnNestedChoices(beat.choices, beat.id);
     }
 
+    this.validatePlayableOutcomeRouting(structure);
+
     // Check starting beat exists
     const startingBeat = structure.beats.find(b => b.id === structure.startingBeatId);
     if (!startingBeat) {
@@ -4576,10 +4712,20 @@ CRITICAL RULES:
     const phaseErrors: EncounterPhaseError[] = [];
 
     // ---- Phase 1: Opening beat ----
-    // NO deterministic fallback here (no-boilerplate mandate): a phase-1 failure
-    // throws so execute() falls through to the lean flow, and a total failure
-    // surfaces to the caller's regen loop — template prose must never ship.
-    const phase1 = await this.runPhase1(input, dynamicsBrief, phaseErrors);
+    // NO deterministic fallback here (no-boilerplate mandate): a phase-1
+    // budget/safety failure is structurally unsafe to "rescue" with the larger
+    // legacy prompt. Wrap it with phase telemetry so execute() can fail closed
+    // and let the caller's regen loop re-author the encounter.
+    let phase1: Phase1Result;
+    try {
+      phase1 = await this.runPhase1(input, dynamicsBrief, phaseErrors);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new EncounterPhasedGenerationError(
+        `Encounter ${input.sceneId} Phase 1 failed to generate an authored opening beat; refusing legacy fallback. ${reason}`,
+        phaseErrors,
+      );
+    }
     console.log(`[EncounterArchitect] Phase 1 complete: ${phase1.openingBeat.choices.length} choices`);
 
     // ---- Phases 2, 3, 4 ----
@@ -4610,7 +4756,10 @@ CRITICAL RULES:
 
     // ---- Deterministic Assembly ----
     if (!phase4Result) {
-      throw new Error(`Encounter ${input.sceneId} Phase 4 failed to generate authored storylets; refusing default storylet fallback.`);
+      throw new EncounterPhase4GenerationError(
+        `Encounter ${input.sceneId} Phase 4 failed to generate authored storylets; refusing default storylet fallback.`,
+        phaseErrors,
+      );
     }
 
     let structure = this.assemblePhasedEncounter(input, phase1, phase2Results, phase3Result, phase4Result, dynamicsBrief);
@@ -4659,6 +4808,67 @@ CRITICAL RULES:
     return { success: true, data: structure, metadata: { encounterTelemetry: telemetry } };
   }
 
+  private hasUnsafePhasedFallbackFailure(phaseErrors: EncounterPhaseError[] | undefined): boolean {
+    return (phaseErrors ?? []).some((error) =>
+      (error.phase === 'phase1' || error.phase.startsWith('phase4'))
+        && (error.reason === 'max_tokens' || error.reason === 'safety' || error.reason === 'recitation')
+    );
+  }
+
+  private validatePlayableOutcomeRouting(structure: EncounterStructure): void {
+    let hasVictoryPath = false;
+    let hasPartialVictoryPath = false;
+    let hasDefeatPath = false;
+
+    const storyletSlots: Partial<EncounterStructure['storylets']> = structure.storylets || {};
+    const isValidTerminalOutcome = (outcome: EncounterChoiceOutcome): boolean => {
+      if (!outcome.isTerminal || !outcome.encounterOutcome) return false;
+      if (outcome.encounterOutcome === 'partialVictory') return Boolean(storyletSlots.partialVictory?.beats?.length);
+      if (outcome.encounterOutcome === 'victory') return Boolean(storyletSlots.victory?.beats?.length);
+      if (outcome.encounterOutcome === 'defeat') return Boolean(storyletSlots.defeat?.beats?.length);
+      if (outcome.encounterOutcome === 'escape') return Boolean(storyletSlots.escape?.beats?.length);
+      return false;
+    };
+
+    const visitChoices = (choices: Array<EncounterChoice | EmbeddedEncounterChoice> | undefined, path: string): void => {
+      for (const choice of choices || []) {
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const outcome = choice.outcomes?.[tier];
+          if (!outcome) {
+            throw new Error(`[EncounterArchitect] Choice "${choice.text}" at ${path} is missing the ${tier} outcome.`);
+          }
+
+          if (outcome.encounterOutcome === 'victory' || outcome.nextBeatId?.includes('victory')) hasVictoryPath = true;
+          if (outcome.encounterOutcome === 'partialVictory') hasPartialVictoryPath = true;
+          if (outcome.encounterOutcome === 'defeat' || outcome.nextBeatId?.includes('defeat')) hasDefeatPath = true;
+
+          if (outcome.nextSituation) {
+            visitChoices(outcome.nextSituation.choices, `${path} -> ${choice.id}:${tier}`);
+            continue;
+          }
+          if (outcome.nextBeatId) continue;
+          if (isValidTerminalOutcome(outcome)) continue;
+
+          throw new Error(
+            `[EncounterArchitect] Outcome ${tier} for "${choice.text}" at ${path} has neither nextSituation, ` +
+            `nextBeatId, nor a valid terminal encounterOutcome with authored storylet aftermath.`
+          );
+        }
+      }
+    };
+
+    for (const beat of structure.beats) {
+      visitChoices(beat.choices, beat.id);
+    }
+
+    if (!hasVictoryPath && !hasPartialVictoryPath) {
+      throw new Error('[EncounterArchitect] Encounter has no authored victory or partialVictory path.');
+    }
+    if (!hasDefeatPath) {
+      throw new Error('[EncounterArchitect] Encounter has no authored defeat path.');
+    }
+  }
+
   // ---- Phase 1: Opening Beat ----
 
   /**
@@ -4677,16 +4887,18 @@ CRITICAL RULES:
     label: string,
     timeoutMs: number,
     errorSink: EncounterPhaseError[],
-    fn: (signal: AbortSignal) => Promise<T>,
+    fn: (signal: AbortSignal, attempt: number, previousReason?: EncounterPhaseError['reason']) => Promise<T>,
   ): Promise<T> {
     let lastErr: unknown;
+    let previousReason: EncounterPhaseError['reason'] | undefined;
     for (let attempt = 1; attempt <= EncounterArchitect.PHASE_RETRY_ATTEMPTS; attempt++) {
       const started = Date.now();
       try {
-        return await withTimeoutAbort((signal) => fn(signal), timeoutMs, `EncounterArchitect.${label}`);
+        return await withTimeoutAbort((signal) => fn(signal, attempt, previousReason), timeoutMs, `EncounterArchitect.${label}`);
       } catch (err) {
         lastErr = err;
-        errorSink.push({ phase: label, attempt, reason: classifyPhaseError(err), ms: Date.now() - started });
+        previousReason = classifyPhaseError(err);
+        errorSink.push({ phase: label, attempt, reason: previousReason, ms: Date.now() - started });
         console.warn(`[EncounterArchitect] ${label} attempt ${attempt}/${EncounterArchitect.PHASE_RETRY_ATTEMPTS} failed: ${err instanceof Error ? err.message : err}`);
         if (attempt < EncounterArchitect.PHASE_RETRY_ATTEMPTS) {
           const backoff = 800 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 400);
@@ -4702,14 +4914,22 @@ CRITICAL RULES:
     brief: RelationshipDynamicsBrief,
     errorSink: EncounterPhaseError[],
   ): Promise<Phase1Result> {
-    return this.runPhaseWithRetry('phase1', EncounterArchitect.PHASE1_TIMEOUT_MS, errorSink, async (signal) => {
-      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase1Prompt(input, brief) }];
-      const response = await this.callLLM(messages, 1, { signal, jsonSchema: buildEncounterPhase1JsonSchema() });
+    return this.runPhaseWithRetry('phase1', EncounterArchitect.PHASE1_TIMEOUT_MS, errorSink, async (signal, _attempt, previousReason) => {
+      const compactRetry = previousReason === 'max_tokens' || previousReason === 'recitation' || previousReason === 'safety';
+      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase1Prompt(input, brief, { compactRetry }) }];
+      const response = await this.callLLM(messages, 1, {
+        signal,
+        jsonSchema: compactRetry ? buildEncounterPhase1CompactJsonSchema() : buildEncounterPhase1JsonSchema(),
+      });
       return this.parseJSON<Phase1Result>(response);
     });
   }
 
-  private buildPhase1Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
+  private buildPhase1Prompt(
+    input: EncounterArchitectInput,
+    brief: RelationshipDynamicsBrief,
+    options: { compactRetry?: boolean } = {},
+  ): string {
     const protagonist = input.protagonistInfo.name || 'the protagonist';
     const npcsList = input.npcsInvolved
       .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}${npc.voiceNotes ? `\n  Voice: ${npc.voiceNotes}` : ''}`)
@@ -4721,6 +4941,94 @@ CRITICAL RULES:
     const relationshipSection = brief.briefText
       ? `\n## Relationship Dynamics\n${brief.briefText}\n`
       : '';
+
+    if (options.compactRetry) {
+      const npcNames = input.npcsInvolved
+        .slice(0, 5)
+        .map((npc) => `${npc.name} (${npc.id}, ${npc.pronouns})`)
+        .join(', ');
+      const authoredBeats = (input.encounterBeatPlan ?? [])
+        .slice(0, 4)
+        .map((beat, index) => `${index + 1}. ${beat}`)
+        .join('\n');
+      const continuity = input.episodeSoFarSummary?.trim()
+        ? `\nContinuity: ${input.episodeSoFarSummary.slice(0, 320)}`
+        : '';
+      return `Generate the OPENING BEAT of a ${input.encounterType} encounter. Return ONLY valid JSON.
+
+## COMPACT PHASE 1 RETRY
+The prior Gemini attempt exhausted its structured output budget. Keep this answer tiny and complete.
+- No markdown, commentary, alternate drafts, analysis, or extra schema fields.
+- setupText: 2 sentences, 45 words maximum.
+- exactly 3 choices only: aggressive, cautious, clever.
+- choice text: 8 words maximum.
+- every outcome narrativeText: 1 sentence, 35 words maximum.
+- Omit reminderPlan and feedbackCue.
+- Use second person for ${protagonist}; never expose stats, dice, DCs, or system math.
+
+## Scene
+- ID: ${input.sceneId}
+- Name: ${input.sceneName}
+- Situation: ${input.sceneDescription.slice(0, 360)}
+- Stakes: ${(input.encounterStakes || 'Keep stakes personal').slice(0, 260)}
+- Skills: ${skillsList}
+- NPCs: ${npcNames || 'None'}${continuity}
+${authoredBeats ? `\n## Must Touch These Beats\n${authoredBeats}\n` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
+## Required JSON Shape (no extra fields)
+{
+  "sceneId": "${input.sceneId}",
+  "encounterType": "${input.encounterType}",
+  "goalClock": { "name": "short string", "segments": 6, "description": "short string" },
+  "threatClock": { "name": "short string", "segments": 4, "description": "short string" },
+  "stakes": { "victory": "short string", "defeat": "short string" },
+  "openingBeat": {
+    "setupText": "45 words max",
+    "choices": [
+      {
+        "id": "c1",
+        "text": "8 words max",
+        "approach": "aggressive",
+        "primarySkill": "one listed skill",
+        "impliedApproach": "aggressive",
+        "consequenceDomain": "relationship",
+        "outcomes": {
+          "success": { "narrativeText": "35 words max", "goalTicks": 2, "threatTicks": 0 },
+          "complicated": { "narrativeText": "35 words max", "goalTicks": 1, "threatTicks": 1 },
+          "failure": { "narrativeText": "35 words max", "goalTicks": 0, "threatTicks": 2 }
+        }
+      },
+      {
+        "id": "c2",
+        "text": "8 words max",
+        "approach": "cautious",
+        "primarySkill": "one listed skill",
+        "impliedApproach": "cautious",
+        "consequenceDomain": "relationship",
+        "outcomes": {
+          "success": { "narrativeText": "35 words max", "goalTicks": 2, "threatTicks": 0 },
+          "complicated": { "narrativeText": "35 words max", "goalTicks": 1, "threatTicks": 1 },
+          "failure": { "narrativeText": "35 words max", "goalTicks": 0, "threatTicks": 2 }
+        }
+      },
+      {
+        "id": "c3",
+        "text": "8 words max",
+        "approach": "clever",
+        "primarySkill": "one listed skill",
+        "impliedApproach": "clever",
+        "consequenceDomain": "information",
+        "outcomes": {
+          "success": { "narrativeText": "35 words max", "goalTicks": 2, "threatTicks": 0 },
+          "complicated": { "narrativeText": "35 words max", "goalTicks": 1, "threatTicks": 1 },
+          "failure": { "narrativeText": "35 words max", "goalTicks": 0, "threatTicks": 2 }
+        }
+      }
+    ]
+  }
+}
+
+Replace placeholders with scene-specific prose. Return ONLY the JSON object.`;
+    }
 
     return `Generate the OPENING BEAT of a ${input.encounterType} encounter. Return ONLY valid JSON.
 ${input.episodeSoFarSummary ? `\n## Episode So Far (continuity is MANDATORY — the encounter CONTINUES from the last scene; never reset time, re-stage arrivals, or treat known characters as strangers; the protagonist is "you", never an NPC)\n${input.episodeSoFarSummary}\n` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
@@ -5020,116 +5328,257 @@ Return ONLY the JSON object.`;
     brief: RelationshipDynamicsBrief,
     errorSink: EncounterPhaseError[],
   ): Promise<Phase4Result> {
-    return this.runPhaseWithRetry('phase4', EncounterArchitect.PHASE4_TIMEOUT_MS, errorSink, async (signal) => {
-      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase4Prompt(input, brief) }];
-      const response = await this.callLLM(messages, 1, { signal, jsonSchema: buildEncounterPhase4JsonSchema() });
-      return this.parseJSON<Phase4Result>(response);
+    const results = await mapWithConcurrency(
+      [...PHASE4_STORYLET_SLOTS],
+      2,
+      (slot) => this.runPhase4StoryletSlot(input, brief, slot, errorSink),
+    );
+
+    const phase4 = {} as Phase4Result;
+    for (let index = 0; index < PHASE4_STORYLET_SLOTS.length; index++) {
+      phase4[PHASE4_STORYLET_SLOTS[index]] = results[index] as any;
+    }
+    console.log(
+      `[EncounterArchitect] Phase 4 storylet slots complete: ${PHASE4_STORYLET_SLOTS.map((slot) => `${slot}=OK`).join(' ')}`
+    );
+    return phase4;
+  }
+
+  private async runPhase4StoryletSlot(
+    input: EncounterArchitectInput,
+    brief: RelationshipDynamicsBrief,
+    slot: Phase4StoryletSlot,
+    errorSink: EncounterPhaseError[],
+  ): Promise<GeneratedStorylet> {
+    return this.runPhaseWithRetry(`phase4:${slot}`, EncounterArchitect.PHASE4_TIMEOUT_MS, errorSink, async (signal, attempt, previousReason) => {
+      const useSafetyRetry = attempt > 1 && (previousReason === 'safety' || previousReason === 'recitation');
+      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase4StoryletPrompt(input, brief, slot, { safetyRetry: useSafetyRetry }) }];
+      const response = await this.callLLM(messages, 1, { signal, jsonSchema: buildEncounterStoryletDraftJsonSchema(slot) });
+      const draft = this.parseJSON<Phase4StoryletDraft>(response);
+      const storylet = this.hydratePhase4StoryletDraft(input, slot, draft);
+      this.validatePhase4StoryletSlot(storylet, slot, input);
+      return storylet;
     });
   }
 
-  private buildPhase4Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
+  private validatePhase4StoryletSlot(
+    storylet: GeneratedStorylet,
+    slot: Phase4StoryletSlot,
+    input: EncounterArchitectInput,
+  ): void {
+    if (!storylet || typeof storylet !== 'object') {
+      throw new Error(`Phase 4 ${slot} storylet returned no object`);
+    }
+    if (!Array.isArray(storylet.beats) || storylet.beats.length === 0) {
+      throw new Error(`Phase 4 ${slot} storylet returned no beats`);
+    }
+    const expectedOutcome = slot;
+    if (storylet.triggerOutcome && storylet.triggerOutcome !== expectedOutcome) {
+      storylet.triggerOutcome = expectedOutcome as any;
+    }
+    if (!storylet.id) storylet.id = `${input.sceneId}-storylet-${slot.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`;
+    if (!storylet.startingBeatId) storylet.startingBeatId = storylet.beats[0]?.id;
+    if (!Array.isArray(storylet.consequences)) storylet.consequences = [];
+    const lastBeat = storylet.beats[storylet.beats.length - 1];
+    if (lastBeat) lastBeat.isTerminal = true;
+  }
+
+  private expectedPhase4BeatCount(slot: Phase4StoryletSlot): number {
+    switch (slot) {
+      case 'victory': return 1;
+      case 'partialVictory': return 2;
+      case 'defeat': return 3;
+      case 'escape': return 2;
+    }
+  }
+
+  private phase4SlotSpec(slot: Phase4StoryletSlot): { name: string; tone: GeneratedStorylet['tone']; beatCount: string; functionText: string; costText?: string } {
+    switch (slot) {
+      case 'victory':
+        return {
+          name: 'Victory',
+          tone: 'triumphant',
+          beatCount: 'exactly 1 beat',
+          functionText: 'Show the win landing in-scene and what it changes going forward.',
+        };
+      case 'partialVictory':
+        return {
+          name: 'Costly Aftermath',
+          tone: 'bittersweet',
+          beatCount: 'exactly 2 beats',
+          functionText: 'Show relief followed by a concrete visible complication that follows forward.',
+          costText: 'Include a cost object with domain, severity, whoPays, immediateEffect, and visibleComplication.',
+        };
+      case 'defeat':
+        return {
+          name: 'Defeat',
+          tone: 'somber',
+          beatCount: 'exactly 3 beats',
+          functionText: 'Show impact, then learning, then resolve; this must feel like the beginning of recovery, not a dead end.',
+        };
+      case 'escape':
+        return {
+          name: 'Escape',
+          tone: 'relieved',
+          beatCount: 'exactly 2 beats',
+          functionText: 'Show a close call followed by assessment while keeping future danger alive.',
+        };
+    }
+  }
+
+  private phase4StoryletId(input: EncounterArchitectInput, slot: Phase4StoryletSlot): string {
+    return `${input.sceneId}-s${slot.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`).replace(/[^a-z-]/g, '')}`;
+  }
+
+  private hydratePhase4StoryletDraft(
+    input: EncounterArchitectInput,
+    slot: Phase4StoryletSlot,
+    draft: Phase4StoryletDraft,
+  ): GeneratedStorylet {
+    if (!draft || typeof draft !== 'object') {
+      throw new Error(`Phase 4 ${slot} storylet draft returned no object`);
+    }
+    const expectedBeatCount = this.expectedPhase4BeatCount(slot);
+    const rawBeats = Array.isArray(draft.beats) ? draft.beats : [];
+    if (rawBeats.length !== expectedBeatCount) {
+      throw new Error(`Phase 4 ${slot} storylet draft returned ${rawBeats.length} beat(s); expected ${expectedBeatCount}`);
+    }
+
+    const spec = this.phase4SlotSpec(slot);
+    const storyletId = this.phase4StoryletId(input, slot);
+    const beats: StoryletBeat[] = rawBeats.map((beat, index) => {
+      const text = String(beat?.text || '').trim();
+      if (!text) {
+        throw new Error(`Phase 4 ${slot} storylet draft beat ${index + 1} has no text`);
+      }
+      if (text.length > 420) {
+        throw new Error(`Phase 4 ${slot} storylet draft beat ${index + 1} exceeds 420 characters`);
+      }
+      if (/\b(?:replace with|placeholder|objective achieved|cost lands|has succeeded|has failed)\b/i.test(text)) {
+        throw new Error(`Phase 4 ${slot} storylet draft beat ${index + 1} contains placeholder or result-label prose`);
+      }
+      return {
+        id: `${storyletId}-beat-${index + 1}`,
+        text,
+        ...(index === rawBeats.length - 1 ? { isTerminal: true } : { nextBeatId: `${storyletId}-beat-${index + 2}` }),
+      };
+    });
+
+    if (slot === 'partialVictory' && !draft.cost) {
+      throw new Error('Phase 4 partialVictory storylet draft returned no cost object');
+    }
+
+    return {
+      id: storyletId,
+      name: spec.name,
+      triggerOutcome: slot,
+      tone: spec.tone,
+      narrativeFunction: spec.functionText,
+      beats,
+      startingBeatId: beats[0].id,
+      consequences: [],
+      nextSceneId: this.nextSceneForPhase4Slot(input, slot),
+      ...(slot === 'partialVictory' && draft.cost ? { cost: draft.cost } : {}),
+    };
+  }
+
+  private nextSceneForPhase4Slot(input: EncounterArchitectInput, slot: Phase4StoryletSlot): string {
+    if (slot === 'defeat') return input.defeatNextSceneId || input.victoryNextSceneId || 'next-scene';
+    return input.victoryNextSceneId || input.defeatNextSceneId || 'next-scene';
+  }
+
+  private buildPhase4StoryletPrompt(
+    input: EncounterArchitectInput,
+    brief: RelationshipDynamicsBrief,
+    slot: Phase4StoryletSlot,
+    options: { safetyRetry?: boolean } = {},
+  ): string {
+    const isSafetyRetry = options.safetyRetry === true;
     const npcsList = input.npcsInvolved
-      .map(n => `${n.name}${n.voiceNotes ? ` (Voice: ${n.voiceNotes})` : ''}`)
+      .map(n => isSafetyRetry ? n.name : `${n.name}${n.voiceNotes ? ` (Voice: ${n.voiceNotes})` : ''}`)
       .join(', ');
     const relationshipSection = brief.briefText
+      && !isSafetyRetry
       ? `\n## Relationship Dynamics\n${brief.briefText}\n`
       : '';
+    const spec = this.phase4SlotSpec(slot);
+    const sceneLine = isSafetyRetry
+      ? `${input.sceneName} — compact social aftermath inside the same scene.`
+      : `${input.sceneName} — ${input.sceneDescription}`;
+    const typeLine = isSafetyRetry
+      ? `social-suspense aftermath | Difficulty: ${input.difficulty}`
+      : `${input.encounterType} | Difficulty: ${input.difficulty}`;
+    const stakesLine = isSafetyRetry
+      ? 'trust, status, access, secrets, reputation, logistics, and future leverage'
+      : input.encounterStakes || 'personal to the protagonist';
+    const storyLine = isSafetyRetry
+      ? `${input.storyContext.title} (gothic social drama)`
+      : `${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})`;
+    const jeopardyLine = isSafetyRetry
+      ? 'Keep jeopardy social and practical: public posture, private information, trust, access, logistics, and cost.'
+      : buildGenreAwareJeopardyGuidance(input.storyContext.genre);
+    const safetyBoundary = isSafetyRetry
+      ? `## Gemini Safety Retry Boundary
+The previous attempt was blocked or recitation-filtered. Write social suspense only.
+Keep the aftermath about status, trust, access, distance, secrets, reputation, logistics, and emotional consequence.
+Do not write sensual attraction, physical intimacy, erotic implication, predatory romance, coercive threat, body-focused description, or explicit violence.
+If danger or attraction matters, translate it into dialogue, changed permission, public posture, private information, or a clear social cost.`
+      : `## Gemini Safety Boundary
+Write PG-13 gothic-romance tension only. Keep desire, danger, glamour, jealousy, and vampire atmosphere emotional and social.
+Do not describe explicit sexual contact, nudity, erotic body detail, coercive sexual threat, or sexualized aftermath.
+If intimacy matters, stage it as distance, restraint, eye contact, invitation, refusal, rumor, changed access, or emotional consequence.`;
 
-    return `Generate encounter STORYLETS (aftermath sequences). Return ONLY valid JSON.
+    return `Generate ONE compact encounter aftermath DRAFT. Return ONLY valid JSON for this draft object.
 
-## Scene: ${input.sceneName} — ${input.sceneDescription}
-## Type: ${input.encounterType} | Difficulty: ${input.difficulty}
-## Stakes: ${input.encounterStakes || 'personal to the protagonist'}
+## Scene: ${sceneLine}
+## Type: ${typeLine}
+## Stakes: ${stakesLine}
 ## NPCs: ${npcsList || 'None'}
-## Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
-## Genre-Aware Jeopardy: ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
+## Story: ${storyLine}
+## Genre-Aware Jeopardy: ${jeopardyLine}
 ${relationshipSection}
-## TASK
-Generate 4 storylets for: victory, partialVictory, defeat, escape. Each is a short aftermath sequence.
+${safetyBoundary}
 
-### Victory (1 beat): Aftermath and forward motion in the same fiction-first beat. Tone: triumphant.
-### Partial Victory (2 beats): Relief → visible cost. Tone: bittersweet. The cost must be explained in fiction-first prose.
-### Defeat (3 beats): Impact → Reflection/Learning → Resolve. Tone: somber. Must feel like START of recovery, not dead end.
-### Escape (2 beats): Close call → Assessment. Tone: relieved/tense.
+## TASK
+Generate ONLY the authored prose draft for the "${slot}" aftermath.
+- Required length: ${spec.beatCount}
+- Narrative function: ${spec.functionText}
+${spec.costText ? `- Cost requirement: ${spec.costText}` : ''}
 
 ${ENCOUNTER_PROSE_DISCIPLINE}
 
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
-- Beat text: 2-3 sentences max. Reference specific NPCs and the encounter's stakes.
+- Keep the JSON compact: no markdown, no commentary, no extra fields, no alternate drafts.
+- Beat text: 1-2 short sentences, under 45 words per beat. Reference specific NPCs and the encounter's stakes.
 - Never use result-label prose like "victory," "defeat," "objective achieved," "cost lands," "has succeeded," or "has failed" as reader-facing text.
 - If a partialVictory has a cost, describe the concrete visible complication in the scene, not cost metadata.
-- Last beat in each storylet must have "isTerminal": true
+- Do NOT include id, name, triggerOutcome, tone, narrativeFunction, startingBeatId, consequences, nextSceneId, isTerminal, visualContract, or sequenceIntent. Runtime metadata is added by code.
 
 ## JSON FORMAT
 {
-  "victory": {
-    "id": "${input.sceneId}-sv",
-    "name": "Victory",
-    "triggerOutcome": "victory",
-    "tone": "triumphant",
-    "narrativeFunction": "Show the win landing in-scene and what it changes going forward",
-    "beats": [
-      { "id": "${input.sceneId}-sv-1", "text": "2-3 sentences of aftermath that show the tangible result and the character's changed posture", "isTerminal": true }
-    ],
-    "startingBeatId": "${input.sceneId}-sv-1",
-    "consequences": [],
-    "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
-  },
-  "partialVictory": {
-    "id": "${input.sceneId}-sp",
-    "name": "Costly Aftermath",
-    "triggerOutcome": "partialVictory",
-    "tone": "bittersweet",
-    "narrativeFunction": "Relief with a visible complication that follows forward",
-    "cost": {
-      "domain": "mixed",
-      "severity": "moderate",
-      "whoPays": "protagonist",
-      "immediateEffect": "One sentence naming the concrete visible complication.",
-      "visibleComplication": "One sentence showing what changed in the scene."
-    },
-    "beats": [
-      { "id": "${input.sceneId}-sp-1", "text": "2-3 sentences: relief arrives, but a specific visible complication remains" },
-      { "id": "${input.sceneId}-sp-2", "text": "1-2 sentences: the cost follows into what comes next", "isTerminal": true }
-    ],
-    "startingBeatId": "${input.sceneId}-sp-1",
-    "consequences": [],
-    "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
-  },
-  "defeat": {
-    "id": "${input.sceneId}-sd",
-    "name": "Defeat",
-    "triggerOutcome": "defeat",
-    "tone": "somber",
-    "narrativeFunction": "Process failure and find resolve",
-    "beats": [
-      { "id": "${input.sceneId}-sd-1", "text": "2-3 sentences of impact" },
-      { "id": "${input.sceneId}-sd-2", "text": "2-3 sentences of reflection" },
-      { "id": "${input.sceneId}-sd-3", "text": "1-2 sentences of resolve", "isTerminal": true }
-    ],
-    "startingBeatId": "${input.sceneId}-sd-1",
-    "consequences": [],
-    "nextSceneId": "${input.defeatNextSceneId || 'next-scene'}"
-  },
-  "escape": {
-    "id": "${input.sceneId}-se",
-    "name": "Escape",
-    "triggerOutcome": "escape",
-    "tone": "relieved",
-    "narrativeFunction": "Narrow escape and taking stock",
-    "beats": [
-      { "id": "${input.sceneId}-se-1", "text": "2-3 sentences of close call" },
-      { "id": "${input.sceneId}-se-2", "text": "1-2 sentences of assessment", "isTerminal": true }
-    ],
-    "startingBeatId": "${input.sceneId}-se-1",
-    "consequences": [],
-    "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
-  }
+  ${slot === 'partialVictory' ? `"cost": {
+    "domain": "mixed",
+    "severity": "moderate",
+    "whoPays": "protagonist",
+    "immediateEffect": "One sentence naming the concrete visible complication.",
+    "visibleComplication": "One sentence showing what changed in the scene."
+  },` : ''}
+  "beats": [
+    { "text": "Specific aftermath prose beat 1." }
+  ]
 }
 
-Replace ALL placeholder text with specific, scene-appropriate narrative.
-Return ONLY the JSON object.`;
+Replace ALL sample text with specific, scene-appropriate narrative.
+Do not expand beyond the required beat count. Keep every string concise enough for structured JSON parsing.
+Return ONLY the compact draft object, not an object keyed by outcome.`;
+  }
+
+  private buildPhase4Prompt(input: EncounterArchitectInput, brief: RelationshipDynamicsBrief): string {
+    return `${this.buildPhase4StoryletPrompt(input, brief, 'victory')}
+
+## Phase 4 Slot Note
+Phase 4 now generates bounded storylet slots separately: victory, partialVictory, defeat, escape.`;
   }
 
   // ========================================================================

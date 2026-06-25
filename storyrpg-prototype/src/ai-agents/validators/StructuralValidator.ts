@@ -767,14 +767,15 @@ export class StructuralValidator {
               const nextScene = episode.scenes[sceneIndex + 1];
               const targetSceneId = (scene as any).leadsTo?.[0] || (scene as any).fallbackSceneId || nextScene?.id || 'episode-end';
               
-              // Add continue choice to prevent dead end
-              beat.choices = [{
-                id: 'continue',
-                text: 'Continue...',
-                choiceType: 'expression' as any,
-                nextSceneId: targetSceneId,
-              }];
+              // Handoff-only scenes should advance directly. Do not fabricate a
+              // one-option "Continue..." choice: strict choice-surface gates treat
+              // that as a broken reader-facing decision, and it masks the
+              // difference between a real authored choice point and plain scene
+              // navigation.
+              beat.nextSceneId = targetSceneId;
               beat.nextBeatId = undefined;
+              beat.choices = undefined;
+              (beat as any).isChoicePoint = false;
               fixes.push(`Fixed dead-end beat ${scene.id}/${beat.id} -> ${targetSceneId}`);
               fixedCount++;
             }

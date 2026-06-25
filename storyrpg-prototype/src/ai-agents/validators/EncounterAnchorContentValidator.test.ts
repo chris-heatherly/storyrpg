@@ -144,6 +144,18 @@ describe('EncounterAnchorContentValidator — failing cases', () => {
     expect(errs.some((m) => /required beat enc-3-1-rb1/.test(m))).toBe(true);
   });
 
+  it('includes episode and scene in issue location so final-contract repair can route it', () => {
+    const planned = plannedEncounter();
+    const story = storyWith([
+      sceneWithBeats('enc-3-1', [
+        'The wall breach opened a ragged gap and the defenders scrambled to hold the line.',
+      ]),
+    ]);
+    const result = validator.validate(story, { scenePlan: scenePlanOf([planned]) });
+    const requiredBeatIssue = result.issues.find((issue) => /required beat enc-3-1-rb1/.test(issue.message));
+    expect(requiredBeatIssue?.location).toContain('encounterAnchor:ep3:enc-3-1');
+  });
+
   it('ERRORS when an authored anchor produced no final scene (dropped)', () => {
     const planned = plannedEncounter();
     const story = storyWith([sceneWithBeats('some-other-scene', ['unrelated prose'])]);

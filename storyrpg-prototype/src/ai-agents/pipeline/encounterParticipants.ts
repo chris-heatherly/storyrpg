@@ -27,3 +27,33 @@ export function filterProtagonistEncounterRefs<T>(
 ): T[] {
   return values.filter((value) => !isProtagonistEncounterRef(value, protagonist));
 }
+
+interface EncounterParticipantSource {
+  encounterRequiredNpcIds?: string[];
+  npcsPresent?: string[];
+  npcsInvolved?: string[];
+  encounter?: {
+    npcsInvolved?: string[];
+    requiredNpcIds?: string[];
+    requiredNpcIdsPresent?: string[];
+  };
+}
+
+interface PlannedEncounterParticipantSource {
+  npcsInvolved?: string[];
+}
+
+export function collectEncounterParticipantRefs(
+  sceneBlueprint: EncounterParticipantSource,
+  plannedEncounter?: PlannedEncounterParticipantSource,
+): string[] {
+  return Array.from(new Set([
+    ...(sceneBlueprint.encounterRequiredNpcIds || []),
+    ...(plannedEncounter?.npcsInvolved || []),
+    ...(sceneBlueprint.npcsPresent || []),
+    ...(sceneBlueprint.npcsInvolved || []),
+    ...(sceneBlueprint.encounter?.npcsInvolved || []),
+    ...(sceneBlueprint.encounter?.requiredNpcIds || []),
+    ...(sceneBlueprint.encounter?.requiredNpcIdsPresent || []),
+  ].map((ref) => String(ref || '').trim()).filter(Boolean)));
+}

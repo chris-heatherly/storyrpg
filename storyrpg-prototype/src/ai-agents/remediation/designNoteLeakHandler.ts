@@ -89,6 +89,12 @@ export function buildDesignNoteLeakStripHandler(): ContractRepairHandler {
             beat.textVariants = beat.textVariants.filter(
               (v: { text?: unknown }) => {
                 if (!v || typeof v.text !== 'string') return true;
+                const cleanedVariantText = stripMetaParagraphs(v.text, meta);
+                if (cleanedVariantText !== undefined) {
+                  v.text = cleanedVariantText;
+                  rewritten += 1;
+                  return true;
+                }
                 return !isMetaParagraph(v.text, meta);
               },
             );

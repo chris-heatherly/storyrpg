@@ -61,6 +61,41 @@ describe('CallbackCoverageValidator', () => {
     expect(result.score).toBe(100);
   });
 
+  it('uses exact payoffEvents when present instead of total payoffCount', () => {
+    const ledger = makeLedger([
+      makeHook({
+        id: 'hook-old-payoff',
+        sourceEpisode: 1,
+        payoffCount: 1,
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+        summary: 'The player promised to protect Mika.',
+      }),
+      makeHook({
+        id: 'hook-this-episode',
+        sourceEpisode: 1,
+        payoffCount: 1,
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+        summary: 'The player kept the blog post quiet.',
+      }),
+    ]);
+    ledger.payoffEvents = [{
+      hookId: 'hook-this-episode',
+      episode: 3,
+      sceneId: 's3',
+      beatId: 'b3',
+      source: 'residue_obligation',
+      creditedAt: '2026-06-24T00:00:00.000Z',
+    }];
+
+    const result = new CallbackCoverageValidator().validate({
+      ledger,
+      currentEpisode: 3,
+      totalEpisodes: 5,
+    });
+
+    expect(result.metrics.hooksPaidOffThisEpisode).toBe(1);
+  });
+
   it('warns when no prior hooks paid off and flags stale + short-summary hooks', () => {
     const ledger = makeLedger([
       // Unresolved, still within window, never paid off -> drives "no payoff" warning.

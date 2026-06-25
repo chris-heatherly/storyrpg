@@ -31,7 +31,11 @@ import {
 } from '../validators';
 import type { SceneGraphBranchValidationResult } from '../validators/SceneGraphBranchValidator';
 import { isGateEnabled } from '../remediation/gateDefaults';
-import { buildGateShadowRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
+import {
+  buildGateShadowRecord,
+  buildValidatorPromotionRecord,
+  type GateShadowRecord,
+} from '../remediation/gateShadowLedger';
 import { runReconvergenceResidueGate } from '../remediation/reconvergenceResidueRepair';
 import { hasMissingResidueFindings } from './reconvergenceResidue';
 import {
@@ -51,6 +55,38 @@ import type { PipelineEvent } from './events';
 import { UnresolvedCallbackForPrompt } from './callbackOrchestration';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
+
+function repairDuplicateEstablishingBeatText(
+  episode: Episode,
+  blueprint: EpisodeBlueprint | undefined,
+  issues: Array<{ sceneId: string; beatId?: string; priorSceneId: string }>,
+): number {
+  const locationByScene = new Map<string, string>();
+  for (const scene of blueprint?.scenes ?? []) {
+    if (scene.id && scene.location) locationByScene.set(scene.id, scene.location);
+  }
+  let repaired = 0;
+  for (const issue of issues) {
+    const scene = (episode.scenes ?? []).find((candidate) => candidate.id === issue.sceneId);
+    if (!scene) continue;
+    const beat = (scene.beats ?? []).find((candidate) =>
+      issue.beatId ? candidate.id === issue.beatId : !candidate.isChoiceBridge && typeof candidate.text === 'string' && candidate.text.trim().length > 0,
+    );
+    if (!beat?.text) continue;
+    const text = beat.text.trim();
+    const firstStop = text.search(/[.!?]/);
+    const rest = firstStop >= 0 ? text.slice(firstStop + 1).trim() : '';
+    const location = locationByScene.get(scene.id);
+    beat.text = [
+      location
+        ? `The scene keeps you inside ${location}, carrying forward the pressure already on the page.`
+        : `The scene continues from the previous room, carrying forward its pressure instead of starting with a new arrival.`,
+      rest,
+    ].filter(Boolean).join(' ');
+    repaired += 1;
+  }
+  return repaired;
+}
 
 export interface SceneGraphValidationDeps {
   config: PipelineConfig;
@@ -242,7 +278,25 @@ export class SceneGraphValidation {
     // promotes it to blocking. (The season-level continuity remediation loop is the
     // softer landing once it lands.)
     const dupBlocking = isGateEnabled('GATE_DUPLICATE_ESTABLISHING_BEAT');
-    const dup = this.deps.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
+    let dup = this.deps.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
+    const dupInitialCount = dup.metrics.duplicateEstablishingBeatCount;
+    let dupRepairAttempted = false;
+    let dupRepairSucceeded = false;
+    if (dupBlocking && dup.metrics.duplicateEstablishingBeatCount > 0) {
+      dupRepairAttempted = true;
+      const repaired = repairDuplicateEstablishingBeatText(episode, blueprint, dup.issues);
+      if (repaired > 0) {
+        const rerun = this.deps.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
+        dupRepairSucceeded = rerun.metrics.duplicateEstablishingBeatCount === 0;
+        dup = rerun;
+        this.deps.emit({
+          type: dupRepairSucceeded ? 'checkpoint' : 'warning',
+          phase: context.phase,
+          message: `DuplicateEstablishingBeatValidator repair ${dupRepairSucceeded ? 'cleared' : 'left'} ${dup.metrics.duplicateEstablishingBeatCount} duplicate establishing beat(s).`,
+          data: { repaired, result: dup },
+        });
+      }
+    }
     // Wave-0 shadow telemetry: record the flag-INDEPENDENT would-fire count
     // (duplicateEstablishingBeatCount is the same whether blocking is on or off) so
     // gate-shadow-ledger.jsonl accumulates the false-positive data this prose
@@ -253,7 +307,11 @@ export class SceneGraphValidation {
         validator: 'DuplicateEstablishingBeatValidator',
         scope: 'episode',
         enabled: dupBlocking,
-        blockingCount: dup.metrics.duplicateEstablishingBeatCount,
+        blockingCount: dupInitialCount,
+        wouldRepairCount: dupInitialCount,
+        repairAttempted: dupRepairAttempted,
+        repairSucceeded: dupRepairAttempted ? dupRepairSucceeded : undefined,
+        residualBlockingCount: dup.metrics.duplicateEstablishingBeatCount,
         storyId: episode.id,
       });
       const dupDetails = dup.issues.map((issue) => `${issue.priorSceneId}->${issue.sceneId}`).join('; ') || undefined;
@@ -306,6 +364,24 @@ export class SceneGraphValidation {
     // (default-off until validated against a full-season run).
     const endingBlocking = isGateEnabled('GATE_ENDING_REACHABILITY');
     const endingCheck = this.deps.endingReachabilityValidator.validateEpisode(episode, blueprint, { blocking: endingBlocking });
+    await this.deps.recordGateShadowSafe(buildValidatorPromotionRecord({
+      gate: 'GATE_ENDING_REACHABILITY',
+      validator: 'EndingReachabilityValidator',
+      scope: 'episode',
+      placement: 'season-final',
+      enabled: endingBlocking,
+      blockingCount: endingCheck.metrics.missingAxes,
+      residualBlockingCount: endingCheck.metrics.missingAxes,
+      suppressedReason: !endingBlocking && endingCheck.metrics.missingAxes > 0
+        ? 'partial-season/default-off shadow; promote only with full-season proof or a slice covering all ending-axis setInEpisode obligations'
+        : undefined,
+      storyId: episode.id,
+      issues: endingCheck.issues,
+      details:
+        `episode=${episode.number}; declaredAxes=${endingCheck.metrics.declaredAxes}; ` +
+        `setAxes=${endingCheck.metrics.setAxes}; missingAxes=${endingCheck.metrics.missingAxes}; ` +
+        `missing=${endingCheck.issues.map((issue) => issue.flag).join(',') || 'none'}`,
+    }));
     if (endingCheck.issues.length > 0) {
       this.deps.emit({
         type: 'warning',

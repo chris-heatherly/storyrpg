@@ -51,9 +51,12 @@ export class SentenceOpenerVarietyValidator extends BaseValidator {
 
   private toIssue(p: MonotonyPassage): ValidationIssue {
     const unit = p.bucket === 'beat' ? 'beat' : 'outcome tier';
+    const location = p.sceneId && typeof p.episodeNumber === 'number'
+      ? `sentenceOpener:ep${p.episodeNumber}:${p.sceneId}:${p.where}`
+      : p.where;
     return this.warning(
       `${p.bucket === 'beat' ? 'Beat' : 'Choice'} "${p.where}" opens ${p.longestRun} consecutive sentences with "You…" — monotonous second-person cadence: "${p.excerpt}${p.excerpt.length >= 90 ? '…' : ''}".`,
-      p.where,
+      location,
       `Vary openers across this ${unit}: lead some sentences with the object, a dependent clause, a sensory beat, an NPC, or environment-as-subject. Keep second person, break the "You X. You Y." run (threshold: ${MONOTONY_RUN_THRESHOLD} in a row).`,
     );
   }

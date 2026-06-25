@@ -46,6 +46,8 @@ export interface TextVariant {
   // When the variant is rendered at runtime, it represents a "payoff" of the
   // hook; generation-side bookkeeping uses this to mark hooks as acknowledged.
   callbackHookId?: string;
+  /** Planned season residue obligation this conditional prose fulfills. */
+  residueObligationId?: string;
 }
 
 export interface SkillInsight {

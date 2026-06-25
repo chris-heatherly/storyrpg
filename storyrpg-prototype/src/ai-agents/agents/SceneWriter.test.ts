@@ -1113,6 +1113,41 @@ describe('SceneWriter structural guards', () => {
     expect(prompt).toContain('leave the event itself for the encounter scene');
   });
 
+  it('renders compacted treatment contracts even when optional list fields are absent', () => {
+    const writer = createWriter();
+    const prompt = (writer as any).buildPrompt({
+      ...preEncounterInput,
+      sceneBlueprint: {
+        ...preEncounterInput.sceneBlueprint,
+        relationshipPacing: [
+          {
+            npcId: 'char-mika',
+            startStage: 'stranger',
+            targetStage: 'intrigued',
+          },
+        ],
+        mechanicPressure: [
+          {
+            id: 'pressure-1',
+            domain: 'relationship',
+            function: 'plant',
+            storyPressure: 'Mika notices Lena before Lena understands why.',
+          },
+        ],
+        authoredTreatmentFields: [
+          {
+            fieldName: 'coldOpenFunction',
+            sourceText: 'Mika makes the city feel watched.',
+          },
+        ],
+      },
+    });
+
+    expect(prompt).toContain('earned current-stage labels only');
+    expect(prompt).toContain('show the on-page event that earns it');
+    expect(prompt).toContain('Mika makes the city feel watched.');
+  });
+
   it('expands underspecified choice scenes into a stable three-beat structure', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

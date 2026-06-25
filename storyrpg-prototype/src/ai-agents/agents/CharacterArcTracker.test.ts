@@ -99,4 +99,49 @@ describe('CharacterArcTracker normalization', () => {
     expect(prompt).toContain('- mara (Mara, ally)');
     expect(prompt).not.toContain('- hero (Hero');
   });
+
+  it('compacts oversized season plans before prompting', async () => {
+    const tracker = trackerReturning({
+      episodeId: 'episode-2', arcPhaseHeadline: '', identityTargets: [], relationshipTargets: [], milestones: [],
+    });
+    await tracker.execute({
+      ...makeInput(),
+      episodeIndex: 2,
+      totalEpisodes: 8,
+      seasonArcPlan: {
+        sourceTitle: 'Bite Me',
+        seasonTitle: 'Bite Me',
+        notes: 'RAW_NOTES_SHOULD_NOT_APPEAR'.repeat(1000),
+        residuePlan: { obligations: Array.from({ length: 100 }, () => ({ sourceText: 'RAW_RESIDUE_SHOULD_NOT_APPEAR' })) },
+        arcs: [
+          { name: 'Champagne', description: 'Glossy rom-com pressure that curdles into dread.'.repeat(100) },
+        ],
+        episodes: [
+          { episodeNumber: 1, title: 'Previous Episode', synopsis: 'Previous pressure.' },
+          {
+            episodeNumber: 2,
+            title: 'Current Episode',
+            synopsis: 'Current pressure.',
+            treatmentGuidance: {
+              dramaticQuestion: 'Can Kylie trust the attention she is getting?',
+              rawStructuralRole: 'RAW_GUIDANCE_SHOULD_NOT_APPEAR'.repeat(1000),
+              majorChoicePressures: Array.from({ length: 20 }, (_, i) => `choice pressure ${i + 1}`),
+            },
+          },
+          { episodeNumber: 4, title: 'Far Future Episode', synopsis: 'Should stay out of the compact window.' },
+        ],
+      },
+    });
+    const spy = (tracker as unknown as { callLLM: ReturnType<typeof vi.fn> }).callLLM;
+    const prompt = spy.mock.calls[0][0][0].content as string;
+
+    expect(prompt.length).toBeLessThan(20000);
+    expect(prompt).toContain('Bite Me');
+    expect(prompt).toContain('Current Episode');
+    expect(prompt).toContain('Previous Episode');
+    expect(prompt).not.toContain('Far Future Episode');
+    expect(prompt).not.toContain('RAW_NOTES_SHOULD_NOT_APPEAR');
+    expect(prompt).not.toContain('RAW_RESIDUE_SHOULD_NOT_APPEAR');
+    expect(prompt).not.toContain('RAW_GUIDANCE_SHOULD_NOT_APPEAR');
+  });
 });

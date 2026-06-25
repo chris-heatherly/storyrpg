@@ -200,3 +200,78 @@ describe('Assembly timeline persistence', () => {
     expect(episode.scenes[0].mechanicPressure?.[0].storyPressure).toContain('access leverage');
   });
 });
+
+describe('Assembly encounter info markers', () => {
+  it('re-emits planned info setup markers onto converted encounter beats', () => {
+    const assembly = makeFullAssembly();
+    const episode = assembly.assembleEpisode(
+      { episode: { number: 3, title: 'Ep 3', synopsis: '' }, seasonPlan: { episodes: [] } } as any,
+      {} as any,
+      { characters: [] } as any,
+      {
+        startingSceneId: 'treatment-enc-3-1',
+        bottleneckScenes: [],
+        scenes: [{
+          id: 'treatment-enc-3-1',
+          name: 'Marinescu Dinner',
+          description: 'Kylie notices the dangerous pattern at dinner.',
+          location: 'Marinescu estate',
+          timeOfDay: 'night',
+          leadsTo: [],
+          npcsPresent: [],
+          purpose: 'encounter',
+          mood: 'dangerous',
+          keyBeats: [],
+          isEncounter: true,
+          setsUpInfoIds: ['INFO-C'],
+        }],
+      } as any,
+      [{
+        sceneId: 'treatment-enc-3-1',
+        sceneName: 'Marinescu Dinner',
+        startingBeatId: 'b1',
+        beats: [{ id: 'b1', text: 'The dinner table goes quiet.' }],
+        charactersInvolved: [],
+      }] as any,
+      [],
+      undefined,
+      new Map([[
+        'treatment-enc-3-1',
+        {
+          sceneId: 'treatment-enc-3-1',
+          encounterType: 'social',
+          beats: [{
+            id: 'beat-1',
+            phase: 'opening',
+            name: 'The wrong name',
+            setupText: 'A guest says a name he should not know.',
+            choices: [],
+            onShow: [{ type: 'setFlag', flag: 'authored_conflict_text', value: true }],
+          }],
+          startingBeatId: 'beat-1',
+          goalClock: { name: 'Composure', segments: 4, description: 'Hold the table.' },
+          threatClock: { name: 'Exposure', segments: 4, description: 'The table turns.' },
+          stakes: { victory: 'You leave with leverage.', defeat: 'You reveal too much.' },
+          tensionCurve: [],
+          storylets: {
+            victory: { id: 'v', name: 'Victory', triggerOutcome: 'victory', tone: 'tense', narrativeFunction: '', startingBeatId: 'v1', beats: [{ id: 'v1', text: 'You keep the name.' }], consequences: [] },
+            defeat: { id: 'd', name: 'Defeat', triggerOutcome: 'defeat', tone: 'tense', narrativeFunction: '', startingBeatId: 'd1', beats: [{ id: 'd1', text: 'The room notices you.' }], consequences: [] },
+          },
+          environmentalElements: [],
+          npcStates: [],
+          escalationTriggers: [],
+          informationVisibility: {},
+          estimatedDuration: '',
+          replayability: '',
+          designNotes: '',
+        } as any,
+      ]]),
+    );
+
+    const onShow = (episode.scenes[0] as any).encounter.phases[0].beats[0].onShow;
+    expect(onShow).toEqual(expect.arrayContaining([
+      { type: 'setFlag', flag: 'authored_conflict_text', value: true },
+      { type: 'setFlag', flag: 'INFO-C_setup', value: true },
+    ]));
+  });
+});

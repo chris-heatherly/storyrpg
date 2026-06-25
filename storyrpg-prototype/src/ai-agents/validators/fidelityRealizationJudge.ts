@@ -32,6 +32,7 @@ import { momentDepicted, requiredMomentFromMessage } from '../remediation/realiz
 const JUDGE_CONFIRMABLE_VALIDATORS = new Set([
   'RequiredBeatRealizationValidator',
   'SignatureDevicePresenceValidator',
+  'ReferencedEventPresenceValidator',
 ]);
 
 /** Max findings judged per contract evaluation (one batched LLM call). */

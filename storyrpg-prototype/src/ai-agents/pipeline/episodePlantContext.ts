@@ -19,6 +19,7 @@
  */
 
 import type { Choice } from '../../types/choice';
+import type { Beat } from '../../types/content';
 import type { Consequence, SetFlag } from '../../types/consequences';
 import type { CallbackLedger } from './callbackLedger';
 import type { UnresolvedCallbackForPrompt } from './callbackOrchestration';
@@ -471,6 +472,57 @@ export function emitSceneInfoMarkers(
     alreadySet.add(flag);
   }
   return choices;
+}
+
+function infoMarkerFlags(scene: { setsUpInfoIds?: string[]; revealsInfoIds?: string[]; paysOffInfoIds?: string[] }): string[] {
+  return [
+    ...(scene.setsUpInfoIds ?? []).map((id) => infoSetupFlag(id)),
+    ...(scene.revealsInfoIds ?? []).map((id) => infoRevealFlag(id)),
+    ...(scene.paysOffInfoIds ?? []).map((id) => infoPayoffFlag(id)),
+  ].filter((flag): flag is string => Boolean(flag));
+}
+
+export function emitSceneInfoMarkersOnBeats(
+  scene: { setsUpInfoIds?: string[]; revealsInfoIds?: string[]; paysOffInfoIds?: string[]; id?: string },
+  beats: Pick<Beat, 'onShow'>[],
+): number {
+  const markers = infoMarkerFlags(scene);
+  if (!beats.length || markers.length === 0) return 0;
+
+  const alreadySet = new Set<string>();
+  for (const beat of beats) {
+    for (const c of beat.onShow ?? []) {
+      if (c.type === 'setFlag' && typeof c.flag === 'string') alreadySet.add(c.flag);
+    }
+  }
+
+  let added = 0;
+  const target = beats.find((beat) => Array.isArray(beat.onShow) && beat.onShow.length > 0) ?? beats[0];
+  for (const flag of markers) {
+    if (alreadySet.has(flag)) continue;
+    target.onShow = [...(target.onShow ?? []), { type: 'setFlag', flag, value: true }];
+    alreadySet.add(flag);
+    added += 1;
+  }
+  return added;
+}
+
+export function encounterInfoMarkerTargets(encounter: {
+  beats?: Array<Pick<Beat, 'onShow'>>;
+  phases?: Array<{ beats?: Array<Pick<Beat, 'onShow'>> }>;
+  storylets?: Array<{ beats?: Array<Pick<Beat, 'onShow'>> }> | Record<string, { beats?: Array<Pick<Beat, 'onShow'>> } | undefined>;
+}): Array<Pick<Beat, 'onShow'>> {
+  const targets: Array<Pick<Beat, 'onShow'>> = [...(encounter.beats ?? [])];
+  for (const phase of encounter.phases ?? []) {
+    targets.push(...(phase.beats ?? []));
+  }
+  const storylets = Array.isArray(encounter.storylets)
+    ? encounter.storylets
+    : Object.values(encounter.storylets ?? {});
+  for (const storylet of storylets) {
+    targets.push(...(storylet?.beats ?? []));
+  }
+  return targets;
 }
 
 /**

@@ -41,6 +41,9 @@ import {
   EpisodeSelectionState,
   CliffhangerPlan,
   SeasonChoiceMomentSeed,
+  SeasonResidueObligation,
+  ResidueObligationKind,
+  ResiduePayoffPolicy,
 } from '../../types/seasonPlan';
 import {
   distributeSevenPoints,
@@ -125,6 +128,7 @@ type MutablePlanData = Partial<SeasonPlan> & {
   seasonPromiseArchitecture?: Partial<SeasonPromiseArchitecture>;
   informationLedger?: any[];
   choiceMoments?: any[];
+  residuePlan?: any[];
 };
 
 // ========================================
@@ -1395,6 +1399,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       crossEpisodeBranches?: any[];
       consequenceChains?: any[];
       seasonFlags?: any[];
+      residuePlan?: any[];
       difficultyCurve?: any[];
       episodeEndingRoutes?: Record<number | string, any[]>;
       episodeCliffhangers?: Record<number | string, Partial<CliffhangerPlan>>;
@@ -1846,6 +1851,29 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       (planData as any).choiceMoments,
       routedEpisodes.length,
     );
+    const residuePlan = this.normalizeResiduePlan({
+      raw: (planData as any).residuePlan,
+      choiceMoments,
+      seasonFlags,
+      consequenceChains,
+      crossEpisodeBranches,
+      totalEpisodes: routedEpisodes.length,
+    });
+    if (residuePlan?.length) {
+      for (const episode of routedEpisodes) {
+        const incoming = residuePlan
+          .filter((obligation) =>
+            obligation.sourceEpisodeNumber <= episode.episodeNumber &&
+            obligation.targetEpisodeNumbers.includes(episode.episodeNumber)
+          )
+          .map((obligation) => obligation.id);
+        const outgoing = residuePlan
+          .filter((obligation) => obligation.sourceEpisodeNumber === episode.episodeNumber)
+          .map((obligation) => obligation.id);
+        if (incoming.length) episode.incomingResidueIds = incoming;
+        if (outgoing.length) episode.outgoingResidueIds = outgoing;
+      }
+    }
 
     // Build character introductions
     const characterIntroductions = (planData as any).characterIntroductions || 
@@ -1893,6 +1921,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       worldTreatmentContracts,
       informationLedger,
       choiceMoments,
+      residuePlan,
       endingMode: preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single',
       resolvedEndings: analysis.resolvedEndings || [],
       episodes: routedEpisodes,
@@ -1999,6 +2028,211 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     }
 
     return plan;
+  }
+
+  /**
+   * Normalize first-class planned residue. The LLM may emit explicit obligations,
+   * but the deterministic floor is every flagged choiceMoment and seasonFlag.
+   */
+  private normalizeResiduePlan(params: {
+    raw: unknown;
+    choiceMoments?: SeasonChoiceMomentSeed[];
+    seasonFlags: Array<{ flag: string; description: string; setInEpisode: number; checkedInEpisodes: number[] }>;
+    consequenceChains: ConsequenceChain[];
+    crossEpisodeBranches: CrossEpisodeBranch[];
+    totalEpisodes: number;
+  }): SeasonResidueObligation[] | undefined {
+    const maxEp = Math.max(1, params.totalEpisodes);
+    const clamp = (n: number) => Math.min(maxEp, Math.max(1, Math.floor(n)));
+    const out = new Map<string, SeasonResidueObligation>();
+    const note = (rawObligation: Partial<SeasonResidueObligation> & { id?: string; flag?: string }): void => {
+      const flag = typeof rawObligation.flag === 'string' ? rawObligation.flag.trim() : '';
+      if (!flag) return;
+      const sourceEpisodeNumber = clamp(Number(rawObligation.sourceEpisodeNumber) || 1);
+      const kind = this.normalizeResidueKind(rawObligation.kind);
+      if (!this.isAllowedResidueFlag(flag, kind)) return;
+      const targets = Array.from(new Set((rawObligation.targetEpisodeNumbers || [])
+        .map((target) => clamp(Number(target)))
+        .filter((target) => target >= sourceEpisodeNumber)));
+      const payoffPolicy = this.normalizeResiduePayoffPolicy(rawObligation.payoffPolicy, sourceEpisodeNumber, targets);
+      if (payoffPolicy !== 'terminal_slice_ok' && targets.length === 0) return;
+      const idBase = rawObligation.id || `residue-${sourceEpisodeNumber}-${flag}`;
+      let id = idBase.replace(/[^a-zA-Z0-9:_-]+/g, '-');
+      let suffix = 2;
+      while (out.has(id)) id = `${idBase}-${suffix++}`;
+      out.set(id, {
+        id,
+        source: rawObligation.source || 'deterministic_fallback',
+        sourceEpisodeNumber,
+        sourceSceneId: rawObligation.sourceSceneId,
+        sourceChoiceMomentId: rawObligation.sourceChoiceMomentId,
+        choiceAnchor: rawObligation.choiceAnchor || rawObligation.sourceMaterial?.choiceText || rawObligation.authoringGuidance || flag,
+        flag,
+        conditionKey: rawObligation.conditionKey || flag,
+        kind,
+        consequenceDomain: rawObligation.consequenceDomain,
+        payoffPolicy,
+        targetEpisodeNumbers: targets,
+        targetSceneIds: rawObligation.targetSceneIds?.filter(Boolean),
+        targetNpcIds: rawObligation.targetNpcIds?.filter(Boolean),
+        targetTopics: rawObligation.targetTopics?.filter(Boolean),
+        treatmentContractIds: rawObligation.treatmentContractIds?.filter(Boolean),
+        sourceMaterial: {
+          choiceText: rawObligation.sourceMaterial?.choiceText,
+          reminderImmediate: rawObligation.sourceMaterial?.reminderImmediate,
+          reminderShortTerm: rawObligation.sourceMaterial?.reminderShortTerm,
+          reminderLater: rawObligation.sourceMaterial?.reminderLater,
+          feedbackEcho: rawObligation.sourceMaterial?.feedbackEcho,
+          feedbackProgress: rawObligation.sourceMaterial?.feedbackProgress,
+          residueHints: rawObligation.sourceMaterial?.residueHints?.filter(Boolean),
+          witnessReactions: rawObligation.sourceMaterial?.witnessReactions?.filter(Boolean),
+        },
+        authoringGuidance: rawObligation.authoringGuidance || rawObligation.choiceAnchor || rawObligation.sourceMaterial?.reminderShortTerm || '',
+        requiredSurface: rawObligation.requiredSurface?.length ? rawObligation.requiredSurface : ['text_variant'],
+        priority: rawObligation.priority || (kind === 'branch_reconvergence' || kind === 'ending_eligibility' ? 'major' : 'moderate'),
+      });
+    };
+
+    if (Array.isArray(params.raw)) {
+      for (const raw of params.raw) {
+        if (raw && typeof raw === 'object') note(raw as Partial<SeasonResidueObligation>);
+      }
+    }
+
+    for (const moment of params.choiceMoments || []) {
+      if (!moment.flag) continue;
+      const target = moment.paysOffEpisode && moment.paysOffEpisode > moment.episode
+        ? [moment.paysOffEpisode]
+        : [moment.episode];
+      note({
+        id: `choice:${moment.id}`,
+        source: 'choice_moment',
+        sourceEpisodeNumber: moment.episode,
+        sourceChoiceMomentId: moment.id,
+        choiceAnchor: moment.anchor,
+        flag: moment.flag,
+        conditionKey: moment.flag,
+        kind: 'callback_line',
+        payoffPolicy: moment.paysOffEpisode && moment.paysOffEpisode > moment.episode ? 'specific_episode' : 'later_scene_same_episode',
+        targetEpisodeNumbers: target,
+        sourceMaterial: {
+          choiceText: moment.anchor,
+          reminderImmediate: moment.anchor,
+          reminderShortTerm: moment.anchor,
+          feedbackEcho: moment.anchor,
+          residueHints: [moment.anchor],
+        },
+        authoringGuidance: moment.anchor,
+        requiredSurface: ['text_variant'],
+        priority: moment.paysOffEpisode && moment.paysOffEpisode > moment.episode ? 'major' : 'moderate',
+      });
+    }
+
+    for (const flagEntry of params.seasonFlags || []) {
+      if (!flagEntry.flag || out.has(`season-flag:${flagEntry.flag}`)) continue;
+      const targets = (flagEntry.checkedInEpisodes || []).filter((ep) => ep >= flagEntry.setInEpisode);
+      if (!targets.length) continue;
+      note({
+        id: `season-flag:${flagEntry.flag}`,
+        source: 'season_planner',
+        sourceEpisodeNumber: flagEntry.setInEpisode,
+        choiceAnchor: flagEntry.description || flagEntry.flag,
+        flag: flagEntry.flag,
+        conditionKey: flagEntry.flag,
+        kind: this.isBranchOrEndingResidueFlag(flagEntry.flag) ? 'branch_reconvergence' : 'callback_line',
+        payoffPolicy: targets.length === 1 ? 'specific_episode' : 'episode_window',
+        targetEpisodeNumbers: targets,
+        sourceMaterial: {
+          reminderImmediate: flagEntry.description,
+          reminderShortTerm: flagEntry.description,
+          feedbackEcho: flagEntry.description,
+          residueHints: flagEntry.description ? [flagEntry.description] : [],
+        },
+        authoringGuidance: flagEntry.description || `Pay off ${flagEntry.flag} in reader-facing prose.`,
+        requiredSurface: ['text_variant'],
+        priority: targets.some((target) => target > flagEntry.setInEpisode) ? 'major' : 'moderate',
+      });
+    }
+
+    for (const chain of params.consequenceChains || []) {
+      const originEp = clamp(chain.origin?.episodeNumber || 1);
+      const slug = String(chain.id || chain.origin?.sourceId || `chain-${originEp}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      const flag = `consequence_${slug}`;
+      if (!flag) continue;
+      note({
+        id: `chain:${chain.id || flag}`,
+        source: 'consequence_chain',
+        sourceEpisodeNumber: originEp,
+        choiceAnchor: chain.origin?.description || chain.id || flag,
+        flag,
+        conditionKey: flag,
+        kind: 'failure_residue',
+        payoffPolicy: 'episode_window',
+        targetEpisodeNumbers: (chain.consequences || []).map((c) => c.episodeNumber).filter((ep) => ep >= originEp),
+        sourceMaterial: {
+          reminderImmediate: chain.origin?.description,
+          reminderShortTerm: chain.consequences?.[0]?.description,
+          feedbackEcho: chain.consequences?.[0]?.description,
+          residueHints: (chain.consequences || []).map((c) => c.description).filter(Boolean),
+        },
+        authoringGuidance: chain.consequences?.[0]?.description || chain.origin?.description || '',
+        requiredSurface: ['text_variant'],
+        priority: 'major',
+      });
+    }
+
+    return out.size > 0 ? [...out.values()] : undefined;
+  }
+
+  private normalizeResidueKind(kind: unknown): ResidueObligationKind {
+    const allowed: ResidueObligationKind[] = [
+      'callback_line',
+      'relationship_behavior',
+      'information_recall',
+      'item_or_prop',
+      'reputation',
+      'danger',
+      'identity',
+      'branch_reconvergence',
+      'failure_residue',
+      'ending_eligibility',
+    ];
+    return allowed.includes(kind as ResidueObligationKind) ? kind as ResidueObligationKind : 'callback_line';
+  }
+
+  private normalizeResiduePayoffPolicy(
+    policy: unknown,
+    sourceEpisodeNumber: number,
+    targetEpisodeNumbers: number[],
+  ): ResiduePayoffPolicy {
+    const allowed: ResiduePayoffPolicy[] = [
+      'same_scene',
+      'later_scene_same_episode',
+      'specific_episode',
+      'episode_window',
+      'terminal_slice_ok',
+    ];
+    if (allowed.includes(policy as ResiduePayoffPolicy)) return policy as ResiduePayoffPolicy;
+    if (targetEpisodeNumbers.length === 0) return 'terminal_slice_ok';
+    if (targetEpisodeNumbers.length === 1 && targetEpisodeNumbers[0] > sourceEpisodeNumber) return 'specific_episode';
+    if (targetEpisodeNumbers.every((target) => target === sourceEpisodeNumber)) return 'later_scene_same_episode';
+    return 'episode_window';
+  }
+
+  private isAllowedResidueFlag(flag: string, kind: ResidueObligationKind): boolean {
+    if (/^tint:/.test(flag)) return false;
+    if (this.isBranchOrEndingResidueFlag(flag)) {
+      return kind === 'branch_reconvergence' || kind === 'ending_eligibility';
+    }
+    if (/^encounter[_.]/.test(flag)) return false;
+    return /^[a-z0-9_:-]+$/.test(flag);
+  }
+
+  private isBranchOrEndingResidueFlag(flag: string): boolean {
+    return /^route_/.test(flag) || /^treatment_branch_/.test(flag);
   }
 
   /**

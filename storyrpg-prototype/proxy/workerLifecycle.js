@@ -953,6 +953,43 @@ function createWorkerLifecycle({
     return { normalized, changed };
   }
 
+  function saveNormalizedWorkerJobs(previousJobs, normalizedJobs) {
+    saveWorkerJobs(normalizedJobs);
+    const previousById = new Map(previousJobs.map((job) => [job?.id, job]));
+    for (const job of normalizedJobs) {
+      if (!job?.id) continue;
+      const previous = previousById.get(job.id);
+      if (!previous) continue;
+      if (
+        previous.status !== job.status
+        || previous.error !== job.error
+        || previous.updatedAt !== job.updatedAt
+        || previous.failureContext !== job.failureContext
+      ) {
+        syncGenerationMirrorFromWorker(job);
+      }
+    }
+    syncOutOfDateWorkerMirrors(normalizedJobs);
+  }
+
+  function syncOutOfDateWorkerMirrors(workerJobs) {
+    const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'paused']);
+    const mirrorById = new Map(loadJobs().map((job) => [job?.id, job]));
+    for (const job of workerJobs) {
+      if (!job?.id || !terminalStatuses.has(job.status)) continue;
+      const mirror = mirrorById.get(job.id);
+      if (!mirror) continue;
+      if (
+        mirror.status !== job.status
+        || mirror.error !== job.error
+        || mirror.updatedAt !== job.updatedAt
+        || mirror.checkpoint?.failureContext?.message !== job.failureContext?.message
+      ) {
+        syncGenerationMirrorFromWorker(job);
+      }
+    }
+  }
+
   function getWorkerQueueKind(job) {
     if (job?.mode === 'image-generation') return 'image';
     return 'story';
@@ -1452,7 +1489,7 @@ function createWorkerLifecycle({
       const jobs = loadWorkerJobs();
       const { normalized: normalizedJobs, changed: normalizedChanged } = normalizeStaleWorkerJobs(jobs);
       if (normalizedChanged) {
-        saveWorkerJobs(normalizedJobs);
+        saveNormalizedWorkerJobs(jobs, normalizedJobs);
       }
       if (idempotencyKey) {
         const existing = normalizedJobs.find((j) => j.idempotencyKey === idempotencyKey && ['pending', 'running'].includes(j.status));
@@ -1586,7 +1623,8 @@ function createWorkerLifecycle({
     app.get('/worker-jobs', (req, res) => {
       const jobs = loadWorkerJobs();
       const { normalized, changed } = normalizeStaleWorkerJobs(jobs);
-      if (changed) saveWorkerJobs(normalized);
+      if (changed) saveNormalizedWorkerJobs(jobs, normalized);
+      else syncOutOfDateWorkerMirrors(normalized);
       const checkpoints = loadCheckpoints();
       const checkpointByJobId = new Map(checkpoints.map((checkpoint) => [checkpoint.jobId, hydrateCheckpointOutputs(checkpoint)]));
       const statsCache = new Map();
@@ -1596,7 +1634,8 @@ function createWorkerLifecycle({
     app.get('/worker-jobs/:jobId', (req, res) => {
       const jobs = loadWorkerJobs();
       const { normalized, changed } = normalizeStaleWorkerJobs(jobs);
-      if (changed) saveWorkerJobs(normalized);
+      if (changed) saveNormalizedWorkerJobs(jobs, normalized);
+      else syncOutOfDateWorkerMirrors(normalized);
       const job = normalized.find((j) => j.id === req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Worker job not found' });
       const checkpoint = loadCheckpoints().find((c) => c.jobId === job.id);
@@ -1889,6 +1928,8 @@ function createWorkerLifecycle({
     saveJobs,
     loadWorkerJobs,
     saveWorkerJobs,
+    saveNormalizedWorkerJobs,
+    syncOutOfDateWorkerMirrors,
     loadCheckpoints,
     saveCheckpoints,
     upsertWorkerJob,

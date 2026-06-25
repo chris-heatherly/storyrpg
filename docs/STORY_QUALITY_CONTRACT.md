@@ -16,6 +16,10 @@ story and image-quality rules, not the old orchestration model.
 - **Choice stakes:** meaningful choices should carry want, cost, and identity.
 - **Consequence budget:** default to callbacks and scene tints; use branchlets
   for important moments; reserve structural branches for major turns.
+- **Choice-type mix:** expression, relationship, strategic, and dilemma
+  percentages are baseline diagnostics, not a universal quality contract.
+  Treatment intent, season structure, and seven-point episode role may justify
+  deliberate skew when choices still serve the authored pressure.
 - **Convergent spine:** branches create different experiences between
   bottlenecks, then reconverge at planned anchors without erasing residue.
 - **Delayed memory:** important choices should echo later through conditional
@@ -73,8 +77,11 @@ story and image-quality rules, not the old orchestration model.
 | Skill / attribute coverage | `SkillCoverageValidator` |
 | Branch mechanical residue | `BranchMechanicalDivergenceValidator` |
 | Mechanical storytelling metadata | `MechanicalStorytellingValidator`, story verb helpers |
-| Callback coverage | `CallbackCoverageValidator`, `CallbackOpportunitiesValidator` |
+| Callback ledger hygiene | `CallbackCoverageValidator` |
+| Callback opportunity density | `CallbackOpportunitiesValidator` (advisory only) |
+| Planned choice residue | `ResidueObligationValidator`, `CallbackLedger`, `choiceMemoryDebt` |
 | Consequence budget | `ConsequenceBudgetValidator` |
+| Choice-type mix telemetry | `ChoiceDistributionValidator` |
 | Branch graph validity | `SceneGraphBranchValidator`, `DivergenceValidator` |
 | Setup/payoff | `SetupPayoffValidator` |
 | Twist / earned surprise | `TwistQualityValidator`, `PixarPrinciplesValidator` |

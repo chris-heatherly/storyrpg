@@ -58,10 +58,22 @@ import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
+import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 import {
   SevenPointAnchorConformanceValidator,
   seasonPlanToAnchorConformanceInput,
 } from './SevenPointAnchorConformanceValidator';
+import {
+  buildValidationPhaseBaseline,
+  fidelityFindingFingerprint,
+  planArtifactsMatchBaseline,
+  type ValidationPhaseBaseline,
+} from './validationPhaseBaseline';
+import type {
+  FinalContractFindingClass,
+  FinalContractRepairTarget,
+  FinalContractSourceKind,
+} from './finalContractSeverityPolicy';
 
 /** One §4 fidelity finding in the shape `FinalStoryContractInput.fidelityFindings` expects. */
 export interface FidelityFinding {
@@ -71,6 +83,11 @@ export interface FidelityFinding {
   suggestion?: string;
   episodeNumber?: number;
   sceneId?: string;
+  gateId?: string;
+  findingClass?: FinalContractFindingClass;
+  sourceKind?: FinalContractSourceKind;
+  repairTarget?: FinalContractRepairTarget;
+  hasConcreteObligation?: boolean;
 }
 
 export interface RunFidelityValidatorsResult {
@@ -90,11 +107,18 @@ export interface RunFidelityValidatorsInput {
   seasonPlan?: SeasonPlan;
   /** The source analysis (authored episode titles, anchors, treatment metadata). */
   sourceAnalysis?: SourceMaterialAnalysis;
+  /** Pre-generation baseline for plan-primary gates. Final repeats are regression nets. */
+  planTimeBaseline?: ValidationPhaseBaseline;
   /** Which generated scope this final-contract pass is validating. */
   scope?: FidelityValidationScope;
 }
 
 const EMPTY: RunFidelityValidatorsResult = { fidelityFindings: [], treatmentSourced: false };
+
+const PLAN_ONLY_FINAL_VALIDATORS = new Set([
+  'AuthoredEpisodeConformanceValidator',
+  'SevenPointAnchorConformanceValidator',
+]);
 
 export type FidelityValidationScopeMode = 'episode-incremental' | 'generated-slice' | 'full-season';
 
@@ -205,6 +229,29 @@ function scopedScenePlan(scenePlan: SeasonScenePlan | undefined, active: Set<num
   };
 }
 
+function rebindScopedScenePlan(scenePlan: SeasonScenePlan | undefined): SeasonScenePlan | undefined {
+  if (!scenePlan?.scenes?.length) return scenePlan;
+  const episodeNumbers = uniqueNumbers(scenePlan.scenes.map((scene) => scene.episodeNumber));
+  const reboundScenes: PlannedScene[] = [];
+  for (const episodeNumber of episodeNumbers) {
+    const episodeScenes = scenePlan.scenes.filter((scene) => scene.episodeNumber === episodeNumber);
+    const result = rebindPlannedSceneObligations(episodeScenes, { episodeNumber });
+    reboundScenes.push(...result.scenes);
+  }
+  const byEpisode: Record<number, string[]> = {};
+  for (const episodeNumber of episodeNumbers) {
+    byEpisode[episodeNumber] = reboundScenes
+      .filter((scene) => scene.episodeNumber === episodeNumber)
+      .sort((a, b) => a.order - b.order)
+      .map((scene) => scene.id);
+  }
+  return {
+    ...scenePlan,
+    scenes: reboundScenes.sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order),
+    byEpisode,
+  };
+}
+
 function entryTouchesActiveEpisode(entry: InformationLedgerEntry, active: Set<number> | undefined): boolean {
   if (!active) return true;
   return uniqueNumbers([
@@ -218,7 +265,7 @@ function entryTouchesActiveEpisode(entry: InformationLedgerEntry, active: Set<nu
 
 function scopeSeasonPlan(seasonPlan: SeasonPlan | undefined, active: Set<number> | undefined): SeasonPlan | undefined {
   if (!seasonPlan || !active) return seasonPlan;
-  const scenePlan = scopedScenePlan(seasonPlan.scenePlan, active);
+  const scenePlan = rebindScopedScenePlan(scopedScenePlan(seasonPlan.scenePlan, active));
   const activeSceneIds = new Set((scenePlan?.scenes ?? []).map((scene) => scene.id));
   return {
     ...seasonPlan,
@@ -339,19 +386,160 @@ function locationSceneRef(location?: string): { episodeNumber?: number; sceneId?
  * validator VISIBLE (its findings surface in the contract report) while its gate is
  * off, so it advises without hard-blocking.
  */
+const FIDELITY_POLICY_BY_VALIDATOR: Record<string, Partial<FidelityFinding>> = {
+  AuthoredEpisodeConformanceValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance,
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  EncounterAnchorContentValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.encounterAnchorContent,
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  InformationLedgerScheduleValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule,
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  SignatureDevicePresenceValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.signatureDevicePresence,
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  SevenPointAnchorConformanceValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance,
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  EncounterSetPieceDepthValidator: {
+    gateId: 'GATE_ENCOUNTER_SETPIECE_DEPTH',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  RequiredBeatRealizationValidator: {
+    gateId: 'GATE_REQUIRED_BEAT_REALIZATION',
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  SceneTransitionContinuityValidator: {
+    gateId: 'GATE_SCENE_TRANSITION_CONTINUITY',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  SceneTurnRealizationValidator: {
+    gateId: 'GATE_SCENE_TURN_REALIZATION',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  RelationshipPacingValidator: {
+    gateId: 'GATE_RELATIONSHIP_PACING',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  NarrativeMechanicPressureValidator: {
+    gateId: 'GATE_NARRATIVE_MECHANIC_PRESSURE',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  TreatmentFieldUtilizationValidator: {
+    gateId: 'GATE_TREATMENT_FIELD_UTILIZATION',
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  SeasonPromiseRealizationValidator: {
+    gateId: 'GATE_SEASON_PROMISE_REALIZATION',
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  CharacterTreatmentRealizationValidator: {
+    gateId: 'GATE_CHARACTER_TREATMENT_REALIZATION',
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  NarrativeFailureModeValidator: {
+    gateId: 'GATE_FAILURE_MODE_AUDIT_REALIZATION',
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
+  CharacterIntroductionValidator: {
+    gateId: 'GATE_CHARACTER_INTRODUCTION',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+};
+
+function policyForFinding(validator: string, issue: ValidationIssue): Partial<FidelityFinding> {
+  if (validator === 'NarrativeFailureModeValidator') {
+    const source = (issue as ValidationIssue & { source?: string }).source;
+    if (source && source !== 'failure_mode_audit_contract') {
+      return {
+        gateId: 'GATE_FAILURE_MODE_AUDIT_REALIZATION',
+        findingClass: 'craft_critic',
+        sourceKind: 'heuristic',
+      };
+    }
+  }
+  return FIDELITY_POLICY_BY_VALIDATOR[validator] ?? {};
+}
+
 function toFindings(validator: string, issues: ValidationIssue[], downgradeToWarning = false): FidelityFinding[] {
   const out: FidelityFinding[] = [];
   for (const issue of issues) {
     if (issue.severity !== 'error' && issue.severity !== 'warning') continue;
+    const sceneRef = locationSceneRef(issue.location);
+    const policy = policyForFinding(validator, issue);
     out.push({
       validator,
       severity: downgradeToWarning ? 'warning' : issue.severity,
       message: issue.message,
       suggestion: issue.suggestion,
-      ...locationSceneRef(issue.location),
+      ...sceneRef,
+      ...policy,
+      repairTarget: policy.repairTarget ?? (
+        sceneRef.episodeNumber || sceneRef.sceneId
+          ? { episodeNumber: sceneRef.episodeNumber, sceneId: sceneRef.sceneId }
+          : undefined
+      ),
     });
   }
   return out;
+}
+
+function applyPlanPrimaryRegressionNet(
+  findings: FidelityFinding[],
+  input: RunFidelityValidatorsInput,
+): FidelityFinding[] {
+  if (!input.planTimeBaseline) return findings;
+  const current = buildValidationPhaseBaseline({
+    sourceAnalysis: input.sourceAnalysis,
+    seasonPlan: input.seasonPlan,
+    findings,
+  });
+  if (!planArtifactsMatchBaseline(input.planTimeBaseline, current)) return findings;
+  const baselineErrors = new Set(input.planTimeBaseline.errorFingerprints);
+  return findings.map((finding) => {
+    if (finding.severity !== 'error' || !PLAN_ONLY_FINAL_VALIDATORS.has(finding.validator)) return finding;
+    const fingerprint = fidelityFindingFingerprint(finding);
+    if (!baselineErrors.has(fingerprint)) return finding;
+    return {
+      ...finding,
+      severity: 'warning',
+      suggestion: finding.suggestion
+        ? `${finding.suggestion} Final contract treated this as a regression-net repeat of the plan-time finding.`
+        : 'Final contract treated this as a regression-net repeat of the plan-time finding.',
+    };
+  });
 }
 
 /**
@@ -556,7 +744,7 @@ function collectFidelityFindings(
   // role facts, Want/Need/Lie/Wound/Truth, starting identity, pressure points,
   // climax choice, end states, visual identity) must be consumed into plan
   // artifacts and realized fiction-first.
-  if (isGateEnabled('GATE_CHARACTER_TREATMENT_REALIZATION')) {
+  if (!incrementalEpisodeSeal && isGateEnabled('GATE_CHARACTER_TREATMENT_REALIZATION')) {
     guard(() => {
       const result = new CharacterTreatmentRealizationValidator().validate({
         story,
@@ -615,7 +803,10 @@ function collectFidelityFindings(
 
 export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFidelityValidatorsResult {
   const treatmentSourced = isTreatmentSourced(input.sourceAnalysis, input.seasonPlan);
-  const findings = collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced);
+  const findings = applyPlanPrimaryRegressionNet(
+    collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced),
+    input,
+  );
   if (findings.length === 0 && !treatmentSourced) return EMPTY;
   return { fidelityFindings: findings, treatmentSourced };
 }
@@ -638,6 +829,7 @@ export interface PlanTimeFidelityResult {
   /** Error-severity findings that should fail the run BEFORE generation. */
   blockingErrors: FidelityFinding[];
   treatmentSourced: boolean;
+  baseline?: ValidationPhaseBaseline;
 }
 
 const EMPTY_PLAN_TIME: PlanTimeFidelityResult = {
@@ -753,5 +945,6 @@ export function runPlanTimeFidelityChecks(input: {
     findings,
     blockingErrors: findings.filter((f) => f.severity === 'error'),
     treatmentSourced,
+    baseline: buildValidationPhaseBaseline({ sourceAnalysis, seasonPlan, findings }),
   };
 }

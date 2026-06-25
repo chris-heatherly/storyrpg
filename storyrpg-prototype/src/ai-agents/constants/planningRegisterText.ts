@@ -10,6 +10,8 @@ export const PLANNING_REGISTER_LEAK_PATTERNS: Array<{ label: string; pattern: Re
   { label: 'Forward pressure', pattern: /\bForward\s+pressure\s*:/i },
   { label: 'Episode pressure instruction', pattern: /\bEscalate\s+the\s+episode\s+pressure\s+through\s+a\s+concrete\s+turn\s*:/i },
   { label: 'Fallout pressure instruction', pattern: /\bLet\s+the\s+fallout\s+settle\s+into\s+the\s+next\s+pressure\s*:/i },
+  { label: 'Information ledger label', pattern: /\binformation\s+ledger\b/i },
+  { label: 'Raw INFO token', pattern: /\bINFO[-_\s]+[A-Z0-9][A-Z0-9_-]*\b/i },
 ];
 
 export function isPlanningRegisterText(text: string | undefined): boolean {

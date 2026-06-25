@@ -46,7 +46,7 @@ describe('ChoiceDistributionValidator', () => {
     expect(result.score).toBe(100);
   });
 
-  it('emits an error when branching choice sets exceed the per-episode cap', () => {
+  it('reports branch cap excess as telemetry by default', () => {
     const input: ChoiceDistributionInput = {
       choiceSets: [
         makeSet('b1', 'relationship', true, 's1'),
@@ -59,6 +59,25 @@ describe('ChoiceDistributionValidator', () => {
     };
 
     const result = new ChoiceDistributionValidator().validate(input);
+
+    expect(result.valid).toBe(true);
+    const telemetry = result.issues.filter((i) => i.severity === 'info');
+    expect(telemetry.some((i) => i.message.includes('exceed the cap of 2'))).toBe(true);
+  });
+
+  it('emits an error when branching cap policy is strict', () => {
+    const input: ChoiceDistributionInput = {
+      choiceSets: [
+        makeSet('b1', 'relationship', true, 's1'),
+        makeSet('b2', 'relationship', true, 's2'),
+        makeSet('b3', 'strategic', true, 's3'),
+        makeSet('b4', 'dilemma', true, 's4'),
+      ],
+      targets: TARGETS,
+      maxBranchingChoicesPerEpisode: 2,
+    };
+
+    const result = new ChoiceDistributionValidator().validate(input, { branchCapPolicy: 'strict' });
 
     expect(result.valid).toBe(false);
     const errors = result.issues.filter((i) => i.severity === 'error');
@@ -88,7 +107,7 @@ describe('ChoiceDistributionValidator', () => {
     expect(expressionError?.location).toBe('scene:sceneX');
   });
 
-  it('raises an error-severity issue when a type deviates beyond the error tolerance', () => {
+  it('reports heavy target skew as telemetry by default', () => {
     // 6 of 8 expression = 75% vs 25% target = +50pp deviation (> default 25 error tolerance).
     const input: ChoiceDistributionInput = {
       choiceSets: [
@@ -107,14 +126,86 @@ describe('ChoiceDistributionValidator', () => {
 
     const result = new ChoiceDistributionValidator().validate(input);
 
+    expect(result.valid).toBe(true);
+    const expressionTelemetry = result.issues.find(
+      (i) => i.severity === 'info' && i.message.includes('"expression"')
+    );
+    expect(expressionTelemetry).toBeDefined();
+    expect(expressionTelemetry?.message).toContain('75%');
+    // Heavy deviation drives the score well below a clean distribution.
+    expect(result.score).toBeLessThan(100);
+  });
+
+  it('reports heavy target skew as warning-severity in advisory mode', () => {
+    const input: ChoiceDistributionInput = {
+      choiceSets: [
+        makeSet('b1', 'expression'),
+        makeSet('b2', 'expression'),
+        makeSet('b3', 'expression'),
+        makeSet('b4', 'expression'),
+        makeSet('b5', 'expression'),
+        makeSet('b6', 'expression'),
+        makeSet('b7', 'relationship'),
+        makeSet('b8', 'strategic'),
+      ],
+      targets: TARGETS,
+      maxBranchingChoicesPerEpisode: 4,
+    };
+
+    const result = new ChoiceDistributionValidator().validate(input, { targetPolicy: 'advisory' });
+
+    expect(result.valid).toBe(true);
+    const expressionWarning = result.issues.find(
+      (i) => i.severity === 'warning' && i.message.includes('"expression"')
+    );
+    expect(expressionWarning).toBeDefined();
+    expect(expressionWarning?.message).toContain('75%');
+  });
+
+  it('preserves legacy error-severity target failures in strict mode', () => {
+    const input: ChoiceDistributionInput = {
+      choiceSets: [
+        makeSet('b1', 'expression'),
+        makeSet('b2', 'expression'),
+        makeSet('b3', 'expression'),
+        makeSet('b4', 'expression'),
+        makeSet('b5', 'expression'),
+        makeSet('b6', 'expression'),
+        makeSet('b7', 'relationship'),
+        makeSet('b8', 'strategic'),
+      ],
+      targets: TARGETS,
+      maxBranchingChoicesPerEpisode: 4,
+    };
+
+    const result = new ChoiceDistributionValidator().validate(input, { targetPolicy: 'strict' });
+
     expect(result.valid).toBe(false);
     const expressionError = result.issues.find(
       (i) => i.severity === 'error' && i.message.includes('"expression"')
     );
     expect(expressionError).toBeDefined();
     expect(expressionError?.message).toContain('75%');
-    // Heavy deviation drives the score well below a clean distribution.
-    expect(result.score).toBeLessThan(100);
+  });
+
+  it('keeps unknown choice types advisory by default', () => {
+    const input: ChoiceDistributionInput = {
+      choiceSets: [
+        makeSet('b1', 'expression'),
+        makeSet('b2', 'relationship'),
+        makeSet('b3', 'strategic'),
+        makeSet('b4', 'mystery'),
+      ],
+      targets: TARGETS,
+      maxBranchingChoicesPerEpisode: 4,
+    };
+
+    const result = new ChoiceDistributionValidator().validate(input);
+
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((i) =>
+      i.severity === 'warning' && i.message.includes('unrecognized type "mystery"')
+    )).toBe(true);
   });
 
   it('computeMetrics reports counts, percentages, and branching without issuing validation', () => {

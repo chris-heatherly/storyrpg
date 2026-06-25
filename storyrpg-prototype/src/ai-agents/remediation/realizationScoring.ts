@@ -66,5 +66,18 @@ export function requiredMomentFromMessage(message: string | undefined): string |
   if (treatmentLedger?.[1]) return treatmentLedger[1].trim();
   // EncounterAnchorContent forms: the moment is the FINAL quoted span at end of message.
   const anchor = /does not depict (?:its central conflict on-page|required beat [^:]+): "([\s\S]*)"\.\s*$/.exec(message);
-  return anchor?.[1]?.trim() || undefined;
+  if (anchor?.[1]) return anchor[1].trim();
+
+  const quotedSpans = Array.from(message.matchAll(/"([^"]+)"/g))
+    .map((match) => match[1]?.trim())
+    .filter((span): span is string => Boolean(span && !isNonMomentQuotedSpan(span)));
+  return quotedSpans.at(-1);
+}
+
+function isNonMomentQuotedSpan(span: string): boolean {
+  if (span === 'None') return true;
+  if (/^s\d+(?:[-\w]*)?$/i.test(span)) return true;
+  if (/^(?:episode|scene|beat|choice|encounter)[-_]?\w*$/i.test(span)) return true;
+  if (/^treatment-enc-\d+-\d+$/i.test(span)) return true;
+  return false;
 }

@@ -35,6 +35,7 @@ export type ValidationCategory =
   | 'mechanics_leakage'
   | 'npc_depth'
   | 'callback_opportunities'
+  | 'residue_obligations'
   | 'pov_clarity'
   | 'voice_fidelity'
   | 'pixar_principles'
@@ -259,6 +260,132 @@ export interface ValidationMetrics {
   };
 }
 
+export type ChoiceAgencyContract =
+  | 'choice_classification_invalid'
+  | 'choice_impact_domain_missing'
+  | 'choice_stakes_missing'
+  | 'choice_stakes_weak'
+  | 'choice_reactive_surface_missing'
+  | 'playable_failure_missing'
+  | 'branch_residue_missing'
+  | 'branch_residue_not_distinct'
+  | 'branch_residue_contract_mismatch'
+  | 'skill_surface_missing'
+  | 'skill_surface_mechanics_leak'
+  | 'choice_reference_invalid';
+
+export type ChoiceAgencyRepairRoute =
+  | 'choice-repair'
+  | 'choice-stakes-repair'
+  | 'branch-residue-repair'
+  | 'skill-surface-repair'
+  | 'reference-integrity-repair'
+  | 'none';
+
+export interface ChoiceAgencyFinding {
+  id: string;
+  contract: ChoiceAgencyContract;
+  sourceValidator: string;
+  severity: 'error' | 'warning' | 'info' | 'suggestion';
+  episodeNumber?: number;
+  sceneId?: string;
+  beatId?: string;
+  choiceId?: string;
+  repairRoute: ChoiceAgencyRepairRoute;
+  message: string;
+  suggestion?: string;
+  rawCategory?: string;
+  dedupeKey: string;
+}
+
+export interface ChoiceAgencyCanonicalReport {
+  findings: ChoiceAgencyFinding[];
+  suppressedDuplicates: Array<{
+    suppressed: ChoiceAgencyFinding;
+    canonicalId: string;
+    reason: string;
+  }>;
+  metrics: {
+    rawFindingCount: number;
+    canonicalFindingCount: number;
+    suppressedDuplicateCount: number;
+    byContract: Record<ChoiceAgencyContract, number>;
+  };
+}
+
+export type TreatmentObligationContract =
+  | 'treatment_plan_conformance'
+  | 'treatment_obligation_realization'
+  | 'treatment_information_schedule'
+  | 'treatment_signature_realization'
+  | 'treatment_character_realization'
+  | 'treatment_season_promise_realization'
+  | 'treatment_encounter_anchor_realization'
+  | 'treatment_failure_mode_realization'
+  | 'treatment_scope_notice';
+
+export type TreatmentRepairRoute =
+  | 'plan-repair'
+  | 'scene-regen'
+  | 'encounter-regen'
+  | 'ledger-repair'
+  | 'judge-and-regen'
+  | 'final-contract-only'
+  | 'none';
+
+export interface TreatmentObligationFinding {
+  id: string;
+  contract: TreatmentObligationContract;
+  sourceValidator: string;
+  severity: 'error' | 'warning' | 'info' | 'suggestion';
+  repairRoute: TreatmentRepairRoute;
+  episodeNumber?: number;
+  sceneId?: string;
+  beatId?: string;
+  choiceId?: string;
+  obligationId?: string;
+  sourceFieldId?: string;
+  sourceTextFingerprint?: string;
+  sourceTextExcerpt?: string;
+  phase: 'plan' | 'final' | 'shadow';
+  targetSurface:
+    | 'plan'
+    | 'scene-prose'
+    | 'choice'
+    | 'encounter'
+    | 'information-ledger'
+    | 'signature-device'
+    | 'character-arc'
+    | 'season-promise'
+    | 'ending'
+    | 'failure-mode'
+    | 'scope';
+  message: string;
+  suggestion?: string;
+  rawCategory?: string;
+  dedupeKey: string;
+}
+
+export interface TreatmentObligationCanonicalReport {
+  findings: TreatmentObligationFinding[];
+  suppressedDuplicates: Array<{
+    suppressed: TreatmentObligationFinding;
+    canonicalId: string;
+    reason: string;
+  }>;
+  groupedEvidence: Array<{
+    canonicalId: string;
+    evidence: TreatmentObligationFinding[];
+  }>;
+  metrics: {
+    rawFindingCount: number;
+    canonicalFindingCount: number;
+    suppressedDuplicateCount: number;
+    byContract: Record<TreatmentObligationContract, number>;
+    byRepairRoute: Record<TreatmentRepairRoute, number>;
+  };
+}
+
 export interface ComprehensiveValidationReport {
   overallPassed: boolean;
   overallScore: number;
@@ -268,6 +395,8 @@ export interface ComprehensiveValidationReport {
   warnings: ValidationIssue[];
   suggestions: ValidationIssue[];
   metrics: ValidationMetrics;
+  /** Shadow-only canonical grouping for choice-agency overlap; does not affect pass/fail or scoring. */
+  choiceAgencyCanonicalReport?: ChoiceAgencyCanonicalReport;
   timestamp: Date;
   duration: number;
 }

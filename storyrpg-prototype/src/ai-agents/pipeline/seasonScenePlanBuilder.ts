@@ -46,6 +46,7 @@ import {
   buildEncounterEventSignature,
   compareEncounterEventSignatures,
 } from '../utils/encounterEventSignature';
+import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -220,6 +221,33 @@ function makeTurnContract(
   };
 }
 
+function countScenePlanningSignals(value: string | undefined): number {
+  const text = (value ?? '').toLowerCase();
+  const signals = [
+    /\bclub|booth|velvet|jazz|dance|door|party|weekend\b/,
+    /\broad|cab|tow|car|mountain|diner|roadside|lift\b/,
+    /\bblog|post|read(?:s|ership)?|viral|profile|inbox|dashboard\b/,
+    /\bmessage|dm|warning|warns?|missing|disappear\b/,
+    /\bdate|brunch|dinner|breakfast|lunch\b/,
+    /\battack|fight|rescue|blood|scream|shadow|throat\b/,
+  ];
+  return signals.filter((signal) => signal.test(text)).length;
+}
+
+function looksLikeBroadEpisodeSummary(value: string | undefined): boolean {
+  const text = (value ?? '').trim();
+  if (text.length < 220) return false;
+  const sentenceCount = text.split(/[.!?]+/).map((part) => part.trim()).filter(Boolean).length;
+  const clauseCount = text.split(/[;—-]+/).map((part) => part.trim()).filter((part) => part.length > 20).length;
+  const planningSignals = countScenePlanningSignals(text);
+  return (sentenceCount >= 2 || clauseCount >= 3) && planningSignals >= 2;
+}
+
+function sceneLocalPressure(scene: PlannedScene): string {
+  if (scene.stakes && !looksLikeBroadEpisodeSummary(scene.stakes)) return scene.stakes;
+  return scene.dramaticPurpose || scene.title || scene.stakes || '';
+}
+
 function inferPlannerTurnContract(scene: PlannedScene): SceneTurnContract {
   if (scene.kind === 'encounter') {
     const central =
@@ -234,12 +262,13 @@ function inferPlannerTurnContract(scene: PlannedScene): SceneTurnContract {
     });
   }
   if (scene.hasChoice) {
-    return makeTurnContract(scene, 'choice', scene.stakes || scene.dramaticPurpose || scene.title, {
-      turnEvent: `The player-facing choice changes the scene pressure: ${scene.stakes || scene.dramaticPurpose || scene.title}.`,
+    const localPressure = sceneLocalPressure(scene);
+    return makeTurnContract(scene, 'choice', localPressure, {
+      turnEvent: `The player-facing choice changes the scene pressure: ${localPressure}.`,
       handoff: 'After the choice, show the immediate consequence or residue before routing onward.',
     });
   }
-  return makeTurnContract(scene, 'planner', scene.dramaticPurpose || scene.stakes || scene.title);
+  return makeTurnContract(scene, 'planner', scene.dramaticPurpose || sceneLocalPressure(scene) || scene.title);
 }
 
 function applyPlannerTurnContract(scene: PlannedScene): void {
@@ -743,7 +772,7 @@ function sceneMatchText(scene: PlannedScene): string {
     scene.title,
     scene.dramaticPurpose,
     ...(scene.locations ?? []),
-    scene.stakes,
+    looksLikeBroadEpisodeSummary(scene.stakes) ? undefined : scene.stakes,
     scene.encounter?.description,
   ]
     .filter(Boolean)
@@ -1447,13 +1476,15 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   }
 
   // Flatten in (episode, order) order.
-  const scenes: PlannedScene[] = [];
+  const rawScenes: PlannedScene[] = [];
   const byEpisode: Record<number, string[]> = {};
   for (const ep of episodes) {
     const epScenes = scenesByEpisode.get(ep.episodeNumber) ?? [];
     byEpisode[ep.episodeNumber] = epScenes.map((s) => s.id);
-    scenes.push(...epScenes);
+    rawScenes.push(...epScenes);
   }
+  const binding = rebindPlannedSceneObligations(rawScenes);
+  const scenes = binding.scenes;
   const seasonPromiseContracts = assignSeasonPromiseContractsToScenes(plan, scenes);
   const sevenPointBeatContracts = assignSevenPointBeatContractsToScenes(plan, scenes);
   const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
@@ -1471,7 +1502,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     scenes,
     byEpisode,
     setupPayoffEdges: edges,
-    authoredTreatmentFields: scenes.flatMap((scene) => scene.authoredTreatmentFields ?? []),
+    authoredTreatmentFields: binding.planLevelAuthoredTreatmentFields,
     seasonPromiseContracts,
     sevenPointBeatContracts,
     arcPressureContracts,

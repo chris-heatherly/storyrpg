@@ -1,6 +1,6 @@
-import type { Story, Episode, Scene, Beat, Consequence } from '../../types';
+import type { Story, Episode, Scene, Beat, Choice, Consequence } from '../../types';
 import type { QAReport } from '../agents/QAAgents';
-import type { ComprehensiveValidationReport } from '../../types/validation';
+import type { ComprehensiveValidationReport, TreatmentObligationCanonicalReport } from '../../types/validation';
 import type { SceneValidationResult } from './IncrementalValidators';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 import { IncrementalEncounterValidator } from './IncrementalValidators';
@@ -11,6 +11,7 @@ import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../u
 import { findNpcPronounInconsistencies, findInternalPronounConflicts } from '../utils/npcPronounResolver';
 import { OutcomeTextQualityValidator } from './OutcomeTextQualityValidator';
 import { FlagContractValidator } from './FlagContractValidator';
+import { ResidueObligationValidator } from './ResidueObligationValidator';
 import { SentenceOpenerVarietyValidator } from './SentenceOpenerVarietyValidator';
 import { ReferencedEventPresenceValidator } from './ReferencedEventPresenceValidator';
 import { ChoiceTypePlanConformanceValidator } from './ChoiceTypePlanConformanceValidator';
@@ -28,14 +29,22 @@ import { collectReaderFacingTexts, collectEncounterMetaTexts } from './Encounter
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
 import { TreatmentEventLedgerValidator } from './TreatmentEventLedgerValidator';
+import { buildTreatmentObligationCanonicalReport } from './treatmentObligationCanonicalReport';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
-import { applyResidueConsumption } from '../pipeline/residueConsumption';
+import { planResidueConsumption } from '../pipeline/residueConsumption';
 import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
 import { rebalanceStoryEncounterSkills } from '../utils/encounterSkillRebalance';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import type { SeasonResidueObligation } from '../../types/seasonPlan';
+import {
+  resolveFinalContractSeverity,
+  type FinalContractFindingClass,
+  type FinalContractRepairTarget,
+  type FinalContractSourceKind,
+} from './finalContractSeverityPolicy';
 
 /**
  * Scene-target sentinels that mean "the episode/story ends here" rather than a
@@ -51,6 +60,37 @@ const TERMINAL_SCENE_TARGETS = new Set([
 function isTerminalSceneTarget(id: string | undefined): boolean {
   return !!id && TERMINAL_SCENE_TARGETS.has(id.trim().toLowerCase());
 }
+
+function sceneRefFromValidationLocation(location?: string): { episodeNumber?: number; sceneId?: string } {
+  if (!location) return {};
+  const match = location.match(/(?:^|:)ep(\d+):([^:]+)/i);
+  if (!match) return {};
+  return { episodeNumber: Number(match[1]), sceneId: match[2] };
+}
+
+interface FidelitySeverityMetadata {
+  gateId?: string;
+  findingClass?: FinalContractFindingClass;
+  sourceKind?: FinalContractSourceKind;
+  repairTarget?: FinalContractRepairTarget;
+  hasConcreteObligation?: boolean;
+}
+
+const FIDELITY_FALLBACK_POLICY: Record<string, FidelitySeverityMetadata> = {
+  AuthoredEpisodeConformanceValidator: { findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  EncounterAnchorContentValidator: { gateId: 'GATE_ENCOUNTER_ANCHOR_CONTENT', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  InformationLedgerScheduleValidator: { gateId: 'GATE_INFORMATION_LEDGER_SCHEDULE', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  SignatureDevicePresenceValidator: { gateId: 'GATE_SIGNATURE_DEVICE_PRESENCE', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  SevenPointAnchorConformanceValidator: { findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  SceneTransitionContinuityValidator: { gateId: 'GATE_SCENE_TRANSITION_CONTINUITY', findingClass: 'repairable_contract', sourceKind: 'story' },
+  SceneTurnRealizationValidator: { gateId: 'GATE_SCENE_TURN_REALIZATION', findingClass: 'repairable_contract', sourceKind: 'story' },
+  RelationshipPacingValidator: { gateId: 'GATE_RELATIONSHIP_PACING', findingClass: 'repairable_contract', sourceKind: 'story' },
+  NarrativeMechanicPressureValidator: { gateId: 'GATE_NARRATIVE_MECHANIC_PRESSURE', findingClass: 'repairable_contract', sourceKind: 'story' },
+  TreatmentFieldUtilizationValidator: { gateId: 'GATE_TREATMENT_FIELD_UTILIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  SeasonPromiseRealizationValidator: { gateId: 'GATE_SEASON_PROMISE_REALIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  CharacterTreatmentRealizationValidator: { gateId: 'GATE_CHARACTER_TREATMENT_REALIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  CharacterIntroductionValidator: { gateId: 'GATE_CHARACTER_INTRODUCTION', findingClass: 'repairable_contract', sourceKind: 'story' },
+};
 
 export type FinalStoryContractIssueType =
   | 'empty_scene'
@@ -70,6 +110,8 @@ export type FinalStoryContractIssueType =
   | 'missing_requested_episode'
   | 'failed_incremental_validation'
   | 'unrepaired_callback_debt'
+  | 'callback_opportunity_advisory'
+  | 'planned_residue_debt'
   | 'source_role_mismatch'
   | 'partial_season_scope'
   | 'treatment_fidelity_violation'
@@ -132,6 +174,8 @@ export interface FinalStoryContractReport {
     /** Shadow metric: design-note/meta-narration leaks found, regardless of GATE_DESIGN_NOTE_LEAK. */
     designNoteLeaks?: number;
   };
+  /** Shadow-only canonical grouping for treatment-fidelity overlap; does not affect pass/fail or scoring. */
+  treatmentObligationCanonicalReport?: TreatmentObligationCanonicalReport;
   generatedAt: string;
 }
 
@@ -175,6 +219,7 @@ export interface FinalStoryContractInput {
   seasonSkillPlan?: SeasonSkillPlan;
   callbackLedger?: SerializedCallbackLedger;
   generatedThroughEpisode?: number;
+  seasonResiduePlan?: SeasonResidueObligation[];
   qaReport?: QAReport;
   bestPracticesReport?: ComprehensiveValidationReport;
   validSkills?: string[];
@@ -193,6 +238,20 @@ export interface FinalStoryContractInput {
    * §4.6 can keep them blocking. Empty/absent ⇒ no fidelity dispatch this run.
    */
   fidelityFindings?: Array<{
+    validator: string;
+    severity: 'error' | 'warning';
+    message: string;
+    suggestion?: string;
+    episodeNumber?: number;
+    sceneId?: string;
+    gateId?: string;
+    findingClass?: FinalContractFindingClass;
+    sourceKind?: FinalContractSourceKind;
+    repairTarget?: FinalContractRepairTarget;
+    hasConcreteObligation?: boolean;
+  }>;
+  /** Optional shadow input from pre-generation fidelity checks; raw gating remains unchanged. */
+  planTimeFidelityFindings?: Array<{
     validator: string;
     severity: 'error' | 'warning';
     message: string;
@@ -379,17 +438,14 @@ export class FinalStoryContractValidator {
       );
     }
 
-    // WS0.2: residue-consume contract. For every consequential set-flag no condition reads,
-    // append a flag-gated in-fiction acknowledgment to a downstream beat, so player decisions
-    // stop silently dying (g17: 49 write-only flags). Mutates input.story before the
-    // FlagContract / callback checks below, so the injected reads count. Default-OFF
-    // (GATE_RESIDUE_CONSUME) until a watched smoke run confirms the prose reads cleanly live.
+    // Planned residue: season-final is an auditor only. Legacy write-only-flag
+    // planning remains useful as shadow diagnostics, but authoritative prose
+    // repair now happens episode-locally before QA/assembly.
     if (isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final')) {
-      const residue = applyResidueConsumption(input.story);
-      if (residue.injected > 0) {
+      const residueDebts = planResidueConsumption(input.story);
+      if (residueDebts.length > 0) {
         console.info(
-          `[FinalStoryContract] residue-consume injected ${residue.injected} flag-gated ` +
-          `acknowledgment(s); ${residue.residual.length} flag(s) had no downstream beat (terminal/cross-slice)`,
+          `[FinalStoryContract] residue shadow: ${residueDebts.length} legacy write-only flag(s) remain for planned-residue comparison`,
         );
       }
     }
@@ -580,6 +636,7 @@ export class FinalStoryContractValidator {
         story: input.story,
         callbackLedger: input.callbackLedger,
         generatedThroughEpisode: input.generatedThroughEpisode,
+        seasonResiduePlan: input.seasonResiduePlan,
       });
       if (flagResult.issues.length > 0) {
         console.info(
@@ -596,6 +653,37 @@ export class FinalStoryContractValidator {
           validator: 'FlagContractValidator',
           suggestion: issue.suggestion,
         });
+      }
+    }
+
+    if (input.seasonResiduePlan?.length) {
+      const blockResidue = isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final');
+      const residueValidator = new ResidueObligationValidator();
+      for (const episode of input.story.episodes || []) {
+        const result = residueValidator.validate({
+          episode,
+          seasonResiduePlan: input.seasonResiduePlan,
+          callbackLedger: input.callbackLedger,
+          episodeNumber: episode.number,
+          generatedThroughEpisode: input.generatedThroughEpisode || Math.max(...(input.story.episodes || []).map((ep) => ep.number || 0), 0),
+        });
+        if (result.issues.length > 0) {
+          console.info(
+            `[FinalStoryContract] residue contract ep${episode.number}: ` +
+            `${result.metrics.paidIncoming.length}/${result.metrics.dueIncoming.length} due paid, ` +
+            `${result.metrics.createdOutgoing.length}/${result.metrics.plannedOutgoing.length} outgoing created, ` +
+            `${result.metrics.unplannedConsequentialFlags.length} unplanned flag(s)`,
+          );
+        }
+        for (const issue of result.issues) {
+          issues.push({
+            type: 'planned_residue_debt',
+            severity: blockResidue ? 'error' : 'warning',
+            message: issue.message,
+            validator: 'ResidueObligationValidator',
+            suggestion: issue.suggestion,
+          });
+        }
       }
     }
 
@@ -688,10 +776,13 @@ export class FinalStoryContractValidator {
       }
       const blockOpener = isGateEnabledAt('GATE_SENTENCE_OPENER_VARIETY', 'season-final');
       for (const issue of openerResult.issues) {
+        const ref = sceneRefFromValidationLocation(issue.location);
         issues.push({
           type: 'sentence_opener_monotony',
           severity: blockOpener ? 'error' : 'warning',
           message: issue.message,
+          episodeNumber: ref.episodeNumber,
+          sceneId: ref.sceneId,
           validator: 'SentenceOpenerVarietyValidator',
           suggestion: issue.suggestion,
         });
@@ -710,10 +801,13 @@ export class FinalStoryContractValidator {
       }
       const blockRef = isGateEnabledAt('GATE_REFERENCED_EVENT_PRESENCE', 'season-final');
       for (const issue of refResult.issues) {
+        const ref = sceneRefFromValidationLocation(issue.location);
         issues.push({
           type: 'promised_clue_absent',
           severity: blockRef ? 'error' : 'warning',
           message: issue.message,
+          episodeNumber: ref.episodeNumber,
+          sceneId: ref.sceneId,
           validator: 'ReferencedEventPresenceValidator',
           suggestion: issue.suggestion,
         });
@@ -1000,15 +1094,26 @@ export class FinalStoryContractValidator {
     }
 
     this.collectSupernaturalCanonContradictions(input.story, storyTexts, issues);
-    await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics, input.treatmentSourced === true, input.callbackLedger, input.generatedThroughEpisode);
+    await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics, input.callbackLedger, input.generatedThroughEpisode);
     this.validateMechanicsLeakage(storyTexts, issues, metrics);
     this.validateIncrementalResults(input.incrementalValidationResults || [], issues, metrics);
-    this.validateQAReports(input.qaReport, input.bestPracticesReport, issues, metrics, input.treatmentSourced === true);
+    this.validateQAReports(input.story, input.qaReport, input.bestPracticesReport, issues, metrics, input.treatmentSourced === true);
     this.validateFidelityFindings(input, issues);
 
     this.reconcileFrozenIncrementalFlags(issues);
 
-    return this.buildReport(issues, metrics);
+    const treatmentObligationCanonicalReport = buildTreatmentObligationCanonicalReport({
+      fidelityFindings: input.fidelityFindings,
+      planTimeFidelityFindings: input.planTimeFidelityFindings,
+      finalContractIssues: issues,
+      treatmentSourced: input.treatmentSourced,
+      generatedEpisodeNumbers: (input.story.episodes || [])
+        .map(episode => episode.number)
+        .filter((episodeNumber): episodeNumber is number => typeof episodeNumber === 'number'),
+      requestedEpisodeNumbers: input.requestedEpisodeNumbers,
+    });
+
+    return this.buildReport(issues, metrics, treatmentObligationCanonicalReport);
   }
 
   private validateRequestedEpisodes(
@@ -1482,7 +1587,6 @@ export class FinalStoryContractValidator {
     callbackChoices: Array<{ id: string; sceneId: string; text: string; consequences?: Consequence[]; reminderPlan?: unknown }>,
     issues: FinalStoryContractIssue[],
     metrics: FinalStoryContractReport['metrics'],
-    treatmentSourced: boolean,
     callbackLedger?: SerializedCallbackLedger,
     generatedThroughEpisode?: number,
   ): Promise<void> {
@@ -1494,13 +1598,11 @@ export class FinalStoryContractValidator {
     });
     metrics.callbackIssues = result.issues.length;
     for (const issue of result.issues) {
-      if (issue.level !== 'error') continue;
       issues.push({
-        // F3: callback debt remains advisory for freeform runs. Treatment-sourced
-        // slices are stricter: visible authored axes cannot leave in-slice debt
-        // while still claiming a passing final contract.
-        type: 'unrepaired_callback_debt',
-        severity: treatmentSourced ? 'error' : 'warning',
+        // Generic callback-opportunity heuristics are advisory. Concrete due debt
+        // is owned by the ledger-aware residue/flag/callback-coverage validators.
+        type: 'callback_opportunity_advisory',
+        severity: 'warning',
         message: issue.message,
         validator: 'CallbackOpportunitiesValidator',
         suggestion: issue.suggestion,
@@ -1595,6 +1697,7 @@ export class FinalStoryContractValidator {
   }
 
   private validateQAReports(
+    story: Story,
     qaReport: QAReport | undefined,
     bestPracticesReport: ComprehensiveValidationReport | undefined,
     issues: FinalStoryContractIssue[],
@@ -1606,10 +1709,15 @@ export class FinalStoryContractValidator {
       // playability gate — advisory by default so the story ships with the score
       // recorded rather than producing zero output. GATE_QA_CRITICAL_BLOCK promotes
       // it to blocking once an auto-repair path exists (default-off ⇒ unchanged).
-      const hasCriticalIssues = qaReport.criticalIssues.length > 0;
       issues.push({
         type: 'qa_blocker_present',
-        severity: hasCriticalIssues && (treatmentSourced || isGateEnabledAt('GATE_QA_CRITICAL_BLOCK', 'season-final')) ? 'error' : 'warning',
+        severity: resolveFinalContractSeverity({
+          requestedSeverity: qaReport.criticalIssues.length > 0 ? 'error' : 'warning',
+          findingClass: 'craft_critic',
+          treatmentSourced,
+          gateId: 'GATE_QA_CRITICAL_BLOCK',
+          sourceKind: 'qa',
+        }),
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
         validator: 'QARunner',
       });
@@ -1628,13 +1736,26 @@ export class FinalStoryContractValidator {
     // never block, so a passing run cannot flip to failing.
     if (qaReport?.continuity?.issues?.length) {
       const REMEDIABLE = new Set(['impossible_knowledge', 'contradiction', 'missing_setup', 'timeline_error']);
-      const blockContinuity =
-        treatmentSourced || isGateEnabled('GATE_CONTINUITY_REMEDIATION') || isGateEnabled('GATE_QA_CRITICAL_BLOCK');
+      const continuityGateId = isGateEnabled('GATE_CONTINUITY_REMEDIATION')
+        ? 'GATE_CONTINUITY_REMEDIATION'
+        : isGateEnabled('GATE_QA_CRITICAL_BLOCK')
+        ? 'GATE_QA_CRITICAL_BLOCK'
+        : undefined;
       for (const issue of qaReport.continuity.issues) {
         if (issue.severity !== 'error' || !REMEDIABLE.has(issue.type)) continue;
         issues.push({
           type: 'continuity_error',
-          severity: blockContinuity ? 'error' : 'warning',
+          severity: resolveFinalContractSeverity({
+            requestedSeverity: 'error',
+            findingClass: 'repairable_contract',
+            treatmentSourced,
+            gateId: continuityGateId,
+            sourceKind: 'qa',
+            repairTarget: {
+              sceneId: issue.location?.sceneId,
+              beatId: issue.location?.beatId,
+            },
+          }),
           message: `Continuity ${issue.type}: ${issue.description}`,
           sceneId: issue.location?.sceneId,
           beatId: issue.location?.beatId,
@@ -1645,24 +1766,123 @@ export class FinalStoryContractValidator {
     }
 
     for (const issue of bestPracticesReport?.blockingIssues || []) {
+      if (this.isStaleRelationshipIdBestPracticeIssue(story, issue)) continue;
+      if (this.isStaleStatCheckBalanceBestPracticeIssue(story, issue)) continue;
       const type = issue.category === 'callback_opportunities'
         ? 'unrepaired_callback_debt'
         : 'qa_blocker_present';
       if (type === 'unrepaired_callback_debt') metrics.callbackIssues++;
-      // F3: best-practices craft findings are advisory at the final gate — EXCEPT
-      // escalated correctness classes (witness-id integrity) when their rollout
-      // flag is on, which stay blocking. Callback debt in treatment-sourced
-      // output also blocks because the source axes are authored obligations.
+      // F3: best-practices craft findings are advisory at the final gate. Only
+      // already-escalated runtime correctness classes can remain blocking here;
+      // concrete callback/residue debt is owned by the contract-specific validators.
       const escalated = isEscalatedIssue(issue);
-      const treatmentCallbackDebt = treatmentSourced && type === 'unrepaired_callback_debt';
       issues.push({
         type,
-        severity: escalated || treatmentCallbackDebt ? 'error' : 'warning',
+        severity: resolveFinalContractSeverity({
+          requestedSeverity: issue.level === 'error' || escalated ? 'error' : 'warning',
+          findingClass: escalated ? 'runtime_contract' : 'craft_critic',
+          treatmentSourced,
+          sourceKind: 'qa',
+          repairTarget: issue.location,
+        }),
         message: issue.message,
         validator: 'IntegratedBestPracticesValidator',
         suggestion: issue.suggestion,
       });
     }
+  }
+
+  private isStaleRelationshipIdBestPracticeIssue(
+    story: Story,
+    issue: { message?: string },
+  ): boolean {
+    const match = (issue.message || '').match(
+      /Relationship consequence on choice "([^"]+)" targets unknown NPC "([^"]+)"/i,
+    );
+    if (!match) return false;
+    const [, choiceId, npcId] = match;
+    const status = this.findChoiceRelationshipTargetStatus(story, choiceId, npcId);
+    // Only suppress frozen report findings when the exact offending choice exists
+    // and its current repaired consequences no longer contain the bad target.
+    return status === 'choice-found-target-absent';
+  }
+
+  private isStaleStatCheckBalanceBestPracticeIssue(
+    story: Story,
+    issue: { message?: string },
+  ): boolean {
+    const match = (issue.message || '').match(/Stat check "([^"]+)" has skillWeights totaling/i);
+    if (!match) return false;
+    const choice = this.findChoiceById(story, match[1]);
+    const weights = choice?.statCheck?.skillWeights;
+    if (!weights || typeof weights !== 'object' || Array.isArray(weights)) return false;
+    const values = Object.values(weights);
+    if (values.length === 0 || values.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      return false;
+    }
+    const total = values.reduce((sum, value) => sum + value, 0);
+    return Math.abs(total - 1) <= 0.01;
+  }
+
+  private findChoiceById(story: Story, choiceId: string): Choice | undefined {
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        for (const beat of scene.beats || []) {
+          const choice = (beat.choices || []).find((candidate) => candidate.id === choiceId);
+          if (choice) return choice;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private findChoiceRelationshipTargetStatus(
+    story: Story,
+    choiceId: string,
+    npcId: string,
+  ): 'choice-found-target-present' | 'choice-found-target-absent' | 'choice-not-found' {
+    let foundChoice = false;
+    let foundTarget = false;
+    const isRelationship = (value: unknown): value is Record<string, unknown> => {
+      if (!value || typeof value !== 'object') return false;
+      const type = String((value as Record<string, unknown>).type || '');
+      return type === 'relationship' || type === 'adjustRelationship' || type === 'changeRelationship';
+    };
+    const checkConsequences = (choice: Record<string, unknown>): void => {
+      const consequences = Array.isArray(choice.consequences) ? choice.consequences : [];
+      for (const consequence of consequences) {
+        if (!isRelationship(consequence)) continue;
+        const target = consequence.npcId || consequence.characterId;
+        if (target === npcId) foundTarget = true;
+      }
+      const delayed = Array.isArray(choice.delayedConsequences) ? choice.delayedConsequences : [];
+      for (const delayedConsequence of delayed) {
+        const consequence = delayedConsequence && typeof delayedConsequence === 'object'
+          ? (delayedConsequence as Record<string, unknown>).consequence
+          : undefined;
+        if (!isRelationship(consequence)) continue;
+        const target = consequence.npcId || consequence.characterId;
+        if (target === npcId) foundTarget = true;
+      }
+    };
+    const visit = (node: unknown): void => {
+      if (foundTarget) return;
+      if (Array.isArray(node)) {
+        for (const item of node) visit(item);
+        return;
+      }
+      if (!node || typeof node !== 'object') return;
+      const obj = node as Record<string, unknown>;
+      if (obj.id === choiceId) {
+        foundChoice = true;
+        checkConsequences(obj);
+        return;
+      }
+      for (const value of Object.values(obj)) visit(value);
+    };
+    visit(story);
+    if (foundTarget) return 'choice-found-target-present';
+    return foundChoice ? 'choice-found-target-absent' : 'choice-not-found';
   }
 
   /**
@@ -1696,14 +1916,27 @@ export class FinalStoryContractValidator {
       const isSeasonPromiseRealization = finding.validator === 'SeasonPromiseRealizationValidator';
       const isCharacterTreatmentRealization = finding.validator === 'CharacterTreatmentRealizationValidator';
       const isNarrativeFailureMode = finding.validator === 'NarrativeFailureModeValidator';
-      const severity: 'error' | 'warning' =
-        finding.severity === 'error' && (isTransitionContinuity || isSceneTurn || isRelationshipPacing || isMechanicPressure || isTreatmentFieldUtilization || isSeasonPromiseRealization || isCharacterTreatmentRealization || isNarrativeFailureMode)
-          ? 'error'
-          : finding.severity === 'error' && isFidelity && input.treatmentSourced
-          ? 'error'
-          : finding.severity === 'error' && !input.treatmentSourced
-          ? 'warning'
-          : finding.severity;
+      const fallback: FidelitySeverityMetadata = isNarrativeFailureMode
+        ? { gateId: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', findingClass: 'craft_critic', sourceKind: 'heuristic' }
+        : FIDELITY_FALLBACK_POLICY[finding.validator] ?? (
+          isFidelity
+            ? { findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true }
+            : { findingClass: 'shadow_advisory' }
+        );
+      const repairTarget = finding.repairTarget ?? (
+        finding.episodeNumber || finding.sceneId
+          ? { episodeNumber: finding.episodeNumber, sceneId: finding.sceneId }
+          : fallback.repairTarget
+      );
+      const severity = resolveFinalContractSeverity({
+        requestedSeverity: finding.severity,
+        findingClass: finding.findingClass ?? fallback.findingClass ?? 'shadow_advisory',
+        treatmentSourced: input.treatmentSourced,
+        gateId: finding.gateId ?? fallback.gateId,
+        sourceKind: finding.sourceKind ?? fallback.sourceKind,
+        repairTarget,
+        hasConcreteObligation: finding.hasConcreteObligation ?? fallback.hasConcreteObligation,
+      });
       issues.push({
         type: isTransitionContinuity
           ? 'transition_continuity_violation'
@@ -1734,7 +1967,8 @@ export class FinalStoryContractValidator {
 
   private buildReport(
     issues: FinalStoryContractIssue[],
-    metrics: FinalStoryContractReport['metrics']
+    metrics: FinalStoryContractReport['metrics'],
+    treatmentObligationCanonicalReport?: TreatmentObligationCanonicalReport,
   ): FinalStoryContractReport {
     const blockingIssues = issues.filter(issue => issue.severity === 'error');
     const warnings = issues.filter(issue => issue.severity === 'warning');
@@ -1743,6 +1977,7 @@ export class FinalStoryContractValidator {
       blockingIssues,
       warnings,
       metrics,
+      treatmentObligationCanonicalReport,
       generatedAt: new Date().toISOString(),
     };
   }

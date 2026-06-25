@@ -28,6 +28,7 @@ export interface CallbackHook {
   sourceEpisode: number;
   sourceSceneId: string;
   sourceChoiceId: string;
+  residueObligationId?: string;
   flags: string[];
   conditionKeys?: string[];
   impactFactors?: ChoiceImpactFactor[];
@@ -62,6 +63,22 @@ export interface CallbackHook {
   proseSources?: { echoSummary?: string; immediate?: string; shortTerm?: string };
   createdAt: string;
 }
+
+export type CallbackPayoffSource = 'authored_variant' | 'fallback_callback' | 'residue_obligation';
+
+export interface CallbackPayoffEvent {
+  hookId: string;
+  episode: number;
+  sceneId?: string;
+  beatId?: string;
+  source: CallbackPayoffSource;
+  residueObligationId?: string;
+  creditedAt: string;
+}
+
+export type CallbackPayoffEventInput = Omit<CallbackPayoffEvent, 'hookId' | 'creditedAt'> & {
+  creditedAt?: string;
+};
 
 export interface LedgerConfig {
   // Number of distinct payoff references before a hook is marked resolved.
@@ -201,12 +218,15 @@ export interface SerializedCallbackLedger {
   config: LedgerConfig;
   /** Beat-level payoff dedupe keys (`<beatKey>::<hookId>`) already credited. */
   creditedVariantBeats?: string[];
+  /** Exact payoff evidence for new ledgers; legacy ledgers may omit it. */
+  payoffEvents?: CallbackPayoffEvent[];
 }
 
 export class CallbackLedger {
   private hooks = new Map<string, CallbackHook>();
   /** Beat-level payoff dedupe: `<beatKey>::<hookId>` entries already credited. */
   private creditedVariantBeats = new Set<string>();
+  private payoffEvents: CallbackPayoffEvent[] = [];
   private config: LedgerConfig;
   private storyId?: string;
 
@@ -245,6 +265,7 @@ export class CallbackLedger {
       impactFactors: hook.impactFactors ?? existing?.impactFactors ?? [],
       consequenceTier: hook.consequenceTier ?? existing?.consequenceTier ?? 'callback',
       proseSources: hook.proseSources ?? existing?.proseSources,
+      residueObligationId: hook.residueObligationId ?? existing?.residueObligationId,
     };
     this.hooks.set(hook.id, merged);
     return merged;
@@ -307,6 +328,8 @@ export class CallbackLedger {
     flag: string;
     episode: number;
     sceneId: string;
+    residueObligationId?: string;
+    payoffEpisode?: number;
   }): CallbackHook | undefined {
     const { flag } = params;
     if (!flag || isStructuralFlag(flag)) return undefined;
@@ -323,11 +346,15 @@ export class CallbackLedger {
       consequenceTier: 'callback',
       summary,
       proseSources: this.proseSourcesOf(params.choice),
-      payoffWindow: {
-        // Eligible from the setting episode onward (same-episode payoff allowed).
-        minEpisode: params.episode,
-        maxEpisode: params.episode + this.config.defaultWindowSpan,
-      },
+      residueObligationId: params.residueObligationId,
+      payoffEpisode: params.payoffEpisode,
+      payoffWindow: params.payoffEpisode != null
+        ? { minEpisode: params.payoffEpisode, maxEpisode: params.payoffEpisode }
+        : {
+          // Eligible from the setting episode onward (same-episode payoff allowed).
+          minEpisode: params.episode,
+          maxEpisode: params.episode + this.config.defaultWindowSpan,
+        },
     });
   }
 
@@ -589,7 +616,7 @@ export class CallbackLedger {
    * Record that a hook was referenced by a TextVariant (or similar payoff).
    * Auto-resolves when payoffCount >= payoffThreshold.
    */
-  recordPayoff(hookId: string): CallbackHook | undefined {
+  recordPayoff(hookId: string, event?: CallbackPayoffEventInput): CallbackHook | undefined {
     // Canonicalize first: a caller may pass a prefix-drifted id (bare vs `flag:`/
     // `score:`) — resolveHookId maps it to the planted hook (and is a no-op for an
     // already-canonical or genuinely-unknown id), so the payoff isn't dropped silently.
@@ -598,6 +625,17 @@ export class CallbackLedger {
     hook.payoffCount += 1;
     if (hook.payoffCount >= this.config.payoffThreshold) {
       hook.resolved = true;
+    }
+    if (event) {
+      this.payoffEvents.push({
+        hookId: hook.id,
+        episode: event.episode,
+        sceneId: event.sceneId,
+        beatId: event.beatId,
+        source: event.source,
+        residueObligationId: event.residueObligationId,
+        creditedAt: event.creditedAt ?? new Date().toISOString(),
+      });
     }
     return hook;
   }
@@ -643,7 +681,7 @@ export class CallbackLedger {
           if (this.creditedVariantBeats.has(beatKey)) return;
           this.creditedVariantBeats.add(beatKey);
         }
-        this.recordPayoff(hookId);
+        this.recordPayoff(hookId, payoffEventFromDedupeKey(dedupeKey));
         matched.push(hookId);
         credited.add(hookId);
         // Same decision → credit the choice's other hooks (e.g. the `later:<choice>`
@@ -792,6 +830,10 @@ export class CallbackLedger {
     return Array.from(this.hooks.values()).filter((hook) => !hook.resolved && !hook.abandoned);
   }
 
+  payoffHistory(): CallbackPayoffEvent[] {
+    return [...this.payoffEvents];
+  }
+
   serialize(): SerializedCallbackLedger {
     return {
       version: 1,
@@ -799,6 +841,7 @@ export class CallbackLedger {
       hooks: Array.from(this.hooks.values()),
       config: this.config,
       creditedVariantBeats: Array.from(this.creditedVariantBeats),
+      payoffEvents: [...this.payoffEvents],
     };
   }
 
@@ -814,8 +857,22 @@ export class CallbackLedger {
     for (const key of parsed.creditedVariantBeats ?? []) {
       ledger.creditedVariantBeats.add(key);
     }
+    ledger.payoffEvents = [...(parsed.payoffEvents ?? [])];
     return ledger;
   }
+}
+
+function payoffEventFromDedupeKey(dedupeKey: string | undefined): CallbackPayoffEventInput | undefined {
+  if (!dedupeKey) return undefined;
+  const [episodeText, sceneId, beatId] = dedupeKey.split(':');
+  const episode = Number(episodeText);
+  if (!Number.isFinite(episode)) return undefined;
+  return {
+    episode,
+    sceneId,
+    beatId,
+    source: 'authored_variant',
+  };
 }
 
 /**

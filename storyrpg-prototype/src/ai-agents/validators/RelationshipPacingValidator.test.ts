@@ -107,6 +107,21 @@ describe('RelationshipPacingValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('unearned relationship label'))).toBe(false);
   });
 
+  it('does not treat visible family-history clues as relationship-label claims', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s3-3', 'Victor is missing from his family portrait. A stranger knows your family history before you offer it.', [contract({
+          blockedLabels: ['best friend', 'soulmate', 'family', 'trusts completely'],
+          targetStage: 'acquaintance',
+          minScenesSinceIntroduction: 0,
+        })]),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('unearned relationship label'))).toBe(false);
+  });
+
   it('does not treat hidden choice-planning summaries as visible relationship-stage claims', () => {
     const result = validator.validate({
       story: story([

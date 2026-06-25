@@ -164,8 +164,27 @@ function beatText(beat: Beat): string {
   ].filter(Boolean).join(' ');
 }
 
+function encounterText(scene: Scene): string {
+  const encounter = (scene as Scene & {
+    encounter?: {
+      phases?: Array<{ beats?: Array<{ text?: string; setupText?: string; escalationText?: string }> }>;
+      storylets?: Array<{ beats?: Array<{ text?: string; setupText?: string; escalationText?: string }> }>
+        | Record<string, { beats?: Array<{ text?: string; setupText?: string; escalationText?: string }> }>;
+    };
+  }).encounter;
+  if (!encounter) return '';
+  const parts: string[] = [];
+  const collect = (beats: Array<{ text?: string; setupText?: string; escalationText?: string }> | undefined): void => {
+    for (const beat of beats ?? []) parts.push(beat.text ?? '', beat.setupText ?? '', beat.escalationText ?? '');
+  };
+  for (const phase of encounter.phases ?? []) collect(phase.beats);
+  const storylets = Array.isArray(encounter.storylets) ? encounter.storylets : Object.values(encounter.storylets ?? {});
+  for (const storylet of storylets) collect(storylet?.beats);
+  return parts.filter(Boolean).join(' ');
+}
+
 function sceneText(scene: Scene): string {
-  return [scene.name, ...(scene.beats ?? []).map(beatText)].filter(Boolean).join(' ');
+  return [scene.name, ...(scene.beats ?? []).map(beatText), encounterText(scene)].filter(Boolean).join(' ');
 }
 
 function consequenceRefs(scene: Scene): ConsequenceRef[] {

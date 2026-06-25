@@ -161,6 +161,13 @@ describe('first-person POV detection (bite-me-g16 coda)', () => {
     expect(hits).toHaveLength(0);
   });
 
+  it('does NOT let an orphan closing quote invert later dialogue masking', () => {
+    const hits = v.findFirstPersonProtagonistTexts([
+      'It\'s not working." Mika snaps her laptop shut. "Three dates, three disasters. I\'m done waiting." She slides a card toward you.',
+    ]);
+    expect(hits).toHaveLength(0);
+  });
+
   it('does NOT flag clean second-person narration', () => {
     const hits = v.findFirstPersonProtagonistTexts([
       'You set down your glass. Your thumb hovers over the keyboard.',

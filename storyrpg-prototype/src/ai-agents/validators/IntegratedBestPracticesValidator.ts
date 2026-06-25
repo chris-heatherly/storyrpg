@@ -21,6 +21,7 @@ import { ConsequenceBudgetValidator } from './ConsequenceBudgetValidator';
 import { StakesTriangleValidator } from './StakesTriangleValidator';
 import { FiveFactorValidator } from './FiveFactorValidator';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
+import { ResidueObligationValidator } from './ResidueObligationValidator';
 import { PixarPrinciplesValidator } from './PixarPrinciplesValidator';
 import { CliffhangerValidator } from './CliffhangerValidator';
 import { ChoiceImpactValidator } from './ChoiceImpactValidator';
@@ -31,6 +32,7 @@ import { StatCheckBalanceValidator } from './StatCheckBalanceValidator';
 import { SkillSurfaceValidator } from './SkillSurfaceValidator';
 import { SkillCoverageValidator } from './SkillCoverageValidator';
 import { BranchMechanicalDivergenceValidator } from './BranchMechanicalDivergenceValidator';
+import { buildChoiceAgencyCanonicalReport } from './choiceAgencyCanonicalReport';
 import { NPCTier, RelationshipDimension, Consequence, ReminderPlan, SeasonBible, Episode, EpisodePlan } from '../../types';
 import type {
   ChoiceAffordanceSource,
@@ -58,6 +60,7 @@ import {
 } from '../../types/validation';
 import { CHOICE_DENSITY_DEFAULTS } from '../../constants/validation';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import type { SeasonResidueObligation } from '../../types/seasonPlan';
 
 // Branching-frequency reference cap fed to ChoiceDistributionValidator's
 // reporting pass. The metric only reports branchingCount vs. this cap today;
@@ -166,6 +169,8 @@ export interface ValidationInput {
   knownScores?: string[];
   callbackLedger?: SerializedCallbackLedger;
   generatedThroughEpisode?: number;
+  seasonResiduePlan?: SeasonResidueObligation[];
+  episodeNumber?: number;
 
   // Optional encounter structures for Pixar principles validation
   encounterStructures?: EncounterStructure[];
@@ -211,6 +216,7 @@ export class IntegratedBestPracticesValidator {
   private stakesTriangleValidator: StakesTriangleValidator;
   private fiveFactorValidator: FiveFactorValidator;
   private callbackValidator: CallbackOpportunitiesValidator;
+  private residueValidator: ResidueObligationValidator;
   private pixarValidator: PixarPrinciplesValidator;
   private cliffhangerValidator: CliffhangerValidator;
   private choiceImpactValidator: ChoiceImpactValidator;
@@ -242,7 +248,11 @@ export class IntegratedBestPracticesValidator {
       agentConfig,
       this.config.rules.fiveFactor
     );
-    this.callbackValidator = new CallbackOpportunitiesValidator({ level: 'error' });
+    // Quick validation can surface callback debt, but it cannot currently repair
+    // callback_opportunities findings in-place. Keep the signal as a warning here;
+    // final-contract validation still owns blocking treatment/callback fidelity.
+    this.callbackValidator = new CallbackOpportunitiesValidator({ level: 'warning' });
+    this.residueValidator = new ResidueObligationValidator();
     this.pixarValidator = new PixarPrinciplesValidator();
     this.cliffhangerValidator = new CliffhangerValidator(agentConfig);
     this.choiceImpactValidator = new ChoiceImpactValidator();
@@ -422,6 +432,30 @@ export class IntegratedBestPracticesValidator {
         if (issue.level === 'error') {
           blockingIssues.push(issue);
         } else if (issue.level === 'warning') {
+          warningCount++;
+        }
+      }
+    }
+
+    if (input.episode && input.seasonResiduePlan?.length && input.episodeNumber) {
+      const residueResult = this.residueValidator.validate({
+        episode: input.episode,
+        seasonResiduePlan: input.seasonResiduePlan,
+        callbackLedger: input.callbackLedger,
+        episodeNumber: input.episodeNumber,
+        generatedThroughEpisode: input.generatedThroughEpisode || input.episodeNumber,
+      });
+      for (const issue of residueResult.issues) {
+        const mapped: ValidationIssue = {
+          category: 'residue_obligations',
+          level: issue.severity === 'error' ? 'error' : 'warning',
+          message: issue.message,
+          location: {},
+          suggestion: issue.suggestion,
+        };
+        if (mapped.level === 'error') {
+          blockingIssues.push(mapped);
+        } else {
           warningCount++;
         }
       }
@@ -820,6 +854,8 @@ export class IntegratedBestPracticesValidator {
       }
     }
 
+    const choiceAgencyCanonicalReport = buildChoiceAgencyCanonicalReport(allIssues);
+
     // Categorize issues. Escalated correctness classes (witness-id integrity,
     // design-note leak) are promoted into the blocking set when their rollout flag
     // is on — see issueEscalation. Default-off ⇒ `escalatedAdvisory` is empty and
@@ -849,6 +885,7 @@ export class IntegratedBestPracticesValidator {
       warnings,
       suggestions,
       metrics,
+      choiceAgencyCanonicalReport,
       timestamp: new Date(),
       duration: Date.now() - startTime,
     };

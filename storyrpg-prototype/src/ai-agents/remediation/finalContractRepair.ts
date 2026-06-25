@@ -23,6 +23,8 @@ import { StructuralValidator } from '../validators/StructuralValidator';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
 import { buildDesignNoteLeakStripHandler } from './designNoteLeakHandler';
 import { buildPlanningRegisterMetadataRepairHandler } from './planningRegisterMetadataRepairHandler';
+import { buildPlayerFacingProseRepairHandler } from './playerFacingProseRepairHandler';
+import { buildRelationshipPacingLabelRepairHandler } from './relationshipPacingLabelRepairHandler';
 import { buildTransitionBridgeRepairHandler } from './transitionBridgeRepairHandler';
 import { buildContinuityBlogPublishRepairHandler } from './continuityBlogPublishRepairHandler';
 
@@ -156,10 +158,19 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // verbatim feedback-cue/reminder one-liner, so a meta-narration leak repairs
     // instead of hard-aborting (the GATE_DESIGN_NOTE_LEAK planned fix).
     buildDesignNoteLeakStripHandler(),
+    // Reader-facing "the player" references are fiction-first leaks even when the
+    // surrounding sentence is otherwise diegetic ("the player opposite you").
+    // Rewrite the visible prose in-place instead of weakening the leakage gate.
+    buildPlayerFacingProseRepairHandler(),
     // Planning-register leak in metadata fields: strip authoring directives from
     // beat/scene metadata that image planning and the reader may consume, without
     // changing story text, choices, encounters, or navigation.
     buildPlanningRegisterMetadataRepairHandler(),
+    // Relationship-pacing residue: downgrade unearned high-stage labels in visible
+    // prose/choice text for scenes the RelationshipPacingValidator already flagged.
+    // This preserves the gate and the relationship turn while avoiding repeated
+    // SceneCritic rewrites that leave the same label residue behind.
+    buildRelationshipPacingLabelRepairHandler(),
     // Transition continuity bridge miss: when the validator names the exact
     // choice-bridge beat and planned location jump, add a short in-fiction
     // travel/arrival sentence to that bridge beat before spending LLM repair.

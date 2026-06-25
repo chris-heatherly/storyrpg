@@ -12,7 +12,10 @@ import {
   emitSceneTreatmentSeeds,
   resolveSceneBranchAxes,
   emitSceneBranchAxes,
+  encounterInfoMarkerTargets,
+  emitSceneInfoMarkersOnBeats,
   emitSceneInfoReveals,
+  infoSetupFlag,
   infoRevealFlag,
   type EpisodePlant,
 } from './episodePlantContext';
@@ -305,6 +308,40 @@ describe('emitSceneBranchAxes semantic placement (gen-5 wine-branch collapse)', 
 
 describe('emitSceneInfoReveals (Step 3)', () => {
   const mkChoice = (id: string): Choice => ({ id, text: id, choiceType: 'relationship', consequences: [] } as unknown as Choice);
+
+  it('sets detectable setup/reveal/payoff markers on scene beats when there are no choices', () => {
+    const beats = [{ id: 'b1', text: 'A fair-play hint lands here.', onShow: [] }];
+    const added = emitSceneInfoMarkersOnBeats(
+      { id: 's1', setsUpInfoIds: ['INFO-C'], revealsInfoIds: ['INFO-A'] },
+      beats,
+    );
+    expect(added).toBe(2);
+    expect(beats[0].onShow?.map((c: any) => c.flag)).toEqual([
+      infoSetupFlag('INFO-C'),
+      infoRevealFlag('INFO-A'),
+    ]);
+  });
+
+  it('does not duplicate beat-level information markers', () => {
+    const beats = [{ id: 'b1', text: 'A fair-play hint lands here.', onShow: [{ type: 'setFlag', flag: infoSetupFlag('INFO-C'), value: true }] }];
+    const added = emitSceneInfoMarkersOnBeats({ id: 's1', setsUpInfoIds: ['INFO-C'] }, beats);
+    expect(added).toBe(0);
+    expect(beats[0].onShow).toHaveLength(1);
+  });
+
+  it('collects encounter phase and storylet beats as information marker targets', () => {
+    const phaseBeat = { id: 'phase-1', onShow: [] };
+    const storyletBeat = { id: 'storylet-1', onShow: [] };
+    const targets = encounterInfoMarkerTargets({
+      phases: [{ beats: [phaseBeat] }],
+      storylets: { victory: { beats: [storyletBeat] } },
+    });
+    const added = emitSceneInfoMarkersOnBeats({ id: 'enc-1', setsUpInfoIds: ['INFO-C'] }, targets);
+
+    expect(added).toBe(1);
+    expect(phaseBeat.onShow.map((c: any) => c.flag)).toEqual([infoSetupFlag('INFO-C')]);
+    expect(storyletBeat.onShow).toEqual([]);
+  });
 
   it('sets a detectable <id>_reveal flag for each assigned reveal, round-robin across choices', () => {
     const choices = [mkChoice('c1'), mkChoice('c2')];

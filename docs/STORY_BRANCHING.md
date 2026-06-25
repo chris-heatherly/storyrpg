@@ -449,12 +449,12 @@ Multiple systems validate branch structure:
 
 ### Choice Distribution Validator
 
-`src/ai-agents/validators/ChoiceDistributionValidator.ts` runs during generation to enforce:
-- Branching frequency stays within the per-episode cap
-- Expression choices never have `nextSceneId`
-- Choice type percentages stay near targets
+`src/ai-agents/validators/ChoiceDistributionValidator.ts` runs during generation to report:
+- Branching frequency compared with the configured cap
+- Expression choices with `nextSceneId`
+- Choice type percentages compared with baseline diagnostic targets
 
-Violations produce errors (blocks generation) or warnings. A **branching penalty** of 15 points per excess branch is applied to the quality score.
+By default, expression choices with `nextSceneId` remain error-severity semantic violations. Branch-cap pressure and choice-type percentage skew are telemetry/advisory signals unless a caller explicitly opts into strict policy. Treatments, season structure, and the episode's seven-point role may justify deliberate distribution skew when choices still serve the authored pressure. A **branching penalty** of 15 points per excess branch is still reflected in the quality score.
 
 ### Branch Manager
 
@@ -534,7 +534,7 @@ Encounter branching now distinguishes clean victory from costly success.
 | `src/ai-agents/agents/ChoiceAuthor.ts` | Creates choices with `nextSceneId` for branching |
 | `src/ai-agents/agents/BranchManager.ts` | Analyzes and validates branch structure |
 | `src/ai-agents/agents/EncounterArchitect.ts` | Creates encounter storylets (tactical branching) |
-| `src/ai-agents/validators/ChoiceDistributionValidator.ts` | Enforces branching cap and expression-no-branch rule |
+| `src/ai-agents/validators/ChoiceDistributionValidator.ts` | Reports branching cap pressure and enforces expression-no-branch rule |
 | `src/ai-agents/validators/PhaseValidator.ts` | Phase-level validation with blocking/warning thresholds |
 | `src/ai-agents/prompts/storytellingPrinciples.ts` | Branch-and-Bottleneck, Choice Geometry, Stakes Triangle |
 | `src/ai-agents/config.ts` | `maxBranchingChoicesPerEpisode` and distribution targets |

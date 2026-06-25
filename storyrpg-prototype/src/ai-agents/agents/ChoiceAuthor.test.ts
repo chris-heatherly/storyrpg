@@ -80,7 +80,7 @@ describe('ChoiceAuthor.validateChoices', () => {
 
   it('derives required choice schema fields from the deterministic planner choice type', () => {
     const relationship = buildChoiceSetJsonSchema({ choiceType: 'relationship', branching: false });
-    expect(relationship.maxOutputTokens).toBe(12000);
+    expect(relationship.maxOutputTokens).toBe(16384);
     const relChoice = (relationship.schema as any).properties.choices.items;
     expect(relChoice.required).toEqual(expect.arrayContaining([
       'choiceType',
@@ -106,6 +106,25 @@ describe('ChoiceAuthor.validateChoices', () => {
     const branchChoice = (branch.schema as any).properties.choices.items;
     expect(branchChoice.required).toContain('nextSceneId');
     expect(branchChoice.required).not.toContain('tintFlag');
+  });
+
+  it('uses a bounded but complete structured-output budget for compact Gemini retries', () => {
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'Mika Table',
+        choicePoint: {
+          type: 'relationship',
+          stakes: { want: 'read Mika', cost: 'strain the friendship', identity: 'choose candor or comfort' },
+          optionHints: ['Ask directly', 'Let it go', 'Offer cover'],
+        },
+      },
+    });
+
+    expect(author.buildJsonSchema(input).maxOutputTokens).toBe(16384);
+    expect(author.buildCompactRetryJsonSchema(input).maxOutputTokens).toBe(8192);
+    expect(author.buildCompactRetryJsonSchema(input).name).toBe('choice_set_compact_retry');
   });
 
   it('normalizes stat-check difficulty and skill weights before returning choices', async () => {
@@ -1016,6 +1035,17 @@ describe('ChoiceAuthor.parseChoiceSetWithCompactRetry (reliability)', () => {
     expect(retryPrompt).toContain('Repair reason');
     expect(retryPrompt).toContain('complete compact ChoiceSet');
     expect(retryPrompt).not.toContain('BASE_PROMPT');
+  });
+
+  it('caps the beat excerpt in compact retry prompts', () => {
+    const author: any = new ChoiceAuthor(config);
+    const longBeat = 'A'.repeat(1500);
+    const prompt = author.buildCompactRepairPrompt(makeInput({ beatText: longBeat }), 'Too long.');
+
+    expect(prompt).toContain('Return ONLY JSON');
+    expect(prompt).toContain('A'.repeat(900));
+    expect(prompt).not.toContain('A'.repeat(901));
+    expect(prompt).not.toContain('## Stat Check (REQUIRED');
   });
 });
 

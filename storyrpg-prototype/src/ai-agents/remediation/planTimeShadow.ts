@@ -42,7 +42,21 @@ export interface PlanTimeShadowStory {
 export interface PlanTimeShadowResult {
   gate: string;
   validator: string;
+  /** Pre-repair blocker count: what the gate would have fired on before local cleanup. */
   blockingCount: number;
+  /** Blocking findings still present after repair / suppression. */
+  residualBlockingCount?: number;
+  wouldRepairCount?: number;
+  repairAttempted?: boolean;
+  repairSucceeded?: boolean;
+}
+
+interface ShadowCountBucket {
+  validator: string;
+  n: number;
+  residual?: number;
+  repairAttempted?: boolean;
+  repairSucceeded?: boolean;
 }
 
 /** Count error-severity findings across validators that use either `severity` or `level`. */
@@ -82,7 +96,7 @@ export async function computePlanTimeShadow(opts: {
   callbackLedger?: unknown;
   totalEpisodes: number;
 }): Promise<PlanTimeShadowResult[]> {
-  const counts: Record<string, { validator: string; n: number }> = {
+  const counts: Record<string, ShadowCountBucket> = {
     [PLAN_GATE_FLAGS.choiceDensity]: { validator: 'ChoiceDensityValidator', n: 0 },
     [PLAN_GATE_FLAGS.consequenceBudget]: { validator: 'ConsequenceBudgetValidator', n: 0 },
     [PLAN_GATE_FLAGS.propIntroduction]: { validator: 'PropIntroductionValidator', n: 0 },
@@ -119,8 +133,17 @@ export async function computePlanTimeShadow(opts: {
       // actually sees post-repair rather than inflating on label/id mismatches.
       const roster = (opts.story.npcs ?? []).map((n) => ({ id: n.id, name: n.name }));
       const propScenes = scenes.map((sc) => ({ sceneId: sc.id ?? '', sceneName: sc.name, referencedEntityIds: [...(sc.charactersInvolved ?? [])] }));
+      const before = errCount(new PropIntroductionValidator().validate(buildPropIntroductionInput(knownIds, propScenes), { strict: true }) as any);
       repairPropIntroduction(propScenes, roster);
-      return errCount(new PropIntroductionValidator().validate(buildPropIntroductionInput(knownIds, propScenes), { strict: true }) as any);
+      const after = errCount(new PropIntroductionValidator().validate(buildPropIntroductionInput(knownIds, propScenes), { strict: true }) as any);
+      counts[PLAN_GATE_FLAGS.propIntroduction].n += before;
+      const existing = counts[PLAN_GATE_FLAGS.propIntroduction];
+      existing.residual = (existing.residual ?? 0) + after;
+      if (before > 0) {
+        existing.repairAttempted = true;
+        existing.repairSucceeded = (existing.repairSucceeded ?? true) && after === 0;
+      }
+      return 0;
     }, PLAN_GATE_FLAGS.propIntroduction);
 
     if (opts.callbackLedger) {
@@ -133,5 +156,15 @@ export async function computePlanTimeShadow(opts: {
     }
   }
 
-  return Object.entries(counts).map(([gate, v]) => ({ gate, validator: v.validator, blockingCount: v.n }));
+  return Object.entries(counts).map(([gate, v]) => {
+    return {
+      gate,
+      validator: v.validator,
+      blockingCount: v.n,
+      residualBlockingCount: v.residual,
+      wouldRepairCount: v.repairAttempted ? v.n : undefined,
+      repairAttempted: v.repairAttempted,
+      repairSucceeded: v.repairSucceeded,
+    };
+  });
 }

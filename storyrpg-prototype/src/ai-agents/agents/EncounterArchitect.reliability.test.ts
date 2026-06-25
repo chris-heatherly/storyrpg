@@ -9,9 +9,10 @@ import {
   type Phase4Result,
 } from './EncounterArchitect';
 import { TimeoutError } from '../utils/withTimeout';
+import { buildEncounterStoryletDraftJsonSchema } from '../schemas/encounterSchemas';
 
 const config = {
-  provider: 'anthropic' as const,
+  provider: 'gemini' as const,
   model: 'test-model',
   apiKey: 'test-key',
   maxTokens: 1024,
@@ -105,6 +106,9 @@ describe('getMinimumRequiredBeatCount (authored-anchor scaling)', () => {
 describe('classifyPhaseError', () => {
   it('classifies timeout, parse, empty, and other', () => {
     expect(classifyPhaseError(new TimeoutError('x', 1000))).toBe('timeout');
+    expect(classifyPhaseError(new Error('Truncated LLM response from Gemini: finishReason=MAX_TOKENS'))).toBe('max_tokens');
+    expect(classifyPhaseError(new Error('Failed to parse Gemini response as JSON: Gemini returned empty content (finishReason=SAFETY). HARM_CATEGORY_SEXUALLY_EXPLICIT'))).toBe('safety');
+    expect(classifyPhaseError(new Error('Failed to parse Gemini response as JSON: Gemini returned empty content (finishReason=RECITATION).'))).toBe('recitation');
     expect(classifyPhaseError(new Error('The operation was aborted'))).toBe('timeout');
     expect(classifyPhaseError(new Error('Failed to parse JSON response'))).toBe('parse');
     expect(classifyPhaseError(new Error('empty response from model'))).toBe('empty');
@@ -125,6 +129,78 @@ describe('mapWithConcurrency', () => {
     });
     expect(out).toEqual([0, 10, 20, 30, 40]);
     expect(maxActive).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('Phase 4 Gemini safety retry prompt', () => {
+  it('uses a stricter social-suspense boundary after safety or recitation failures', () => {
+    const architect = new EncounterArchitect(config) as any;
+    const romanticInput = {
+      ...input,
+      encounterType: 'romantic',
+      storyContext: { title: 'Bite Me', genre: 'Vampire Romance', tone: 'Sensual gothic' },
+      encounterStakes: 'She lets herself be courted by a magnetic vampire and must claim her appetite.',
+    };
+    const normal = architect.buildPhase4StoryletPrompt(romanticInput, { briefText: 'The attraction changes who has access.' }, 'defeat');
+    const retry = architect.buildPhase4StoryletPrompt(romanticInput, { briefText: 'The attraction changes who has access.' }, 'defeat', { safetyRetry: true });
+
+    expect(normal).toContain('PG-13 gothic-romance tension only');
+    expect(normal).toContain('Vampire Romance');
+    expect(normal).toContain('magnetic vampire');
+    expect(retry).toContain('Gemini Safety Retry Boundary');
+    expect(retry).toContain('Write social suspense only');
+    expect(retry).toContain('status, trust, access, distance');
+    expect(retry).toContain('social-suspense aftermath');
+    expect(retry).not.toContain('Keep desire, danger, glamour');
+    expect(retry).not.toContain('Vampire Romance');
+    expect(retry).not.toContain('Sensual gothic');
+    expect(retry).not.toContain('magnetic vampire');
+    expect(retry).not.toContain('claim her appetite');
+    expect(retry).not.toContain('The attraction changes who has access.');
+  });
+});
+
+describe('Phase 1 Gemini budget retry', () => {
+  it('uses a compact opening-beat prompt after Gemini max-token failure', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const prompts: string[] = [];
+    const schemaNames: string[] = [];
+    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any, _retries: number, options: any) => {
+      const prompt: string = messages?.[0]?.content ?? '';
+      prompts.push(prompt);
+      schemaNames.push(options?.jsonSchema?.name);
+      if (prompts.length === 1) {
+        throw new Error('Truncated LLM response from Gemini: finishReason=MAX_TOKENS (limit: 8192)');
+      }
+      return JSON.stringify(makePhase1());
+    });
+
+    const sink: EncounterPhaseError[] = [];
+    const result = await architect.runPhase1(input, { npcDynamics: [], knockOnEffects: [], briefText: '' }, sink);
+
+    expect(result.openingBeat.choices).toHaveLength(3);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).not.toContain('COMPACT PHASE 1 RETRY');
+    expect(prompts[1]).toContain('COMPACT PHASE 1 RETRY');
+    expect(prompts[1]).toContain('exhausted its structured output budget');
+    expect(prompts[1]).toContain('Omit reminderPlan and feedbackCue');
+    expect(prompts[1].length).toBeLessThan(prompts[0].length);
+    expect(schemaNames).toEqual(['encounter_phase_1', 'encounter_phase_1_compact']);
+    expect(sink).toMatchObject([{ phase: 'phase1', attempt: 1, reason: 'max_tokens' }]);
+  });
+
+  it('does not escalate phase-1 max-token exhaustion into the larger legacy lean fallback', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const leanSpy = vi.spyOn(architect, 'buildLeanMessages');
+    vi.spyOn(architect, 'callLLM').mockRejectedValue(
+      new Error('Truncated LLM response from Gemini: finishReason=MAX_TOKENS (limit: 8192)'),
+    );
+
+    const result = await architect.execute(input);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Phase 1 failed to generate an authored opening beat/);
+    expect(leanSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -183,6 +259,13 @@ function makePhase2(choiceId: string): unknown {
         primarySkill: 'persuasion',
         outcomes: { success: outcome('victory'), complicated: outcome('partialVictory'), failure: outcome('escape') },
       },
+      {
+        id: `${choiceId}-${suffix}-c3`,
+        text: 'Hold position and read the room',
+        approach: 'careful',
+        primarySkill: 'resolve',
+        outcomes: { success: outcome('victory'), complicated: outcome('partialVictory'), failure: outcome('defeat') },
+      },
     ],
   });
   return { choiceId, afterSuccess: situation('s'), afterComplicated: situation('c'), afterFailure: situation('f') };
@@ -219,6 +302,318 @@ describe('executePhased telemetry', () => {
     });
 
     await expect(architect.executePhased(input)).rejects.toThrow(/Phase 4 failed to generate authored storylets/);
+  });
+
+  it('generates phase 4 as bounded per-storylet slot calls and assembles the existing shape', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const phase1Json = JSON.stringify(makePhase1());
+    const phase4 = makePhase4();
+    const phase4Prompts: string[] = [];
+
+    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any) => {
+      const prompt: string = messages?.[0]?.content ?? '';
+      if (prompt.includes('OPENING BEAT')) return phase1Json;
+      if (prompt.includes('NEXT MOMENT')) {
+        const choiceId = /"choiceId": "(c\d+)"/.exec(prompt)?.[1] ?? 'c1';
+        return JSON.stringify(makePhase2(choiceId));
+      }
+      if (prompt.includes('Generate ONE compact encounter aftermath DRAFT')) {
+        phase4Prompts.push(prompt);
+        const slot = /"([^"]+)" aftermath/.exec(prompt)?.[1] as keyof Phase4Result;
+        const beatCounts: Record<keyof Phase4Result, number> = { victory: 1, partialVictory: 2, defeat: 3, escape: 2 };
+        const baseText = phase4[slot]?.beats[0]?.text ?? 'Specific aftermath text lands in the scene.';
+        return JSON.stringify({
+          ...(slot === 'partialVictory' ? { cost: phase4.partialVictory?.cost ?? {
+            domain: 'mixed',
+            severity: 'moderate',
+            whoPays: 'protagonist',
+            immediateEffect: 'Eros leaves one visible cost in the room.',
+            visibleComplication: 'The silence changes how everyone looks at Alex.',
+          } } : {}),
+          beats: Array.from({ length: beatCounts[slot] }, (_, index) => ({ text: `${baseText} Beat ${index + 1}.` })),
+        });
+      }
+      throw new Error(`Unexpected prompt: ${prompt.slice(0, 80)}`);
+    });
+
+    const result = await architect.executePhased(input);
+
+    expect(result.success).toBe(true);
+    expect(Object.keys(result.data?.storylets ?? {}).sort()).toEqual(['defeat', 'escape', 'partialVictory', 'victory']);
+    expect(phase4Prompts).toHaveLength(4);
+    for (const prompt of phase4Prompts) {
+      expect(prompt).not.toContain('Generate 4 storylets');
+      expect(prompt).toContain('Keep the JSON compact');
+      expect(prompt).toContain('under 45 words per beat');
+      expect(prompt).toContain('Do NOT include id, name, triggerOutcome');
+      expect(prompt).toContain('PG-13 gothic-romance tension only');
+      expect(prompt.length).toBeLessThan(8000);
+    }
+    expect(result.metadata?.encounterTelemetry?.phase4Ok).toBe(true);
+    expect(result.data?.storylets?.victory.id).toBe('scene-3-svictory');
+    expect(result.data?.storylets?.victory.startingBeatId).toBe('scene-3-svictory-beat-1');
+    expect(result.data?.storylets?.defeat.beats).toHaveLength(3);
+  });
+
+  it('keeps phase-4 draft calls compact enough to avoid runaway structured output', () => {
+    expect(buildEncounterStoryletDraftJsonSchema('victory').maxOutputTokens).toBe(4096);
+    expect((buildEncounterStoryletDraftJsonSchema('partialVictory').schema as any).required).toEqual(['beats', 'cost']);
+  });
+
+  it('does not escalate phase-4 max-token failure into the larger legacy lean fallback', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const phase1Json = JSON.stringify(makePhase1());
+    const leanSpy = vi.spyOn(architect, 'buildLeanMessages');
+    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any) => {
+      const prompt: string = messages?.[0]?.content ?? '';
+      if (prompt.includes('OPENING BEAT')) return phase1Json;
+      if (prompt.includes('NEXT MOMENT')) {
+        const choiceId = /"choiceId": "(c\d+)"/.exec(prompt)?.[1] ?? 'c1';
+        return JSON.stringify(makePhase2(choiceId));
+      }
+      if (prompt.includes('Generate ONE compact encounter aftermath DRAFT')) {
+        throw new Error('Truncated LLM response from Gemini: finishReason=MAX_TOKENS (limit: 16384)');
+      }
+      throw new Error(`Unexpected prompt: ${prompt.slice(0, 80)}`);
+    });
+
+    const result = await architect.execute(input);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Phase 4 failed to generate authored storylets/);
+    expect(leanSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not escalate phase-4 Gemini safety failure into the larger legacy lean fallback', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const phase1Json = JSON.stringify(makePhase1());
+    const leanSpy = vi.spyOn(architect, 'buildLeanMessages');
+    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any) => {
+      const prompt: string = messages?.[0]?.content ?? '';
+      if (prompt.includes('OPENING BEAT')) return phase1Json;
+      if (prompt.includes('NEXT MOMENT')) {
+        const choiceId = /"choiceId": "(c\d+)"/.exec(prompt)?.[1] ?? 'c1';
+        return JSON.stringify(makePhase2(choiceId));
+      }
+      if (prompt.includes('Generate ONE compact encounter aftermath DRAFT')) {
+        throw new Error('Failed to parse Gemini response as JSON: Gemini returned empty content (finishReason=SAFETY). HARM_CATEGORY_SEXUALLY_EXPLICIT');
+      }
+      throw new Error(`Unexpected prompt: ${prompt.slice(0, 80)}`);
+    });
+
+    const result = await architect.execute(input);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Phase 4 failed to generate authored storylets/);
+    expect(leanSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects encounters whose outcomes have no playable route before downstream validation', () => {
+    const architect = new EncounterArchitect(config) as any;
+    const structure: any = {
+      sceneId: 'scene-3',
+      encounterType: 'dramatic',
+      goalClock: { name: 'g', segments: 6, filled: 0, type: 'goal' },
+      threatClock: { name: 't', segments: 4, filled: 0, type: 'threat' },
+      stakes: { victory: 'You prevail.', defeat: 'You fall.' },
+      storylets: makePhase4(),
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          phase: 'setup',
+          name: 'Open',
+          setupText: 'Alex stands in the hall as Eros waits for an answer.',
+          choices: [
+            {
+              id: 'c1',
+              text: 'Step toward Eros',
+              approach: 'bold',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex changes the room.', goalTicks: 2, threatTicks: 0 },
+                complicated: { tier: 'complicated', narrativeText: 'Alex gains ground with a visible cost.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'Eros takes control of the room.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'c2',
+              text: 'Hold position',
+              approach: 'careful',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex reads the pressure correctly.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'Alex keeps composure at a cost.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'The pause gives Eros leverage.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'c3',
+              text: 'Name the pressure',
+              approach: 'clever',
+              primarySkill: 'persuasion',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex names the truth aloud.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'The truth lands imperfectly.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'The truth misses its mark.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+          ],
+        },
+        {
+          id: 'beat-2',
+          phase: 'resolution',
+          name: 'Resolve',
+          setupText: 'The confrontation narrows to its consequence.',
+          choices: [
+            {
+              id: 'r1',
+              text: 'Accept the consequence',
+              approach: 'bold',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex carries the outcome forward.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'Alex carries the cost forward.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'Alex learns what must change.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'r2',
+              text: 'Protect the opening',
+              approach: 'careful',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'The opening holds.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'The opening holds imperfectly.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'The opening closes.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'r3',
+              text: 'Leave with the lesson',
+              approach: 'clever',
+              primarySkill: 'persuasion',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex leaves with leverage.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'Alex leaves with leverage and a cost.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'Alex leaves with a sharper lesson.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => architect.validateStructure(structure, input)).toThrow(/has neither nextSituation/);
+  });
+
+  it('routes dangling outcomes to existing authored storylets without creating storylet prose', () => {
+    const architect = new EncounterArchitect(config) as any;
+    const storylets = makePhase4();
+    const structure: any = {
+      sceneId: 'scene-3',
+      encounterType: 'dramatic',
+      goalClock: { name: 'g', segments: 6, filled: 0, type: 'goal' },
+      threatClock: { name: 't', segments: 4, filled: 0, type: 'threat' },
+      stakes: { victory: 'You prevail.', defeat: 'You fall.' },
+      storylets,
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          phase: 'setup',
+          name: 'Open',
+          setupText: 'Alex stands in the hall as Eros waits for an answer.',
+          choices: [
+            {
+              id: 'c1',
+              text: 'Step toward Eros',
+              approach: 'bold',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex changes the room.', goalTicks: 2, threatTicks: 0 },
+                complicated: { tier: 'complicated', narrativeText: 'Alex gains ground with a visible cost.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'Eros takes control of the room.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'c2',
+              text: 'Hold position',
+              approach: 'careful',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex reads the pressure correctly.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'Alex keeps composure at a cost.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'The pause gives Eros leverage.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'c3',
+              text: 'Name the pressure',
+              approach: 'clever',
+              primarySkill: 'persuasion',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex names the truth aloud.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'The truth lands imperfectly.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'The truth misses its mark.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+          ],
+        },
+        {
+          id: 'beat-2',
+          phase: 'resolution',
+          name: 'Resolve',
+          setupText: 'The confrontation narrows to its consequence.',
+          choices: [
+            {
+              id: 'r1',
+              text: 'Accept the consequence',
+              approach: 'bold',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex carries the outcome forward.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'Alex carries the cost forward.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'Alex learns what must change.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'r2',
+              text: 'Protect the opening',
+              approach: 'careful',
+              primarySkill: 'resolve',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'The opening holds.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'The opening holds imperfectly.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'The opening closes.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+            {
+              id: 'r3',
+              text: 'Leave with the lesson',
+              approach: 'clever',
+              primarySkill: 'persuasion',
+              outcomes: {
+                success: { tier: 'success', narrativeText: 'Alex leaves with leverage.', goalTicks: 2, threatTicks: 0, isTerminal: true, encounterOutcome: 'victory' },
+                complicated: { tier: 'complicated', narrativeText: 'Alex leaves with leverage and a cost.', goalTicks: 1, threatTicks: 1, isTerminal: true, encounterOutcome: 'partialVictory' },
+                failure: { tier: 'failure', narrativeText: 'Alex leaves with a sharper lesson.', goalTicks: 0, threatTicks: 2, isTerminal: true, encounterOutcome: 'defeat' },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const storyletsBefore = JSON.stringify(structure.storylets);
+
+    const repaired = architect.routeDanglingOutcomesToAuthoredStorylets(structure, input);
+
+    expect(repaired).toBe(1);
+    expect(structure.beats[0].choices[0].outcomes.success).toMatchObject({
+      isTerminal: true,
+      encounterOutcome: 'victory',
+    });
+    expect(JSON.stringify(structure.storylets)).toBe(storyletsBefore);
+    expect(() => architect.validateStructure(structure, input)).not.toThrow();
   });
 });
 

@@ -424,6 +424,7 @@ export function convertEncounterStructureToEncounter(
       phase: beat.phase,
       name: beat.name,
       setupText: beat.setupText,
+      onShow: (beat as any).onShow,
       // Pre-encounter state payoff: conditional situation text
       setupTextVariants: (beat as any).setupTextVariants,
       visualContract: (beat as any).visualContract,

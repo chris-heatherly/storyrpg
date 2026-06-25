@@ -47,6 +47,10 @@ function dialogueMask(text: string): boolean[] {
     const prev = i > 0 ? text[i - 1] : '';
     const next = i + 1 < text.length ? text[i + 1] : '';
     if (c === '“' || c === '”' || c === '"') {
+      if (!inDouble && looksLikeOrphanClosingDoubleQuote(text, i)) {
+        mask[i] = true;
+        continue;
+      }
       inDouble = !inDouble;
       mask[i] = true;
       continue;
@@ -63,6 +67,15 @@ function dialogueMask(text: string): boolean[] {
     mask[i] = inDouble || inSingle || inStar;
   }
   return mask;
+}
+
+function looksLikeOrphanClosingDoubleQuote(text: string, index: number): boolean {
+  const c = text[index];
+  if (c === '“') return false;
+  if (c === '”') return true;
+  const prev = index > 0 ? text[index - 1] : '';
+  const next = index + 1 < text.length ? text[index + 1] : '';
+  return /[.!?]/.test(prev) && (next === '' || /\s/.test(next));
 }
 
 /** Return only the NARRATION (text outside dialogue spans). */
@@ -158,7 +171,7 @@ const POSSESSIVE_PRONOUN_HEAD_NOUNS = new Set([
   'ankle', 'ankles', 'back', 'body', 'cheek', 'cheeks', 'chest', 'coat',
   'collar', 'cuffs', 'door', 'dress', 'elbow', 'fingers', 'floor', 'hair',
   'home', 'instinct', 'instincts', 'jaw', 'knuckles', 'lips', 'neck', 'pocket', 'skin', 'sleeve',
-  'spine', 'throat', 'thumb', 'wrist', 'wrists', 'lungs',
+  'spine', 'throat', 'thumb', 'wrist', 'wrists', 'lungs', 'sense',
 ]);
 const SELF_BODY_POSSESSIVE_HEAD_NOUNS = new Set([
   'ankle', 'ankles', 'arm', 'arms', 'back', 'body', 'breath', 'cheek', 'cheeks',

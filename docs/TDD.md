@@ -318,7 +318,9 @@ StoryRPG_New/
     │   │   │   ├── PipelineClient.ts   # Typed client the UI uses to drive the pipeline over the proxy
     │   │   │   ├── checkpointing.ts    # Extracted checkpoint writer/loader
     │   │   │   ├── events.ts           # Typed pipeline progress events
-    │   │   │   ├── callbackLedger.ts   # Setup/payoff ledger backing ThreadPlanner + delayed consequences
+    │   │   │   ├── callbackLedger.ts   # Callback hook ledger for delayed consequence payoffs
+    │   │   │   ├── choiceMemoryDebt.ts # Shared callback/residue evidence + classification helpers
+    │   │   │   ├── residueObligations.ts # Planned residue fulfillment before assembly/QA
     │   │   │   └── phases/             # Phase-specific logic (WorldBuildingPhase, SavingPhase, …)
     │   │   │
     │   │   ├── codec/                  # Pipeline-side codec/event helpers
@@ -1032,12 +1034,14 @@ The validation system operates at multiple levels and — for the final playthro
 | `StructuralValidator` | Data model conformance | Post-generation |
 | `ChoiceDensityValidator` | Appropriate number of choices per beat | Ongoing |
 | `ConsequenceBudgetValidator` | Balanced consequence distribution | Ongoing |
-| `CallbackOpportunitiesValidator` | Narrative coherence across episodes | Post-generation |
+| `CallbackOpportunitiesValidator` | Advisory callback opportunity/reminder-plan density | Post-generation |
+| `CallbackCoverageValidator` | CallbackLedger hygiene, due windows, stale hooks, exact payoff events when available | Post-generation |
+| `ResidueObligationValidator` | Planned choice-residue obligations; requires player-facing payoff evidence | Episode/final contract |
 | `CliffhangerValidator` | Episode ending quality | Episode completion |
 | `ChoiceDistributionValidator` | Choice type variety | Scene completion |
 | `IncrementalValidators` | Voice / stakes / continuity / sensitivity / encounter structure | Per scene |
 | `PixarPrinciplesValidator` | Stakes triangle, surprise (setup/twist/satisfaction), and story-spine checks | Season + encounter |
-| `SetupPayoffValidator` | Every NarrativeThread plant has a payoff beat (Chekhov's-gun / deus-ex-machina) | Post-generation |
+| `SetupPayoffValidator` | Every NarrativeThread plant has a payoff beat (Chekhov's-gun / deus-ex-machina), distinct from choice residue | Post-generation |
 | `TwistQualityValidator` | Episode twist presence + foreshadow-precedes-reveal scheduling | Post-generation |
 | `ArcDeltaValidator` | Start-vs-end identity/relationship deltas match CharacterArcTracker targets | Post-generation |
 | `DivergenceValidator` | Runs a lightweight path simulator; flags cosmetic branching and no-op decision points | Episode-level |

@@ -53,6 +53,29 @@ describe('planningHelpers', () => {
     expect(result.npcs[0]?.fashionStyle).toBe(fashionStyle);
   });
 
+  it('preserves authored relationship roles for character design', () => {
+    const brief: any = {
+      protagonist: { id: 'placeholder', name: 'Placeholder', description: 'n/a' },
+      npcs: [],
+    };
+    const analysis: any = {
+      protagonist: { id: 'hero', name: 'Kylie', description: 'The lead.' },
+      majorCharacters: [
+        { id: 'char-radu', name: 'Radu Stoian', role: 'love_interest', importance: 'core', description: 'The honest second lead.' },
+        { id: 'char-stela', name: 'Stela Pavel', role: 'mentor', importance: 'core', description: 'A practitioner who wards Kylie.' },
+        { id: 'char-mika', name: 'Mika Drăgan', role: 'rival', importance: 'core', description: 'A friend with divided loyalties.' },
+      ],
+    };
+
+    const result = createCharacterBriefFromAnalysis(brief, analysis);
+
+    expect(result.npcs.map((npc: any) => [npc.id, npc.role])).toEqual([
+      ['char-radu', 'love_interest'],
+      ['char-stela', 'mentor'],
+      ['char-mika', 'rival'],
+    ]);
+  });
+
   it('builds episode-scoped season plan directives', () => {
     const warningMessages: string[] = [];
     const brief: any = {

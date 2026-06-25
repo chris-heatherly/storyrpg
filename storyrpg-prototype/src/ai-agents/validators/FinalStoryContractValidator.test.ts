@@ -922,17 +922,18 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((i) => i.type === 'qa_blocker_present')).toBe(false);
   });
 
-  it('blocks QA failures for treatment-sourced output', async () => {
+  it('does NOT block treatment-sourced output on broad QA criticals', async () => {
     const report = await new FinalStoryContractValidator().validate({
       story: validStory(),
       treatmentSourced: true,
       qaReport: { passesQA: false, overallScore: 61, criticalIssues: ['Encounter prose is malformed.'] } as any,
     });
 
-    expect(report.passed).toBe(false);
-    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+    expect(report.passed).toBe(true);
+    expect(report.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'qa_blocker_present', validator: 'QARunner' }),
     ]));
+    expect(report.blockingIssues.some((issue) => issue.type === 'qa_blocker_present')).toBe(false);
   });
 
   it('does NOT block treatment-sourced output on score-only QA failures', async () => {
@@ -948,7 +949,7 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((issue) => issue.type === 'qa_blocker_present')).toBe(false);
   });
 
-  it('blocks callback debt from best-practices reports for treatment-sourced output only', async () => {
+  it('keeps callback-opportunity best-practices findings advisory even for treatment-sourced output', async () => {
     const bestPracticesReport = {
       overallPassed: false,
       overallScore: 72,
@@ -980,9 +981,131 @@ describe('FinalStoryContractValidator', () => {
       treatmentSourced: true,
       bestPracticesReport,
     });
-    expect(treatment.passed).toBe(false);
-    expect(treatment.blockingIssues).toEqual(expect.arrayContaining([
+    expect(treatment.passed).toBe(true);
+    expect(treatment.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'unrepaired_callback_debt' }),
+    ]));
+    expect(treatment.blockingIssues.some((issue) => issue.type === 'unrepaired_callback_debt')).toBe(false);
+  });
+
+  it('keeps Pixar best-practices findings advisory at the final contract', async () => {
+    const bestPracticesReport = {
+      overallPassed: false,
+      overallScore: 68,
+      blockingIssues: [{
+        category: 'pixar_principles',
+        level: 'error',
+        message: 'Rule #19: the ending resolves by coincidence instead of protagonist action.',
+        location: {},
+        suggestion: 'Rewrite the ending with protagonist-caused resolution.',
+      }],
+      warnings: [],
+      suggestions: [],
+      metrics: {} as any,
+      timestamp: new Date(),
+      duration: 0,
+    } as any;
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      bestPracticesReport,
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'qa_blocker_present', validator: 'IntegratedBestPracticesValidator' }),
+    ]));
+    expect(report.blockingIssues.some((issue) => issue.message.includes('Rule #19'))).toBe(false);
+  });
+
+  it('does not block on stale relationship-id findings after deterministic cleanup', async () => {
+    const bestPracticesReport = {
+      overallPassed: false,
+      overallScore: 82,
+      blockingIssues: [{
+        category: 'mechanical_storytelling',
+        level: 'error',
+        message: 'Relationship consequence on choice "choice-1" targets unknown NPC "char-kylie-marinescu" — the delta will be silently dropped at runtime.',
+        location: { beatId: 'choice-1', choiceId: 'char-kylie-marinescu' },
+        suggestion: 'Use an npcId from story.npcs for the relationship consequence, or remove it.',
+      }],
+      warnings: [],
+      suggestions: [],
+      metrics: {} as any,
+      timestamp: new Date(),
+      duration: 0,
+    } as any;
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      bestPracticesReport,
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.blockingIssues.some((issue) => issue.message.includes('char-kylie-marinescu'))).toBe(false);
+  });
+
+  it('does not block on stale stat-check findings after deterministic normalization', async () => {
+    const story = validStory();
+    const choice = story.episodes[0].scenes[0].beats[0].choices?.[0] as any;
+    choice.id = 'choice-1';
+    choice.statCheck = { difficulty: 35, skillWeights: { deception: 1 } };
+    const bestPracticesReport = {
+      overallPassed: false,
+      overallScore: 82,
+      blockingIssues: [{
+        category: 'stat_check_balance',
+        level: 'error',
+        message: 'Stat check "choice-1" has skillWeights totaling -1.00 instead of 1.0.',
+        location: { beatId: 'beat-1', choiceId: 'choice-1' },
+        suggestion: 'Normalize skillWeights so the challenge geometry sums to 1.0.',
+      }],
+      warnings: [],
+      suggestions: [],
+      metrics: {} as any,
+      timestamp: new Date(),
+      duration: 0,
+    } as any;
+
+    const report = await new FinalStoryContractValidator().validate({
+      story,
+      bestPracticesReport,
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.blockingIssues.some((issue) => issue.message.includes('skillWeights totaling'))).toBe(false);
+  });
+
+  it('keeps relationship-id findings blocking when the current choice cannot be verified clean', async () => {
+    const bestPracticesReport = {
+      overallPassed: false,
+      overallScore: 82,
+      blockingIssues: [{
+        category: 'mechanical_storytelling',
+        level: 'error',
+        message: 'Relationship consequence on choice "missing-choice" targets unknown NPC "char-kylie-marinescu" — the delta will be silently dropped at runtime.',
+        location: { beatId: 'missing-choice', choiceId: 'char-kylie-marinescu' },
+        suggestion: 'Use an npcId from story.npcs for the relationship consequence, or remove it.',
+      }],
+      warnings: [],
+      suggestions: [],
+      metrics: {} as any,
+      timestamp: new Date(),
+      duration: 0,
+    } as any;
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      bestPracticesReport,
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'qa_blocker_present',
+        validator: 'IntegratedBestPracticesValidator',
+      }),
     ]));
   });
 
@@ -1009,8 +1132,9 @@ describe('FinalStoryContractValidator', () => {
       story,
       treatmentSourced: true,
     });
-    expect(withoutLedger.blockingIssues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'unrepaired_callback_debt', message: expect.stringContaining('treatment_seed_ep1_1') }),
+    expect(withoutLedger.blockingIssues.some((i) => i.type === 'unrepaired_callback_debt')).toBe(false);
+    expect(withoutLedger.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'callback_opportunity_advisory' }),
     ]));
 
     const withLedger = await new FinalStoryContractValidator().validate({
@@ -1156,6 +1280,37 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((i) => i.type === 'treatment_field_utilization_violation')).toBe(true);
   });
 
+  it('attaches a shadow treatment obligation canonical report without changing raw blockers', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [
+        {
+          validator: 'TreatmentFieldUtilizationValidator',
+          severity: 'error',
+          message: 'Episode 1 treatment field "promise" was planned but not realized in reader-facing story pressure: "Every victory should cost public trust.".',
+          sceneId: 's1-1',
+          episodeNumber: 1,
+        },
+        {
+          validator: 'SeasonPromiseRealizationValidator',
+          severity: 'error',
+          message: 'Season promise "player_promise" was planned but not realized as reader-facing story material: "Every victory should cost public trust.".',
+          sceneId: 's1-1',
+          episodeNumber: 1,
+        },
+      ],
+    });
+
+    expect(report.blockingIssues.filter((issue) =>
+      issue.type === 'treatment_field_utilization_violation'
+      || issue.type === 'season_promise_realization_violation'
+    )).toHaveLength(2);
+    expect(report.treatmentObligationCanonicalReport?.metrics.rawFindingCount).toBe(2);
+    expect(report.treatmentObligationCanonicalReport?.metrics.canonicalFindingCount).toBe(1);
+    expect(report.treatmentObligationCanonicalReport?.findings[0].contract).toBe('treatment_season_promise_realization');
+  });
+
   it('hard-fails a character treatment realization finding as its own contract type', async () => {
     const report = await new FinalStoryContractValidator().validate({
       story: validStory(),
@@ -1183,11 +1338,34 @@ describe('FinalStoryContractValidator', () => {
         message: 'The authored passive-protagonist mitigation was planned but never staged on-page.',
         sceneId: 's1-1',
         episodeNumber: 1,
+        findingClass: 'authored_contract',
+        sourceKind: 'treatment',
+        hasConcreteObligation: true,
       }],
     });
 
     expect(report.passed).toBe(false);
     expect(report.blockingIssues.some((i) => i.type === 'narrative_failure_mode_violation')).toBe(true);
+  });
+
+  it('downgrades generic narrative failure-mode heuristics to advisory', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'NarrativeFailureModeValidator',
+        severity: 'error',
+        message: '[Convenient coincidence] The ending appears to resolve through outside rescue.',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+        findingClass: 'craft_critic',
+        sourceKind: 'heuristic',
+      }],
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.warnings.some((i) => i.type === 'narrative_failure_mode_violation')).toBe(true);
+    expect(report.blockingIssues.some((i) => i.type === 'narrative_failure_mode_violation')).toBe(false);
   });
 
   it('downgrades a fidelity finding to advisory when the source is NOT a treatment', async () => {
@@ -1240,6 +1418,17 @@ describe('FinalStoryContractValidator', () => {
       const report = await new FinalStoryContractValidator().validate({
         story: validStory(), qaReport: qaReportWithContradiction(),
       });
+      expect(report.blockingIssues.some((i) => i.type === 'continuity_error')).toBe(false);
+    });
+
+    it('does NOT promote continuity errors only because the run is treatment-sourced', async () => {
+      const report = await new FinalStoryContractValidator().validate({
+        story: validStory(),
+        treatmentSourced: true,
+        qaReport: qaReportWithContradiction(),
+      });
+      expect(report.passed).toBe(true);
+      expect(report.warnings.some((i) => i.type === 'continuity_error')).toBe(true);
       expect(report.blockingIssues.some((i) => i.type === 'continuity_error')).toBe(false);
     });
 
@@ -1330,6 +1519,95 @@ describe('FinalStoryContractValidator repeated high-pressure event gate', () => 
               id: 's1-6-b1',
               text: 'You write the blog post about the Cișmigiu attack and the charcoal-suited rescue; by morning, Mr. Midnight is viral.',
             } as any],
+          },
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'duplicate_high_pressure_event')).toBe(false);
+  });
+
+  it('allows a club-aftercare scene whose throat idiom is not an attack restaging', async () => {
+    const encounter = validEncounter() as any;
+    encounter.description = 'Walking home through Cișmigiu Gardens at 1am, you are attacked by a shadow and rescued by the man in the charcoal suit.';
+    encounter.phases[0].beats[0].setupText = 'A cold weight drops onto your shoulders in Cișmigiu Gardens, dragging you backward until Victor rescues you from the shadow.';
+
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-2',
+        scenes: [
+          {
+            id: 's1-2',
+            name: 'Lumina Books',
+            startingBeatId: 's1-2-b1',
+            leadsTo: ['enc-1'],
+            timeline: { location: 'Lumina Books', timeOfDay: 'night' },
+            beats: [
+              {
+                id: 's1-2-b1',
+                text:
+                  'After the Vâlcescu Club, you step into Lumina Books. A question catches in your throat as Stela presses a rose quartz into your palm and warns that protection is different from inspiration.',
+              } as any,
+            ],
+          },
+          {
+            id: 'enc-1',
+            name: 'Cișmigiu Gardens Attack',
+            startingBeatId: '',
+            leadsTo: [],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            beats: [],
+            encounter,
+          },
+        ],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'duplicate_high_pressure_event')).toBe(false);
+  });
+
+  it('allows a club setup scene with wedding-run idiom and ambient shadows before the park attack', async () => {
+    const encounter = validEncounter() as any;
+    encounter.description = 'Walking home through Cișmigiu Gardens at 1am, you are attacked by a shadow and rescued by the man in the charcoal suit.';
+    encounter.phases[0].beats[0].setupText = 'The midnight air in Cișmigiu Gardens is unnaturally still. A cold weight drops onto your shoulders, dragging you backward into the dark.';
+
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-1',
+        scenes: [
+          {
+            id: 's1-1',
+            name: 'Cafe Arrival',
+            startingBeatId: 's1-1-b1',
+            leadsTo: ['enc-1'],
+            timeline: { location: 'Vâlcescu Club', timeOfDay: 'night' },
+            beats: [
+              {
+                id: 's1-1-b1',
+                text:
+                  "The cursor blinks on a blank page titled 'Bucharest, Day One.' You don't run from a wedding, you run toward something else.",
+              } as any,
+              {
+                id: 's1-1-b2',
+                text:
+                  'Mika leads you into a room with no windows, where shadows cling to the corners and candles throw flickering light on dark wood.',
+              } as any,
+            ],
+          },
+          {
+            id: 'enc-1',
+            name: 'Cișmigiu Gardens Attack',
+            startingBeatId: '',
+            leadsTo: [],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            beats: [],
+            encounter,
           },
         ],
       }],

@@ -288,6 +288,67 @@ function normalizeCliffhangerType(raw: string | undefined): TreatmentEpisodeGuid
   return normalized ? aliases[normalized] : undefined;
 }
 
+function cleanTreatmentAnchorCandidate(value: string): string {
+  return value
+    .trim()
+    .replace(/^[-*]\s+/, '')
+    .replace(/\*\*/g, '')
+    .replace(/^[A-Z][A-Za-z0-9 /&,'’-]{1,80}:\s+/, '')
+    .trim();
+}
+
+function mergeUniqueList(...lists: Array<string[] | undefined>): string[] {
+  const merged: string[] = [];
+  for (const list of lists) {
+    for (const value of list ?? []) {
+      const cleaned = value.trim();
+      if (!cleaned) continue;
+      if (merged.some((existing) => existing.toLowerCase() === cleaned.toLowerCase())) continue;
+      merged.push(cleaned);
+    }
+  }
+  return merged;
+}
+
+function splitEpisodeBodyIntoAnchorCandidates(body: string): string[] {
+  return body
+    .split(/\r?\n+/)
+    .flatMap((line) => {
+      const cleaned = cleanTreatmentAnchorCandidate(line);
+      if (!cleaned) return [];
+      return cleaned
+        .split(/(?<=[.!?])\s+|;\s+/)
+        .map((part) => cleanTreatmentAnchorCandidate(part))
+        .filter(Boolean);
+    });
+}
+
+function hasAuthoredSocialProofAnchor(value: string): boolean {
+  return /\b(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?\s*[kKmM]|(?:eighty|ninety|hundred|thousand|million)\b)/.test(value)
+    && /\b(blog|post|readership|reads?|readers?|dashboard|viral|traffic|views?|followers?|subscribers?|clicks?|brand deals?)\b/i.test(value);
+}
+
+function hasAuthoredLineageNameAnchor(value: string): boolean {
+  return /\b[A-Z][a-z][A-Za-z'’-]*\b/.test(value)
+    && /\b(grandmother|grandfather|mother|father|parent|maiden name|family name|surname|heirloom|letter|chain|locket|ring|inheritance|ancestor|lineage|bloodline)\b/i.test(value);
+}
+
+function extractLiteralEpisodeFactAnchors(body: string): string[] {
+  let socialProofAnchor: string | undefined;
+  let lineageNameAnchor: string | undefined;
+  for (const candidate of splitEpisodeBodyIntoAnchorCandidates(body)) {
+    if (candidate.length > 320) continue;
+    if (!socialProofAnchor && hasAuthoredSocialProofAnchor(candidate)) {
+      socialProofAnchor = candidate;
+    }
+    if (!lineageNameAnchor && hasAuthoredLineageNameAnchor(candidate)) {
+      lineageNameAnchor = candidate;
+    }
+    if (socialProofAnchor && lineageNameAnchor) break;
+  }
+  return mergeUniqueList([socialProofAnchor, lineageNameAnchor].filter(Boolean) as string[]);
+}
+
 function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeGuidance> {
   const episodes: Record<number, TreatmentEpisodeGuidance> = {};
   const normalizedSection = normalizeEpisodeNumberTitleLines(section);
@@ -343,6 +404,12 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
       || nextEpisodeCausality
       || endingTurnout
       || consequenceResidue;
+    const literalFactAnchors = extractLiteralEpisodeFactAnchors(body);
+    const informationMovement = getBulletValue(body, 'Information movement');
+    const consequenceSeeds = mergeUniqueList(
+      getFlexibleInlineOrIndentedList(body, ['Consequence seeds', 'Consequence seed']),
+      literalFactAnchors,
+    );
 
     return {
       episodeNumber,
@@ -381,10 +448,10 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
         exitShift: getBulletValue(body, 'Exit shift'),
         powerShift: getFlexibleBulletValue(body, ['Power shift', 'Power dynamic shift']),
         subtextGap: getFlexibleBulletValue(body, ['Subtext gap', 'Subtext']),
-        informationMovement: getBulletValue(body, 'Information movement'),
+        informationMovement: mergeScalar(informationMovement, literalFactAnchors.join(' | ')),
         majorChoicePressures: getFlexibleInlineOrIndentedList(body, ['Major choice pressure', 'Major choices', 'Meaningful choice pressure', 'Meaningful choices', 'Choice pressure']),
         alternativePaths: getFlexibleInlineOrIndentedList(body, ['Alternative paths', 'Alternative path or branchlet', 'Branchlet']),
-        consequenceSeeds: getFlexibleInlineOrIndentedList(body, ['Consequence seeds', 'Consequence seed']),
+        consequenceSeeds,
         consequenceResidue,
         visualAnchor: getBulletValue(body, 'Visual anchor'),
         endingTurnout,

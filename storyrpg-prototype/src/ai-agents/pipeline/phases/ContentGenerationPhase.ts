@@ -35,8 +35,16 @@ import { GeneratedBeat, SceneContent, SceneWriter } from '../../agents/SceneWrit
 import { EpisodeBlueprint, SceneBlueprint } from '../../agents/StoryArchitect';
 import { TwistPlan } from '../../agents/TwistArchitect';
 import { WorldBible } from '../../agents/WorldBuilder';
+import { applyChoiceResidueBackstop } from '../residueObligations';
 import { RemediationBudget, shouldAttemptRemediation } from '../../remediation/RemediationBudget';
 import { gateEnabledPredicate, isGateEnabled } from '../../remediation/gateDefaults';
+import {
+  analyzeEpisodeTreatmentDensity,
+  describeTreatmentDensityReport,
+  isUnsafeTreatmentDensityReport,
+  type TreatmentDensityReport,
+  unsafeTreatmentDensityReports,
+} from '../../remediation/gateRepairRouter';
 import {
   improvesMissingRealization,
   insertMissingMomentBeats,
@@ -71,7 +79,9 @@ import { assignChoiceTypes } from '../choiceTypePlanner';
 import {
   EpisodePlant,
   emitSceneBranchAxes,
+  encounterInfoMarkerTargets,
   emitSceneInfoMarkers,
+  emitSceneInfoMarkersOnBeats,
   emitSceneTreatmentSeeds,
   extractBranchResidueFromChoiceSet,
   extractPlantsFromChoiceSet,
@@ -82,7 +92,7 @@ import {
 } from '../episodePlantContext';
 import { PipelineError } from '../errors';
 import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
-import { filterProtagonistEncounterRefs } from '../encounterParticipants';
+import { collectEncounterParticipantRefs, filterProtagonistEncounterRefs } from '../encounterParticipants';
 import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPlan';
 import { buildOutcomeTextVariants } from '../outcomeVariants';
 import { buildSceneSettingContext } from '../planningHelpers';
@@ -114,6 +124,10 @@ import {
 } from '../characterArcPlanning';
 import type { CharacterArcTargets } from '../../agents/CharacterArcTracker';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
+import {
+  compactSceneWriterInput,
+  isSceneWriterCompactRetryReason,
+} from './sceneWriterInputCompaction';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -266,6 +280,17 @@ export class ContentGenerationPhase {
 
   constructor(private readonly deps: ContentGenerationPhaseDeps) {}
 
+  private sceneDensityCanExpandWithBeatBudget(report: TreatmentDensityReport, scene: SceneBlueprint | undefined): boolean {
+    if (!scene) return false;
+    const hardOverage = Math.max(0, report.hardUnits - report.threshold.hardUnits);
+    if (hardOverage > 0) return false;
+    if (report.threshold.profile === 'encounter') return false;
+    if (report.explicitTimeJumpCount >= 2 && report.totalUnits > report.threshold.totalUnits) return false;
+    const recommendedBeatCount = scene.recommendedBeatCount ?? 0;
+    if (recommendedBeatCount <= 0) return false;
+    return recommendedBeatCount >= Math.ceil(report.totalUnits) + 1;
+  }
+
   async run(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -296,6 +321,66 @@ export class ContentGenerationPhase {
     const episodeSlice = episodeTypeCounts(this.deps.seasonChoicePlan, episodeNumber ?? 1);
     const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never, undefined, episodeSlice);
     const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
+    const densityEpisodeNumber = episodeNumber ?? brief.episode.number;
+    const treatmentDensityReports = analyzeEpisodeTreatmentDensity(blueprint.scenes as never, densityEpisodeNumber);
+    const treatmentDensityByScene = new Map(treatmentDensityReports.map((report) => [report.sceneId, report]));
+    const overloadedDensityReports = treatmentDensityReports.filter((report) => report.overloaded);
+    const sceneById = new Map(blueprint.scenes.map((scene) => [scene.id, scene]));
+    const unsafeDensityReports = unsafeTreatmentDensityReports(treatmentDensityReports)
+      .filter((report) => !this.sceneDensityCanExpandWithBeatBudget(report, sceneById.get(report.sceneId)));
+    if (outputDirectory) {
+      await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-treatment-density-report.json`, {
+        episodeNumber: densityEpisodeNumber,
+        generatedAt: new Date().toISOString(),
+        reports: treatmentDensityReports,
+        overloadedScenes: overloadedDensityReports.map((report) => ({
+          sceneId: report.sceneId,
+          hardUnits: report.hardUnits,
+          totalUnits: report.totalUnits,
+          threshold: report.threshold,
+          overloadReasons: report.overloadReasons,
+          recommendedDirective: report.recommendedDirective,
+        })),
+        unsafeScenes: unsafeDensityReports.map((report) => ({
+          sceneId: report.sceneId,
+          hardUnits: report.hardUnits,
+          totalUnits: report.totalUnits,
+          threshold: report.threshold,
+          overloadReasons: report.overloadReasons,
+          recommendedDirective: report.recommendedDirective,
+        })),
+      });
+    }
+    if (unsafeDensityReports.length > 0) {
+      const summary = unsafeDensityReports.map(describeTreatmentDensityReport).join(' | ');
+      context.emit({
+        type: 'warning',
+        phase: 'scenes',
+        message: `Treatment density guard blocked content generation for ${unsafeDensityReports.length} unsafe scene(s): ${summary}`,
+        data: { reports: unsafeDensityReports },
+      });
+      throw new PipelineError(
+        `[TreatmentDensityGate] Episode ${densityEpisodeNumber} unsafe planned-scene treatment density before content generation: ${summary}. Re-run architecture with blueprint rebalance before SceneWriter/EncounterArchitect.`,
+        'episode_architecture',
+        {
+          agent: 'TreatmentDensityGate',
+          context: {
+            episodeNumber: densityEpisodeNumber,
+            unsafeScenes: unsafeDensityReports,
+          },
+        },
+      );
+    }
+    if (overloadedDensityReports.length > 0) {
+      context.emit({
+        type: 'warning',
+        phase: 'scenes',
+        message: `Treatment density guard flagged ${overloadedDensityReports.length} overloaded scene(s): ${
+          overloadedDensityReports.map((report) => `${report.sceneId} (${report.overloadReasons.join('; ')})`).join('; ')
+        }`,
+        data: { reports: overloadedDensityReports },
+      });
+    }
 
     // P2-skills: bias this episode's stat-check skill assignment toward the season
     // skill plan so the season exercises >=6 of the 8 skills with no >30% dominance.
@@ -799,6 +884,15 @@ export class ContentGenerationPhase {
             .flatMap((s) => s.npcsPresent || []),
         });
         this.pruneUnscopedTreatmentSeedBeats(sceneBlueprint);
+        const densityReport = treatmentDensityByScene.get(sceneBlueprint.id);
+        const densityGuidance = densityReport?.overloaded
+          ? [
+              'TREATMENT DENSITY GUARD:',
+              `This scene is overloaded (${densityReport.overloadReasons.join('; ')}).`,
+              'Do not add recap, timeline jumps, or extra treatment beats beyond the assigned scene turn.',
+              'Prioritize the scene\'s central visible action, preserve chronological order, and leave outside-scope obligations for neighboring scenes or later repair routing.',
+            ].join(' ')
+          : '';
 
         const sceneWriterInput = {
           sceneBlueprint,
@@ -806,7 +900,7 @@ export class ContentGenerationPhase {
             title: brief.story.title,
             genre: brief.story.genre,
             tone: brief.story.tone,
-            userPrompt: brief.userPrompt,
+            userPrompt: [brief.userPrompt, densityGuidance].filter(Boolean).join('\n\n'),
             worldContext: this.deps.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
           },
           protagonistInfo: {
@@ -926,6 +1020,20 @@ export class ContentGenerationPhase {
           activeThreads: sceneActiveThreads(this.deps.seasonThreadLedger, sceneBlueprint.id, episodeNumber ?? brief.episode.number),
           twistDirectives: sceneTwistDirectives(this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number), sceneBlueprint.id),
         };
+        const {
+          input: sceneWriterInputForAuthoring,
+          diagnostics: sceneWriterCompaction,
+        } = compactSceneWriterInput(sceneWriterInput);
+        const droppedContractCount = Object.values(sceneWriterCompaction.droppedCounts)
+          .reduce((sum, value) => sum + value, 0);
+        if (droppedContractCount > 0 || sceneWriterCompaction.compactSceneBytes < sceneWriterCompaction.originalSceneBytes) {
+          context.emit({
+            type: 'debug',
+            phase: 'scenes',
+            message: `SceneWriter input compacted for ${sceneBlueprint.id}: ${sceneWriterCompaction.originalSceneBytes} -> ${sceneWriterCompaction.compactSceneBytes} bytes`,
+            data: sceneWriterCompaction,
+          });
+        }
 
         // === KARPATHY LOOP: Best-of-N for critical scenes ===
         const bestOfN = brief.options?.bestOfN ?? BEST_OF_N_DEFAULTS.candidates;
@@ -947,7 +1055,7 @@ export class ContentGenerationPhase {
           const candidates = await Promise.all(
             Array.from({ length: bestOfN }, (_, idx) =>
               withTimeout(
-                this.deps.sceneWriter.execute(sceneWriterInput),
+                this.deps.sceneWriter.execute(sceneWriterInputForAuthoring),
                 PIPELINE_TIMEOUTS.llmAgent,
                 `SceneWriter.execute(${sceneBlueprint.id} candidate-${idx})`
               ).catch((err) => ({
@@ -1011,7 +1119,7 @@ export class ContentGenerationPhase {
           }
         } else {
           sceneResult = await withTimeout(
-            this.deps.sceneWriter.execute(sceneWriterInput),
+            this.deps.sceneWriter.execute(sceneWriterInputForAuthoring),
             PIPELINE_TIMEOUTS.llmAgent,
             `SceneWriter.execute(${sceneBlueprint.id})`
           );
@@ -1027,11 +1135,12 @@ export class ContentGenerationPhase {
           });
 
           const sceneFailureReason = sceneResult.error || 'unknown SceneWriter failure';
-          const compactRetryInstruction = /raw processing budget|response exceeded/i.test(sceneFailureReason)
+          const shouldCompactRetry = isSceneWriterCompactRetryReason(sceneFailureReason);
+          const compactRetryInstruction = shouldCompactRetry
             ? '\n\nCOMPACT RETRY MODE: The previous response was too large to safely process. Return one complete SceneContent JSON object under the hard raw-response budget. Use 6-8 beats, concise prose, compact visual metadata, no optional boilerplate arrays/fields, and textVariants only when they have a real condition from the prompt.'
             : '';
 
-          const retrySceneResult = await withTimeout(this.deps.sceneWriter.execute({
+          const retrySceneWriterInput = {
             sceneBlueprint,
             storyContext: {
               title: brief.story.title,
@@ -1060,7 +1169,9 @@ export class ContentGenerationPhase {
             }),
             relevantFlags: blueprint.suggestedFlags,
             relevantScores: blueprint.suggestedScores,
-            targetBeatCount: this.deps.getTargetBeatCountForScene(sceneBlueprint),
+            targetBeatCount: shouldCompactRetry
+              ? Math.min(this.deps.getTargetBeatCountForScene(sceneBlueprint), 8)
+              : this.deps.getTargetBeatCountForScene(sceneBlueprint),
             dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
             previousSceneSummary: previousScene
               ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
@@ -1069,7 +1180,25 @@ export class ContentGenerationPhase {
             incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
             sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
             memoryContext: this.deps.cachedPipelineMemory || undefined,
-          }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneBlueprint.id} retry)`);
+          };
+          const {
+            input: retrySceneWriterInputForAuthoring,
+            diagnostics: retryCompaction,
+          } = compactSceneWriterInput(retrySceneWriterInput);
+          if (shouldCompactRetry) {
+            context.emit({
+              type: 'debug',
+              phase: 'scenes',
+              message: `SceneWriter compact retry for ${sceneBlueprint.id}: ${retryCompaction.originalSceneBytes} -> ${retryCompaction.compactSceneBytes} bytes`,
+              data: retryCompaction,
+            });
+          }
+
+          const retrySceneResult = await withTimeout(
+            this.deps.sceneWriter.execute(retrySceneWriterInputForAuthoring),
+            PIPELINE_TIMEOUTS.llmAgent,
+            `SceneWriter.execute(${sceneBlueprint.id} retry)`,
+          );
 
           if (retrySceneResult.success && retrySceneResult.data) {
             // Retry succeeded — replace the original result so the rest of the loop uses it
@@ -1142,6 +1271,14 @@ export class ContentGenerationPhase {
         // later rewrite pass can verify it isn't paraphrasing a moment away.
         sceneContent.requiredBeats = sceneBlueprint.requiredBeats;
         sceneContent.signatureMoment = sceneBlueprint.signatureMoment;
+        const infoMarkersAdded = emitSceneInfoMarkersOnBeats(sceneBlueprint, sceneContent.beats);
+        if (infoMarkersAdded > 0) {
+          context.emit({
+            type: 'debug',
+            phase: 'scenes',
+            message: `Planted ${infoMarkersAdded} deterministic information-ledger marker(s) on ${sceneBlueprint.id}.`,
+          });
+        }
 
         // Scene-time realization check (GATE_SCENE_REQUIRED_BEAT_CHECK):
         // verify the freshly written prose depicts every authored
@@ -1195,15 +1332,25 @@ export class ContentGenerationPhase {
               }
               if (missing.length > 0) {
                 const beforeRecovery = missing;
-                insertMissingMomentBeats(sceneBlueprint.id, sceneContent.beats, missing);
+                const beatCountBeforeRecovery = sceneContent.beats.length;
+                insertMissingMomentBeats(sceneBlueprint.id, sceneContent.beats, missing, {
+                  sceneDensityOverloaded: densityReport ? isUnsafeTreatmentDensityReport(densityReport) : false,
+                  onSkip: (m, reason) => context.emit({
+                    type: 'warning',
+                    phase: 'scenes',
+                    message: `Scene ${sceneBlueprint.id} skipped deterministic authored-moment insertion for [${m.tier}] "${m.moment}": ${reason}.`,
+                    data: { missing: m, densityReport },
+                  }),
+                });
                 sceneContent.startingBeatId = sceneContent.beats[0]?.id ?? sceneContent.startingBeatId;
                 missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
+                const insertedCount = Math.max(0, sceneContent.beats.length - beatCountBeforeRecovery);
                 context.emit({
                   type: missing.length > 0 ? 'warning' : 'debug',
                   phase: 'scenes',
                   message:
                     `Scene ${sceneBlueprint.id} deterministic authored-moment recovery inserted ` +
-                    `${beforeRecovery.length} beat(s); ${missing.length} under-realized moment(s) remain`,
+                    `${insertedCount}/${beforeRecovery.length} beat(s); ${missing.length} under-realized moment(s) remain`,
                   data: { inserted: beforeRecovery.map((m) => ({ tier: m.tier, moment: m.moment })) },
                 });
               }
@@ -1294,6 +1441,13 @@ export class ContentGenerationPhase {
               agent: 'ChoiceAuthor',
               message: `Creating choices for ${sceneBlueprint.name}`,
             });
+            const seasonResiduePlan = brief.seasonPlan?.residuePlan || [];
+            const assignedResidueIds = new Set(sceneBlueprint.choicePoint?.residueObligationIds || []);
+            const outgoingResidueObligations = seasonResiduePlan.filter((obligation) => assignedResidueIds.has(obligation.id));
+            const dueResidueObligations = seasonResiduePlan.filter((obligation) =>
+              sceneBlueprint.residueObligationIds?.includes(obligation.id) &&
+              obligation.targetEpisodeNumbers.includes(brief.episode.number)
+            );
 
             const choiceAuthorInput: ChoiceAuthorInput = {
               sceneBlueprint,
@@ -1317,6 +1471,11 @@ export class ContentGenerationPhase {
               // B1: sealed canon as authoritative "do not contradict" context.
               establishedCanon: this.deps.establishedCanonForPrompt(brief.episode?.number),
               unresolvedCallbacks: this.deps.getUnresolvedCallbacksForPrompt(brief.episode?.number) as ChoiceAuthorInput['unresolvedCallbacks'],
+              outgoingResidueObligations,
+              dueResidueObligations,
+              disallowedUnplannedResidueFlags: seasonResiduePlan
+                .filter((obligation) => obligation.sourceEpisodeNumber !== brief.episode.number)
+                .map((obligation) => obligation.flag),
               possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
                 const scene = blueprint.scenes.find(s => s.id === id);
                 return {
@@ -1435,6 +1594,18 @@ export class ContentGenerationPhase {
               // INFO phase assigned to this scene, so the schedule validator can confirm
               // authored information movement landed. No-op when the scene has no phases.
               emitSceneInfoMarkers(sceneBlueprint, choices);
+              const residueBackstop = applyChoiceResidueBackstop(
+                { beatId: choicePointBeat.id, sceneId: sceneBlueprint.id, choiceType: sceneBlueprint.choicePoint?.type || 'expression', choices, overallStakes: { want: '', cost: '', identity: '' }, designNotes: '' },
+                sceneBlueprint,
+                seasonResiduePlan,
+              );
+              if (residueBackstop.addedFlags > 0 || residueBackstop.stamped > 0) {
+                context.emit({
+                  type: 'debug',
+                  phase: 'choices',
+                  message: `Residue backstop for ${sceneBlueprint.id}: stamped ${residueBackstop.stamped}, added ${residueBackstop.addedFlags} planned flag(s).`,
+                });
+              }
             };
 
             if (!choiceResult.success || !choiceResult.data) {
@@ -1453,7 +1624,9 @@ export class ContentGenerationPhase {
               const declaresOnPageContract =
                 resolveSceneTreatmentSeeds(sceneBlueprint).length > 0 ||
                 resolveSceneBranchAxes(sceneBlueprint).length > 0 ||
-                (sceneBlueprint.revealsInfoIds ?? []).length > 0;
+                (sceneBlueprint.setsUpInfoIds ?? []).length > 0 ||
+                (sceneBlueprint.revealsInfoIds ?? []).length > 0 ||
+                (sceneBlueprint.paysOffInfoIds ?? []).length > 0;
               const fallbackChoiceSet =
                 this.deps.buildBranchFallbackChoiceSet(sceneBlueprint, choicePointBeat)
                 ?? (declaresOnPageContract || sceneBlueprint.choicePoint
@@ -2143,11 +2316,10 @@ export class ContentGenerationPhase {
           ].filter(Boolean).join(' ');
           return !OFF_PAGE_RELATION.test(text);
         };
-        const encounterRequiredNpcIds = filterProtagonistEncounterRefs(Array.from(new Set([
-          ...(sceneBlueprint.encounterRequiredNpcIds || []),
-          ...(plannedEnc?.npcsInvolved || []),
-          ...(sceneBlueprint.npcsPresent || []),
-        ])), brief.protagonist).filter(isStageablePresent);
+        const encounterRequiredNpcIds = filterProtagonistEncounterRefs(
+          collectEncounterParticipantRefs(sceneBlueprint, plannedEnc),
+          brief.protagonist,
+        ).filter(isStageablePresent);
         
         // NOTE: encounterRelevantSkills are passed to the architect as *prompt
         // hints* (see availableSkills/encounterRelevantSkills inputs below), but
@@ -2206,7 +2378,7 @@ export class ContentGenerationPhase {
             name: profile?.name || npcId,
             pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
             role: (npcBrief?.role === 'antagonist' ? 'enemy' : 
-                   npcBrief?.role === 'ally' ? 'ally' : 
+                   npcBrief?.role === 'ally' || npcBrief?.role === 'love_interest' || npcBrief?.role === 'mentor' ? 'ally' : 
                    npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
             description: profile?.overview || '',
             physicalDescription: profile?.physicalDescription,
@@ -2518,8 +2690,20 @@ export class ContentGenerationPhase {
           );
         }
 
+        const plantEncounterInfoMarkers = (encounter: EncounterStructure): void => {
+          const added = emitSceneInfoMarkersOnBeats(sceneBlueprint, encounterInfoMarkerTargets(encounter as any));
+          if (added > 0) {
+            context.emit({
+              type: 'debug',
+              phase: 'encounters',
+              message: `Planted ${added} deterministic information-ledger marker(s) on encounter ${sceneBlueprint.id}.`,
+            });
+          }
+        };
+
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
+          plantEncounterInfoMarkers(encounterResult.data);
           encounters.set(sceneBlueprint.id, encounterResult.data);
           this.deps.captureEncounterTelemetry(encounterResult.metadata, sceneBlueprint.id);
           context.emit({
@@ -2688,6 +2872,7 @@ export class ContentGenerationPhase {
                         regenValidation.issues.length < encounterValidation.issues.length ||
                         regenCollisions.length < phase4Collisions.length ||
                         regenTemplateHits.length < templateHits.length) {
+                      plantEncounterInfoMarkers(regenEncounterResult.data);
                       encounters.set(sceneBlueprint.id, regenEncounterResult.data);
                       this.deps.captureEncounterTelemetry(regenEncounterResult.metadata, sceneBlueprint.id);
                       // overallPassed is driven only by the real validator —

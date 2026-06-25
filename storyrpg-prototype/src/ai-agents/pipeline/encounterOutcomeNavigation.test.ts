@@ -98,4 +98,53 @@ describe('normalizeEncounterOutcomeNavigation', () => {
     expect(repaired.isTerminal).toBe(true);
     expect(repaired.encounterOutcome).toBe('defeat');
   });
+
+  it('repairs outcomes inside phased encounter beats', () => {
+    const encounter = {
+      phases: [
+        {
+          id: 'phase-1',
+          beats: [
+            {
+              id: 'beat-1',
+              choices: [
+                {
+                  id: 'c1',
+                  text: 'Call out the flattery directly.',
+                  outcomes: {
+                    success: { tier: 'success', narrativeText: 'He enjoys the friction.', isTerminal: false },
+                    complicated: { tier: 'complicated', narrativeText: 'He regains the tempo.', isTerminal: false },
+                    failure: { tier: 'failure', narrativeText: 'He lets the silence stretch.', isTerminal: false },
+                  },
+                },
+              ],
+            },
+            {
+              id: 'beat-2',
+              choices: [
+                {
+                  id: 'c2',
+                  text: 'Leave the table.',
+                  outcomes: {
+                    success: { tier: 'success', narrativeText: 'You stand.', isTerminal: true },
+                    complicated: { tier: 'complicated', narrativeText: 'You stand, shaken.', isTerminal: true },
+                    failure: { tier: 'failure', narrativeText: 'You stay seated.', isTerminal: true },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const story = storyWithEncounter(encounter);
+    expect(normalizeEncounterOutcomeNavigation(story)).toBe(3);
+    const repaired = ((story.episodes[0].scenes[0].encounter as any).phases[0].beats[0].choices[0].outcomes);
+    expect(repaired.success.nextBeatId).toBe('beat-2');
+    expect(repaired.complicated.nextBeatId).toBe('beat-2');
+    expect(repaired.failure.nextBeatId).toBe('beat-2');
+    expect(repaired.success.isTerminal).toBe(false);
+    expect(repaired.complicated.encounterOutcome).toBeUndefined();
+  });
 });

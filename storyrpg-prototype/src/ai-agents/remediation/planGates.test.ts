@@ -95,8 +95,41 @@ describe('Bucket D plan-gate wiring', () => {
       });
     };
 
+    const runPercentageSkewValidator = () =>
+      new ChoiceDistributionValidator().validate({
+        choiceSets: [
+          { beatId: 'b1', choiceType: 'expression' },
+          { beatId: 'b2', choiceType: 'expression' },
+          { beatId: 'b3', choiceType: 'expression' },
+          { beatId: 'b4', choiceType: 'expression' },
+          { beatId: 'b5', choiceType: 'expression' },
+          { beatId: 'b6', choiceType: 'expression' },
+          { beatId: 'b7', choiceType: 'relationship' },
+          { beatId: 'b8', choiceType: 'strategic' },
+        ],
+        targets: { expression: 35, relationship: 30, strategic: 20, dilemma: 15 },
+        maxBranchingChoicesPerEpisode: Number.MAX_SAFE_INTEGER,
+      }, {
+        targetPolicy: 'advisory',
+        branchCapPolicy: 'telemetry',
+      });
+
     it('produces an error-severity finding (expression choice with branching)', () => {
       expect(runValidator().issues.some((i) => i.severity === 'error')).toBe(true);
+    });
+
+    it('keeps percentage skew out of the hard-gate path even when the gate is on', () => {
+      const result = runPercentageSkewValidator();
+      expect(result.issues.some((i) => i.severity === 'warning')).toBe(true);
+      expect(result.issues.some((i) => i.severity === 'error')).toBe(false);
+
+      const decision = shouldGate(
+        PLAN_GATE_FLAGS.choiceDistribution,
+        result.issues,
+        on(PLAN_GATE_FLAGS.choiceDistribution),
+      );
+      expect(decision.gate).toBe(false);
+      expect(decision.blockingCount).toBe(0);
     });
 
     it('does not gate when GATE_CHOICE_DISTRIBUTION is off', () => {

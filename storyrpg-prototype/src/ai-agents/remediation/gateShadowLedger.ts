@@ -35,6 +35,16 @@ export interface GateShadowRecord {
   blockingCount: number;
   /** For repair-backed gates: how many findings an eligible repair would resolve. */
   wouldRepairCount?: number;
+  /** Where this gate executes (plan, episode, or season-final). */
+  placement?: string;
+  /** Whether a repair/retry path actually ran for this gate class. */
+  repairAttempted?: boolean;
+  /** Whether the repair/retry path cleared the class it targeted. */
+  repairSucceeded?: boolean;
+  /** Blocking findings still present after repair/judge/suppression. */
+  residualBlockingCount?: number;
+  /** Why a would-fire finding was intentionally not counted as blockable. */
+  suppressedReason?: string;
   /**
    * ISO timestamp; supplied by the caller (keeps this deterministic/testable),
    * matching the quality/remediation ledger convention.
@@ -69,6 +79,11 @@ export function buildGateShadowRecord(opts: {
   blockingCount: number;
   storyId?: string;
   wouldRepairCount?: number;
+  placement?: string;
+  repairAttempted?: boolean;
+  repairSucceeded?: boolean;
+  residualBlockingCount?: number;
+  suppressedReason?: string;
   issues?: Array<{ severity: string; message?: string }>;
   /** Explicit details override; otherwise summarized from issues. */
   details?: string;
@@ -89,7 +104,36 @@ export function buildGateShadowRecord(opts: {
     wouldGate: opts.blockingCount > 0,
     blockingCount: opts.blockingCount,
     wouldRepairCount: opts.wouldRepairCount,
+    placement: opts.placement,
+    repairAttempted: opts.repairAttempted,
+    repairSucceeded: opts.repairSucceeded,
+    residualBlockingCount: opts.residualBlockingCount,
+    suppressedReason: opts.suppressedReason,
     storyId: opts.storyId,
     details,
   };
+}
+
+/**
+ * Promotion-readiness telemetry helper. It is intentionally just a stricter
+ * facade over `buildGateShadowRecord` so rollout reports and live shadow rows
+ * use one stable shape while old consumers keep reading normal shadow fields.
+ */
+export function buildValidatorPromotionRecord(opts: {
+  gate: string;
+  validator: string;
+  scope: RemediationScope;
+  placement: string;
+  enabled: boolean;
+  blockingCount: number;
+  storyId?: string;
+  wouldRepairCount?: number;
+  repairAttempted?: boolean;
+  repairSucceeded?: boolean;
+  residualBlockingCount?: number;
+  suppressedReason?: string;
+  details?: string;
+  issues?: Array<{ severity: string; message?: string }>;
+}): Omit<GateShadowRecord, 'timestamp' | 'runDir'> {
+  return buildGateShadowRecord(opts);
 }

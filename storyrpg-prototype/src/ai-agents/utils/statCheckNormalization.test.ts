@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeChoiceSetStatChecks, normalizeChoiceStatCheck } from './statCheckNormalization';
+import { normalizeChoiceSetStatChecks, normalizeChoiceStatCheck, normalizeStoryStatChecks } from './statCheckNormalization';
 
 describe('statCheckNormalization', () => {
   it('clamps difficulty and normalizes positive skill weights', () => {
@@ -28,5 +28,35 @@ describe('statCheckNormalization', () => {
       skillWeights: { persuasion: 0.75, perception: 0.25 },
     });
     expect(choiceSets[0].choices[1].statCheck).toBeUndefined();
+  });
+
+  it('repairs all-invalid skill weights by preserving the authored skill axis', () => {
+    const normalized = normalizeChoiceStatCheck({
+      difficulty: 35,
+      skillWeights: { deception: -1 },
+    } as never);
+
+    expect(normalized?.skillWeights).toEqual({ deception: 1 });
+  });
+
+  it('normalizes final story stat checks in place', () => {
+    const story = {
+      episodes: [{
+        scenes: [{
+          beats: [{
+            choices: [{
+              id: 'c1',
+              statCheck: { difficulty: 20, skillWeights: { deception: -1 } },
+            }],
+          }],
+        }],
+      }],
+    } as never;
+
+    expect(normalizeStoryStatChecks(story)).toBe(1);
+    expect(story.episodes[0].scenes[0].beats[0].choices[0].statCheck).toEqual({
+      difficulty: 35,
+      skillWeights: { deception: 1 },
+    });
   });
 });

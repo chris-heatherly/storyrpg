@@ -34,6 +34,7 @@ import {
   SevenPointStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
+import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import type { ConsequenceTier, MechanicPressureContract, RelationshipPacingContract } from '../../types/scenePlan';
 // Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
 // via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
@@ -48,6 +49,7 @@ import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExa
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
+import { authorFacingMechanicPressureText } from '../utils/treatmentFieldContracts';
 
 /**
  * Bucket C soft-gate decision for the LLM-judged stakes score.
@@ -222,6 +224,13 @@ export interface ChoiceAuthorInput {
     impactFactors?: ChoiceImpactFactor[];
     consequenceTier?: ChoiceConsequenceTier;
   }>;
+
+  /** Planned residue obligations assigned to this choice point to create. */
+  outgoingResidueObligations?: SeasonResidueObligation[];
+  /** Planned residue obligations this choice text may help pay off. */
+  dueResidueObligations?: SeasonResidueObligation[];
+  /** Consequential flags that should not be invented outside the planned residue contract. */
+  disallowedUnplannedResidueFlags?: string[];
 
   // Genre/source-specific verbs that make choices feel native to the story.
   storyVerbs?: StoryVerb[];
@@ -499,7 +508,7 @@ Before finalizing:
         firstResponse = await this.callLLM(
           [{ role: 'user', content: prompt }],
           1,
-          { jsonSchema },
+          { jsonSchema: this.buildCompactRetryJsonSchema(input) },
         );
       } catch (llmError) {
         if (!(llmError instanceof TruncatedLLMResponseError)) throw llmError;
@@ -623,7 +632,7 @@ Before finalizing:
     const response = await this.callLLM(
       [{ role: 'user', content: compactPrompt }],
       4,
-      { jsonSchema: this.buildJsonSchema(input) },
+      { jsonSchema: this.buildCompactRetryJsonSchema(input) },
     );
     const choiceSet = this.parseJSON<ChoiceSet>(response); // rethrows on failure → execute() fails → phase falls back
     const choiceCount = Array.isArray(choiceSet.choices) ? choiceSet.choices.length : 0;
@@ -642,6 +651,15 @@ Before finalizing:
     });
   }
 
+  private buildCompactRetryJsonSchema(input: ChoiceAuthorInput) {
+    const schema = this.buildJsonSchema(input);
+    return {
+      ...schema,
+      name: 'choice_set_compact_retry',
+      maxOutputTokens: 8192,
+    };
+  }
+
   private buildCompactRepairPrompt(input: ChoiceAuthorInput, issueList: string): string {
     const choicePoint = input.sceneBlueprint.choicePoint!;
     const isBranching = Boolean(choicePoint.branches || input.requiredBranchTargets?.length);
@@ -655,14 +673,14 @@ Before finalizing:
       : '';
     const optionHints = (choicePoint.optionHints || []).slice(0, input.optionCount).join(' | ');
 
-    return `Return one complete compact ChoiceSet JSON object. The deterministic schema is supplied by the caller; match it exactly.
+    return `Return one complete compact ChoiceSet JSON object. The deterministic schema is supplied by the caller; match it exactly. Return ONLY JSON.
 
 Repair reason:
 ${issueList}
 
 Scene: ${input.sceneBlueprint.id} / ${input.sceneBlueprint.name} / ${input.sceneBlueprint.location}
 Beat id: ${input.beatId}
-Beat text: ${input.beatText}
+Beat text: ${String(input.beatText || '').slice(0, 900)}
 
 Choice point:
 - type: ${choicePoint.type}
@@ -1508,6 +1526,30 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
     }
   }
 
+  private buildResidueObligationSection(input: ChoiceAuthorInput): string {
+    const outgoing = input.outgoingResidueObligations || [];
+    const due = input.dueResidueObligations || [];
+    if (outgoing.length === 0 && due.length === 0) return '';
+    const describe = (obligation: SeasonResidueObligation) =>
+      `- ${obligation.id}: flag ${obligation.flag}; ${obligation.choiceAnchor}; surface ${obligation.requiredSurface.join(', ')}; guidance: ${obligation.authoringGuidance || obligation.sourceMaterial.reminderShortTerm || obligation.sourceMaterial.feedbackEcho || 'make the consequence visible in fiction'}`;
+    return `
+## Planned Residue Contract
+These are season-planned choice echoes. Do not invent extra consequential flags outside this contract.
+${outgoing.length ? `
+Outgoing obligations this choice point MUST create:
+${outgoing.map(describe).join('\n')}
+- At least one option must set each listed flag with a \`setFlag\` consequence.
+- Stamp the matching \`residueObligationIds\` on the option that creates it.
+- Source \`residueHints\`, \`reminderPlan\`, and \`feedbackCue\` from the guidance above.
+` : ''}
+${due.length ? `
+Due obligations this choice point MAY pay through choice text or conditional options:
+${due.map(describe).join('\n')}
+- If paid through conditional choice text, gate it on the exact flag/condition key.
+` : ''}
+`;
+  }
+
   private buildPrompt(input: ChoiceAuthorInput): string {
     const npcList = input.npcsInScene
       .map(npc => {
@@ -1563,6 +1605,7 @@ ${directFragmentList}
       sevenPoint: input.seasonSevenPoint,
       episodeStructuralRole: input.episodeStructuralRole,
     });
+    const residueSection = this.buildResidueObligationSection(input);
 
     return `
 Create player choices for the following decision point:
@@ -1599,6 +1642,7 @@ ${buildChoiceAuthorCallbackSection((input.unresolvedCallbacks || []).map(h => ({
   resolved: false,
   createdAt: '',
 })), { authorNewHooks: true })}
+${residueSection}
 ## Choice Point Design
 - **Type**: ${choicePoint.type}
 - **Description**: ${choicePoint.description}
@@ -1717,7 +1761,7 @@ ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npc
 ${input.sceneBlueprint.mechanicPressure?.length ? `
 ## Narrative Mechanic Pressure Contracts
 Treat mechanics as hidden story pressure, not numbers that directly cause results. Every non-expression consequence should declare or inherit a pressure contract and answer: what changed in the fiction, what future affordance it creates, what residue appears now, what payoff is allowed later, and what payoff is blocked until more evidence exists.
-${input.sceneBlueprint.mechanicPressure.map((c) => `- ${c.id}: ${c.domain}/${c.function} — ${c.storyPressure}; evidence: ${c.evidenceRequired.join('; ') || 'show what earns it'}; residue: ${c.visibleResidue.join('; ') || 'show immediate behavior/access/cost/clue/posture'}; allowed payoffs: ${c.allowedPayoffs.join('; ') || 'earned future permission'}; blocked payoffs: ${c.blockedPayoffs.join('; ') || 'unsupported payoff'}`).join('\n')}
+${input.sceneBlueprint.mechanicPressure.map((c) => `- ${c.id}: ${c.domain}/${c.function} — ${authorFacingMechanicPressureText(c)}; evidence: ${c.evidenceRequired.join('; ') || 'show what earns it'}; residue: ${c.visibleResidue.join('; ') || 'show immediate behavior/access/cost/clue/posture'}; allowed payoffs: ${c.allowedPayoffs.join('; ') || 'earned future permission'}; blocked payoffs: ${c.blockedPayoffs.join('; ') || 'unsupported payoff'}`).join('\n')}
 - Use \`residueHints\`, \`reminderPlan\`, \`feedbackCue\`, or \`witnessReactions\` to make hidden pressure visible.
 - Bare state math is not enough unless the consequence is purely infrastructural.
 - Conditions/gates should spend pressure that has already been planted or is reachable through prior choices.

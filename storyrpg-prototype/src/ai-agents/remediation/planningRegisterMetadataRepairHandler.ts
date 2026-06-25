@@ -1,5 +1,6 @@
 import type { Story } from '../../types/story';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
+import { authorFacingInformationMovementText } from '../utils/treatmentFieldContracts';
 import type { ContractRepairHandler } from './finalContractRepair';
 
 type MutableRecord = Record<string, unknown>;
@@ -20,15 +21,20 @@ const SCENE_METADATA_FIELDS = [
 ] as const;
 
 const PLANNING_PREFIX_PATTERNS: RegExp[] = [
+  /^\s*(?:Everything\.\s*)?Then\s+continue\s+into\s+the\s+planned\s+scene\s*:\s*/i,
   /^\s*Escalate\s+the\s+episode\s+pressure\s+through\s+a\s+concrete\s+turn\s*:\s*/i,
   /^\s*Let\s+the\s+fallout\s+settle\s+into\s+the\s+next\s+pressure\s*:\s*/i,
   /^\s*Forward\s+pressure\s*:\s*/i,
 ];
 
+const OPEN_EPISODE_PREFIX_PATTERN =
+  /^\s*Open\s+the\s+episode\s+(?:through|with)\s+(?:its\s+)?(?:immediate\s+)?(?:question|pressure|hook|turn)?\s*:?\s*/i;
+
 function cleanupSentence(text: string): string {
   return text
     .replace(/\s+/g, ' ')
     .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/([.!?])\s*([.!?])+/g, '$1')
     .replace(/([.!?]){2,}$/g, '$1')
     .trim();
 }
@@ -38,7 +44,20 @@ function stripPlanningPrefix(text: string): string {
   for (const pattern of PLANNING_PREFIX_PATTERNS) {
     cleaned = cleaned.replace(pattern, '');
   }
+  cleaned = cleaned.replace(OPEN_EPISODE_PREFIX_PATTERN, '');
   return cleanupSentence(cleaned);
+}
+
+function stripTreatmentEchoLabel(text: string): string {
+  return text.replace(/^\s*[a-z_]+:treatment[_a-z0-9-]*\s*[—:-]\s*/i, '');
+}
+
+function sanitizeLedgerPlanningText(text: string): string | undefined {
+  if (!isPlanningRegisterText(text)) return undefined;
+  const stripped = stripTreatmentEchoLabel(stripPlanningPrefix(text));
+  const safe = cleanupSentence(authorFacingInformationMovementText(stripped));
+  if (!safe || safe === text || isPlanningRegisterText(safe) || isWeakReplacement(safe)) return undefined;
+  return safe;
 }
 
 function usefulWordCount(text: string): number {
@@ -71,6 +90,9 @@ function replacementForBeatField(
   beat: MutableRecord,
   original: string,
 ): string | undefined {
+  const ledgerSafe = sanitizeLedgerPlanningText(original);
+  if (ledgerSafe) return ledgerSafe;
+
   const stripped = stripPlanningPrefix(original);
   if (!isWeakReplacement(stripped)) return stripped;
 
@@ -87,12 +109,93 @@ function replacementForBeatField(
   return undefined;
 }
 
+function replacementForBeatText(beat: MutableRecord, original: string): string | undefined {
+  const ledgerSafe = sanitizeLedgerPlanningText(original);
+  if (ledgerSafe) return ledgerSafe;
+
+  const stripped = stripPlanningPrefix(original);
+  if (!isWeakReplacement(stripped)) return stripped;
+
+  const visualFallback = firstReadableSentence(beat.visualMoment);
+  if (visualFallback) return visualFallback;
+
+  const actionFallback = firstReadableSentence(beat.primaryAction);
+  if (actionFallback) return actionFallback;
+
+  return undefined;
+}
+
+function replacementForVariantText(beat: MutableRecord, original: string): string | undefined {
+  const ledgerSafe = sanitizeLedgerPlanningText(original);
+  if (ledgerSafe) return ledgerSafe;
+
+  const stripped = stripPlanningPrefix(original).replace(/\.{2,}/g, '.');
+  if (!isWeakReplacement(stripped)) return stripped;
+  return firstReadableSentence(beat.text);
+}
+
 function replacementForSceneField(scene: MutableRecord, original: string): string | undefined {
+  const ledgerSafe = sanitizeLedgerPlanningText(original);
+  if (ledgerSafe) return ledgerSafe;
+
   const stripped = stripPlanningPrefix(original);
   if (!isWeakReplacement(stripped)) return stripped;
 
   const firstBeat = Array.isArray(scene.beats) ? scene.beats[0] as MutableRecord | undefined : undefined;
   return firstReadableSentence(firstBeat?.text);
+}
+
+function replacementForEncounterField(scene: MutableRecord, encounter: MutableRecord, original: string): string | undefined {
+  const ledgerSafe = sanitizeLedgerPlanningText(original);
+  if (ledgerSafe) return ledgerSafe;
+
+  const stripped = stripPlanningPrefix(original);
+  if (!isWeakReplacement(stripped)) return stripped;
+
+  const encounterDescription = firstReadableSentence(encounter.description);
+  if (encounterDescription) return encounterDescription;
+
+  const sceneDescription = firstReadableSentence(scene.description);
+  if (sceneDescription) return sceneDescription;
+
+  const firstBeat = Array.isArray(scene.beats) ? scene.beats[0] as MutableRecord | undefined : undefined;
+  return firstReadableSentence(firstBeat?.text);
+}
+
+function repairEncounterPlanningText(scene: MutableRecord, encounter: MutableRecord, value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  let rewritten = 0;
+
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      const item = value[index];
+      if (typeof item === 'string' && isPlanningRegisterText(item)) {
+        const replacement = replacementForEncounterField(scene, encounter, item);
+        if (replacement && replacement !== item) {
+          value[index] = replacement;
+          rewritten += 1;
+        }
+        continue;
+      }
+      rewritten += repairEncounterPlanningText(scene, encounter, item);
+    }
+    return rewritten;
+  }
+
+  const record = value as MutableRecord;
+  for (const [key, child] of Object.entries(record)) {
+    if (typeof child === 'string') {
+      if (!isPlanningRegisterText(child)) continue;
+      const replacement = replacementForEncounterField(scene, encounter, child);
+      if (!replacement || replacement === child) continue;
+      record[key] = replacement;
+      rewritten += 1;
+    } else if (child && typeof child === 'object') {
+      rewritten += repairEncounterPlanningText(scene, encounter, child);
+    }
+  }
+
+  return rewritten;
 }
 
 function hasPlanningRegisterBlocker(
@@ -122,6 +225,15 @@ export function buildPlanningRegisterMetadataRepairHandler(): ContractRepairHand
 
         for (const beatValue of (Array.isArray(scene.beats) ? scene.beats : [])) {
           const beat = beatValue as MutableRecord;
+          const text = beat.text;
+          if (typeof text === 'string' && isPlanningRegisterText(text)) {
+            const replacement = replacementForBeatText(beat, text);
+            if (replacement && replacement !== text) {
+              beat.text = replacement;
+              rewritten += 1;
+            }
+          }
+
           for (const field of BEAT_METADATA_FIELDS) {
             const value = beat[field];
             if (typeof value !== 'string' || !isPlanningRegisterText(value)) continue;
@@ -130,6 +242,20 @@ export function buildPlanningRegisterMetadataRepairHandler(): ContractRepairHand
             beat[field] = replacement;
             rewritten += 1;
           }
+
+          for (const variantValue of (Array.isArray(beat.textVariants) ? beat.textVariants : [])) {
+            const variant = variantValue as MutableRecord;
+            const value = variant.text;
+            if (typeof value !== 'string' || !isPlanningRegisterText(value)) continue;
+            const replacement = replacementForVariantText(beat, value);
+            if (!replacement || replacement === value) continue;
+            variant.text = replacement;
+            rewritten += 1;
+          }
+        }
+
+        if (scene.encounter && typeof scene.encounter === 'object') {
+          rewritten += repairEncounterPlanningText(scene, scene.encounter as MutableRecord, scene.encounter);
         }
       }
     }

@@ -148,7 +148,8 @@ import { SeasonCanon } from './seasonCanon';
 import { createRunState, type PipelineRunState } from './runState';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
-import { runPlanTimeFidelityChecks, runFidelityValidators } from '../validators/runFidelityValidators';
+import { runPlanTimeFidelityChecks, runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
+import type { ValidationPhaseBaseline } from '../validators/validationPhaseBaseline';
 import { FinalStoryContractValidator } from '../validators/FinalStoryContractValidator';
 import {
   buildChoiceAuthorNpcs,
@@ -249,7 +250,7 @@ import {
   type HarvestEpisodeCallbacksParams,
   type InjectFallbackCallbacksParams,
 } from './callbackOrchestration';
-import { applyResidueConsumption } from './residueConsumption';
+import { implementEpisodeResidueObligations } from './residueObligations';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
@@ -296,6 +297,7 @@ import {
   type NarrativeDiagnosticsReport,
   ChoiceDensityValidator,
   PropIntroductionValidator,
+  ArcPressureArchitectureValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
@@ -305,7 +307,7 @@ import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
-import { buildGateShadowRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
+import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import {
@@ -401,7 +403,7 @@ export interface FullCreativeBrief {
   npcs: Array<{
     id: string;
     name: string;
-    role: 'antagonist' | 'ally' | 'neutral' | 'wildcard';
+    role: 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral' | 'wildcard';
     description: string;
     importance: 'major' | 'supporting' | 'minor';
     relationshipToProtagonist?: string;
@@ -674,6 +676,8 @@ export class FullStoryPipeline {
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
   private cachedPipelineMemory: string | null = null;
+  private planTimeFidelityFindings: FidelityFinding[] = [];
+  private planTimeFidelityBaseline?: ValidationPhaseBaseline;
 
   /**
    * Paths (relative or absolute) to the three style-bible anchor images,
@@ -3694,6 +3698,7 @@ export class FullStoryPipeline {
         this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
         this.applyActiveImageStyleToRuntime();
         this.resetAssetRegistry(idSlugify(brief.story.title));
+        await this.recordArcPressureShadowSafe(brief.seasonPlan, idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
         // Phase 6 (Plan Part 9 + Part 10): episode-time charge-materialization gate.
@@ -4294,6 +4299,7 @@ export class FullStoryPipeline {
       storyArchitect: this.storyArchitect,
       emitPlanUpdate: this.emitPlanUpdate.bind(this),
       getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
     } satisfies Partial<EpisodeArchitecturePhaseDeps> as unknown as EpisodeArchitecturePhaseDeps;
     Object.defineProperties(deps, {
       cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
@@ -4317,6 +4323,9 @@ export class FullStoryPipeline {
     const cap = this.config.generation?.maxBeatsPerScene || MAX_BEATS_PER_SCENE;
     if (this.config.generation?.episodeStructureMode === 'sceneEpisodes' && !sceneBlueprint.isEncounter) {
       return clampTargetBeatCount(this.config.generation.sceneEpisodeNormalTargetBeats || 8, cap);
+    }
+    if (sceneBlueprint.recommendedBeatCount) {
+      return clampTargetBeatCount(sceneBlueprint.recommendedBeatCount, cap);
     }
     return clampTargetBeatCount(sceneBlueprint.purpose === 'bottleneck'
       ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
@@ -4969,11 +4978,15 @@ export class FullStoryPipeline {
     // mismatch previously survived to the season-final contract and killed the
     // run after the full generation spend. Warnings surface; errors fail fast.
     // The season-final dispatch stays as a regression net for mid-run drift.
+    this.planTimeFidelityFindings = [];
+    this.planTimeFidelityBaseline = undefined;
     {
       const planFidelity = runPlanTimeFidelityChecks({
         seasonPlan: baseBrief.seasonPlan,
         sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? analysis,
       });
+      this.planTimeFidelityFindings = planFidelity.findings;
+      this.planTimeFidelityBaseline = planFidelity.baseline;
       for (const f of planFidelity.findings) {
         if (f.severity !== 'error') {
           this.emit({ type: 'warning', phase: 'plan_fidelity', message: `[${f.validator}] ${f.message}` });
@@ -5178,6 +5191,7 @@ export class FullStoryPipeline {
       const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
       this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
       this.applyActiveImageStyleToRuntime();
+      await this.recordArcPressureShadowSafe(baseBrief.seasonPlan, idSlugify(baseBrief.story.title));
       
       // Initialize AssetRegistry with JSONL persistence for durable image tracking
       const registryJsonlPath = (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl';
@@ -6054,6 +6068,7 @@ export class FullStoryPipeline {
         story: oneEpisodeStory,
         seasonPlan: episodeBrief.seasonPlan,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
+        planTimeBaseline: this.planTimeFidelityBaseline,
         scope: {
           mode: 'episode-incremental',
           requestedEpisodeNumbers: [i],
@@ -6077,8 +6092,10 @@ export class FullStoryPipeline {
         validSkills: Object.keys(oneEpisodeStory.initialState?.skills || {}),
         mode: this.config.validation?.mode,
         fidelityFindings: fidelity.fidelityFindings,
+        planTimeFidelityFindings: this.planTimeFidelityFindings,
         treatmentSourced: fidelity.treatmentSourced,
         callbackLedger: this.callbackLedger.serialize(),
+        seasonResiduePlan: episodeBrief.seasonPlan?.residuePlan,
         seasonChoicePlan: this.seasonChoicePlan,
         plannedChoiceTypesByScene: plannedChoiceTypes,
         plannedConsequenceTiersByScene: plannedConsequenceTiers,
@@ -6245,31 +6262,77 @@ export class FullStoryPipeline {
         )
       );
 
+      let callbackNewHooks = 0;
+      let authoredCallbackPayoffs = 0;
+
       // Plan 1: Harvest delayed-consequence callbacks from this episode's
-      // choices (seed new hooks) and textVariants (record payoffs). The
-      // ledger is then persisted to the output directory so validators and
-      // the UI can inspect it.
+      // choices (seed new hooks) and textVariants (record payoffs). Planned
+      // residue runs next and gets first claim on due choice-memory debt before
+      // generic fallback callbacks fill remaining unresolved hooks.
       try {
         const { newHooks, payoffs } = this.harvestEpisodeCallbacks({
           episodeNumber: i,
           sceneContents: sceneContents as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['sceneContents'],
           choiceSets: choiceSets as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['choiceSets'],
         });
-        // Deterministically realize planted-but-uncollected callbacks: append a
-        // flag-gated TextVariant (sourced from the choice's reminderPlan) to a downstream
-        // beat for each in-window hook the LLM left unreferenced. Mutates sceneContents,
-        // which assembly + validation both read afterward, so the payoff lands in the
-        // shipped story AND lifts the callback-coverage metric. See callbackOrchestration.
+        callbackNewHooks = newHooks;
+        authoredCallbackPayoffs = payoffs;
+      } catch (ledgerErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_callbacks`,
+          message: `CallbackLedger harvest failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
+        });
+      }
+
+      const residueContract = implementEpisodeResidueObligations({
+        episodeNumber: i,
+        sceneContents,
+        choiceSets,
+        blueprint,
+        seasonResiduePlan: episodeBrief.seasonPlan?.residuePlan,
+        callbackLedger: this.callbackLedger,
+        importedCallbackLedger: this.callbackLedger.serialize(),
+        generatedThroughEpisode: this.totalEpisodes,
+      });
+      if (
+        residueContract.autoInjected.length > 0 ||
+        residueContract.missingIncoming.length > 0 ||
+        residueContract.missingOutgoing.length > 0 ||
+        residueContract.unplannedConsequentialFlags.length > 0
+      ) {
+        this.emit({
+          type: residueContract.missingIncoming.length || residueContract.missingOutgoing.length || residueContract.unplannedConsequentialFlags.length ? 'warning' : 'debug',
+          phase: `episode_${i}_residue_contract`,
+          message:
+            `Residue contract: ${residueContract.createdOutgoing.length}/${residueContract.plannedOutgoing.length} outgoing created, ` +
+            `${residueContract.paidIncoming.length}/${residueContract.dueIncoming.length} due paid, ` +
+            `${residueContract.autoInjected.length} auto-injected, ${residueContract.unplannedConsequentialFlags.length} unplanned flag(s).`,
+        });
+      }
+      await saveEarlyDiagnostic(outputDirectory, `episode-${i}-residue-contract.json`, residueContract);
+      await saveEarlyDiagnostic(outputDirectory, '10-residue-ledger.json', {
+        episodeNumber: i,
+        residueContract,
+        callbackLedger: this.callbackLedger.serialize(),
+      });
+
+      try {
+        // Deterministically realize planted-but-uncollected callbacks after
+        // planned residue has had the first opportunity to pay its assigned
+        // obligations. This prevents a generic callback line from double-paying
+        // the same hook before the residue contract can attach source-specific
+        // prose and evidence.
         const { injected } = this.injectFallbackCallbacks({
           episodeNumber: i,
           sceneContents: sceneContents as unknown as InjectFallbackCallbacksParams['sceneContents'],
           choiceSets: choiceSets as unknown as InjectFallbackCallbacksParams['choiceSets'],
         });
-        if (newHooks > 0 || payoffs > 0 || injected > 0) {
+        if (callbackNewHooks > 0 || authoredCallbackPayoffs > 0 || injected > 0) {
           this.emit({
             type: 'debug',
             phase: `episode_${i}_callbacks`,
-            message: `Callback ledger: +${newHooks} new hook(s), +${payoffs} authored payoff(s), +${injected} auto-realized this episode; ${this.callbackLedger.size()} total`,
+            message: `Callback ledger: +${callbackNewHooks} new hook(s), +${authoredCallbackPayoffs} authored payoff(s), +${injected} auto-realized this episode; ${this.callbackLedger.size()} total`,
           });
         }
         await saveEarlyDiagnostic(outputDirectory, '09-callback-ledger.json', this.callbackLedger.serialize());
@@ -6277,7 +6340,7 @@ export class FullStoryPipeline {
         this.emit({
           type: 'warning',
           phase: `episode_${i}_callbacks`,
-          message: `CallbackLedger harvest failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
+          message: `CallbackLedger fallback injection failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
         });
       }
 
@@ -6558,8 +6621,20 @@ export class FullStoryPipeline {
           const propResult = new PropIntroductionValidator().validate(propInput, { strict: true });
           const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
           const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, seasonGateEnforcement);
-          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.propIntroduction, 'PropIntroductionValidator', propGate.blockingCount, propIssues, undefined);
-          if (propGate.gate) {
+          await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+            gate: PLAN_GATE_FLAGS.propIntroduction,
+            validator: 'PropIntroductionValidator',
+            scope: 'episode',
+            placement: 'plan',
+            enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
+            blockingCount: propGate.blockingCount,
+            wouldRepairCount: propGate.blockingCount,
+            repairAttempted: false,
+            residualBlockingCount: propGate.blockingCount,
+            issues: propIssues,
+            details: `episode=${i}; unresolved=${propGate.blockingCount}; repairTelemetry=pre`,
+          }));
+          if (propGate.blockingCount > 0) {
             // Wave 4 repair loop: resolve raw label->canonical-id references (the
             // witness-bug class) and re-validate before aborting. Genuinely-unknown
             // references are NOT rewritten, so a real dangling reference still blocks.
@@ -6568,10 +6643,40 @@ export class FullStoryPipeline {
               .filter((sc) => Array.isArray(sc.charactersInvolved))
               .map((sc) => ({ sceneId: sc.sceneId, sceneName: sc.sceneName, referencedEntityIds: sc.charactersInvolved as string[] }));
             const propRepair = await repairAndRevalidatePropIntroduction(propRepairScenes, propRoster, {
-              canSpend: () => shouldAttemptRemediation(this.remediationBudget),
+              canSpend: () => propGate.gate ? shouldAttemptRemediation(this.remediationBudget) : true,
             });
-            for (const rec of propRepair.records) await this.recordRemediationSafe(rec);
-            if (!propRepair.passed) {
+            if (propGate.gate) {
+              for (const rec of propRepair.records) await this.recordRemediationSafe(rec);
+            }
+            const repairedPropResult = new PropIntroductionValidator().validate(
+              buildPropIntroductionInput(
+                propRoster.flatMap((r) => [r.id, r.name]),
+                propRepairScenes.map((sc) => ({
+                  sceneId: sc.sceneId,
+                  sceneName: sc.sceneName,
+                  referencedEntityIds: sc.referencedEntityIds,
+                })),
+              ),
+              { strict: true },
+            );
+            const remainingUnknownCount = repairedPropResult.issues.filter((iss) => iss.severity === 'error').length;
+            await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+              gate: PLAN_GATE_FLAGS.propIntroduction,
+              validator: 'PropIntroductionValidator',
+              scope: 'episode',
+              placement: 'plan',
+              enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
+              blockingCount: propGate.blockingCount,
+              wouldRepairCount: propGate.blockingCount,
+              repairAttempted: true,
+              repairSucceeded: propRepair.passed,
+              residualBlockingCount: remainingUnknownCount,
+              issues: repairedPropResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message })),
+              details:
+                `episode=${i}; wouldRepairCount=${propGate.blockingCount}; repairedCount=${propRepair.fixedCount}; ` +
+                `remainingUnknownCount=${remainingUnknownCount}; examples=${propRepair.examples.join(',') || 'none'}`,
+            }));
+            if (propGate.gate && !propRepair.passed) {
               const errs = propIssues.filter((iss) => iss.severity === 'error');
               await this.recordRemediationSafe({
                 rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
@@ -6736,14 +6841,6 @@ export class FullStoryPipeline {
         encounters,
         encounterImageResults
       );
-      const residueResult = applyResidueConsumption({ episodes: [episode] } as unknown as Story);
-      if (residueResult.injected > 0 || residueResult.residual.length > 0) {
-        this.emit({
-          type: residueResult.residual.length > 0 ? 'warning' : 'debug',
-          phase: `episode_${i}_residue_consumption`,
-          message: `Episode ${i} residue consumption: ${residueResult.injected} flag read(s) injected${residueResult.residual.length > 0 ? `; ${residueResult.residual.length} residual flag(s): ${residueResult.residual.slice(0, 4).join(', ')}` : ''}`,
-        });
-      }
       this.validateMicroEpisodeStructure(episode, {
         phase: `episode_${i}_micro_episode_final_validation`,
       });
@@ -6871,7 +6968,7 @@ export class FullStoryPipeline {
         // Keep the episode failure as the primary signal.
       }
 
-      if (this.config.validation.mode === 'strict') {
+      if (this.isFailFastEnabled() || this.config.validation.mode === 'strict') {
         throw epError;
       }
       return {
@@ -8845,6 +8942,8 @@ export class FullStoryPipeline {
         callbackLedger: { get: () => this.callbackLedger },
         allEncounterTelemetry: { get: () => this.allEncounterTelemetry },
         remediationBudget: { get: () => this.remediationBudget },
+        planTimeFidelityFindings: { get: () => this.planTimeFidelityFindings },
+        planTimeFidelityBaseline: { get: () => this.planTimeFidelityBaseline },
         sceneCritic: { get: () => this.sceneCritic ?? null },
       });
       this._finalContract = new FinalContract(deps);
@@ -9655,6 +9754,31 @@ export class FullStoryPipeline {
     record: Omit<RemediationLedgerRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string },
   ): Promise<void> {
     return this.runLedger().recordRemediationSafe(record);
+  }
+
+  private async recordArcPressureShadowSafe(seasonPlan: SeasonPlan | undefined, storyId?: string): Promise<void> {
+    if (!seasonPlan) return;
+    const result = new ArcPressureArchitectureValidator().validate(seasonPlan, {
+      treatmentSourced: (seasonPlan.arcPressureContracts ?? []).some((contract) => contract.source === 'treatment'),
+      arcPressureContracts: seasonPlan.arcPressureContracts,
+    });
+    const blockingCount = result.issues.filter((issue) => issue.severity === 'error').length;
+    await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+      gate: PLAN_GATE_FLAGS.arcPressure,
+      validator: 'ArcPressureArchitectureValidator',
+      scope: 'season',
+      placement: 'plan',
+      enabled: isGateEnabled(PLAN_GATE_FLAGS.arcPressure),
+      blockingCount,
+      repairAttempted: true,
+      repairSucceeded: blockingCount === 0,
+      residualBlockingCount: blockingCount,
+      storyId,
+      issues: result.issues,
+      details:
+        `arcs=${seasonPlan.arcs?.length ?? 0}; contracts=${seasonPlan.arcPressureContracts?.length ?? 0}; ` +
+        `metrics=${JSON.stringify(result.metrics)}`,
+    }));
   }
 
   private async recordGateShadowSafe(

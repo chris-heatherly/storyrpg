@@ -277,7 +277,9 @@ export class EncounterAnchorContentValidator extends BaseValidator {
       }
 
       const found = finalById.get(planned.id);
-      const loc = `encounterAnchor:${planned.id}`;
+      const loc = typeof planned.episodeNumber === 'number'
+        ? `encounterAnchor:ep${planned.episodeNumber}:${planned.id}`
+        : `encounterAnchor:${planned.id}`;
 
       if (!found) {
         // An authored encounter anchor that produced no final scene is a dropped

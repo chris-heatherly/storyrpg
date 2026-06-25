@@ -157,7 +157,7 @@ export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPrese
   },
 };
 
-export const DEFAULT_MODEL_FAMILY: GeneratorLlmProvider = 'anthropic';
+export const DEFAULT_MODEL_FAMILY: GeneratorLlmProvider = 'gemini';
 
 /**
  * Per-task model overrides. Narrative tasks store a model only (provider is

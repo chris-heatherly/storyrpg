@@ -55,9 +55,9 @@ describe('modelFamilies presets', () => {
 
 describe('resolveTaskAssignments', () => {
   it('returns the preset when no overrides are given', () => {
-    const resolved = resolveTaskAssignments('anthropic', undefined);
-    expect(resolved.architect.model).toBe('claude-opus-4-8');
-    expect(resolved.qa.model).toBe('claude-haiku-4-5');
+    const resolved = resolveTaskAssignments('gemini', undefined);
+    expect(resolved.architect.model).toBe('gemini-3.1-pro-preview');
+    expect(resolved.qa.model).toBe('gemini-2.5-flash');
   });
 
   it('defaults a narrative override to the family provider when none is given', () => {

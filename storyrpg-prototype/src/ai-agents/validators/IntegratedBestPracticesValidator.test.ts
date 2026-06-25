@@ -64,6 +64,32 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(stakesIssue?.location?.choiceId).toBe('c-dilemma');
   });
 
+  it('quick validation warns, but does not block, on callback opportunities', async () => {
+    const validator = new IntegratedBestPracticesValidator(agentConfig);
+    const result = await validator.runQuickValidation(baseInput({
+      scenes: [
+        { id: 'scene-1', charactersInvolved: [], beats: [{ id: 'beat-1', text: 'Something happens in the room.', isChoicePoint: true }] },
+      ],
+      choices: [
+        {
+          id: 'callback-choice',
+          text: 'Pocket the card.',
+          choiceType: 'expression',
+          sceneId: 'scene-1',
+          consequences: [{ type: 'setFlag', flag: 'pocketed_card', value: true }],
+          reminderPlan: {
+            immediate: 'The card edge presses into your palm.',
+            shortTerm: 'The card can come back as evidence.',
+          },
+        },
+      ],
+    }));
+
+    expect(result.canProceed).toBe(true);
+    expect(result.blockingIssues).toHaveLength(0);
+    expect(result.warningCount).toBeGreaterThan(0);
+  });
+
   it('reports totalChoices from the real choice inventory, not choice-point beats', async () => {
     // Regression: choiceDensity.totalChoices used to read ChoiceDensity's
     // choiceCount (beats flagged isChoicePoint, ~2), making a 14-choice story

@@ -294,6 +294,140 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.issues).toHaveLength(0);
   });
 
+  it('FAIL: a time-chain treatment beat cannot pass when the Mr. Midnight blog payoff is dropped', () => {
+    const moment = "Kylie lands in Bucharest with two suitcases and her grandmother's address; by night three she's at a rooftop bar with two new friends watching two men watch her; by 1am she's walking home through Cișmigiu; by 1:15 she's pinned to a tree; by 1:16 a man in a charcoal suit asks if she can stand. She writes about him as Mr. Midnight, and the post does 80,000 reads in a week.";
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', moment, 'authored')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', "You land in Bucharest with two suitcases and your grandmother's address."),
+            beat('b2', 'By night three, you are at a rooftop bar with two new friends and two men watching you.'),
+            beat('b3', 'At 1am you walk home through Cișmigiu; by 1:15 you are pinned to a tree.'),
+            beat('b4', 'At 1:16, a man in a charcoal suit asks if you can stand.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues[0]?.message).toContain('Mr. Midnight');
+  });
+
+  it('PASS: a time-chain treatment beat passes once every atom is dramatized', () => {
+    const moment = "Kylie lands in Bucharest with two suitcases and her grandmother's address; by night three she's at a rooftop bar with two new friends watching two men watch her; by 1am she's walking home through Cișmigiu; by 1:15 she's pinned to a tree; by 1:16 a man in a charcoal suit asks if she can stand. She writes about him as Mr. Midnight, and the post does 80,000 reads in a week.";
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, { requiredBeats: [requiredBeat('rb1', moment, 'authored')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-1', [
+            beat('b1', "You land in Bucharest with two suitcases and your grandmother's address."),
+            beat('b2', 'By night three, you are at a rooftop bar with two new friends and two men watching you.'),
+            beat('b3', 'At 1am you walk through Cișmigiu; by 1:15 you are pinned to a tree.'),
+            beat('b4', 'At 1:16, a man in a charcoal suit asks if you can stand.'),
+            beat('b5', 'You write about him as Mr. Midnight, and within a week the post does 80,000 reads.'),
+          ]),
+        ]),
+      ]),
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('FAIL: split park-rescue action atoms cannot pass when the threshold tail is truncated', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-4', 1, {
+          requiredBeats: [
+            requiredBeat('park-action-1', 'Walking home through Cișmigiu at 1am, Kylie is pinned to a willow by a shadow', 'authored'),
+            requiredBeat('park-action-2', 'a second figure in a charcoal suit drops the attacker', 'authored'),
+            requiredBeat('park-action-3', 'a second figure in a charcoal suit walks her home', 'authored'),
+            requiredBeat('park-action-4', 'a second figure in a charcoal suit kisses her hand at the threshold', 'authored'),
+            requiredBeat('park-action-5', 'a second figure in a charcoal suit declines to come in', 'authored'),
+            requiredBeat('park-action-6', 'a second figure in a charcoal suit vanishes.', 'authored'),
+          ],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-4', [
+            beat('b1', "By 1 AM, you're walking home through Cișmigiu."),
+            beat('b2', 'Before you can draw breath to scream, a hand closes on your throat.'),
+            beat('b3', "You're slammed back against the rough bark of a weeping willow, pinned."),
+            beat('b4', 'A man in a perfectly tailored charcoal suit emerges from the mist. In one fluid, impossible motion, he drops the attacker.'),
+            beat('b5', 'The man does not spare your attacker a glance. His dark eyes find yours. He extends a hand. "Can you stand?"'),
+          ]),
+        ]),
+      ]),
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.location)).toEqual([
+      'requiredBeat:ep1:s1-4:park-action-3',
+      'requiredBeat:ep1:s1-4:park-action-4',
+      'requiredBeat:ep1:s1-4:park-action-5',
+      'requiredBeat:ep1:s1-4:park-action-6',
+    ]);
+  });
+
+  it('PASS: split park-rescue action atoms pass when the home, threshold, refusal, and vanish actions land', () => {
+    const result = run({
+      plan: plan([
+        plannedScene('s1-4', 1, {
+          requiredBeats: [
+            requiredBeat('park-action-3', 'a second figure in a charcoal suit walks her home', 'authored'),
+            requiredBeat('park-action-4', 'a second figure in a charcoal suit kisses her hand at the threshold', 'authored'),
+            requiredBeat('park-action-5', 'a second figure in a charcoal suit declines to come in', 'authored'),
+            requiredBeat('park-action-6', 'a second figure in a charcoal suit vanishes.', 'authored'),
+          ],
+        }),
+      ]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-4', [
+            beat('b1', 'Victor walks you home through the thinning fog, one gloved hand hovering near your elbow without quite touching.'),
+            beat('b2', 'At your threshold, he kisses your knuckles as if the doorway is a chapel rail.'),
+            beat('b3', 'When you ask him inside, he refuses to cross the threshold.'),
+            beat('b4', 'You blink once, and he vanishes into the mist before the latch clicks shut.'),
+          ]),
+        ]),
+      ]),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('FAIL: a short quoted treatment line cannot pass on loose token overlap alone', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-2', 1, { requiredBeats: [requiredBeat('quote-stela', '"this one wants to be with you, love"', 'authored')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-2', [
+            beat('b1', "'This one,' Stela says, placing the warm quartz in your hand, 'has been waiting for you.'"),
+          ]),
+        ]),
+      ]),
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues[0]?.location).toBe('requiredBeat:ep1:s1-2:quote-stela');
+  });
+
+  it('PASS: a short quoted treatment line passes when the authored line lands verbatim', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-2', 1, { requiredBeats: [requiredBeat('quote-stela', '"this one wants to be with you, love"', 'authored')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-2', [
+            beat('b1', "'This one wants to be with you, love,' Stela says, closing your fingers around the rose quartz."),
+          ]),
+        ]),
+      ]),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
   it('valid when the plan carries no authored standard beats', () => {
     const result = run({
       plan: plan([plannedScene('s1-1', 1, {})]),

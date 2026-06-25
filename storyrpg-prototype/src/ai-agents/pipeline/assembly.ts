@@ -33,6 +33,7 @@ import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
 import { convertEncounterStructureToEncounter } from '../converters';
+import { encounterInfoMarkerTargets, emitSceneInfoMarkersOnBeats } from './episodePlantContext';
 import { assembleChoiceForStory, isSafeChoiceAttachmentBeat, reconcileChoiceSetBeatIds } from './choiceAssembly';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { sceneTimelineMetaForScene } from '../utils/sceneTimeline';
@@ -128,6 +129,9 @@ export class Assembly {
       const encounter = encounterStructure
         ? convertEncounterStructureToEncounter(encounterStructure, sceneBlueprint)
         : undefined;
+      if (encounter) {
+        emitSceneInfoMarkersOnBeats(sceneBlueprint, encounterInfoMarkerTargets(encounter as any));
+      }
 
       // Map encounter images to the encounter structure (including recursive nextSituation trees)
       if (encounter && sceneEncounterImages) {
@@ -391,6 +395,9 @@ export class Assembly {
         encounter = encounterStructure
           ? convertEncounterStructureToEncounter(encounterStructure, sb)
           : undefined;
+        if (encounter) {
+          emitSceneInfoMarkersOnBeats(sb, encounterInfoMarkerTargets(encounter as any));
+        }
       } catch (convError) {
         const convMsg = convError instanceof Error ? convError.message : String(convError);
         console.error(`[Pipeline] Failed to convert encounter for scene ${sb.id} (non-fatal): ${convMsg}`);

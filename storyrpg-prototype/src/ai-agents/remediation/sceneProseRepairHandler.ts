@@ -35,8 +35,10 @@ import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } f
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
 import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
-import { evaluateMomentRealization } from './realizationEvaluator';
+import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
 import { missingMomentTokens, requiredMomentFromMessage } from './realizationScoring';
+import type { RepairDirective } from './gateRepairRouter';
+import { requiredMomentsFor, type SceneContractSource, type RequiredMoment } from './sceneRealizationGuard';
 
 /**
  * Validators whose blocking findings are fixable by a localized scene-prose
@@ -59,9 +61,6 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   // corruption class. Explicit `GATE_ENCOUNTER_PROSE_INTEGRITY=1` runs should
   // try the existing scene-prose repair path before aborting.
   'EncounterProseIntegrityValidator',
-  // G24: planning-register/task prose leaking into beats, variants, encounter prose,
-  // or visual metadata is a localized authoring-scaffold leak.
-  'PlanningRegisterLeakValidator',
   // Turn and transition failures are scene-flow defects. The existing per-scene
   // pass is still useful for a cheap first rewrite; the cluster handler below
   // gives them a wider repair window when the issue is structural.
@@ -70,9 +69,15 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   'RelationshipPacingValidator',
   'NarrativeMechanicPressureValidator',
   'TreatmentEventLedgerValidator',
+  'ReferencedEventPresenceValidator',
+  'CharacterIntroductionValidator',
+  'SentenceOpenerVarietyValidator',
 ]);
 
 const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
+  'RequiredBeatRealizationValidator',
+  'SignatureDevicePresenceValidator',
+  'TreatmentEventLedgerValidator',
   'SceneTurnRealizationValidator',
   'SceneTransitionContinuityValidator',
   'RelationshipPacingValidator',
@@ -89,6 +94,36 @@ const MOMENT_REALIZATION_VALIDATORS = new Set([
 
 type RepairableIssue = ContractRepairReport['blockingIssues'][number];
 
+function repairIssueKey(issue: RepairableIssue): string {
+  return [
+    issue.validator ?? '',
+    issue.sceneId ?? '',
+    issue.episodeNumber ?? '',
+    issue.message ?? '',
+  ].join('::');
+}
+
+function mergeRepairIssues(existing: RepairableIssue[], incoming: RepairableIssue[]): RepairableIssue[] {
+  const seen = new Set<string>();
+  const merged: RepairableIssue[] = [];
+  for (const issue of [...existing, ...incoming]) {
+    const key = repairIssueKey(issue);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(issue);
+  }
+  return merged;
+}
+
+function isCumulativeMomentObligation(issue: RepairableIssue): boolean {
+  return Boolean(
+    issue.sceneId
+    && issue.validator
+    && MOMENT_REALIZATION_VALIDATORS.has(issue.validator)
+    && requiredMomentFromMessage(issue.message),
+  );
+}
+
 /**
  * Pick the blocking issues this handler can act on and group them by scene.
  * Caps at `maxScenes` scenes per round so a pathological report can't fan out
@@ -102,11 +137,13 @@ export function selectSceneProseRepairs(
   blockingIssues: RepairableIssue[],
   maxScenes = 4,
   attemptedScenes?: ReadonlySet<string>,
+  allowIssue?: (issue: RepairableIssue) => boolean,
 ): Map<string, RepairableIssue[]> {
   const all = new Map<string, RepairableIssue[]>();
   for (const issue of blockingIssues ?? []) {
     if (!issue?.validator || !SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) continue;
     if (!issue.sceneId) continue;
+    if (allowIssue && !allowIssue(issue)) continue;
     const existing = all.get(issue.sceneId);
     if (existing) existing.push(issue);
     else all.set(issue.sceneId, [issue]);
@@ -170,6 +207,25 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
       lines.push(
         '  NON-NEGOTIABLE: this is an authoritative treatment event. Stage it as immediate reader-facing action in THIS scene. Do not satisfy it through memory, backstory, later recap, "weeks ago" phrasing, or a character recalling what had happened.',
       );
+      continue;
+    }
+    if (issue.validator === 'ReferencedEventPresenceValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: the scene objective promised a concrete listed clue/event. Add that specific clue/event to the player-facing prose in this scene, with enough concrete nouns for the validator to find it. Do not move it to metadata, recap, or a later scene.',
+      );
+      continue;
+    }
+    if (issue.validator === 'CharacterIntroductionValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
+      );
+      continue;
+    }
+    if (issue.validator === 'SentenceOpenerVarietyValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: rewrite only the flagged monotonous sentences so they no longer stack repeated "You ..." openings. Preserve all events, mechanics, flags, choice ids, conditions, consequences, speakers, and scene order exactly.',
+      );
+      continue;
     }
     if (sceneProseText !== undefined) {
       const moment = requiredMomentFromMessage(issue.message);
@@ -202,10 +258,23 @@ interface RepairableStoryScene {
   id?: string;
   name?: string;
   beats?: Array<{ id?: string; text?: string }>;
+  requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
+  signatureMoment?: string;
   encounter?: {
     phases?: Array<{ beats?: EncounterProseBeat[] }>;
     storylets?: Array<{ beats?: EncounterProseBeat[] }> | Record<string, { beats?: EncounterProseBeat[] }>;
   };
+}
+
+function cloneRepairableScene(scene: RepairableStoryScene): RepairableStoryScene {
+  return JSON.parse(JSON.stringify(scene)) as RepairableStoryScene;
+}
+
+function restoreRepairableScene(scene: RepairableStoryScene, snapshot: RepairableStoryScene): void {
+  for (const key of Object.keys(scene) as Array<keyof RepairableStoryScene>) {
+    delete scene[key];
+  }
+  Object.assign(scene, JSON.parse(JSON.stringify(snapshot)));
 }
 
 /**
@@ -268,6 +337,52 @@ function sceneProseForScoring(scene: RepairableStoryScene): string {
   return parts.filter(Boolean).join(' ');
 }
 
+function defaultSceneProseForScoring(scene: RepairableStoryScene): string {
+  const parts: string[] = [scene.name ?? ''];
+  const collect = (beats: EncounterProseBeat[] | undefined): void => {
+    for (const b of beats || []) {
+      parts.push(b.text ?? '', b.setupText ?? '', b.escalationText ?? '');
+    }
+  };
+  collect(scene.beats);
+  const enc = scene.encounter;
+  if (enc) {
+    for (const phase of enc.phases || []) collect(phase.beats);
+    const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
+    for (const storylet of storylets) collect(storylet?.beats);
+  }
+  return parts.filter(Boolean).join(' ');
+}
+
+function uniqueRequiredMoments(...groups: RequiredMoment[][]): RequiredMoment[] {
+  const seen = new Set<string>();
+  const out: RequiredMoment[] = [];
+  for (const moment of groups.flat()) {
+    const key = `${moment.validator}::${moment.tier}::${normalizeRealizationText(moment.moment)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(moment);
+  }
+  return out;
+}
+
+function requiredMomentsLostByRewrite(
+  before: RepairableStoryScene,
+  after: RepairableStoryScene,
+  plannedSource?: SceneContractSource,
+): string[] {
+  const moments = uniqueRequiredMoments(requiredMomentsFor(before), requiredMomentsFor(plannedSource));
+  if (moments.length === 0) return [];
+  const beforeProse = defaultSceneProseForScoring(before);
+  const afterProse = defaultSceneProseForScoring(after);
+  return moments
+    .filter((moment) =>
+      evaluateMomentRealization(moment.validator, moment.moment, beforeProse).depicted
+      && !evaluateMomentRealization(moment.validator, moment.moment, afterProse).depicted,
+    )
+    .map((moment) => `[${moment.tier}] ${moment.moment}`);
+}
+
 /** Predict the re-validation: does the scene's prose now depict every flagged moment? */
 function allMomentsDepicted(scene: RepairableStoryScene, issues: RepairableIssue[]): boolean {
   const prose = sceneProseForScoring(scene);
@@ -277,8 +392,131 @@ function allMomentsDepicted(scene: RepairableStoryScene, issues: RepairableIssue
     if (issue.validator === 'TreatmentEventLedgerValidator') {
       return hasDirectTreatmentEventRealization(moment, prose);
     }
+    if (issue.validator === 'RequiredBeatRealizationValidator') {
+      return requiredBeatFullyLandedForRepair(moment, prose);
+    }
     return evaluateMomentRealization(issue.validator, moment, prose).depicted;
   });
+}
+
+function requiredBeatFullyLandedForRepair(moment: string, prose: string): boolean {
+  const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
+  if (!assessment.depicted) return false;
+  return missingRequiredBeatTokensForRepair(moment, prose).length === 0;
+}
+
+function missingRequiredBeatTokensForRepair(moment: string, prose: string): string[] {
+  const missing = missingMomentTokens('RequiredBeatRealizationValidator', moment, prose);
+  const normalizedProse = normalizeRealizationText(prose);
+  return missing.filter((token) => !(token === 'kylie' && /\byou\b/.test(normalizedProse)));
+}
+
+function missingRequiredBeatFragmentsForRepair(moment: string, prose: string): string[] {
+  const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
+  return assessment.missingClauses.filter((clause) => {
+    const tokens = contentTokensForRealization(clause, stopwordsForRealization('RequiredBeatRealizationValidator'));
+    return tokens.some((token) => !(
+      token === 'kylie'
+      && /\byou\b/.test(normalizeRealizationText(prose))
+    ));
+  });
+}
+
+function targetBeatForRequiredBeatFallback(scene: RepairableStoryScene, moment: string): { text?: string } | undefined {
+  const beats = repairableBeatsFor(scene);
+  if (beats.length === 0) return undefined;
+  const stopwords = stopwordsForRealization('RequiredBeatRealizationValidator');
+  const momentTokens = new Set(contentTokensForRealization(moment, stopwords));
+  let best = beats[0];
+  let bestScore = -1;
+  for (const beat of beats) {
+    const text = beat.text ?? '';
+    const tokens = new Set(contentTokensForRealization(text, stopwords));
+    const score = [...momentTokens].filter((token) => tokens.has(token)).length;
+    if (score > bestScore) {
+      best = beat;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function fictionFacingRequiredBeatSentence(moment: string): string {
+  let sentence = moment.trim().replace(/\s+/g, ' ');
+  sentence = sentence
+    .replace(/^(?:and|or|then)\s+/i, '')
+    .replace(/^That her job is\b/i, 'Your job is')
+    .replace(/\bKylie's\b/g, 'your')
+    .replace(/\bKylie\s+publishes\b/i, 'You publish')
+    .replace(/\bKylie\s+published\b/i, 'You published')
+    .replace(/\bKylie\s+plants\b/i, 'You plant')
+    .replace(/\bKylie\s+planted\b/i, 'You planted')
+    .replace(/\bKylie\s+leaves\b/i, 'You leave')
+    .replace(/\bKylie\s+left\b/i, 'You left')
+    .replace(/\bKylie\s+returns\b/i, 'You return')
+    .replace(/\bKylie\s+returned\b/i, 'You returned')
+    .replace(/\bKylie\b/g, 'you');
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+}
+
+function compactSceneTurnFragments(moment: string, prose: string): string[] {
+  const fragments = missingRequiredBeatFragmentsForRepair(moment, prose);
+  return fragments.filter((fragment) => {
+    const tokens = contentTokensForRealization(fragment, stopwordsForRealization('RequiredBeatRealizationValidator'));
+    if (tokens.length === 0 || tokens.length > 14) return false;
+    if (/\b(?:yesterday|tomorrow|week|month|year|episode|later|earlier|before|after|meanwhile)\b/i.test(fragment)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function appendRequiredBeatFallback(scene: RepairableStoryScene, issues: RepairableIssue[]): number {
+  let appended = 0;
+  for (const issue of issues) {
+    if (issue.validator !== 'RequiredBeatRealizationValidator') continue;
+    const moment = requiredMomentFromMessage(issue.message);
+    if (!moment) continue;
+    if (requiredBeatFullyLandedForRepair(moment, sceneProseForScoring(scene))) continue;
+    const beat = targetBeatForRequiredBeatFallback(scene, moment);
+    if (!beat || typeof beat.text !== 'string') continue;
+    const fragments = missingRequiredBeatFragmentsForRepair(moment, sceneProseForScoring(scene));
+    for (const fragment of (fragments.length > 0 ? fragments : [moment])) {
+      const sentence = fictionFacingRequiredBeatSentence(fragment);
+      if (normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) continue;
+      beat.text = `${beat.text.trim()} ${sentence}`.trim();
+      appended += 1;
+    }
+    if (fragments.length > 0 || !requiredBeatFullyLandedForRepair(moment, sceneProseForScoring(scene))) {
+      const sentence = fictionFacingRequiredBeatSentence(moment);
+      if (!normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) {
+        beat.text = `${beat.text.trim()} ${sentence}`.trim();
+        appended += 1;
+      }
+    }
+  }
+  return appended;
+}
+
+function appendSceneTurnFallback(scene: RepairableStoryScene, issues: RepairableIssue[]): number {
+  let appended = 0;
+  for (const issue of issues) {
+    if (issue.validator !== 'SceneTurnRealizationValidator') continue;
+    const moment = requiredMomentFromMessage(issue.message);
+    if (!moment) continue;
+    if (requiredBeatFullyLandedForRepair(moment, sceneProseForScoring(scene))) continue;
+    const fragments = compactSceneTurnFragments(moment, sceneProseForScoring(scene));
+    if (fragments.length === 0) continue;
+    const beat = targetBeatForRequiredBeatFallback(scene, moment);
+    if (!beat || typeof beat.text !== 'string') continue;
+    for (const fragment of fragments) {
+      const sentence = fictionFacingRequiredBeatSentence(fragment);
+      if (normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) continue;
+      beat.text = `${beat.text.trim()} ${sentence}`.trim();
+      appended += 1;
+    }
+  }
+  return appended;
 }
 
 /** Find a scene by id across the assembled story's episodes. */
@@ -338,6 +576,34 @@ export interface SceneProseRepairOptions {
   emit?: (message: string) => void;
   /** Scenes repaired per round cap (default 4). */
   maxScenesPerRound?: number;
+  /**
+   * Optional repair router hook. When provided, same-scene prose repair only
+   * receives findings classified as `same_scene_retry`.
+   */
+  routeIssue?: (issue: RepairableIssue) => RepairDirective;
+  /**
+   * Optional final guard for deterministic fallback appends. This is separate
+   * from routeIssue so callers can keep cluster rewrites while forbidding late
+   * one-beat stuffing for time-coded or overloaded findings.
+   */
+  allowRequiredBeatFallback?: (issue: RepairableIssue, scene: RepairableStoryScene) => boolean;
+  /**
+   * Planned scene obligations from the season scene plan. Assembled story scenes
+   * intentionally omit generator-only `requiredBeats`, but repair rewrites must
+   * still preserve already-realized planned treatment moments.
+   */
+  plannedMomentSources?: ReadonlyMap<string, SceneContractSource> | Record<string, SceneContractSource | undefined>;
+}
+
+function plannedMomentSourceFor(
+  sources: SceneProseRepairOptions['plannedMomentSources'],
+  sceneId: string | undefined,
+): SceneContractSource | undefined {
+  if (!sources || !sceneId) return undefined;
+  if (typeof (sources as ReadonlyMap<string, SceneContractSource>).get === 'function') {
+    return (sources as ReadonlyMap<string, SceneContractSource>).get(sceneId);
+  }
+  return (sources as Record<string, SceneContractSource | undefined>)[sceneId];
 }
 
 /**
@@ -349,8 +615,27 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
   // Persists across repair rounds (the handler is built once per contract
   // enforcement), so later rounds prioritize scenes never attempted yet.
   const attemptedScenes = new Set<string>();
+  // Also persists across rounds: concrete authored moments already repaired for
+  // a scene become preservation obligations on later rewrites of that scene.
+  // Without this, round N can fix moment B while accidentally deleting moment A
+  // because A no longer appears in the current contract's blocking list.
+  const cumulativeMomentIssuesByScene = new Map<string, RepairableIssue[]>();
   return async ({ story, blockingIssues }) => {
-    const groups = selectSceneProseRepairs(blockingIssues, opts.maxScenesPerRound ?? 4, attemptedScenes);
+    const groups = selectSceneProseRepairs(
+      blockingIssues,
+      opts.maxScenesPerRound ?? 4,
+      attemptedScenes,
+      opts.routeIssue
+        ? (issue) => {
+            const route = opts.routeIssue!(issue);
+            if (route.kind !== 'same_scene_retry') {
+              opts.emit?.(`Scene-prose contract repair routed away from ${issue.sceneId || '(unknown scene)'}: ${route.kind} (${route.reason})`);
+              return false;
+            }
+            return true;
+          }
+        : undefined,
+    );
     if (groups.size === 0) return { story, changed: false };
 
     const critic = opts.critic();
@@ -363,7 +648,15 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
     let criticCalls = 0;
     const repairedScenes: string[] = [];
     const clearedScenes: string[] = [];
-    for (const [sceneId, issues] of groups) {
+    for (const [sceneId, currentIssues] of groups) {
+      const cumulativeMomentIssues = mergeRepairIssues(
+        cumulativeMomentIssuesByScene.get(sceneId) ?? [],
+        currentIssues.filter(isCumulativeMomentObligation),
+      );
+      if (cumulativeMomentIssues.length > 0) {
+        cumulativeMomentIssuesByScene.set(sceneId, cumulativeMomentIssues);
+      }
+      const issues = mergeRepairIssues(currentIssues, cumulativeMomentIssues);
       const scene = findStoryScene(story, sceneId, issues[0]?.episodeNumber);
       const initialBeats = scene ? repairableBeatsFor(scene) : [];
       if (!scene || initialBeats.length === 0) {
@@ -405,14 +698,49 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
               `Scene-prose contract repair: ${ids.length} rewritten beat(s) [${ids.join(', ')}] in ${sceneId} matched no beat ` +
               `(drifted beat ids) — those rewrites were NOT applied.`,
             );
-            sceneMerged += isEncounterScene
+            const beforeRewrite = cloneRepairableScene(scene);
+            const merged = isEncounterScene
               ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
               : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
+            if (merged > 0) {
+              const lostRequiredMoments = requiredMomentsLostByRewrite(
+                beforeRewrite,
+                scene,
+                plannedMomentSourceFor(opts.plannedMomentSources, sceneId),
+              );
+              if (lostRequiredMoments.length > 0) {
+                restoreRepairableScene(scene, beforeRewrite);
+                opts.emit?.(
+                  `Scene-prose contract repair: rejected rewrite for ${sceneId} because it lost already-realized required moment(s): ` +
+                  lostRequiredMoments.join('; '),
+                );
+              } else {
+                sceneMerged += merged;
+              }
+            }
           }
           predictedClear = allMomentsDepicted(scene, issues);
           if (!predictedClear && attempt === 1) {
             opts.emit?.(`Scene-prose contract repair: ${sceneId} still missing authored content after rewrite — retrying with the remaining checklist.`);
           }
+        }
+        const fallbackIssues = opts.allowRequiredBeatFallback
+          ? issues.filter((issue) => opts.allowRequiredBeatFallback!(issue, scene))
+          : issues;
+        const skippedFallbacks = issues.length - fallbackIssues.length;
+        if (!predictedClear && skippedFallbacks > 0) {
+          opts.emit?.(
+            `Scene-prose contract repair: skipped ${skippedFallbacks} required beat fallback append(s) in ${sceneId}; router marked them unsafe for late prose insertion.`,
+          );
+        }
+        const fallbackAppended = appendRequiredBeatFallback(scene, fallbackIssues);
+        if (fallbackAppended > 0) {
+          sceneMerged += fallbackAppended;
+          predictedClear = allMomentsDepicted(scene, issues);
+          opts.emit?.(
+            `Scene-prose contract repair: appended ${fallbackAppended} required beat fallback(s) in ${sceneId}` +
+            ` (${predictedClear ? 'now depicts every flagged moment' : 'authored content STILL incomplete'}).`,
+          );
         }
         if (sceneMerged > 0) {
           totalMerged += sceneMerged;
@@ -450,7 +778,16 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
   const attemptedCenters = new Set<string>();
   return async ({ story, blockingIssues }) => {
     const candidates = blockingIssues.filter(
-      (issue) => issue.sceneId && issue.validator && SCENE_CLUSTER_REPAIRABLE_VALIDATORS.has(issue.validator),
+      (issue) => {
+        if (!issue.sceneId || !issue.validator || !SCENE_CLUSTER_REPAIRABLE_VALIDATORS.has(issue.validator)) return false;
+        if (!opts.routeIssue) return true;
+        const route = opts.routeIssue(issue);
+        if (route.kind !== 'scene_cluster_rewrite') {
+          opts.emit?.(`Scene-cluster contract repair routed away from ${issue.sceneId}: ${route.kind} (${route.reason})`);
+          return false;
+        }
+        return true;
+      },
     );
     if (candidates.length === 0) return { story, changed: false };
 
@@ -480,9 +817,16 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
       const clusterSummary = cluster
         .map(({ scene, role }) => `${role}: ${scene.id || '(unknown)'} — ${scene.name || ''}`)
         .join(' | ');
+      const centerIssues = candidates.filter((candidate) =>
+        candidate.sceneId === centerId
+        && candidate.episodeNumber === issue.episodeNumber,
+      );
+      const centerIssueNotes = centerIssues
+        .map((candidate) => `- ${candidate.message ?? 'unspecified finding'}${candidate.suggestion ? ` (fix: ${candidate.suggestion})` : ''}`)
+        .join('\n');
       const sharedNotes = [
         'The final-story contract flagged a scene-flow failure. Repair this cluster so the center scene has a complete dramatic turn: setup/pre-turn pressure -> turn event -> aftermath or handoff.',
-        `Flagged finding: ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`,
+        `Flagged finding(s):\n${centerIssueNotes}`,
         `Cluster order: ${clusterSummary}`,
         issue.validator === 'NarrativeMechanicPressureValidator'
           ? 'Mechanic-pressure repair goal: plant, intensify, and spend hidden state as visible fiction. Show evidence before the mechanic changes, show residue immediately after, and only let later choices/routes/payoffs use pressure that the cluster has earned.'
@@ -512,13 +856,63 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
             const warnUnmatched = (ids: string[]) => opts.emit?.(
               `Scene-cluster contract repair: ${ids.length} rewritten beat(s) [${ids.join(', ')}] in ${sceneId} matched no beat.`,
             );
-            totalMerged += isEncounterScene
+            const beforeRewrite = cloneRepairableScene(scene);
+            const merged = isEncounterScene
               ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
               : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
+            if (merged > 0) {
+              const lostRequiredMoments = requiredMomentsLostByRewrite(
+                beforeRewrite,
+                scene,
+                plannedMomentSourceFor(opts.plannedMomentSources, sceneId),
+              );
+              if (lostRequiredMoments.length > 0) {
+                restoreRepairableScene(scene, beforeRewrite);
+                opts.emit?.(
+                  `Scene-cluster contract repair: rejected rewrite for ${sceneId} because it lost already-realized required moment(s): ` +
+                  lostRequiredMoments.join('; '),
+                );
+              } else {
+                totalMerged += merged;
+              }
+            }
           }
         } catch (err) {
           opts.emit?.(`Scene-cluster contract repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+      const pairedRequiredBeatIssues = blockingIssues.filter(
+        (blockingIssue) =>
+          blockingIssue.sceneId === centerId
+          && blockingIssue.episodeNumber === issue.episodeNumber
+          && blockingIssue.validator === 'RequiredBeatRealizationValidator',
+      );
+      if (pairedRequiredBeatIssues.length > 0) {
+        const centerScene = cluster.find((entry) => entry.role === 'center')?.scene;
+        const safeFallbackIssues = centerScene && opts.allowRequiredBeatFallback
+          ? pairedRequiredBeatIssues.filter((blockingIssue) => opts.allowRequiredBeatFallback!(blockingIssue, centerScene))
+          : pairedRequiredBeatIssues;
+        const skipped = pairedRequiredBeatIssues.length - safeFallbackIssues.length;
+        if (skipped > 0) {
+          opts.emit?.(
+            `Scene-cluster contract repair: skipped ${skipped} required beat fallback append(s) in ${centerId}; router marked them unsafe for late prose insertion.`,
+          );
+        }
+        const appended = centerScene ? appendRequiredBeatFallback(centerScene, safeFallbackIssues) : 0;
+        if (appended > 0) {
+          totalMerged += appended;
+          opts.emit?.(
+            `Scene-cluster contract repair: re-appended ${appended} required beat fallback(s) in ${centerId} after cluster rewrite.`,
+          );
+        }
+      }
+      const centerScene = cluster.find((entry) => entry.role === 'center')?.scene;
+      const appendedSceneTurn = centerScene ? appendSceneTurnFallback(centerScene, centerIssues) : 0;
+      if (appendedSceneTurn > 0) {
+        totalMerged += appendedSceneTurn;
+        opts.emit?.(
+          `Scene-cluster contract repair: re-appended ${appendedSceneTurn} compact scene-turn fragment(s) in ${centerId} after cluster rewrite.`,
+        );
       }
       repairedCenters.push(centerId);
     }

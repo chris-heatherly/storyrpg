@@ -52,128 +52,17 @@ import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/sc
 import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
+import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { concreteSeedDepicted } from '../utils/concreteSeedRealization';
-
-/** Stopwords stripped before keyword overlap (mirrors SignatureDevicePresenceValidator). */
-const STOPWORDS = new Set([
-  'about', 'after', 'again', 'against', 'also', 'and', 'because', 'become', 'before', 'being', 'between',
-  'choice', 'chooses', 'could', 'during', 'episode', 'every', 'from', 'have', 'into', 'keeps', 'later',
-  'leave', 'leaves', 'major', 'make', 'makes', 'must', 'opens', 'paths', 'player', 'pressure', 'scene',
-  'should', 'that', 'their', 'them', 'then', 'there', 'this', 'through', 'when', 'where', 'with', 'without',
-  'staged', 'moment', 'beat', 'depict', 'depicts', 'show', 'shows',
-]);
-
-/** Minimum content-word overlap for a required beat to count as "depicted". */
-const PRESENCE_MIN_SCORE = 0.5;
-
-function normalize(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** Content tokens (≥4 chars, not a stopword) used for keyword overlap. */
-function contentTokens(value: string | undefined): string[] {
-  if (!value) return [];
-  return normalize(value)
-    .split(' ')
-    .filter((token) => token.length >= 4 && !STOPWORDS.has(token));
-}
-
-/** A needle token is present if a haystack token matches exactly or via a shared stem. */
-function tokenPresent(token: string, hayTokens: string[], haySet: Set<string>): boolean {
-  if (haySet.has(token)) return true;
-  for (const h of hayTokens) {
-    if (h.startsWith(token) || token.startsWith(h)) return true;
-  }
-  return false;
-}
-
-function overlapScore(needle: string, haystack: string): number {
-  const needed = [...new Set(contentTokens(needle))];
-  if (needed.length === 0) return 1; // nothing concrete to assert → trivially present
-  const hayTokens = [...new Set(contentTokens(haystack))];
-  const haySet = new Set(hayTokens);
-  const hits = needed.filter((token) => tokenPresent(token, hayTokens, haySet)).length;
-  return hits / needed.length;
-}
-
-function splitCompoundClauses(mustDepict: string): string[] {
-  const colonList = /:\s*([\s\S]+)$/.exec(mustDepict)?.[1];
-  const commaCount = (mustDepict.match(/,/g) || []).length;
-  const listSource = colonList || (commaCount >= 2 && /\b(?:and|or)\b/i.test(mustDepict) ? mustDepict : '');
-  if (!listSource) return [];
-
-  const clauses = listSource
-    .split(/\s*(?:;|,|\band\b)\s*/i)
-    .map((clause) => clause
-      .replace(/^\s*(?:and|or|including|include|includes|collects?|shows?|depicts?)\s+/i, '')
-      .replace(/^[\s:—-]+|[\s.]+$/g, '')
-      .trim())
-    .filter((clause) => contentTokens(clause).length >= 2);
-
-  return clauses.length >= 3 ? clauses : [];
-}
-
-function compoundBeatDepicted(mustDepict: string, prose: string): boolean | undefined {
-  const clauses = splitCompoundClauses(mustDepict);
-  if (clauses.length === 0) return undefined;
-  return clauses.every((clause) => normalize(prose).includes(normalize(clause)) || overlapScore(clause, prose) >= PRESENCE_MIN_SCORE);
-}
-
-/**
- * Treatments mark a beat's load-bearing entities with markdown emphasis — the
- * bite-me three-dates beat is *"Three terrible dates fail in a row — *The Lawyer*,
- * *The Founder*, *The Filmmaker* — each one fed straight into the blog…"*. Such a
- * beat is a CONJUNCTION of named sub-events; whole-beat token overlap dilutes the
- * named entities with connective summary words ("terrible", "fail", "straight",
- * "group", "reacts") that legitimately never appear in dramatized prose, so it
- * scores below threshold and false-flags a fully-dramatized scene (bite-me-g13
- * s2-1). Returns the emphasized spans only when there are ≥2 of them (a single
- * emphasis is not an enumeration and gets no free pass).
- */
-function emphasizedSpans(mustDepict: string): string[] {
-  const spans = [...mustDepict.matchAll(/\*+([^*]+?)\*+/g)]
-    .map((m) => m[1].trim())
-    .filter((s) => s.length > 0);
-  return spans.length >= 2 ? spans : [];
-}
-
-/** A single emphasized span is depicted if its content words all appear in prose. */
-function spanPresent(span: string, prose: string): boolean {
-  if (normalize(prose).includes(normalize(span))) return true;
-  return overlapScore(span, prose) >= 1; // every content token of the named entity present
-}
 
 /** Verbatim substring (normalized) OR sufficient content-word overlap. */
 function beatDepicted(mustDepict: string, prose: string): boolean {
-  const normalizedBeat = normalize(mustDepict);
-  if (normalizedBeat.length === 0) return true;
-  const concreteDepicted = concreteSeedDepicted(normalizedBeat, prose);
-  if (typeof concreteDepicted === 'boolean') return concreteDepicted;
-  if (normalize(prose).includes(normalizedBeat)) return true;
-  const compoundDepicted = compoundBeatDepicted(mustDepict, prose);
-  if (typeof compoundDepicted === 'boolean') return compoundDepicted;
-  if (overlapScore(mustDepict, prose) >= PRESENCE_MIN_SCORE) return true;
-  // Enumeration credit: a beat that emphasizes ≥2 named entities is depicted when
-  // ALL of them land on-page. This is strictly additive (it can only mark MORE
-  // beats depicted) and is scoped to emphasis-bearing beats, so it cannot reopen
-  // the G10 partial-drop hole — that miss (Endsong s1-6, "…reaches for Lysandra,
-  // declares her blood the key… before withdrawing wounded") carries NO markdown
-  // emphasis and is unaffected. The LLM judge remains the backstop for the
-  // non-enumeration paraphrase case.
-  const spans = emphasizedSpans(mustDepict);
-  if (spans.length >= 2 && spans.every((span) => spanPresent(span, prose))) return true;
-  return false;
+  return evaluateMomentRealization('RequiredBeatRealizationValidator', mustDepict, prose).depicted;
 }
 
 function seedDepicted(mustDepict: string, prose: string): boolean {
-  const needle = normalize(mustDepict);
-  const hay = normalize(prose);
+  const needle = normalizeRealizationText(mustDepict);
+  const hay = normalizeRealizationText(prose);
   const concreteDepicted = concreteSeedDepicted(needle, prose);
   if (typeof concreteDepicted === 'boolean') return concreteDepicted;
   if (beatDepicted(mustDepict, prose)) return true;
@@ -200,7 +89,7 @@ function isAbstractSeedLabel(mustDepict: string): boolean {
 }
 
 function isKnownConcreteSeedLabel(mustDepict: string): boolean {
-  const needle = normalize(mustDepict);
+  const needle = normalizeRealizationText(mustDepict);
   return needle === 'season central pressure';
 }
 
@@ -278,14 +167,14 @@ function collectStandardBeats(plan: SeasonScenePlan, tier: RequiredBeat['tier'])
       if (tier === 'seed' && isAbstractSeedLabel(mustDepict)) {
         const hasConcreteSource = Boolean(
           sourceTurn
-          && normalize(sourceTurn) !== normalize(mustDepict)
+          && normalizeRealizationText(sourceTurn) !== normalizeRealizationText(mustDepict)
           && !isAbstractSeedLabel(sourceTurn),
         );
         if (hasConcreteSource) text = sourceTurn as string;
         else if (!isKnownConcreteSeedLabel(mustDepict)) continue;
       }
       if (tier === 'seed' && isChoiceContingentSeed(text)) continue;
-      const key = `${scene.id}::${normalize(text)}`;
+      const key = `${scene.id}::${normalizeRealizationText(text)}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({ episodeNumber: scene.episodeNumber, sceneId: scene.id, beatId: beat.id, text });

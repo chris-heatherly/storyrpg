@@ -5,6 +5,8 @@ const stringArray = {
   items: { type: 'string' },
 } as const;
 
+const shortString = (maxLength: number) => ({ type: 'string', maxLength }) as const;
+
 const clock = {
   type: 'object',
   additionalProperties: false,
@@ -221,10 +223,19 @@ const storyletBeat = {
   additionalProperties: false,
   required: ['id', 'text'],
   properties: {
-    id: { type: 'string' },
-    text: { type: 'string' },
-    nextBeatId: { type: 'string' },
+    id: shortString(120),
+    text: shortString(420),
+    nextBeatId: shortString(120),
     isTerminal: { type: 'boolean' },
+  },
+} as const;
+
+const leanStoryletBeat = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['text'],
+  properties: {
+    text: shortString(420),
   },
 } as const;
 
@@ -232,11 +243,11 @@ const encounterCost = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    domain: { type: 'string' },
-    severity: { type: 'string' },
-    whoPays: { type: 'string' },
-    immediateEffect: { type: 'string' },
-    visibleComplication: { type: 'string' },
+    domain: shortString(80),
+    severity: shortString(80),
+    whoPays: shortString(120),
+    immediateEffect: shortString(260),
+    visibleComplication: shortString(260),
   },
 } as const;
 
@@ -245,17 +256,17 @@ const storylet = {
   additionalProperties: false,
   required: ['id', 'name', 'triggerOutcome', 'tone', 'narrativeFunction', 'beats', 'startingBeatId', 'consequences'],
   properties: {
-    id: { type: 'string' },
-    name: { type: 'string' },
-    triggerOutcome: { type: 'string' },
-    tone: { type: 'string' },
-    narrativeFunction: { type: 'string' },
+    id: shortString(120),
+    name: shortString(80),
+    triggerOutcome: shortString(40),
+    tone: shortString(80),
+    narrativeFunction: shortString(260),
     beats: {
       type: 'array',
       maxItems: 3,
       items: storyletBeat,
     },
-    startingBeatId: { type: 'string' },
+    startingBeatId: shortString(120),
     consequences: {
       type: 'array',
       maxItems: 2,
@@ -263,13 +274,13 @@ const storylet = {
         type: 'object',
         additionalProperties: false,
         properties: {
-          type: { type: 'string' },
-          flag: { type: 'string' },
-          name: { type: 'string' },
-          score: { type: 'string' },
-          value: { type: 'string' },
+          type: shortString(80),
+          flag: shortString(120),
+          name: shortString(120),
+          score: shortString(120),
+          value: shortString(180),
           change: { type: 'number' },
-          description: { type: 'string' },
+          description: shortString(240),
         },
       },
     },
@@ -280,33 +291,50 @@ const storylet = {
         additionalProperties: false,
         required: ['flag', 'value'],
         properties: {
-          flag: { type: 'string' },
+          flag: shortString(120),
           value: { type: 'boolean' },
         },
       },
     },
     cost: encounterCost,
-    nextSceneId: { type: 'string' },
+    nextSceneId: shortString(120),
   },
 } as const;
+
+const leanStorylet = (requireCost = false) => ({
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'beats',
+    ...(requireCost ? ['cost'] : []),
+  ],
+  properties: {
+    beats: {
+      type: 'array',
+      maxItems: 3,
+      items: leanStoryletBeat,
+    },
+    cost: encounterCost,
+  },
+}) as const;
 
 const compactStorylet = {
   type: 'object',
   additionalProperties: false,
   required: ['id', 'name', 'triggerOutcome', 'tone', 'narrativeFunction', 'beats', 'startingBeatId'],
   properties: {
-    id: { type: 'string' },
-    name: { type: 'string' },
-    triggerOutcome: { type: 'string' },
-    tone: { type: 'string' },
-    narrativeFunction: { type: 'string' },
+    id: shortString(120),
+    name: shortString(80),
+    triggerOutcome: shortString(40),
+    tone: shortString(80),
+    narrativeFunction: shortString(260),
     beats: {
       type: 'array',
       maxItems: 3,
       items: storyletBeat,
     },
-    startingBeatId: { type: 'string' },
-    nextSceneId: { type: 'string' },
+    startingBeatId: shortString(120),
+    nextSceneId: shortString(120),
   },
 } as const;
 
@@ -400,6 +428,74 @@ export function buildEncounterPhase1JsonSchema(): StructuredJsonSchema {
   };
 }
 
+export function buildEncounterPhase1CompactJsonSchema(): StructuredJsonSchema {
+  const compactPhase1Outcome = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['narrativeText', 'goalTicks', 'threatTicks'],
+    properties: {
+      narrativeText: shortString(260),
+      goalTicks: { type: 'number' },
+      threatTicks: { type: 'number' },
+    },
+  } as const;
+  const compactPhase1Choice = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'text', 'approach', 'primarySkill', 'outcomes'],
+    properties: {
+      id: shortString(40),
+      text: shortString(80),
+      approach: shortString(40),
+      primarySkill: shortString(80),
+      impliedApproach: shortString(40),
+      consequenceDomain: shortString(40),
+      outcomes: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['success', 'complicated', 'failure'],
+        properties: {
+          success: compactPhase1Outcome,
+          complicated: compactPhase1Outcome,
+          failure: compactPhase1Outcome,
+        },
+      },
+    },
+  } as const;
+
+  return {
+    name: 'encounter_phase_1_compact',
+    description: 'Compact encounter opening beat retry after Gemini budget/safety failures.',
+    maxOutputTokens: 4096,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['sceneId', 'encounterType', 'goalClock', 'threatClock', 'stakes', 'openingBeat'],
+      properties: {
+        sceneId: shortString(120),
+        encounterType: shortString(60),
+        goalClock: clock,
+        threatClock: clock,
+        stakes,
+        openingBeat: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['setupText', 'choices'],
+          properties: {
+            setupText: shortString(360),
+            choices: {
+              type: 'array',
+              minItems: 3,
+              maxItems: 3,
+              items: compactPhase1Choice,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 export function buildEncounterPhase2JsonSchema(): StructuredJsonSchema {
   return {
     name: 'encounter_phase_2',
@@ -476,7 +572,7 @@ export function buildEncounterPhase4JsonSchema(): StructuredJsonSchema {
   return {
     name: 'encounter_phase_4',
     description: 'Encounter aftermath storylets.',
-    maxOutputTokens: 12000,
+    maxOutputTokens: 16384,
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -488,5 +584,24 @@ export function buildEncounterPhase4JsonSchema(): StructuredJsonSchema {
         escape: storylet,
       },
     },
+  };
+}
+
+export function buildEncounterStoryletJsonSchema(slotName = 'storylet'): StructuredJsonSchema {
+  return {
+    name: `encounter_phase_4_${slotName}`,
+    description: `Encounter aftermath storylet for ${slotName}.`,
+    maxOutputTokens: 16384,
+    schema: storylet,
+  };
+}
+
+export function buildEncounterStoryletDraftJsonSchema(slotName = 'storylet'): StructuredJsonSchema {
+  const requireCost = slotName === 'partialVictory';
+  return {
+    name: `encounter_phase_4_${slotName}_draft`,
+    description: `Compact authored aftermath prose draft for ${slotName}.`,
+    maxOutputTokens: 4096,
+    schema: leanStorylet(requireCost),
   };
 }

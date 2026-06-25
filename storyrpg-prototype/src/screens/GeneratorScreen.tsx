@@ -1833,7 +1833,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           if (worker.result.seasonPlan) {
             setSeasonPlan(worker.result.seasonPlan);
             await seasonPlanStore.savePlan(worker.result.seasonPlan, normalizedAnalysis);
-            setSelectedEpisodes([1]);
+            setSelectedEpisodes(Array.from({ length: episodeCount }, (_, idx) => idx + 1));
           } else if (worker.result.seasonPlanError) {
             handleEvent({
               type: 'warning',
@@ -1928,7 +1928,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         if (analysisResponse.seasonPlan) {
           setSeasonPlan(analysisResponse.seasonPlan);
           await seasonPlanStore.savePlan(analysisResponse.seasonPlan, normalizedAnalysis);
-          setSelectedEpisodes([1]);
+          setSelectedEpisodes(Array.from({ length: episodeCount }, (_, idx) => idx + 1));
           const encounterCount = analysisResponse.seasonPlan.encounterPlan?.totalEncounters || 0;
           const branchCount = analysisResponse.seasonPlan.crossEpisodeBranches?.length || 0;
           handleEvent({

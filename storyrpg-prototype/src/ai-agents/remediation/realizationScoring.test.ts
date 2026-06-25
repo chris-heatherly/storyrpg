@@ -49,6 +49,16 @@ describe('requiredMomentFromMessage', () => {
     expect(requiredMomentFromMessage(msg)).toBe(moment);
   });
 
+  it('extracts the final quoted authored moment from compact required-beat findings', () => {
+    const msg = 'Authored required beat is missing from scene "s2-1": "this one wants to be with you, love".';
+    expect(requiredMomentFromMessage(msg)).toBe('this one wants to be with you, love');
+  });
+
+  it('ignores quoted scene ids when falling back to the final quoted span', () => {
+    const msg = 'Authored required beat is missing from scene "treatment-enc-1-1": "The attacker speaks before the rescue."';
+    expect(requiredMomentFromMessage(msg)).toBe('The attacker speaks before the rescue.');
+  });
+
   it('returns undefined for non-realization messages', () => {
     expect(requiredMomentFromMessage('Witness npc id "None" is invalid.')).toBeUndefined();
     expect(requiredMomentFromMessage(undefined)).toBeUndefined();
@@ -107,6 +117,36 @@ describe('momentDepicted (mirror of the validators’ presence check)', () => {
     expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
   });
 
+  it('credits compact quoted dialogue when the exact words are split by punctuation and casing', () => {
+    const moment = '"this one wants to be with you, love"';
+    const prose = "Stela presses the quartz into your palm. 'This one,' she says softly. 'It wants to be with you, love.'";
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
+  it('does not count shoe teasing or a shoebox as an authored shoe swap', () => {
+    const moment = 'Mika swaps out her "American shoes,"';
+    const prose = [
+      'Mika waves a hand at your shoes. "Those shoes you wore yesterday? An international crime."',
+      'She gestures to a sleek black box tucked under her arm.',
+    ].join(' ');
+
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(false);
+    expect(missingMomentTokens('RequiredBeatRealizationValidator', moment, prose)).toEqual(expect.arrayContaining([
+      'swap-shoes',
+      'american-shoes',
+    ]));
+  });
+
+  it('passes an authored shoe swap only when the exchange happens on-page', () => {
+    const moment = 'Mika swaps out her "American shoes,"';
+    const prose = [
+      '"The shoes, very American," Mika says with theatrical horror.',
+      'She unlaces your sneakers and slides your foot into the new shoe, her touch surprisingly gentle.',
+    ].join(' ');
+
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
   it('credits paraphrased protective-herb warding when the bag, brunch context, and protection meaning land', () => {
     const moment = 'Stela gifts Kylie a protective bag of herbs during brunch, continuing her quiet, consent-based warding.';
     const prose = [
@@ -138,6 +178,44 @@ describe('momentDepicted (mirror of the validators’ presence check)', () => {
       "An elderly guest knows your grandmother's Marinescu maiden name before you offer it.",
     ].join(' ');
     expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
+  it('does not let a partial time-chain treatment beat pass when the blog payoff is missing', () => {
+    const moment = "Kylie lands in Bucharest with two suitcases and her grandmother's address; by night three she's at a rooftop bar with two new friends watching two men watch her; by 1am she's walking home through Cișmigiu; by 1:15 she's pinned to a tree; by 1:16 a man in a charcoal suit asks if she can stand. She writes about him as Mr. Midnight, and the post does 80,000 reads in a week.";
+    const prose = [
+      'You land in Bucharest with two suitcases and your grandmother\'s address folded in your passport.',
+      'By night three, a rooftop bar has given you two new friends and two men watching from the far rail.',
+      'At 1am, Cișmigiu turns wet and silver around you.',
+      'By 1:15, the bark of a tree is against your spine.',
+      'At 1:16, a man in a charcoal suit asks if you can stand.',
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(false);
+    expect(missingMomentTokens('RequiredBeatRealizationValidator', moment, prose)).toEqual(expect.arrayContaining(['midnight', 'post', 'reads']));
+  });
+
+  it('passes a time-chain treatment beat only when every chained event lands', () => {
+    const moment = "Kylie lands in Bucharest with two suitcases and her grandmother's address; by night three she's at a rooftop bar with two new friends watching two men watch her; by 1am she's walking home through Cișmigiu; by 1:15 she's pinned to a tree; by 1:16 a man in a charcoal suit asks if she can stand. She writes about him as Mr. Midnight, and the post does 80,000 reads in a week.";
+    const prose = [
+      'You land in Bucharest with two suitcases and your grandmother\'s address folded in your passport.',
+      'By night three, a rooftop bar has given you two new friends and two men watching from the far rail.',
+      'At 1am, Cișmigiu turns wet and silver around you.',
+      'By 1:15, the bark of a tree is against your spine.',
+      'At 1:16, a man in a charcoal suit asks if you can stand.',
+      'You write about him as Mr. Midnight.',
+      'Within a week, the post has done 80,000 reads.',
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
+  it('ignores planning-register parentheticals while enforcing the treatment plant atoms', () => {
+    const moment = 'Discovery and escalation — the rescue births Mr. Midnight and the viral blog (INFO-B planted live, paid off in 3/5/8); the dropped black roses and card seed the courtship.';
+    const prose = [
+      'The rescue gives the blog its name: Mr. Midnight.',
+      'By morning, the post has gone viral.',
+      'At your door, dropped black roses wait beside a card, seeding the courtship before you know what game you are in.',
+    ].join(' ');
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+    expect(missingMomentTokens('RequiredBeatRealizationValidator', moment, prose)).not.toContain('info');
   });
 
   it('treats an empty/unextractable moment as depicted', () => {

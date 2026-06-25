@@ -42,6 +42,24 @@ describe('assignSeasonChoiceTypes', () => {
     expect(b.choiceType).not.toBe('expression');
   });
 
+  it('swaps an expression slot off a late later-payoff moment without changing season totals', () => {
+    const moments = [
+      moment('a', 1, 'immediate'),
+      moment('b', 1, 'immediate'),
+      moment('c', 2, 'immediate'),
+      moment('d', 2, 'immediate'),
+      moment('e', 3, 'immediate'),
+      moment('f', 3, { payoffEpisode: 5 }, 'late_flag'),
+    ];
+    const plan = assignSeasonChoiceTypes(moments);
+    expect(plan.moments.find((m) => m.id === 'f')?.choiceType).not.toBe('expression');
+    const counts = plan.moments.reduce((acc, m) => {
+      acc[m.choiceType!] = (acc[m.choiceType!] ?? 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    expect(counts).toEqual(plan.counts);
+  });
+
   it('handles an empty moment list', () => {
     expect(assignSeasonChoiceTypes([]).moments).toEqual([]);
   });

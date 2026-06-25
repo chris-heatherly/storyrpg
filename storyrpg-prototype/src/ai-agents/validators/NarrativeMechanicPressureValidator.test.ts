@@ -181,4 +181,35 @@ describe('NarrativeMechanicPressureValidator', () => {
 
     expect(result.valid).toBe(true);
   });
+
+  it('counts encounter prose as visible residue for treatment-authored pressure', () => {
+    const result = validator.validate({
+      story: story([
+        scene('enc-1', '', [
+          pressure({
+            id: 'enc-1-pressure-secret',
+            source: 'treatment',
+            domain: 'information',
+            mechanicRef: { infoId: 'park-rescue' },
+            storyPressure: 'The park rescue changes what Kylie notices about Victor.',
+            evidenceRequired: ['show the rescue clue on-page'],
+            visibleResidue: ['suspicion, warning, clue, or changed interpretation'],
+            allowedPayoffs: ['later suspicion'],
+          }),
+        ], {
+          encounter: {
+            phases: [{
+              beats: [{
+                id: 'enc-1-b1',
+                setupText: 'Victor shields Kylie in the park, and the warning leaves a clue she notices because the rescue changes her suspicion.',
+              }],
+            }],
+          },
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+  });
 });

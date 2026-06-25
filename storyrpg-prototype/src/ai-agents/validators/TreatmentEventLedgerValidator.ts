@@ -1,6 +1,6 @@
 import type { Beat, Scene, Story } from '../../types';
 import type { SevenPointBeatRealizationContract } from '../../types/scenePlan';
-import { evaluateMomentRealization } from '../remediation/realizationEvaluator';
+import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { BaseValidator } from './BaseValidator';
 
 export type TreatmentEventLedgerStatus = 'missing' | 'summary_only';
@@ -88,6 +88,26 @@ function nonSummaryProse(prose: string): string {
   return proseWindows(prose).filter((window) => !SUMMARY_ONLY_RE.test(window)).join(' ');
 }
 
+function isAbstractTrajectoryClause(clause: string): boolean {
+  const normalized = normalizeRealizationText(clause);
+  return /\b(?:begin|begins|began|build|builds|building|start|starts|started)\b/.test(normalized)
+    && /\b(?:new|fresh|glamorous|better)\s+(?:life|start)\b/.test(normalized);
+}
+
+function ledgerMomentDepicted(moment: string, prose: string): boolean {
+  const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
+  if (assessment.depicted) return true;
+  if (
+    assessment.mode === 'compound-clauses'
+    && assessment.missingClauses.length > 0
+    && assessment.missingClauses.every(isAbstractTrajectoryClause)
+    && assessment.matchedClauses.length >= 2
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isMustDramatize(contract: SevenPointBeatRealizationContract, treatmentSourced?: boolean): boolean {
   if (contract.blockingLevel !== 'treatment' && !treatmentSourced) return false;
   return contract.requiredRealization.includes('final_prose')
@@ -97,13 +117,13 @@ function isMustDramatize(contract: SevenPointBeatRealizationContract, treatmentS
 function directWindowDepicts(moment: string, windows: string[]): boolean {
   return windows.some((window) => {
     if (SUMMARY_ONLY_RE.test(window)) return false;
-    return evaluateMomentRealization('RequiredBeatRealizationValidator', moment, window).depicted;
+    return ledgerMomentDepicted(moment, window);
   });
 }
 
 export function hasDirectTreatmentEventRealization(moment: string, prose: string): boolean {
   const windows = proseWindows(prose);
-  return directWindowDepicts(moment, windows);
+  return directWindowDepicts(moment, windows) || ledgerMomentDepicted(moment, nonSummaryProse(prose));
 }
 
 function directRealizationStatus(
@@ -113,8 +133,8 @@ function directRealizationStatus(
   const sourceText = contract.sourceText.trim();
   const atoms = (contract.eventAtoms || []).map((atom) => atom.trim()).filter(Boolean);
   const globalDepicted =
-    evaluateMomentRealization('RequiredBeatRealizationValidator', sourceText, prose).depicted
-    || atoms.some((atom) => evaluateMomentRealization('RequiredBeatRealizationValidator', atom, prose).depicted);
+    ledgerMomentDepicted(sourceText, prose)
+    || atoms.some((atom) => ledgerMomentDepicted(atom, prose));
   if (!globalDepicted) return 'missing';
 
   const windows = proseWindows(prose);
@@ -130,11 +150,11 @@ function episodeLevelDirectRealization(contract: SevenPointBeatRealizationContra
   const atoms = (contract.eventAtoms || []).map((atom) => atom.trim()).filter(Boolean);
   const filteredProse = nonSummaryProse(prose);
   if (!filteredProse) return false;
-  if (evaluateMomentRealization('RequiredBeatRealizationValidator', sourceText, filteredProse).depicted) {
+  if (ledgerMomentDepicted(sourceText, filteredProse)) {
     return true;
   }
   return atoms.length > 0
-    && atoms.every((atom) => evaluateMomentRealization('RequiredBeatRealizationValidator', atom, filteredProse).depicted);
+    && atoms.every((atom) => ledgerMomentDepicted(atom, filteredProse));
 }
 
 export class TreatmentEventLedgerValidator extends BaseValidator {

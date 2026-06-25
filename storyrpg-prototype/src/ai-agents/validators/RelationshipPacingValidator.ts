@@ -92,7 +92,7 @@ function isFamilyRelationshipClaim(text: string, index: number): boolean {
   const start = Math.max(0, index - 48);
   const end = Math.min(text.length, index + 64);
   const window = text.slice(start, end).toLowerCase();
-  return /\b(?:like|as|found|chosen|our|their|your|his|her)\s+family\b/.test(window)
+  return /\b(?:like|as|found|chosen)\s+family\b/.test(window)
     || /\bfamily\s+(?:now|already|forever|by choice|for tonight)\b/.test(window)
     || /\b(?:part|member)\s+of\s+(?:the|our|their|your|his|her)\s+family\b/.test(window);
 }

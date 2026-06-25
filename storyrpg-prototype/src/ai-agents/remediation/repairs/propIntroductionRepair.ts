@@ -39,9 +39,10 @@ export interface PropRepairScene {
 export function repairPropIntroduction(
   scenes: PropRepairScene[],
   roster: NpcRosterEntry[],
-): { fixedCount: number; records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> } {
+): { fixedCount: number; examples: string[]; records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> } {
   let fixedCount = 0;
-  if (!roster?.length) return { fixedCount, records: [] };
+  const examples: string[] = [];
+  if (!roster?.length) return { fixedCount, examples, records: [] };
 
   for (const scene of scenes) {
     const refs = scene.referencedEntityIds;
@@ -54,6 +55,7 @@ export function repairPropIntroduction(
       if (canonical && canonical !== raw) {
         refs[i] = canonical;
         fixedCount++;
+        if (examples.length < 5) examples.push(`${raw}->${canonical}`);
       }
     }
   }
@@ -68,10 +70,10 @@ export function repairPropIntroduction(
           degraded: false,
           blocked: false,
           attempts: 1,
-          details: `Resolved ${fixedCount} raw entity reference(s) to canonical cast ids.`,
+          details: `Resolved ${fixedCount} raw entity reference(s) to canonical cast ids.${examples.length ? ` Examples: ${examples.join(', ')}` : ''}`,
         }]
       : [];
-  return { fixedCount, records };
+  return { fixedCount, examples, records };
 }
 
 /**
@@ -87,9 +89,10 @@ export async function repairAndRevalidatePropIntroduction(
   scenes: PropRepairScene[],
   roster: NpcRosterEntry[],
   opts?: { canSpend?: () => boolean; maxAttempts?: number },
-): Promise<{ passed: boolean; fixedCount: number; records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> }> {
+): Promise<{ passed: boolean; fixedCount: number; examples: string[]; records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> }> {
   const knownIds = roster.flatMap((r) => [r.id, r.name]).filter(Boolean) as string[];
   let fixedCount = 0;
+  const examples: string[] = [];
   const records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> = [];
 
   const detect = () => {
@@ -106,6 +109,9 @@ export async function repairAndRevalidatePropIntroduction(
   const remediate = () => {
     const res = repairPropIntroduction(scenes, roster);
     fixedCount += res.fixedCount;
+    for (const example of res.examples) {
+      if (examples.length < 5) examples.push(example);
+    }
     records.push(...res.records);
   };
 
@@ -117,9 +123,9 @@ export async function repairAndRevalidatePropIntroduction(
       blocking: true,
       canSpend: opts?.canSpend,
     });
-    return { passed: out.passed, fixedCount, records };
+    return { passed: out.passed, fixedCount, examples, records };
   } catch (e) {
-    if (e instanceof GatedRemediationError) return { passed: false, fixedCount, records };
+    if (e instanceof GatedRemediationError) return { passed: false, fixedCount, examples, records };
     throw e;
   }
 }

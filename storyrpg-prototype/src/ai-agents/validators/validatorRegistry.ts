@@ -98,7 +98,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DENSITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
   { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DISTRIBUTION', dispatchedFrom: 'IntegratedBestPracticesValidator' },
   { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CONSEQUENCE_BUDGET', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
-  { validator: 'CallbackOpportunitiesValidator', stage: 'quick', tier: 'autofix', dispatchedFrom: 'IntegratedBestPracticesValidator' },
+  { validator: 'CallbackOpportunitiesValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator (opportunity heuristics only)' },
   // tier stays 'advisory' (not 'blocking'): the safe isolated-token class is
   // enforced via autofix; in-prose leaks defer to B1 regen.
   { validator: 'MechanicsLeakageValidator', stage: 'quick', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_MECHANICS_LEAKAGE', dispatchedFrom: 'IntegratedBestPracticesValidator' },
@@ -121,7 +121,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
   { validator: 'ArcDeltaValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_ARC_DELTA', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'DivergenceValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
-  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CALLBACK_COVERAGE', dispatchedFrom: 'narrativeDiagnostics' },
+  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CALLBACK_COVERAGE', dispatchedFrom: 'narrativeDiagnostics (CallbackLedger hygiene)' },
   { validator: 'NarrativeFailureModeValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // E5 / #26C / D4 — advisory diagnostics added 2026-06.
   { validator: 'IntensityDistributionValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
@@ -135,6 +135,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'StructuralValidator', stage: 'final', tier: 'autofix', dispatchedFrom: 'FullStoryPipeline' },
   { validator: 'MicroEpisodeSeasonValidator', stage: 'final', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },
   { validator: 'FinalStoryContractValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'ResidueObligationValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_RESIDUE_CONSUME', dispatchedFrom: 'FinalStoryContractValidator (planned residue source of truth)' },
   { validator: 'EncounterQualityValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   // Season Canon (P2) — state-scoped promise gate. Fires only when a promise is
   // due/dangling/invalid for the episode being sealed (never a blanket alarm).

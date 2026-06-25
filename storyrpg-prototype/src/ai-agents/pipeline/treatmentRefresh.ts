@@ -18,6 +18,154 @@ import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 
 type Emit = (event: Omit<PipelineEvent, 'timestamp'>) => void;
 
+function normalizeEntityRef(value: string | undefined): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/^loc[-_\s]+/i, ' ')
+    .replace(/^char[-_\s]+/i, ' ')
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function entityTokens(value: string | undefined): string[] {
+  return normalizeEntityRef(value)
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && !['the', 'and', 'via', 'text', 'off', 'screen', 'presence'].includes(token));
+}
+
+function entityRefMatches(candidateId: string | undefined, candidateName: string | undefined, refs: Set<string>): boolean {
+  const candidateKeys = [normalizeEntityRef(candidateId), normalizeEntityRef(candidateName)].filter(Boolean);
+
+  if (candidateKeys.some((key) => refs.has(key))) return true;
+
+  const candidateTokenSets = [entityTokens(candidateId), entityTokens(candidateName)].filter((tokens) => tokens.length > 0);
+  for (const ref of refs) {
+    const refTokens = new Set(entityTokens(ref));
+    if (refTokens.size === 0) continue;
+    for (const candidateTokens of candidateTokenSets) {
+      if (candidateTokens.length === 0) continue;
+      if (candidateTokens.every((token) => refTokens.has(token))) return true;
+      if ([...refTokens].every((token) => candidateTokens.includes(token))) return true;
+    }
+  }
+
+  return false;
+}
+
+function baseEntityName(value: string | undefined): string {
+  return normalizeEntityRef(value);
+}
+
+function dedupeByBaseName<T extends { name: string; importance?: string; firstAppearance?: number }>(items: T[]): T[] {
+  const priority = (item: T): number => {
+    const importanceScore = item.importance === 'core' ? 3 : item.importance === 'supporting' ? 2 : 1;
+    const canonicalScore = /\([^)]*\)/.test(item.name) ? 0 : 1;
+    const firstAppearanceScore = Number.isFinite(item.firstAppearance) ? -Number(item.firstAppearance) / 100 : 0;
+    return importanceScore + canonicalScore + firstAppearanceScore;
+  };
+
+  const byName = new Map<string, T>();
+  for (const item of items) {
+    const key = baseEntityName(item.name);
+    const current = byName.get(key);
+    if (!current || priority(item) > priority(current)) {
+      byName.set(key, item);
+    }
+  }
+  return Array.from(byName.values());
+}
+
+type MajorCharacter = SourceMaterialAnalysis['majorCharacters'][number];
+
+interface TreatmentCharacterCard {
+  name: string;
+  roleText: string;
+}
+
+function canonicalCharacterName(value: string | undefined): string {
+  return normalizeEntityRef(String(value || '').replace(/\s*\([^)]*\)\s*$/, ''));
+}
+
+function parseTreatmentCharacterCards(sourceText: string | undefined): Map<string, TreatmentCharacterCard> {
+  const cards = new Map<string, TreatmentCharacterCard>();
+  const text = sourceText || '';
+  const matches = [...text.matchAll(/(?:^|\n)-\s+\*\*Name:\*\*\s+([^\n]+)\n([\s\S]*?)(?=\n-\s+\*\*Name:\*\*|\n##\s+|\n###\s+|$)/g)];
+  for (const match of matches) {
+    const rawName = match[1]?.trim();
+    const body = match[2] || '';
+    const roleMatch = body.match(/(?:^|\n)-\s+\*\*Role:\*\*\s+([^\n]+)/);
+    const key = canonicalCharacterName(rawName);
+    if (!key || !roleMatch?.[1]?.trim()) continue;
+    cards.set(key, {
+      name: rawName.replace(/\s*\([^)]*\)\s*$/, '').trim(),
+      roleText: roleMatch[1].trim(),
+    });
+  }
+  return cards;
+}
+
+function roleFromTreatmentRoleText(roleText: string, fallback: MajorCharacter['role']): MajorCharacter['role'] {
+  if (/\b(love interest|romantic lead|second lead|partner|werewolf|pricolici)\b/i.test(roleText)) return 'love_interest';
+  if (/\b(rival|spy|handler|succubus|betray)\b/i.test(roleText)) return 'rival';
+  if (/\b(mentor|teacher|guide)\b/i.test(roleText)) return 'mentor';
+  if (/\b(ally|protector|hunter|journalist|friend|practitioner|bookshop)\b/i.test(roleText)) return 'ally';
+  if (/\b(antagonist|villain|strigoi|vampire|possessor|coven)\b/i.test(roleText)) return 'antagonist';
+  return fallback;
+}
+
+function roleFromArchitecturePressure(pressureRole: string | undefined, fallback: MajorCharacter['role']): MajorCharacter['role'] {
+  switch (pressureRole) {
+    case 'antagonist':
+    case 'temptation':
+      return 'antagonist';
+    case 'ally':
+      return 'ally';
+    case 'mirror':
+      return 'rival';
+    default:
+      return fallback;
+  }
+}
+
+function repairMajorCharactersFromTreatment(
+  analysis: SourceMaterialAnalysis,
+  sourceText: string | undefined,
+): SourceMaterialAnalysis['majorCharacters'] {
+  const cards = parseTreatmentCharacterCards(sourceText);
+  const architectureByName = new Map(
+    (analysis.characterArchitecture?.supportingCharacters || [])
+      .map((character) => [canonicalCharacterName(character.characterName), character] as const),
+  );
+
+  return (analysis.majorCharacters || []).map((character) => {
+    const key = canonicalCharacterName(character.name);
+    const card = cards.get(key);
+    const architecture = architectureByName.get(key);
+    const hasBlankDescription = !character.description?.trim();
+    const repairedRole = card
+      ? roleFromTreatmentRoleText(card.roleText, character.role)
+      : roleFromArchitecturePressure(architecture?.pressureRole, character.role);
+    const repairedImportance = architecture?.screenTimeTier === 'major'
+      ? 'core'
+      : architecture?.screenTimeTier === 'supporting'
+        ? 'supporting'
+        : character.importance;
+
+    return {
+      ...character,
+      role: character.role === 'neutral' ? repairedRole : character.role,
+      importance: character.importance === 'supporting' && repairedImportance === 'core'
+        ? 'core'
+        : character.importance,
+      description: hasBlankDescription && card?.roleText ? card.roleText : character.description,
+    };
+  });
+}
+
 /**
  * Narrow a full-season analysis down to the episodes being generated, carrying
  * only the locations/characters those episodes reference (with fuzzy matching
@@ -44,35 +192,21 @@ export function filterAnalysisForEpisodeRange(
   for (const episode of selectedEpisodes) {
     const episodeLocs = episode.locations || [];
     for (const locRef of episodeLocs) {
-      neededLocationRefs.add(locRef.toLowerCase());
+      const normalized = normalizeEntityRef(locRef);
+      if (normalized) neededLocationRefs.add(normalized);
     }
   }
 
   // Also include locations from the starting location of episode 1 if generating from start
   if (episodeRange.start === 1 && analysis.keyLocations.length > 0) {
     // Always include the first location as it's likely the starting point
-    neededLocationRefs.add(analysis.keyLocations[0].id.toLowerCase());
-    neededLocationRefs.add(analysis.keyLocations[0].name.toLowerCase());
+    neededLocationRefs.add(normalizeEntityRef(analysis.keyLocations[0].id));
+    neededLocationRefs.add(normalizeEntityRef(analysis.keyLocations[0].name));
   }
 
   // Filter locations - match by ID or by name (fuzzy matching)
   const filteredLocations = analysis.keyLocations.filter(loc => {
-    const locIdLower = loc.id.toLowerCase();
-    const locNameLower = loc.name.toLowerCase();
-
-    // Direct match by ID or name
-    if (neededLocationRefs.has(locIdLower) || neededLocationRefs.has(locNameLower)) {
-      return true;
-    }
-
-    // Partial match - check if any reference contains or is contained in location name
-    for (const ref of neededLocationRefs) {
-      if (locNameLower.includes(ref) || ref.includes(locNameLower)) {
-        return true;
-      }
-    }
-
-    return false;
+    return entityRefMatches(loc.id, loc.name, neededLocationRefs);
   });
 
   // If no locations were matched (perhaps location IDs don't match), include first few
@@ -90,45 +224,25 @@ export function filterAnalysisForEpisodeRange(
     const mainChars = episode.mainCharacters || [];
     const supportChars = episode.supportingCharacters || [];
     for (const charRef of [...mainChars, ...supportChars]) {
-      neededCharacterRefs.add(charRef.toLowerCase());
+      const normalized = normalizeEntityRef(charRef);
+      if (normalized) neededCharacterRefs.add(normalized);
     }
   }
 
   // Filter characters - match by name (with fuzzy matching) or always include core
   const filteredCharacters = analysis.majorCharacters.filter(char => {
-    const charNameLower = char.name.toLowerCase();
-
     // Always include core characters - they're central to the story
     if (char.importance === 'core') {
       return true;
     }
 
-    // Direct match by name
-    if (neededCharacterRefs.has(charNameLower)) {
-      return true;
-    }
-
-    // Partial match - check if any reference contains or is contained in character name
-    for (const ref of neededCharacterRefs) {
-      // Check both directions - "Rose" matches "Rose the Healer" and vice versa
-      const refParts = ref.split(/\s+/);
-      const nameParts = charNameLower.split(/\s+/);
-
-      // Match if first name matches or full name contains reference
-      if (refParts.some(part => nameParts.includes(part)) ||
-          charNameLower.includes(ref) ||
-          ref.includes(charNameLower)) {
-        return true;
-      }
-    }
-
-    return false;
+    return entityRefMatches(char.id, char.name, neededCharacterRefs);
   });
 
   // If no characters were matched, include all core/supporting ones
-  const charactersToUse = filteredCharacters.length > 0
+  const charactersToUse = dedupeByBaseName(filteredCharacters.length > 0
     ? filteredCharacters
-    : analysis.majorCharacters.filter(c => c.importance === 'core' || c.importance === 'supporting');
+    : analysis.majorCharacters.filter(c => c.importance === 'core' || c.importance === 'supporting'));
 
   emit({ type: 'debug', phase: 'filtering', message: `Episode characters needed: ${Array.from(neededCharacterRefs).join(', ')}` });
   emit({ type: 'debug', phase: 'filtering', message: `Filtered characters: ${charactersToUse.map(c => c.name).join(', ')}` });
@@ -229,6 +343,7 @@ export function refreshAnalysisFromTreatmentDocument(
     totalEstimatedEpisodes: episodeBreakdown.length,
     treatmentSeasonGuidance: treatment.seasonGuidance || analysis.treatmentSeasonGuidance,
     resolvedEndings: treatment.endings?.length ? treatment.endings : analysis.resolvedEndings,
+    majorCharacters: repairMajorCharactersFromTreatment(analysis, sourceText),
     episodeBreakdown,
   };
 }

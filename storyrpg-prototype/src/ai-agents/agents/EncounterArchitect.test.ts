@@ -616,6 +616,43 @@ describe('assemblePhasedEncounter', () => {
     expect(structure.storylets.defeat.name).toBe('Custom Defeat');
   });
 
+  it('hydrates compact Phase 4 drafts into full runtime storylets', () => {
+    const storylet = (architect as any).hydratePhase4StoryletDraft(input, 'defeat', {
+      beats: [
+        { text: 'The loss lands before Alex can soften it.' },
+        { text: 'Eros leaves just enough silence for the lesson to become specific.' },
+        { text: 'Alex steadies around what has to change next.' },
+      ],
+    });
+
+    expect(storylet).toMatchObject({
+      id: 'scene-3-sdefeat',
+      name: 'Defeat',
+      triggerOutcome: 'defeat',
+      tone: 'somber',
+      startingBeatId: 'scene-3-sdefeat-beat-1',
+      consequences: [],
+      nextSceneId: 'next-scene',
+    });
+    expect(storylet.beats.map((beat: any) => beat.id)).toEqual([
+      'scene-3-sdefeat-beat-1',
+      'scene-3-sdefeat-beat-2',
+      'scene-3-sdefeat-beat-3',
+    ]);
+    expect(storylet.beats[0].nextBeatId).toBe('scene-3-sdefeat-beat-2');
+    expect(storylet.beats[2].isTerminal).toBe(true);
+  });
+
+  it('rejects Phase 4 drafts that omit required authored prose structure', () => {
+    expect(() => (architect as any).hydratePhase4StoryletDraft(input, 'defeat', {
+      beats: [{ text: 'Only one defeat beat.' }],
+    })).toThrow(/expected 3/);
+
+    expect(() => (architect as any).hydratePhase4StoryletDraft(input, 'partialVictory', {
+      beats: [{ text: 'A cost is visible.' }, { text: 'The next moment will remember it.' }],
+    })).toThrow(/no cost object/);
+  });
+
   it('recovers nameless generated storylet flags with deterministic encounter outcome names', () => {
     const phase1 = makePhase1();
     const phase4 = makeAuthoredStorylets();

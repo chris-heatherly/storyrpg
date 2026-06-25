@@ -180,6 +180,39 @@ describe('CallbackLedger', () => {
     expect(hook!.payoffWindow.minEpisode).toBe(2);
   });
 
+  it('records optional payoff events without changing legacy payoff counts', () => {
+    const ledger = new CallbackLedger();
+    ledger.recordFlagSet({
+      choice: makeChoice({
+        id: 'choice-help-mika',
+        consequences: [{ type: 'setFlag', flag: 'helped_mika', value: true } as any],
+      }),
+      flag: 'helped_mika',
+      episode: 1,
+      sceneId: 's1',
+    });
+
+    const paid = ledger.recordPayoff('flag:helped_mika', {
+      episode: 2,
+      sceneId: 's2',
+      beatId: 'b2',
+      source: 'residue_obligation',
+      residueObligationId: 'residue:mika',
+    });
+
+    expect(paid?.payoffCount).toBe(1);
+    expect(ledger.payoffHistory()).toMatchObject([{
+      hookId: 'flag:helped_mika',
+      episode: 2,
+      sceneId: 's2',
+      beatId: 'b2',
+      source: 'residue_obligation',
+      residueObligationId: 'residue:mika',
+    }]);
+    const roundTripped = CallbackLedger.deserialize(ledger.serialize());
+    expect(roundTripped.payoffHistory()).toHaveLength(1);
+  });
+
   it('unresolvedFor never lets the maxActiveHooks cap starve an explicitly-due promise', () => {
     // Bite-Me G13 regression: a forward promise due THIS episode was pushed past
     // the cap by lower-priority window-only flag hooks, so it never reached the

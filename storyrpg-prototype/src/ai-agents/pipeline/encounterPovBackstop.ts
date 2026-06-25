@@ -33,6 +33,8 @@ const NARRATIVE_KEYS = new Set([
   'visibleComplication',
   'narration',
   'description',
+  'victory',
+  'defeat',
 ]);
 
 export interface ProtagonistRef {

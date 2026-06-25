@@ -3,7 +3,14 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Story } from '../../types';
-import { deriveRunQualityScore, savePipelineOutputs, writeFinalStoryPackage, savePartialStory, saveFinalStoryContractFailure } from './pipelineOutputWriter';
+import {
+  deriveRunQualityScore,
+  reconcileBestPracticesReportForFinalStory,
+  savePipelineOutputs,
+  writeFinalStoryPackage,
+  savePartialStory,
+  saveFinalStoryContractFailure,
+} from './pipelineOutputWriter';
 
 vi.mock('expo-file-system', () => ({
   default: {},
@@ -28,11 +35,14 @@ describe('deriveRunQualityScore', () => {
       } as any,
     });
 
-    expect(result.score).toBe(81);
+    expect(result.score).toBe(87);
     expect(result.basis).toMatchObject({
       qaScore: 80,
       validationScore: 70,
       finalStoryContractScore: 100,
+      validatorComplianceScore: 88,
+      validatorBlockingIssues: 0,
+      validatorWarnings: 0,
       evidenceCoverage: 100,
       caps: [],
       penalties: [],
@@ -44,7 +54,7 @@ describe('deriveRunQualityScore', () => {
       qaReport: { overallScore: 100, passesQA: true, criticalIssues: [] } as any,
     });
 
-    expect(result.score).toBe(30);
+    expect(result.score).toBe(20);
     expect(result.basis.penalties).toEqual(expect.arrayContaining([
       'missing_best_practices_validation',
       'missing_final_story_contract',
@@ -65,6 +75,7 @@ describe('deriveRunQualityScore', () => {
 
     expect(result.score).toBe(49);
     expect(result.basis.caps).toContain('final_contract_failed_cap_49');
+    expect(result.basis.penalties).toContain('validator_blocking_issues_1');
   });
 
   it('keeps passing final-contract warnings visible without treating them like blockers', () => {
@@ -83,9 +94,95 @@ describe('deriveRunQualityScore', () => {
       } as any,
     });
 
-    expect(result.basis.finalStoryContractScore).toBe(96);
+    expect(result.basis.finalStoryContractScore).toBe(92);
+    expect(result.basis.validatorWarnings).toBe(3);
+    expect(result.basis.penalties).toContain('validator_warnings_3');
     expect(result.score).toBe(90);
     expect(result.basis.caps).toEqual([]);
+  });
+});
+
+describe('reconcileBestPracticesReportForFinalStory', () => {
+  it('drops stale relationship-id blockers when the final story no longer contains the target', () => {
+    const story = makeStory();
+    story.episodes[0].scenes[0].beats[0].choices = [{
+      id: 'choice-1',
+      text: 'Ask Kylie.',
+      consequences: [{ type: 'setFlag', flag: 'asked_kylie', value: true }],
+    } as any];
+
+    const report = reconcileBestPracticesReportForFinalStory({
+      overallScore: 93,
+      overallPassed: false,
+      qualityScore: 93,
+      metrics: {},
+      blockingIssues: [{
+        category: 'mechanical_storytelling',
+        message: 'Relationship consequence on choice "choice-1" targets unknown NPC "char-kylie-marinescu" — the delta will be silently dropped at runtime.',
+      }],
+      warnings: [],
+      suggestions: [],
+      timestamp: 'now',
+      duration: 1,
+    } as any, story);
+
+    expect(report?.overallPassed).toBe(true);
+    expect(report?.blockingIssues).toEqual([]);
+  });
+
+  it('keeps relationship-id blockers when the final story still contains the target', () => {
+    const story = makeStory();
+    story.episodes[0].scenes[0].beats[0].choices = [{
+      id: 'choice-1',
+      text: 'Trust Kylie.',
+      consequences: [{ type: 'relationship', npcId: 'char-kylie-marinescu', value: 1 }],
+    } as any];
+
+    const report = reconcileBestPracticesReportForFinalStory({
+      overallScore: 93,
+      overallPassed: false,
+      qualityScore: 93,
+      metrics: {},
+      blockingIssues: [{
+        category: 'mechanical_storytelling',
+        message: 'Relationship consequence on choice "choice-1" targets unknown NPC "char-kylie-marinescu" — the delta will be silently dropped at runtime.',
+      }],
+      warnings: [],
+      suggestions: [],
+      timestamp: 'now',
+      duration: 1,
+    } as any, story);
+
+    expect(report?.overallPassed).toBe(false);
+    expect(report?.blockingIssues).toHaveLength(1);
+  });
+
+  it('drops stale stat-check blockers when final story weights are normalized', () => {
+    const story = makeStory();
+    story.episodes[0].scenes[0].beats[0].choices = [{
+      id: 'choice-1',
+      text: 'Answer honestly.',
+      statCheck: { difficulty: 35, skillWeights: { deception: 1 } },
+      consequences: [],
+    } as any];
+
+    const report = reconcileBestPracticesReportForFinalStory({
+      overallScore: 93,
+      overallPassed: false,
+      qualityScore: 93,
+      metrics: {},
+      blockingIssues: [{
+        category: 'stat_check_balance',
+        message: 'Stat check "choice-1" has skillWeights totaling -1.00 instead of 1.0.',
+      }],
+      warnings: [],
+      suggestions: [],
+      timestamp: 'now',
+      duration: 1,
+    } as any, story);
+
+    expect(report?.overallPassed).toBe(true);
+    expect(report?.blockingIssues).toEqual([]);
   });
 });
 
@@ -345,10 +442,11 @@ describe('pipelineOutputWriter', () => {
     expect(manifest.summary).toMatchObject({
       finalStoryContractPassed: true,
       finalStoryContractBlockingIssues: 0,
-      qualityScore: 25,
+      qualityScore: 50,
       qualityScoreBasis: expect.objectContaining({
         finalStoryContractScore: 100,
-        evidenceCoverage: 25,
+        validatorComplianceScore: 60,
+        evidenceCoverage: 50,
       }),
     });
   });

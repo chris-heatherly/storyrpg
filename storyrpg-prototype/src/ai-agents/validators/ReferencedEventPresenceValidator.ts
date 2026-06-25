@@ -58,7 +58,7 @@ export class ReferencedEventPresenceValidator extends BaseValidator {
           if (!present) {
             issues.push(this.warning(
               `Scene "${scene.name || scene.id}" objective promises "${item.trim()}" but none of its content appears in the scene's prose — a later payoff would reference a clue the reader never saw.`,
-              `${episode.id}:${scene.id}`,
+              `referencedEvent:ep${episode.number}:${scene.id}:${locationToken(item)}`,
               'Dramatize the promised detail on-page in this scene (a beat or tint), or remove it from the objective so it is not paid off later as if shown.',
             ));
           }
@@ -74,6 +74,15 @@ export class ReferencedEventPresenceValidator extends BaseValidator {
       suggestions: issues.map((i) => i.suggestion).filter((s): s is string => Boolean(s)),
     };
   }
+}
+
+function locationToken(value: string): string {
+  return value
+    .trim()
+    .slice(0, 48)
+    .replace(/[^a-z0-9]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'item';
 }
 
 const PROSE_KEYS = new Set([

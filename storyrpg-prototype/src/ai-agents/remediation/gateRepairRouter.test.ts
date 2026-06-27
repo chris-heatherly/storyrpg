@@ -79,6 +79,19 @@ describe('GateRepairRouter', () => {
     expect(route.unsafeForProsePatch).toBe(false);
   });
 
+  it('keeps opening-scene treatment ledger arrival hooks in same-scene repair', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'TreatmentEventLedgerValidator',
+      'Treatment event ledger miss in scene "s1-1": must dramatize on-page, not summarize later: "Kylie arrives in Bucharest, unpacking her grandmother\'s chain and launching her dating blog, completely unaware of the supernatural predators circling her.".',
+      's1-1',
+      1,
+    ));
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
+  });
+
   it('routes overloaded scene findings to blueprint rebalance', () => {
     const router = new GateRepairRouter({
       densityReports: [{
@@ -103,7 +116,7 @@ describe('GateRepairRouter', () => {
     expect(route.kind).toBe('blueprint_rebalance');
   });
 
-  it('routes expandable density warnings to cluster repair instead of blueprint rebalance', () => {
+  it('does not treat time cues alone as unsafe when raw density is within budget', () => {
     const densityReport = {
       episodeNumber: 1,
       sceneId: 's1-rooftop-setup',
@@ -126,8 +139,60 @@ describe('GateRepairRouter', () => {
       's1-rooftop-setup',
     ));
 
+    expect(isTreatmentDensityExpandable(densityReport)).toBe(true);
     expect(isUnsafeTreatmentDensityReport(densityReport)).toBe(false);
     expect(route.kind).toBe('scene_cluster_rewrite');
+  });
+
+  it('allows under-budget encounter scenes with localized time cues through density safety', () => {
+    const report = analyzeSceneTreatmentDensity({
+      id: 'treatment-enc-1-1',
+      name: 'Cișmigiu attack at 1am',
+      encounter: {
+        description: 'Cișmigiu at 1am: fog, a shadow, and Victor rescuing Kylie from the attack.',
+      },
+      requiredBeats: [
+        {
+          id: 'attack',
+          sourceTurn: 'At 1am in Cișmigiu Gardens, Kylie is pinned by a shadow.',
+          mustDepict: 'At 1am in Cișmigiu Gardens, Kylie is pinned by a shadow.',
+          tier: 'authored' as const,
+        },
+        {
+          id: 'morning-name',
+          sourceTurn: 'The next morning, Kylie gives the rescuer a blog codename.',
+          mustDepict: 'The next morning, Kylie gives the rescuer a blog codename.',
+          tier: 'authored' as const,
+        },
+      ],
+      turnContract: {
+        turnId: 'park-attack-turn',
+        source: 'encounter' as const,
+        centralTurn: 'Kylie survives the Cișmigiu attack because Victor intervenes.',
+        beforeState: 'Kylie is alone after the rooftop high.',
+        turnEvent: 'The city turns from romantic possibility into a supernatural threat.',
+        afterState: 'Victor is no longer just a magnetic stranger.',
+        handoff: 'The next morning, Kylie has to decide what name to give the man who saved her.',
+      },
+      authoredTreatmentFields: [
+        {
+          id: 'enc-anchor',
+          contractKind: 'encounter_anchor' as const,
+          sourceText: 'Cișmigiu at 1am: fog, a shadow, and Victor rescuing Kylie from the attack.',
+          fieldName: 'encounter_anchor',
+          episodeNumber: 1,
+          targetSceneIds: ['treatment-enc-1-1'],
+          requiredRealization: ['encounter' as const, 'final_prose' as const],
+          blockingLevel: 'treatment' as const,
+        },
+      ],
+    }, { episodeNumber: 1, sceneIndex: 2 });
+
+    expect(report.explicitTimeJumpCount).toBeGreaterThanOrEqual(2);
+    expect(report.hardUnits).toBeLessThanOrEqual(report.threshold.hardUnits);
+    expect(report.totalUnits).toBeLessThanOrEqual(report.threshold.totalUnits);
+    expect(isTreatmentDensityExpandable(report)).toBe(true);
+    expect(isUnsafeTreatmentDensityReport(report)).toBe(false);
   });
 
   it('defers residue obligations outside the generated slice', () => {
@@ -142,6 +207,30 @@ describe('GateRepairRouter', () => {
     expect(route.kind).toBe('partial_scope_defer');
   });
 
+  it('defers broad no-scene treatment utilization findings in partial slices', () => {
+    const router = new GateRepairRouter({ generatedThroughEpisode: 1 });
+    const route = router.routeIssue({
+      validator: 'TreatmentFieldUtilizationValidator',
+      message: 'World/location treatment field "Technology/magic/supernatural rules" was planned but not realized in reader-facing story pressure: "Strigoi rules reveal across episodes 1-8."',
+      severity: 'error',
+    });
+
+    expect(route.kind).toBe('partial_scope_defer');
+    expect(route.unsafeForProsePatch).toBe(true);
+  });
+
+  it('allows localized treatment utilization findings to use same-scene retry', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'TreatmentFieldUtilizationValidator',
+      'World/location treatment field "Location purpose" was planned but not realized in reader-facing story pressure: "the proof funnel."',
+      's1-1',
+    ));
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
+  });
+
   it('keeps continuity contradictions out of direct prose insertion', () => {
     const router = new GateRepairRouter();
     const route = router.routeIssue(issue(
@@ -151,6 +240,45 @@ describe('GateRepairRouter', () => {
 
     expect(route.kind).toBe('blueprint_rebalance');
     expect(route.unsafeForProsePatch).toBe(true);
+  });
+
+  it('routes localized episode-turnout scene-turn misses to same-scene retry', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'SceneTurnRealizationValidator',
+      'Scene "s2-6" carries arc pressure "Episode 2 turnout" but does not dramatize the authored arc event on-page: "E2 ends on escalation + a second suitor."',
+      's2-6',
+      2,
+    ));
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
+  });
+
+  it('routes localized authored arc-pressure misses to same-scene retry', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'SceneTurnRealizationValidator',
+      'Scene "s2-1" carries arc pressure "Midpoint recontextualization" but does not dramatize the authored arc event on-page: "The "glamorous new life" is, underneath, a funnel — the club is a lure, the rescue was staged, and the friend who adopted her on sight has been steering her since before she landed (visible only on a replay).".',
+      's2-1',
+      2,
+    ));
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
+  });
+
+  it('routes localized encounter arc-pressure misses to same-scene retry', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'SceneTurnRealizationValidator',
+      'Encounter scene "treatment-enc-1-1" carries arc pressure but does not stage its authored event: "That her job is to observe and describe other people\'s lives, ordering second and writing the piece later, rather than claiming her own appetite.".',
+      'treatment-enc-1-1',
+      1,
+    ));
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
   });
 });
 

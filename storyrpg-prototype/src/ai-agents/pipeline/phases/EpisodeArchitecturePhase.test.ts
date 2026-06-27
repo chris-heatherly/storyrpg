@@ -96,6 +96,74 @@ describe('EpisodeArchitecturePhase', () => {
     expect(events.filter(e => e.type === 'regeneration_triggered')).toHaveLength(2);
   });
 
+  it('retries on over-cap scene counts with cap-specific repair guidance', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ success: false, error: 'Blueprint must have no more than 6 scenes' })
+      .mockResolvedValueOnce({ success: false, error: 'Blueprint has 7 scenes; maximum is 6' })
+      .mockResolvedValueOnce({ success: true, data: makeBlueprint() });
+    const deps = makeDeps({ storyArchitect: { execute } as any });
+    const events: PipelineEvent[] = [];
+    const brief = {
+      ...makeBrief(),
+      multiEpisode: {
+        preferences: {
+          targetScenesPerEpisode: 6,
+        },
+      },
+    };
+
+    await new EpisodeArchitecturePhase(deps).run(
+      brief, { worldRules: [], tensions: [] } as any, { characters: [] } as any, makeContext(events),
+    );
+
+    expect(execute).toHaveBeenCalledTimes(3);
+    const lastInput = (execute.mock.calls[2] as unknown[])[0] as any;
+    expect(lastInput.userPrompt).toContain('CRITICAL BLUEPRINT SCENE CAP REPAIR');
+    expect(lastInput.userPrompt).toContain('3-6 scenes total');
+    expect(events.filter(e => e.type === 'regeneration_triggered')).toHaveLength(2);
+    expect(events.filter(e => e.type === 'regeneration_triggered').map(e => (e as any).message)).toEqual([
+      'Retrying StoryArchitect for scene-count cap repair (1/3)',
+      'Retrying StoryArchitect for scene-count cap repair (2/3)',
+    ]);
+  });
+
+  it('raises the scene cap to match an authored season-scene slice', async () => {
+    const execute = vi.fn(async () => ({ success: true, data: makeBlueprint() }));
+    const deps = makeDeps({ storyArchitect: { execute } as any });
+    const plannedScenes = Array.from({ length: 8 }, (_, index) => ({
+      id: `planned-${index + 1}`,
+      kind: index === 5 ? 'encounter' : 'scene',
+      title: `Planned ${index + 1}`,
+    }));
+    const brief = {
+      ...makeBrief(),
+      seasonPlan: {
+        episodes: [{
+          episodeNumber: 1,
+          plannedScenes,
+          plannedEncounters: [],
+        }],
+        crossEpisodeBranches: [],
+        consequenceChains: [],
+        arcs: [],
+        informationLedger: [],
+      },
+      multiEpisode: {
+        preferences: {
+          targetScenesPerEpisode: 6,
+          targetChoicesPerEpisode: 4,
+        },
+      },
+    };
+
+    await new EpisodeArchitecturePhase(deps).run(
+      brief, { worldRules: [], tensions: [] } as any, { characters: [] } as any, makeContext([]),
+    );
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect((execute.mock.calls as any)[0][0].targetSceneCount).toBe(8);
+  });
+
   it('does not retry non-branch failures', async () => {
     const execute = vi.fn(async () => ({ success: false, error: 'provider exploded' }));
     const deps = makeDeps({ storyArchitect: { execute } as any });

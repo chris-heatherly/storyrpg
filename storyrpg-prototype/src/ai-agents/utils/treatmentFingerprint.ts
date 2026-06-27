@@ -22,7 +22,8 @@
  * no clock, no randomness.
  */
 
-import type { StructuralRole } from '../../types/sourceAnalysis';
+import { STORY_CIRCLE_BEATS } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat, StructuralRole } from '../../types/sourceAnalysis';
 import type { ExtractedTreatment } from './treatmentExtraction';
 
 /** Beats that can carry an explicit `(EpN)` anchor in Section 7. */
@@ -55,6 +56,17 @@ const BEAT_LABELS: Array<{ beat: AnchorableBeat; pattern: RegExp }> = [
   { beat: 'pinch2', pattern: /\bpinch\s*2\b/i },
   { beat: 'climax', pattern: /\bclimax\b/i },
   { beat: 'resolution', pattern: /\bresolution\b/i },
+];
+
+const STORY_CIRCLE_BEAT_LABELS: Array<{ beat: StoryCircleBeat; pattern: RegExp }> = [
+  { beat: 'you', pattern: /\byou\b|\bhook\b/i },
+  { beat: 'need', pattern: /\bneed\b|\bwant\s*(?:vs\.?|\/)?\s*need\b/i },
+  { beat: 'go', pattern: /\bgo\b|\bplot\s*turn\s*1\b|\bthreshold\b/i },
+  { beat: 'search', pattern: /\bsearch\b|\bpinch\s*1\b/i },
+  { beat: 'find', pattern: /\bfind\b|\bmidpoint\b/i },
+  { beat: 'take', pattern: /\btake\b|\bpinch\s*2\b|\bprice\b/i },
+  { beat: 'return', pattern: /\breturn\b|\bclimax\b/i },
+  { beat: 'change', pattern: /\bchange\b|\bresolution\b/i },
 ];
 
 /**
@@ -111,6 +123,29 @@ export function extractBeatEpisodeAnchors(
     }
   }
   return anchors;
+}
+
+export function extractStoryCircleBeatEpisodeAnchors(
+  seasonSpine: string | undefined,
+): Partial<Record<StoryCircleBeat, number>> {
+  const anchors: Partial<Record<StoryCircleBeat, number>> = {};
+  if (!seasonSpine) return anchors;
+  for (const line of seasonSpine.split(/\r?\n/)) {
+    const epMatch = line.match(/\(?\bEp(?:isode)?\.?\s*#?\s*(\d+)\b\)?/i);
+    if (!epMatch) continue;
+    const episodeNumber = Number(epMatch[1]);
+    if (!Number.isFinite(episodeNumber)) continue;
+    for (const { beat, pattern } of STORY_CIRCLE_BEAT_LABELS) {
+      if (anchors[beat] === undefined && pattern.test(line)) {
+        anchors[beat] = episodeNumber;
+      }
+    }
+  }
+  return Object.fromEntries(
+    STORY_CIRCLE_BEATS
+      .filter((beat) => anchors[beat] !== undefined)
+      .map((beat) => [beat, anchors[beat]]),
+  ) as Partial<Record<StoryCircleBeat, number>>;
 }
 
 function serializeAnchors(anchors: Partial<Record<AnchorableBeat, number>>): string {

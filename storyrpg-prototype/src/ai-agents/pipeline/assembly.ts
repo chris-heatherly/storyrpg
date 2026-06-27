@@ -69,8 +69,6 @@ export interface AssemblyDeps {
   getEpisodeScopedSceneId: (brief: FullCreativeBrief, sceneId: string) => string;
   sanitizeReaderFacingSceneName: (name: string | undefined, fallback?: string) => string;
   sanitizeSceneContentForReader: (sceneBlueprint: SceneBlueprint, content: SceneContent) => void;
-  validateMicroEpisodeSeason: (story: Story, context: { phase: string }) => void;
-  validateMicroEpisodeStructure: (episode: Episode, context: { phase: string }) => void;
   wireEncounterTreeImages: (
     choices: Array<{ id: string; outcomes?: Record<string, any> }>,
     beatId: string,
@@ -255,7 +253,7 @@ export class Assembly {
         authoredTreatmentFields: sceneBlueprint.authoredTreatmentFields,
         seasonPromiseContracts: sceneBlueprint.seasonPromiseContracts,
         stakesArchitectureContracts: sceneBlueprint.stakesArchitectureContracts,
-        sevenPointBeatContracts: sceneBlueprint.sevenPointBeatContracts,
+        storyCircleBeatContracts: sceneBlueprint.storyCircleBeatContracts,
         arcPressureContracts: sceneBlueprint.arcPressureContracts,
         branchConsequenceContracts: sceneBlueprint.branchConsequenceContracts,
         endingRealizationContracts: sceneBlueprint.endingRealizationContracts,
@@ -274,13 +272,9 @@ export class Assembly {
       title: brief.episode.title,
       synopsis: brief.episode.synopsis,
       coverImage: episodeCover,
-      episodeStructureMode: this.deps.config.generation?.episodeStructureMode,
       scenes,
       startingSceneId: blueprint.startingSceneId,
     };
-    this.deps.validateMicroEpisodeStructure(episode, {
-      phase: 'micro_episode_final_validation',
-    });
 
     const storyCover = episodeCover;
 
@@ -325,8 +319,7 @@ export class Assembly {
           }
         : undefined,
     };
-    this.reportOrphanedChoiceSets(scenes, choiceSets, blueprint, 'micro_episode_season_final_validation');
-    this.deps.validateMicroEpisodeSeason(story, { phase: 'micro_episode_season_final_validation' });
+    this.reportOrphanedChoiceSets(scenes, choiceSets, blueprint, 'assembly');
 
     return story;
   }
@@ -540,7 +533,7 @@ export class Assembly {
         authoredTreatmentFields: sb.authoredTreatmentFields,
         seasonPromiseContracts: sb.seasonPromiseContracts,
         stakesArchitectureContracts: sb.stakesArchitectureContracts,
-        sevenPointBeatContracts: sb.sevenPointBeatContracts,
+        storyCircleBeatContracts: sb.storyCircleBeatContracts,
         arcPressureContracts: sb.arcPressureContracts,
         branchConsequenceContracts: sb.branchConsequenceContracts,
         endingRealizationContracts: sb.endingRealizationContracts,
@@ -592,15 +585,12 @@ export class Assembly {
     const episodeCover = scenes.length > 0 ? sceneImages.get(this.deps.getEpisodeScopedSceneId(brief, scenes[0].id)) || '' : '';
 
     const seasonEpisode = brief.seasonPlan?.episodes.find(e => e.episodeNumber === brief.episode.number);
-    const episodeStructureMode = seasonEpisode?.episodeStructureMode || this.deps.config.generation?.episodeStructureMode;
 
     return {
       id: generateEpisodeId(brief.episode.number, brief.episode.title),
       number: brief.episode.number,
       title: brief.episode.title,
       synopsis: brief.episode.synopsis,
-      episodeStructureMode,
-      routeMeta: seasonEpisode?.routeMeta,
       scenes,
       startingSceneId: blueprint.startingSceneId,
       unlockConditions: seasonEpisode?.unlockConditions,
@@ -653,6 +643,13 @@ export class Assembly {
             nextSceneId = corrected;
           }
         }
+      }
+      const routesThroughGeneratedBridge =
+        !!gc.nextBeatId &&
+        (gc.routeContext as { bridgePurpose?: unknown } | undefined)?.bridgePurpose === 'choice_transition';
+      if (routesThroughGeneratedBridge) {
+        const bridgeChoice = { ...gc, nextSceneId: undefined };
+        return assembleChoiceForStory(bridgeChoice);
       }
       return assembleChoiceForStory(gc, nextSceneId);
     });

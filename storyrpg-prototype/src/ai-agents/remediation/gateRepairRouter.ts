@@ -75,7 +75,7 @@ interface StorySceneLike {
   signatureMoment?: string;
   turnContract?: SceneBlueprint['turnContract'];
   authoredTreatmentFields?: SceneBlueprint['authoredTreatmentFields'];
-  sevenPointBeatContracts?: SceneBlueprint['sevenPointBeatContracts'];
+  storyCircleBeatContracts?: SceneBlueprint['storyCircleBeatContracts'];
   choicePoint?: SceneBlueprint['choicePoint'];
 }
 
@@ -220,22 +220,43 @@ function countExplicitTimeJumps(scene: StorySceneLike): number {
       .map(textOf),
     scene.signatureMoment,
     textOf(scene.turnContract),
-    ...(scene.authoredTreatmentFields ?? []).map(textOf),
+    ...(scene.authoredTreatmentFields ?? [])
+      .filter((field) =>
+        (field.requiredRealization?.includes('final_prose') ?? true)
+        && field.contractKind !== 'encounter_anchor'
+        && field.contractKind !== 'encounter_conflict'
+        && field.contractKind !== 'encounter_buildup'
+      )
+      .map(textOf),
   ].filter((part): part is string => Boolean(part));
   const joined = texts.join(' ')
     .toLowerCase()
     .replace(/\bdating after dusk\b/g, 'dating after title')
     .replace(/\bdusk club\b/g, 'club')
     .replace(/\bafter dusk\b/g, 'after title');
-  const matches = joined.match(/\b(?:night\s+(?:one|two|three|four|[0-9]+)|[0-9]+\s*(?:am|pm|a\.m\.|p\.m\.)|morning|dawn|dusk|sunset|later|earlier|next\s+(?:day|morning|night)|previous\s+(?:day|night))\b/g);
+  const matches = joined.match(/\b(?:night\s+(?:one|two|three|four|[0-9]+)|[0-9]+\s*(?:am|pm|a\.m\.|p\.m\.)|morning|dawn|dusk|sunset|evening|later|earlier|next\s+(?:day|morning|night)|previous\s+(?:day|night))\b/g);
   const normalized = (matches ?? [])
     .filter((cue) => cue !== 'later' && cue !== 'earlier')
     .map((cue) => {
-      if (cue === 'dusk' || cue === 'sunset') return 'evening';
+      if (cue === 'dusk' || cue === 'sunset' || cue === 'evening') return 'evening';
       if (cue === 'morning' || cue === 'next morning') return 'morning';
       return cue;
     });
-  return new Set(normalized).size;
+  const unique = new Set(normalized);
+  const ordinalNightCues = new Set(normalized.filter((cue) => /^night\s+(?:one|two|three|four|[0-9]+)$/.test(cue)));
+  if (ordinalNightCues.size === 1 && unique.has('evening')) {
+    unique.delete('evening');
+  }
+  for (const cue of normalized) {
+    const match = /^([0-9]+)\s*(am|pm|a\.m\.|p\.m\.)$/.exec(cue);
+    if (!match) continue;
+    const hour = Number(match[1]);
+    const meridiem = match[2].replace(/\./g, '');
+    if (!Number.isFinite(hour)) continue;
+    if (meridiem === 'pm' && (hour >= 5 || hour === 12)) unique.delete('evening');
+    if (meridiem === 'am' && hour >= 5 && hour <= 11) unique.delete('morning');
+  }
+  return unique.size;
 }
 
 function textPartsOf(value: unknown): string[] {
@@ -372,18 +393,30 @@ export function analyzeSceneTreatmentDensity(
     }
   }
 
-  const sevenPointContracts = scene.sevenPointBeatContracts ?? [];
-  const additionalSevenPointUnits = sevenPointContracts.filter((contract) => !sceneAlreadyCarriesStructuralBeat(scene, contract)).length;
-  if (additionalSevenPointUnits > 0) {
-    pushObligation(obligations, 'seven_point_structural_beat', `${additionalSevenPointUnits} seven-point contract(s)`, 1, 1);
+  const storyCircleContracts = scene.storyCircleBeatContracts ?? [];
+  const additionalStoryCircleUnits = storyCircleContracts.filter((contract) => !sceneAlreadyCarriesStructuralBeat(scene, contract)).length;
+  if (additionalStoryCircleUnits > 0) {
+    pushObligation(obligations, 'story_circle_structural_beat', `${additionalStoryCircleUnits} Story Circle contract(s)`, 1, 1);
+  }
+
+  const encounterFields = (scene.authoredTreatmentFields ?? []).filter((contract) =>
+    contract.contractKind === 'encounter_anchor' || contract.contractKind === 'encounter_conflict'
+  );
+  if (encounterFields.length > 0) {
+    pushObligation(
+      obligations,
+      'encounter_anchor',
+      encounterFields.map((contract) => contract.sourceText || contract.fieldName).filter(Boolean).join(' | '),
+      2,
+      2,
+      encounterFields.map((contract) => contract.id).join(','),
+    );
   }
 
   for (const contract of scene.authoredTreatmentFields ?? []) {
     const finalProse = contract.requiredRealization?.includes('final_prose');
     const encounterField = contract.contractKind === 'encounter_anchor' || contract.contractKind === 'encounter_conflict';
-    if (encounterField) {
-      pushObligation(obligations, 'encounter_anchor', contract.sourceText || contract.fieldName, 2, 2, contract.id);
-    } else if (finalProse) {
+    if (!encounterField && finalProse) {
       pushObligation(obligations, 'treatment_final_prose_field', contract.sourceText || contract.fieldName, 0, 0.5, contract.id);
     }
   }
@@ -439,8 +472,8 @@ export function isTreatmentDensityExpandable(report: TreatmentDensityReport): bo
     ? 0
     : Math.max(0, report.totalUnits - report.threshold.totalUnits);
   if (hardOverage === 0 && totalOverage === 0) return true;
-  if (hardOverage === 0 && totalOverage <= 1.5) return true;
   if (report.explicitTimeJumpCount >= 2) return false;
+  if (hardOverage === 0 && totalOverage <= 1.5) return true;
   if (report.threshold.profile === 'encounter') return false;
 
   return hardOverage <= 1 && totalOverage <= 1.5;
@@ -487,6 +520,13 @@ function directive(
     qualityFloor: QUALITY_FLOOR,
     unsafeForProsePatch: !['deterministic_cleanup', 'same_scene_retry'].includes(kind),
   };
+}
+
+function isOpeningSceneTreatmentEvent(issue: RepairIssue, issueText: string): boolean {
+  const sceneId = (issue.sceneId || '').toLowerCase();
+  if (issue.episodeNumber !== undefined && issue.episodeNumber !== 1) return false;
+  if (!/^s?1[-_]?1$/.test(sceneId)) return false;
+  return /\b(?:arrives?|arrival|unpacking|unpacks?|launching|launches|starts?|opening|settles?|new life|blog)\b/i.test(issueText);
 }
 
 export class GateRepairRouter {
@@ -550,12 +590,47 @@ export class GateRepairRouter {
       if (/\b(?:out[- ]of[- ]scene|wrong scene|assigned elsewhere|another scene|planned scene|not scheduled)\b/i.test(issueText)) {
         return directive('blueprint_rebalance', issue, 'Treatment event appears assigned to the wrong scene.');
       }
+      if (!unsafeDensity && isOpeningSceneTreatmentEvent(issue, issueText)) {
+        return directive('same_scene_retry', issue, 'Opening treatment event is localized to the first scene and should be repaired in-place.');
+      }
       if (!unsafeDensity && !hasTimeOrOrderCue) return directive('same_scene_retry', issue, 'Treatment event is concrete and localized.');
       return directive('scene_cluster_rewrite', issue, unsafeDensity ? `Treatment event scene is overloaded: ${density?.overloadReasons.join('; ')}` : 'Treatment event has sequence context.');
     }
 
+    if (validator === 'TreatmentFieldUtilizationValidator') {
+      if (!issue.sceneId) {
+        if (
+          this.context.generatedThroughEpisode !== undefined
+          || /\b(?:partial(?:-|\s*)slice|partial(?:-|\s*)season|future|later|season|every episode|E\d\s*(?:-|through|to|→)|episodes?\s+\d)/i.test(issueText)
+        ) {
+          return directive('partial_scope_defer', issue, 'Treatment field is broad or outside the generated episode slice.');
+        }
+        return directive('diagnostic_stop', issue, 'Treatment field has no localized scene target for safe prose repair.');
+      }
+      if (unsafeDensity) return directive('blueprint_rebalance', issue, `Treatment field sits on overloaded scene: ${density?.overloadReasons.join('; ')}`);
+      if (hasTimeOrOrderCue) return directive('scene_cluster_rewrite', issue, 'Treatment field includes time/order cues that need adjacent-scene context.');
+      return directive('same_scene_retry', issue, 'Localized treatment field is safe for same-scene retry.');
+    }
+
     if (CLUSTER_DEFAULT_VALIDATORS.has(validator)) {
       if (unsafeDensity) return directive('blueprint_rebalance', issue, `Scene-flow issue sits on overloaded scene: ${density?.overloadReasons.join('; ')}`);
+      if (
+        validator === 'SceneTurnRealizationValidator'
+        && issue.sceneId
+        && /\bcarries arc pressure\b/i.test(issueText)
+        && (
+          /\bauthored arc event on-page\b/i.test(issueText)
+          || /\bstage its authored event\b/i.test(issueText)
+        )
+      ) {
+        return directive('same_scene_retry', issue, 'Authored arc-pressure event is localized to the flagged scene.');
+      }
+      if (
+        validator === 'SceneTurnRealizationValidator'
+        && /\b(?:episode\s+\d+\s+turnout|episode turnout|arc_episode_turnout|cliffhanger|episode ending)\b/i.test(issueText)
+      ) {
+        return directive('same_scene_retry', issue, 'Episode-turnout scene turn is localized to the ending scene.');
+      }
       return directive('scene_cluster_rewrite', issue, 'Scene-flow validators need adjacent-scene context.');
     }
 

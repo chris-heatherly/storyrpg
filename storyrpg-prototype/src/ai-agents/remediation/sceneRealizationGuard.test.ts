@@ -95,6 +95,21 @@ describe('requiredMomentsFor', () => {
     });
     expect(moments).toEqual([]);
   });
+
+  it('skips social umbrella authored fragments while keeping concrete sibling actions', () => {
+    const moments = requiredMomentsFor({
+      requiredBeats: [
+        { tier: 'authored', mustDepict: 'Mika adopts Kylie at the door of Vâlcescu Club on night two' },
+        { tier: 'authored', mustDepict: 'Mika swaps out her "American shoes,"' },
+        { tier: 'authored', mustDepict: 'Mika hands her a key card to the side entrance.' },
+      ],
+    });
+
+    expect(moments.map((m) => m.moment)).toEqual([
+      'Mika swaps out her "American shoes,"',
+      'Mika hands her a key card to the side entrance.',
+    ]);
+  });
 });
 
 describe('missingRequiredMoments', () => {

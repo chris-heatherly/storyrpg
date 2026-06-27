@@ -39,8 +39,6 @@ export function synthesizeTreatmentGuidance(plan: SeasonPlan): number {
 
     const guidance: TreatmentEpisodeGuidance = {
       authoredTitle: ep.title,
-      arcLabel: arc?.name,
-      actLabel: arc ? `Act covering episodes ${arc.episodeRange.start}-${arc.episodeRange.end}` : undefined,
       normalizedStructuralRoles: ep.structuralRole,
       synopsis: ep.synopsis,
       episodeTurns: turns.length > 0 ? turns : undefined,

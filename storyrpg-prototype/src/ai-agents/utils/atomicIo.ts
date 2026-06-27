@@ -22,9 +22,21 @@ export interface AtomicWriteResult {
 const NODE_ENABLED = typeof process !== 'undefined' && !!(process as unknown as { versions?: { node?: string } })?.versions?.node;
 
 function requireNode<T>(moduleName: string): T {
-  // Avoid bundler static analysis; react-native/expo-web should never hit this.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(moduleName) as T;
+  const getBuiltinModule = (typeof process !== 'undefined'
+    ? (process as unknown as { getBuiltinModule?: (mod: string) => unknown }).getBuiltinModule
+    : undefined);
+  if (typeof getBuiltinModule === 'function') {
+    const builtin = getBuiltinModule(moduleName);
+    if (builtin) return builtin as T;
+  }
+
+  // Hidden from Metro's static analyzer. Metro rejects require(variable), but
+  // this module only resolves Node built-ins after NODE_ENABLED has passed.
+  const req = (Function('return typeof require !== "undefined" ? require : null'))() as
+    | ((mod: string) => unknown)
+    | null;
+  if (!req) throw new Error(`atomicIo: Node module not available: ${moduleName}`);
+  return req(moduleName) as T;
 }
 
 function lazyModules() {

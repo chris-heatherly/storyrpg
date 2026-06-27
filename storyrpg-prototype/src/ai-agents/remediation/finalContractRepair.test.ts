@@ -70,6 +70,86 @@ describe('runFinalContractRepair', () => {
     expect(out.attempts).toBe(3);
   });
 
+  it('deduplicates repeated issue fingerprints before handlers when enabled', async () => {
+    let seenIssues = 0;
+    const duplicateFail: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [
+        { validator: 'SceneTurnRealizationValidator', episodeNumber: 2, sceneId: 's2-2', message: 'Missing "same authored moment in prose"' },
+        { validator: 'SceneTurnRealizationValidator', episodeNumber: 2, sceneId: 's2-2', message: 'Missing "same authored moment in prose"' },
+      ],
+    };
+    const out = await runFinalContractRepair({
+      story,
+      initialReport: duplicateFail,
+      handlers: [({ blockingIssues }) => {
+        seenIssues = blockingIssues.length;
+        return { story, changed: false };
+      }],
+      revalidate: async () => duplicateFail,
+      dedupeIssueFingerprints: true,
+    });
+    expect(out.passed).toBe(false);
+    expect(out.attempts).toBe(1);
+    expect(seenIssues).toBe(1);
+  });
+
+  it('stops retrying an unchanged issue after its per-issue budget is spent', async () => {
+    let handlerCalls = 0;
+    let revalidations = 0;
+    const repeatedFail: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [{ validator: 'SceneTurnRealizationValidator', episodeNumber: 2, sceneId: 's2-2', message: 'Missing "stubborn authored moment in prose"' }],
+    };
+    const out = await runFinalContractRepair({
+      story,
+      initialReport: repeatedFail,
+      handlers: [() => {
+        handlerCalls += 1;
+        return { story, changed: true };
+      }],
+      revalidate: async () => {
+        revalidations += 1;
+        return repeatedFail;
+      },
+      maxAttempts: 5,
+      maxAttemptsPerIssue: 1,
+    });
+    expect(out.passed).toBe(false);
+    expect(out.attempts).toBe(1);
+    expect(handlerCalls).toBe(1);
+    expect(revalidations).toBe(1);
+    expect(out.exhaustedIssueCount).toBe(1);
+  });
+
+  it('allows a new issue fingerprint after the prior one is repaired', async () => {
+    let handlerCalls = 0;
+    const firstFail: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [{ validator: 'RequiredBeatRealizationValidator', episodeNumber: 1, sceneId: 's1-1', message: 'Missing "door adoption"' }],
+    };
+    const secondFail: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [{ validator: 'RequiredBeatRealizationValidator', episodeNumber: 1, sceneId: 's1-2', message: 'Missing "club entrance"' }],
+    };
+    const reports = [secondFail, pass];
+    const out = await runFinalContractRepair({
+      story,
+      initialReport: firstFail,
+      handlers: [() => {
+        handlerCalls += 1;
+        return { story, changed: true };
+      }],
+      revalidate: async () => reports.shift() ?? pass,
+      maxAttempts: 5,
+      maxAttemptsPerIssue: 1,
+    });
+    expect(out.passed).toBe(true);
+    expect(out.attempts).toBe(2);
+    expect(handlerCalls).toBe(2);
+    expect(out.exhaustedIssueCount).toBe(0);
+  });
+
   it('stops early when canSpend denies another round', async () => {
     const out = await runFinalContractRepair({
       story,

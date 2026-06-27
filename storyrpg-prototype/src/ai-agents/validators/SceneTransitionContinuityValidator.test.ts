@@ -150,6 +150,24 @@ describe('SceneTransitionContinuityValidator', () => {
     expect(validator.validate({ story }).issues).toEqual([]);
   });
 
+  it('accepts disoriented leaving prose as a location-transition acknowledgment', () => {
+    const story = makeStory([
+      makeScene({
+        id: 'enc-1',
+        leadsTo: ['s1-4'],
+        beats: [beat('Fog closes around Cișmigiu Gardens.')],
+        timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+      }),
+      makeScene({
+        id: 's1-4',
+        beats: [beat("You don't remember leaving the park. One moment the fog of Cișmigiu was a shroud, the next, the city opened up around you.")],
+        timeline: { location: "Route to Kylie's Apartment", timeOfDay: 'night' },
+      }),
+    ]);
+
+    expect(validator.validate({ story }).issues).toEqual([]);
+  });
+
   it('flags an empty encounter scaffold sitting on a jump (the g10 pattern)', () => {
     const story = makeStory([
       makeScene({ id: 's1', leadsTo: ['enc-1'], beats: [beat('She hands you the receipt.')], timeline: { location: 'bookshop', timeOfDay: 'afternoon' } }),

@@ -27,7 +27,7 @@ function createAnalysis(): SourceMaterialAnalysis {
       incitingIncident: 'The gods call in the bargain Rhea\'s parents made.',
       climax: 'Rhea faces the divine council with her final answer.',
     },
-    sevenPoint: {
+    legacyStructure: {
       hook: 'Rhea\'s ordinary life in the divided city.',
       plotTurn1: 'The gods call in the bargain.',
       pinch1: 'Her lover is threatened by the divine debt.',

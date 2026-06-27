@@ -4,10 +4,16 @@ import type {
   PlannedScene,
   SceneTurnContract,
   SeasonScenePlan,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
 } from '../../types/scenePlan';
 import { momentDepicted } from '../remediation/realizationScoring';
+import {
+  arcPressureContractTargetsEpisode,
+  isSceneBoundArcPressureKind,
+} from '../utils/arcPressureContracts';
+import { isGenericScenePlannerText } from '../utils/sceneContractBuilders';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
+import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
 export interface SceneTurnRealizationInput {
   story: Story;
@@ -47,23 +53,7 @@ function textOfBeat(beat: Beat): string {
 }
 
 function sceneProse(scene: Scene): string {
-  const parts = [scene.name, ...(scene.beats || []).map(textOfBeat)];
-  const enc = scene.encounter as
-    | { phases?: Array<{ beats?: unknown[] }>; storylets?: unknown }
-    | undefined;
-  const collect = (beats: unknown[] | undefined): void => {
-    for (const raw of beats || []) {
-      const beat = raw as Partial<Beat> & { setupText?: string; escalationText?: string };
-      parts.push(beat.text || '', beat.setupText || '', beat.escalationText || '');
-    }
-  };
-  if (enc) {
-    for (const phase of enc.phases || []) collect(phase.beats);
-    const storylets = Array.isArray(enc.storylets)
-      ? enc.storylets
-      : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
-    for (const storylet of storylets) collect((storylet as { beats?: unknown[] } | undefined)?.beats);
-  }
+  const parts = [scene.name, ...(scene.beats || []).map(textOfBeat), ...collectReaderFacingTexts(scene)];
   return parts.filter(Boolean).join(' ');
 }
 
@@ -142,23 +132,24 @@ function contractFor(scene: Scene, planned?: PlannedScene): SceneTurnContract | 
   return scene.turnContract || planned?.turnContract;
 }
 
-function sevenPointContractsFor(scene: Scene, planned?: PlannedScene): SevenPointBeatRealizationContract[] {
-  const byId = new Map<string, SevenPointBeatRealizationContract>();
-  for (const contract of planned?.sevenPointBeatContracts ?? []) byId.set(contract.id, contract);
-  for (const contract of scene.sevenPointBeatContracts ?? []) byId.set(contract.id, contract);
+function storyCircleContractsFor(scene: Scene, planned?: PlannedScene): StoryCircleBeatRealizationContract[] {
+  const byId = new Map<string, StoryCircleBeatRealizationContract>();
+  for (const contract of planned?.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
+  for (const contract of scene.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
   return Array.from(byId.values());
 }
 
-function arcPressureContractsFor(scene: Scene, planned?: PlannedScene): ArcPressureTreatmentContract[] {
+function arcPressureContractsFor(scene: Scene, episodeNumber: number, planned?: PlannedScene): ArcPressureTreatmentContract[] {
   const byId = new Map<string, ArcPressureTreatmentContract>();
-  for (const contract of planned?.arcPressureContracts ?? []) byId.set(contract.id, contract);
-  for (const contract of scene.arcPressureContracts ?? []) byId.set(contract.id, contract);
+  const sceneContracts = scene.arcPressureContracts;
+  const sourceContracts = sceneContracts !== undefined
+    ? sceneContracts
+    : planned?.arcPressureContracts ?? [];
+  for (const contract of sourceContracts) byId.set(contract.id, contract);
   return Array.from(byId.values()).filter((contract) =>
-    contract.contractKind === 'arc_midpoint_recontextualization'
-    || contract.contractKind === 'arc_late_crisis'
-    || contract.contractKind === 'arc_finale_answer'
-    || contract.contractKind === 'arc_handoff_pressure'
-    || contract.contractKind === 'arc_episode_turnout'
+    isSceneBoundArcPressureKind(contract.contractKind)
+    && arcPressureContractTargetsEpisode(contract, episodeNumber)
+    && (contract.targetSceneIds.length === 0 || contract.targetSceneIds.includes(scene.id))
   );
 }
 
@@ -178,18 +169,18 @@ export class SceneTurnRealizationValidator extends BaseValidator {
     for (const { episodeNumber, scene, planned } of refs) {
       const contract = contractFor(scene, planned);
       if (!contract?.centralTurn?.trim()) {
-        for (const beatContract of sevenPointContractsFor(scene, planned)) {
+        for (const beatContract of storyCircleContractsFor(scene, planned)) {
           const prose = sceneProse(scene);
           if (!prose.trim()) {
             issues.push(this.createIssue(
               beatContract.blockingLevel === 'treatment' ? 'error' : 'warning',
-              `Scene "${scene.id}" has a seven-point ${beatContract.beat} realization contract but no reader-facing prose to realize it: "${beatContract.sourceText}".`,
+              `Scene "${scene.id}" has a Story Circle ${beatContract.beat} realization contract but no reader-facing prose to realize it: "${beatContract.sourceText}".`,
               `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
-              'Generate reader-facing scene prose that stages the authored seven-point beat event and resulting state change.',
+              'Generate reader-facing scene prose that stages the authored Story Circle beat event and resulting state change.',
             ));
           }
         }
-        for (const arcContract of arcPressureContractsFor(scene, planned)) {
+        for (const arcContract of arcPressureContractsFor(scene, episodeNumber, planned)) {
           const prose = sceneProse(scene);
           if (!prose.trim()) {
             issues.push(this.createIssue(
@@ -203,22 +194,34 @@ export class SceneTurnRealizationValidator extends BaseValidator {
         continue;
       }
       if (isEncounterScene(scene, planned)) {
-        for (const beatContract of sevenPointContractsFor(scene, planned)) {
-          const prose = sceneProse(scene);
+        const prose = sceneProse(scene);
+        if (contract.source === 'planner' && isGenericScenePlannerText(contract.centralTurn)) {
+          issues.push(this.error(
+            `Encounter scene "${scene.id}" still has a generic planner central turn instead of a concrete scene event: "${contract.centralTurn}".`,
+            `sceneTurn:ep${episodeNumber}:${scene.id}:${contract.turnId}`,
+            'Replace the generic planner turn with the concrete encounter event, changed state, and handoff before final assembly.',
+          ));
+        } else if (!prose.trim() || !momentDepicted('RequiredBeatRealizationValidator', contract.centralTurn, prose)) {
+          issues.push(this.error(
+            `Encounter scene "${scene.id}" does not dramatize its central turn on-page: "${contract.centralTurn}".`,
+            `sceneTurn:ep${episodeNumber}:${scene.id}:${contract.turnId}`,
+            'Repair the encounter setup, phase action, choice, or outcome so the central turn is visible on-page.',
+          ));
+        }
+        for (const beatContract of storyCircleContractsFor(scene, planned)) {
           const eventDepicted = beatContract.eventAtoms.some((atom) =>
             momentDepicted('RequiredBeatRealizationValidator', atom, prose)
           ) || momentDepicted('RequiredBeatRealizationValidator', beatContract.sourceText, prose);
           if (!eventDepicted) {
             issues.push(this.createIssue(
               beatContract.blockingLevel === 'treatment' ? 'error' : 'warning',
-              `Encounter scene "${scene.id}" carries seven-point ${beatContract.beat} but does not stage its authored event: "${beatContract.sourceText}".`,
+              `Encounter scene "${scene.id}" carries Story Circle ${beatContract.beat} but does not stage its authored event: "${beatContract.sourceText}".`,
               `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
-              'Repair the encounter setup, phase action, choice, or outcome so the authored seven-point beat is visible on-page.',
+              'Repair the encounter setup, phase action, choice, or outcome so the authored Story Circle beat is visible on-page.',
             ));
           }
         }
-        for (const arcContract of arcPressureContractsFor(scene, planned)) {
-          const prose = sceneProse(scene);
+        for (const arcContract of arcPressureContractsFor(scene, episodeNumber, planned)) {
           const eventDepicted = arcContract.eventAtoms.some((atom) =>
             momentDepicted('RequiredBeatRealizationValidator', atom, prose)
           ) || momentDepicted('RequiredBeatRealizationValidator', arcContract.sourceText, prose);
@@ -236,6 +239,14 @@ export class SceneTurnRealizationValidator extends BaseValidator {
 
       const prose = sceneProse(scene);
       const beats = scene.beats || [];
+      if (contract.source === 'planner' && isGenericScenePlannerText(contract.centralTurn)) {
+        issues.push(this.error(
+          `Scene "${scene.id}" still has a generic planner central turn instead of a concrete scene event: "${contract.centralTurn}".`,
+          `sceneTurn:ep${episodeNumber}:${scene.id}:${contract.turnId}`,
+          'Replace the generic planner turn with a concrete visible event, reveal, choice, cost, changed state, or handoff before final assembly.',
+        ));
+        continue;
+      }
       if (!prose.trim() || beats.length === 0) {
         issues.push(this.error(
           `Scene "${scene.id}" has a dramatic turn contract but no reader-facing prose to realize it: "${contract.centralTurn}".`,
@@ -250,9 +261,12 @@ export class SceneTurnRealizationValidator extends BaseValidator {
       const before = hasBeforeEvidence(scene, turnIndex);
       const after = hasAfterEvidence(scene, turnIndex);
       const riskyChoiceExit = hasChoiceAftermathRisk(scene);
-      const isTreatmentTurn = contract.source === 'treatment';
+      const isBlockingTurnSource =
+        contract.source === 'treatment' ||
+        contract.source === 'planner' ||
+        contract.source === 'encounter';
       const structurallyRisky = riskyChoiceExit && !after;
-      const severity: 'error' | 'warning' = isTreatmentTurn || structurallyRisky ? 'error' : 'warning';
+      const severity: 'error' | 'warning' = isBlockingTurnSource || structurallyRisky ? 'error' : 'warning';
 
       if (!eventDepicted) {
         issues.push(this.createIssue(
@@ -276,7 +290,7 @@ export class SceneTurnRealizationValidator extends BaseValidator {
         ));
       }
 
-      for (const beatContract of sevenPointContractsFor(scene, planned)) {
+      for (const beatContract of storyCircleContractsFor(scene, planned)) {
         const atomIndex = beats.findIndex((beat) =>
           beatContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, textOfBeat(beat)))
         );
@@ -290,9 +304,9 @@ export class SceneTurnRealizationValidator extends BaseValidator {
         if (!eventDepicted) {
           issues.push(this.createIssue(
             beatSeverity,
-            `Scene "${scene.id}" carries seven-point ${beatContract.beat} structurally but does not dramatize its authored beat event on-page: "${beatContract.sourceText}".`,
+            `Scene "${scene.id}" carries Story Circle ${beatContract.beat} structurally but does not dramatize its authored beat event on-page: "${beatContract.sourceText}".`,
             `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
-            'Stage the authored seven-point beat as visible action, reveal, choice, cost, changed state, or handoff, not as structural metadata.',
+            'Stage the authored Story Circle beat as visible action, reveal, choice, cost, changed state, or handoff, not as structural metadata.',
           ));
           continue;
         }
@@ -302,14 +316,14 @@ export class SceneTurnRealizationValidator extends BaseValidator {
         if (beatMissing.length > 0) {
           issues.push(this.createIssue(
             beatSeverity,
-            `Scene "${scene.id}" stages seven-point ${beatContract.beat} but does not give it complete scene shape (${beatMissing.join(', ')} missing): "${beatContract.sourceText}".`,
+            `Scene "${scene.id}" stages Story Circle ${beatContract.beat} but does not give it complete scene shape (${beatMissing.join(', ')} missing): "${beatContract.sourceText}".`,
             `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
-            'Build the authored seven-point beat around setup/pre-turn pressure, the beat event, and an immediate consequence or grounded handoff.',
+            'Build the authored Story Circle beat around setup/pre-turn pressure, the beat event, and an immediate consequence or grounded handoff.',
           ));
         }
       }
 
-      for (const arcContract of arcPressureContractsFor(scene, planned)) {
+      for (const arcContract of arcPressureContractsFor(scene, episodeNumber, planned)) {
         const atomIndex = beats.findIndex((beat) =>
           arcContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, textOfBeat(beat)))
         );

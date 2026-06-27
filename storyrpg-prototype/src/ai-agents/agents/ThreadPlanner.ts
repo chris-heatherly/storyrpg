@@ -16,9 +16,12 @@ import { EpisodeBlueprint } from './StoryArchitect';
 import { SeasonBible, NarrativeThread, ThreadLedger } from '../../types';
 import type {
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
 export interface ThreadPlannerInput {
   episodeBlueprint: EpisodeBlueprint;
@@ -37,8 +40,10 @@ export interface ThreadPlannerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level 7-point beat map. */
-  seasonSevenPoint?: SevenPointStructure;
+  /** Season-level legacy-structure beat map. */
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /**
    * Which beat(s) of the season this episode carries. Determines whether
@@ -47,6 +52,8 @@ export interface ThreadPlannerInput {
    * (Hook / Rising beats).
    */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle role(s) for this episode. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 }
 
 export class ThreadPlanner extends BaseAgent {
@@ -159,9 +166,16 @@ Status must start as "planned" — validators will promote it to "planted",
     const priorThreadsBlock = input.priorThreads?.length
       ? `\n## Prior Threads (still open)\n${JSON.stringify(input.priorThreads, null, 2)}\n`
       : '';
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: input.episodeStoryCircleRole,
+      episodeCircle: blueprint.episodeCircle,
+    });
 
     return `# Episode: ${blueprint.episodeId}
 
+${structuralContext}
 ## Scenes
 ${sceneList}
 ${priorThreadsBlock}

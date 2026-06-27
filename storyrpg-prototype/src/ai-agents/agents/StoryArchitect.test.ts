@@ -154,6 +154,30 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
     expect(blueprint.scenes[0].choicePoint.optionHints).toEqual([]);
   });
 
+  it('keeps treatment-residue fallback reminders out of planning register', () => {
+    const input = makeInput({
+      seasonPlanDirectives: {
+        treatmentGuidance: {
+          alternativePaths: [
+            'Walking over to Victor at the rooftop forces Mika to invent a reason she warned you off, opening a small Mika lie you can catch in a later episode.',
+          ],
+        },
+      },
+    });
+    const blueprint: any = {
+      startingSceneId: 's1',
+      scenes: [{ id: 's1', isEncounter: false, choicePoint: { type: 'dilemma', stakes: {}, optionHints: [] } }],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairTreatmentResidue(blueprint, input);
+
+    const reminderText = Object.values(blueprint.scenes[0].choicePoint.reminderPlan).join(' ');
+    expect(reminderText).not.toMatch(/Show immediate residue|authored path|authored residue|reconvergence|Future scenes should remember|later episode/i);
+    expect(reminderText).toContain('Mika');
+    expect(reminderText).toContain('Victor');
+  });
+
   it('includes authored treatment guidance as concrete choice and path directives', () => {
     const input = makeInput({
       seasonPlanDirectives: {
@@ -247,12 +271,49 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
 });
 
 describe('StoryArchitect treatment fidelity validation', () => {
+  it('flags duplicate staged high-pressure events at blueprint time but allows blog recaps', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const duplicateBlueprint: any = {
+      scenes: [
+        {
+          id: 's1-4',
+          name: 'Cișmigiu attack',
+          description: 'In Cișmigiu Gardens, a shadow attacks Kylie and Victor rescues her.',
+          location: 'Cișmigiu Gardens',
+          keyBeats: ['A shadow pins Kylie to a willow until Victor rescues her.'],
+        },
+        {
+          id: 'treatment-enc-1-1',
+          name: 'Cișmigiu attack encounter',
+          description: 'At 1am in Cișmigiu Gardens, a shadow attacks Kylie and Victor rescues her.',
+          location: 'Cișmigiu Gardens',
+          keyBeats: ['The shadow attack and Victor rescue are staged again.'],
+        },
+      ],
+    };
+    const recapBlueprint: any = {
+      scenes: [
+        duplicateBlueprint.scenes[0],
+        {
+          id: 's1-5',
+          name: 'Dating After Dusk post',
+          description: 'Kylie writes a blog recap of the Cișmigiu attack and Victor rescue.',
+          location: "Kylie's Lipscani Apartment",
+          keyBeats: ['The blog post retells the attack rather than restaging it.'],
+        },
+      ],
+    };
+
+    expect((architect as any).collectBlueprintDuplicateEventIssues(duplicateBlueprint).join('\n')).toContain('restage the same high-pressure event');
+    expect((architect as any).collectBlueprintDuplicateEventIssues(recapBlueprint)).toEqual([]);
+  });
+
   it('repairs authored branchlet and seed residue into blueprint memory fields before validation', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({
       seasonPlanDirectives: {
         treatmentGuidance: {
-          alternativePaths: ['Reading the messages leaves Kylie more bruised in sceneEp 2; blocking leaves her brittle.'],
+          alternativePaths: ['Reading the messages leaves Kylie more bruised in episode 2; blocking leaves her brittle.'],
           consequenceSeeds: ['The grandmother gold chain and the Dating After Dusk draft.'],
           consequenceResidue: 'The draft file remains open on the kitchen table.',
         },
@@ -449,8 +510,8 @@ describe('StoryArchitect treatment fidelity validation', () => {
     ]);
   });
 
-  it('repairs treatment theme pressure and sceneEpisode forward pressure into validator-visible fields', () => {
-    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
+  it('repairs treatment theme pressure and forward pressure into validator-visible fields', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({
       episodeNumber: 3,
       episodeTitle: 'The Bookshop',
@@ -579,7 +640,6 @@ describe('StoryArchitect treatment fidelity validation', () => {
     expect(blueprint.dramaticAudit.stakesLayers.existential).toBeUndefined();
     expect(blueprint.scenes[0].stakesLayers.existential).toBeUndefined();
     expect(blueprint.scenes[0].choicePoint.stakesLayers.existential).toBeUndefined();
-    expect(blueprint.scenes[0].keyBeats[0]).toContain('Pressure:');
     expect(blueprint.scenes[0].keyBeats.join('\n')).toContain('Because Mika texts');
   });
 
@@ -699,7 +759,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
   });
 
   it('repairs authored treatment choice pressure into a concrete choicePoint before validation', () => {
-    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({
       episodeNumber: 1,
       seasonPlanDirectives: {
@@ -782,7 +842,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
   });
 
   it('repairs incomplete information plan rows before dramatic validation', () => {
-    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes', allowLinearBottleneckEpisodes: true } as any);
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const input = makeInput({
       episodeNumber: 5,
       episodeTitle: 'Cismigiu',
@@ -1371,6 +1431,62 @@ describe('StoryArchitect transition repair', () => {
     expect(blueprint.scenes[1].residue[1]).toMatchObject({ type: 'danger' });
     expect((architect as any).collectSceneTurnContractIssues(blueprint, false).join('\n')).not.toContain('lacks a forced decision or irreversible reaction');
   });
+
+  it('repairs multi-character choice scenes with a power-dynamic shift for scene turn validation', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Text at the Door',
+      synopsis: 'A friend arrives with a warning.',
+      scenes: [
+        {
+          id: 's1-6',
+          name: 'Stela Texts',
+          description: 'Stela texts that she had a horrible dream and is coming to Kylie.',
+          location: 'apartment',
+          mood: 'uneasy',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Will Kylie let Stela interrupt the glamour?',
+          wantVsNeed: 'Protect the sparkling night vs listen to the friend who sees danger.',
+          conflictEngine: 'Stela arrives with a warning that cuts against the romance.',
+          dramaticStructure: {
+            question: 'Will Kylie let Stela interrupt the glamour?',
+            turn: 'Stela sends the warning text.',
+            pressurePeak: 'Kylie must answer before the mood can settle.',
+            changedState: 'Kylie knows Stela is coming over.',
+          },
+          personalStake: 'Kylie risks losing the fantasy or ignoring a friend.',
+          npcsPresent: ['stela'],
+          narrativeFunction: 'Cliffhanger handoff into protective friendship pressure.',
+          keyBeats: ['Stela texts about the horrible dream.', 'Kylie answers the door.'],
+          leadsTo: [],
+          transitionOut: [],
+          residue: [{ type: 'information', description: 'Stela is coming over with herbs.' }],
+          choicePoint: {
+            type: 'expression',
+            stakes: { want: 'Keep the night sparkling', cost: 'Dismiss Stela', identity: 'romantic or careful' },
+            description: 'Choose how openly Kylie receives Stela’s warning.',
+            optionHints: ['Laugh it off', 'Ask what she saw'],
+            consequenceDomain: 'relationship',
+            reminderPlan: { immediate: 'Stela notices the tone.', shortTerm: 'The warning colors the next scene.' },
+          },
+        },
+      ],
+      startingSceneId: 's1-6',
+      bottleneckScenes: ['s1-6'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).repairSceneTurnContracts(blueprint);
+
+    expect(blueprint.scenes[0].keyBeats.join('\n')).toContain('power dynamic shifts');
+    expect(blueprint.scenes[0].residue[1]).toMatchObject({ type: 'relationship' });
+    expect((architect as any).collectSceneTurnContractIssues(blueprint, false).join('\n')).not.toContain('lacks a power-dynamic shift');
+  });
 });
 
 describe('StoryArchitect planned encounter repair', () => {
@@ -1384,6 +1500,14 @@ describe('StoryArchitect planned encounter repair', () => {
           difficulty: 'hard',
           npcsInvolved: ['mysterious_attacker', 'andrei'],
           stakes: 'Lena must decide whether she fights, flees, or freezes when faced with a supernatural predator.',
+          storyCircleTarget: 'take',
+          storyCircleTargetRationale: 'The park attack demands a cost for Lena entering the supernatural world.',
+          storyCircleTargetEvidence: {
+            episodeStoryCircleRole: ['take'],
+            episodeQuestion: 'Will Lena pay the price of knowing what stalks her?',
+            protagonistChange: 'Lena can no longer treat the threat as ordinary danger.',
+            cliffhangerHandoff: 'next_need',
+          },
           relevantSkills: ['resolve', 'empathy'],
           encounterBuildup: 'The prior scenes establish Andrei as a watcher and the park as a place of threat.',
           encounterSetupContext: ['flag:noticed_andrei — Andrei reacts if Lena clocks him before the attack'],
@@ -1392,6 +1516,13 @@ describe('StoryArchitect planned encounter repair', () => {
       },
     });
   }
+
+  it('uses authored planned encounters instead of generic long-episode minimums', () => {
+    const architect = new StoryArchitect(config, { minEncountersLong: 2 } as any);
+
+    expect((architect as any).getMinEncountersForBlueprint(8, makePlannedEncounterInput())).toBe(1);
+    expect((architect as any).getMinEncountersForBlueprint(8, makeInput())).toBe(2);
+  });
 
   it('binds a matching unbound encounter scene even when the model chose the wrong encounter type', () => {
     const architect = new StoryArchitect(config);
@@ -1466,6 +1597,8 @@ describe('StoryArchitect planned encounter repair', () => {
       isEncounter: true,
       plannedEncounterId: 'enc-1-1',
       encounterType: 'social',
+      encounterStoryCircleTarget: 'take',
+      encounterStoryCircleTargetRationale: expect.stringContaining('cost'),
       encounterStakes: expect.stringContaining('Lena must decide'),
     });
     expect(blueprint.scenes[1].encounterRequiredNpcIds).toEqual(expect.arrayContaining(['mysterious_attacker', 'andrei']));
@@ -1977,6 +2110,22 @@ describe('StoryArchitect.classifyBlueprintFailure (validator tiering, B1)', () =
     expect(c.retryable).toBe(true);
   });
 
+  it('retries over-cap scene counts as hard structural failures', () => {
+    const c = StoryArchitect.classifyBlueprintFailure('Blueprint must have no more than 6 scenes');
+    expect(c.hasHard).toBe(true);
+    expect(c.advisoryOnly).toBe(false);
+    expect(c.retryable).toBe(true);
+  });
+
+  it('retries duplicate high-pressure event staging as a hard blueprint failure', () => {
+    const c = StoryArchitect.classifyBlueprintFailure(
+      'Scene "s3-6" appears to restage the same high-pressure event as "s3-1" (cismigiu, victor).',
+    );
+    expect(c.hasHard).toBe(true);
+    expect(c.advisoryOnly).toBe(false);
+    expect(c.retryable).toBe(true);
+  });
+
   it('keeps parse failures hard and flagged', () => {
     const c = StoryArchitect.classifyBlueprintFailure('Failed to parse JSON response: Unexpected token');
     expect(c.isParseError).toBe(true);
@@ -2000,39 +2149,41 @@ describe('StoryArchitect.classifyBlueprintFailure (validator tiering, B1)', () =
   });
 });
 
-describe('StoryArchitect 7-point spine verification (tier 2)', () => {
-  const arc = (overrides: Record<string, string> = {}) => ({
-    hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '', ...overrides,
+describe('StoryArchitect Story Circle episodeCircle verification (tier 2)', () => {
+  const episodeCircle = (overrides: Record<string, string | undefined> = {}) => ({
+    you: 'Alex starts in a familiar pressure state.',
+    need: 'Alex wants safety but needs agency.',
+    go: 'Alex crosses into the dangerous case.',
+    search: 'Alex tests new rules under pressure.',
+    find: 'Alex gains the answer that changes the problem.',
+    take: 'Alex pays a personal price for the answer.',
+    return: 'Alex brings the result back to the original pressure field.',
+    change: 'Alex acts from a changed self-concept.',
+    ...overrides,
   });
   const validScenes = [
     { id: 's1', leadsTo: ['s2'] }, { id: 's2', leadsTo: ['s3'] }, { id: 's3', leadsTo: [] },
   ];
-  const blueprint = (a: Record<string, string>, structuralRole: string[]): any => ({
-    arc: arc(a), structuralRole, scenes: validScenes, startingSceneId: 's1', bottleneckScenes: [],
+  const blueprint = (circle: Record<string, string | undefined>): any => ({
+    episodeCircle: episodeCircle(circle), scenes: validScenes, startingSceneId: 's1', bottleneckScenes: [],
   });
 
-  it('blocks when an assigned spine beat is left unrealized (empty arc.<beat>)', () => {
-    const architect = new StoryArchitect(config, { sevenPointBlocking: true });
-    const bp = blueprint({}, ['midpoint']); // arc.midpoint is ''
-    expect(() => (architect as any).validateBlueprint(bp, makeInput())).toThrow(/SevenPointGate.*midpoint/);
+  it('blocks when an episodeCircle beat is left unrealized', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: true, requireSceneGraphBranching: false });
+    const bp = blueprint({ take: '' });
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).toThrow(/StoryCircleGate.*take/);
   });
 
-  it('passes when the assigned spine beat is realized', () => {
-    const architect = new StoryArchitect(config, { sevenPointBlocking: true });
-    const bp = blueprint({ midpoint: 'The truth about the captain lands.' }, ['midpoint']);
-    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
+  it('passes when every episodeCircle beat is realized', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: true, requireSceneGraphBranching: false });
+    const bp = blueprint({});
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/StoryCircleGate/);
   });
 
-  it('skips buffer roles (rising/falling) which have no arc beat', () => {
-    const architect = new StoryArchitect(config, { sevenPointBlocking: true });
-    const bp = blueprint({}, ['rising']); // no canonical beat assigned → nothing to realize
-    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
-  });
-
-  it('does not block when sevenPointBlocking is off (advisory)', () => {
-    const architect = new StoryArchitect(config, { sevenPointBlocking: false });
-    const bp = blueprint({}, ['climax']); // empty climax, but gate off
-    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/SevenPointGate/);
+  it('does not block when storyCircleBlocking is off (advisory)', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: false, requireSceneGraphBranching: false });
+    const bp = blueprint({ change: '' });
+    expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/StoryCircleGate/);
   });
 });
 
@@ -2145,20 +2296,27 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect((architect as any).assessBlueprintBranchAdequacy(blueprint).adequate).toBe(true);
   });
 
-  it('exempts sceneEpisodes mode (never fires)', () => {
-    const architect = new StoryArchitect(config, { episodeStructureMode: 'sceneEpisodes' } as any);
-    const blueprint: any = { scenes: [linearScene('s1-1', [])] };
-
-    expect((architect as any).assessBlueprintBranchAdequacy(blueprint).adequate).toBe(true);
-  });
-
   // Elaborate (deterministic, no-LLM) path: the guard fails fast before content gen.
   const plannedStandard = (id: string, order: number, role: string) => ({
     id, episodeNumber: 1, order, kind: 'standard', title: id, dramaticPurpose: `Purpose ${id}`, narrativeRole: role,
   });
   const plannedEncounter = (id: string, order: number) => ({
-    id, episodeNumber: 1, order, kind: 'encounter', title: id, dramaticPurpose: `Encounter ${id}`, narrativeRole: 'turn',
-    encounter: { type: 'social', difficulty: 'moderate', relevantSkills: [], isBranchPoint: false },
+    id,
+    episodeNumber: 1,
+    order,
+    kind: 'encounter',
+    title: id,
+    dramaticPurpose: `Victor corners Kylie at the velvet rope and forces the private rescue into public pressure.`,
+    narrativeRole: 'turn',
+    encounter: {
+      type: 'social',
+      difficulty: 'moderate',
+      relevantSkills: ['perception', 'resolve'],
+      isBranchPoint: false,
+      description: 'Victor corners Kylie at the velvet rope and tests whether she will treat the rescue as romance or danger.',
+      stakes: 'Kylie risks public reputation, private desire, and trust in Mika.',
+      centralConflict: 'Victor controls the invitation while Kylie tries to keep her agency.',
+    },
   });
 
   it('elaborate path fails fast with an attributed message on a 2-scene plan', async () => {
@@ -2190,11 +2348,206 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
 
     const result = await architect.execute(input);
 
+	    expect(result.success).toBe(true);
+	    const validBranch = (result.data!.scenes || []).filter(
+	      (s: any) => s.choicePoint?.branches && s.choicePoint.type !== 'expression' && new Set(s.leadsTo || []).size >= 2,
+	    );
+	    expect(validBranch.length).toBeGreaterThanOrEqual(1);
+    for (const scene of result.data!.scenes) {
+      expect(scene.dramaticStructure?.question).toBeTruthy();
+      expect(scene.dramaticStructure?.turn).toBeTruthy();
+      expect(scene.dramaticStructure?.changedState).toBeTruthy();
+      expect(scene.sequenceIntent?.turningPoint).toBeTruthy();
+      expect(scene.residue?.length).toBeGreaterThan(0);
+      expect(scene.turnContract?.centralTurn).toBeTruthy();
+      expect(scene.turnContract?.centralTurn).not.toMatch(/^(setup|development|release) scene \d+$/i);
+      if (scene.leadsTo.length > 0) {
+        expect(scene.transitionOut?.[0]?.toSceneId).toBe(scene.leadsTo[0]);
+      }
+    }
+	  });
+
+  it('elaborate path returns advisory warnings through the normal warning channel', async () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          plannedStandard('s1-1', 0, 'setup'),
+          plannedEncounter('treatment-enc-1-1', 1),
+          plannedStandard('s1-3', 2, 'release'),
+        ],
+      } as any,
+    });
+
+    const original = (architect as any).collectDramaticStructureIssues.bind(architect);
+    (architect as any).collectDramaticStructureIssues = () => ['[DramaticStructure] Scene s1-2 has an advisory-only shape issue.'];
+    const result = await architect.execute(input);
+    (architect as any).collectDramaticStructureIssues = original;
+
     expect(result.success).toBe(true);
-    const validBranch = (result.data!.scenes || []).filter(
-      (s: any) => s.choicePoint?.branches && s.choicePoint.type !== 'expression' && new Set(s.leadsTo || []).size >= 2,
-    );
-    expect(validBranch.length).toBeGreaterThanOrEqual(1);
+    expect(result.warnings?.join('\n')).toContain('[DramaticStructure]');
+  });
+
+  it('extends the planned-scene cap for bounded prose-only binder split helpers', () => {
+    const architect = new StoryArchitect(config);
+    const scenes = Array.from({ length: 12 }, (_, index) => ({
+      id: `s2-${index + 1}`,
+      name: `Scene ${index + 1}`,
+      description: `Scene ${index + 1}`,
+      location: 'Bucharest',
+      mood: 'charged',
+      purpose: 'transition',
+      dramaticQuestion: `Question ${index + 1}`,
+      wantVsNeed: `Want ${index + 1}`,
+      conflictEngine: `Conflict ${index + 1}`,
+      npcsPresent: [],
+      narrativeFunction: `Function ${index + 1}`,
+      keyBeats: [`Beat ${index + 1}`],
+      leadsTo: index < 11 ? [`s2-${index + 2}`] : [],
+      ...(index >= 10 ? {
+        planningOrigin: {
+          kind: 'binder_split',
+          splitKind: index === 10 ? 'friend_debrief' : 'late_night_writing',
+          parentSceneId: 's2-5',
+          reason: 'Test helper split.',
+        },
+        plannedHasChoice: false,
+      } : {}),
+    }));
+    const blueprint = {
+      episodeId: 'episode-2',
+      number: 2,
+      title: 'Mr. Midnight',
+      synopsis: 'A date becomes public pressure.',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      episodeCircle: {
+        you: 'Kylie wants to keep writing.',
+        need: 'She needs to separate being wanted from being known.',
+        go: 'The blog pulls her into Victor and Radu pressure.',
+        search: 'She tests both numbers and both stories.',
+        find: 'The debrief and writing make the pressure legible.',
+        take: 'The public version costs privacy.',
+        return: 'She returns to the page.',
+        change: 'The blog is now leverage.',
+      },
+      scenes,
+      startingSceneId: 's2-1',
+      bottleneckScenes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      themes: [],
+      narrativePromises: [],
+    };
+    const input = makeInput({ episodeNumber: 2, targetSceneCount: 10 });
+
+    expect((architect as any).effectiveTargetSceneCount(blueprint, input)).toBe(12);
+    expect((architect as any).collectStructuralIssues(blueprint, input)).not.toContain('Blueprint has 12 scenes; maximum is 10');
+  });
+
+  it('extends the planned-scene cap for choice-bearing chronological binder splits', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = {
+      episodeId: 'episode-1',
+      title: 'Dating After Dusk',
+      startingSceneId: 's1-1',
+      bottleneckScenes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      themes: [],
+      narrativePromises: [],
+      scenes: Array.from({ length: 8 }, (_, index) => ({
+        id: index === 2 ? 's1-rooftop-setup' : `s1-${index + 1}`,
+        name: index === 2 ? 'Rooftop bar at sunset' : `Scene ${index + 1}`,
+        description: `Scene ${index + 1}`,
+        location: 'Bucharest',
+        mood: 'charged',
+        purpose: 'transition',
+        dramaticQuestion: `Question ${index + 1}`,
+        wantVsNeed: `Want ${index + 1}`,
+        conflictEngine: `Conflict ${index + 1}`,
+        npcsPresent: [],
+        narrativeFunction: `Function ${index + 1}`,
+        keyBeats: [`Beat ${index + 1}`],
+        leadsTo: index < 7 ? [index === 1 ? 's1-rooftop-setup' : `s1-${index + 2}`] : [],
+        ...(index === 2 ? {
+          planningOrigin: {
+            kind: 'binder_split',
+            splitKind: 'mixed_rooftop_setup',
+            parentSceneId: 'treatment-enc-1-1',
+            reason: 'Split mixed rooftop setup away from the later park encounter.',
+          },
+          plannedHasChoice: true,
+        } : {}),
+      })),
+    };
+    const input = makeInput({ episodeNumber: 1, targetSceneCount: 7 });
+
+    expect((architect as any).effectiveTargetSceneCount(blueprint, input)).toBe(8);
+    expect((architect as any).collectStructuralIssues(blueprint, input)).not.toContain('Blueprint has 8 scenes; maximum is 7');
+  });
+
+  it('does not extend the planned-scene cap for untagged over-cap scenes', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = {
+      episodeId: 'episode-2',
+      title: 'Mr. Midnight',
+      startingSceneId: 's2-1',
+      bottleneckScenes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      themes: [],
+      narrativePromises: [],
+      scenes: Array.from({ length: 11 }, (_, index) => ({
+        id: `s2-${index + 1}`,
+        name: `Scene ${index + 1}`,
+        description: `Scene ${index + 1}`,
+        location: 'Bucharest',
+        mood: 'charged',
+        purpose: 'transition',
+        dramaticQuestion: `Question ${index + 1}`,
+        wantVsNeed: `Want ${index + 1}`,
+        conflictEngine: `Conflict ${index + 1}`,
+        npcsPresent: [],
+        narrativeFunction: `Function ${index + 1}`,
+        keyBeats: [`Beat ${index + 1}`],
+        leadsTo: index < 10 ? [`s2-${index + 2}`] : [],
+      })),
+    };
+    const input = makeInput({ episodeNumber: 2, targetSceneCount: 10 });
+
+    expect((architect as any).effectiveTargetSceneCount(blueprint, input)).toBe(10);
+    expect((architect as any).collectStructuralIssues(blueprint, input)).toContain('Blueprint has 11 scenes; maximum is 10');
+  });
+
+  it('upgrades generic release scenes into concrete changed-state contracts', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      episodeSynopsis: 'The viral post turns private rescue into public romantic pressure.',
+      seasonPlanDirectives: {
+        plannedScenes: [
+          plannedStandard('s1-1', 0, 'setup'),
+          {
+            ...plannedStandard('s1-6', 1, 'release'),
+            title: 'release scene 6',
+            dramaticPurpose: 'Let the fallout settle into the next pressure: rising pressure.',
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    const release = blueprint.scenes.find((scene: any) => scene.id === 's1-6');
+
+    expect(release.name).not.toBe('release scene 6');
+    expect(release.turnContract.centralTurn).not.toContain('Let the fallout settle');
+    expect(release.dramaticStructure.changedState).toContain('changed leverage');
+    expect(release.sequenceIntent.turningPoint).toBe(release.turnContract.centralTurn);
+    expect(release.residue.length).toBeGreaterThan(0);
   });
 
   it('repairs stale planned-scene locations from explicit required beat settings', () => {
@@ -2222,6 +2575,149 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
     expect(blueprint.scenes[1].location).toBe('Lumina Books');
     expect(blueprint.scenes[2].location).toBe('Cișmigiu Gardens');
+  });
+
+  it('does not carry stale late-arc crisis pressure into the wrong planned episode', () => {
+    const architect = new StoryArchitect(config);
+    const crisisText = 'At the Equinox weekend Victor makes clear that the blog and his privacy cannot both win.';
+    const staleContract = {
+      id: 'arc-pressure-arc-1-arc_late_crisis-equinox',
+      source: 'treatment',
+      arcId: 'arc-1',
+      arcTitle: 'Champagne',
+      fieldName: 'Late-arc crisis / all-is-lost beat',
+      sourceText: crisisText,
+      contractKind: 'arc_late_crisis',
+      requiredRealization: ['season_arc', 'scene_turn', 'mechanic_pressure', 'final_prose'],
+      targetEpisodeNumbers: [2],
+      targetSceneIds: ['s2-1'],
+      eventAtoms: ['Equinox weekend'],
+      blockingLevel: 'treatment',
+    };
+    const input = makeInput({
+      episodeNumber: 2,
+      seasonPlanDirectives: {
+        arcPressure: {
+          arcId: 'arc-1',
+          arcName: 'Champagne',
+          lateArcCrisis: {
+            episodeNumber: 2,
+            apparentFailure: crisisText,
+            irreversibleCost: crisisText,
+            description: crisisText,
+          },
+        },
+        treatmentGuidance: {
+          nextEpisodePressure: 'Episode 3 must open at the Equinox weekend with the country-house invitation, the missing-model question, and Victor privacy pressure.',
+        },
+        plannedScenes: [{
+          ...plannedStandard('s2-1', 0, 'setup'),
+          arcPressureContracts: [staleContract],
+          requiredBeats: [{
+            id: 's2-1-arc-pressure-arc-late-crisis',
+            tier: 'authored',
+            sourceTurn: crisisText,
+            mustDepict: crisisText,
+          }],
+          mechanicPressure: [{
+            id: `${staleContract.id}-pressure`,
+            source: 'treatment',
+            domain: 'resource',
+            mechanicRef: { flag: staleContract.id },
+            function: 'complicate',
+            storyPressure: crisisText,
+            evidenceRequired: ['Equinox weekend'],
+            visibleResidue: [],
+            allowedPayoffs: [],
+            blockedPayoffs: [],
+            originatingSceneId: 's2-1',
+          }],
+        }],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes[0].arcPressureContracts ?? []).toHaveLength(0);
+    expect(blueprint.scenes[0].requiredBeats.some((beat: any) => beat.mustDepict === crisisText)).toBe(false);
+    expect((blueprint.scenes[0].mechanicPressure ?? []).some((pressure: any) => pressure.storyPressure === crisisText)).toBe(false);
+  });
+
+  it('does not carry wrong-episode or broad arc pressure into planned-scene blueprints', () => {
+    const architect = new StoryArchitect(config);
+    const midpointText = 'The glamorous new life is underneath a funnel, and the rescue was staged.';
+    const questionText = 'Can Kylie start over in a city that does not know her ex name?';
+    const wrongEpisodeMidpoint = {
+      id: 'arc-pressure-arc-1-arc_midpoint_recontextualization-funnel',
+      source: 'treatment',
+      arcId: 'arc-1',
+      arcTitle: 'Champagne',
+      fieldName: 'Midpoint recontextualization',
+      sourceText: midpointText,
+      contractKind: 'arc_midpoint_recontextualization',
+      requiredRealization: ['season_arc', 'scene_turn', 'mechanic_pressure', 'final_prose'],
+      targetEpisodeNumbers: [3],
+      targetSceneIds: ['s3-1'],
+      eventAtoms: ['glamorous new life is underneath a funnel'],
+      blockingLevel: 'treatment',
+    };
+    const broadQuestion = {
+      id: 'arc-pressure-arc-1-arc_question-start-over',
+      source: 'treatment',
+      arcId: 'arc-1',
+      arcTitle: 'Champagne',
+      fieldName: 'Arc dramatic question',
+      sourceText: questionText,
+      contractKind: 'arc_question',
+      requiredRealization: ['season_arc', 'scene_turn', 'final_prose'],
+      targetEpisodeNumbers: [1, 2, 3],
+      targetSceneIds: ['s2-1'],
+      eventAtoms: ['Kylie start over'],
+      blockingLevel: 'treatment',
+    };
+    const input = makeInput({
+      episodeNumber: 2,
+      seasonPlanDirectives: {
+        plannedScenes: [{
+          ...plannedStandard('s2-1', 0, 'turn'),
+          arcPressureContracts: [wrongEpisodeMidpoint, broadQuestion],
+          requiredBeats: [
+            {
+              id: 's2-1-arc-pressure-arc-midpoint',
+              tier: 'authored',
+              sourceTurn: midpointText,
+              mustDepict: midpointText,
+            },
+            {
+              id: 's2-1-arc-pressure-arc-question',
+              tier: 'authored',
+              sourceTurn: questionText,
+              mustDepict: questionText,
+            },
+          ],
+          mechanicPressure: [{
+            id: `${wrongEpisodeMidpoint.id}-pressure`,
+            source: 'treatment',
+            domain: 'information',
+            mechanicRef: { flag: wrongEpisodeMidpoint.id },
+            function: 'intensify',
+            storyPressure: midpointText,
+            evidenceRequired: ['funnel'],
+            visibleResidue: [],
+            allowedPayoffs: [],
+            blockedPayoffs: [],
+            originatingSceneId: 's2-1',
+          }],
+        }],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    expect(blueprint.scenes[0].arcPressureContracts ?? []).toHaveLength(0);
+    expect(blueprint.scenes[0].requiredBeats.some((beat: any) => beat.mustDepict === midpointText)).toBe(false);
+    expect(blueprint.scenes[0].requiredBeats.some((beat: any) => beat.mustDepict === questionText)).toBe(false);
+    expect((blueprint.scenes[0].mechanicPressure ?? []).some((pressure: any) => pressure.storyPressure === midpointText)).toBe(false);
   });
 
   it('does not treat a character surname as the matching venue location', () => {

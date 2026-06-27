@@ -185,7 +185,7 @@ function classifyTreatmentFinding(finding: TreatmentFindingInput): Pick<Treatmen
 
   switch (finding.validator) {
     case 'AuthoredEpisodeConformanceValidator':
-    case 'SevenPointAnchorConformanceValidator':
+    case 'StoryCircleAnchorConformanceValidator':
       return { contract: 'treatment_plan_conformance', repairRoute: 'plan-repair', targetSurface: 'plan' };
 
     case 'TreatmentEventLedgerValidator':
@@ -272,7 +272,7 @@ function classifyTreatmentFieldUtilization(message: string): Pick<TreatmentOblig
     return { contract: 'treatment_information_schedule', repairRoute: 'ledger-repair', targetSurface: 'information-ledger' };
   }
 
-  if (/Seven-point beat/i.test(message)) {
+  if (/Legacy-structure beat/i.test(message)) {
     return { contract: 'treatment_obligation_realization', repairRoute: 'scene-regen', targetSurface: 'scene-prose' };
   }
 

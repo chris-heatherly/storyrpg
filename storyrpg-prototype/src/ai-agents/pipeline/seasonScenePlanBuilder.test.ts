@@ -40,7 +40,7 @@ function episode(
 
 function plan(episodes: SeasonEpisode[], extra: Partial<SeasonPlan> = {}): SeasonPlan {
   return {
-    sevenPoint: {
+    legacyStructure: {
       hook: 'Ordinary world',
       plotTurn1: 'Inciting incident',
       pinch1: 'First setback',
@@ -67,6 +67,59 @@ describe('buildSeasonScenePlan', () => {
     // Each episode has at least the minimum spine.
     expect(scenesForEpisode(sp, 1).length).toBeGreaterThanOrEqual(3);
     expect(scenesForEpisode(sp, 2).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('uses episode-local treatment pressure before global Story Circle event prose', () => {
+    const ep = episode(3, ['plotTurn1'], {
+      title: 'The Weekend',
+      synopsis: "Kylie crosses the threshold into Victor's isolated country estate.",
+      locations: ["Victor's Estate"],
+      treatmentGuidance: {
+        episodePromise: 'What does Kylie look like when she lets herself be courted?',
+        openingSituation: 'The drive north with Mika in the back seat and Stela texting warnings.',
+        synopsis: "Kylie spends the weekend at Victor's estate and notices the first impossible cracks.",
+        encounterBuildup: "Victor's attention, the rose garden, the dinner toast, and the unnamed model crying in the powder room.",
+        majorChoicePressures: [
+          "Publish the pre-weekend post or protect Victor's privacy.",
+          'Drink the dark wine or refuse it.',
+          'Press Ileana gently or let her go.',
+        ],
+        encounterAnchors: ['The kiss in the hedge maze at midnight.'],
+        endingPressure: "Radu's scarf appears on Kylie's doormat even though she never gave him her address.",
+      } as SeasonEpisode['treatmentGuidance'],
+      plannedEncounters: [
+        {
+          id: 'treatment-enc-3-1',
+          description: 'The kiss in the hedge maze at midnight.',
+          type: 'social',
+          difficulty: 'medium',
+        },
+      ],
+    });
+
+    const sp = buildSeasonScenePlan(plan([ep], {
+      legacyStructure: {
+        hook: 'Kylie unpacking in Lipscani.',
+        plotTurn1: 'The attack in the park and the rescue by Victor, pulling her into the supernatural web.',
+        pinch1: 'First setback',
+        midpoint: 'Reversal',
+        pinch2: 'Crisis',
+        climax: 'Confrontation',
+        resolution: 'Aftermath',
+      },
+    }));
+    const standardSceneText = scenesForEpisode(sp, 3)
+      .filter((scene) => scene.kind === 'standard')
+      .map((scene) => [
+        scene.dramaticPurpose,
+        scene.turnContract?.centralTurn,
+        scene.turnContract?.turnEvent,
+      ].join(' '))
+      .join('\n');
+
+    expect(standardSceneText).toContain("Victor's estate");
+    expect(standardSceneText).toContain('dark wine');
+    expect(standardSceneText).not.toMatch(/attack in the park|rescue by Victor|Cismigiu/i);
   });
 
   it('represents encounters as kind:"encounter" scenes whose id is the encounter id', () => {
@@ -364,12 +417,12 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
-  it('binds the cold open as its own enforceable tier and consequence seeds as advisory seeds (WS1.3)', () => {
+  it('binds concrete cold-open beats and consequence seeds without treatment labels (WS1.3)', () => {
     const ep = episode(1, ['hook'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
         episodeTurns: ['Mika adopts Kylie at the Vâlcescu Club door.'],
-        coldOpenFunction: 'A FaceTime to her niece Sadie ("are there vampires in Romania?").',
+        coldOpenFunction: 'Hook — Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window; promise — reinvention, glamour, a city that owes her a better story; stakes — a FaceTime to her niece Sadie ("are there vampires in Romania?").',
         consequenceSeeds: [
           'Mika\'s house negroni one shade too dark.',
           'The stray dog in the courtyard, watching.',
@@ -380,13 +433,15 @@ describe('buildSeasonScenePlan', () => {
     const seedBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'seed'));
     const coldOpenBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'coldopen'));
     // Cold open is split out from the generic seeds so it can be enforced on its own (WS1.3).
-    expect(coldOpenBeats).toHaveLength(1);
-    expect(coldOpenBeats[0].mustDepict).toContain('vampires in Romania');
+    expect(coldOpenBeats.map((beat) => beat.mustDepict)).toEqual([
+      'Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window; a FaceTime to her niece Sadie ("are there vampires in Romania?").',
+    ]);
+    expect(coldOpenBeats.map((beat) => beat.mustDepict).join(' ')).not.toMatch(/\bHook\s*—|\bpromise\s*—|\bstakes\s*—/i);
     expect(seedBeats).toHaveLength(2); // the two consequence seeds
     expect(seedBeats.some((b) => b.mustDepict.includes('negroni'))).toBe(true);
     expect(seedBeats.some((b) => b.mustDepict.includes('stray dog'))).toBe(true);
-    // The cold open lands on the opening scene.
-    expect((scenes[0].requiredBeats ?? []).some((b) => b.tier === 'coldopen' && b.mustDepict.includes('vampires in Romania'))).toBe(true);
+    // The cold open remains a single enforceable beat after rebind/repair.
+    expect(coldOpenBeats).toHaveLength(1);
   });
 
   it('pins a scene setting to the location its authored turn names (no collapse-to-first)', () => {
@@ -431,6 +486,60 @@ describe('buildSeasonScenePlan', () => {
     expect(sceneOf('Vâlcescu')?.locations).toEqual(['Vâlcescu Club']);
     expect(sceneOf('rose quartz')?.locations).toEqual(['Lumina Books']);
     expect(sceneOf('Cișmigiu')?.locations).toEqual(['Cișmigiu Gardens']);
+  });
+
+  it('infers authored Bite Me venues when episode locations only name the apartment', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 5,
+      locations: ['Kylie\'s Lipscani Apartment'],
+      treatmentGuidance: {
+        majorChoicePressures: [
+          "Accept Mika's key card or leave the club untouched.",
+          "Accept Stela's quartz or refuse the warding invitation.",
+          "Walk over to Victor or follow Mika's warning.",
+        ],
+        encounterAnchors: [
+          'The rooftop bar at sunset where the Dusk Club locks into place.',
+          'Cismigiu at 1am — fog, a shadow, a scream, a rescue.',
+        ],
+      },
+      plannedEncounters: [
+        {
+          id: 'treatment-enc-1-1',
+          type: 'social',
+          description: 'The rooftop bar at sunset where the Dusk Club locks into place.',
+          difficulty: 'easy',
+        } as any,
+        {
+          id: 'treatment-enc-1-2',
+          type: 'romantic',
+          description: 'Cismigiu at 1am — fog, a shadow, a scream, a rescue.',
+          difficulty: 'easy',
+        } as any,
+      ],
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], {
+      legacyStructure: {
+        hook: 'Kylie arrives in Bucharest, forms the Dusk Club with her friends, and seeks romance.',
+        plotTurn1: '',
+        pinch1: '',
+        midpoint: '',
+        pinch2: '',
+        climax: '',
+        resolution: '',
+      },
+    })), 1);
+    const keyCardScene = scenes.find((s) =>
+      (s.requiredBeats ?? []).some((beat) => beat.mustDepict.includes('key card'))
+    );
+    const openingScene = scenes.find((s) => s.narrativeRole === 'setup');
+    const rooftop = scenes.find((s) => s.id === 'treatment-enc-1-1');
+    const cismigiu = scenes.find((s) => s.id === 'treatment-enc-1-2');
+
+    expect(openingScene?.requiredBeats?.some((beat) => beat.mustDepict.includes('forms the Dusk Club'))).toBe(true);
+    expect(keyCardScene?.locations).toEqual(['Vâlcescu Club']);
+    expect(rooftop?.locations).toEqual(['Rooftop Bar']);
+    expect(cismigiu?.locations).toEqual(['Cișmigiu Gardens']);
   });
 
   it('promotes a treatment-covered Bite Me attack encounter instead of appending a repeat', () => {

@@ -28,6 +28,13 @@ import type { Story } from '../../types';
 installResilientHttp();
 
 let activeResultPath: string | undefined;
+const WORKER_HEARTBEAT_INTERVAL_MS = Math.max(5_000, Number(process.env.STORYRPG_WORKER_HEARTBEAT_INTERVAL_MS) || 30_000);
+let latestWorkerStatus: Record<string, unknown> = {
+  mode: 'booting',
+  phase: 'startup',
+  message: 'Worker booting',
+  updatedAt: new Date().toISOString(),
+};
 
 function emit(type: string, payload: Record<string, unknown> = {}) {
   try {
@@ -35,6 +42,31 @@ function emit(type: string, payload: Record<string, unknown> = {}) {
   } catch {
     // stdout may be closed if parent already killed us — nothing to do
   }
+}
+
+function markWorkerStatus(patch: Record<string, unknown>) {
+  latestWorkerStatus = {
+    ...latestWorkerStatus,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function emitPipelineEvent(event: any) {
+  markWorkerStatus({
+    phase: event.phase,
+    agent: event.agent,
+    eventType: event.type,
+    message: event.message,
+  });
+  emit('pipeline_event', {
+    eventType: event.type,
+    phase: event.phase,
+    agent: event.agent,
+    message: event.message,
+    data: event.data,
+    telemetry: event.telemetry,
+  });
 }
 
 async function persistFailureResult(error: unknown) {
@@ -105,8 +137,10 @@ const heartbeatInterval = setInterval(() => {
     rssBytes: mem.rss,
     heapUsedBytes: mem.heapUsed,
     heapTotalBytes: mem.heapTotal,
+    intervalMs: WORKER_HEARTBEAT_INTERVAL_MS,
+    status: latestWorkerStatus,
   });
-}, 60_000);
+}, WORKER_HEARTBEAT_INTERVAL_MS);
 // Don't let the heartbeat timer keep the process alive after main() finishes
 heartbeatInterval.unref();
 
@@ -143,16 +177,7 @@ async function runAnalysis(payload: WorkerPayload) {
     prompt,
     preferences,
     resumeCheckpoint: payload.resumeCheckpoint,
-    onEvent: (event) => {
-      emit('pipeline_event', {
-        eventType: event.type,
-        phase: event.phase,
-        agent: event.agent,
-        message: event.message,
-        data: event.data,
-        telemetry: event.telemetry,
-      });
-    },
+    onEvent: emitPipelineEvent,
   });
   emit('step_complete', { step: 'source_analysis', output: result.analysisResult });
   emit('step_complete', {
@@ -184,16 +209,7 @@ async function runGeneration(payload: WorkerPayload) {
     sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
     episodeRange,
     resumeCheckpoint: payload.resumeCheckpoint,
-    onEvent: (event) => {
-      emit('pipeline_event', {
-        eventType: event.type,
-        phase: event.phase,
-        agent: event.agent,
-        message: event.message,
-        data: event.data,
-        telemetry: event.telemetry,
-      });
-    },
+    onEvent: emitPipelineEvent,
     onImageJobEvent: (rawEvent: any) => {
       emit('image_job_event', {
         eventType: rawEvent.type,
@@ -324,16 +340,7 @@ async function runImageGeneration(payload: WorkerPayload) {
     skipCharacterRefs: payload.imageGenerationInput.skipCharacterRefs,
     skipVisualContractValidation: payload.imageGenerationInput.skipVisualContractValidation,
     resumeCheckpoint: payload.resumeCheckpoint,
-    onEvent: (event) => {
-      emit('pipeline_event', {
-        eventType: event.type,
-        phase: event.phase,
-        agent: event.agent,
-        message: event.message,
-        data: event.data,
-        telemetry: event.telemetry,
-      });
-    },
+    onEvent: emitPipelineEvent,
     onImageJobEvent: (rawEvent: any) => {
       emit('image_job_event', {
         eventType: rawEvent.type,
@@ -415,11 +422,23 @@ async function main() {
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);
   activeResultPath = payload.resultPath;
+  markWorkerStatus({
+    mode: payload.mode,
+    externalJobId: payload.externalJobId,
+    friendlyName: payload.friendlyName,
+    phase: 'startup',
+    message: 'Worker payload loaded',
+  });
   if (payload.processTitle) {
     process.title = payload.processTitle;
   }
 
   emit('worker_start', { mode: payload.mode, friendlyName: payload.friendlyName, processTitle: payload.processTitle });
+  emit('heartbeat', {
+    boot: true,
+    intervalMs: WORKER_HEARTBEAT_INTERVAL_MS,
+    status: latestWorkerStatus,
+  });
 
   // WS1b preflight: 1-token ping so an exhausted account pauses the job before
   // any generation spend. Fail-open — only a definitive billing error throws

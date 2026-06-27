@@ -1,9 +1,7 @@
 import type { InformationLedgerEntry, SeasonPlan } from '../../types/seasonPlan';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
-export interface InformationLedgerOptions {
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
-}
+export interface InformationLedgerOptions {}
 
 export interface InformationLedgerMetrics {
   entryCount: number;
@@ -202,18 +200,11 @@ export class InformationLedgerValidator extends BaseValidator {
     }
     const earliestTouch = Math.min(...entry.setupTouchEpisodes);
     const runway = payoffEpisode - earliestTouch;
-    const shortSeason = totalEpisodes < (options.episodeStructureMode === 'sceneEpisodes' ? 6 : 4);
+    const shortSeason = totalEpisodes < 4;
     if (shortSeason) return;
-    if (options.episodeStructureMode === 'sceneEpisodes') {
-      if (runway < 5 || runway > 8) {
-        issues.push(this.error(
-          `Information payoff "${entry.id}" has ${runway} sceneEpisode(s) of runway; required runway is 5-8 sceneEpisodes.`,
-          `${location}.setupTouchEpisodes`,
-        ));
-      }
-    } else if (runway < 3 || runway > 4) {
+    if (runway < 3 || runway > 4) {
       issues.push(this.error(
-        `Information payoff "${entry.id}" has ${runway} episode(s) of runway; required runway is 3-4 regular episodes.`,
+        `Information payoff "${entry.id}" has ${runway} episode(s) of runway; required runway is 3-4 episodes.`,
         `${location}.setupTouchEpisodes`,
       ));
     }

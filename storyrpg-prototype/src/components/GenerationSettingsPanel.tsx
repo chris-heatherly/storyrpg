@@ -51,21 +51,6 @@ import {
 // ========================================
 
 export interface GenerationSettings {
-  episodeStructureMode: 'standard' | 'sceneEpisodes';
-
-  // Scene-length episode mode
-  sceneEpisodeMinScenes: number;
-  sceneEpisodeMaxScenes: number;
-  sceneEpisodeNormalMinBeats: number;
-  sceneEpisodeNormalTargetBeats: number;
-  sceneEpisodeNormalMaxBeats: number;
-  sceneEpisodeEncounterMaxBeats: number;
-  sceneEpisodeEncounterCadence: number;
-  sceneEpisodeBranchMinEpisodes: number;
-  sceneEpisodeBranchMaxEpisodes: number;
-  sceneEpisodeSceneGraphBranching: boolean;
-  sceneEpisodeCrossEpisodeBranching: boolean;
-
   // Scene structure
   targetSceneCount: number;
   majorChoiceCount: number;
@@ -146,21 +131,6 @@ export interface GenerationSettings {
 }
 
 export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
-  episodeStructureMode: 'standard',
-
-  // Scene-length episode mode
-  sceneEpisodeMinScenes: 1,
-  sceneEpisodeMaxScenes: 1,
-  sceneEpisodeNormalMinBeats: 6,
-  sceneEpisodeNormalTargetBeats: 8,
-  sceneEpisodeNormalMaxBeats: 10,
-  sceneEpisodeEncounterMaxBeats: 15,
-  sceneEpisodeEncounterCadence: 6,
-  sceneEpisodeBranchMinEpisodes: 1,
-  sceneEpisodeBranchMaxEpisodes: 2,
-  sceneEpisodeSceneGraphBranching: false,
-  sceneEpisodeCrossEpisodeBranching: true,
-
   // Scene structure
   targetSceneCount: SCENE_DEFAULTS.targetSceneCount,
   majorChoiceCount: SCENE_DEFAULTS.majorChoiceCount,
@@ -479,16 +449,6 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
 ];
 
 const STORY_STRUCTURE_FIELDS: SettingFieldConfig[] = [
-  {
-    type: 'select',
-    key: 'episodeStructureMode',
-    label: 'Episode Structure',
-    description: 'Standard multi-scene episodes or scene-length playable episodes.',
-    options: [
-      { value: 'standard', label: 'Standard Episodes' },
-      { value: 'sceneEpisodes', label: 'Scene-Length Episodes' },
-    ],
-  },
   { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Hard range: each episode should contain 3-6 scenes.', min: 3, max: 6 },
   { type: 'number', key: 'majorChoiceCount', label: 'Major Choice Points', description: 'How many big decisions an episode should contain.', min: 1, max: 6 },
   { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Default lower bound for generated scene beats. 3 is recommended.', min: 1, max: 6 },
@@ -496,20 +456,6 @@ const STORY_STRUCTURE_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Target cap for standard prose scenes.', min: 3, max: 10 },
   { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Target cap for key bottleneck scenes; use higher values sparingly.', min: 4, max: 12 },
   { type: 'number', key: 'encounterBeatCount', label: 'Encounter Beats', description: 'Target beats for encounter scenes.', min: 2, max: 8 },
-];
-
-const SCENE_LENGTH_EPISODE_FIELDS: SettingFieldConfig[] = [
-  { type: 'number', key: 'sceneEpisodeMinScenes', label: 'Minimum Scenes', description: 'Scene-length episodes should contain exactly one scene.', min: 1, max: 1 },
-  { type: 'number', key: 'sceneEpisodeMaxScenes', label: 'Maximum Scenes', description: 'Scene-length episodes should contain exactly one scene.', min: 1, max: 1 },
-  { type: 'number', key: 'sceneEpisodeNormalMinBeats', label: 'Normal Min Beats', description: 'Minimum beats for non-encounter scene-length episodes.', min: 1, max: 12 },
-  { type: 'number', key: 'sceneEpisodeNormalTargetBeats', label: 'Normal Target Beats', description: 'Target beats for non-encounter scene-length episodes.', min: 1, max: 15 },
-  { type: 'number', key: 'sceneEpisodeNormalMaxBeats', label: 'Normal Max Beats', description: 'Maximum beats for non-encounter scene-length episodes.', min: 1, max: 20 },
-  { type: 'number', key: 'sceneEpisodeEncounterMaxBeats', label: 'Encounter Max Path Beats', description: 'Maximum effective playable beats through a milestone encounter path.', min: 3, max: 25 },
-  { type: 'number', key: 'sceneEpisodeEncounterCadence', label: 'Encounter Cadence', description: 'Master-spine milestone encounter frequency.', min: 2, max: 12, unit: 'eps' },
-  { type: 'number', key: 'sceneEpisodeBranchMinEpisodes', label: 'Branch Min Episodes', description: 'Minimum route-specific episodes before reconvergence.', min: 1, max: 3 },
-  { type: 'number', key: 'sceneEpisodeBranchMaxEpisodes', label: 'Branch Max Episodes', description: 'Maximum route-specific episodes before reconvergence.', min: 1, max: 4 },
-  { type: 'toggle', key: 'sceneEpisodeSceneGraphBranching', label: 'Per-Episode Scene Branching', description: 'Use old within-episode scene graph branches. Keep off for scene-length mode.' },
-  { type: 'toggle', key: 'sceneEpisodeCrossEpisodeBranching', label: 'Cross-Episode Route Branching', description: 'Use route flags and route-gated episodes for structural branches.' },
 ];
 
 const TEXT_LIMIT_FIELDS: SettingFieldConfig[] = [
@@ -540,9 +486,9 @@ const CHOICE_AND_ENCOUNTER_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'choiceDistStrategic', label: 'Strategic', description: 'Skill and stat-based choices that may branch.', min: 0, max: 50, step: 5, unit: '%' },
   { type: 'number', key: 'choiceDistDilemma', label: 'Dilemma', description: 'High-stakes value tests that may branch.', min: 0, max: 30, step: 5, unit: '%' },
   { type: 'number', key: 'maxBranchingChoicesPerEpisode', label: 'Max Branching Choices', description: 'Any non-expression choice may route to a different scene.', min: 0, max: 4 },
-  { type: 'number', key: 'minEncountersShort', label: 'Short Episode Encounters', description: 'Minimum encounters for 3-4 scene episodes.', min: 0, max: 3 },
-  { type: 'number', key: 'minEncountersMedium', label: 'Medium Episode Encounters', description: 'Minimum encounters for 5-7 scene episodes.', min: 0, max: 4 },
-  { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for 8+ scene episodes.', min: 0, max: 5 },
+  { type: 'number', key: 'minEncountersShort', label: 'Short Episode Encounters', description: 'Minimum encounters for episodes with 3-4 scenes.', min: 0, max: 3 },
+  { type: 'number', key: 'minEncountersMedium', label: 'Medium Episode Encounters', description: 'Minimum encounters for episodes with 5-7 scenes.', min: 0, max: 4 },
+  { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for episodes with 8+ scenes.', min: 0, max: 5 },
 ];
 
 // NOTE: Character asset toggles (generateCharacterRefs, generateExpressionSheets,
@@ -567,14 +513,6 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
     defaultExpanded: true,
     description: 'Core pacing and episode shape.',
     fields: STORY_STRUCTURE_FIELDS,
-  },
-  {
-    id: 'scene-length',
-    title: 'SCENE-LENGTH EPISODE MODE',
-    icon: <Activity size={16} color={TERMINAL.colors.primary} />,
-    description: 'One dramatic scene per episode, route branches across episodes, and milestone encounters on the master spine.',
-    fields: SCENE_LENGTH_EPISODE_FIELDS,
-    condition: (settings) => settings.episodeStructureMode === 'sceneEpisodes',
   },
   {
     id: 'text',

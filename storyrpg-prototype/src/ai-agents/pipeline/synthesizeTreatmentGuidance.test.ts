@@ -44,7 +44,6 @@ describe('synthesizeTreatmentGuidance', () => {
 
     const count = synthesizeTreatmentGuidance(p);
     expect(count).toBe(1);
-    expect(ep.treatmentGuidance?.arcLabel).toBe('The Descent');
     expect(ep.treatmentGuidance?.synopsis).toBe('Synopsis 2');
     // Only the plot point targeting THIS episode becomes a turn.
     expect(ep.treatmentGuidance?.episodeTurns).toEqual(['The betrayal lands']);

@@ -1,21 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import {
-  distributeSevenPoints,
+  distributeLegacyStructure,
   describeDistribution,
-  checkSevenPointCoverage,
-  backfillMissingBeats,
+  checkLegacyStructureCoverage,
+  backfillMissingLegacyBeats,
   CANONICAL_BEATS,
-} from './sevenPointDistribution';
+} from './legacyStructureDistribution';
 
-describe('distributeSevenPoints', () => {
+describe('distributeLegacyStructure', () => {
   it('returns an empty array for invalid input', () => {
-    expect(distributeSevenPoints(0)).toEqual([]);
-    expect(distributeSevenPoints(-1)).toEqual([]);
-    expect(distributeSevenPoints(NaN)).toEqual([]);
+    expect(distributeLegacyStructure(0)).toEqual([]);
+    expect(distributeLegacyStructure(-1)).toEqual([]);
+    expect(distributeLegacyStructure(NaN)).toEqual([]);
   });
 
   it('places every canonical beat when N >= 7', () => {
-    const entries = distributeSevenPoints(9);
+    const entries = distributeLegacyStructure(9);
     expect(entries).toHaveLength(9);
 
     const placed = new Set(entries.flatMap((e) => e.structuralRole));
@@ -25,7 +25,7 @@ describe('distributeSevenPoints', () => {
   });
 
   it('preserves canonical order across episodes', () => {
-    const entries = distributeSevenPoints(12);
+    const entries = distributeLegacyStructure(12);
 
     const beatToEpisode = new Map<string, number>();
     for (const entry of entries) {
@@ -45,7 +45,7 @@ describe('distributeSevenPoints', () => {
   });
 
   it('fuses beats onto shared episodes when N < 7', () => {
-    const entries = distributeSevenPoints(3);
+    const entries = distributeLegacyStructure(3);
     expect(entries).toHaveLength(3);
 
     // Every beat still appears.
@@ -56,7 +56,7 @@ describe('distributeSevenPoints', () => {
   });
 
   it('fills empty episodes with rising/falling buffers split on the midpoint', () => {
-    const entries = distributeSevenPoints(12);
+    const entries = distributeLegacyStructure(12);
     const midpointIdx = entries.findIndex((e) => e.structuralRole.includes('midpoint'));
     expect(midpointIdx).toBeGreaterThan(0);
 
@@ -73,7 +73,7 @@ describe('distributeSevenPoints', () => {
   });
 
   it('handles a single-episode season by fusing every beat', () => {
-    const entries = distributeSevenPoints(1);
+    const entries = distributeLegacyStructure(1);
     expect(entries).toHaveLength(1);
     const placed = new Set(entries[0].structuralRole);
     for (const beat of CANONICAL_BEATS) {
@@ -94,14 +94,14 @@ describe('describeDistribution', () => {
   });
 });
 
-describe('checkSevenPointCoverage', () => {
+describe('checkLegacyStructureCoverage', () => {
   it('returns no issues when every beat is covered in canonical order', () => {
-    const entries = distributeSevenPoints(10);
-    expect(checkSevenPointCoverage(entries)).toEqual([]);
+    const entries = distributeLegacyStructure(10);
+    expect(checkLegacyStructureCoverage(entries)).toEqual([]);
   });
 
   it('reports a missing beat', () => {
-    const issues = checkSevenPointCoverage([
+    const issues = checkLegacyStructureCoverage([
       { episodeNumber: 1, structuralRole: ['hook'] },
       { episodeNumber: 2, structuralRole: ['plotTurn1'] },
       { episodeNumber: 3, structuralRole: ['pinch1'] },
@@ -117,7 +117,7 @@ describe('checkSevenPointCoverage', () => {
   it('reports beat ordering violations', () => {
     // plotTurn1 placed BEFORE hook across episodes — canonical order says
     // hook must come first.
-    const issues = checkSevenPointCoverage([
+    const issues = checkLegacyStructureCoverage([
       { episodeNumber: 1, structuralRole: ['plotTurn1'] },
       { episodeNumber: 2, structuralRole: ['hook'] },
       { episodeNumber: 3, structuralRole: ['pinch1'] },
@@ -131,7 +131,7 @@ describe('checkSevenPointCoverage', () => {
   });
 
   it('treats undefined structuralRole as empty', () => {
-    const issues = checkSevenPointCoverage([
+    const issues = checkLegacyStructureCoverage([
       { episodeNumber: 1 },
       { episodeNumber: 2, structuralRole: undefined },
     ]);
@@ -141,33 +141,33 @@ describe('checkSevenPointCoverage', () => {
   });
 });
 
-describe('backfillMissingBeats (1.5)', () => {
+describe('backfillMissingLegacyBeats (1.5)', () => {
   it('backfills a canonical beat dropped by a partial LLM distribution', () => {
-    const defaults = distributeSevenPoints(7);
+    const defaults = distributeLegacyStructure(7);
     // Simulate a partial LLM distribution that drops `climax`.
     const roleByEpisode = new Map<any, any>();
     for (const e of defaults) {
       roleByEpisode.set(e.episodeNumber, e.structuralRole.filter((r: string) => r !== 'climax'));
     }
     // Precondition: climax is missing.
-    expect(checkSevenPointCoverage(
+    expect(checkLegacyStructureCoverage(
       Array.from(roleByEpisode.entries()).map(([episodeNumber, structuralRole]) => ({ episodeNumber, structuralRole })),
     ).some((i) => i.includes('climax'))).toBe(true);
 
-    backfillMissingBeats(roleByEpisode, defaults);
+    backfillMissingLegacyBeats(roleByEpisode, defaults);
 
     // Postcondition: full coverage, no missing beats.
-    const issues = checkSevenPointCoverage(
+    const issues = checkLegacyStructureCoverage(
       Array.from(roleByEpisode.entries()).map(([episodeNumber, structuralRole]) => ({ episodeNumber, structuralRole })),
     );
-    expect(issues.filter((i) => i.startsWith('Missing 7-point beat'))).toHaveLength(0);
+    expect(issues.filter((i) => i.startsWith('Missing Story Circle beat'))).toHaveLength(0);
   });
 
   it('is a no-op when coverage is already complete', () => {
-    const defaults = distributeSevenPoints(7);
+    const defaults = distributeLegacyStructure(7);
     const roleByEpisode = new Map<any, any>(defaults.map((e) => [e.episodeNumber, [...e.structuralRole]]));
     const before = JSON.stringify(Array.from(roleByEpisode.entries()));
-    backfillMissingBeats(roleByEpisode, defaults);
+    backfillMissingLegacyBeats(roleByEpisode, defaults);
     expect(JSON.stringify(Array.from(roleByEpisode.entries()))).toBe(before);
   });
 });

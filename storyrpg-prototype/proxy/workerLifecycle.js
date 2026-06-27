@@ -42,6 +42,17 @@ function isQuotaFailureContext(failureContext) {
   return failureContext?.failureKind === PROVIDER_QUOTA_FAILURE_KIND;
 }
 
+function isArchitectureResumeFailure(message, failure = {}) {
+  const text = String(message || '');
+  const phaseText = [
+    failure.failurePhase,
+    failure.failureStepId,
+    failure.resumeFromStepId,
+  ].filter(Boolean).join(' ');
+  return /architecture craft gate|story architect failed|blueprint/i.test(text)
+    || /\b(?:episode_)?architecture\b/i.test(phaseText);
+}
+
 function stripLargeValues(obj, maxStringLen = 512) {
   if (!obj || typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) return obj.map((item) => stripLargeValues(item, maxStringLen));
@@ -338,6 +349,33 @@ function mergeJsonLike(base, patch) {
     }
   }
   return merged;
+}
+
+const DURABLE_RESUME_OUTPUT_STEP_IDS = [
+  'source_analysis',
+  'season_plan',
+  'world_bible',
+  'character_bible',
+  'output_directory',
+];
+
+function normalizeResumeStepsForOutputs(steps, outputs, now = new Date().toISOString()) {
+  const normalized = { ...(steps || {}) };
+  if (!outputs || typeof outputs !== 'object') return normalized;
+
+  for (const stepId of DURABLE_RESUME_OUTPUT_STEP_IDS) {
+    if (!Object.prototype.hasOwnProperty.call(outputs, stepId) || outputs[stepId] === undefined) continue;
+    const existing = normalized[stepId] || {};
+    if (existing.status === 'completed') continue;
+    normalized[stepId] = {
+      ...existing,
+      stepId,
+      status: 'completed',
+      updatedAt: now,
+    };
+  }
+
+  return normalized;
 }
 
 function normalizePipelineOutputDir(cfg, { storiesDir, runtimeRoot, appRoot }) {
@@ -640,6 +678,7 @@ function createWorkerLifecycle({
     const failure = job.failureContext || checkpoint?.failureContext || {};
     const message = String(failure.message || job.error || '');
     const { outputDirectory, manifest, manifestError } = loadResumeManifest(checkpoint);
+    const canResume = Boolean(checkpoint?.resumeContext?.requestPayload);
     const units = manifest?.units && typeof manifest.units === 'object' ? manifest.units : {};
     const unitIds = Object.keys(units);
     const reusableUnits = unitIds.filter((id) => units[id]?.status === 'completed');
@@ -647,8 +686,10 @@ function createWorkerLifecycle({
     let failedUnit = failure.failureStepId || failure.failurePhase || job.currentPhase || 'generation';
     let resumeFromUnit = failure.resumeFromStepId || failedUnit;
 
-    const sceneMatch = message.match(/SceneWriter\.execute\(([^)\s]+)\)/i)
-      || message.match(/scene\s+([a-z0-9._-]+)/i);
+    const sceneMatch = isArchitectureResumeFailure(message, failure)
+      ? null
+      : message.match(/SceneWriter\.execute\(([^)\s]+)\)/i)
+        || message.match(/scene\s+([a-z0-9._-]+)/i);
     if (/final.*save|story package|manifest|writeFinalStoryPackage|nodeRequire/i.test(message)) {
       strategy = 'save';
       failedUnit = 'final_story_package';
@@ -670,11 +711,14 @@ function createWorkerLifecycle({
       failedUnit,
       resumeFromUnit,
       outputDirectory,
+      canResume,
       reusableUnitCount: reusableUnits.length,
       reusableUnits: reusableUnits.slice(0, 50),
       manifestAvailable: Boolean(manifest),
       manifestError,
-      humanSummary: strategy === 'scene'
+      humanSummary: !canResume
+        ? 'Resume is unavailable because the private request payload for this older job is no longer stored. Start a new generation with the same settings.'
+        : strategy === 'scene'
         ? `Resume will reuse ${reusableUnits.length} completed checkpoint unit(s) and restart around ${resumeFromUnit}.`
         : strategy === 'images'
           ? `Resume will reuse story/text checkpoints where available and image cache entries in the existing output directory.`
@@ -722,9 +766,47 @@ function createWorkerLifecycle({
         jobId: job.id,
         pid: job.pid,
         orphaned: true,
+        trackedByProxy: activeWorkers.has(job.id),
+        pidAlive: isProcessAlive(job.pid),
+        lastHeartbeatAt: job.lastHeartbeatAt,
+        lastWorkerEventAt: job.lastWorkerEventAt,
+        lastWorkerEventType: job.lastWorkerEventType,
+        lastPipelineEventAt: job.lastPipelineEventAt,
+        lastPipelinePhase: job.lastPipelinePhase,
+        lastPipelineMessage: job.lastPipelineMessage,
         lastEvent,
         requiredSlotFailures,
         outputDirectory: getOutputDirectoryFromJob(job, checkpoint),
+      },
+      timestamp: new Date().toISOString(),
+    }, 400);
+  }
+
+  function buildStaleFailureContext(job, { staleMinutes, isPending }) {
+    const message = isPending
+      ? `Queued ${staleMinutes} minutes without an available worker slot`
+      : `Worker stale for ${staleMinutes} minutes`;
+    return stripLargeValues({
+      message,
+      failurePhase: job.currentPhase || 'generation',
+      failureStepId: job.currentPhase || 'generation',
+      failureKind: isPending ? 'worker_queue_timeout' : 'worker_heartbeat_timeout',
+      resumeFromStepId: job.currentPhase || 'generation',
+      resumePatchableInputs: ['settings'],
+      context: {
+        jobId: job.id,
+        pid: job.pid,
+        pending: isPending,
+        trackedByProxy: activeWorkers.has(job.id),
+        pidAlive: isProcessAlive(job.pid),
+        staleMinutes,
+        lastHeartbeatAt: job.lastHeartbeatAt,
+        lastWorkerEventAt: job.lastWorkerEventAt,
+        lastWorkerEventType: job.lastWorkerEventType,
+        lastPipelineEventAt: job.lastPipelineEventAt,
+        lastPipelinePhase: job.lastPipelinePhase,
+        lastPipelineMessage: job.lastPipelineMessage,
+        outputDirectory: getOutputDirectoryFromJob(job, loadCheckpoints().find((c) => c.jobId === job.id)),
       },
       timestamp: new Date().toISOString(),
     }, 400);
@@ -913,6 +995,11 @@ function createWorkerLifecycle({
             reason: 'orphaned_process',
             pid: job.pid,
             failureKind: failureContext.failureKind,
+            trackedByProxy: failureContext.context?.trackedByProxy,
+            pidAlive: failureContext.context?.pidAlive,
+            lastHeartbeatAt: failureContext.context?.lastHeartbeatAt,
+            lastWorkerEventAt: failureContext.context?.lastWorkerEventAt,
+            lastPipelinePhase: failureContext.context?.lastPipelinePhase,
             at: failed.updatedAt,
           });
           return failed;
@@ -933,19 +1020,25 @@ function createWorkerLifecycle({
       if (now - heartbeat < staleThreshold) return job;
       changed = true;
       const staleMin = Math.round((now - heartbeat) / 60000);
+      const failureContext = buildStaleFailureContext(job, { staleMinutes: staleMin, isPending });
       const failed = {
         ...job,
         status: 'failed',
-        error: job.error || (isPending
-          ? `Queued ${staleMin} minutes without an available worker slot`
-          : `Worker stale for ${staleMin} minutes`),
+        error: job.error || failureContext.message,
+        failureContext,
         updatedAt: new Date().toISOString(),
         deadLetter: true,
       };
+      updateCheckpoint(job.id, { failureContext });
       appendDeadLetter({
         jobId: job.id,
         reason: isPending ? 'queue_timeout' : 'stale',
         staleMinutes: staleMin,
+        failureKind: failureContext.failureKind,
+        pid: job.pid,
+        trackedByProxy: failureContext.context?.trackedByProxy,
+        pidAlive: failureContext.context?.pidAlive,
+        lastHeartbeatAt: job.lastHeartbeatAt,
         at: failed.updatedAt,
       });
       return failed;
@@ -1041,11 +1134,40 @@ function createWorkerLifecycle({
       entryScriptPath: runnerPath,
       payloadPath,
     });
-    activeWorkers.set(workerJob.id, { proc, payloadPath, resultPath });
-    upsertWorkerJob(workerJob.id, { status: 'running', pid: proc.pid, startedAt: new Date().toISOString() });
+    const workerStartedAt = new Date().toISOString();
+    activeWorkers.set(workerJob.id, {
+      proc,
+      payloadPath,
+      resultPath,
+      startedAt: workerStartedAt,
+      lastWorkerEventAt: workerStartedAt,
+      lastWorkerEventType: 'spawn',
+    });
+    upsertWorkerJob(workerJob.id, {
+      status: 'running',
+      pid: proc.pid,
+      startedAt: workerStartedAt,
+      workerSpawnedAt: workerStartedAt,
+      lastWorkerEventAt: workerStartedAt,
+      lastWorkerEventType: 'spawn',
+    });
+    appendWorkerTimeline(workerJob.id, {
+      workerEvent: true,
+      type: 'worker_spawn',
+      pid: proc.pid,
+      timestamp: workerStartedAt,
+      message: `Spawned worker process pid=${proc.pid}`,
+    });
 
     proc.on('error', (err) => {
       console.error(`[Proxy] Worker spawn error for ${workerJob.id}: ${err.message}`);
+      appendWorkerTimeline(workerJob.id, {
+        workerEvent: true,
+        type: 'worker_spawn_error',
+        pid: proc.pid,
+        message: err.message,
+        timestamp: new Date().toISOString(),
+      });
       activeWorkers.delete(workerJob.id);
       const failed = upsertWorkerJob(workerJob.id, {
         status: 'failed',
@@ -1071,6 +1193,12 @@ function createWorkerLifecycle({
           const evt = JSON.parse(trimmed);
           if (!evt.workerEvent) continue;
           appendWorkerTimeline(workerJob.id, evt);
+          const active = activeWorkers.get(workerJob.id);
+          const eventAt = evt.timestamp || new Date().toISOString();
+          if (active) {
+            active.lastWorkerEventAt = eventAt;
+            active.lastWorkerEventType = evt.type;
+          }
 
           if (evt.type === 'pipeline_event') {
             const phase = evt.phase || 'processing';
@@ -1080,7 +1208,17 @@ function createWorkerLifecycle({
             const updates = {
               currentPhase: phase,
               progress: phase === 'complete' ? 100 : nextProgress,
+              lastWorkerEventAt: eventAt,
+              lastWorkerEventType: evt.type,
+              lastPipelineEventAt: eventAt,
+              lastPipelinePhase: phase,
+              lastPipelineMessage: typeof evt.message === 'string' ? evt.message.slice(0, 300) : undefined,
             };
+            if (active) {
+              active.lastPipelineEventAt = eventAt;
+              active.lastPipelinePhase = phase;
+              active.lastPipelineMessage = updates.lastPipelineMessage;
+            }
             if (evt.telemetry && typeof evt.telemetry === 'object') {
               if (typeof evt.telemetry.phaseProgress === 'number') updates.phaseProgress = evt.telemetry.phaseProgress;
               if (typeof evt.telemetry.currentItem === 'number') updates.currentItem = evt.telemetry.currentItem;
@@ -1103,30 +1241,37 @@ function createWorkerLifecycle({
               updates.generationPlan = evt.data.generationPlan;
             }
             upsertWorkerJob(workerJob.id, updates);
-            if (evt.eventType === 'checkpoint' && evt.data && typeof evt.data === 'object' && evt.data.stepId && Object.prototype.hasOwnProperty.call(evt.data, 'output')) {
-              const checkpointFile = persistCheckpointOutput(workerJob.id, evt.data.stepId, evt.data.output);
+            const savedCheckpointStepId = evt.eventType === 'checkpoint'
+              && evt.data
+              && typeof evt.data === 'object'
+              && evt.data.stepId
+              && Object.prototype.hasOwnProperty.call(evt.data, 'output')
+              ? evt.data.stepId
+              : null;
+            if (savedCheckpointStepId) {
+              const checkpointFile = persistCheckpointOutput(workerJob.id, savedCheckpointStepId, evt.data.output);
               updateCheckpoint(workerJob.id, {
                 outputs: {
-                  [evt.data.stepId]: { __checkpointFile: checkpointFile },
+                  [savedCheckpointStepId]: { __checkpointFile: checkpointFile },
                 },
                 steps: {
-                  [evt.data.stepId]: {
-                    stepId: evt.data.stepId,
+                  [savedCheckpointStepId]: {
+                    stepId: savedCheckpointStepId,
                     status: 'completed',
                     updatedAt: new Date().toISOString(),
-                    idempotencyKey: `${workerJob.id}:${evt.data.stepId}`,
+                    idempotencyKey: `${workerJob.id}:${savedCheckpointStepId}`,
                     artifactKey: evt.data.artifactKey,
                   },
                 },
               });
-              markArtifactCommitted(workerJob.id, evt.data.artifactKey || `checkpoint:${evt.data.stepId}`, { source: 'pipeline-checkpoint' });
+              markArtifactCommitted(workerJob.id, evt.data.artifactKey || `checkpoint:${savedCheckpointStepId}`, { source: 'pipeline-checkpoint' });
             }
             updateCheckpoint(workerJob.id, {
               lastEvent: evt,
               steps: {
                 [phase]: {
                   stepId: phase,
-                  status: evt.eventType === 'phase_complete' ? 'completed' : 'running',
+                  status: evt.eventType === 'phase_complete' || savedCheckpointStepId === phase ? 'completed' : 'running',
                   updatedAt: new Date().toISOString(),
                   idempotencyKey: `${workerJob.id}:${phase}`,
                 },
@@ -1249,7 +1394,23 @@ function createWorkerLifecycle({
             });
             markArtifactCommitted(workerJob.id, `step:${evt.step || 'unknown'}`, { source: 'worker-step' });
           } else if (evt.type === 'heartbeat') {
-            upsertWorkerJob(workerJob.id, {});
+            if (active) {
+              active.lastHeartbeatAt = eventAt;
+              active.lastHeartbeat = stripLargeValues(evt, 200);
+            }
+            upsertWorkerJob(workerJob.id, {
+              lastHeartbeatAt: eventAt,
+              lastWorkerEventAt: eventAt,
+              lastWorkerEventType: evt.type,
+              heartbeat: stripLargeValues({
+                rssBytes: evt.rssBytes,
+                heapUsedBytes: evt.heapUsedBytes,
+                heapTotalBytes: evt.heapTotalBytes,
+                intervalMs: evt.intervalMs,
+                boot: evt.boot,
+                status: evt.status,
+              }, 200),
+            });
           }
         } catch {
           appendWorkerTimeline(workerJob.id, {
@@ -1274,9 +1435,36 @@ function createWorkerLifecycle({
     });
 
     proc.on('close', (code, signal) => {
+      const active = activeWorkers.get(workerJob.id);
+      const closeAt = new Date().toISOString();
+      const resultFound = fs.existsSync(resultPath);
+      const closeDiagnostics = stripLargeValues({
+        pid: proc.pid,
+        code,
+        signal: signal || null,
+        resultFound,
+        resultPath,
+        payloadPath,
+        trackedBeforeClose: activeWorkers.has(workerJob.id),
+        startedAt: active?.startedAt,
+        closedAt: closeAt,
+        lastHeartbeatAt: active?.lastHeartbeatAt,
+        lastWorkerEventAt: active?.lastWorkerEventAt,
+        lastWorkerEventType: active?.lastWorkerEventType,
+        lastPipelineEventAt: active?.lastPipelineEventAt,
+        lastPipelinePhase: active?.lastPipelinePhase,
+        lastPipelineMessage: active?.lastPipelineMessage,
+      }, 400);
+      appendWorkerTimeline(workerJob.id, {
+        workerEvent: true,
+        type: 'worker_close',
+        timestamp: closeAt,
+        message: `Worker exited with code=${code} signal=${signal || 'none'}`,
+        diagnostics: closeDiagnostics,
+      });
       activeWorkers.delete(workerJob.id);
       let result = null;
-      if (fs.existsSync(resultPath)) {
+      if (resultFound) {
         try {
           result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
         } catch (e) {
@@ -1326,7 +1514,13 @@ function createWorkerLifecycle({
         const currentJob = loadWorkerJobs().find((j) => j.id === workerJob.id);
         const failureContext = currentJob?.failureContext || buildFailureContextFromEvent({
           message: `Worker exited with code=${code} signal=${signal || 'none'}`,
+          failurePhase: currentJob?.currentPhase || workerJob.currentPhase || 'generation',
+          failureStepId: currentJob?.currentPhase || workerJob.currentPhase || 'generation',
           failureKind: 'worker_exit',
+          resumeFromStepId: currentJob?.currentPhase || workerJob.currentPhase || 'generation',
+          context: {
+            closeDiagnostics,
+          },
         }, currentJob || workerJob);
         const errorMsg = failureContext.message || `Worker exited with code=${code} signal=${signal || 'none'}`;
         const isQuotaPause = isQuotaFailureContext(failureContext);
@@ -1345,6 +1539,10 @@ function createWorkerLifecycle({
             reason: 'worker_exit',
             code,
             signal,
+            pid: proc.pid,
+            resultFound,
+            lastHeartbeatAt: closeDiagnostics.lastHeartbeatAt,
+            lastPipelinePhase: closeDiagnostics.lastPipelinePhase,
             at: new Date().toISOString(),
           });
         }
@@ -1510,6 +1708,11 @@ function createWorkerLifecycle({
               reason: 'orphaned_process',
               pid: existing.pid,
               failureKind: failureContext.failureKind,
+              trackedByProxy: failureContext.context?.trackedByProxy,
+              pidAlive: failureContext.context?.pidAlive,
+              lastHeartbeatAt: failureContext.context?.lastHeartbeatAt,
+              lastWorkerEventAt: failureContext.context?.lastWorkerEventAt,
+              lastPipelinePhase: failureContext.context?.lastPipelinePhase,
               at: new Date().toISOString(),
             });
             syncGenerationMirrorFromWorker(failed);
@@ -1811,15 +2014,7 @@ function createWorkerLifecycle({
         patchedOutputs.output_directory = { outputDirectory: priorOutputDir };
       }
 
-      const resumeSteps = { ...(hydratedCheckpoint?.steps || {}) };
-      if (priorOutputDir) {
-        resumeSteps.output_directory = {
-          ...(resumeSteps.output_directory || {}),
-          stepId: 'output_directory',
-          status: 'completed',
-          updatedAt: new Date().toISOString(),
-        };
-      }
+      const resumeSteps = normalizeResumeStepsForOutputs(hydratedCheckpoint?.steps || {}, patchedOutputs);
 
       const resumeCheckpoint = {
         ...(hydratedCheckpoint || {}),
@@ -1946,4 +2141,10 @@ function createWorkerLifecycle({
   };
 }
 
-module.exports = { createWorkerLifecycle };
+module.exports = {
+  createWorkerLifecycle,
+  __test__: {
+    isArchitectureResumeFailure,
+    normalizeResumeStepsForOutputs,
+  },
+};

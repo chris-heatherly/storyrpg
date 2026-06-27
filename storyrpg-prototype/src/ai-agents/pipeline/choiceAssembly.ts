@@ -58,8 +58,7 @@ function isUnsafeFallbackText(text: string | undefined): boolean {
     || /\bdecision changes the tone\b/i.test(text)
     || /\bscene\s*\d+\b/i.test(text)
     || /\bserves\s+the\s+\w+\s+beat\b/i.test(text)
-    || /\bforward\s+pressure\s*:/i.test(text)
-    || /\bsceneEpisode\b/i.test(text);
+    || /\bforward\s+pressure\s*:/i.test(text);
 }
 
 function isMixedDecisionHint(text: string | undefined): boolean {

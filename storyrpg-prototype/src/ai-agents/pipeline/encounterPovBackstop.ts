@@ -12,9 +12,9 @@ import {
  * regen path (EncounterArchitect POV directive) is the primary fix; THIS is the deterministic
  * guarantee that a third-person break never ships even on truncated/variant output.
  *
- * Only NARRATIVE prose fields are touched (not choice option text, which is already imperative
- * second person, nor labels/prompts). Pronoun coercion is held back when a same-gender NPC
- * shares the string (she/her ambiguity) — the residual is reported for the LLM-regen gate.
+ * Narrative prose fields are touched, plus choice option text that explicitly names the
+ * protagonist. Pronoun coercion is held back when a same-gender NPC shares the string
+ * (she/her ambiguity) — the residual is reported for the LLM-regen gate.
  */
 
 const NARRATIVE_KEYS = new Set([
@@ -118,19 +118,48 @@ function looksLikeChoiceText(obj: Record<string, unknown>, key: string): boolean
   );
 }
 
-function walkNarrative(node: unknown, fn: (s: string) => string, depth = 0): void {
+function replaceChoicePhrase(text: string, pattern: RegExp, replacement: string): string {
+  return text.replace(pattern, (match) =>
+    /^[A-Z]/.test(match) ? replacement.charAt(0).toUpperCase() + replacement.slice(1) : replacement,
+  );
+}
+
+function repairChoiceTextProtagonistReference(text: string, protagonistName: string): { text: string; changed: boolean } {
+  const coerced = coerceThirdPersonProtagonistToSecond(text, protagonistName, {
+    coercePronouns: false,
+  });
+  let repaired = coerced.text;
+  repaired = replaceChoicePhrase(repaired, /\bdemand your location\b/gi, 'demand answers');
+  repaired = replaceChoicePhrase(repaired, /\bask for your location\b/gi, 'ask where this is going');
+  repaired = replaceChoicePhrase(repaired, /\bask where your location is\b/gi, 'ask where this is going');
+  return {
+    text: repaired,
+    changed: coerced.changed || repaired !== text,
+  };
+}
+
+function walkNarrative(
+  node: unknown,
+  fn: (s: string) => string,
+  choiceFn: (s: string) => string,
+  depth = 0,
+): void {
   if (depth > 12 || node == null) return;
   if (Array.isArray(node)) {
-    for (const v of node) walkNarrative(v, fn, depth + 1);
+    for (const v of node) walkNarrative(v, fn, choiceFn, depth + 1);
     return;
   }
   if (typeof node === 'object') {
     const obj = node as Record<string, unknown>;
     for (const [k, v] of Object.entries(obj)) {
       if (typeof v === 'string') {
-        if (NARRATIVE_KEYS.has(k) && !looksLikeChoiceText(obj, k)) obj[k] = fn(v);
+        if (looksLikeChoiceText(obj, k)) {
+          obj[k] = choiceFn(v);
+        } else if (NARRATIVE_KEYS.has(k)) {
+          obj[k] = fn(v);
+        }
       } else {
-        walkNarrative(v, fn, depth + 1);
+        walkNarrative(v, fn, choiceFn, depth + 1);
       }
     }
   }
@@ -146,7 +175,7 @@ function collectNarrative(node: unknown, out: string[], depth = 0): void {
     const obj = node as Record<string, unknown>;
     for (const [k, v] of Object.entries(obj)) {
       if (typeof v === 'string') {
-        if (NARRATIVE_KEYS.has(k) && !looksLikeChoiceText(obj, k) && v.trim()) out.push(v);
+        if ((NARRATIVE_KEYS.has(k) || looksLikeChoiceText(obj, k)) && v.trim()) out.push(v);
       } else {
         collectNarrative(v, out, depth + 1);
       }
@@ -191,20 +220,28 @@ export function applyEncounterPovBackstop(
   const sameGender = sameGenderNpcNames(story, prot.pronouns).filter((n) => n !== prot.name);
   let coerced = 0;
   eachEncounter(story, (enc) =>
-    walkNarrative(enc, (s) => {
-      const residue = repairSecondPersonProtagonistResidue(s);
-      if (!firstNameRe(prot.name!).test(residue.text)) {
-        if (residue.changed) coerced += 1;
-        return residue.text;
-      }
-      const coercePronouns = Boolean(subjectPronoun) && !textHasAnyName(s, sameGender);
-      const { text, changed } = coerceThirdPersonProtagonistToSecond(residue.text, prot.name, {
-        coercePronouns,
-        subjectPronoun,
-      });
-      if (changed || residue.changed) coerced += 1;
-      return text;
-    }),
+    walkNarrative(
+      enc,
+      (s) => {
+        const residue = repairSecondPersonProtagonistResidue(s);
+        if (!firstNameRe(prot.name!).test(residue.text)) {
+          if (residue.changed) coerced += 1;
+          return residue.text;
+        }
+        const coercePronouns = Boolean(subjectPronoun) && !textHasAnyName(s, sameGender);
+        const { text, changed } = coerceThirdPersonProtagonistToSecond(residue.text, prot.name, {
+          coercePronouns,
+          subjectPronoun,
+        });
+        if (changed || residue.changed) coerced += 1;
+        return text;
+      },
+      (s) => {
+        const { text, changed } = repairChoiceTextProtagonistReference(s, prot.name!);
+        if (changed) coerced += 1;
+        return text;
+      },
+    ),
   );
   return { coerced, residualBreaks: findEncounterPovBreaks(story, prot) };
 }

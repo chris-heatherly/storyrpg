@@ -18,9 +18,12 @@ import { EpisodeBlueprint } from './StoryArchitect';
 import { SeasonBible, ThreadLedger } from '../../types';
 import type {
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
 export type TwistKind = 'reversal' | 'revelation' | 'betrayal' | 'reframe';
 
@@ -62,14 +65,18 @@ export interface TwistArchitectInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level 7-point beat map for placing foreshadow + reveal. */
-  seasonSevenPoint?: SevenPointStructure;
+  /** Season-level legacy-structure beat map for placing foreshadow + reveal. */
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /**
    * The beat(s) this episode carries. Episodes carrying Midpoint or
    * Plot Turn 2 are natural homes for the season's biggest twists.
    */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle role(s) for this episode. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 }
 
 export class TwistArchitect extends BaseAgent {
@@ -181,8 +188,14 @@ Return ONLY JSON.
           2,
         )}\n`
       : '';
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: input.episodeStoryCircleRole,
+      episodeCircle: bp.episodeCircle,
+    });
 
-    return `# Episode: ${bp.episodeId}\n\n## Scenes\n${scenes}\n${threadBlock}\nSchedule the episode's twist using the REQUIRED JSON STRUCTURE.`;
+    return `# Episode: ${bp.episodeId}\n\n${structuralContext}\n## Scenes\n${scenes}\n${threadBlock}\nSchedule the episode's twist using the REQUIRED JSON STRUCTURE.`;
   }
 
   private normalizePlan(plan: TwistPlan, input: TwistArchitectInput): TwistPlan {

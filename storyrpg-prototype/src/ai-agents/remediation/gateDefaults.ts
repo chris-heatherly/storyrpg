@@ -78,6 +78,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rescue a failing one. Reversible via env=0.
   GATE_FINAL_CONTRACT_REPAIR: true,
 
+  // Scene-shape architecture gates. These were kept default-off while planned
+  // scenes could bypass the architecture validator path and emit generic scene
+  // containers. Planned-scene blueprints now receive deterministic dramatic
+  // structure / turn-contract metadata and validate through the same policy as
+  // invented blueprints, so missing scene question/turn/changed-state and
+  // removable-scene failures are correctness issues, not broad craft taste.
+  // Reversible via =0.
+  GATE_DRAMATIC_STRUCTURE: true,
+  GATE_SCENE_TURN_CONTRACT: true,
+
   // LLM scene-prose repair handler INSIDE the final-contract repair loop
   // (2026-06-11 failure-cycle audit: 20 runs generated every episode and then
   // died at the contract, median 73 min each). When ON, blocking prose-
@@ -442,7 +452,7 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // partial-season + episode-scope fixes), InformationLedgerSchedule (encounter-beat
   // scan + arc-reframe-summary exemption), and SignatureDevicePresence (encounter prose
   // + verb-only negation cues + length-gated inversion) all report 0 errors. The two
-  // PLAN-vs-treatment validators (AuthoredEpisodeConformance, SevenPointAnchor) are
+  // PLAN-vs-treatment validators (AuthoredEpisodeConformance, StoryCircleAnchor) are
   // independent of how many episodes were generated and could not be offline-verified
   // (the run did not persist sourceAnalysis); watch them on the next live run.
   // Reversible per-env via STORYRPG / GATE_TREATMENT_SOURCED_ARM=0 (kill-switch).
@@ -452,7 +462,7 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // Promoted ON to ENFORCE authored-treatment fidelity (not merely steer it): with
   // these off the validators are dispatched but never block, so a re-cut episode
   // list, an empty encounter anchor, a missing signature device, a mis-scheduled
-  // info reveal, or a mis-anchored 7-point beat would ship silently. SCOPE: these
+  // info reveal, or a mis-anchored legacy-structure beat would ship silently. SCOPE: these
   // escalate to blocking ONLY on treatment-sourced runs (runFidelityValidators sets
   // treatmentSourced from sourceFormat; FinalStoryContractValidator.validateFidelity
   // -Findings only hard-fails when treatmentSourced) — non-treatment generation is
@@ -470,7 +480,7 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // still suppresses future-episode obligations that have not been generated yet.
   GATE_INFORMATION_LEDGER_SCHEDULE: true,
   GATE_SIGNATURE_DEVICE_PRESENCE: true,
-  GATE_SEVEN_POINT_ANCHOR_CONFORMANCE: true,
+  GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE: true,
   // WS2a (CONSISTENCY_PLAN 2026-06-09): reconvergence-residue repair + degrade.
   // The #1 archived-run killer (16 zero-output runs) was the SceneGraphBranchValidator
   // missing_branch_residue ERROR escalating straight to a pipeline abort. With this ON,

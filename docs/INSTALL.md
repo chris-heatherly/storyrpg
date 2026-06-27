@@ -353,7 +353,52 @@ STABLE_DIFFUSION_BASE_URL=http://localhost:7860
 
 With `EXPO_PUBLIC_SD_ENABLED=true` the Generator screen exposes an `SD` segment and a parameters panel where you can override base URL, model, sampler, steps, CFG, and negative prompt per session. ControlNet models / IP-Adapter model names, per-character LoRA mappings, and style LoRAs are part of `StableDiffusionSettings` and can be edited via the UI or passed programmatically in `PipelineConfig.imageGen.stableDiffusion`. See `docs/IMAGE_PIPELINE_RUNTIME.md` (Provider Notes → `stable-diffusion`) for the full feature matrix.
 
-### 4.c) Optional — LoRA Auto-Training Sidecar
+### 4.c) Optional — Cognee Pipeline Memory Sidecar
+
+StoryRPG can use [Cognee](https://github.com/topoteretes/cognee) as the
+Generator-side long-term memory provider for pipeline lessons, validator
+findings, generated-run diagnostics, and character reference history. Cognee
+memory is advisory prompt context only; validators and typed artifacts remain
+the source of truth.
+
+1. Add Cognee settings to `storyrpg-prototype/.env`:
+
+```env
+# --- Cognee memory (Generator / worker only; never EXPO_PUBLIC_) ---
+STORYRPG_MEMORY_PROVIDER=cognee
+COGNEE_BASE_URL=http://localhost:8000
+# Optional when the Cognee server requires auth:
+# COGNEE_API_KEY=ck_...
+
+COGNEE_PROJECT_DATASET=storyrpg-project
+COGNEE_RUN_DATASET_PREFIX=storyrpg-run
+COGNEE_VALIDATOR_DATASET=storyrpg-validator-history
+
+# Cognee needs an LLM key for graph extraction.
+LLM_API_KEY=your-openai-compatible-key
+```
+
+2. Start the sidecar:
+
+```bash
+cd storyrpg-prototype
+docker compose -f docker-compose.cognee.yml up -d
+npm run memory:health
+```
+
+3. Seed memory:
+
+```bash
+npm run memory:index-project
+npm run memory:index-run -- --storyId your-generated-story-folder
+npm run memory:ask -- "What validator failures have repeated recently?"
+```
+
+If Cognee is unavailable, the pipeline fails open and falls back to the local
+`pipeline-memories/` file provider when configured. Cognee env vars are
+server/generator-side only and must not be prefixed with `EXPO_PUBLIC_`.
+
+### 4.d) Optional — LoRA Auto-Training Sidecar
 
 Stable Diffusion is the only provider that can consume LoRAs, so the
 pipeline ships an **auto-train LoRA** subsystem that produces
@@ -906,6 +951,10 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 | `npm run generate:fantasy` | Generate a fantasy-genre story |
 | `npm run generate:doc` | Generate from a document file |
 | `npm run generate:template` | Generate using a template file |
+| `npm run memory:index-project` | Index StoryRPG docs/contracts into Cognee |
+| `npm run memory:index-run` | Index a generated story run into Cognee (`-- --storyId <folder>` optional) |
+| `npm run memory:ask` | Query Cognee project/validator memory (`-- "question"`) |
+| `npm run memory:health` | Check Cognee sidecar health |
 | `npm run proxy:compose:up` | Start proxy in Docker |
 | `npm run proxy:compose:down` | Stop Docker proxy |
 | `npm run proxy:compose:logs` | View Docker proxy logs |

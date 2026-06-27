@@ -115,4 +115,60 @@ describe('buildTransitionBridgeRepairHandler', () => {
     expect(bridge.text.startsWith("You drive out of Kylie's Lipscani Apartment")).toBe(true);
     expect(new SceneTransitionContinuityValidator().validate({ story: inputStory }).valid).toBe(true);
   });
+
+  it('repairs detected adjacent-scene jumps using scene-plan timeline metadata', () => {
+    const bridge = beat({
+      id: 's3-2-b6',
+      text: 'You snap the laptop shut. The club is waiting for its next chapter.',
+      nextSceneId: 'enc-3',
+    });
+    const inputStory = story([
+      scene({
+        id: 's3-2',
+        beats: [bridge],
+        leadsTo: ['enc-3'],
+      }),
+      scene({
+        id: 'enc-3',
+        beats: [beat({ id: 'enc-3-b1', text: 'Victor watches your face for the answer.' })],
+      }),
+    ]);
+    const scenePlan = {
+      scenes: [
+        {
+          id: 's3-2',
+          episodeNumber: 3,
+          order: 0,
+          kind: 'standard',
+          title: 'Apartment',
+          dramaticPurpose: 'Kylie leaves her apartment.',
+          narrativeRole: 'setup',
+          locations: ["Kylie's Lipscani Apartment"],
+          setsUp: [],
+          paysOff: [],
+        },
+        {
+          id: 'enc-3',
+          episodeNumber: 3,
+          order: 1,
+          kind: 'encounter',
+          title: 'Club',
+          dramaticPurpose: 'Kylie arrives at the club.',
+          narrativeRole: 'escalation',
+          locations: ['Vâlcescu Club'],
+          setsUp: [],
+          paysOff: [],
+        },
+      ],
+      byEpisode: { 3: ['s3-2', 'enc-3'] },
+      setupPayoffEdges: [],
+    };
+    expect(new SceneTransitionContinuityValidator().validate({ story: inputStory, scenePlan }).valid).toBe(false);
+
+    const touched = repairDetectedTransitionBridgeContinuity(inputStory, scenePlan);
+
+    expect(touched).toBe(1);
+    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn?.startsWith("You leave Kylie's Lipscani Apartment and arrive at Vâlcescu Club")).toBe(true);
+    expect(new SceneTransitionContinuityValidator().validate({ story: inputStory, scenePlan }).valid).toBe(true);
+  });
 });

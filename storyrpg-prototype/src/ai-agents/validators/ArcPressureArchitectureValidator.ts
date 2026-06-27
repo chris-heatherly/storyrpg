@@ -4,18 +4,20 @@ import type {
   SeasonArc,
   SeasonPlan,
 } from '../../types/seasonPlan';
+import type { StoryCircleBeat, StoryCircleRoleAssignment } from '../../types/sourceAnalysis';
 import type { ArcPressureTreatmentContract } from '../../types/scenePlan';
+import { STORY_CIRCLE_BEATS } from '../../types/sourceAnalysis';
 import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
 export interface ArcPressureArchitectureOptions {
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
   treatmentSourced?: boolean;
   arcPressureContracts?: ArcPressureTreatmentContract[];
 }
 
 export interface ArcPressureArchitectureMetrics {
   arcCount: number;
+  arcsWithStoryCircleSpan: number;
   arcsWithQuestion: number;
   arcsWithIdentityPressure: number;
   arcsWithMidpointRecontextualization: number;
@@ -45,6 +47,21 @@ const CRISIS_LANGUAGE = /\b(fail|failure|collapse|lost|loss|cost|irreversible|br
 const FLAT_ORDER_LANGUAGE = /\b(then|next|after that|continues|moves on|travels|arrives|later)\b/i;
 const TURN_PRESSURE_LANGUAGE = /\b(escalat|reverse|reveal|cost|choice|decision|crisis|finale|handoff|consequence|pressure|because|therefore|but|discovers?|loses?|forces?|changes?|reframes?)\b/i;
 
+const STORY_CIRCLE_INDEX = new Map<StoryCircleBeat, number>(
+  STORY_CIRCLE_BEATS.map((beat, index) => [beat, index]),
+);
+
+const TURN_TYPES_BY_BEAT: Partial<Record<StoryCircleBeat, ReadonlySet<ArcEpisodeTurnoutType>>> = {
+  you: new Set(['setup', 'revelation']),
+  need: new Set(['setup', 'choice', 'revelation']),
+  go: new Set(['choice', 'escalation', 'reversal']),
+  search: new Set(['escalation', 'reversal', 'revelation', 'choice']),
+  find: new Set(['revelation', 'recontextualization', 'choice']),
+  take: new Set(['cost', 'crisis', 'reversal', 'choice']),
+  return: new Set(['handoff', 'cost', 'recontextualization', 'revelation']),
+  change: new Set(['finale', 'revelation', 'choice']),
+};
+
 function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && !EMPTY_PLACEHOLDER.test(value);
 }
@@ -57,6 +74,12 @@ function expectedArcEpisodes(arc: SeasonArc): number[] {
     episodes.push(episodeNumber);
   }
   return episodes;
+}
+
+function primaryStoryCircleRoles(roles: StoryCircleRoleAssignment[] | undefined): StoryCircleRoleAssignment[] {
+  return (roles ?? []).filter((role) =>
+    role && role.roleKind !== 'expansion' && STORY_CIRCLE_INDEX.has(role.beat)
+  );
 }
 
 function textFrom(values: unknown[]): string {
@@ -86,6 +109,7 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
     const arcs = Array.isArray(plan.arcs) ? plan.arcs : [];
     const metrics: ArcPressureArchitectureMetrics = {
       arcCount: arcs.length,
+      arcsWithStoryCircleSpan: 0,
       arcsWithQuestion: 0,
       arcsWithIdentityPressure: 0,
       arcsWithMidpointRecontextualization: 0,
@@ -105,6 +129,7 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
     for (const arc of arcs) {
       this.validateArc(arc, plan, options, issues, metrics);
     }
+    this.validateStoryCircleOwnership(arcs, plan, issues);
     this.validateAuthoredContracts(arcs, options, issues);
 
     return this.result(issues, metrics);
@@ -134,11 +159,11 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
       issues.push(this.warning(
         `Arc "${arc.name}" spans ${length} episode(s); target 3-8 episodes where practical.`,
         `${location}.episodeRange`,
-        options.episodeStructureMode === 'sceneEpisodes'
-          ? 'In sceneEpisodes mode, treat this as a sceneEpisode chain. If the chain must be shorter or longer, keep turnouts explicit.'
-          : 'If source length forces an exception, keep the arc pressure fields explicit so the exception is intentional.',
+        'If source length forces an exception, keep the arc pressure fields explicit so the exception is intentional.',
       ));
     }
+
+    this.validateStoryCircleSpan(arc, plan, location, start, end, issues, metrics);
 
     if (!hasText(arc.arcQuestion)) {
       issues.push(this.error(
@@ -154,7 +179,7 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
       issues.push(this.error(
         `Arc "${arc.name}" is missing seasonQuestionRelation.`,
         `${location}.seasonQuestionRelation`,
-        'Explain how this arc pressures the season goal, stakes, or theme question without competing with the 7-point spine.',
+        'Explain how this arc pressures the season goal, stakes, or theme question without competing with the Story Circle spine.',
       ));
     }
 
@@ -171,7 +196,92 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
     this.validateMidpoint(arc, location, start, end, issues, metrics);
     this.validateLateCrisis(arc, location, start, end, issues, metrics);
     this.validateFinaleAndHandoff(arc, plan.totalEpisodes, location, issues);
-    this.validateTurnouts(arc, location, issues, metrics);
+    this.validateTurnouts(arc, plan, location, issues, metrics);
+  }
+
+  private validateStoryCircleSpan(
+    arc: SeasonArc,
+    plan: Pick<SeasonPlan, 'episodes'>,
+    location: string,
+    start: number,
+    end: number,
+    issues: ValidationIssue[],
+    metrics: ArcPressureArchitectureMetrics,
+  ): void {
+    const span = arc.storyCircleSpan;
+    if (!span) {
+      issues.push(this.error(
+        `Arc "${arc.name}" is missing storyCircleSpan.`,
+        `${location}.storyCircleSpan`,
+        'Assign the contiguous Story Circle beat span this arc owns; arcs are enforced through the eight-beat spine, not acts or legacy structural roles.',
+      ));
+      return;
+    }
+
+    const startIndex = STORY_CIRCLE_INDEX.get(span.startBeat);
+    const endIndex = STORY_CIRCLE_INDEX.get(span.endBeat);
+    if (startIndex === undefined || endIndex === undefined || startIndex > endIndex) {
+      issues.push(this.error(
+        `Arc "${arc.name}" has an invalid Story Circle span (${span.startBeat} -> ${span.endBeat}).`,
+        `${location}.storyCircleSpan`,
+        'Story Circle spans must move forward through you, need, go, search, find, take, return, change.',
+      ));
+      return;
+    }
+
+    if (span.startEpisode !== start || span.endEpisode !== end) {
+      issues.push(this.error(
+        `Arc "${arc.name}" storyCircleSpan episode range (${span.startEpisode}-${span.endEpisode}) does not match episodeRange (${start}-${end}).`,
+        `${location}.storyCircleSpan`,
+        'Keep the arc episode range and Story Circle ownership range identical so validators can prove handoff and turnout coverage.',
+      ));
+    }
+
+    const expectedBeats = STORY_CIRCLE_BEATS.slice(startIndex, endIndex + 1);
+    const owned = new Set(span.ownedBeats ?? []);
+    for (const beat of expectedBeats) {
+      if (!owned.has(beat)) {
+        issues.push(this.error(
+          `Arc "${arc.name}" storyCircleSpan omits owned beat "${beat}" inside its declared span.`,
+          `${location}.storyCircleSpan.ownedBeats`,
+          'ownedBeats must exactly cover the contiguous Story Circle beats from startBeat through endBeat.',
+        ));
+      }
+    }
+    for (const beat of owned) {
+      const index = STORY_CIRCLE_INDEX.get(beat);
+      if (index === undefined || index < startIndex || index > endIndex) {
+        issues.push(this.error(
+          `Arc "${arc.name}" owns Story Circle beat "${beat}" outside its declared span.`,
+          `${location}.storyCircleSpan.ownedBeats`,
+        ));
+      }
+    }
+
+    const arcEpisodes = plan.episodes.filter((episode) =>
+      episode.episodeNumber >= start && episode.episodeNumber <= end
+    );
+    for (const episode of arcEpisodes) {
+      const primaryRoles = primaryStoryCircleRoles(episode.storyCircleRole);
+      if (primaryRoles.length === 0) {
+        issues.push(this.error(
+          `Arc "${arc.name}" includes episode ${episode.episodeNumber}, but the episode has no primary Story Circle role.`,
+          `season.episodes[${episode.episodeNumber}].storyCircleRole`,
+        ));
+        continue;
+      }
+      for (const role of primaryRoles) {
+        if (!owned.has(role.beat)) {
+          issues.push(this.error(
+            `Arc "${arc.name}" includes episode ${episode.episodeNumber}, which carries Story Circle beat "${role.beat}" outside the arc's owned beats.`,
+            `${location}.storyCircleSpan.ownedBeats`,
+            'Either move the episode to the correct arc or expand the arc Story Circle span so arc ownership matches episode roles.',
+          ));
+        }
+      }
+    }
+
+    metrics.arcsWithStoryCircleSpan += 1;
   }
 
   private validateMidpoint(
@@ -184,17 +294,17 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
   ): void {
     const midpoint = arc.midpointRecontextualization;
     if (!midpoint) {
-      issues.push(this.error(
+      issues.push(this.warning(
         `Arc "${arc.name}" is missing midpointRecontextualization.`,
         `${location}.midpointRecontextualization`,
-        'The middle of the arc must change the question being asked, not just intensify it.',
+        'Optional craft note: arcs that cover search/find often benefit from a reframe, but Story Circle ownership and turnouts are the blocking structure.',
       ));
       return;
     }
 
     const midpointText = textFrom([midpoint.questionBefore, midpoint.questionAfter, midpoint.description]);
     if (!hasText(midpoint.questionBefore) || !hasText(midpoint.questionAfter) || !hasText(midpoint.description)) {
-      issues.push(this.error(
+      issues.push(this.warning(
         `Arc "${arc.name}" has an incomplete midpointRecontextualization.`,
         `${location}.midpointRecontextualization`,
         'Fill questionBefore, questionAfter, and description.',
@@ -227,17 +337,17 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
   ): void {
     const crisis = arc.lateArcCrisis;
     if (!crisis) {
-      issues.push(this.error(
+      issues.push(this.warning(
         `Arc "${arc.name}" is missing lateArcCrisis.`,
         `${location}.lateArcCrisis`,
-        'Add a late-arc crisis: apparent failure, irreversible cost, or collapse of the current plan.',
+        'Optional craft note: arcs that cover take/return often benefit from a late cost or collapse, but Story Circle ownership and turnouts are the blocking structure.',
       ));
       return;
     }
 
     const crisisText = textFrom([crisis.apparentFailure, crisis.irreversibleCost, crisis.description]);
     if (!hasText(crisis.apparentFailure) || !hasText(crisis.irreversibleCost) || !hasText(crisis.description)) {
-      issues.push(this.error(
+      issues.push(this.warning(
         `Arc "${arc.name}" has an incomplete lateArcCrisis.`,
         `${location}.lateArcCrisis`,
         'Fill apparentFailure, irreversibleCost, and description.',
@@ -255,7 +365,7 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
       issues.push(this.warning(
         `Arc "${arc.name}" lateArcCrisis is far from the final third of the arc.`,
         `${location}.lateArcCrisis.episodeNumber`,
-        'Keep the crisis near the 2/3 point unless the season 7-point spine requires otherwise.',
+        'Keep the crisis near the final third unless the season Story Circle ownership or source treatment requires otherwise.',
       ));
     }
     if (!CRISIS_LANGUAGE.test(crisisText)) {
@@ -291,6 +401,7 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
 
   private validateTurnouts(
     arc: SeasonArc,
+    plan: Pick<SeasonPlan, 'episodes'>,
     location: string,
     issues: ValidationIssue[],
     metrics: ArcPressureArchitectureMetrics,
@@ -339,10 +450,92 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
           'Turnouts should be escalation, reversal, discovery, cost, choice residue, crisis, finale, or handoff.',
         ));
       }
+      if (!turnout.storyCircleBeat || !STORY_CIRCLE_INDEX.has(turnout.storyCircleBeat)) {
+        issues.push(this.error(
+          `Arc "${arc.name}" turnout for episode ${turnout.episodeNumber} is missing a valid storyCircleBeat.`,
+          `${turnoutLocation}.storyCircleBeat`,
+        ));
+        complete = false;
+      } else {
+        const episode = plan.episodes.find((candidate) => candidate.episodeNumber === turnout.episodeNumber);
+        const roles = episode?.storyCircleRole ?? [];
+        const matchesEpisodeRole = roles.some((role) =>
+          role.beat === turnout.storyCircleBeat && role.roleKind === turnout.storyCircleRoleKind
+        );
+        if (!matchesEpisodeRole) {
+          issues.push(this.error(
+            `Arc "${arc.name}" turnout for episode ${turnout.episodeNumber} lands Story Circle beat "${turnout.storyCircleBeat}" (${turnout.storyCircleRoleKind}), but the episode does not carry that role.`,
+            `${turnoutLocation}.storyCircleBeat`,
+            'Arc turnouts must align with the episode Story Circle role so arc pressure is enforced inside the eight-beat spine.',
+          ));
+          complete = false;
+        }
+        const allowedTypes = TURN_TYPES_BY_BEAT[turnout.storyCircleBeat];
+        if (allowedTypes && !allowedTypes.has(turnout.turnType)) {
+          issues.push(this.warning(
+            `Arc "${arc.name}" episode ${turnout.episodeNumber} turnout type "${turnout.turnType}" is unusual for Story Circle beat "${turnout.storyCircleBeat}".`,
+            `${turnoutLocation}.turnType`,
+            `Use one of: ${[...allowedTypes].join(', ')} unless the source demands this turn type.`,
+          ));
+        }
+      }
     }
 
     if (complete) {
       metrics.arcsWithCompleteTurnouts += 1;
+    }
+  }
+
+  private validateStoryCircleOwnership(
+    arcs: SeasonArc[],
+    plan: Pick<SeasonPlan, 'episodes' | 'totalEpisodes'>,
+    issues: ValidationIssue[],
+  ): void {
+    const owners = new Map<StoryCircleBeat, string[]>();
+    for (const arc of arcs) {
+      for (const beat of arc.storyCircleSpan?.ownedBeats ?? []) {
+        owners.set(beat, [...(owners.get(beat) ?? []), arc.name]);
+      }
+    }
+
+    for (const episode of plan.episodes) {
+      for (const role of primaryStoryCircleRoles(episode.storyCircleRole)) {
+        const beatOwners = owners.get(role.beat) ?? [];
+        if (beatOwners.length === 0) {
+          issues.push(this.error(
+            `Primary Story Circle beat "${role.beat}" on episode ${episode.episodeNumber} is not owned by any arc.`,
+            `season.episodes[${episode.episodeNumber}].storyCircleRole`,
+            'Every primary Story Circle beat must belong to exactly one arc pressure movement.',
+          ));
+        } else if (beatOwners.length > 1) {
+          issues.push(this.error(
+            `Primary Story Circle beat "${role.beat}" is owned by multiple arcs: ${beatOwners.join(', ')}.`,
+            'season.arcs.storyCircleSpan',
+            'Split arcs by contiguous Story Circle spans; overlapping primary beat ownership is not allowed.',
+          ));
+        }
+      }
+    }
+
+    const sorted = arcs
+      .filter((arc) => arc.episodeRange?.start && arc.episodeRange?.end)
+      .sort((a, b) => a.episodeRange.start - b.episodeRange.start);
+    for (let index = 0; index < sorted.length - 1; index += 1) {
+      const current = sorted[index];
+      const next = sorted[index + 1];
+      if (current.episodeRange.end < plan.totalEpisodes && !hasText(current.handoffPressure)) {
+        issues.push(this.error(
+          `Arc "${current.name}" ends before the season finale but has no handoffPressure.`,
+          `season.arcs.${current.id || current.name}.handoffPressure`,
+          'Non-final arcs must hand residue, cost, reveal, route pressure, or identity pressure into the next arc.',
+        ));
+      }
+      if (next.incomingPressureFromArcId && next.incomingPressureFromArcId !== current.id) {
+        issues.push(this.warning(
+          `Arc "${next.name}" incomingPressureFromArcId points to "${next.incomingPressureFromArcId}" instead of the prior arc "${current.id}".`,
+          `season.arcs.${next.id || next.name}.incomingPressureFromArcId`,
+        ));
+      }
     }
   }
 

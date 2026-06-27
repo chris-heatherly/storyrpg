@@ -13,10 +13,6 @@ import type { SeasonPlan } from '../../types/seasonPlan';
 type StoryAnalysisPreferences = {
   targetScenesPerEpisode?: number;
   targetChoicesPerEpisode?: number;
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
-  sceneEpisodeEncounterCadence?: number;
-  sceneEpisodeBranchMinEpisodes?: number;
-  sceneEpisodeBranchMaxEpisodes?: number;
   pacing?: 'tight' | 'moderate' | 'expansive';
   endingMode?: EndingMode;
 };
@@ -138,7 +134,7 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
     : await seasonPlanner.execute({
         sourceAnalysis: analysisResult.analysis,
         preferences,
-        sevenPointBlocking: request.config?.generation?.sevenPointBlocking,
+        storyCircleBlocking: request.config?.generation?.storyCircleBlocking,
       });
 
   return {

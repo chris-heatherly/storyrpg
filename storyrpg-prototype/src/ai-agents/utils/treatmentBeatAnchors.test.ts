@@ -32,6 +32,31 @@ const TREATMENT = `# Branching-Narrative Season Treatment
 - Cliffhanger question: can they break the line?
 `;
 
+const STORY_CIRCLE_TREATMENT = `# Branching-Narrative Season Treatment
+
+## 3. Story Circle Season Spine
+- You (Ep1): the valley's ordinary pressure
+- Need (Ep2): the missing truth
+- Go (Ep3): the siege threshold
+- Search (Ep4): the ravine pressure
+- Find (Ep6): the reveal
+- Take (Ep7): betrayal costs the alliance
+- Return (Ep10): the endsong confrontation
+- Change (Ep10): dawn after the bargain
+
+## 9. Episode Outline
+
+### Episode 1: Dawn and Discord
+- Story Circle role: you
+- Episode promise: the valley wakes
+- Cliffhanger question: who lit the beacon?
+
+### Episode 3: The Siege Tightens
+- Story Circle role: go
+- Episode promise: the walls hold, barely
+- Cliffhanger question: can they break the line?
+`;
+
 describe('Step 1.1 — Section-7 beat→episode anchor parsing', () => {
   it('populates seasonGuidance.beatEpisodeAnchors from the spine', () => {
     const treatment = extractTreatmentFromMarkdown(TREATMENT);
@@ -50,5 +75,22 @@ describe('Step 1.1 — Section-7 beat→episode anchor parsing', () => {
     const noAnchors = TREATMENT.replace(/\(Ep\d+\)/g, '');
     const treatment = extractTreatmentFromMarkdown(noAnchors);
     expect(treatment.seasonGuidance?.beatEpisodeAnchors).toBeUndefined();
+  });
+
+  it('populates seasonGuidance.storyCircleBeatEpisodeAnchors from the current Story Circle spine', () => {
+    const treatment = extractTreatmentFromMarkdown(STORY_CIRCLE_TREATMENT);
+    expect(treatment.isTreatment).toBe(true);
+    expect(treatment.seasonGuidance?.storyCircleBeatEpisodeAnchors).toEqual({
+      you: 1,
+      need: 2,
+      go: 3,
+      search: 4,
+      find: 6,
+      take: 7,
+      return: 10,
+      change: 10,
+    });
+    expect(treatment.episodes[1]?.normalizedStructuralRoles).toEqual(['hook']);
+    expect(treatment.episodes[3]?.normalizedStructuralRoles).toEqual(['plotTurn1']);
   });
 });

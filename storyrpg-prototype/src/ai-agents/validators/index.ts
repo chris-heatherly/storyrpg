@@ -40,18 +40,6 @@ export type {
   EndingReachabilityResult,
   EndingReachabilityOptions,
 } from './EndingReachabilityValidator';
-export { MicroEpisodeStructureValidator } from './MicroEpisodeStructureValidator';
-export type {
-  MicroEpisodeStructureIssue,
-  MicroEpisodeStructureOptions,
-  MicroEpisodeStructureResult,
-} from './MicroEpisodeStructureValidator';
-export { MicroEpisodeSeasonValidator } from './MicroEpisodeSeasonValidator';
-export type {
-  MicroEpisodeSeasonIssue,
-  MicroEpisodeSeasonOptions,
-  MicroEpisodeSeasonResult,
-} from './MicroEpisodeSeasonValidator';
 export { FinalStoryContractValidator } from './FinalStoryContractValidator';
 export type {
   FinalStoryContractInput,
@@ -84,6 +72,16 @@ export type {
   TreatmentFidelityValidationResult,
   TreatmentFinalStoryValidationInput,
 } from './TreatmentFidelityValidator';
+export {
+  StoryCircleCoverageValidator,
+  seasonPlanToStoryCircleCoverageInput,
+} from './StoryCircleCoverageValidator';
+export type { StoryCircleCoverageInput } from './StoryCircleCoverageValidator';
+export {
+  StoryCircleAnchorConformanceValidator,
+  seasonPlanToStoryCircleAnchorConformanceInput,
+} from './StoryCircleAnchorConformanceValidator';
+export type { StoryCircleAnchorConformanceInput } from './StoryCircleAnchorConformanceValidator';
 export { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
 export type { TreatmentFieldUtilizationInput } from './TreatmentFieldUtilizationValidator';
 export { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';
@@ -222,11 +220,6 @@ export { ArcDeltaValidator } from './ArcDeltaValidator';
 export type { ArcDeltaInput, ArcDeltaMetrics, ArcDeltaResult } from './ArcDeltaValidator';
 export { DivergenceValidator } from './DivergenceValidator';
 export type { DivergenceInput, DivergenceMetrics, DivergenceResult } from './DivergenceValidator';
-export {
-  SevenPointCoverageValidator,
-  seasonPlanToCoverageInput,
-} from './SevenPointCoverageValidator';
-export type { SevenPointCoverageInput } from './SevenPointCoverageValidator';
 export { simulateEpisodePaths } from './pathSimulator';
 export type { TerminalState, PathSimulationResult, SimulatorOptions } from './pathSimulator';
 

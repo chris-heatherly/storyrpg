@@ -194,7 +194,7 @@ function analysis(selectedContracts = contracts()): SourceMaterialAnalysis {
       fashionStyle: { styleSummary: 'Honey-blonde, tortoiseshell glasses, slip dresses, trench.' },
     },
     characterTreatmentContracts: selectedContracts,
-    treatmentSeasonGuidance: { episodeStructureMode: 'standard', protagonistGuidance: protagonistGuidance() },
+    treatmentSeasonGuidance: { protagonistGuidance: protagonistGuidance() },
     characterArchitecture: {
       protagonist: {
         lie: 'Being chosen by a beautiful man is the same as being known and safe.',

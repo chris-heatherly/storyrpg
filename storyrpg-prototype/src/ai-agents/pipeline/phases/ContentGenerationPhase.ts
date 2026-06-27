@@ -93,6 +93,7 @@ import {
 import { PipelineError } from '../errors';
 import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
 import { collectEncounterParticipantRefs, filterProtagonistEncounterRefs } from '../encounterParticipants';
+import { assessEncounterTurnRealization, formatEncounterTurnRealizationFeedback } from '../encounterTurnRealizationGuard';
 import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPlan';
 import { buildOutcomeTextVariants } from '../outcomeVariants';
 import { buildSceneSettingContext } from '../planningHelpers';
@@ -241,12 +242,6 @@ export interface ContentGenerationPhaseDeps {
     record: Omit<RemediationLedgerRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string }
   ) => Promise<void>;
   recordSceneValidationResult: (result: SceneValidationResult) => void;
-  repairSceneEpisodePlayableContract: (
-    sceneBlueprint: SceneBlueprint,
-    content: SceneContent,
-    choiceSets: ChoiceSet[],
-    context: { phase: string }
-  ) => void;
   resolveWorldLocationForScene: (
     sceneBlueprint: Pick<SceneBlueprint, 'location' | 'name' | 'description'>,
     worldBible: WorldBible
@@ -285,7 +280,7 @@ export class ContentGenerationPhase {
     const hardOverage = Math.max(0, report.hardUnits - report.threshold.hardUnits);
     if (hardOverage > 0) return false;
     if (report.threshold.profile === 'encounter') return false;
-    if (report.explicitTimeJumpCount >= 2 && report.totalUnits > report.threshold.totalUnits) return false;
+    if (report.explicitTimeJumpCount >= 2) return false;
     const recommendedBeatCount = scene.recommendedBeatCount ?? 0;
     if (recommendedBeatCount <= 0) return false;
     return recommendedBeatCount >= Math.ceil(report.totalUnits) + 1;
@@ -431,6 +426,7 @@ export class ContentGenerationPhase {
     // lives in threadTwistPlanning (monolith ratchet). Default-off; both agents fail open.
     if (isThreadTwistPlanningEnabled(context.config.generation)) {
       const ttEpisode = episodeNumber ?? brief.episode.number;
+      const ttSeasonEpisode = brief.seasonPlan?.episodes.find((e) => e.episodeNumber === ttEpisode);
       const { threadLedger, twistPlan } = await planEpisodeThreadsAndTwist({
         enabled: true,
         threadPlanner: this.deps.getThreadPlanner(),
@@ -438,8 +434,10 @@ export class ContentGenerationPhase {
         episodeBlueprint: blueprint,
         episodeNumber: ttEpisode,
         seasonAnchors: brief.seasonPlan?.anchors,
-        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
-        episodeStructuralRole: brief.seasonPlan?.episodes.find((e) => e.episodeNumber === ttEpisode)?.structuralRole,
+        seasonStoryCircle: brief.seasonPlan?.storyCircle,
+        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
+        episodeStoryCircleRole: ttSeasonEpisode?.storyCircleRole,
+        episodeStructuralRole: ttSeasonEpisode?.structuralRole,
         priorThreads: openPriorThreads(this.deps.seasonThreadLedger, ttEpisode),
         emitWarning: (message) => context.emit({ type: 'warning', phase: 'content', message }),
       });
@@ -461,6 +459,7 @@ export class ContentGenerationPhase {
     // the agent fails open.
     if (isCharacterArcTrackingEnabled(context.config.generation)) {
       const atEpisode = episodeNumber ?? brief.episode.number;
+      const atSeasonEpisode = brief.seasonPlan?.episodes.find((e) => e.episodeNumber === atEpisode);
       const { arcTargets } = await planEpisodeArcTargets({
         enabled: true,
         characterArcTracker: this.deps.getCharacterArcTracker(),
@@ -470,8 +469,10 @@ export class ContentGenerationPhase {
         episodeIndex: atEpisode,
         totalEpisodes: brief.seasonPlan?.episodes?.length ?? atEpisode,
         seasonAnchors: brief.seasonPlan?.anchors,
-        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
-        episodeStructuralRole: brief.seasonPlan?.episodes.find((e) => e.episodeNumber === atEpisode)?.structuralRole,
+        seasonStoryCircle: brief.seasonPlan?.storyCircle,
+        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
+        episodeStoryCircleRole: atSeasonEpisode?.storyCircleRole,
+        episodeStructuralRole: atSeasonEpisode?.structuralRole,
         characterArchitecture: brief.multiEpisode?.sourceAnalysis?.characterArchitecture,
         emitWarning: (message) => context.emit({ type: 'warning', phase: 'content', message }),
       });
@@ -758,8 +759,18 @@ export class ContentGenerationPhase {
         const resumedEncounter = sceneBlueprint.isEncounter && sceneBlueprint.encounterType
           ? this.deps.loadResumeUnit<EncounterStructure>(outputDirectory, encounterUnitId, encounterCheckpointPath)
           : undefined;
+        const resumedEncounterTurn = resumedEncounter
+          ? assessEncounterTurnRealization(sceneBlueprint, resumedEncounter)
+          : undefined;
+        if (resumedEncounter && resumedEncounterTurn && !resumedEncounterTurn.passed) {
+          context.emit({
+            type: 'warning',
+            phase: 'encounters',
+            message: `Discarding resumed encounter checkpoint for ${sceneBlueprint.id}: authored encounter turn is under-realized. ${formatEncounterTurnRealizationFeedback(resumedEncounterTurn)}`,
+          });
+        }
         const hasRequiredChoice = !sceneBlueprint.choicePoint || Boolean(resumedChoice);
-        const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType) || Boolean(resumedEncounter);
+        const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType) || Boolean(resumedEncounter && resumedEncounterTurn?.passed);
         if (resumedScene && hasRequiredChoice && hasRequiredEncounter) {
           sceneContents.push(resumedScene);
           if (resumedChoice) choiceSets.push(resumedChoice);
@@ -1006,7 +1017,12 @@ export class ContentGenerationPhase {
           memoryContext: this.deps.cachedPipelineMemory || undefined,
           branchContext: branchContextByScene.get(sceneBlueprint.id),
           seasonAnchors: brief.seasonPlan?.anchors,
-          seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+          seasonStoryCircle: brief.seasonPlan?.storyCircle,
+          seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
+          episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
+            (e) => e.episodeNumber === brief.episode.number,
+          )?.storyCircleRole,
+          episodeCircle: blueprint.episodeCircle,
           episodeStructuralRole: brief.seasonPlan?.episodes.find(
             (e) => e.episodeNumber === brief.episode.number,
           )?.structuralRole,
@@ -1052,19 +1068,23 @@ export class ContentGenerationPhase {
             message: `Best-of-${bestOfN} for critical scene ${sceneBlueprint.id} (${sceneBlueprint.purpose || 'opening'})`,
           });
 
-          const candidates = await Promise.all(
-            Array.from({ length: bestOfN }, (_, idx) =>
-              withTimeout(
-                this.deps.sceneWriter.execute(sceneWriterInputForAuthoring),
-                PIPELINE_TIMEOUTS.llmAgent,
-                `SceneWriter.execute(${sceneBlueprint.id} candidate-${idx})`
-              ).catch((err) => ({
-                success: false as const,
-                data: null as SceneContent | null,
-                error: err instanceof Error ? err.message : String(err),
-              }))
-            )
-          );
+          const candidates: Array<AgentResponse<SceneContent> | {
+            success: false;
+            data: SceneContent | null;
+            error: string;
+          }> = [];
+          for (let idx = 0; idx < bestOfN; idx += 1) {
+            const candidate = await withTimeout(
+              this.deps.sceneWriter.execute(sceneWriterInputForAuthoring),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} candidate-${idx})`
+            ).catch((err) => ({
+              success: false as const,
+              data: null as SceneContent | null,
+              error: err instanceof Error ? err.message : String(err),
+            }));
+            candidates.push(candidate);
+          }
 
           const validCandidates = candidates.filter(
             (c): c is AgentResponse<SceneContent> & { success: true; data: SceneContent } =>
@@ -1519,7 +1539,12 @@ export class ContentGenerationPhase {
                 this.deps.episodeArcTargets.get(episodeNumber ?? brief.episode.number),
               ),
               seasonAnchors: brief.seasonPlan?.anchors,
-              seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+              seasonStoryCircle: brief.seasonPlan?.storyCircle,
+              seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
+              episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
+                (e) => e.episodeNumber === brief.episode.number,
+              )?.storyCircleRole,
+              episodeCircle: blueprint.episodeCircle,
               episodeStructuralRole: brief.seasonPlan?.episodes.find(
                 (e) => e.episodeNumber === brief.episode.number,
               )?.structuralRole,
@@ -2339,10 +2364,6 @@ export class ContentGenerationPhase {
         const defeatNextSceneId = leadsToScenes[1] || leadsToScenes[0] || '';
 
         // Dynamic beat count based on difficulty - use config.generation.encounterBeatCount as base.
-        // Scene-length milestone encounters can be richer, but still honor the configured effective path cap.
-        const sceneEpisodeEncounterMax = context.config.generation?.episodeStructureMode === 'sceneEpisodes'
-          ? (context.config.generation.sceneEpisodeEncounterMaxBeats || 15)
-          : undefined;
         const baseEncounterBeats = context.config.generation?.encounterBeatCount || 4;
         const beatCountByDifficulty: Record<string, number> = {
           easy: Math.max(2, baseEncounterBeats - 1),
@@ -2358,9 +2379,7 @@ export class ContentGenerationPhase {
           beatCountByDifficulty[sceneBlueprint.encounterDifficulty || 'moderate'] || baseEncounterBeats,
           encounterBeatPlan.length,
         );
-        const targetBeatCount = sceneEpisodeEncounterMax
-          ? Math.min(sceneEpisodeEncounterMax, uncappedTargetBeatCount)
-          : uncappedTargetBeatCount;
+        const targetBeatCount = uncappedTargetBeatCount;
 
         // Extract protagonist skills from character profile if available
         const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
@@ -2513,6 +2532,9 @@ export class ContentGenerationPhase {
                         : 'social'
           ),
           encounterDescription: sceneBlueprint.encounterDescription || sceneBlueprint.description,
+          encounterStoryCircleTarget: sceneBlueprint.encounterStoryCircleTarget || plannedEnc?.storyCircleTarget,
+          encounterStoryCircleTargetRationale: sceneBlueprint.encounterStoryCircleTargetRationale || plannedEnc?.storyCircleTargetRationale,
+          encounterStoryCircleTargetEvidence: sceneBlueprint.encounterStoryCircleTargetEvidence || plannedEnc?.storyCircleTargetEvidence,
           encounterStakes: sceneBlueprint.encounterStakes || plannedEnc?.stakes,
           // Authored-treatment anchor (G12): the architect must SEE the
           // authored texts to realize them — EncounterAnchorContentValidator
@@ -2554,7 +2576,12 @@ export class ContentGenerationPhase {
           memoryContext: this.deps.cachedPipelineMemory || undefined,
           storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,
-          seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+          seasonStoryCircle: brief.seasonPlan?.storyCircle,
+          seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
+          episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
+            (e) => e.episodeNumber === brief.episode.number,
+          )?.storyCircleRole,
+          episodeCircle: blueprint.episodeCircle,
           episodeStructuralRole: brief.seasonPlan?.episodes.find(
             (e) => e.episodeNumber === brief.episode.number,
           )?.structuralRole,
@@ -2657,8 +2684,13 @@ export class ContentGenerationPhase {
               if (isEncounterNarrativelyHollow(attemptResult.data)) {
                 lastEncounterFailure = 'EncounterArchitect returned a hollow encounter: no beat contains player-facing narrative setup, description, escalation, or choice outcome prose.';
               } else {
-              encounterResult = attemptResult;
-              break;
+                const turnRealization = assessEncounterTurnRealization(sceneBlueprint, attemptResult.data);
+                if (!turnRealization.passed) {
+                  lastEncounterFailure = `EncounterArchitect under-realized authored encounter turn(s):\n${formatEncounterTurnRealizationFeedback(turnRealization)}\nAuthor the missing moment in setupText, outcome narrativeText, nested nextSituation setupText, or storylet beat prose before returning JSON.`;
+                } else {
+                  encounterResult = attemptResult;
+                  break;
+                }
               }
             } else {
               lastEncounterFailure = attemptResult.error || 'EncounterArchitect returned no data';
@@ -2840,11 +2872,23 @@ export class ContentGenerationPhase {
                   const templateGuidance = templateHits.length > 0
                     ? `\n\nThe previous attempt contained GENERIC TEMPLATE PROSE that must be replaced with bespoke content grounded in this scene's stakes, setting, and characters. Offending fragments: ${templateHits.slice(0, 5).map(t => `"${t}"`).join(', ')}. Author every player-facing string (setup, choices, outcomes, storylets) specifically for this encounter.`
                     : '';
+                  const turnGuidance = [
+                    sceneBlueprint.turnContract?.centralTurn,
+                    sceneBlueprint.signatureMoment,
+                    ...(sceneBlueprint.requiredBeats ?? [])
+                      .filter((beat) => beat.tier !== 'connective' && beat.tier !== 'seed')
+                      .map((beat) => beat.mustDepict || beat.sourceTurn),
+                  ]
+                    .map((text) => typeof text === 'string' ? text.trim() : '')
+                    .filter(Boolean);
+                  const authoredTurnGuidance = turnGuidance.length > 0
+                    ? `\n\nPreserve and fully stage these authored encounter turn obligation(s) in player-facing setupText, outcome narrativeText, nested nextSituation setupText, or storylet beat prose:\n- ${turnGuidance.join('\n- ')}`
+                    : '';
                   const regenEncounterInput: EncounterArchitectInput = {
                     ...encounterInput,
                     storyContext: {
                       ...encounterInput.storyContext,
-                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.${collisionGuidance}${templateGuidance}`,
+                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.${collisionGuidance}${templateGuidance}${authoredTurnGuidance}`,
                     },
                   };
 
@@ -2867,6 +2911,16 @@ export class ContentGenerationPhase {
                     const regenValidation = this.deps.incrementalValidator!.validators.encounter.validateEncounter(regenEncounterResult.data);
                     const regenCollisions = this.deps.getPhase4DefaultCollisions(regenEncounterResult.metadata);
                     const regenTemplateHits = scanEncounterTemplateProse(regenEncounterResult.data);
+                    const regenTurnRealization = assessEncounterTurnRealization(sceneBlueprint, regenEncounterResult.data);
+
+                    if (!regenTurnRealization.passed) {
+                      context.emit({
+                        type: 'warning',
+                        phase: 'encounters',
+                        message: `Encounter regeneration for ${sceneBlueprint.id} under-realized authored turn(s), keeping previous encounter. ${formatEncounterTurnRealizationFeedback(regenTurnRealization)}`,
+                      });
+                      continue;
+                    }
 
                     if (regenValidation.passed ||
                         regenValidation.issues.length < encounterValidation.issues.length ||
@@ -2968,14 +3022,6 @@ export class ContentGenerationPhase {
         );
       }
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
-      if (completedScene) {
-        this.deps.repairSceneEpisodePlayableContract(
-          sceneBlueprint,
-          completedScene,
-          choiceSets,
-          { phase: episodeNumber ? `episode_${episodeNumber}_micro_episode_repair` : 'micro_episode_repair' }
-        );
-      }
       if (completedScene && outputDirectory && episodeNumber) {
         await this.deps.saveResumeUnit(outputDirectory, sceneUnitId, sceneCheckpointPath, completedScene);
         const completedChoice = choiceSets.find((cs) =>
@@ -3064,21 +3110,12 @@ export class ContentGenerationPhase {
       ?.trim();
     if (!coldOpen) return;
 
-    const directive = `Open with this cold-open moment before the scene's main pressure, then transition into the planned scene: ${coldOpen}`;
     const alreadyAligned = (text?: string): boolean =>
-      Boolean(text && (text.includes(coldOpen) || text.includes('Open with this cold-open moment')));
+      Boolean(text && text.includes(coldOpen));
 
     sceneBlueprint.keyBeats = Array.isArray(sceneBlueprint.keyBeats) ? sceneBlueprint.keyBeats : [];
     if (!sceneBlueprint.keyBeats.some((beat) => alreadyAligned(beat))) {
-      sceneBlueprint.keyBeats.unshift(directive);
-    }
-
-    if (!alreadyAligned(sceneBlueprint.description)) {
-      sceneBlueprint.description = `Cold-open prelude: ${coldOpen}\n\nThen continue into the planned scene: ${sceneBlueprint.description || sceneBlueprint.name}`;
-    }
-
-    if (!alreadyAligned(sceneBlueprint.narrativeFunction)) {
-      sceneBlueprint.narrativeFunction = `Open on the required cold-open prelude, then fulfill the planned scene function: ${sceneBlueprint.narrativeFunction || sceneBlueprint.description || sceneBlueprint.name}`;
+      sceneBlueprint.keyBeats.unshift(coldOpen);
     }
   }
 }

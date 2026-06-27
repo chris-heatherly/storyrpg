@@ -47,11 +47,20 @@ export interface RepairBlueprintScene {
   id: string;
   name?: string;
   leadsTo?: string[];
-  choicePoint?: { branches?: boolean } | null;
+  choicePoint?: { branches?: boolean; type?: string; optionHints?: string[] } | null;
   isEncounter?: boolean;
   plannedEncounterId?: string;
   purpose?: string;
+  narrativeRole?: string;
+  isBottleneck?: boolean;
+  isConvergencePoint?: boolean;
   requiredBeats?: Array<{ tier?: string }>;
+  textVariants?: unknown[];
+  callbackHookIds?: unknown[];
+  onShow?: unknown[];
+  consequences?: unknown[];
+  coveragePlan?: unknown;
+  visualCast?: unknown;
 }
 export interface RepairBlueprint {
   scenes?: RepairBlueprintScene[];
@@ -91,8 +100,20 @@ function repairBlueprintLeadsTo(
 
 function blueprintSceneRequiresSequentialSetup(scene: RepairBlueprintScene): boolean {
   if (scene.isEncounter || scene.plannedEncounterId) return true;
-  if (/bottleneck|convergence/i.test(scene.purpose || '')) return true;
+  if (scene.isBottleneck || scene.isConvergencePoint) return true;
+  if (/bottleneck|convergence/i.test(`${scene.purpose || ''} ${scene.narrativeRole || ''}`)) return true;
   if (/treatment|encounter|required|anchor/i.test(`${scene.id} ${scene.name || ''}`)) return true;
+  if (scene.choicePoint) return true;
+  if (
+    (Array.isArray(scene.textVariants) && scene.textVariants.length > 0) ||
+    (Array.isArray(scene.callbackHookIds) && scene.callbackHookIds.length > 0) ||
+    (Array.isArray(scene.onShow) && scene.onShow.length > 0) ||
+    (Array.isArray(scene.consequences) && scene.consequences.length > 0) ||
+    scene.coveragePlan ||
+    scene.visualCast
+  ) {
+    return true;
+  }
   return (scene.requiredBeats || []).some((beat) =>
     beat?.tier === 'authored' || beat?.tier === 'signature',
   );

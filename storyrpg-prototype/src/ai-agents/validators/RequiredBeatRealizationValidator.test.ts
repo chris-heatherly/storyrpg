@@ -660,6 +660,47 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.issues.some((i) => i.severity === 'error')).toBe(true);
   });
 
+  it('keeps broad composite synopsis seeds advisory while concrete seed gate is on', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, {
+        requiredBeats: [
+          requiredBeat(
+            'rb1',
+            'Kylie arrives, builds a new glamorous life, launches a viral blog, and lets herself be courted by Victor, ignoring the quiet wrong-notes.',
+            'seed',
+          ),
+        ],
+      })]),
+      story: story([episode(1, [generatedScene('s1-1', [beat('b1', 'Kylie FaceTimes Sadie from her Lipscani apartment and jokes about vampires in Romania.')])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: 'warning' }),
+    ]));
+  });
+
+  it('keeps hidden-information seeds advisory instead of requiring literal spoiler prose', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-1', 1, {
+        requiredBeats: [
+          requiredBeat(
+            'rb1',
+            'Mika has been secretly steering Kylie toward Victor to settle her own debts.',
+            'seed',
+          ),
+        ],
+      })]),
+      story: story([episode(1, [generatedScene('s1-1', [
+        beat('b1', 'Mika slides the key card across the table and tells you Victor will be there.'),
+        beat('b2', 'Her eyes flick to the window, hunted for half a second, before the bright smile snaps back.'),
+      ])])]),
+    });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: 'warning' }),
+    ]));
+  });
+
   it('env kill-switch can keep a dropped seed advisory during rollback', () => {
     const prev = process.env.GATE_TREATMENT_SEED_REALIZATION;
     process.env.GATE_TREATMENT_SEED_REALIZATION = '0';

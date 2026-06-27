@@ -7,7 +7,7 @@ describe('qaReportSchemas', () => {
     const stakes = buildStakesReportJsonSchema();
 
     expect(voice.name).toBe('voice_report');
-    expect(voice.maxOutputTokens).toBe(2048);
+    expect(voice.maxOutputTokens).toBe(4096);
     expect((voice.schema as any).required).toContain('overallScore');
     expect((voice.schema as any).additionalProperties).toBe(false);
     expect((voice.schema as any).properties.issues.items.required).toContain('suggestion');

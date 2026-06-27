@@ -9,7 +9,6 @@ import type { StakesLayers } from '../../types';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
 export interface DramaticStructureValidationOptions {
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
   requireSceneLevelMetadata?: boolean;
   protagonistAgencyTarget?: number;
 }
@@ -179,7 +178,7 @@ export class DramaticStructureValidator extends BaseValidator {
         metrics.scenesWithStakeLayers += 1;
       }
       if (requireSceneLevelMetadata) {
-        this.validateSceneStructure(scene, issues, options.episodeStructureMode);
+        this.validateSceneStructure(scene, issues);
         if (isMajorScene(scene, isFinalScene) && !hasPersonalStake(scene.personalStake)) {
           issues.push(this.error(
             `Scene ${sceneLabel(scene)} lacks a concrete personal stake.`,
@@ -197,17 +196,6 @@ export class DramaticStructureValidator extends BaseValidator {
     });
 
     this.validateExistentialEscalation(scenes, issues);
-
-    if (options.episodeStructureMode === 'sceneEpisodes' && scenes.length === 1) {
-      const onlyScene = scenes[0];
-      if (!onlyScene?.dramaticStructure || !hasText(blueprint.dramaticAudit?.episodeQuestion)) {
-        issues.push(this.error(
-          'sceneEpisodes mode requires the single scene to carry both scene-level and episode-level dramatic structure.',
-          onlyScene?.id,
-          'Fill dramaticAudit plus the scene dramaticStructure so the single scene has question, turn, pressure peak, and changed state.',
-        ));
-      }
-    }
 
     const errors = issues.filter((issue) => issue.severity === 'error').length;
     const warnings = issues.filter((issue) => issue.severity === 'warning').length;
@@ -353,7 +341,6 @@ export class DramaticStructureValidator extends BaseValidator {
   private validateSceneStructure(
     scene: SceneBlueprint,
     issues: ValidationIssue[],
-    episodeStructureMode?: 'standard' | 'sceneEpisodes',
   ): void {
     const structure = scene.dramaticStructure;
     if (!structure) {
@@ -374,14 +361,6 @@ export class DramaticStructureValidator extends BaseValidator {
         ));
       }
     }
-
-    if (episodeStructureMode === 'sceneEpisodes' && !hasText(scene.personalStake)) {
-      issues.push(this.error(
-        `sceneEpisode ${sceneLabel(scene)} lacks personalStake.`,
-        scene.id,
-        'The single scene carries episode-scale pressure and needs a concrete personal stake.',
-      ));
-    }
   }
 
   private validateSceneStakeLayers(scene: SceneBlueprint, issues: ValidationIssue[], isFinalScene: boolean): void {
@@ -392,7 +371,7 @@ export class DramaticStructureValidator extends BaseValidator {
       issues.push(this.error(
         `Scene ${sceneLabel(scene)} needs at least three stakes layers.`,
         scene.id,
-        'Major scenes, encounters, dilemmas, climaxes, and sceneEpisodes should name at least three of material, relational, identity, or existential stakes.',
+        'Major scenes, encounters, dilemmas, and climaxes should name at least three of material, relational, identity, or existential stakes.',
       ));
     }
 

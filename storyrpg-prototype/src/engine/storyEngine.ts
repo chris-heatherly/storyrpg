@@ -528,28 +528,10 @@ export function getNextEpisode(
   return story.episodes[currentIndex + 1];
 }
 
-/**
- * Check whether an episode is part of the player's active route.
- *
- * Standard stories keep the old behavior. Scene-length branch episodes are
- * hidden unless their route-gating unlock conditions currently pass.
- */
 export function isEpisodeOnActiveRoute(
   episode: Episode,
   player: PlayerState
 ): boolean {
-  if (episode.episodeStructureMode !== 'sceneEpisodes' && !episode.routeMeta) {
-    return true;
-  }
-
-  if (episode.routeMeta?.kind !== 'branch') {
-    return true;
-  }
-
-  if (episode.routeMeta.hideWhenInactive === false) {
-    return true;
-  }
-
   return isEpisodeUnlocked(episode, player);
 }
 
@@ -560,19 +542,11 @@ export function getPlayableEpisodes(
   story: Story,
   player: PlayerState
 ): Episode[] {
-  const hasRouteMetadata = story.episodes.some(
-    episode => episode.episodeStructureMode === 'sceneEpisodes' || episode.routeMeta
-  );
-
-  if (!hasRouteMetadata) {
-    return story.episodes;
-  }
-
   return story.episodes.filter(episode => isEpisodeOnActiveRoute(episode, player));
 }
 
 /**
- * Get the next episode in active playback order, skipping inactive route siblings.
+ * Get the next episode in active playback order.
  */
 export function getNextPlayableEpisode(
   story: Story,

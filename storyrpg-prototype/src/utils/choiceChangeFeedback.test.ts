@@ -80,7 +80,7 @@ describe('choice change feedback', () => {
         magnitude: 'minor',
         narrativeHint: 'You feel more practiced in investigation.',
       },
-    ])).toBe('You feel more practiced in investigation.');
+    ])).toBe('The next clue feels easier to hold.');
   });
 
   it('combines relationship and skill feedback into one fiction-first sentence', () => {
@@ -101,7 +101,7 @@ describe('choice change feedback', () => {
       },
     ]);
 
-    expect(sentence).toBe('Lysandra Brightwell trusts you as you become more practiced in persuasion.');
+    expect(sentence).toBe('Lysandra Brightwell trusts you as your next words come a little steadier.');
   });
 
   it('omits neutral relationship chatter when meaningful feedback is present', () => {
@@ -129,7 +129,7 @@ describe('choice change feedback', () => {
       },
     ]);
 
-    expect(sentence).toBe('Lysandra Brightwell trusts you as you become more practiced in persuasion.');
+    expect(sentence).toBe('Lysandra Brightwell trusts you as your next words come a little steadier.');
   });
 
   it('keeps skill-only and attribute-only feedback fiction-first', () => {
@@ -141,7 +141,7 @@ describe('choice change feedback', () => {
         magnitude: 'minor',
         narrativeHint: 'You feel more practiced in investigation.',
       },
-    ])).toBe('You feel more practiced in investigation.');
+    ])).toBe('The next clue feels easier to hold.');
 
     expect(buildChoiceConsequenceSentence([
       {

@@ -59,6 +59,39 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     label: 'treatment-residue planning language',
     suggestion: 'Show the consequence in-fiction; never ship treatment-residue instructions as prose.',
   },
+  {
+    // Treatment structural labels are useful while planning, but if the whole
+    // "Hook / promise / stakes" sentence reaches prose it reads as a design card,
+    // not a scene.
+    pattern: /\bHook\s*(?:—|-|:)[^.!?\n]{0,700}\bpromise\s*(?:—|-|:)[^.!?\n]{0,700}\bstakes\s*(?:—|-|:)/i,
+    label: 'hook/promise/stakes treatment labels',
+    suggestion: 'Convert the treatment card into concrete scene action and dialogue; never expose Hook/promise/stakes labels.',
+  },
+  {
+    pattern: /^\s*(?:Hook|promise|stakes)\s*(?:—|-|:)/i,
+    label: 'treatment structural label',
+    suggestion: 'Remove treatment-card labels and write the concrete story moment directly.',
+  },
+  {
+    pattern: /\b(?:around|because)\s+(?:Hook|promise|stakes)\s*(?:—|-|:)/i,
+    label: 'embedded treatment structural label',
+    suggestion: 'Remove embedded treatment-card labels and keep only the concrete story moment.',
+  },
+  {
+    pattern: /\bCold-open\s+prelude\s*:|\bThen\s+continue\s+into\s+the\s+planned\s+scene\s*:|\bOpen\s+with\s+this\s+cold-open\s+moment\b|\bOpen\s+on\s+the\s+required\s+cold-open\s+prelude\b/i,
+    label: 'cold-open planning wrapper',
+    suggestion: 'Remove cold-open/planned-scene instructions and keep only in-world action.',
+  },
+  {
+    pattern: /\bStage\s+the\s+pressure\s+through\s+visible\s+action,\s*reaction,\s*object\s+movement,\s*distance,\s*or\s+dialogue\s+around\b/i,
+    label: 'sequence staging directive',
+    suggestion: 'Replace sequence-staging directives with concrete in-world action and reaction.',
+  },
+  {
+    pattern: /\bThe\s+response\s+changes\s+access,\s*trust,\s*information,\s*or\s*danger\s+around\b/i,
+    label: 'choice response mechanics summary',
+    suggestion: 'Replace abstract access/trust/information/danger summaries with concrete in-world aftermath.',
+  },
 ];
 
 /**

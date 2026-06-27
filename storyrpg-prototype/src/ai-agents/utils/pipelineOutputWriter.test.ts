@@ -23,82 +23,175 @@ vi.mock('expo-file-system', () => ({
 const tempDirs: string[] = [];
 
 describe('deriveRunQualityScore', () => {
-  it('combines QA, validation, and final contract evidence', () => {
+  it('scores complete coherent Story Circle output above 90 while keeping legacy subscores diagnostic', () => {
     const result = deriveRunQualityScore({
-      qaReport: { overallScore: 80, passesQA: true, criticalIssues: [] } as any,
-      bestPracticesReport: { overallScore: 70, overallPassed: true, blockingIssues: [], warnings: [] } as any,
-      finalStoryContractReport: {
-        passed: true,
-        blockingIssues: [],
-        warnings: [],
-        metrics: {},
-      } as any,
+      finalStory: makeStoryCircleStory(),
+      qaReport: { overallScore: 44, passesQA: true, criticalIssues: [] } as any,
+      bestPracticesReport: { overallScore: 52, overallPassed: true, blockingIssues: [], warnings: [], suggestions: [] } as any,
+      finalStoryContractReport: passingFinalStoryContract(),
     });
 
-    expect(result.score).toBe(87);
-    expect(result.basis).toMatchObject({
-      qaScore: 80,
-      validationScore: 70,
+    expect(result.score).toBeGreaterThan(90);
+    expect(result.basis.version).toBe(3);
+    expect(result.basis.legacySubscores).toMatchObject({
+      qaScore: 44,
+      validationScore: 52,
       finalStoryContractScore: 100,
-      validatorComplianceScore: 88,
-      validatorBlockingIssues: 0,
-      validatorWarnings: 0,
-      evidenceCoverage: 100,
-      caps: [],
-      penalties: [],
     });
+    expect(result.basis.caps).toEqual([]);
+    expect(result.basis.storyCircle.missingBeats).toEqual([]);
+    expect(Object.fromEntries(result.basis.domains.map((domain) => [domain.id, domain.weight]))).toMatchObject({
+      story_circle_spine: 20,
+      dramatic_structure_architecture: 18,
+      scene_coherence_prose_continuity: 17,
+      choice_agency: 15,
+      branching_consequence_memory: 13,
+      character_npc_relationship_quality: 10,
+      gameplay_mechanics_as_fiction: 5,
+      encounters: 2,
+    });
+    expect(result.basis.domains.find((domain) => domain.id === 'story_circle_spine')?.concepts)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'take_real_price', weight: 12 }),
+        expect.objectContaining({ id: 'change_transformation_equilibrium', weight: 10 }),
+      ]));
   });
 
-  it('treats missing evidence as zero and caps the score', () => {
+  it('loads category and concept weight overrides from the tweakable markdown file', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-quality-weights-'));
+    tempDirs.push(tempDir);
+    const weightsPath = join(tempDir, 'QUALITY_SCORE_WEIGHTS.md');
+    await writeFile(weightsPath, [
+      '# Test weights',
+      '## Category Weights',
+      '| Category | Weight |',
+      '|---|---:|',
+      '| Story Circle spine | 21% |',
+      '## Story Circle spine',
+      '| Concept | Weight |',
+      '|---|---:|',
+      '| take: real price / loss / sacrifice | 30% |',
+    ].join('\n'));
+
     const result = deriveRunQualityScore({
-      qaReport: { overallScore: 100, passesQA: true, criticalIssues: [] } as any,
+      finalStory: makeStoryCircleStory(),
+      finalStoryContractReport: passingFinalStoryContract(),
+    }, { weightsMarkdownPath: weightsPath });
+    const storyCircle = result.basis.domains.find((domain) => domain.id === 'story_circle_spine');
+
+    expect(storyCircle?.weight).toBe(21);
+    expect(storyCircle?.concepts.find((concept) => concept.id === 'take_real_price')?.weight).toBe(30);
+  });
+
+  it('caps below 70 when any primary Story Circle beat is missing', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory({ omitBeats: ['go'] }),
+      finalStoryContractReport: passingFinalStoryContract(),
     });
 
-    expect(result.score).toBe(20);
-    expect(result.basis.penalties).toEqual(expect.arrayContaining([
-      'missing_best_practices_validation',
-      'missing_final_story_contract',
+    expect(result.score).toBeLessThan(70);
+    expect(result.basis.storyCircle.missingBeats).toContain('go');
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('story_circle_primary_beat_missing');
+  });
+
+  it('caps below 60 when the take price beat is missing', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory({ omitBeats: ['take'] }),
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.score).toBeLessThan(60);
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('take_price_missing_or_weak');
+  });
+
+  it('caps below 60 when the change equilibrium beat is missing', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory({ omitBeats: ['change'] }),
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.score).toBeLessThan(60);
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('change_equilibrium_missing_or_weak');
+  });
+
+  it('caps metadata-only Story Circle labels below 70 when not realized in final prose', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory({ metadataOnly: true }),
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.score).toBeLessThan(70);
+    expect(result.basis.storyCircle.metadataOnlyBeats).toEqual(expect.arrayContaining(['you', 'take', 'change']));
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('episode_circle_metadata_only');
+  });
+
+  it('caps below 70 when critical beat placement is out of chronology', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeWrongOrderStoryCircleStory(),
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.score).toBeLessThan(70);
+    expect(result.basis.storyCircle.ordered).toBe(false);
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('story_circle_beats_out_of_order');
+  });
+
+  it('caps leakage below 70 and repeated leakage below 50', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory({
+        extraProse: ' A visible skill check begins here. The DC 12 result is announced to the player.',
+      }),
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.score).toBeLessThan(50);
+    expect(result.basis.caps.map((cap) => cap.id)).toEqual(expect.arrayContaining([
+      'player_facing_mechanics_leakage',
+      'repeated_or_central_leakage',
     ]));
   });
 
-  it('caps failed final contracts below publishable quality', () => {
+  it('caps cosmetic branching below 80', () => {
     const result = deriveRunQualityScore({
-      qaReport: { overallScore: 100, passesQA: true, criticalIssues: [] } as any,
-      bestPracticesReport: { overallScore: 100, overallPassed: true, blockingIssues: [], warnings: [] } as any,
-      finalStoryContractReport: {
-        passed: false,
-        blockingIssues: [{ severity: 'error' }],
-        warnings: [],
-        metrics: {},
-      } as any,
+      finalStory: makeStoryCircleStory({ cosmeticChoice: true }),
+      finalStoryContractReport: passingFinalStoryContract(),
     });
 
-    expect(result.score).toBe(49);
-    expect(result.basis.caps).toContain('final_contract_failed_cap_49');
-    expect(result.basis.penalties).toContain('validator_blocking_issues_1');
+    expect(result.score).toBeLessThan(80);
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('branching_cosmetic_or_residue_free');
   });
 
-  it('keeps passing final-contract warnings visible without treating them like blockers', () => {
+  it('awards no structural credit for Story Circle-only evidence', () => {
+    const story = makeStoryCircleStory({ omitEpisodeCircle: true });
     const result = deriveRunQualityScore({
-      qaReport: { overallScore: 80, passesQA: true, criticalIssues: [] } as any,
-      bestPracticesReport: { overallScore: 94, overallPassed: true, blockingIssues: [], warnings: [] } as any,
-      finalStoryContractReport: {
-        passed: true,
-        blockingIssues: [],
-        warnings: [
-          { type: 'sentence_opener_monotony', validator: 'SentenceOpenerVarietyValidator', sceneId: 's2-4', message: 'Vary sentence openers.' },
-          { type: 'partial_season_scope', message: 'Generated output is a partial slice.' },
-          { type: 'partial_season_scope', message: 'Generated output is a partial slice.' },
-        ],
-        metrics: {},
-      } as any,
+      finalStory: story,
+      brief: {
+        seasonPlan: {
+          legacyStructure: {
+            hook: 'legacy hook',
+            plotTurn1: 'legacy turn',
+            pinch1: 'legacy pinch',
+            midpoint: 'legacy midpoint',
+            pinch2: 'legacy pinch',
+            climax: 'legacy climax',
+            resolution: 'legacy resolution',
+          },
+        },
+      },
+      finalStoryContractReport: passingFinalStoryContract(),
     });
 
-    expect(result.basis.finalStoryContractScore).toBe(92);
-    expect(result.basis.validatorWarnings).toBe(3);
-    expect(result.basis.penalties).toContain('validator_warnings_3');
-    expect(result.score).toBe(90);
-    expect(result.basis.caps).toEqual([]);
+    expect(result.score).toBeLessThan(70);
+    expect(result.basis.storyCircle.missingBeats).toEqual([
+      'you',
+      'need',
+      'go',
+      'search',
+      'find',
+      'take',
+      'return',
+      'change',
+    ]);
   });
 });
 
@@ -228,6 +321,125 @@ function makeStory(): Story {
       },
     ],
   };
+}
+
+const STORY_CIRCLE_FIXTURE = {
+  you: 'Mara tends the quiet archive while council pressure tightens around her old life',
+  need: 'Mara needs the missing lantern key because her fear keeps the truth locked away',
+  go: 'Mara crosses the floodlit threshold into the forbidden stacks where retreat becomes dangerous',
+  search: 'Mara adapts under pressure by bargaining with echoes and reading the room instead of hiding',
+  find: 'Mara obtains the hidden answer but learns it exposes her mentor to ruin',
+  take: 'Mara pays the price by burning her safe alibi and choosing the wound over comfort',
+  return: 'Mara carries the lantern prize and the wound back into the council chamber',
+  change: 'Mara creates a new equilibrium by speaking as the archive keeper instead of the obedient clerk',
+} as const;
+
+type StoryCircleFixtureBeat = keyof typeof STORY_CIRCLE_FIXTURE;
+
+function makeStoryCircleStory(options: {
+  omitBeats?: StoryCircleFixtureBeat[];
+  metadataOnly?: boolean;
+  extraProse?: string;
+  cosmeticChoice?: boolean;
+  omitEpisodeCircle?: boolean;
+} = {}): Story {
+  const story = makeStory();
+  const episode = story.episodes[0] as any;
+  const scene = episode.scenes[0] as any;
+  const circle = Object.fromEntries(
+    Object.entries(STORY_CIRCLE_FIXTURE).filter(([beat]) => !options.omitBeats?.includes(beat as StoryCircleFixtureBeat)),
+  );
+
+  if (!options.omitEpisodeCircle) {
+    episode.episodeCircle = circle;
+  }
+
+  scene.turnType = 'irreversible_choice';
+  scene.beats[0].text = options.metadataOnly
+    ? `Mara pauses in a dim room and decides the night cannot stay simple.${options.extraProse ?? ''}`
+    : `${Object.values(circle).join(' ')}${options.extraProse ?? ''}`;
+  scene.beats[0].choices = [
+    options.cosmeticChoice
+      ? { id: 'choice-1', text: 'Nod without changing anything.' }
+      : {
+          id: 'choice-1',
+          text: 'Carry the lantern into the chamber.',
+          nextSceneId: 'scene-1',
+          consequences: [{ type: 'setFlag', flag: 'carried_lantern_truth', value: true }],
+          outcomeText: 'The choice leaves a remembered promise in the chamber.',
+        },
+  ] as any;
+
+  return story;
+}
+
+function makeWrongOrderStoryCircleStory(): Story {
+  const story = makeStory();
+  const episode = story.episodes[0] as any;
+  episode.scenes = [
+    {
+      id: 'scene-go-first',
+      name: 'Go First',
+      startingBeatId: 'beat-go',
+      turnType: 'threshold_crossing',
+      storyCircleBeatContracts: [{ beat: 'go', sourceText: STORY_CIRCLE_FIXTURE.go }],
+      beats: [{ id: 'beat-go', text: STORY_CIRCLE_FIXTURE.go, choices: [] }],
+    },
+    {
+      id: 'scene-you-after',
+      name: 'You After Go',
+      startingBeatId: 'beat-rest',
+      turnType: 'return_with_difference',
+      storyCircleBeatContracts: [
+        { beat: 'you', sourceText: STORY_CIRCLE_FIXTURE.you },
+        { beat: 'need', sourceText: STORY_CIRCLE_FIXTURE.need },
+        { beat: 'search', sourceText: STORY_CIRCLE_FIXTURE.search },
+        { beat: 'find', sourceText: STORY_CIRCLE_FIXTURE.find },
+        { beat: 'take', sourceText: STORY_CIRCLE_FIXTURE.take },
+        { beat: 'return', sourceText: STORY_CIRCLE_FIXTURE.return },
+        { beat: 'change', sourceText: STORY_CIRCLE_FIXTURE.change },
+      ],
+      beats: [{
+        id: 'beat-rest',
+        text: [
+          STORY_CIRCLE_FIXTURE.you,
+          STORY_CIRCLE_FIXTURE.need,
+          STORY_CIRCLE_FIXTURE.search,
+          STORY_CIRCLE_FIXTURE.find,
+          STORY_CIRCLE_FIXTURE.take,
+          STORY_CIRCLE_FIXTURE.return,
+          STORY_CIRCLE_FIXTURE.change,
+        ].join(' '),
+        choices: [{
+          id: 'choice-1',
+          text: 'Carry the consequence forward.',
+          nextSceneId: 'scene-you-after',
+          consequences: [{ type: 'setFlag', flag: 'accepted_wrong_order_cost', value: true }],
+        }],
+      }],
+    },
+  ];
+  return story;
+}
+
+function passingFinalStoryContract() {
+  return {
+    passed: true,
+    blockingIssues: [],
+    warnings: [],
+    metrics: {
+      episodesChecked: 1,
+      scenesChecked: 1,
+      beatsChecked: 1,
+      encounterScenesChecked: 0,
+      validEncounterScenes: 0,
+      requestedEpisodesMissing: 0,
+      failedIncrementalResults: 0,
+      callbackIssues: 0,
+      mechanicsLeaks: 0,
+    },
+    generatedAt: '2026-05-28T00:00:00.000Z',
+  } as any;
 }
 
 afterEach(async () => {
@@ -412,43 +624,37 @@ describe('pipelineOutputWriter', () => {
           themes: [],
         },
       },
-      finalStory: makeStory(),
-      finalStoryContractReport: {
-        passed: true,
-        blockingIssues: [],
-        warnings: [],
-        metrics: {
-          episodesChecked: 1,
-          scenesChecked: 1,
-          beatsChecked: 1,
-          encounterScenesChecked: 0,
-          validEncounterScenes: 0,
-          requestedEpisodesMissing: 0,
-          failedIncrementalResults: 0,
-          callbackIssues: 0,
-          mechanicsLeaks: 0,
-        },
-        generatedAt: '2026-05-28T00:00:00.000Z',
-      },
+      finalStory: makeStoryCircleStory(),
+      finalStoryContractReport: passingFinalStoryContract(),
     } as any, 123);
 
     const contract = JSON.parse(await readFile(`${outputDir}07b-final-story-contract.json`, 'utf8'));
     expect(contract).toMatchObject({ passed: true });
 
+    const qualityReport = JSON.parse(await readFile(`${outputDir}07c-quality-score-report.json`, 'utf8'));
+    expect(qualityReport).toMatchObject({
+      version: 3,
+      finalScore: expect.any(Number),
+      storyCircle: expect.objectContaining({ missingBeats: [] }),
+      legacySubscores: expect.objectContaining({ finalStoryContractScore: 100 }),
+    });
+
     const manifest = JSON.parse(await readFile(`${outputDir}manifest.json`, 'utf8'));
     expect(manifest.files).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'Final Story Contract', type: 'final-story-contract' }),
+      expect.objectContaining({ name: 'Quality Score Report', type: 'quality-score' }),
     ]));
     expect(manifest.summary).toMatchObject({
       finalStoryContractPassed: true,
       finalStoryContractBlockingIssues: 0,
-      qualityScore: 50,
+      qualityScore: expect.any(Number),
       qualityScoreBasis: expect.objectContaining({
-        finalStoryContractScore: 100,
-        validatorComplianceScore: 60,
-        evidenceCoverage: 50,
+        version: 3,
+        evidenceCoverage: 100,
+        legacySubscores: expect.objectContaining({ finalStoryContractScore: 100 }),
       }),
     });
+    expect(manifest.summary.qualityScore).toBeGreaterThan(90);
   });
 
   it('supersedes stale failure diagnostics when a later successful package is written', async () => {

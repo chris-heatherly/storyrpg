@@ -31,9 +31,15 @@ describe('requiredMomentFromMessage', () => {
     expect(requiredMomentFromMessage(msg)).toBe(moment);
   });
 
-  it('extracts the quoted moment from a SceneTurn seven-point event finding', () => {
+  it('extracts the quoted moment from a SceneTurn Story Circle event finding', () => {
     const moment = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is rescued by a mysterious man in the park.';
-    const msg = `Scene "s1-1" carries seven-point hook structurally but does not dramatize its authored beat event on-page: "${moment}".`;
+    const msg = `Scene "s1-1" carries Story Circle hook structurally but does not dramatize its authored beat event on-page: "${moment}".`;
+    expect(requiredMomentFromMessage(msg)).toBe(moment);
+  });
+
+  it('extracts a SceneTurn authored arc moment that contains inner quotes', () => {
+    const moment = 'The "glamorous new life" is, underneath, a funnel — the club is a lure, the rescue was staged, and the friend who adopted her on sight has been steering her since before she landed (visible only on a replay).';
+    const msg = `Scene "s2-1" carries arc pressure "Midpoint recontextualization" but does not dramatize the authored arc event on-page: "${moment}".`;
     expect(requiredMomentFromMessage(msg)).toBe(moment);
   });
 
@@ -142,6 +148,17 @@ describe('momentDepicted (mirror of the validators’ presence check)', () => {
     const prose = [
       '"The shoes, very American," Mika says with theatrical horror.',
       'She unlaces your sneakers and slides your foot into the new shoe, her touch surprisingly gentle.',
+    ].join(' ');
+
+    expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);
+  });
+
+  it('credits staged disappearance prose as an authored vanish beat', () => {
+    const moment = 'Victor vanishes.';
+    const prose = [
+      'Before you can find a voice to speak, the shadows in the corner of the landing deepen around Victor.',
+      'He does not turn. He simply recedes into them, a figure dissolving into ink.',
+      'One moment he is there; the next, only the faint scent of winter air remains.',
     ].join(' ');
 
     expect(momentDepicted('RequiredBeatRealizationValidator', moment, prose)).toBe(true);

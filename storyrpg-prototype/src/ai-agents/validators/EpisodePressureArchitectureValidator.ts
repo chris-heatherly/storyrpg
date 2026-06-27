@@ -10,7 +10,6 @@ import type {
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
 export interface EpisodePressureArchitectureOptions {
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
   isFinale?: boolean;
   targetSceneCount?: number;
 }
@@ -39,7 +38,6 @@ const VALID_TURN_TYPES = new Set<EpisodeTurnType>([
 ]);
 const VALID_B_PLOT_MODES = new Set<BPlotMode>([
   'scene',
-  'sceneEpisode',
   'underlay',
   'offscreen_pressure',
 ]);
@@ -138,7 +136,6 @@ function likelyNeedsBPlot(
   blueprint: EpisodeBlueprint,
   options: EpisodePressureArchitectureOptions,
 ): boolean {
-  if (options.episodeStructureMode === 'sceneEpisodes') return false;
   if ((options.targetSceneCount || blueprint.scenes.length) < 5 && blueprint.scenes.length < 5) return false;
 
   const sceneText = blueprint.scenes.map(sceneHaystack).join(' ');
@@ -197,7 +194,7 @@ export class EpisodePressureArchitectureValidator extends BaseValidator {
       issues.push(this.error(
         'dramaticAudit.episodeQuestionSetup is missing.',
         blueprint.episodeId,
-        'State how the opening scene or first sceneEpisode beat poses/promises the episode question.',
+        'State how the opening scene poses/promises the episode question.',
       ));
     }
     if (!hasText(audit.episodeQuestionAnswer)) {
@@ -212,20 +209,11 @@ export class EpisodePressureArchitectureValidator extends BaseValidator {
       issues.push(this.error(
         'dramaticAudit.openingPromise is incomplete.',
         blueprint.episodeId,
-        'Add hook, episodePromise, and activePressure. In sceneEpisodes, these belong in the first beat or first 1-2 beats.',
+        'Add hook, episodePromise, and activePressure.',
       ));
     }
 
-    if (opening && options.episodeStructureMode === 'sceneEpisodes') {
-      const firstKeyBeat = blueprint.scenes[0]?.keyBeats?.[0] || '';
-      if (!OPENING_PRESSURE.test(firstKeyBeat)) {
-        issues.push(this.error(
-          'sceneEpisode opening keyBeat is neutral instead of pressure-bearing.',
-          blueprint.scenes[0]?.id,
-          'The first keyBeat should contain pressure, desire, threat, question, choice, revelation, or relationship tension.',
-        ));
-      }
-    } else if (opening && first && !OPENING_PRESSURE.test(firstText)) {
+    if (opening && first && !OPENING_PRESSURE.test(firstText)) {
       issues.push(this.warning(
         'Opening scene weakly supports the openingPromise.',
         first.id,
@@ -246,7 +234,7 @@ export class EpisodePressureArchitectureValidator extends BaseValidator {
         issues.push(this.error(
           'B-plot mode is missing or invalid.',
           blueprint.episodeId,
-          'Use mode: scene, sceneEpisode, underlay, or offscreen_pressure.',
+          'Use mode: scene, underlay, or offscreen_pressure.',
         ));
       }
       if (!hasText(bPlot.relationshipOrIdentityPressure)) {
@@ -270,11 +258,11 @@ export class EpisodePressureArchitectureValidator extends BaseValidator {
           'State how the relationship/identity pressure intersects or resonates with the A-plot at the climax or major choice.',
         ));
       }
-      if ((bPlot.mode === 'scene' || bPlot.mode === 'sceneEpisode') && arrayOrEmpty(bPlot.scenesOrEpisodes).length === 0) {
+      if (bPlot.mode === 'scene' && arrayOrEmpty(bPlot.scenesOrEpisodes).length === 0) {
         issues.push(this.error(
           'B-plot scene mode needs scenesOrEpisodes.',
           blueprint.episodeId,
-          'Reference the protagonist-facing scene or sceneEpisode carrying the B-plot pressure.',
+          'Reference the protagonist-facing scene carrying the B-plot pressure.',
         ));
       }
     } else if (likelyNeedsBPlot(blueprint, options)) {

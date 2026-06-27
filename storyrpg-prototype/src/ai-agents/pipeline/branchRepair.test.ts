@@ -244,6 +244,47 @@ describe('repairLostSceneGraphBranches', () => {
     expect(choiceSets[0].choices[1].repairedRequiredSetupSkip).toBe(true);
   });
 
+  it('collapses sibling targets that skip a concrete transition choice scene', () => {
+    const blueprint: RepairBlueprint = {
+      scenes: [
+        { id: 's1-3', leadsTo: ['s1-4', 's1-4-debrief'], choicePoint: { branches: true } },
+        {
+          id: 's1-4',
+          name: 'Development Scene 4',
+          purpose: 'transition',
+          narrativeRole: 'development',
+          leadsTo: ['s1-4-debrief'],
+          choicePoint: { type: 'strategic', optionHints: [] },
+          requiredBeats: [],
+        },
+        { id: 's1-4-debrief', purpose: 'bottleneck', leadsTo: ['s1-5'] },
+        { id: 's1-5', leadsTo: [] },
+      ],
+    };
+    const choiceSets = [{
+      sceneId: 's1-3',
+      choices: [
+        { id: 'choice-7-1', nextSceneId: 's1-4' },
+        { id: 'choice-7-2', nextSceneId: 's1-4-debrief' },
+      ],
+    }];
+
+    const repairs = repairBlueprintRequiredSetupSkips(blueprint);
+    const repairedChoices = applyBlueprintRequiredSetupSkipRepairsToChoiceSets(choiceSets, repairs);
+
+    expect(repairs).toEqual([{
+      sceneId: 's1-3',
+      fromTargetSceneId: 's1-4-debrief',
+      toTargetSceneId: 's1-4',
+      skippedSceneIds: ['s1-4'],
+    }]);
+    expect(blueprint.scenes![0].leadsTo).toEqual(['s1-4']);
+    expect(blueprint.scenes![0].choicePoint?.branches).toBe(false);
+    expect(repairedChoices).toBe(1);
+    expect(choiceSets[0].choices.map((choice) => choice.nextSceneId)).toEqual(['s1-4', 's1-4']);
+    expect(choiceSets[0].choices[1].repairedRequiredSetupSkip).toBe(true);
+  });
+
   it('does not wire backward/self/missing targets (needs ≥2 distinct forward targets)', () => {
     const episode: RepairEpisode = {
       scenes: [

@@ -19,6 +19,14 @@ describe('isUnsafeCallbackProse', () => {
   it('rejects choice-response planning language', () => {
     expect(isUnsafeCallbackProse('The next beat visibly responds to the authored choice: take the key card or leave it.')).toBe(true);
     expect(isUnsafeCallbackProse('The authored choice colors the room.')).toBe(true);
+    expect(isUnsafeCallbackProse('Show immediate residue from the authored path: Mika invents a reason she warned you off.')).toBe(true);
+    expect(isUnsafeCallbackProse('Keep this authored residue visible after reconvergence: Mika keeps watching the exits.')).toBe(true);
+    expect(isUnsafeCallbackProse('Hook — Kylie unpacks in the Lipscani apartment; promise — reinvention; stakes — Sadie asks about vampires.')).toBe(true);
+    expect(isUnsafeCallbackProse('Hook — Kylie unpacks in the Lipscani apartment.')).toBe(true);
+    expect(isUnsafeCallbackProse('Cold-open prelude: Kylie unpacks.\n\nThen continue into the planned scene: Mika opens the club door.')).toBe(true);
+    expect(isUnsafeCallbackProse('The response changes access, trust, information, or danger around At a Lipscani bookshop.')).toBe(true);
+    expect(isUnsafeCallbackProse('Stage the pressure through visible action, reaction, object movement, distance, or dialogue around Kylie unpacking.')).toBe(true);
+    expect(isUnsafeCallbackProse('The room answers through posture around Hook — Kylie unpacks in the Lipscani apartment.')).toBe(true);
   });
 
   it('treats empty/undefined as unsafe', () => {

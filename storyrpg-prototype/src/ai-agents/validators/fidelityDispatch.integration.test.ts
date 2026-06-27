@@ -75,7 +75,7 @@ function minimalStory(): Story {
 }
 
 // A season plan whose plotTurn1 beat is anchored to the WRONG episode (authored Ep3,
-// assigned Ep5) so SevenPointAnchorConformanceValidator emits a blocking finding.
+// assigned Ep5) so StoryCircleAnchorConformanceValidator emits a blocking finding.
 function misanchoredSeasonPlan(): SeasonPlan {
   return {
     episodes: [
@@ -94,7 +94,7 @@ function treatmentAnalysis(): SourceMaterialAnalysis {
   } as unknown as SourceMaterialAnalysis;
 }
 
-const ANCHOR_FLAG = TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance;
+const ANCHOR_FLAG = TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance;
 
 afterEach(() => {
   for (const flag of Object.values(TREATMENT_FIDELITY_GATE_FLAGS)) delete process.env[flag];

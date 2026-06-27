@@ -180,6 +180,15 @@ Active generation flow:
 17. Final story assembly, `SavingPhase`, `pipelineOutputWriter`, package writing, and catalog visibility.
 18. Optional asset HTTP validation and Playwright-based story-path QA.
 
+Scene-first planning now treats scenes as load-bearing dramatic units. When
+`SeasonPlannerAgent` supplies planned scenes, `StoryArchitect` deterministically
+derives scene names, turn contracts, dramatic structure, sequence intent,
+residue, and transitions before prose generation, then runs the planned-scene
+blueprint through the same architecture validation policy as LLM-invented
+blueprints. `DramaticStructure` and `SceneTurnContract` are default-on
+scene-shape gates with `GATE_DRAMATIC_STRUCTURE=0` and
+`GATE_SCENE_TURN_CONTRACT=0` kill switches.
+
 The pipeline has begun extracting typed phases. `SavingPhase` is wired and tested. `WorldBuildingPhase` is scaffolded but not fully wired as the active phase boundary. Future extraction should continue in behavior-preserving steps.
 
 ## Pipeline Parallelism and Resumability

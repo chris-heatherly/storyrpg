@@ -98,6 +98,7 @@ export const PIPELINE_TIMEOUTS = {
   imageGeneration: 3 * 60_000,
   storyboard: 15 * 60_000,
   validateAndRegenerate: 5 * 60_000,
+  finalContractRepair: 20 * 60_000,
   colorScript: 3 * 60_000,
   outputWriter: 2 * 60_000,
 } as const;

@@ -10,7 +10,7 @@ import type {
   FailureModeAuditContract,
   PlannedScene,
   SeasonScenePlan,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
@@ -31,9 +31,9 @@ import {
   stakesArchitectureMatchThreshold,
 } from '../utils/stakesArchitectureContracts';
 import {
-  buildSevenPointBeatContracts,
-  sevenPointBeatMatchThreshold,
-} from '../utils/sevenPointBeatContracts';
+  buildStoryCircleBeatContracts,
+  storyCircleBeatMatchThreshold,
+} from '../utils/storyCircleBeatContracts';
 import {
   arcPressureMatchThreshold,
   buildArcPressureContracts,
@@ -113,13 +113,14 @@ function stakesContractsFromInput(input: TreatmentFieldUtilizationInput): Stakes
   return contracts.filter((contract) => contract.blockingLevel !== 'warning');
 }
 
-function sevenPointContractsFromInput(input: TreatmentFieldUtilizationInput): SevenPointBeatRealizationContract[] {
-  const contracts = input.seasonPlan?.sevenPointBeatContracts
-    ?? input.seasonPlan?.scenePlan?.sevenPointBeatContracts
-    ?? input.sourceAnalysis?.sevenPointBeatContracts
-    ?? buildSevenPointBeatContracts({
+function storyCircleContractsFromInput(input: TreatmentFieldUtilizationInput): StoryCircleBeatRealizationContract[] {
+  const contracts = input.seasonPlan?.storyCircleBeatContracts
+    ?? input.seasonPlan?.scenePlan?.storyCircleBeatContracts
+    ?? input.sourceAnalysis?.storyCircleBeatContracts
+    ?? buildStoryCircleBeatContracts({
       guidance: input.sourceAnalysis?.treatmentSeasonGuidance,
-      sevenPoint: input.seasonPlan?.sevenPoint ?? input.sourceAnalysis?.sevenPoint,
+      storyCircle: input.seasonPlan?.storyCircle ?? input.sourceAnalysis?.storyCircle,
+      legacyStructure: input.seasonPlan?.legacyStructure ?? input.sourceAnalysis?.legacyStructure,
       totalEpisodes: input.seasonPlan?.totalEpisodes ?? input.sourceAnalysis?.totalEstimatedEpisodes ?? 1,
       treatmentSourced: input.treatmentSourced ?? input.sourceAnalysis?.sourceFormat === 'story_treatment',
     });
@@ -277,7 +278,7 @@ function plannedSceneText(scene: PlannedScene): string {
     deepText(scene.requiredBeats),
     deepText(scene.relationshipPacing),
     deepText(scene.mechanicPressure),
-    deepText(scene.sevenPointBeatContracts),
+    deepText(scene.storyCircleBeatContracts),
     deepText(scene.arcPressureContracts),
     deepText(scene.encounter),
     deepText(scene.worldTreatmentContracts),
@@ -625,10 +626,24 @@ function worldFinalText(input: TreatmentFieldUtilizationInput, contract: WorldTr
 
 function hasWorldFinalRealization(input: TreatmentFieldUtilizationInput, contract: WorldTreatmentRealizationContract): boolean {
   const text = worldFinalText(input, contract);
+  if (
+    shouldDeferPartialSliceFinalRealization(input, contract.targetEpisodeNumbers, contract.targetSceneIds, contract.sourceText)
+    && hasWorldStructuredPlanUse(input.seasonPlan, contract)
+  ) {
+    return true;
+  }
   if (contract.contractKind === 'location_identity') {
     return Boolean(locationMatches(contract, text) || treatmentFieldCloseMatch(contract.sourceText, text, worldMatchThreshold(contract)));
   }
   if (contract.contractKind === 'time_period') return true;
+  if (
+    contract.contractKind === 'location_purpose'
+    && treatmentFieldTokens(contract.sourceText).length <= 5
+    && hasWorldStructuredPlanUse(input.seasonPlan, contract)
+    && text.trim().length > 0
+  ) {
+    return true;
+  }
   return treatmentFieldCloseMatch(contract.sourceText, text, worldMatchThreshold(contract));
 }
 
@@ -766,6 +781,12 @@ function stakesFinalText(input: TreatmentFieldUtilizationInput, contract: Stakes
 
 function hasStakesFinalRealization(input: TreatmentFieldUtilizationInput, contract: StakesArchitectureContract): boolean {
   const text = stakesFinalText(input, contract);
+  if (
+    shouldDeferPartialSliceFinalRealization(input, contract.targetEpisodeNumbers, contract.targetSceneIds, contract.sourceText, { broadTokenThreshold: Number.POSITIVE_INFINITY })
+    && hasStakesStructuredPlanUse(input.seasonPlan, contract)
+  ) {
+    return true;
+  }
   if (treatmentFieldCloseMatch(contract.sourceText, text, stakesArchitectureMatchThreshold(contract))) return true;
   if (!hasStakesStructuredPlanUse(input.seasonPlan, contract) || !text.trim()) return false;
   // Stakes can be realized fiction-first without repeating exact nouns when the
@@ -778,56 +799,56 @@ function hasStakesFinalRealization(input: TreatmentFieldUtilizationInput, contra
   return true;
 }
 
-function sevenPointContractTargets(
+function storyCircleContractTargets(
   plan: SeasonPlan | undefined,
-  contract: SevenPointBeatRealizationContract,
+  contract: StoryCircleBeatRealizationContract,
 ): PlannedScene[] {
   const targetIds = new Set(contract.targetSceneIds);
   const scenes = plan?.scenePlan?.scenes ?? [];
   for (const scene of scenes) {
-    if ((scene.sevenPointBeatContracts ?? []).some((field) => field.id === contract.id)) {
+    if ((scene.storyCircleBeatContracts ?? []).some((field) => field.id === contract.id)) {
       targetIds.add(scene.id);
     }
   }
   return scenes.filter((scene) => targetIds.has(scene.id));
 }
 
-function sevenPointIssueLocation(contract: SevenPointBeatRealizationContract, plan?: SeasonPlan): string {
+function storyCircleIssueLocation(contract: StoryCircleBeatRealizationContract, plan?: SeasonPlan): string {
   const sceneId = contract.targetSceneIds[0]
-    ?? sevenPointContractTargets(plan, contract)[0]?.id
+    ?? storyCircleContractTargets(plan, contract)[0]?.id
     ?? 'episode';
-  return `sevenPointBeat:ep${contract.targetEpisodeNumber ?? 'unknown'}:${sceneId}:${contract.id}`;
+  return `storyCircleBeat:ep${contract.targetEpisodeNumber ?? 'unknown'}:${sceneId}:${contract.id}`;
 }
 
-function hasSevenPointPlannedContractMetadata(plan: SeasonPlan | undefined, contract: SevenPointBeatRealizationContract): boolean {
-  if ((plan?.scenePlan?.sevenPointBeatContracts ?? []).some((field) => field.id === contract.id)) return true;
-  if ((plan?.sevenPointBeatContracts ?? []).some((field) => field.id === contract.id)) return true;
+function hasStoryCirclePlannedContractMetadata(plan: SeasonPlan | undefined, contract: StoryCircleBeatRealizationContract): boolean {
+  if ((plan?.scenePlan?.storyCircleBeatContracts ?? []).some((field) => field.id === contract.id)) return true;
+  if ((plan?.storyCircleBeatContracts ?? []).some((field) => field.id === contract.id)) return true;
   return (plan?.scenePlan?.scenes ?? []).some((scene) =>
-    (scene.sevenPointBeatContracts ?? []).some((field) => field.id === contract.id)
+    (scene.storyCircleBeatContracts ?? []).some((field) => field.id === contract.id)
   );
 }
 
-function hasSevenPointStructuredPlanUse(plan: SeasonPlan | undefined, contract: SevenPointBeatRealizationContract): boolean {
-  const targets = sevenPointContractTargets(plan, contract);
+function hasStoryCircleStructuredPlanUse(plan: SeasonPlan | undefined, contract: StoryCircleBeatRealizationContract): boolean {
+  const targets = storyCircleContractTargets(plan, contract);
   const targetText = targets.map(plannedSceneText).join(' ');
   const episodeText = contract.targetEpisodeNumber
     ? planEpisodeText(plan, contract.targetEpisodeNumber)
     : '';
   const text = `${targetText} ${episodeText}`;
-  const match = treatmentFieldCloseMatch(contract.sourceText, text, sevenPointBeatMatchThreshold(contract));
+  const match = treatmentFieldCloseMatch(contract.sourceText, text, storyCircleBeatMatchThreshold(contract));
   return targets.some((scene) =>
     Boolean(scene.turnContract)
-    || (scene.requiredBeats ?? []).some((beat) => beat.id.includes(`seven-point-${contract.beat}`) || treatmentFieldCloseMatch(contract.sourceText, `${beat.sourceTurn} ${beat.mustDepict}`, 0.25))
+    || (scene.requiredBeats ?? []).some((beat) => beat.id.includes(`story-circle-${contract.beat}`) || treatmentFieldCloseMatch(contract.sourceText, `${beat.sourceTurn} ${beat.mustDepict}`, 0.25))
     || (scene.mechanicPressure ?? []).some((pressure) => pressure.id.includes(contract.id) || treatmentFieldCloseMatch(contract.sourceText, pressure.storyPressure, 0.25))
-    || (contract.beat === 'climax' && scene.hasChoice)
-    || (contract.beat === 'resolution' && scene.narrativeRole === 'release')
+    || (contract.beat === 'return' && scene.hasChoice)
+    || (contract.beat === 'change' && scene.narrativeRole === 'release')
   ) || match;
 }
 
-function sevenPointFinalText(input: TreatmentFieldUtilizationInput, contract: SevenPointBeatRealizationContract): string {
+function storyCircleFinalText(input: TreatmentFieldUtilizationInput, contract: StoryCircleBeatRealizationContract): string {
   const targetIds = new Set(contract.targetSceneIds);
   for (const scene of input.seasonPlan?.scenePlan?.scenes ?? []) {
-    if ((scene.sevenPointBeatContracts ?? []).some((field) => field.id === contract.id)) {
+    if ((scene.storyCircleBeatContracts ?? []).some((field) => field.id === contract.id)) {
       targetIds.add(scene.id);
     }
   }
@@ -851,13 +872,66 @@ function generatedEpisodeIncludes(input: TreatmentFieldUtilizationInput, episode
   return (input.story.episodes ?? []).some((episode) => episode.number === episodeNumber);
 }
 
-function hasSevenPointFinalRealization(input: TreatmentFieldUtilizationInput, contract: SevenPointBeatRealizationContract): boolean {
+function generatedEpisodeNumbers(input: TreatmentFieldUtilizationInput): Set<number> {
+  return new Set(
+    (input.story?.episodes ?? [])
+      .map((episode) => episode.number)
+      .filter((episodeNumber): episodeNumber is number => typeof episodeNumber === 'number'),
+  );
+}
+
+function isPartialGeneratedSlice(input: TreatmentFieldUtilizationInput): boolean {
+  const generated = generatedEpisodeNumbers(input);
+  if (generated.size === 0) return false;
+  const totalEpisodes = input.seasonPlan?.totalEpisodes ?? input.sourceAnalysis?.totalEstimatedEpisodes;
+  return typeof totalEpisodes === 'number' && totalEpisodes > generated.size;
+}
+
+function spansUngeneratedEpisode(input: TreatmentFieldUtilizationInput, targetEpisodeNumbers: number[]): boolean {
+  if (!isPartialGeneratedSlice(input) || targetEpisodeNumbers.length <= 1) return false;
+  const generated = generatedEpisodeNumbers(input);
+  return targetEpisodeNumbers.some((episodeNumber) => !generated.has(episodeNumber));
+}
+
+function hasGeneratedSceneTarget(input: TreatmentFieldUtilizationInput, targetSceneIds: string[]): boolean {
+  if (targetSceneIds.length === 0) return false;
+  const generatedSceneIds = new Set<string>();
+  for (const episode of input.story?.episodes ?? []) {
+    for (const scene of episode.scenes ?? []) {
+      generatedSceneIds.add(scene.id);
+    }
+  }
+  return targetSceneIds.some((sceneId) => generatedSceneIds.has(sceneId));
+}
+
+function shouldDeferPartialSliceFinalRealization(
+  input: TreatmentFieldUtilizationInput,
+  targetEpisodeNumbers: number[],
+  targetSceneIds: string[],
+  sourceText: string,
+  options: { broadTokenThreshold?: number } = {},
+): boolean {
+  if (!spansUngeneratedEpisode(input, targetEpisodeNumbers)) return false;
+  const tokenCount = treatmentFieldTokens(sourceText).length;
+  const generatedSceneTarget = hasGeneratedSceneTarget(input, targetSceneIds);
+  const broadTokenThreshold = options.broadTokenThreshold ?? 6;
+
+  // Multi-episode contracts often name the whole season rule/arc/audit in a
+  // single source string, while the partial run can only prove the generated
+  // slice. Keep scene-local, compact obligations enforceable; defer broad
+  // season-spanning prose checks to the ledger/full-season pass.
+  return !generatedSceneTarget
+    || tokenCount > broadTokenThreshold
+    || /(?:;|\bE\d\b|\bep\s*\d\b|\bepisode(?:s)?\b|→|->|midpoint|finale|season|across|threaded|every episode|later|payoff)/i.test(sourceText);
+}
+
+function hasStoryCircleFinalRealization(input: TreatmentFieldUtilizationInput, contract: StoryCircleBeatRealizationContract): boolean {
   if (!generatedEpisodeIncludes(input, contract.targetEpisodeNumber)) return true;
-  const text = sevenPointFinalText(input, contract);
+  const text = storyCircleFinalText(input, contract);
   if (!text.trim()) return false;
-  if (treatmentFieldCloseMatch(contract.sourceText, text, sevenPointBeatMatchThreshold(contract))) return true;
+  if (treatmentFieldCloseMatch(contract.sourceText, text, storyCircleBeatMatchThreshold(contract))) return true;
   const atoms = contract.eventAtoms.length > 0 ? contract.eventAtoms : [contract.sourceText];
-  const depictedAtoms = atoms.filter((atom) => treatmentFieldCloseMatch(atom, text, Math.min(0.4, sevenPointBeatMatchThreshold(contract) + 0.08)));
+  const depictedAtoms = atoms.filter((atom) => treatmentFieldCloseMatch(atom, text, Math.min(0.4, storyCircleBeatMatchThreshold(contract) + 0.08)));
   return depictedAtoms.length >= Math.max(1, Math.ceil(Math.min(atoms.length, 3) / 2));
 }
 
@@ -966,6 +1040,12 @@ function hasArcPressureFinalRealization(input: TreatmentFieldUtilizationInput, c
     if (!generatedAny) return true;
   }
   const text = arcPressureFinalText(input, contract);
+  if (
+    shouldDeferPartialSliceFinalRealization(input, contract.targetEpisodeNumbers, contract.targetSceneIds, contract.sourceText, { broadTokenThreshold: 12 })
+    && hasArcPressureStructuredPlanUse(input.seasonPlan, contract)
+  ) {
+    return true;
+  }
   if (contract.contractKind === 'arc_identity') return true;
   if (!text.trim()) return false;
   if (treatmentFieldCloseMatch(contract.sourceText, text, arcPressureMatchThreshold(contract))) return true;
@@ -1088,6 +1168,12 @@ function failureModeFinalText(input: TreatmentFieldUtilizationInput, contract: F
 
 function hasFailureModeFinalRealization(input: TreatmentFieldUtilizationInput, contract: FailureModeAuditContract): boolean {
   const text = failureModeFinalText(input, contract);
+  if (
+    shouldDeferPartialSliceFinalRealization(input, contract.targetEpisodeNumbers, contract.targetSceneIds, contract.sourceText)
+    && hasFailureModeStructuredPlanUse(input.seasonPlan, contract)
+  ) {
+    return true;
+  }
   if (treatmentFieldCloseMatch(contract.sourceText, text, failureModeAuditMatchThreshold(contract))) return true;
   if (!hasFailureModeStructuredPlanUse(input.seasonPlan, contract) || !text.trim()) return false;
   switch (contract.contractKind) {
@@ -1323,7 +1409,7 @@ export class TreatmentFieldUtilizationValidator extends BaseValidator {
     const contracts = contractsFromAnalysis(input.sourceAnalysis);
     const worldContracts = worldContractsFromInput(input);
     const stakesContracts = stakesContractsFromInput(input);
-    const sevenPointContracts = sevenPointContractsFromInput(input);
+    const storyCircleContracts = storyCircleContractsFromInput(input);
     const arcPressureContracts = arcPressureContractsFromInput(input);
     const branchConsequenceContracts = branchConsequenceContractsFromInput(input);
     const endingRealizationContracts = endingRealizationContractsFromInput(input);
@@ -1332,7 +1418,7 @@ export class TreatmentFieldUtilizationValidator extends BaseValidator {
       contracts.length === 0
       && worldContracts.length === 0
       && stakesContracts.length === 0
-      && sevenPointContracts.length === 0
+      && storyCircleContracts.length === 0
       && arcPressureContracts.length === 0
       && branchConsequenceContracts.length === 0
       && endingRealizationContracts.length === 0
@@ -1404,23 +1490,23 @@ export class TreatmentFieldUtilizationValidator extends BaseValidator {
       }
     }
 
-    for (const contract of sevenPointContracts) {
-      const planHasMetadata = hasSevenPointPlannedContractMetadata(input.seasonPlan, contract);
-      const planUse = hasSevenPointStructuredPlanUse(input.seasonPlan, contract);
+    for (const contract of storyCircleContracts) {
+      const planHasMetadata = hasStoryCirclePlannedContractMetadata(input.seasonPlan, contract);
+      const planUse = hasStoryCircleStructuredPlanUse(input.seasonPlan, contract);
       if (!planHasMetadata || !planUse) {
         issues.push(this.error(
-          `Seven-point beat "${contract.beat}" was not consumed into a concrete plan artifact: "${contract.sourceText}".`,
-          sevenPointIssueLocation(contract, input.seasonPlan),
+          `Story Circle beat "${contract.beat}" was not consumed into a concrete plan artifact: "${contract.sourceText}".`,
+          storyCircleIssueLocation(contract, input.seasonPlan),
           'Assign the authored beat text to a scene turn, required beat, choice/encounter, mechanic pressure contract, information movement, or episode ending before prose generation.',
         ));
         if (input.phase === 'plan') continue;
       }
 
-      if (input.phase !== 'plan' && input.story && !hasSevenPointFinalRealization(input, contract)) {
+      if (input.phase !== 'plan' && input.story && !hasStoryCircleFinalRealization(input, contract)) {
         issues.push(this.error(
-          `Seven-point beat "${contract.beat}" was planned but its authored event/state change was not realized in generated prose: "${contract.sourceText}".`,
-          sevenPointIssueLocation(contract, input.seasonPlan),
-          'Repair the assigned scene/cluster or finale/ending so the authored seven-point beat is staged as visible event, reveal, choice, cost, changed state, or handoff.',
+          `Story Circle beat "${contract.beat}" was planned but its authored event/state change was not realized in generated prose: "${contract.sourceText}".`,
+          storyCircleIssueLocation(contract, input.seasonPlan),
+          'Repair the assigned scene/cluster or finale/ending so the authored Story Circle beat is staged as visible event, reveal, choice, cost, changed state, or handoff.',
         ));
       }
     }

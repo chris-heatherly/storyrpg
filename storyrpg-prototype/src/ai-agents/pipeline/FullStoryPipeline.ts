@@ -182,7 +182,7 @@ import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePh
 import { EncounterImagePhase } from './phases/EncounterImagePhase';
 import { CoverArtPhase } from './phases/CoverArtPhase';
 import { ImageSupport } from './imageSupport';
-import { PipelineMemory } from './pipelineMemory';
+import { PipelineMemory, renderPipelineMemoryPacket, type PipelineMemoryPacket } from './pipelineMemory';
 import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
 import { DraftImageGeneration, type DraftImageGenerationDeps } from './draftImageGeneration';
@@ -288,8 +288,6 @@ import {
   DuplicateEstablishingBeatValidator,
   TreatmentSeedOnPageValidator,
   EndingReachabilityValidator,
-  MicroEpisodeStructureValidator,
-  MicroEpisodeSeasonValidator,
   type FinalStoryContractReport,
   TreatmentFidelityValidator,
   type SceneGraphBranchValidationResult,
@@ -458,10 +456,6 @@ export interface FullCreativeBrief {
     preferences?: {
       targetScenesPerEpisode?: number;
       targetChoicesPerEpisode?: number;
-      episodeStructureMode?: 'standard' | 'sceneEpisodes';
-      sceneEpisodeEncounterCadence?: number;
-      sceneEpisodeBranchMinEpisodes?: number;
-      sceneEpisodeBranchMaxEpisodes?: number;
       pacing?: 'tight' | 'moderate' | 'expansive';
       endingMode?: EndingMode;
     };
@@ -627,8 +621,6 @@ export class FullStoryPipeline {
   private duplicateEstablishingBeatValidator: DuplicateEstablishingBeatValidator = new DuplicateEstablishingBeatValidator();
   private treatmentSeedOnPageValidator: TreatmentSeedOnPageValidator = new TreatmentSeedOnPageValidator();
   private endingReachabilityValidator: EndingReachabilityValidator = new EndingReachabilityValidator();
-  private microEpisodeStructureValidator: MicroEpisodeStructureValidator = new MicroEpisodeStructureValidator();
-  private microEpisodeSeasonValidator: MicroEpisodeSeasonValidator = new MicroEpisodeSeasonValidator();
   
   // Incremental validation (per-scene during content generation)
   private incrementalValidator: IncrementalValidationRunner | null = null;
@@ -675,7 +667,7 @@ export class FullStoryPipeline {
   private _cancelled = false;
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
-  private cachedPipelineMemory: string | null = null;
+  private cachedPipelineMemory: PipelineMemoryPacket | null = null;
   private planTimeFidelityFindings: FidelityFinding[] = [];
   private planTimeFidelityBaseline?: ValidationPhaseBaseline;
 
@@ -1170,313 +1162,26 @@ export class FullStoryPipeline {
     return this.finalContract().enforceFinalStoryContract(input);
   }
 
-  private validateMicroEpisodeStructure(
-    episode: Episode,
-    context: {
-      phase: string;
-    }
-  ): void {
-    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return;
-
-    const result = this.microEpisodeStructureValidator.validateEpisode(episode, {
-      minScenes: this.config.generation.sceneEpisodeMinScenes || 1,
-      maxScenes: this.config.generation.sceneEpisodeMaxScenes || 1,
-      normalMinBeats: this.config.generation.sceneEpisodeNormalMinBeats || 6,
-      normalMaxBeats: this.config.generation.sceneEpisodeNormalMaxBeats || 10,
-      encounterMaxBeats: this.config.generation.sceneEpisodeEncounterMaxBeats || 15,
-    });
-
-    this.emit({
-      type: result.valid ? 'checkpoint' : 'warning',
-      phase: context.phase,
-      message: `MicroEpisodeStructureValidator: ${result.summary}`,
-      data: result,
-    });
-
-    if (!result.valid) {
-      const errors = result.issues.filter(issue => issue.severity === 'error');
-      this.throwIfFailFast(
-        `Micro-episode structure validation failed: ${errors.map(issue => issue.message).join(' ')}`,
-        context.phase,
-        {
-          context: {
-            microEpisodeMetrics: result.metrics,
-            microEpisodeIssues: result.issues,
-            failureKind: 'micro_episode_structure',
-          },
-        }
-      );
-    }
-  }
-
-  private validateMicroEpisodeSeason(story: Story, context: { phase: string }): void {
-    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return;
-
-    const result = this.microEpisodeSeasonValidator.validateStory(story, {
-      encounterCadence: this.config.generation.sceneEpisodeEncounterCadence || 6,
-      branchMinEpisodes: this.config.generation.sceneEpisodeBranchMinEpisodes || 1,
-      branchMaxEpisodes: this.config.generation.sceneEpisodeBranchMaxEpisodes || 2,
-    });
-
-    this.emit({
-      type: result.valid ? 'checkpoint' : 'warning',
-      phase: context.phase,
-      message: `MicroEpisodeSeasonValidator: ${result.summary}`,
-      data: result,
-    });
-
-    // Wave-0 shadow: firing data for the Wave-2 "micro-episode → hard gate" decision.
-    if (isShadowLoggingEnabled()) {
-      void this.recordGateShadowSafe(buildGateShadowRecord({
-        gate: 'GATE_MICRO_EPISODE_SEASON', validator: 'MicroEpisodeSeasonValidator', scope: 'season',
-        enabled: false, blockingCount: result.issues.filter((i) => i.severity === 'error').length,
-        storyId: story.id, issues: result.issues.map((i) => ({ severity: i.severity, message: i.message })),
-      }));
-    }
-
-    if (!result.valid) {
-      const errors = result.issues.filter(issue => issue.severity === 'error');
-      this.throwIfFailFast(
-        `Micro-episode season validation failed: ${errors.map(issue => issue.message).join(' ')}`,
-        context.phase,
-        {
-          context: {
-            microEpisodeSeasonMetrics: result.metrics,
-            microEpisodeSeasonIssues: result.issues,
-            failureKind: 'micro_episode_season',
-          },
-        }
-      );
-    }
-  }
-
-  private compactSceneEpisodeBeatOverflow(
-    sceneContents: SceneContent[],
-    choiceSets: ChoiceSet[],
-    encounters: Map<string, EncounterStructure> | undefined,
-    context: { phase: string }
-  ): void {
-    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return;
-
-    const maxBeats = this.config.generation.sceneEpisodeNormalMaxBeats || 10;
-    const minBeats = this.config.generation.sceneEpisodeNormalMinBeats || 6;
-    const protectedChoiceBeatIds = new Set(
-      choiceSets
-        .map((choiceSet) => choiceSet.beatId)
-        .filter(Boolean)
-    );
-
-    for (const content of sceneContents) {
-      if (!content?.beats?.length) continue;
-      if (encounters?.has(content.sceneId)) continue;
-      if (content.beats.length <= maxBeats) continue;
-
-      const originalCount = content.beats.length;
-      while (content.beats.length > maxBeats) {
-        const removeIndex = this.findSceneEpisodeOverflowBeatIndex(content.beats, protectedChoiceBeatIds);
-        if (removeIndex < 0) break;
-        const [removed] = content.beats.splice(removeIndex, 1);
-        const mergeTarget = content.beats[Math.max(0, removeIndex - 1)];
-        if (mergeTarget && removed) {
-          mergeTarget.text = [mergeTarget.text, removed.text].filter(Boolean).join('\n\n');
-          if (!mergeTarget.visualMoment && removed.visualMoment) mergeTarget.visualMoment = removed.visualMoment;
-          if (!mergeTarget.primaryAction && removed.primaryAction) mergeTarget.primaryAction = removed.primaryAction;
-          if (!mergeTarget.emotionalRead && removed.emotionalRead) mergeTarget.emotionalRead = removed.emotionalRead;
-          if (removed.nextSceneId && !mergeTarget.nextSceneId) mergeTarget.nextSceneId = removed.nextSceneId;
-          if (removed.callbackHookIds?.length) {
-            mergeTarget.callbackHookIds = [...new Set([...(mergeTarget.callbackHookIds || []), ...removed.callbackHookIds])];
-          }
-        }
-      }
-
-      this.relinkSceneEpisodeBeats(content);
-      if (content.beats.length >= minBeats && content.beats.length < originalCount) {
+  private enforceEpisodeIncrementalContractWithTimeout(
+    episodeNumber: number,
+    input: Parameters<FullStoryPipeline['enforceFinalStoryContract']>[0],
+    timeoutMs = PIPELINE_TIMEOUTS.finalContractRepair,
+  ): Promise<FinalStoryContractReport | undefined> {
+    return withTimeout(
+      this.enforceFinalStoryContract(input),
+      timeoutMs,
+      `FinalStoryContractRepair(incremental_contract_ep_${episodeNumber})`,
+      () => {
         this.emit({
-          type: 'debug',
-          phase: context.phase,
-          message: `Compacted sceneEpisode ${content.sceneId} from ${originalCount} to ${content.beats.length} beats before micro-episode validation.`,
+          type: 'warning',
+          phase: `incremental_contract_ep_${episodeNumber}`,
+          message: `Episode ${episodeNumber} contract repair exceeded ${Math.round(timeoutMs / 60_000)} minute(s); failing the job so it can be resumed safely.`,
         });
-      }
-    }
-  }
-
-  private findSceneEpisodeOverflowBeatIndex(beats: GeneratedBeat[], protectedChoiceBeatIds: Set<string>): number {
-    const protectedIndexes = new Set<number>([0, beats.length - 1]);
-    beats.forEach((beat, index) => {
-      if (beat.isChoicePoint || protectedChoiceBeatIds.has(beat.id)) {
-        protectedIndexes.add(index);
-      }
-    });
-
-    for (let index = beats.length - 2; index >= 1; index--) {
-      if (!protectedIndexes.has(index)) return index;
-    }
-    return -1;
-  }
-
-  private relinkSceneEpisodeBeats(content: SceneContent): void {
-    content.beats.forEach((beat, index) => {
-      const next = content.beats[index + 1];
-      beat.nextBeatId = next?.id;
-      if (!next) delete beat.nextBeatId;
-    });
-    if (!content.beats.some((beat) => beat.id === content.startingBeatId)) {
-      content.startingBeatId = content.beats[0]?.id || content.startingBeatId;
-    }
-  }
-
-  private repairSceneEpisodePlayableContract(
-    sceneBlueprint: SceneBlueprint,
-    content: SceneContent,
-    choiceSets: ChoiceSet[],
-    context: { phase: string }
-  ): boolean {
-    if (this.config.generation?.episodeStructureMode !== 'sceneEpisodes') return false;
-    if (sceneBlueprint.isEncounter || (content as SceneContent & { encounter?: unknown })?.encounter) return false;
-
-    content.beats = Array.isArray(content.beats) ? content.beats : [];
-    let repaired = false;
-
-    if (content.beats.length === 0) {
-      content.beats.push(this.createSceneEpisodeSyntheticBeat(
-        sceneBlueprint,
-        'beat-1',
-        sceneBlueprint.description || sceneBlueprint.dramaticQuestion || 'The scene pressure arrives.',
-        true,
-      ));
-      content.startingBeatId = 'beat-1';
-      repaired = true;
-    }
-
-    let choiceBeat = content.beats.find((beat) => beat.isChoicePoint);
-    if (!choiceBeat) {
-      choiceBeat = content.beats[content.beats.length - 1];
-      if (choiceBeat) {
-        choiceBeat.isChoicePoint = true;
-        repaired = true;
-      }
-    }
-
-    const minBeats = this.config.generation.sceneEpisodeNormalMinBeats || 6;
-    const maxBeats = this.config.generation.sceneEpisodeNormalMaxBeats || 10;
-    const targetFloor = Math.min(minBeats, maxBeats);
-    while (content.beats.length < targetFloor) {
-      const insertIndex = choiceBeat ? Math.max(0, content.beats.indexOf(choiceBeat)) : content.beats.length;
-      const beatId = this.nextSceneEpisodeSyntheticBeatId(content);
-      content.beats.splice(insertIndex, 0, this.createSceneEpisodeSyntheticBeat(
-        sceneBlueprint,
-        beatId,
-        this.buildSceneEpisodeSyntheticBeatText(sceneBlueprint, content.beats.length, targetFloor),
-        insertIndex === 0,
-      ));
-      repaired = true;
-    }
-
-    if (choiceBeat && !content.beats.includes(choiceBeat)) {
-      choiceBeat = content.beats[content.beats.length - 1];
-      if (choiceBeat) choiceBeat.isChoicePoint = true;
-    }
-
-    this.relinkSceneEpisodeBeats(content);
-
-    const activeChoiceBeat = content.beats.find((beat) => beat.isChoicePoint) || content.beats[content.beats.length - 1];
-    if (activeChoiceBeat) {
-      activeChoiceBeat.isChoicePoint = true;
-      const existingChoiceSet = choiceSets.find((choiceSet) =>
-        choiceSet.sceneId === sceneBlueprint.id && choiceSet.beatId === activeChoiceBeat.id
-      );
-      if (!existingChoiceSet) {
-        choiceSets.push(this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, activeChoiceBeat));
-        repaired = true;
-      }
-    }
-
-    if (!content.startingBeatId && content.beats[0]) {
-      content.startingBeatId = content.beats[0].id;
-      repaired = true;
-    }
-
-    if (repaired) {
-      this.emit({
-        type: 'debug',
-        phase: context.phase,
-        message: `Repaired sceneEpisode playable contract for ${sceneBlueprint.id}: ${content.beats.length} beat(s), ${choiceSets.filter(cs => cs.sceneId === sceneBlueprint.id).length} choice set(s).`,
-      });
-    }
-
-    return repaired;
-  }
-
-  private createSceneEpisodeSyntheticBeat(
-    sceneBlueprint: SceneBlueprint,
-    id: string,
-    text: string,
-    isOpening = false
-  ): GeneratedBeat {
-    const cleanText = this.ensureSentence(text || sceneBlueprint.description || 'The pressure changes shape.');
-    return {
-      id,
-      text: cleanText,
-      isChoicePoint: false,
-      visualMoment: cleanText,
-      primaryAction: cleanText,
-      emotionalRead: isOpening
-        ? 'the protagonist enters with visible intent'
-        : 'the protagonist absorbs the pressure and chooses what it means',
-      relationshipDynamic: sceneBlueprint.npcsPresent?.length
-        ? 'the power dynamic tightens between the protagonist and the people present'
-        : 'the protagonist is pressed by the situation itself',
-      mustShowDetail: sceneBlueprint.location || sceneBlueprint.name,
-      intensityTier: isOpening ? 'rest' : 'supporting',
-      sequenceIntent: {
-        objective: sceneBlueprint.dramaticQuestion || 'Keep the sceneEpisode pressure moving toward a choice.',
-        activity: sceneBlueprint.choicePoint?.description || sceneBlueprint.conflictEngine || 'pressure, reaction, and decision',
-        obstacle: sceneBlueprint.conflictEngine || sceneBlueprint.choicePoint?.stakes?.cost || 'the situation resists a clean answer',
-        startState: sceneBlueprint.personalStake || sceneBlueprint.description || 'The scene begins under pressure.',
-        endState: sceneBlueprint.choicePoint?.description || 'The next beat leaves a clearer choice.',
-        beatRole: isOpening ? 'setup' : 'escalation',
-        mechanicThread: sceneBlueprint.choicePoint?.consequenceDomain || sceneBlueprint.purpose || 'sceneEpisode',
       },
-    } as GeneratedBeat;
-  }
-
-  private buildSceneEpisodeSyntheticBeatText(
-    sceneBlueprint: SceneBlueprint,
-    currentBeatCount: number,
-    targetFloor: number
-  ): string {
-    const authoredBeats = (sceneBlueprint.keyBeats || [])
-      .map((beat) => String(beat || '').trim())
-      .filter(Boolean)
-      .filter((beat) => !/^choice pressure:/i.test(beat));
-    const authored = authoredBeats[currentBeatCount % Math.max(1, authoredBeats.length)];
-    if (authored) return authored;
-
-    const choicePressure = sceneBlueprint.choicePoint?.description;
-    const dramaticQuestion = sceneBlueprint.dramaticQuestion || sceneBlueprint.dramaticStructure?.question;
-    const pressurePeak = sceneBlueprint.dramaticStructure?.pressurePeak || sceneBlueprint.choicePoint?.stakes?.cost;
-    const exitShift = this.stripAgentFacingFidelityText(
-      sceneBlueprint.dramaticStructure?.changedState || sceneBlueprint.narrativeFunction || '',
-      sceneBlueprint.description || sceneBlueprint.name || 'The choice leaves residue.'
     );
-    const fallbackCycle = [
-      dramaticQuestion ? `The scene presses its question: ${dramaticQuestion}` : '',
-      pressurePeak ? `The cost becomes harder to ignore: ${pressurePeak}` : '',
-      choicePressure ? `The decision narrows: ${choicePressure}` : '',
-      exitShift ? `The moment leaves residue: ${exitShift}` : '',
-    ].filter(Boolean);
-    return fallbackCycle[currentBeatCount % Math.max(1, fallbackCycle.length)]
-      || `The scene holds one more turn before the choice can land (${currentBeatCount + 1}/${targetFloor}).`;
   }
 
-  private nextSceneEpisodeSyntheticBeatId(content: SceneContent): string {
-    const ids = new Set(content.beats.map((beat) => beat.id));
-    let index = content.beats.length + 1;
-    while (ids.has(`beat-${index}`) || ids.has(`beat-synth-${index}`)) index++;
-    return ids.has(`beat-${index}`) ? `beat-synth-${index}` : `beat-${index}`;
-  }
-
-  private createFallbackSceneEpisodeChoiceSet(
+  private createFallbackChoiceSet(
     sceneBlueprint: SceneBlueprint,
     choiceBeat: GeneratedBeat
   ): ChoiceSet {
@@ -1538,7 +1243,7 @@ export class FullStoryPipeline {
       choiceType,
       overallStakes: stakes,
       overallStakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
-      designNotes: 'Deterministic sceneEpisode fallback: preserves treatment pressure when ChoiceAuthor does not produce a usable choice set.',
+      designNotes: 'Deterministic fallback: preserves authored choice pressure when ChoiceAuthor does not produce a usable choice set.',
       choices: options.map((text, index) => {
         const tintFlag = this.fallbackTintFlag(choiceType, index);
         return {
@@ -1565,7 +1270,7 @@ export class FullStoryPipeline {
             immediate: immediateReminder,
             shortTerm: this.stripAgentFacingFidelityText(
               sceneBlueprint.narrativeFunction || '',
-              'The residue carries into the next sceneEpisode.'
+              'The residue carries into the next scene.'
             ),
           },
           feedbackCue: {
@@ -1600,8 +1305,7 @@ export class FullStoryPipeline {
       || isPlaceholderStake(cleaned)
       || cleaned.length > 240
       || /\bserves\s+the\s+\w+\s+beat\b/i.test(cleaned)
-      || /\bforward\s+pressure\s*:/i.test(cleaned)
-      || /\bsceneEpisode\b/i.test(cleaned);
+      || /\bforward\s+pressure\s*:/i.test(cleaned);
   }
 
   private fallbackTintFlag(choiceType: string, index: number): string {
@@ -1649,7 +1353,7 @@ export class FullStoryPipeline {
     const targets = [...new Set((sceneBlueprint.leadsTo || []).filter(Boolean))];
     if (targets.length < 2) return undefined; // only branch points need this net
 
-    const base = this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, choiceBeat);
+    const base = this.createFallbackChoiceSet(sceneBlueprint, choiceBeat);
     // Pad to cover every target and route round-robin so each leadsTo target is reached.
     const choices = routeFallbackChoicesAcrossTargets(base.choices, targets, choiceBeat.id).map((choice) => ({
       ...choice,
@@ -2887,7 +2591,6 @@ export class FullStoryPipeline {
     if (terminalReason === 'cancelled' && finalStory.imagesStatus === 'pending') {
       finalStory.imagesStatus = 'partial';
     }
-    this.validateMicroEpisodeSeason(finalStory, { phase: 'micro_episode_season_final_validation' });
     const visualContractPersistence = this.auditStoryVisualContractPersistence(finalStory);
 
     await saveEarlyDiagnostic(outputDirectory, '08-final-story.json', finalStory);
@@ -3323,9 +3026,18 @@ export class FullStoryPipeline {
 
     try {
       // Read pipeline optimization memory (prior generation insights)
-      this.cachedPipelineMemory = await this.readPipelineMemory();
+      this.cachedPipelineMemory = await this.recallPipelineMemory();
       if (this.cachedPipelineMemory) {
-        this.emit({ type: 'debug', phase: 'initialization', message: `Loaded pipeline optimization memory (${this.cachedPipelineMemory.length} chars)` });
+        this.emit({
+          type: 'debug',
+          phase: 'initialization',
+          message: `Loaded pipeline memory (${this.cachedPipelineMemory.sourceSnippets.length} snippet(s) from ${this.cachedPipelineMemory.datasetNames.join(', ') || 'configured provider'})`,
+          data: {
+            datasetNames: this.cachedPipelineMemory.datasetNames,
+            queryLog: this.cachedPipelineMemory.queryLog,
+            warnings: this.cachedPipelineMemory.warnings,
+          },
+        });
       }
 
       // === PHASE 1: WORLD BUILDING ===
@@ -3614,28 +3326,68 @@ export class FullStoryPipeline {
       }
       if (resumedSceneContent) {
         this.emit({ type: 'debug', phase: 'content', message: 'Resumed from durable scene content checkpoint' });
-      } else {
-        this.addCheckpoint(
-          'Scene Content',
-          { sceneContents, choiceSets, encounterCount: encounters.size, encounters: Array.from(encounters.entries()) },
-          true
-        );
-      }
+	      } else {
+	        this.addCheckpoint(
+	          'Scene Content',
+	          { sceneContents, choiceSets, encounterCount: encounters.size, encounters: Array.from(encounters.entries()) },
+	          true
+	        );
+	      }
+	      this.writePipelineMemoryRecord({
+	        kind: 'artifact',
+	        dataset: `${this.config.memory?.runDatasetPrefix || 'storyrpg-run'}-${idSlugify(brief.story.title)}`,
+	        title: `Episode ${brief.episode.number} content generation summary`,
+	        text: [
+	          `Episode: ${brief.episode.number} - ${brief.episode.title}`,
+	          `Scenes authored: ${sceneContents.length}`,
+	          `Choice sets authored: ${choiceSets.length}`,
+	          `Encounters authored: ${encounters.size}`,
+	          this.seasonThreadLedger.threads.length > 0 ? `Thread ledger entries: ${this.seasonThreadLedger.threads.length}` : null,
+	          this.episodeTwistPlans.has(brief.episode.number) ? 'Twist plan: present' : null,
+	          this.episodeArcTargets.has(brief.episode.number) ? 'Character arc targets: present' : null,
+	        ].filter(Boolean).join('\n'),
+	        metadata: {
+	          episodeNumber: brief.episode.number,
+          sceneIds: sceneContents.map((scene) => scene.sceneId),
+	          choiceBeatIds: choiceSets.map((choiceSet) => choiceSet.beatId),
+	          encounterIds: Array.from(encounters.keys()),
+	          threadLedger: this.seasonThreadLedger.threads.length > 0 ? this.seasonThreadLedger : undefined,
+	          twistPlan: this.episodeTwistPlans.get(brief.episode.number),
+	          arcTargets: this.episodeArcTargets.get(brief.episode.number),
+	        },
+	        nodeSet: ['content-generation', 'agent-output', `episode-${brief.episode.number}`],
+	      }).catch(() => {});
 
-      // === PHASE 4.5: QUICK VALIDATION ===
+	      // === PHASE 4.5: QUICK VALIDATION ===
       // Extracted to phases/QuickValidationPhase.ts (pure move): the fast
       // validator gate, incremental POV/voice escalation, targeted repair
       // (ChoiceAuthor + scoped SceneWriter rewrites), one re-validation, and
       // the blocking ValidationError. Repairs mutate sceneContents/choiceSets
       // in place via the shared array refs.
-      const quickValidation = await this.quickValidationPhase().run(
-        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
-        {
-          config: this.config,
-          emit: this.emit.bind(this),
-          addCheckpoint: this.addCheckpoint.bind(this),
-        }
-      );
+	      const quickValidation = await this.quickValidationPhase().run(
+	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
+	        {
+	          config: this.config,
+	          emit: this.emit.bind(this),
+	          addCheckpoint: this.addCheckpoint.bind(this),
+	        }
+	      );
+	      if (quickValidation) {
+	        this.writeValidatorMemory({
+	          validator: 'IntegratedBestPracticesValidator',
+	          lifecycle: 'quick-validation',
+	          stage: 'quick_validation',
+	          severity: quickValidation.blockingIssues.length > 0 ? 'blocking' : quickValidation.warningCount > 0 ? 'warning' : 'pass',
+	          outcome: quickValidation.canProceed ? 'passed' : 'failed',
+	          storyId: brief.story.title,
+	          repairRoute: 'quick-validation-repair',
+	          findings: {
+	            blockingIssues: quickValidation.blockingIssues.slice(0, 20),
+	            warningCount: quickValidation.warningCount,
+	            executionRecords: quickValidation.executionRecords,
+	          },
+	        }).catch(() => {});
+	      }
 
       // === PHASE 5: QUALITY ASSURANCE ===
       await this.checkCancellation();
@@ -3645,14 +3397,32 @@ export class FullStoryPipeline {
       // practices in parallel, the choice-distribution checkpoint, the
       // QA-driven targeted repair loop, and the threshold warning. Repairs
       // mutate sceneContents/choiceSets in place via the shared array refs.
-      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
-        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
-        {
-          config: this.config,
-          emit: this.emit.bind(this),
-          addCheckpoint: this.addCheckpoint.bind(this),
-        }
-      );
+	      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
+	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
+	        {
+	          config: this.config,
+	          emit: this.emit.bind(this),
+	          addCheckpoint: this.addCheckpoint.bind(this),
+	        }
+	      );
+	      if (bestPracticesReport) {
+	        this.writeValidatorMemory({
+	          validator: 'IntegratedBestPracticesValidator',
+	          lifecycle: 'full-qa',
+	          stage: 'qa',
+	          severity: bestPracticesReport.blockingIssues.length > 0 ? 'blocking' : bestPracticesReport.warnings.length > 0 ? 'warning' : 'pass',
+	          outcome: bestPracticesReport.overallPassed ? 'passed' : 'failed',
+	          storyId: brief.story.title,
+	          repairRoute: 'qa-repair',
+	          findings: {
+	            overallScore: bestPracticesReport.overallScore,
+	            blockingIssues: bestPracticesReport.blockingIssues.slice(0, 20),
+	            warnings: bestPracticesReport.warnings.slice(0, 20),
+	            suggestions: bestPracticesReport.suggestions.slice(0, 10),
+	            executionRecords: bestPracticesReport.executionRecords,
+	          },
+	        }).catch(() => {});
+	      }
 
       await this.repairWeakCliffhangerBeforeImages(
         brief,
@@ -3742,10 +3512,6 @@ export class FullStoryPipeline {
           choiceSets,
           residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
         });
-        this.validateMicroEpisodeStructure(branchValidationEpisode, {
-          phase: 'micro_episode_validation',
-        });
-
         // Set image service output directory to story's images folder
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
@@ -4255,7 +4021,7 @@ export class FullStoryPipeline {
         world: brief.world,
         startingLocationId: brief.episode.startingLocation,
         rawDocument: brief.rawDocument,
-        memoryContext: this.cachedPipelineMemory || undefined,
+        memoryContext: this.renderedPipelineMemory || undefined,
         locationIntroductions: brief.seasonPlan?.locationIntroductions,
         debug: this.config.debug,
       },
@@ -4277,7 +4043,7 @@ export class FullStoryPipeline {
   ): Promise<CharacterBible> {
     const deps = { characterDesigner: this.characterDesigner } satisfies Partial<CharacterDesignPhaseDeps> as unknown as CharacterDesignPhaseDeps;
     Object.defineProperties(deps, {
-      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
     });
     return new CharacterDesignPhase(deps).run(brief, worldBible, {
       config: this.config,
@@ -4302,7 +4068,7 @@ export class FullStoryPipeline {
       recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
     } satisfies Partial<EpisodeArchitecturePhaseDeps> as unknown as EpisodeArchitecturePhaseDeps;
     Object.defineProperties(deps, {
-      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
       generationPlan: { get: () => this.generationPlan },
       architectAdvisoryWarnings: { get: () => this.architectAdvisoryWarnings },
       seasonChoicePlan: {
@@ -4321,9 +4087,6 @@ export class FullStoryPipeline {
     // LEVER B3: clamp the computed target to a hard ceiling (default 10) so an
     // outlier blueprint can't produce a pathologically large single scene call.
     const cap = this.config.generation?.maxBeatsPerScene || MAX_BEATS_PER_SCENE;
-    if (this.config.generation?.episodeStructureMode === 'sceneEpisodes' && !sceneBlueprint.isEncounter) {
-      return clampTargetBeatCount(this.config.generation.sceneEpisodeNormalTargetBeats || 8, cap);
-    }
     if (sceneBlueprint.recommendedBeatCount) {
       return clampTargetBeatCount(sceneBlueprint.recommendedBeatCount, cap);
     }
@@ -4376,7 +4139,7 @@ export class FullStoryPipeline {
       assertSceneDependencyInvariants: this.assertSceneDependencyInvariants.bind(this),
       buildBranchFallbackChoiceSet: this.buildBranchFallbackChoiceSet.bind(this),
       buildDeterministicChoiceSet: (sceneBlueprint, choiceBeat) =>
-        choiceBeat ? this.createFallbackSceneEpisodeChoiceSet(sceneBlueprint, choiceBeat) : undefined,
+        choiceBeat ? this.createFallbackChoiceSet(sceneBlueprint, choiceBeat) : undefined,
       buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
       buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
       buildEncounterPriorStateContext: this.buildEncounterPriorStateContext.bind(this),
@@ -4395,7 +4158,6 @@ export class FullStoryPipeline {
       loadResumeUnit: this.loadResumeUnit.bind(this),
       recordRemediationSafe: this.recordRemediationSafe.bind(this),
       recordSceneValidationResult: this.recordSceneValidationResult.bind(this),
-      repairSceneEpisodePlayableContract: this.repairSceneEpisodePlayableContract.bind(this),
       resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
       runSceneCriticPass: this.runSceneCriticPass.bind(this),
       sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
@@ -4420,7 +4182,7 @@ export class FullStoryPipeline {
         get: () => this.encounterTelemetry,
         set: (value) => { this.encounterTelemetry = value; },
       },
-      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
       callbackLedger: { get: () => this.callbackLedger },
       dependencySchedulerStats: { get: () => this.dependencySchedulerStats },
       episodeTwistPlans: { get: () => this.episodeTwistPlans },
@@ -4500,7 +4262,7 @@ export class FullStoryPipeline {
     Object.defineProperties(deps, {
       incrementalValidator: { get: () => this.incrementalValidator },
       sceneValidationResults: { get: () => this.sceneValidationResults },
-      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
     });
     return new QAPhase(deps);
   }
@@ -4520,7 +4282,7 @@ export class FullStoryPipeline {
     // the pipeline's current values.
     Object.defineProperties(deps, {
       sceneValidationResults: { get: () => this.sceneValidationResults },
-      cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
     });
     return new QuickValidationPhase(deps);
   }
@@ -4973,7 +4735,7 @@ export class FullStoryPipeline {
     }
 
     // WS1 (contracts upstream): the two plan-checkable §4 fidelity gates
-    // (authored episode conformance, seven-point anchor conformance) run HERE,
+    // (authored episode conformance, Story Circle anchor conformance) run HERE,
     // before any generation is spent. A deterministic plan-vs-treatment
     // mismatch previously survived to the season-final contract and killed the
     // run after the full generation spend. Warnings surface; errors fail fast.
@@ -4981,13 +4743,41 @@ export class FullStoryPipeline {
     this.planTimeFidelityFindings = [];
     this.planTimeFidelityBaseline = undefined;
     {
+      const planTimeRequestedEpisodes = episodeRange.specific?.length
+        ? [...new Set(episodeRange.specific)]
+        : Array.from({ length: Math.max(0, episodeRange.end - episodeRange.start + 1) }, (_, idx) => episodeRange.start + idx);
+      const isFullSeasonPlanTimeScope = analysis.totalEstimatedEpisodes > 0
+        && planTimeRequestedEpisodes.length >= analysis.totalEstimatedEpisodes
+        && Array.from({ length: analysis.totalEstimatedEpisodes }, (_, idx) => idx + 1)
+          .every((episodeNumber) => planTimeRequestedEpisodes.includes(episodeNumber));
       const planFidelity = runPlanTimeFidelityChecks({
         seasonPlan: baseBrief.seasonPlan,
         sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? analysis,
+        scope: {
+          mode: isFullSeasonPlanTimeScope ? 'full-season' : 'generated-slice',
+          requestedEpisodeNumbers: planTimeRequestedEpisodes,
+        },
       });
-      this.planTimeFidelityFindings = planFidelity.findings;
-      this.planTimeFidelityBaseline = planFidelity.baseline;
-      for (const f of planFidelity.findings) {
+	      this.planTimeFidelityFindings = planFidelity.findings;
+	      this.planTimeFidelityBaseline = planFidelity.baseline;
+	      if (planFidelity.findings.length > 0 || planFidelity.blockingErrors.length > 0) {
+	        this.writeValidatorMemory({
+	          validator: 'runPlanTimeFidelityChecks',
+	          lifecycle: 'plan-fidelity',
+	          stage: 'plan_fidelity',
+	          severity: planFidelity.blockingErrors.length > 0 ? 'blocking' : 'warning',
+	          outcome: planFidelity.blockingErrors.length > 0 ? 'failed' : 'passed_with_warnings',
+	          storyId: baseBrief.story.title,
+	          repairRoute: 'plan-time',
+	          findings: {
+	            requestedEpisodeNumbers: planTimeRequestedEpisodes,
+	            findings: planFidelity.findings,
+	            blockingErrors: planFidelity.blockingErrors,
+	            baseline: planFidelity.baseline,
+	          },
+	        }).catch(() => {});
+	      }
+	      for (const f of planFidelity.findings) {
         if (f.severity !== 'error') {
           this.emit({ type: 'warning', phase: 'plan_fidelity', message: `[${f.validator}] ${f.message}` });
         }
@@ -5065,9 +4855,7 @@ export class FullStoryPipeline {
     // Seed the structure plan before world/character/image work so the headline
     // % is driven by real work units from the start. Episode titles and scene
     // counts fill in once the per-episode outlines and architect run.
-    const estimatedScenesPerEpisode = this.config.generation?.episodeStructureMode === 'sceneEpisodes'
-      ? (this.config.generation?.sceneEpisodeMaxScenes || 1)
-      : (this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || 6);
+    const estimatedScenesPerEpisode = this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || 6;
     this.generationPlan = initPlan({
       totalEpisodes: this.totalEpisodes,
       episodes: episodesToGenerate.map((number) => ({ number, expectedSceneCount: estimatedScenesPerEpisode })),
@@ -5093,7 +4881,7 @@ export class FullStoryPipeline {
       if (missingOutlines.length > 0) {
         throw new Error(
           `Requested episode(s) ${missingOutlines.join(', ')} are missing from source analysis after treatment parsing. ` +
-          'Re-run source analysis or check the treatment sceneEpisode headings.'
+          'Re-run source analysis or check the treatment episode headings.'
         );
       }
 
@@ -5842,8 +5630,6 @@ export class FullStoryPipeline {
         isCompleteSeason: story.episodes.length >= analysis.totalEstimatedEpisodes,
         sourceText: baseBrief.rawDocument,
       });
-      this.validateMicroEpisodeSeason(story, { phase: 'micro_episode_season_final_validation' });
-
       finalStoryContractReport = await this.enforceFinalStoryContract({
         story,
         brief: baseBrief,
@@ -6110,7 +5896,7 @@ export class FullStoryPipeline {
           message: `Episode ${i} contract has ${report.blockingIssues.length} blocker(s); attempting episode-local repair before completion.`,
           data: { blockingIssues: report.blockingIssues.slice(0, 5) },
         });
-        const repairedReport = await this.enforceFinalStoryContract({
+        const repairedReport = await this.enforceEpisodeIncrementalContractWithTimeout(i, {
           story: oneEpisodeStory,
           brief: episodeBrief,
           requestedEpisodeNumbers: [i],
@@ -6364,10 +6150,6 @@ export class FullStoryPipeline {
         encounters,
         { phase: `episode_${i}_branch_repair` }
       );
-      this.compactSceneEpisodeBeatOverflow(sceneContents, choiceSets, encounters, {
-        phase: `episode_${i}_micro_episode_compaction`,
-      });
-
       const branchValidationEpisode = this.assembleEpisode(
         episodeBrief,
         worldBible,
@@ -6386,10 +6168,6 @@ export class FullStoryPipeline {
         choiceSets,
         residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(episodeBrief, worldBible, characterBible, blueprint, sceneContents, choiceSets, undefined, encounters, undefined) },
       });
-      this.validateMicroEpisodeStructure(branchValidationEpisode, {
-        phase: `episode_${i}_micro_episode_validation`,
-      });
-
       // Narrative diagnostics (SetupPayoff / Twist / ArcDelta / Divergence / Callback /
       // FailureMode + E5 intensity / #26C prop-intro / D4 choice-coverage). RELOCATED here
       // — BEFORE image generation — because the image-gen block below can short-circuit the
@@ -6841,9 +6619,6 @@ export class FullStoryPipeline {
         encounters,
         encounterImageResults
       );
-      this.validateMicroEpisodeStructure(episode, {
-        phase: `episode_${i}_micro_episode_final_validation`,
-      });
 
       // (Narrative diagnostics moved earlier — see the pre-image-gen block above. They used
       // to run here, after image generation, where an image-gen short-circuit silently
@@ -8883,7 +8658,7 @@ export class FullStoryPipeline {
    * Memoized story/episode assembly cluster — see pipeline/assembly.ts. The
    * run-scoped style anchor paths are shared by reference; all other helpers
    * (fidelity text, choice-bridge beats, reader sanitization, episode-scoped
-   * keys, encounter-tree image wiring, micro-episode validations) are bound.
+   * keys and encounter-tree image wiring are bound.
    */
   private assembly(): Assembly {
     if (!this._assembly) {
@@ -8900,8 +8675,6 @@ export class FullStoryPipeline {
         getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
         sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
         sanitizeSceneContentForReader: this.sanitizeSceneContentForReader.bind(this),
-        validateMicroEpisodeSeason: this.validateMicroEpisodeSeason.bind(this),
-        validateMicroEpisodeStructure: this.validateMicroEpisodeStructure.bind(this),
         wireEncounterTreeImages: this.wireEncounterTreeImages.bind(this),
       });
     }
@@ -8921,10 +8694,11 @@ export class FullStoryPipeline {
     if (!this._finalContract) {
       const deps = {
         config: this.config,
-        emit: this.emit.bind(this),
-        recordRemediationSafe: this.recordRemediationSafe.bind(this),
-        recordFinalContractShadow: this.recordFinalContractShadow.bind(this),
-        saveFailedContractArtifacts: async (story, report) => {
+	        emit: this.emit.bind(this),
+	        recordRemediationSafe: this.recordRemediationSafe.bind(this),
+	        recordFinalContractShadow: this.recordFinalContractShadow.bind(this),
+	        writeValidatorMemory: this.writeValidatorMemory.bind(this),
+	        saveFailedContractArtifacts: async (story, report) => {
           const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
           if (!rawOutputDirectory) return;
           const outputDirectory = rawOutputDirectory.endsWith('/') ? rawOutputDirectory : `${rawOutputDirectory}/`;
@@ -9004,7 +8778,7 @@ export class FullStoryPipeline {
       // cachedPipelineMemory is set once memory loads — read both lazily.
       Object.defineProperties(deps, {
         sceneCritic: { get: () => this.sceneCritic ?? null },
-        cachedPipelineMemory: { get: () => this.cachedPipelineMemory },
+        cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
       });
       this._sceneGraphValidation = new SceneGraphValidation(deps);
     }
@@ -9071,7 +8845,6 @@ export class FullStoryPipeline {
         auditStoryVisualContractPersistence: this.auditStoryVisualContractPersistence.bind(this),
         repairBoundImageReferences: this.repairBoundImageReferences.bind(this),
         buildImageManifestFromStory: this.buildImageManifestFromStory.bind(this),
-        validateMicroEpisodeSeason: this.validateMicroEpisodeSeason.bind(this),
         getCollectedVisualPlanningForSave: this.getCollectedVisualPlanningForSave.bind(this),
         buildStoryGeneratorMetadata: this.buildStoryGeneratorMetadata.bind(this),
         getRemediationSummary: this.getRemediationSummary.bind(this),
@@ -9370,7 +9143,6 @@ export class FullStoryPipeline {
 
         choice.routeContext = routeContext;
         choice.nextBeatId = bridgeId;
-        delete choice.nextSceneId;
 
         const existingBridge = content.beats.find(candidate => candidate.id === bridgeId);
         if (existingBridge) {
@@ -9813,6 +9585,10 @@ export class FullStoryPipeline {
     return this._pipelineMemory;
   }
 
+  private get renderedPipelineMemory(): string | null {
+    return renderPipelineMemoryPacket(this.cachedPipelineMemory, this.config.memory?.maxPromptChars);
+  }
+
   async writeGenerationMemory(opts: Parameters<PipelineMemory['writeGenerationMemory']>[0]): Promise<void> {
     return this.pipelineMemory().writeGenerationMemory(opts);
   }
@@ -9834,6 +9610,18 @@ export class FullStoryPipeline {
 
   async readPipelineMemory(): Promise<string | null> {
     return this.pipelineMemory().readPipelineMemory();
+  }
+
+  async recallPipelineMemory(): Promise<PipelineMemoryPacket | null> {
+    return this.pipelineMemory().recallPacket();
+  }
+
+  async writeValidatorMemory(opts: Parameters<PipelineMemory['writeValidatorMemory']>[0]): Promise<void> {
+    return this.pipelineMemory().writeValidatorMemory(opts);
+  }
+
+  async writePipelineMemoryRecord(opts: Parameters<PipelineMemory['writeRecord']>[0]): Promise<void> {
+    return this.pipelineMemory().writeRecord(opts);
   }
 
   /**

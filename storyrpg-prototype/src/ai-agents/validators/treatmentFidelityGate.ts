@@ -24,7 +24,7 @@ export const TREATMENT_FIDELITY_GATE_FLAGS = {
   encounterAnchorContent: 'GATE_ENCOUNTER_ANCHOR_CONTENT',
   informationLedgerSchedule: 'GATE_INFORMATION_LEDGER_SCHEDULE',
   signatureDevicePresence: 'GATE_SIGNATURE_DEVICE_PRESENCE',
-  sevenPointAnchorConformance: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE',
+  storyCircleAnchorConformance: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE',
 } as const;
 
 export type TreatmentFidelityGateFlag =
@@ -36,7 +36,7 @@ export const TREATMENT_FIDELITY_VALIDATORS: readonly string[] = [
   'EncounterAnchorContentValidator',
   'InformationLedgerScheduleValidator',
   'SignatureDevicePresenceValidator',
-  'SevenPointAnchorConformanceValidator',
+  'StoryCircleAnchorConformanceValidator',
 ] as const;
 
 import { isGateEnabled } from '../remediation/gateDefaults';

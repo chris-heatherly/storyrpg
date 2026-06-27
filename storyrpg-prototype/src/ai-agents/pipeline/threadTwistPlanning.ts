@@ -31,7 +31,9 @@ import type { GenerationSettingsConfig } from '../config';
 import type { NarrativeThread, ThreadLedger } from '../../types';
 import type {
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
@@ -75,7 +77,9 @@ export interface PlanEpisodeThreadsAndTwistParams {
   episodeBlueprint: EpisodeBlueprint;
   episodeNumber: number;
   seasonAnchors?: StoryAnchors;
-  seasonSevenPoint?: SevenPointStructure;
+  seasonStoryCircle?: StoryCircleStructure;
+  seasonLegacyStructure?: LegacyStructuralMap;
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
   episodeStructuralRole?: StructuralRole[];
   /** Open threads from PRIOR episodes (see `openPriorThreads`). */
   priorThreads?: NarrativeThread[];
@@ -112,7 +116,9 @@ export async function planEpisodeThreadsAndTwist(
         episodeBlueprint: params.episodeBlueprint,
         priorThreads: params.priorThreads?.length ? params.priorThreads : undefined,
         seasonAnchors: params.seasonAnchors,
-        seasonSevenPoint: params.seasonSevenPoint,
+        seasonStoryCircle: params.seasonStoryCircle,
+        seasonLegacyStructure: params.seasonLegacyStructure,
+        episodeStoryCircleRole: params.episodeStoryCircleRole,
         episodeStructuralRole: params.episodeStructuralRole,
       }),
       timeoutMs,
@@ -147,7 +153,9 @@ export async function planEpisodeThreadsAndTwist(
         episodeBlueprint: params.episodeBlueprint,
         threadLedger,
         seasonAnchors: params.seasonAnchors,
-        seasonSevenPoint: params.seasonSevenPoint,
+        seasonStoryCircle: params.seasonStoryCircle,
+        seasonLegacyStructure: params.seasonLegacyStructure,
+        episodeStoryCircleRole: params.episodeStoryCircleRole,
         episodeStructuralRole: params.episodeStructuralRole,
       }),
       timeoutMs,

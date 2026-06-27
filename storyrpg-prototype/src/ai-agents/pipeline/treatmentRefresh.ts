@@ -259,7 +259,7 @@ export function filterAnalysisForEpisodeRange(
 /**
  * Re-derive the per-episode breakdown of a cached analysis from the treatment
  * document itself, so a stale cached analysis can't ship outdated episode
- * guidance (titles, structural roles, sceneEpisode mode).
+ * guidance (titles and structural roles).
  */
 export function refreshAnalysisFromTreatmentDocument(
   analysis: SourceMaterialAnalysis,
@@ -290,8 +290,8 @@ export function refreshAnalysisFromTreatmentDocument(
       ...(existing || {
         episodeNumber,
         title: guidance.authoredTitle || `Episode ${episodeNumber}`,
-        synopsis: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment sceneEpisode ${episodeNumber}`,
-        sourceChapters: [`Treatment sceneEpisode ${episodeNumber}`],
+        synopsis: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment episode ${episodeNumber}`,
+        sourceChapters: [`Treatment episode ${episodeNumber}`],
         sourceSummary: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || '',
         plotPoints: [],
         mainCharacters: [protagonistName],
@@ -307,23 +307,10 @@ export function refreshAnalysisFromTreatmentDocument(
       }),
       episodeNumber,
       title: guidance.authoredTitle || existing?.title || `Episode ${episodeNumber}`,
-      synopsis: existing?.synopsis || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment sceneEpisode ${episodeNumber}`,
+      synopsis: existing?.synopsis || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment episode ${episodeNumber}`,
       sourceSummary: existing?.sourceSummary || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || '',
-      estimatedSceneCount: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
-        ? 1
-        : (existing?.estimatedSceneCount || 1),
-      estimatedChoiceCount: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
-        ? Math.max(1, Math.min(existing?.estimatedChoiceCount || 1, 2))
-        : (existing?.estimatedChoiceCount || 1),
-      episodeStructureMode: treatment.seasonGuidance?.episodeStructureMode || existing?.episodeStructureMode,
-      routeMeta: treatment.seasonGuidance?.episodeStructureMode === 'sceneEpisodes'
-        ? {
-            kind: 'master' as const,
-            spineIndex: episodeNumber,
-            displayLabel: `${episodeNumber}`,
-            isMilestoneEncounter: existing?.routeMeta?.isMilestoneEncounter || false,
-          }
-        : existing?.routeMeta,
+      estimatedSceneCount: existing?.estimatedSceneCount || 1,
+      estimatedChoiceCount: existing?.estimatedChoiceCount || 1,
       structuralRole,
       treatmentGuidance: guidance,
     };
@@ -362,19 +349,15 @@ export function refreshBriefSeasonPlanFromAnalysis(
   if (!plan || outlines.length === 0) return baseBrief;
 
   const isTreatmentPlan = analysis.sourceFormat === 'story_treatment'
-    || analysis.treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes'
     || outlines.some((outline) => outline.treatmentGuidance);
   if (!isTreatmentPlan) return baseBrief;
 
   const planByNumber = new Map((plan.episodes || []).map((episode) => [episode.episodeNumber, episode]));
-  const treatmentMode = analysis.treatmentSeasonGuidance?.episodeStructureMode;
-
   const isStale = plan.totalEpisodes !== outlines.length
     || (plan.episodes || []).length !== outlines.length
     || outlines.some((outline) => {
       const planned = planByNumber.get(outline.episodeNumber);
       if (!planned) return true;
-      if (treatmentMode && planned.episodeStructureMode !== treatmentMode) return true;
       if ((planned.treatmentGuidance?.authoredTitle || planned.title) !== (outline.treatmentGuidance?.authoredTitle || outline.title)) {
         return true;
       }
@@ -410,7 +393,7 @@ export function refreshBriefSeasonPlanFromAnalysis(
       synopsis: outline.synopsis || guidance?.episodePromise || guidance?.dramaticQuestion || existing?.synopsis || '',
       sourceChapters: outline.sourceChapters?.length
         ? outline.sourceChapters
-        : (existing?.sourceChapters?.length ? existing.sourceChapters : [`Treatment sceneEpisode ${outline.episodeNumber}`]),
+        : (existing?.sourceChapters?.length ? existing.sourceChapters : [`Treatment episode ${outline.episodeNumber}`]),
       sourceSummary: outline.sourceSummary || guidance?.episodePromise || guidance?.dramaticQuestion || existing?.sourceSummary || '',
       plotPoints: outline.plotPoints || existing?.plotPoints || [],
       mainCharacters: outline.mainCharacters?.length
@@ -418,24 +401,11 @@ export function refreshBriefSeasonPlanFromAnalysis(
         : (existing?.mainCharacters?.length ? existing.mainCharacters : [protagonistName]),
       supportingCharacters: outline.supportingCharacters || existing?.supportingCharacters || [],
       locations: outline.locations || existing?.locations || [],
-      estimatedSceneCount: treatmentMode === 'sceneEpisodes'
-        ? 1
-        : (outline.estimatedSceneCount || existing?.estimatedSceneCount || 1),
-      estimatedChoiceCount: treatmentMode === 'sceneEpisodes'
-        ? Math.max(1, Math.min(outline.estimatedChoiceCount || existing?.estimatedChoiceCount || 1, 2))
-        : (outline.estimatedChoiceCount || existing?.estimatedChoiceCount || 1),
+      estimatedSceneCount: outline.estimatedSceneCount || existing?.estimatedSceneCount || 1,
+      estimatedChoiceCount: outline.estimatedChoiceCount || existing?.estimatedChoiceCount || 1,
       narrativeFunction,
       structuralRole: outline.structuralRole || existing?.structuralRole,
       treatmentGuidance: guidance || existing?.treatmentGuidance,
-      episodeStructureMode: treatmentMode || outline.episodeStructureMode || existing?.episodeStructureMode,
-      routeMeta: treatmentMode === 'sceneEpisodes'
-        ? {
-            kind: 'master' as const,
-            spineIndex: outline.episodeNumber,
-            displayLabel: `${outline.episodeNumber}`,
-            isMilestoneEncounter: existing?.routeMeta?.isMilestoneEncounter || false,
-          }
-        : (outline.routeMeta || existing?.routeMeta),
       status: existing?.status || 'planned',
       dependsOn: existing?.dependsOn?.length ? existing.dependsOn : previousEpisode,
       setupsForEpisodes: existing?.setupsForEpisodes?.length ? existing.setupsForEpisodes : nextEpisode,
@@ -452,7 +422,7 @@ export function refreshBriefSeasonPlanFromAnalysis(
     updatedAt: new Date(),
     episodes: alignedEpisodes,
     anchors: analysis.anchors || plan.anchors,
-    sevenPoint: analysis.sevenPoint || plan.sevenPoint,
+    legacyStructure: analysis.legacyStructure || plan.legacyStructure,
     endingMode: analysis.resolvedEndingMode || analysis.detectedEndingMode || plan.endingMode,
     resolvedEndings: analysis.resolvedEndings?.length ? analysis.resolvedEndings : plan.resolvedEndings,
     characterArchitecture: analysis.characterArchitecture || plan.characterArchitecture,

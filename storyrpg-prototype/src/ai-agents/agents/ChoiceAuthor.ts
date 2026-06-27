@@ -31,7 +31,9 @@ import type { StoryVerb } from '../utils/storyVerbs';
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
@@ -158,16 +160,22 @@ export interface ChoiceAuthorInput {
   seasonAnchors?: StoryAnchors;
 
   /**
-   * Season-level 7-point beat map. ChoiceAuthor uses it to calibrate
+   * Season-level legacy-structure beat map. ChoiceAuthor uses it to calibrate
    * choice weight: choices in the Climax / Pinch beats should be more
    * consequential than choices in Rising / Hook beats.
    */
-  seasonSevenPoint?: SevenPointStructure;
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle beat map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /**
    * Which beat(s) of the season this episode carries.
    */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle beat(s) this episode carries. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
+  /** Episode-level fractal Story Circle from StoryArchitect. */
+  episodeCircle?: StoryCircleStructure;
 
   // Pipeline memory / optimization hints from prior runs (optional)
   memoryContext?: string;
@@ -1602,8 +1610,9 @@ ${directFragmentList}
 
     const structuralContext = buildStructuralContextSection({
       anchors: input.seasonAnchors,
-      sevenPoint: input.seasonSevenPoint,
-      episodeStructuralRole: input.episodeStructuralRole,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: input.episodeStoryCircleRole,
+      episodeCircle: input.episodeCircle,
     });
     const residueSection = this.buildResidueObligationSection(input);
 
@@ -2718,7 +2727,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       case 'skill':
         return `Show what the player proves, fails, learns, or notices so later tactics feel earned.`;
       default:
-        return `Show immediate residue from ${pressure}: changed access, posture, tone, cost, clue, memory, or narrowed options.`;
+        return `After "${choice.text}", make the changed access, posture, tone, cost, clue, memory, or narrowed options visible.`;
     }
   }
 

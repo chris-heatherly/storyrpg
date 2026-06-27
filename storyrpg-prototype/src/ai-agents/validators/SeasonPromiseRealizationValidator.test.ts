@@ -8,7 +8,6 @@ import { buildSeasonPromiseContracts } from '../utils/seasonPromiseContracts';
 import { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';
 
 const guidance: TreatmentSeasonGuidance = {
-  episodeStructureMode: 'standard',
   genre: 'Paranormal rom-com that graduates into dark vampire romance by midseason.',
   tone: 'Champagne fizz on top, blood at the bottom; early episodes are bright before the back half darkens.',
   logline: 'A food writer in Bucharest starts a dating blog and discovers the man, friends, and city are monsters.',
@@ -68,7 +67,6 @@ function analysis(seasonGuidance: TreatmentSeasonGuidance = guidance): SourceMat
 
 function plannedSeasonPlan(seasonGuidanceInput: Partial<TreatmentSeasonGuidance> = guidance): SeasonPlan {
   const seasonGuidance: TreatmentSeasonGuidance = {
-    episodeStructureMode: 'standard',
     ...seasonGuidanceInput,
   };
   const contracts = buildSeasonPromiseContracts({
@@ -91,7 +89,7 @@ function plannedSeasonPlan(seasonGuidanceInput: Partial<TreatmentSeasonGuidance>
     tone: 'Champagne fizz on top, blood at the bottom',
     themes: ['voice under pressure'],
     anchors: {},
-    sevenPoint: { hook: 'Mara starts over in the city.' },
+    legacyStructure: { hook: 'Mara starts over in the city.' },
     seasonPromiseArchitecture: architecture(),
     seasonPromiseContracts: contracts,
     arcs: [],
@@ -280,7 +278,6 @@ describe('SeasonPromiseRealizationValidator', () => {
 
   it('fails final validation when a theme or inaction promise stays metadata-only', () => {
     const seasonGuidance = {
-      episodeStructureMode: 'standard',
       themeQuestion: 'Whose voice is yours when love asks you to surrender it?',
       inactionPressure: 'Standing still means losing safety, voice, legacy, or humanity.',
     } satisfies TreatmentSeasonGuidance;

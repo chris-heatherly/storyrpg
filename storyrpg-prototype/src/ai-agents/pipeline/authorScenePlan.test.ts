@@ -29,7 +29,7 @@ function episode(num: number, role: StructuralRole[], opts: Partial<SeasonEpisod
 
 function plan(episodes: SeasonEpisode[], extra: Partial<SeasonPlan> = {}): SeasonPlan {
   return {
-    sevenPoint: { hook: 'h', plotTurn1: 'p1', pinch1: 'pi1', midpoint: 'm', pinch2: 'pi2', climax: 'c', resolution: 'r' },
+    legacyStructure: { hook: 'h', plotTurn1: 'p1', pinch1: 'pi1', midpoint: 'm', pinch2: 'pi2', climax: 'c', resolution: 'r' },
     episodes,
     consequenceChains: [],
     choiceMoments: [],
@@ -285,7 +285,7 @@ describe('normalizeAuthoredScenePlan', () => {
 });
 
 describe('buildScenePlanPrompt', () => {
-  it('includes episodes, the seven-point spine, and encounter ids', () => {
+  it('includes episodes, the Story Circle spine, and encounter ids', () => {
     const ep = episode(1, ['climax'], {
       plannedEncounters: [
         { id: 'enc-x', type: 'combat', description: 'duel', difficulty: 'hard', npcsInvolved: [], stakes: 's', relevantSkills: [], isBranchPoint: true },
@@ -294,6 +294,6 @@ describe('buildScenePlanPrompt', () => {
     const prompt = buildScenePlanPrompt(plan([ep]));
     expect(prompt).toContain('Episode 1');
     expect(prompt).toContain('encounterId "enc-x"');
-    expect(prompt).toContain('7-point');
+    expect(prompt).toContain('Story Circle');
   });
 });

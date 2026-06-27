@@ -25,25 +25,10 @@ import type {
   RelationshipPacingContract,
   SceneTurnContract,
   SeasonPromiseRealizationContract,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from './scenePlan';
-
-export type EpisodeStructureMode = 'standard' | 'sceneEpisodes';
-
-export interface EpisodeRouteMeta {
-  kind: 'master' | 'branch';
-  spineIndex: number;
-  branchGroupId?: string;
-  branchPathId?: string;
-  branchStep?: number;
-  branchLength?: 1 | 2;
-  rejoinsAtSpineIndex?: number;
-  displayLabel?: string;
-  isMilestoneEncounter?: boolean;
-  hideWhenInactive?: boolean;
-}
 
 export interface Scene {
   id: string;
@@ -127,11 +112,11 @@ export interface Scene {
   stakesArchitectureContracts?: StakesArchitectureContract[];
 
   /**
-   * Generator-only 7-point beat realization obligations assigned to this scene.
+   * Generator-only legacy-structure beat realization obligations assigned to this scene.
    * Playback ignores this; final validators use it to ensure authored Hook /
    * Midpoint / Climax / Resolution content was staged on-page.
    */
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
 
   /**
    * Generator-only arc-pressure treatment obligations assigned to this scene.
@@ -182,9 +167,6 @@ export interface Episode {
   title: string;
   synopsis: string;
   coverImage: MediaRef;
-
-  episodeStructureMode?: EpisodeStructureMode;
-  routeMeta?: EpisodeRouteMeta;
 
   scenes: Scene[];
   startingSceneId: string;

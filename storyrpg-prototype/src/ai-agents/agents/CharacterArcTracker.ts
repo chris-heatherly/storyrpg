@@ -22,7 +22,9 @@ import { CharacterBible } from './CharacterDesigner';
 import type {
   CharacterArchitecture,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
 
@@ -89,8 +91,10 @@ export interface CharacterArcTrackerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level 7-point beat map. */
-  seasonSevenPoint?: SevenPointStructure;
+  /** Season-level legacy-structure beat map. */
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /**
    * Structural beat(s) this episode carries. Midpoint episodes should
@@ -98,6 +102,8 @@ export interface CharacterArcTrackerInput {
    * `commitment` or `resolution` milestones.
    */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle role(s) this episode carries. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 
   /**
    * Agent-facing Lie / origin pressure / Truth / Want-vs-Need architecture.
@@ -258,7 +264,8 @@ Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON
       tone: truncatePromptString(plan.tone, 240),
       themes: this.compactValue(plan.themes, { depth: 1, maxArrayItems: 6, maxStringLength: 240 }),
       anchors: this.compactValue(plan.anchors, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
-      sevenPoint: this.compactValue(plan.sevenPoint, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
+      storyCircle: this.compactValue(plan.storyCircle, { depth: 2, maxArrayItems: 8, maxStringLength: 420 }),
+      legacyStructure: this.compactValue(plan.legacyStructure, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
       characterArchitecture: this.compactValue(plan.characterArchitecture, {
         depth: 3,
         maxArrayItems: 8,
@@ -276,6 +283,8 @@ Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON
       episodeNumber: episode.episodeNumber,
       title: truncatePromptString(episode.title, 160),
       synopsis: truncatePromptString(episode.synopsis, 420),
+      storyCircleRole: this.compactValue(episode.storyCircleRole, { depth: 2, maxArrayItems: 4, maxStringLength: 120 }),
+      episodeCircle: this.compactValue(episode.episodeCircle, { depth: 2, maxArrayItems: 8, maxStringLength: 220 }),
       structuralRole: this.compactValue(episode.structuralRole, { depth: 1, maxArrayItems: 4, maxStringLength: 80 }),
       narrativeFunction: this.compactValue(episode.narrativeFunction, {
         depth: 2,

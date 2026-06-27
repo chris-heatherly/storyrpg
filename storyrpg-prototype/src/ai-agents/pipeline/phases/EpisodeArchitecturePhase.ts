@@ -106,6 +106,15 @@ export class EpisodeArchitecturePhase {
     // populate its episode arc block against the correct beat(s).
     const seasonPlan = brief.seasonPlan;
     const seasonEpisode = seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number);
+    const configuredTargetSceneCount = clampSceneCount(
+      brief.multiEpisode?.preferences?.targetScenesPerEpisode ||
+      context.config.generation?.maxScenesPerEpisode ||
+      context.config.generation?.targetSceneCount ||
+      brief.options?.targetSceneCount ||
+      6,
+    );
+    const plannedSceneCount = seasonPlanDirectives?.plannedScenes?.length || 0;
+    const targetSceneCount = Math.max(configuredTargetSceneCount, plannedSceneCount);
 
     const architectureInput: StoryArchitectInput = {
       storyTitle: brief.story.title,
@@ -129,20 +138,14 @@ export class EpisodeArchitecturePhase {
       worldContext: worldBible.worldRules.join('. ') + ' ' + worldBible.tensions.join('. '),
       currentLocation: brief.episode.startingLocation,
       previousEpisodeSummary: brief.episode.previousSummary,
-      targetSceneCount: context.config.generation?.episodeStructureMode === 'sceneEpisodes'
-        ? (context.config.generation?.sceneEpisodeMaxScenes || 1)
-        : clampSceneCount(
-            brief.multiEpisode?.preferences?.targetScenesPerEpisode ||
-            context.config.generation?.maxScenesPerEpisode ||
-            context.config.generation?.targetSceneCount ||
-            brief.options?.targetSceneCount ||
-            6,
-          ),
+      targetSceneCount,
       majorChoiceCount: brief.multiEpisode?.preferences?.targetChoicesPerEpisode || context.config.generation?.majorChoiceCount || brief.options?.majorChoiceCount || 2,
       pacing: brief.multiEpisode?.preferences?.pacing,
       seasonPlanDirectives,
       seasonAnchors: seasonPlan?.anchors,
-      seasonSevenPoint: seasonPlan?.sevenPoint,
+      seasonStoryCircle: seasonPlan?.storyCircle,
+      seasonLegacyStructure: seasonPlan?.legacyStructure,
+      episodeStoryCircleRole: seasonEpisode?.storyCircleRole,
       episodeStructuralRole: seasonEpisode?.structuralRole,
       cliffhangerPlan: seasonEpisode?.cliffhangerPlan,
       // Characters this episode is planned to introduce — the blueprint gives
@@ -178,18 +181,28 @@ export class EpisodeArchitecturePhase {
         errorText.includes('TreatmentDensityGate') ||
         errorText.includes('TreatmentBindingGate') ||
         errorText.includes('Treatment density overload');
-      if ((!branchFailure && !densityFailure) || attempt >= maxArchitectureAttempts) break;
+      const sceneCapFailure =
+        /Blueprint must have no more than \d+ scenes/i.test(errorText) ||
+        /Blueprint has \d+ scenes; maximum is \d+/i.test(errorText);
+      if ((!branchFailure && !densityFailure && !sceneCapFailure) || attempt >= maxArchitectureAttempts) break;
 
       context.emit({
         type: 'regeneration_triggered',
         phase: 'architecture',
-        message: densityFailure
+        message: sceneCapFailure
+          ? `Retrying StoryArchitect for scene-count cap repair (${attempt}/${maxArchitectureAttempts})`
+          : densityFailure
           ? `Retrying StoryArchitect for treatment binding/density rebalance (${attempt}/${maxArchitectureAttempts})`
           : `Retrying StoryArchitect for missing scene-graph branch (${attempt}/${maxArchitectureAttempts})`,
         data: { error: result.error },
       });
 
-      architectureInput.userPrompt = densityFailure
+      architectureInput.userPrompt = sceneCapFailure
+        ? `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT SCENE CAP REPAIR:\n` +
+          `The previous blueprint exceeded the hard scene cap. The scenes array must contain 3-${targetSceneCount} scenes total. ` +
+          `Merge debrief, bridge, aftermath, or branch-only material into adjacent planned scenes as keyBeats, residue, choice reminders, or handoff text instead of adding new scenes. ` +
+          `Preserve required treatment beats and encounter anchors by moving them into existing chronological scenes. Previous scene-cap failure: ${errorText}`
+        : densityFailure
         ? `${architectureInput.userPrompt || ''}\n\nCRITICAL BLUEPRINT DENSITY REPAIR:\n` +
           `The previous blueprint had invalid treatment-obligation bindings. ` +
           `Do not default unplaced treatment fields, character introductions, encounter anchors, later/time-coded beats, or abstract future payoff seeds to the first scene. ` +

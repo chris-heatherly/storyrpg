@@ -1,9 +1,14 @@
 import type {
+  ArcPressureTreatmentContract,
   AuthoredTreatmentFieldContract,
   MechanicPressureContract,
   PlannedScene,
   RequiredBeat,
 } from '../../types/scenePlan';
+import {
+  arcPressureContractTargetsScene,
+  isSceneBoundArcPressureKind,
+} from '../utils/arcPressureContracts';
 import { hasTimelineCue } from './gateRepairRouter';
 
 export type PlannedSceneBindingAction =
@@ -76,7 +81,8 @@ const CHOICE_KINDS = new Set<AuthoredTreatmentFieldContract['contractKind']>([
 ]);
 
 const LEDGER_ONLY_RE = /\b(?:INFO[-_\s]*[A-Z0-9]+|information\s+ledger|later episode|future|pay\s*off|payoff|paid off|confirmed|revealed later|not yet|mystery box|box question|ending state|possible end state|season resolution|finale)\b/i;
-const FUTURE_RESIDUE_RE = /\b(?:choice residue|later|future|mid-arc|catchable|confess(?:es|ion)? earlier|paid off|payoff|reconverge|season brand|downstream|going forward|canonical|route|path)\b/i;
+const FUTURE_RESIDUE_RE = /\b(?:choice residue|later|future|mid-arc|catchable|confess(?:es|ion)? earlier|paid off|payoff|episode\s+\d+|e\d+\b|reconverge|season brand|downstream|going forward|canonical|route|path)\b/i;
+const BROAD_FUTURE_LEDGER_RE = /\b(?:episode cannot be removed|cannot be removed|launch(?:es)? the entire|back half|courtship-and-mystery|country[-\s]?house|equinox weekend|casa stelarum|ileana|anonymous warning|no-photo account|last party|cliffhanger|left unexplained|too-perfect|too perfect|happened to break down|was staged|had been staged)\b/i;
 const NEXT_PRESSURE_RE = /\b(?:accepts?|invitation|invites?|weekend|retreat|country[-\s]?house|next pressure|next episode|doorway|threshold question)\b/i;
 
 const LOCATION_KEYWORDS = [
@@ -87,6 +93,7 @@ const LOCATION_KEYWORDS = [
   'cismigiu',
   'park',
   'gardens',
+  'dragan',
   'valcescu',
   'club',
   'apartment',
@@ -101,6 +108,8 @@ type SceneEventCue =
   | 'rooftopMeet'
   | 'parkAttack'
   | 'roadBreakdown'
+  | 'friendDebrief'
+  | 'lateNightWriting'
   | 'blogAftermath'
   | 'endingAftermath';
 
@@ -166,7 +175,7 @@ function sceneText(scene: PlannedScene, excludeRequiredBeatId?: string): string 
 }
 
 function isBroadMixedChoiceTurn(turn: PlannedScene['turnContract'] | undefined): boolean {
-  if (!turn || turn.source !== 'choice') return false;
+  if (!turn || (turn.source !== 'choice' && turn.source !== 'treatment')) return false;
   const text = [turn.centralTurn, turn.turnEvent, turn.handoff].filter(Boolean).join(' ');
   if (!text) return false;
   return text.length >= 260 || eventCues(text).size >= 2 || explicitTimeCues(text).length >= 2;
@@ -227,7 +236,8 @@ function eventCues(value: string | undefined): Set<SceneEventCue> {
   if (/\b(?:lands?|arrives?|unpacks?|two suitcases|grandmother(?:'s)? address|belle epoque|lipscani window)\b/.test(text)) {
     cues.add('arrival');
   }
-  if (/\b(?:valcescu|club|side entrance|key card|american shoes|night two)\b/.test(text)) {
+  if (/\b(?:valcescu|club|side entrance|key card|american shoes|night two)\b/.test(text)
+    || (/\bvictor\b/.test(text) && /\b(?:booth|back room|back-room|jazz|for now|codename|every post|mr midnight)\b/.test(text))) {
     cues.add('valcescuDoor');
   }
   if (/\b(?:lumina|bookshop|bookstore|quartz|crystal|stela presses|wants to be with you)\b/.test(text)) {
@@ -242,7 +252,13 @@ function eventCues(value: string | undefined): Set<SceneEventCue> {
   if (hasRoadBreakdownCue(text)) {
     cues.add('roadBreakdown');
   }
-  if (/\b(?:blog|post|dating after dusk|mr midnight|readership|reads?|viral|codename|4 ?am|6 ?pm|80 ?000|84 ?000)\b/.test(text)) {
+  if (/\b(?:debrief|convenes?|regroups?|recaps?|friend group|dusk club|dragan|vintage|after[-\s]?date)\b/.test(text)) {
+    cues.add('friendDebrief');
+  }
+  if (/\b(?:3 ?am|2 ?am|late night|goes home|back home|two men'?s numbers|numbers in (?:her|your) phone|dictionary|codename|writes? .*the mountain|writes? .*chef)\b/.test(text)) {
+    cues.add('lateNightWriting');
+  }
+  if (/\b(?:blog|post|dating after dusk|mr midnight|readership|reads?|viral|dashboard|profile|republik|codename|4 ?am|6 ?pm|80 ?000|84 ?000)\b/.test(text)) {
     cues.add('blogAftermath');
   }
   if (/\b(?:9 ?am|dm pile|brand deal|horrible dream|coming over with herbs|cliffhanger|episode end)\b/.test(text)) {
@@ -314,14 +330,23 @@ function isLedgerOnly(contract: AuthoredTreatmentFieldContract): boolean {
   if (contract.contractKind === 'next_episode_pressure') return true;
   if (contract.contractKind === 'alternative_path' && FUTURE_RESIDUE_RE.test(contract.sourceText)) return true;
   if (contract.contractKind === 'consequence_seed' && FUTURE_RESIDUE_RE.test(contract.sourceText)) return true;
+  if (contract.contractKind === 'consequence_seed' && BROAD_FUTURE_LEDGER_RE.test(contract.sourceText)) return true;
+  if (ENDING_KINDS.has(contract.contractKind) && (FUTURE_RESIDUE_RE.test(contract.sourceText) || BROAD_FUTURE_LEDGER_RE.test(contract.sourceText))) return true;
   if (
     (contract.contractKind === 'theme_angle' || contract.contractKind === 'lie_pressure')
     && !sceneHasConcreteCue(contract.sourceText)
   ) return true;
-  if (contract.contractKind === 'stakes_layer' && eventCues(contract.sourceText).size === 0) return true;
+  if (
+    contract.contractKind === 'stakes_layer'
+    && (
+      eventCues(contract.sourceText).size === 0
+      || /\bmaterial\b.{0,120}\brelational\b.{0,120}\bidentity\b/i.test(contract.sourceText)
+      || /\brelational\b.{0,120}\bidentity\b.{0,120}\bexistential\b/i.test(contract.sourceText)
+    )
+  ) return true;
   if (contract.contractKind === 'pressure_lane' && eventCues(contract.sourceText).size > 1 && !hasTimelineCue(contract.sourceText)) return true;
   if (contract.contractKind !== 'information_movement' && contract.contractKind !== 'consequence_seed') return false;
-  return LEDGER_ONLY_RE.test(contract.sourceText);
+  return LEDGER_ONLY_RE.test(contract.sourceText) || BROAD_FUTURE_LEDGER_RE.test(contract.sourceText);
 }
 
 function sceneHasConcreteCue(value: string | undefined): boolean {
@@ -337,6 +362,7 @@ function isLedgerOnlyBeat(beat: RequiredBeat): boolean {
   if (isAbstractQuestionBeat(text)) return true;
   if (/\barc[-_]?late[-_]?crisis\b/i.test(beat.id)) return true;
   if (/\bE\d+\s+ends?\s+on\b/i.test(text)) return true;
+  if (BROAD_FUTURE_LEDGER_RE.test(text)) return true;
   if (/\bthat her job is to observe and describe other people'?s lives\b/i.test(text)) return true;
   if (/\b(?:late[-\s]?arc crisis|at the .*weekend)\b/i.test(text) && /\b(?:first crack|private man|powder room|photograph|missing|vanished|disappear|doesn'?t come back)\b/i.test(text)) return true;
   if (/\b(?:visible only on (?:a )?replay|replay-only|audience (?:clocks|catches) later|underneath\b.{0,80}\bfunnel|was staged|had been staged)\b/i.test(text)) return true;
@@ -349,7 +375,8 @@ function isLedgerOnlyBeat(beat: RequiredBeat): boolean {
   ) return true;
   if (beat.tier !== 'seed') return false;
   return LEDGER_ONLY_RE.test(text)
-    || /\b(?:choice residue|did or didn|whether|depending on|contracted to|confirmed at|revealed at|paid off in|future|later|staged the ep-1 attack|strigoi|pricolici|hunter|cannot control)\b/i.test(text)
+    || BROAD_FUTURE_LEDGER_RE.test(text)
+    || /\b(?:choice residue|did or didn|whether|depending on|contracted to|confirmed at|revealed at|paid off in|future|later|episode\s+\d+|staged the ep-1 attack|strigoi|pricolici|hunter|cannot control)\b/i.test(text)
     || /\b(?:so .{0,80}\blands\b|built-up contrast|cold reintroduction|doorstep scarf|sunday[-\s]?night|during the weekend)\b/i.test(text);
 }
 
@@ -493,12 +520,46 @@ function scoreSceneForBeat(text: string, scene: PlannedScene, excludeRequiredBea
   return score;
 }
 
+function isRougherKitchenBeat(text: string): boolean {
+  return /\brougher\s+man\b/i.test(text) || /\bkitchen\s+entrance\b/i.test(text);
+}
+
 function bestSceneForBeat(text: string, scenes: PlannedScene[], excludeRequiredBeatId?: string): PlannedScene | undefined {
   const sourceCues = eventCues(text);
+  if (sourceCues.has('blogAftermath') && isBlogMetricText(text)) {
+    const blogMatches = scenes.filter(isPrimaryBlogAftermathScene);
+    if (blogMatches.length > 0) {
+      return blogMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
+  if (sourceCues.has('friendDebrief')) {
+    const debriefMatches = scenes.filter((scene) => {
+      const cues = primarySceneCues(scene);
+      return cues.has('friendDebrief') && !cues.has('lateNightWriting');
+    });
+    if (debriefMatches.length > 0) {
+      return debriefMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
   if (sourceCues.has('roadBreakdown')) {
     const primaryCueMatches = scenes.filter((scene) => primarySceneCues(scene).has('roadBreakdown'));
     if (primaryCueMatches.length > 0) {
       return primaryCueMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
+  if (sourceCues.has('rooftopMeet') && isRougherKitchenBeat(text)) {
+    const rooftopMatches = scenes.filter((scene) => {
+      const cues = primarySceneCues(scene);
+      return cues.has('rooftopMeet') && !cues.has('valcescuDoor');
+    });
+    if (rooftopMatches.length > 0) {
+      return rooftopMatches
         .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
         .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
     }
@@ -633,6 +694,13 @@ function cloneScenes(scenes: PlannedScene[]): PlannedScene[] {
       branchOutcomes: scene.encounter.branchOutcomes ? { ...scene.encounter.branchOutcomes } : undefined,
     } : undefined,
     authoredTreatmentFields: scene.authoredTreatmentFields?.map((field) => ({ ...field, targetSceneIds: [...(field.targetSceneIds ?? [])] })),
+    arcPressureContracts: scene.arcPressureContracts?.map((contract) => ({
+      ...contract,
+      requiredRealization: [...(contract.requiredRealization ?? [])],
+      targetEpisodeNumbers: [...(contract.targetEpisodeNumbers ?? [])],
+      targetSceneIds: [...(contract.targetSceneIds ?? [])],
+      eventAtoms: [...(contract.eventAtoms ?? [])],
+    })),
     mechanicPressure: scene.mechanicPressure?.map((pressure) => ({ ...pressure })),
   }));
 }
@@ -650,6 +718,7 @@ function makeColdOpenArrivalScene(episodeNumber: number, sourceBeat: RequiredBea
     npcsInvolved: ['Kylie Marinescu', 'Sadie'],
     setsUp: [],
     paysOff: [],
+    requiredBeats: [sourceBeat],
     stakes: 'Kylie reaches Bucharest with the fragile promise of reinvention still intact.',
     turnContract: {
       turnId: `s${episodeNumber}-arrival-cold-open-turn`,
@@ -674,17 +743,65 @@ function hasAnyCue(value: string | undefined, cues: SceneEventCue[]): boolean {
 
 function isBlogMetricText(value: string | undefined): boolean {
   const text = normalize(value);
-  return /\b(?:6pm|80\s*000|84\s*000|90\s*000|readership|reads|brand deal|dm pile|ticking past)\b/.test(text);
+  return /\b(?:6pm|80\s*000|84\s*000|90\s*000|readership|reads|brand deal|dm pile|dashboard|profile|republik|ticking past)\b/.test(text);
+}
+
+function isPublicBlogAftermathText(value: string | undefined): boolean {
+  const text = normalize(value);
+  return /\b(?:brand deal|brand deals|dm pile|republik|profile|readership|dashboard|blog as public|public sellable|sellable codenamed|80\s*000|84\s*000|90\s*000|130\s*000)\b/.test(text)
+    && !isBlogDraftText(value);
 }
 
 function isBlogDraftText(value: string | undefined): boolean {
   const text = normalize(value);
-  return /\b(?:4am|unable to sleep|launches dating after dusk|writes? about|mr midnight|post about)\b/.test(text);
+  return /\b(?:4am|unable to sleep|launches dating after dusk|writes? about|writes? .*mr midnight|post about)\b/.test(text);
+}
+
+function isPrimaryBlogAftermathScene(scene: PlannedScene): boolean {
+  const cues = primarySceneCues(scene);
+  return cues.has('blogAftermath')
+    && !cues.has('rooftopMeet')
+    && !cues.has('parkAttack')
+    && !cues.has('roadBreakdown')
+    && !cues.has('valcescuDoor');
+}
+
+function isFriendDebriefText(value: string | undefined): boolean {
+  const text = normalize(value);
+  const strongDebrief = /\b(?:debrief|convenes?|regroups?|recaps?|dragan|vintage)\b/.test(text);
+  return hasCue(value, 'friendDebrief')
+    && !hasCue(value, 'lateNightWriting')
+    && (strongDebrief || !hasCue(value, 'valcescuDoor'));
+}
+
+function isLateNightWritingText(value: string | undefined): boolean {
+  const text = normalize(value);
+  const strongWriting = /\b(?:3 ?am|2 ?am|late night|goes home|back home|numbers in (?:her|your) phone|dictionary|codename|writes?)\b/.test(text);
+  return strongWriting
+    && hasCue(value, 'lateNightWriting')
+    && !hasCue(value, 'valcescuDoor');
+}
+
+function isSocialDebriefAndWritingAftermathText(value: string | undefined): boolean {
+  const cues = eventCues(value);
+  if (cues.has('friendDebrief') && cues.has('lateNightWriting')) return true;
+  const text = normalize(value);
+  return /\b(?:debrief|dusk club|dragan vintage)\b/.test(text)
+    && /\b(?:3 ?am|2 ?am|late night|two men'?s numbers|numbers in (?:her|your) phone|dictionary|codename)\b/.test(text);
 }
 
 function isRescueAftermathText(value: string | undefined): boolean {
   const text = normalize(value);
   return /\b(?:walks? her home|kisses? her hand|threshold|declines? to come in|vanishes?)\b/.test(text);
+}
+
+function parkAttackEncounterFieldText(field: AuthoredTreatmentFieldContract): string | undefined {
+  if (field.contractKind !== 'encounter_anchor' && field.contractKind !== 'encounter_conflict') return undefined;
+  if (!hasCue(field.sourceText, 'rooftopMeet') || !hasCue(field.sourceText, 'parkAttack')) return undefined;
+  if (field.contractKind === 'encounter_anchor') {
+    return 'Cișmigiu at 1am: fog, a shadow, a scream, and Victor rescuing Kylie from the attack.';
+  }
+  return 'The park attack is the cost the city exacts for Kylie treating danger as romance.';
 }
 
 function canonicalizeVictorAftermathBeat(beat: RequiredBeat): RequiredBeat {
@@ -761,6 +878,8 @@ function rewriteBroadChoiceTurnContracts(scenes: PlannedScene[], decisions: Plan
   for (const scene of scenes) {
     const turn = scene.turnContract;
     if (!turn) continue;
+    if (scene.planningOrigin?.kind === 'binder_split') continue;
+    if (isNamedSocialAftermathHelperScene(scene)) continue;
     if (!isBroadMixedChoiceTurn(turn)) continue;
     const concreteBeat = (scene.requiredBeats ?? [])
       .find((beat) => beat.tier !== 'seed' && beat.tier !== 'connective' && (beat.mustDepict || beat.sourceTurn));
@@ -778,12 +897,12 @@ function rewriteBroadChoiceTurnContracts(scenes: PlannedScene[], decisions: Plan
     decisions.push({
       action: 'kept',
       issueKind: 'valid_dense_scene_needs_more_beats',
-      contractId: `choice-turn:${scene.id}`,
+      contractId: `turn-contract:${scene.id}`,
       contractKind: 'pressure_lane',
       episodeNumber: scene.episodeNumber,
       fromSceneId: scene.id,
       toSceneId: scene.id,
-      reason: 'Choice-derived turn contract summarized multiple episode events; rewrote it to the first scene-local required beat before binding and density checks.',
+      reason: 'Turn contract summarized multiple episode events; rewrote it to the first scene-local required beat before binding and density checks.',
     });
   }
 }
@@ -849,7 +968,7 @@ function beatCoveredByEarlierBeat(beat: RequiredBeat, kept: RequiredBeat[]): boo
       && /\b(?:dashboard|readership|reads?|viral post|ticking|[0-9]+\s*k)\b/i.test(candidateText)
     ) return true;
     if (
-      beat.id.includes('seven-point-hook-part')
+      beat.id.includes('story-circle-hook-part')
       && beatCues.size > 0
       && cueSetsOverlap(beatCues, candidateCues)
       && /^(?:by|she writes|kylie lands)\b/i.test(text.trim())
@@ -945,6 +1064,121 @@ function dedupeRequiredBeats(scenes: PlannedScene[], decisions: PlannedSceneBind
   }
 }
 
+function fieldCoveredByRequiredBeat(field: AuthoredTreatmentFieldContract, scene: PlannedScene): boolean {
+  const fieldText = field.sourceText;
+  if (!fieldText) return false;
+  return (scene.requiredBeats ?? []).some((beat) => {
+    const beatLabel = beatText(beat);
+    if (!beatLabel) return false;
+    const overlap = Math.max(tokenOverlap(fieldText, beatLabel), tokenOverlap(beatLabel, fieldText));
+    if (overlap >= 0.58) return true;
+    const fieldCues = eventCues(fieldText);
+    const beatCues = eventCues(beatLabel);
+    return fieldCues.size > 0 && cueSetsOverlap(fieldCues, beatCues) && overlap >= 0.28;
+  });
+}
+
+function isBroadSceneCommentaryField(field: AuthoredTreatmentFieldContract): boolean {
+  const text = field.sourceText;
+  if (!text) return false;
+  if (/\bscene note\s*:/i.test(text) && eventCues(text).size >= 1) return true;
+  if (
+    (field.contractKind === 'pressure_lane' || field.contractKind === 'theme_angle' || field.contractKind === 'lie_pressure')
+    && text.length >= 220
+    && eventCues(text).size >= 2
+  ) return true;
+  return false;
+}
+
+function isMixedAftermathChoiceField(field: AuthoredTreatmentFieldContract): boolean {
+  if (field.contractKind !== 'major_choice_pressure') return false;
+  if (/\bnext\s+morning\b/i.test(field.sourceText) && eventCues(field.sourceText).size >= 1) return true;
+  return eventCues(field.sourceText).size >= 2 || explicitTimeCues(field.sourceText).length >= 2;
+}
+
+function fieldDuplicatesEarlierField(
+  field: AuthoredTreatmentFieldContract,
+  kept: AuthoredTreatmentFieldContract[],
+): boolean {
+  return kept.some((candidate) => {
+    if (candidate.contractKind !== field.contractKind) return false;
+    const overlap = Math.max(tokenOverlap(field.sourceText, candidate.sourceText), tokenOverlap(candidate.sourceText, field.sourceText));
+    if (overlap >= 0.42) return true;
+    const fieldCues = eventCues(field.sourceText);
+    const candidateCues = eventCues(candidate.sourceText);
+    return fieldCues.size > 0 && cueSetsOverlap(fieldCues, candidateCues) && overlap >= 0.28;
+  });
+}
+
+function dedupeAuthoredTreatmentFieldsAgainstSceneBeats(
+  scenes: PlannedScene[],
+  decisions: PlannedSceneBindingDecision[],
+): void {
+  for (const scene of scenes) {
+    const kept: AuthoredTreatmentFieldContract[] = [];
+    for (const field of scene.authoredTreatmentFields ?? []) {
+      if (field.contractKind === 'consequence_seed' && fieldCoveredByRequiredBeat(field, scene)) {
+        decisions.push({
+          action: 'ledgered',
+          issueKind: 'valid_dense_scene_needs_more_beats',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Consequence seed duplicates a scene-local required beat and remains enforced through that beat instead of adding density.',
+        });
+        kept.push({
+          ...field,
+          requiredRealization: (field.requiredRealization ?? []).filter((item) => item !== 'final_prose'),
+        });
+        continue;
+      }
+      if (isBroadSceneCommentaryField(field)) {
+        decisions.push({
+          action: 'ledgered',
+          issueKind: 'ledger_scope_pollution',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Broad multi-event treatment commentary remains plan-level instead of adding scene-prose density.',
+        });
+        continue;
+      }
+      if (isMixedAftermathChoiceField(field)) {
+        decisions.push({
+          action: 'ledgered',
+          issueKind: 'chronology_conflict',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Choice field mixes multiple scene/time beats; the choice/consequence remains, but final prose stays scene-local.',
+        });
+        kept.push({
+          ...field,
+          requiredRealization: (field.requiredRealization ?? []).filter((item) => item !== 'final_prose'),
+        });
+        continue;
+      }
+      if (fieldDuplicatesEarlierField(field, kept)) {
+        decisions.push({
+          action: 'ledgered',
+          issueKind: 'valid_dense_scene_needs_more_beats',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Duplicate treatment field is represented by an earlier field on the same scene.',
+        });
+        continue;
+      }
+      kept.push(field);
+    }
+    scene.authoredTreatmentFields = kept;
+  }
+}
+
 function insertPlannedScene(scenes: PlannedScene[], scene: PlannedScene): PlannedScene {
   const existing = scenes.find((candidate) => candidate.id === scene.id);
   if (existing) return existing;
@@ -981,12 +1215,27 @@ function repairMixedRooftopParkEncounter(scenes: PlannedScene[], decisions: Plan
       kind: 'standard',
       encounter: undefined,
       title: 'Rooftop bar at sunset',
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'mixed_rooftop_setup',
+        parentSceneId: encounter.id,
+        reason: 'Split mixed rooftop setup away from the later park encounter so both authored turns can land chronologically.',
+      },
       dramaticPurpose: encounter.dramaticPurpose,
       narrativeRole: 'development',
       requiredBeats: [],
       authoredTreatmentFields: [],
       mechanicPressure: [],
       hasChoice: true,
+    });
+    setSceneTurnContract(setup, {
+      turnId: `${setup.id}-turn`,
+      source: setup.turnContract?.source ?? 'treatment',
+      centralTurn: 'Kylie joins Mika at the rooftop bar and clocks the charged social triangle before the night turns dangerous.',
+      beforeState: 'Kylie is still treating Bucharest as a romantic social experiment.',
+      turnEvent: 'The rooftop meeting turns the city from possibility into visible romantic and social pressure.',
+      afterState: 'Kylie leaves the rooftop with curiosity sharpened and danger still unnamed.',
+      handoff: 'Hand forward to the later walk without restaging the park attack.',
     });
 
     const movedBeatIds = new Set<string>();
@@ -1081,6 +1330,22 @@ function repairMixedRooftopParkEncounter(scenes: PlannedScene[], decisions: Plan
       }
     }
     removeFieldIds(encounter, setupFieldIds);
+    for (const field of encounter.authoredTreatmentFields ?? []) {
+      const encounterOnlyText = parkAttackEncounterFieldText(field);
+      if (!encounterOnlyText) continue;
+      field.sourceText = encounterOnlyText;
+      field.fieldName = field.contractKind;
+      decisions.push({
+        action: 'kept',
+        issueKind: 'wrong_scene_binding',
+        contractId: field.id,
+        contractKind: field.contractKind,
+        episodeNumber,
+        fromSceneId: encounter.id,
+        toSceneId: encounter.id,
+        reason: 'Mixed rooftop/park encounter field was narrowed to the encounter event after rooftop setup split.',
+      });
+    }
 
     encounter.title = 'Cișmigiu attack at 1am';
     encounter.dramaticPurpose = 'Cișmigiu at 1am: fog, a shadow, a scream, and a rescue that makes Kylie feel chosen and endangered at once.';
@@ -1179,6 +1444,12 @@ function splitBlogMetricScenes(scenes: PlannedScene[], decisions: PlannedSceneBi
       id: `${scene.id}-viral-aftermath`,
       order: scene.order + 0.2,
       title: 'The post goes viral by evening',
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'viral_aftermath',
+        parentSceneId: scene.id,
+        reason: 'Split the public readership aftermath away from the private writing scene to avoid overloading one prose unit.',
+      },
       dramaticPurpose: "By evening, the Mr. Midnight post becomes a visible public signal that Kylie's new life is accelerating beyond her control.",
       narrativeRole: 'payoff',
       turnContract: scene.turnContract ? {
@@ -1239,6 +1510,90 @@ function splitBlogMetricScenes(scenes: PlannedScene[], decisions: PlannedSceneBi
   }
 }
 
+function splitRoadPublicAftermathScenes(scenes: PlannedScene[], decisions: PlannedSceneBindingDecision[]): void {
+  const targets = scenes.filter((scene) =>
+    scene.kind === 'standard'
+    && primarySceneCues(scene).has('roadBreakdown')
+    && (
+      (scene.requiredBeats ?? []).some((beat) => isPublicBlogAftermathText(beatText(beat)))
+      || (scene.authoredTreatmentFields ?? []).some((field) => isPublicBlogAftermathText(field.sourceText))
+    ),
+  );
+
+  for (const scene of targets) {
+    const publicScene = insertPlannedScene(scenes, {
+      ...scene,
+      id: `${scene.id}-public-blog-aftermath`,
+      order: scene.order + 0.15,
+      title: 'The blog becomes public leverage',
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'public_blog_aftermath',
+        parentSceneId: scene.id,
+        reason: 'Split public blog leverage away from the private road-breakdown scene to preserve chronology and density.',
+      },
+      dramaticPurpose: "The blog's growing reach, brand attention, and public profile become material pressure after the private road encounter.",
+      narrativeRole: 'payoff',
+      locations: ["Kylie's Lipscani Apartment"],
+      signatureMoment: undefined,
+      requiredBeats: [],
+      authoredTreatmentFields: [],
+      mechanicPressure: [],
+      hasChoice: false,
+    });
+    delete (publicScene as PlannedScene & { choicePoint?: unknown }).choicePoint;
+
+    const keptBeats: RequiredBeat[] = [];
+    for (const beat of scene.requiredBeats ?? []) {
+      if (isPublicBlogAftermathText(beatText(beat))) {
+        pushUniqueBeat(publicScene, beat);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'chronology_conflict',
+          contractId: beat.id,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: publicScene.id,
+          reason: 'Public blog/readership aftermath belongs in a separate payoff scene instead of overloading the road-breakdown scene.',
+        });
+        continue;
+      }
+      keptBeats.push(beat);
+    }
+    replaceRequiredBeats(scene, keptBeats);
+
+    const movedFieldIds = new Set<string>();
+    for (const field of scene.authoredTreatmentFields ?? []) {
+      if (isPublicBlogAftermathText(field.sourceText)) {
+        pushUniqueField(publicScene, cloneContractForScene(field, publicScene.id));
+        movedFieldIds.add(field.id);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'chronology_conflict',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: publicScene.id,
+          reason: 'Public blog/readership treatment field was rebound to a payoff aftermath scene.',
+        });
+      }
+    }
+    removeFieldIds(scene, movedFieldIds);
+
+    setSceneTurnContract(publicScene, {
+      turnId: `${publicScene.id}-turn`,
+      source: publicScene.turnContract?.source ?? 'treatment',
+      centralTurn: "The blog's reach becomes public leverage.",
+      beforeState: 'The road encounter is still private material.',
+      turnEvent: 'Readership, brand attention, and profile pressure turn private experience into public leverage.',
+      afterState: 'The protagonist has more attention than control over the version of herself now circulating.',
+      handoff: 'Hand forward to the next romantic or mystery pressure without restaging the road encounter.',
+    });
+  }
+}
+
 function splitRescueAftermathScenes(scenes: PlannedScene[], decisions: PlannedSceneBindingDecision[]): void {
   const targets = scenes.filter((scene) => {
     const beats = scene.requiredBeats ?? [];
@@ -1254,6 +1609,12 @@ function splitRescueAftermathScenes(scenes: PlannedScene[], decisions: PlannedSc
       id: `${scene.id}-threshold`,
       order: scene.order + 0.1,
       title: 'Victor stops at the threshold',
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'threshold_aftermath',
+        parentSceneId: scene.id,
+        reason: 'Split the threshold aftermath away from the walk-home scene to avoid restaging the rescue.',
+      },
       dramaticPurpose: 'At Kylie\'s threshold, Victor kisses her hand, declines to come in, and vanishes before the night can become ordinary.',
       narrativeRole: 'release',
       locations: ["Kylie's Apartment Threshold"],
@@ -1308,12 +1669,370 @@ function splitRescueAftermathScenes(scenes: PlannedScene[], decisions: PlannedSc
   }
 }
 
+function splitSocialDebriefAndWritingAftermathScenes(
+  scenes: PlannedScene[],
+  decisions: PlannedSceneBindingDecision[],
+): void {
+  const targets = scenes.filter((scene) => {
+    if (scene.kind !== 'standard') return false;
+    if (scene.planningOrigin?.kind === 'binder_split') return false;
+    if (isNamedSocialAftermathHelperScene(scene)) return false;
+    const primaryCues = eventCues([
+      scene.id,
+      scene.title,
+      scene.locations?.join(' '),
+      scene.timeOfDay,
+      scene.signatureMoment,
+      scene.dramaticPurpose,
+    ].filter(Boolean).join(' '));
+    const hasPrimarySameLane = primaryCues.has('friendDebrief') || primaryCues.has('lateNightWriting');
+    const hasMixedPrimaryLane = primaryCues.has('roadBreakdown') || primaryCues.has('blogAftermath') || primaryCues.has('endingAftermath');
+    if (hasPrimarySameLane && !primaryCues.has('valcescuDoor') && !hasMixedPrimaryLane) return false;
+    const beats = scene.requiredBeats ?? [];
+    return beats.some((beat) => isFriendDebriefText(beatText(beat)))
+      || beats.some((beat) => isLateNightWritingText(beatText(beat)));
+  });
+
+  for (const scene of targets) {
+    const originalTurn = scene.turnContract;
+    const debriefScene = insertPlannedScene(scenes, {
+      ...scene,
+      id: `${scene.id}-debrief`,
+      order: scene.order + 0.1,
+      title: 'Friend debrief',
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'friend_debrief',
+        parentSceneId: scene.id,
+        reason: 'Split the social debrief away from the primary date/conversation scene to preserve scene turn clarity.',
+      },
+      dramaticPurpose: 'The friend group debriefs the date and turns private romantic pressure into social interpretation.',
+      narrativeRole: 'payoff',
+      locations: ['Drăgan Vintage'],
+      signatureMoment: undefined,
+      requiredBeats: [],
+      authoredTreatmentFields: [],
+      mechanicPressure: [],
+      hasChoice: false,
+    });
+    delete (debriefScene as PlannedScene & { choicePoint?: unknown }).choicePoint;
+
+    const writingScene = insertPlannedScene(scenes, {
+      ...scene,
+      id: `${scene.id}-late-night-writing`,
+      order: scene.order + 0.2,
+      title: 'Late-night dictionary entry',
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'late_night_writing',
+        parentSceneId: scene.id,
+        reason: 'Split late-night codename writing away from the primary scene to preserve chronology and treatment density.',
+      },
+      dramaticPurpose: 'At home after the date, the protagonist converts two phone numbers and a new crush into blog language.',
+      narrativeRole: 'release',
+      locations: ["Kylie's Lipscani Apartment"],
+      signatureMoment: undefined,
+      requiredBeats: [],
+      authoredTreatmentFields: [],
+      mechanicPressure: [],
+      hasChoice: false,
+    });
+    delete (writingScene as PlannedScene & { choicePoint?: unknown }).choicePoint;
+
+    const keptBeats: RequiredBeat[] = [];
+    for (const beat of scene.requiredBeats ?? []) {
+      const text = beatText(beat);
+      if (isFriendDebriefText(text)) {
+        pushUniqueBeat(debriefScene, beat);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'chronology_conflict',
+          contractId: beat.id,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: debriefScene.id,
+          reason: 'Friend debrief obligation belongs in its own social aftermath scene instead of the preceding primary scene.',
+        });
+        continue;
+      }
+      if (isLateNightWritingText(text)) {
+        pushUniqueBeat(writingScene, beat);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'chronology_conflict',
+          contractId: beat.id,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: writingScene.id,
+          reason: 'Late-night writing/codename obligation belongs in its own home aftermath scene instead of the preceding primary scene.',
+        });
+        continue;
+      }
+      keptBeats.push(beat);
+    }
+    replaceRequiredBeats(scene, keptBeats);
+
+    const movedFieldIds = new Set<string>();
+    for (const field of scene.authoredTreatmentFields ?? []) {
+      if (isFriendDebriefText(field.sourceText)) {
+        pushUniqueField(debriefScene, cloneContractForScene(field, debriefScene.id));
+        movedFieldIds.add(field.id);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'chronology_conflict',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: debriefScene.id,
+          reason: 'Friend debrief treatment field was rebound to a social aftermath scene.',
+        });
+        continue;
+      }
+      if (isLateNightWritingText(field.sourceText)) {
+        pushUniqueField(writingScene, cloneContractForScene(field, writingScene.id));
+        movedFieldIds.add(field.id);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'chronology_conflict',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: writingScene.id,
+          reason: 'Late-night writing treatment field was rebound to a home aftermath scene.',
+        });
+      }
+    }
+    removeFieldIds(scene, movedFieldIds);
+
+    if (
+      originalTurn
+      && (
+        isSocialDebriefAndWritingAftermathText(originalTurn.centralTurn)
+        || isSocialDebriefAndWritingAftermathText(originalTurn.turnEvent)
+        || isFriendDebriefText(originalTurn.centralTurn)
+        || isFriendDebriefText(originalTurn.turnEvent)
+        || isLateNightWritingText(originalTurn.centralTurn)
+        || isLateNightWritingText(originalTurn.turnEvent)
+      )
+    ) {
+      const localTurn = [
+        scene.signatureMoment,
+        ...(scene.requiredBeats ?? [])
+          .filter((beat) => beat.tier !== 'seed' && beat.tier !== 'connective')
+          .map((beat) => beat.mustDepict || beat.sourceTurn),
+        ...(scene.authoredTreatmentFields ?? [])
+          .filter((field) =>
+            field.requiredRealization?.includes('final_prose')
+            && !isFriendDebriefText(field.sourceText)
+            && !isLateNightWritingText(field.sourceText)
+            && !isSocialDebriefAndWritingAftermathText(field.sourceText)
+          )
+          .map((field) => field.sourceText),
+      ].find((text) =>
+        text
+        && !isFriendDebriefText(text)
+        && !isLateNightWritingText(text)
+        && !isSocialDebriefAndWritingAftermathText(text)
+      );
+      if (localTurn) {
+        setSceneTurnContract(scene, {
+          turnId: originalTurn.turnId,
+          source: originalTurn.source ?? 'treatment',
+          centralTurn: localTurn,
+          beforeState: originalTurn.beforeState || 'The scene has not yet made its local date pressure visible.',
+          turnEvent: localTurn,
+          afterState: originalTurn.afterState || 'The local date pressure has changed the scene state on-page.',
+          handoff: 'Hand forward to the social and private aftermath without summarizing it in this scene.',
+        });
+        decisions.push({
+          action: 'kept',
+          issueKind: 'chronology_conflict',
+          contractId: `turn-contract:${scene.id}`,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: scene.id,
+          reason: 'Aftermath split moved debrief/writing beats out of the scene, so the source turn contract was narrowed back to the remaining scene-local obligation.',
+        });
+      }
+    }
+
+    if ((debriefScene.requiredBeats ?? []).length > 0 || (debriefScene.authoredTreatmentFields ?? []).length > 0) {
+      setSceneTurnContract(debriefScene, {
+        turnId: `${debriefScene.id}-turn`,
+        source: debriefScene.turnContract?.source ?? 'treatment',
+        centralTurn: 'The friend group convenes for a debrief that turns private romantic pressure into public social leverage.',
+        beforeState: 'The date is still private pressure.',
+        turnEvent: 'The debrief shifts control from private memory to group interpretation, changing what the protagonist can admit, hide, or use.',
+        afterState: 'The protagonist carries both the group interpretation and the private pull of the date as competing leverage.',
+        handoff: 'Hand forward to the late-night private writing aftermath.',
+      });
+    }
+
+    if ((writingScene.requiredBeats ?? []).length > 0 || (writingScene.authoredTreatmentFields ?? []).length > 0) {
+      setSceneTurnContract(writingScene, {
+        turnId: `${writingScene.id}-turn`,
+        source: writingScene.turnContract?.source ?? 'treatment',
+        centralTurn: 'At home late at night, the protagonist turns two men\'s numbers into a public codename, shifting private desire into public leverage.',
+        beforeState: 'The date and debrief have left two numbers and too much meaning in the phone.',
+        turnEvent: 'The writing transfers control from the men\'s invitations to her codenamed voice, while making the blog newly valuable and dangerous.',
+        afterState: 'Private attraction has become public leverage, future romantic pressure, and a risk Victor cannot fully control.',
+        handoff: 'Hand forward to the next invitation or consequence without restaging the date.',
+      });
+    }
+  }
+}
+
+function isNamedSocialAftermathHelperScene(scene: PlannedScene): boolean {
+  const cues = eventCues([scene.id, scene.title].filter(Boolean).join(' '));
+  return cues.has('friendDebrief') || cues.has('lateNightWriting');
+}
+
+function normalizeSocialAftermathHelperTurnContracts(scenes: PlannedScene[]): void {
+  for (const scene of scenes) {
+    if (scene.kind !== 'standard') continue;
+    const cues = eventCues([scene.id, scene.title].filter(Boolean).join(' '));
+    if (cues.has('friendDebrief')) {
+      setSceneTurnContract(scene, {
+        turnId: `${scene.id}-turn`,
+        source: scene.turnContract?.source ?? 'treatment',
+        centralTurn: 'The friend group convenes for a debrief that turns private romantic pressure into public social leverage.',
+        beforeState: 'The date is still private pressure.',
+        turnEvent: 'The debrief shifts control from private memory to group interpretation, changing what the protagonist can admit, hide, or use.',
+        afterState: 'The protagonist carries both the group interpretation and the private pull of the date as competing leverage.',
+        handoff: 'Hand forward to the late-night private writing aftermath.',
+      });
+    }
+    if (cues.has('lateNightWriting')) {
+      setSceneTurnContract(scene, {
+        turnId: `${scene.id}-turn`,
+        source: scene.turnContract?.source ?? 'treatment',
+        centralTurn: 'At home late at night, the protagonist turns two men\'s numbers into a public codename, shifting private desire into public leverage.',
+        beforeState: 'The date and debrief have left two numbers and too much meaning in the phone.',
+        turnEvent: 'The writing transfers control from the men\'s invitations to her codenamed voice, while making the blog newly valuable and dangerous.',
+        afterState: 'Private attraction has become public leverage, future romantic pressure, and a risk Victor cannot fully control.',
+        handoff: 'Hand forward to the next invitation or consequence without restaging the date.',
+      });
+    }
+  }
+}
+
+function socialAftermathSibling(
+  scene: PlannedScene,
+  scenes: PlannedScene[],
+  splitKind: NonNullable<PlannedScene['planningOrigin']>['splitKind'],
+): PlannedScene | undefined {
+  if (scene.planningOrigin?.kind === 'binder_split') {
+    const sibling = scenes.find((candidate) =>
+      candidate.episodeNumber === scene.episodeNumber
+      && candidate.planningOrigin?.kind === 'binder_split'
+      && candidate.planningOrigin.parentSceneId === scene.planningOrigin?.parentSceneId
+      && candidate.planningOrigin.splitKind === splitKind
+    );
+    if (sibling) return sibling;
+  }
+
+  const exactId = splitKind === 'friend_debrief'
+    ? scene.id.replace(/-late-night-writing$/, '-debrief')
+    : scene.id.replace(/-debrief$/, '-late-night-writing');
+  if (exactId !== scene.id) {
+    const exact = scenes.find((candidate) => candidate.episodeNumber === scene.episodeNumber && candidate.id === exactId);
+    if (exact) return exact;
+  }
+
+  const targetCue: SceneEventCue = splitKind === 'friend_debrief' ? 'friendDebrief' : 'lateNightWriting';
+  return scenes
+    .filter((candidate) =>
+      candidate.episodeNumber === scene.episodeNumber
+      && candidate.id !== scene.id
+      && eventCues([candidate.id, candidate.title].filter(Boolean).join(' ')).has(targetCue)
+    )
+    .sort((a, b) => Math.abs(a.order - scene.order) - Math.abs(b.order - scene.order) || a.order - b.order)[0];
+}
+
+function reassignSocialAftermathHelperBeats(scenes: PlannedScene[], decisions: PlannedSceneBindingDecision[]): void {
+  const beatMoves = new Map<string, RequiredBeat[]>();
+  for (const scene of scenes) {
+    if (scene.kind !== 'standard') continue;
+    const cues = eventCues([scene.id, scene.title].filter(Boolean).join(' '));
+    if (!cues.has('friendDebrief') && !cues.has('lateNightWriting')) continue;
+
+    const kept: RequiredBeat[] = [];
+    for (const beat of scene.requiredBeats ?? []) {
+      const text = beatText(beat);
+      const target = cues.has('lateNightWriting') && isFriendDebriefText(text)
+        ? socialAftermathSibling(scene, scenes, 'friend_debrief')
+        : cues.has('friendDebrief') && isLateNightWritingText(text)
+          ? socialAftermathSibling(scene, scenes, 'late_night_writing')
+          : undefined;
+      if (!target || target.id === scene.id) {
+        kept.push(beat);
+        continue;
+      }
+      beatMoves.set(target.id, [...(beatMoves.get(target.id) ?? []), beat]);
+      decisions.push({
+        action: 'rebound',
+        issueKind: 'chronology_conflict',
+        contractId: beat.id,
+        contractKind: 'pressure_lane',
+        episodeNumber: scene.episodeNumber,
+        fromSceneId: scene.id,
+        toSceneId: target.id,
+        reason: 'Social aftermath helper beat belonged to its sibling debrief/writing lane, not the current helper scene.',
+      });
+    }
+    replaceRequiredBeats(scene, kept);
+  }
+
+  for (const scene of scenes) {
+    const additions = beatMoves.get(scene.id) ?? [];
+    if (additions.length > 0) {
+      scene.requiredBeats = [...(scene.requiredBeats ?? []), ...additions];
+    }
+  }
+}
+
 function renormalizeSceneOrders(scenes: PlannedScene[]): void {
   scenes
     .sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id))
     .forEach((scene, index) => {
       scene.order = index;
     });
+}
+
+function removeArcPressureResidue(scene: PlannedScene, removed: ArcPressureTreatmentContract[]): void {
+  if (removed.length === 0) return;
+  const removedIds = new Set(removed.map((contract) => contract.id));
+  const removedTexts = new Set(removed.map((contract) => contract.sourceText));
+  scene.requiredBeats = scene.requiredBeats?.filter((beat) =>
+    !removedTexts.has(beat.sourceTurn)
+    && !removedTexts.has(beat.mustDepict)
+    && !Array.from(removedIds).some((id) => beat.id.includes(id))
+  );
+  scene.mechanicPressure = scene.mechanicPressure?.filter((pressure) =>
+    !removedIds.has(pressure.id)
+    && !removedIds.has(pressure.mechanicRef?.flag ?? '')
+    && !removedTexts.has(pressure.storyPressure)
+  );
+}
+
+function scrubArcPressureBindings(scenes: PlannedScene[]): void {
+  for (const scene of scenes) {
+    const contracts = scene.arcPressureContracts ?? [];
+    if (contracts.length === 0) continue;
+    const kept = contracts.filter((contract) =>
+      isSceneBoundArcPressureKind(contract.contractKind)
+      && arcPressureContractTargetsScene(contract, scene)
+    );
+    const keptIds = new Set(kept.map((contract) => contract.id));
+    const removed = contracts.filter((contract) => !keptIds.has(contract.id));
+    scene.arcPressureContracts = kept;
+    removeArcPressureResidue(scene, removed);
+  }
 }
 
 function ensureMissingConcreteScenes(scenes: PlannedScene[], decisions: PlannedSceneBindingDecision[]): void {
@@ -1329,6 +2048,9 @@ function ensureMissingConcreteScenes(scenes: PlannedScene[], decisions: PlannedS
     if (!sourceBeat) continue;
     const firstOrder = Math.min(...episodeScenes.map((scene) => scene.order));
     scenes.push(makeColdOpenArrivalScene(episodeNumber, sourceBeat, firstOrder - 0.5));
+    if (sourceScene) {
+      replaceRequiredBeats(sourceScene, (sourceScene.requiredBeats ?? []).filter((beat) => beat.id !== sourceBeat.id));
+    }
     decisions.push({
       action: 'rebound',
       issueKind: 'wrong_scene_binding',
@@ -1351,6 +2073,7 @@ export function rebindPlannedSceneObligations(
   const decisions: PlannedSceneBindingDecision[] = [];
   const planLevel = new Map<string, AuthoredTreatmentFieldContract>();
 
+  scrubArcPressureBindings(scenes);
   ensureMissingConcreteScenes(scenes, decisions);
 
   for (const scene of scenes) {
@@ -1566,7 +2289,14 @@ export function rebindPlannedSceneObligations(
 
       if (hasTimelineCue(text) || eventCues(text).size > 0) {
         const target = bestSceneForBeat(text, scenes, beat.id);
-        if (target && target.id !== scene.id && scoreSceneForBeat(text, target, beat.id) - scoreSceneForBeat(text, scene, beat.id) >= 1.25) {
+        const forceBlogMetricRebound = Boolean(
+          target
+          && target.id !== scene.id
+          && isBlogMetricText(text)
+          && isPrimaryBlogAftermathScene(target)
+          && !isPrimaryBlogAftermathScene(scene),
+        );
+        if (target && target.id !== scene.id && (forceBlogMetricRebound || scoreSceneForBeat(text, target, beat.id) - scoreSceneForBeat(text, scene, beat.id) >= 1.25)) {
           beatAdditions.set(target.id, [...(beatAdditions.get(target.id) ?? []), beat]);
           decisions.push({
             action: 'rebound',
@@ -1597,11 +2327,17 @@ export function rebindPlannedSceneObligations(
   dedupeRequiredBeats(scenes, decisions);
   repairMixedRooftopParkEncounter(scenes, decisions);
   splitRescueAftermathScenes(scenes, decisions);
+  splitSocialDebriefAndWritingAftermathScenes(scenes, decisions);
+  normalizeSocialAftermathHelperTurnContracts(scenes);
+  reassignSocialAftermathHelperBeats(scenes, decisions);
+  splitRoadPublicAftermathScenes(scenes, decisions);
   splitBlogMetricScenes(scenes, decisions);
   rewriteStructuralLabelTurnContracts(scenes, decisions);
   rewriteBroadChoiceTurnContracts(scenes, decisions);
   dedupeEncounterRequiredBeatsAgainstFields(scenes, decisions);
   dedupeRequiredBeats(scenes, decisions);
+  dedupeAuthoredTreatmentFieldsAgainstSceneBeats(scenes, decisions);
+  scrubArcPressureBindings(scenes);
   renormalizeSceneOrders(scenes);
 
   const beatBudgetRecommendations = scenes

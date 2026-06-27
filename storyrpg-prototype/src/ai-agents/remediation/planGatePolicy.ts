@@ -7,7 +7,7 @@
 // advisory — but ONLY when a per-rule env flag is set. This is the opt-in (B0)
 // convention: default-off, gate only when the flag is explicitly enabled.
 //
-// Unlike the SevenPoint season gate (inverted opt-out, default ON), the Bucket D
+// Unlike the Story Circle season gate (inverted opt-out, default ON), the Bucket D
 // rules are still being validated against multi-episode regens, so they default
 // OFF and roll out one flag at a time.
 //

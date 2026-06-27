@@ -1,9 +1,7 @@
 import type { EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
-export interface SceneTurnContractOptions {
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
-}
+export interface SceneTurnContractOptions {}
 
 export interface SceneTurnContractMetrics {
   sceneCount: number;
@@ -250,9 +248,7 @@ export class SceneTurnContractValidator extends BaseValidator {
       if (multiCharacter && powerShift) metrics.multiCharacterScenesWithPowerShift += 1;
       if (consequence) metrics.consequenceBearingSceneCount += 1;
 
-      const prefix = options.episodeStructureMode === 'sceneEpisodes'
-        ? `sceneEpisode scene ${sceneLabel(scene)}`
-        : `Scene ${sceneLabel(scene)}`;
+      const prefix = `Scene ${sceneLabel(scene)}`;
 
       if (!entry) {
         issues.push(this.error(
@@ -289,7 +285,7 @@ export class SceneTurnContractValidator extends BaseValidator {
       if (multiCharacter && !powerShift) {
         const message = `${prefix} lacks a power-dynamic shift.`;
         const suggestion = 'In multi-character scenes, shift leverage, trust, vulnerability, intimacy, distance, status, information, threat, debt, or public/private advantage at least once.';
-        issues.push(major || options.episodeStructureMode === 'sceneEpisodes'
+        issues.push(major
           ? this.error(message, scene.id, suggestion)
           : this.warning(message, scene.id, suggestion));
       }

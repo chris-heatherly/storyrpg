@@ -65,7 +65,7 @@ function makeOversizedInput(): SceneWriterInput {
       characterTreatmentContracts: Array.from({ length: 18 }, (_, i) => repeatedContract(i, { characterName: 'Kylie Marinescu' })),
       branchConsequenceContracts: Array.from({ length: 14 }, (_, i) => repeatedContract(i, { contractKind: 'branch_origin_choice' })),
       failureModeAuditContracts: Array.from({ length: 20 }, (_, i) => repeatedContract(i, { label: 'Escalation trap', status: 'avoided' })),
-      sevenPointBeatContracts: [repeatedContract(0, { beat: 'hook', eventAtoms: ['Kylie arrives', 'the blog begins'] })],
+      storyCircleBeatContracts: [repeatedContract(0, { beat: 'hook', eventAtoms: ['Kylie arrives', 'the blog begins'] })],
       arcPressureContracts: [repeatedContract(1, { arcTitle: 'Champagne', eventAtoms: ['friendship pressure'] })],
       choicePoint: {
         type: 'relationship',

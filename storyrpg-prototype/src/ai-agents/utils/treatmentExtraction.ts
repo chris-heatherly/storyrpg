@@ -9,7 +9,7 @@ import type {
   WorldLocationTreatmentGuidance,
   WorldLocationTreatmentLocationGuidance,
 } from '../../types/sourceAnalysis';
-import { extractBeatEpisodeAnchors } from './treatmentFingerprint';
+import { extractBeatEpisodeAnchors, extractStoryCircleBeatEpisodeAnchors } from './treatmentFingerprint';
 import { parseInformationLedgerGuidance } from './informationLedgerContracts';
 
 export interface ExtractedTreatment {
@@ -27,9 +27,9 @@ export interface ExtractedTreatment {
 }
 
 const SECTION_HEADING_RE = /^##\s+(?:\d+\.\s+)?(.+)$/gm;
-const HEADED_EPISODE_RE = /^#{3,5}\s+(?:\*\*)?(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?\d+(?:\s*[.):\-—–]\s*|\s+)/gim;
-const EPISODE_HEADING_RE = /^(?:(?:#{3,5}\s+)(?:\*\*)?(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?(\d+)(?:\s*[.):\-—–]\s*|\s+)(.+?)(?:\*\*)?\s*|(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?(\d+)(?:\s*[.):\-—–]\s*|\s+)(?:\*\*)?(.+?)(?:\*\*)?\s*)$/gim;
-const NUMBER_AND_TITLE_RE = /^(?:-\s*)?(?:\*\*)?(Scene\s*Episode|SceneEpisode|SceneEp|Episode)\s+number\s+and\s+title(?:\s*\([^)]*\))?(?:\s*:\*\*|\*\*\s*:|\s*:)\s*(?:\*\*)?(?:(?:Scene\s*Episode|SceneEpisode|SceneEp|Episode|Scene|Ep\.?|SE|E)\s*#?\s*)?(\d+)(?:(?:\s*[.):\-—–]\s*|\s+)([^*\n]+?))?(?:\*\*)?\s*$/gim;
+const HEADED_EPISODE_RE = /^#{3,5}\s+(?:\*\*)?(?:(?:Episode|Scene|Ep\.?|E)\s*#?\s*)?\d+(?:\s*[.):\-—–]\s*|\s+)/gim;
+const EPISODE_HEADING_RE = /^(?:(?:#{3,5}\s+)(?:\*\*)?(?:(?:Episode|Scene|Ep\.?|E)\s*#?\s*)?(\d+)(?:\s*[.):\-—–]\s*|\s+)(.+?)(?:\*\*)?\s*|(?:(?:Episode|Scene|Ep\.?|E)\s*#?\s*)?(\d+)(?:\s*[.):\-—–]\s*|\s+)(?:\*\*)?(.+?)(?:\*\*)?\s*)$/gim;
+const NUMBER_AND_TITLE_RE = /^(?:-\s*)?(?:\*\*)?Episode\s+number\s+and\s+title(?:\s*\([^)]*\))?(?:\s*:\*\*|\*\*\s*:|\s*:)\s*(?:\*\*)?(?:(?:Episode|Scene|Ep\.?|E)\s*#?\s*)?(\d+)(?:(?:\s*[.):\-—–]\s*|\s+)([^*\n]+?))?(?:\*\*)?\s*$/gim;
 const BRANCH_HEADING_RE = /^(?:#{3,5}\s+|\*\*)(?:(?:Branch|Consequence Chain)\s+[A-Z0-9]*\s*)?(?:[—–:-]\s+)?(.+?)(?:\*\*)?\s*$/gim;
 const ENDING_HEADING_RE = /^#{3,5}\s+Ending\s+(?:\d+|[A-Z])\s*(?:[.):—–:-]\s*)"?([^"\n(]+)"?(?:\s+\(([^)]+)\))?/gim;
 
@@ -37,14 +37,13 @@ const TREATMENT_MARKERS = [
   /branching[-\s]narrative season treatment/i,
   /storyrpg treatment prompt/i,
   /regular episode version/i,
-  /sceneepisode version/i,
   /storyrpg structure model/i,
-  /3-act\s*\/\s*7-point season spine/i,
+  /3-act\s*\/\s*legacy-structure season spine/i,
   /choose-your-own-adventure/i,
-  /^#{3,5}\s+(?:(?:Scene\s*)?Episode\s+|SceneEp\s+|Scene\s+|Ep\.?\s+|SE\s*)?\d+/im,
+  /^#{3,5}\s+(?:Episode\s+|Scene\s+|Ep\.?\s+|E\s*)?\d+/im,
   /\bEpisode Outline\b/i,
-  /\bSceneEpisode Outline\b/i,
   /\*\*Structural role(?:\s*:\s*anchor, fused anchors, or buffer)?(?:\s*\([^)]*\))?:\*\*/i,
+  /\*\*Story Circle role(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Entry goal(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Forced choice(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Exit shift(?:\s*\([^)]*\))?:\*\*/i,
@@ -218,8 +217,8 @@ function getFlexibleInlineOrIndentedList(body: string, labels: string[]): string
 }
 
 function normalizeEpisodeNumberTitleLines(section: string): string {
-  return section.replace(NUMBER_AND_TITLE_RE, (_match, kind: string, number: string, rawTitle: string | undefined) => {
-    const canonicalKind = /scene/i.test(kind) ? 'SceneEpisode' : 'Episode';
+  return section.replace(NUMBER_AND_TITLE_RE, (_match, number: string, rawTitle: string | undefined) => {
+    const canonicalKind = 'Episode';
     const title = (rawTitle || `${canonicalKind} ${number}`)
       .trim()
       .replace(/^["“”]+|["“”]+$/g, '');
@@ -256,6 +255,13 @@ export function normalizeTreatmentStructuralRoles(raw: string | undefined): Stru
   }
   if (/\brising\b/.test(lower)) return ['rising'];
   if (/\bfalling|final-pressure|final pressure|processing|recovery/.test(lower)) return ['falling'];
+  if (/\byou\b/.test(lower)) add('hook');
+  if (/\bgo\b/.test(lower)) add('plotTurn1');
+  if (/\bsearch\b/.test(lower)) add('pinch1');
+  if (/\bfind\b/.test(lower)) add('midpoint');
+  if (/\btake\b/.test(lower)) add('pinch2');
+  if (/\breturn\b/.test(lower)) add('climax');
+  if (/\bchange\b/.test(lower)) add('resolution');
   if (/\bhook\b/.test(lower)) add('hook');
   if (/plot\s*turn\s*1|plotturn1|inciting|commitment/.test(lower)) add('plotTurn1');
   if (/pinch\s*1|first\s+pinch/.test(lower)) add('pinch1');
@@ -356,7 +362,10 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
   for (const guidance of splitByMatches(normalizedSection, EPISODE_HEADING_RE, (match, body) => {
     const episodeNumber = Number(match[1] || match[3]);
     const authoredTitle = cleanAuthoredTitle(match[2] || match[4]);
-    const rawStructuralRole = getBulletValue(body, 'Structural role')
+    const rawStructuralRole = getBulletValue(body, 'Story Circle role')
+      || getBulletValueWithLabelPrefix(body, 'Story Circle role')
+      || getAllBulletValues(body, 'Story Circle role')[0]
+      || getBulletValue(body, 'Structural role')
       || getBulletValueWithLabelPrefix(body, 'Structural role')
       || getAllBulletValues(body, 'Structural role')[0];
     const structuralNote = getFlexibleBulletValue(body, ['Structural note', 'Role note']);
@@ -364,7 +373,7 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
       ...getAllBulletValues(body, 'Encounter anchor'),
       ...getInlineOrIndentedList(body, 'Encounter anchors'),
     ];
-    const endingTurnout = getFlexibleBulletValue(body, ['Ending turnout', 'SceneEpisode ending', 'Scene episode ending']);
+    const endingTurnout = getFlexibleBulletValue(body, ['Ending turnout']);
     const consequenceResidue = getFlexibleBulletValue(body, ['Consequence residue', 'Residue']);
     const resolvedEpisodeTension = getFlexibleBulletValue(body, [
       'Resolved episode tension',
@@ -390,11 +399,7 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
       'What carries forward',
     ]);
     const nextEpisodeCausality = getFlexibleBulletValue(body, [
-      'Why the next sceneEpisode exists because of this one',
-      'Why the next scene episode exists because of this one',
-      'Why next sceneEp exists',
-      'Why next scene episode exists',
-      'Next sceneEpisode pressure',
+      'Why the next episode exists because of this one',
       'Next episode pressure',
     ]);
     const endingPressure = getFlexibleBulletValue(body, ['Ending pressure'])
@@ -406,21 +411,20 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
       || consequenceResidue;
     const literalFactAnchors = extractLiteralEpisodeFactAnchors(body);
     const informationMovement = getBulletValue(body, 'Information movement');
+    const explicitConsequenceSeeds = getFlexibleInlineOrIndentedList(body, ['Consequence seeds', 'Consequence seed']);
     const consequenceSeeds = mergeUniqueList(
-      getFlexibleInlineOrIndentedList(body, ['Consequence seeds', 'Consequence seed']),
-      literalFactAnchors,
+      explicitConsequenceSeeds,
+      explicitConsequenceSeeds.length > 0 ? [] : literalFactAnchors,
     );
 
     return {
       episodeNumber,
       guidance: {
         authoredTitle: authoredTitle || undefined,
-        actLabel: getBulletValue(body, 'Act') || getBulletValue(body, 'Act/Arc')?.split('/')[0]?.trim(),
-        arcLabel: getBulletValue(body, 'Arc') || getBulletValue(body, 'Act/Arc')?.split('/').slice(1).join('/').trim(),
         rawStructuralRole,
         normalizedStructuralRoles: normalizeTreatmentStructuralRoles(rawStructuralRole),
         structuralNote,
-        dramaticQuestion: getFlexibleBulletValue(body, ['Episode dramatic question', 'SceneEpisode dramatic question', 'Dramatic question']),
+        dramaticQuestion: getFlexibleBulletValue(body, ['Episode dramatic question', 'Dramatic question']),
         episodePromise: getBulletValue(body, 'Episode promise'),
         coldOpenFunction: getFlexibleBulletValue(body, ['Cold open function', 'Opening image / hook function', 'Opening image/hook function']),
         openingImage: getFlexibleBulletValue(body, ['Opening image', 'Visual opening']),
@@ -733,10 +737,6 @@ function parseFailureModeAuditGuidance(section: string | undefined): TreatmentSe
     });
   }
   return rows.length > 0 ? { rawSection: section, rows } : undefined;
-}
-
-function inferEpisodeStructureMode(markdown: string): TreatmentSeasonGuidance['episodeStructureMode'] {
-  return /\bscene\s*episodes?\b|\bsceneepisodes?\b/i.test(markdown) ? 'sceneEpisodes' : 'standard';
 }
 
 function parseTopLevelSeasonPromiseFields(markdown: string): Partial<TreatmentSeasonGuidance> {
@@ -1140,7 +1140,6 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
   const failureModeAudit = getFlexibleSection(markdown, ['failure mode audit']);
   const failureModeAuditGuidance = parseFailureModeAuditGuidance(failureModeAudit);
   const sections: TreatmentSeasonGuidance = {
-    episodeStructureMode: inferEpisodeStructureMode(markdown),
     seasonPromiseAndDramaticEngine,
     ...topLevelPromiseFields,
     ...engineFields,
@@ -1151,12 +1150,19 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
     stakesArchitectureGuidance,
     informationLedger,
     informationLedgerGuidance,
-    seasonSpine: getFlexibleSection(markdown, ['3-act / 7-point season spine', '7-point season spine']),
+    seasonSpine: getFlexibleSection(markdown, [
+      'story circle season spine',
+      'season story circle',
+      'story circle spine',
+      '3-act / legacy-structure season spine',
+      'legacy-structure season spine',
+      '3-act / 7-point season spine',
+    ]),
     arcPlan,
     arcGuidance,
     scenePlanningNotes,
     scenePlanningGuidance,
-    branchAndConsequenceChains: getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains']),
+    branchAndConsequenceChains: getFlexibleSection(markdown, ['cross-episode branches', 'cross-episode branches and consequence chains']),
     failForward: getFlexibleSection(markdown, ['capability, growth, and fail-forward']),
     endings: getFlexibleSection(markdown, ['alternate endings']),
     failureModeAudit,
@@ -1169,8 +1175,12 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
   if (Object.keys(beatEpisodeAnchors).length > 0) {
     sections.beatEpisodeAnchors = beatEpisodeAnchors;
   }
+  const storyCircleBeatEpisodeAnchors = extractStoryCircleBeatEpisodeAnchors(sections.seasonSpine);
+  if (Object.keys(storyCircleBeatEpisodeAnchors).length > 0) {
+    sections.storyCircleBeatEpisodeAnchors = storyCircleBeatEpisodeAnchors;
+  }
   sections.rawSectionSummary = Object.entries(sections)
-    .filter(([key, value]) => key !== 'episodeStructureMode' && key !== 'rawSectionSummary' && typeof value === 'string' && value.trim().length > 0)
+    .filter(([key, value]) => key !== 'rawSectionSummary' && typeof value === 'string' && value.trim().length > 0)
     .map(([key]) => key);
   if (protagonistGuidance) sections.rawSectionSummary.push('protagonistGuidance');
   if (worldLocationGuidance) sections.rawSectionSummary.push('worldLocationGuidance');
@@ -1291,7 +1301,7 @@ export function validateExtractedTreatment(
     }
   }
 
-  const episodeSection = sections?.episodeSection || getFlexibleSection(markdown, ['sceneepisode outline', 'scene episode outline', 'episode outline']);
+  const episodeSection = sections?.episodeSection || getFlexibleSection(markdown, ['episode outline']);
   const headedEpisodeNumbers = episodeSection ? getEpisodeHeadingNumbers(episodeSection) : [];
   const uniqueHeadedEpisodeCount = new Set(headedEpisodeNumbers).size;
   if (uniqueHeadedEpisodeCount > episodeNumbers.length) {
@@ -1300,7 +1310,7 @@ export function validateExtractedTreatment(
     warnings.push(message);
   }
 
-  const branchSection = sections?.branchSection || getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
+  const branchSection = sections?.branchSection || getFlexibleSection(markdown, ['cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
   if (branchSection && /(?:^|\n)\s*(?:#{3,5}\s+|\*\*)Branch\s+[A-Z0-9]/i.test(branchSection) && treatment.branches.length === 0) {
     warnings.push('Treatment branch section contains branch headings, but no branches parsed.');
   }
@@ -1366,9 +1376,9 @@ export function extractTreatmentFromMarkdown(
       },
     };
   }
-  const explicitEpisodeSection = getFlexibleSection(markdown, ['sceneepisode outline', 'scene episode outline', 'episode outline']);
+  const explicitEpisodeSection = getFlexibleSection(markdown, ['episode outline']);
   const episodeSection = explicitEpisodeSection || (resettableTest(HEADED_EPISODE_RE, markdown) ? markdown : '');
-  const branchSection = getFlexibleSection(markdown, ['cross-sceneepisode branches', 'cross-sceneepisode branches and consequence chains', 'cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
+  const branchSection = getFlexibleSection(markdown, ['cross-episode branches', 'cross-episode branches and consequence chains', 'consequence chains', 'branch']);
   const endingSection = getFlexibleSection(markdown, ['alternate endings', 'episode endings', 'endings']);
   const looksLikeTreatment = looksLikeTreatmentMarkdown(markdown);
   let episodes = episodeSection ? parseEpisodeGuidance(episodeSection) : {};
@@ -1382,7 +1392,7 @@ export function extractTreatmentFromMarkdown(
   warnings.push(...validateExtractedTreatment(markdown, { episodes, branches, endings, seasonGuidance }, { episodeSection, branchSection, endingSection }, options?.strictValidation ?? false));
   const promptGuideWithoutEpisodes = isPromptGuideMarkdown(markdown) && Object.keys(episodes).length === 0;
   const markerCount = TREATMENT_MARKERS.reduce((count, marker) => count + (marker.test(markdown) ? 1 : 0), 0);
-  const formatVersion = /storyrpg structure model|episode turns?|sceneepisode|central conflict|episode endings|information ledger/i.test(markdown)
+  const formatVersion = /storyrpg structure model|episode turns?|central conflict|episode endings|information ledger/i.test(markdown)
     ? 'storyrpg-treatment-v2'
     : 'legacy';
   const confidence: ExtractedTreatment['metadata']['confidence'] = markerCount >= 6 && Object.keys(episodes).length > 0
@@ -1434,6 +1444,6 @@ export function looksLikeTreatmentMarkdown(markdown: string): boolean {
   if (hasWorldLocationBrief && hasTreatmentContext) return true;
   return markerCount >= 3 || (
     /story treatment/i.test(markdown)
-    && (resettableTest(EPISODE_HEADING_RE, markdown) || /\*\*(?:Episode|SceneEpisode) promise(?:\s*\([^)]*\))?:\*\*/i.test(markdown))
+    && (resettableTest(EPISODE_HEADING_RE, markdown) || /\*\*Episode promise(?:\s*\([^)]*\))?:\*\*/i.test(markdown))
   );
 }

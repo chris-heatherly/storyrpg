@@ -513,6 +513,27 @@ describe('FinalStoryContractValidator', () => {
     expect(direct.valid).toBe(true);
   });
 
+  it('does not flag grammatical indirect-object second-person encounter phrasing', () => {
+    const encounter = validEncounter();
+    (encounter.phases[0].beats[0].choices[0].outcomes.success as any).narrativeText =
+      'He stops, respecting the boundary you just drew. "I will walk you home," he states softly. The distance gives you room to breathe and think.';
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        scenes: [{
+          id: 'scene-1',
+          name: 'Clean Encounter',
+          startingBeatId: '',
+          beats: [],
+          encounter: encounter as any,
+        }],
+      }],
+    });
+
+    const direct = new EncounterProseIntegrityValidator().validate({ story });
+    expect(direct.valid).toBe(true);
+  });
+
   it('uses the roster protagonist instead of an unsafe brief protagonist for encounter POV repair', async () => {
     const encounter = validEncounter();
     (encounter.phases[0].beats[0] as any).setupText =
@@ -799,6 +820,50 @@ describe('FinalStoryContractValidator', () => {
     const report = await new FinalStoryContractValidator().validate({ story });
 
     expect(report.blockingIssues.filter((i) => i.type === 'broken_navigation')).toEqual([]);
+  });
+
+  it('treats a future-episode scene id as a valid partial-generation handoff', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        number: 2,
+        scenes: [{
+          ...validStory().episodes[0].scenes[0],
+          beats: [{
+            id: 'beat-1',
+            text: 'The post goes live, and the next invitation waits beyond this episode.',
+            nextSceneId: 's3-1-valcescu-club',
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.filter((i) => i.type === 'broken_navigation')).toEqual([]);
+  });
+
+  it('still fails a missing same-episode scene id', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        number: 2,
+        scenes: [{
+          ...validStory().episodes[0].scenes[0],
+          beats: [{
+            id: 'beat-1',
+            text: 'The path names a scene that should exist in this episode.',
+            nextSceneId: 's2-99-missing',
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'broken_navigation' }),
+    ]));
   });
 
   // §4.2 (Treatment-Fidelity Remediation): on a TREATMENT-SOURCED run, a TRULY HOLLOW
@@ -1641,6 +1706,35 @@ describe('FinalStoryContractValidator repeated high-pressure event gate', () => 
 
     expect(report.blockingIssues).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'scene_location_event_mismatch', sceneId: 's1-7' }),
+    ]));
+  });
+
+  it('does not treat referenced blog/payoff locations as a staged location mismatch', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-1',
+        scenes: [{
+          id: 's1-1',
+          name: 'Apartment FaceTime',
+          startingBeatId: 's1-1-b1',
+          leadsTo: [],
+          timeline: { location: "Kylie's Lipscani Apartment", timeOfDay: 'evening' },
+          beats: [{
+            id: 's1-1-b1',
+            text: 'From her Lipscani apartment, Kylie FaceTimes Sadie about Romanian vampires and her new Dating After Dusk post.',
+          } as any, {
+            id: 's1-1-b2',
+            text: 'The blog comments claim an unseen attacker chased someone near Vâlcescu before a bookshop light went dark, but here it is only online noise on her phone.',
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'scene_location_event_mismatch', sceneId: 's1-1' }),
     ]));
   });
 });

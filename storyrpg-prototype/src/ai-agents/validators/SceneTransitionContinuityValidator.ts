@@ -52,7 +52,8 @@ const TRANSITION_MARKERS = new RegExp(
     '\\b(dawn|sunrise|daybreak|morning|noon|midday|afternoon|dusk|sunset|twilight|evening|night|midnight)\\b',
     '\\d{1,2}\\s?(a\\.?m\\.?|p\\.?m\\.?|o.clock)',
     // movement / arrival
-    'you (arrive|reach|step (into|out|onto)|enter|leave|cross|climb|walk|ride|drive|return|make your way|find yourself)',
+    'you (arrive|reach|step (into|out|onto)|enter|leave|leaving|cross|climb|walk|ride|drive|return|make your way|find yourself)',
+    'you (?:do not|don.t) remember leaving', 'one moment\\b[\\s\\S]{0,160}\\bthe next\\b',
     'back (at|in|to)\\b', 'on the way', 'the (walk|ride|drive|journey|road) (to|back|home)',
     'across (town|the city)', 'outside\\b', 'halfway (to|across)',
   ].join('|'),

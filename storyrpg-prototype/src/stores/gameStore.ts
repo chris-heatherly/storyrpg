@@ -704,14 +704,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
           case 'skill': {
             const dir = consequence.change >= 0 ? 'up' : 'down';
+            const skillLabel = consequence.skill.replace(/_/g, ' ');
+            const skillHint = (() => {
+              const source = skillLabel.toLowerCase();
+              if (source.includes('persuasion') || source.includes('charm') || source.includes('deception')) {
+                return dir === 'up' ? 'Your next words come a little steadier.' : 'Your next words come less easily.';
+              }
+              if (source.includes('investigation') || source.includes('perception') || source.includes('insight')) {
+                return dir === 'up' ? 'The next clue feels easier to hold.' : 'The next clue feels harder to hold.';
+              }
+              if (source.includes('stealth') || source.includes('sleight')) {
+                return dir === 'up' ? 'Silence comes a little more naturally.' : 'Silence feels harder to keep.';
+              }
+              if (source.includes('combat') || source.includes('athletics') || source.includes('acrobatics')) {
+                return dir === 'up' ? 'Your body answers a little faster.' : 'Your body remembers the cost.';
+              }
+              if (source.includes('survival') || source.includes('medicine')) {
+                return dir === 'up' ? 'The world gives up a little more of its pattern.' : 'The world feels harder to read.';
+              }
+              return dir === 'up' ? 'The lesson settles in before the moment passes.' : 'The mistake stays with you.';
+            })();
             applied.push({
               type: 'skill',
-              label: consequence.skill.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              label: skillLabel.replace(/\b\w/g, c => c.toUpperCase()),
               direction: dir,
               magnitude: classifyMagnitude(consequence.change),
-              narrativeHint: dir === 'up'
-                ? `You feel more practiced in ${consequence.skill.replace(/_/g, ' ')}.`
-                : `That stumble leaves your ${consequence.skill.replace(/_/g, ' ')} shaken.`,
+              narrativeHint: skillHint,
               scope: 'self',
               linger: true,
             });

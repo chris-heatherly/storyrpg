@@ -802,6 +802,19 @@ describe('ChoiceAuthor relationship consequence repair', () => {
     expect(immediate).not.toMatch(/Relationship with|moving only as far|friend|visible pressure around/i);
   });
 
+  it('keeps default residue hints out of authoring register', () => {
+    const author: any = new ChoiceAuthor(config);
+    const description = author.residueDescriptionForChoice({
+      id: 'c1',
+      text: 'Step toward Victor',
+      consequences: [],
+    });
+
+    expect(description).toContain('Step toward Victor');
+    expect(description).toMatch(/changed access|posture|narrowed options/);
+    expect(description).not.toMatch(/Show immediate residue|authored path|residue from/i);
+  });
+
   it('maps arc bond targets to affection relationship consequences', () => {
     const author: any = new ChoiceAuthor(config);
     const choiceSet = makeChoiceSet({

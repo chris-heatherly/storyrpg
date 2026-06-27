@@ -61,6 +61,19 @@ function isTerminalSceneTarget(id: string | undefined): boolean {
   return !!id && TERMINAL_SCENE_TARGETS.has(id.trim().toLowerCase());
 }
 
+function futureEpisodeNumberFromSceneTarget(id: string | undefined): number | undefined {
+  const match = id?.trim().match(/^(?:s|scene-|episode-)(\d+)(?:[-_]|$)/i);
+  if (!match) return undefined;
+  return Number(match[1]);
+}
+
+function isFutureEpisodeSceneTarget(id: string | undefined, currentEpisodeNumber: number | undefined): boolean {
+  const targetEpisode = futureEpisodeNumberFromSceneTarget(id);
+  return typeof targetEpisode === 'number'
+    && typeof currentEpisodeNumber === 'number'
+    && targetEpisode > currentEpisodeNumber;
+}
+
 function sceneRefFromValidationLocation(location?: string): { episodeNumber?: number; sceneId?: string } {
   if (!location) return {};
   const match = location.match(/(?:^|:)ep(\d+):([^:]+)/i);
@@ -81,7 +94,7 @@ const FIDELITY_FALLBACK_POLICY: Record<string, FidelitySeverityMetadata> = {
   EncounterAnchorContentValidator: { gateId: 'GATE_ENCOUNTER_ANCHOR_CONTENT', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   InformationLedgerScheduleValidator: { gateId: 'GATE_INFORMATION_LEDGER_SCHEDULE', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   SignatureDevicePresenceValidator: { gateId: 'GATE_SIGNATURE_DEVICE_PRESENCE', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
-  SevenPointAnchorConformanceValidator: { findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
+  StoryCircleAnchorConformanceValidator: { findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   SceneTransitionContinuityValidator: { gateId: 'GATE_SCENE_TRANSITION_CONTINUITY', findingClass: 'repairable_contract', sourceKind: 'story' },
   SceneTurnRealizationValidator: { gateId: 'GATE_SCENE_TURN_REALIZATION', findingClass: 'repairable_contract', sourceKind: 'story' },
   RelationshipPacingValidator: { gateId: 'GATE_RELATIONSHIP_PACING', findingClass: 'repairable_contract', sourceKind: 'story' },
@@ -234,7 +247,7 @@ export interface FinalStoryContractInput {
    * Findings emitted by the five §4 treatment-fidelity validators
    * (AuthoredEpisodeConformance / EncounterAnchorContent /
    * InformationLedgerSchedule / SignatureDevicePresence /
-   * SevenPointAnchorConformance). Each carries the emitting `validator` name so
+   * StoryCircleAnchorConformance). Each carries the emitting `validator` name so
    * §4.6 can keep them blocking. Empty/absent ⇒ no fidelity dispatch this run.
    */
   fidelityFindings?: Array<{
@@ -501,7 +514,7 @@ export class FinalStoryContractValidator {
       }
     }
 
-    // Treatment event ledger: seven-point treatment contracts are authoritative
+    // Treatment event ledger: Story Circle treatment contracts are authoritative
     // event atoms. A scene cannot satisfy a must-dramatize hook/midpoint/climax
     // by mentioning it as memory, later recap, or metadata; the event has to be
     // staged in reader-facing prose in its assigned scene.
@@ -1234,9 +1247,9 @@ export class FinalStoryContractValidator {
       })
       .filter((entry) =>
         entry.textCount > 0
-        && entry.signature.pressureActions.size > 0
-        && !entry.signature.isSetupOnly
-        && !entry.signature.isReferenceOnly
+        && entry.eventOnlySignature.pressureActions.size > 0
+        && !entry.eventOnlySignature.isSetupOnly
+        && !entry.eventOnlySignature.isReferenceOnly
       );
 
     for (const entry of staged) {
@@ -1331,7 +1344,12 @@ export class FinalStoryContractValidator {
           beatId: beat.id,
         });
       }
-      if (beat.nextSceneId && !sceneMap.has(beat.nextSceneId) && !isTerminalSceneTarget(beat.nextSceneId)) {
+      if (
+        beat.nextSceneId
+        && !sceneMap.has(beat.nextSceneId)
+        && !isTerminalSceneTarget(beat.nextSceneId)
+        && !isFutureEpisodeSceneTarget(beat.nextSceneId, episode.number)
+      ) {
         issues.push({
           type: 'broken_navigation',
           severity: 'error',
@@ -1354,7 +1372,12 @@ export class FinalStoryContractValidator {
             beatId: beat.id,
           });
         }
-        if (choice.nextSceneId && !sceneMap.has(choice.nextSceneId) && !isTerminalSceneTarget(choice.nextSceneId)) {
+        if (
+          choice.nextSceneId
+          && !sceneMap.has(choice.nextSceneId)
+          && !isTerminalSceneTarget(choice.nextSceneId)
+          && !isFutureEpisodeSceneTarget(choice.nextSceneId, episode.number)
+        ) {
           issues.push({
             type: 'broken_navigation',
             severity: 'error',

@@ -135,6 +135,60 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
+  it('downgrades settled Dusk Club membership into a provisional joke', () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    scene.beats[0].text = 'Stela presses rose quartz into your palm, and the Dusk Club is now three.';
+    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    expect(initial.issues.some((issue) => issue.message.includes('settled group membership'))).toBe(true);
+
+    const result = buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: initial.issues.map((issue) => ({
+        validator: 'RelationshipPacingValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: issue.severity,
+        message: issue.message,
+        suggestion: issue.suggestion,
+      })),
+    });
+
+    expect(result.changed).toBe(true);
+    expect(scene.beats[0].text).toContain('joke about calling it the Dusk Club');
+    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+  });
+
+  it('downgrades unearned relationship labels in scene headers', () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    scene.name = 'Friend debrief';
+    scene.title = 'Friend debrief';
+    scene.beats[0].text = 'Mika and Stela compare the night like a dare, not a settled bond.';
+    scene.beats[0].textVariants = [];
+    scene.beats[0].choices = [];
+    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    expect(initial.valid).toBe(false);
+    expect(initial.issues.some((issue) => issue.message.includes('high relationship stage'))).toBe(true);
+
+    const result = buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: initial.issues.map((issue) => ({
+        validator: 'RelationshipPacingValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: issue.severity,
+        message: issue.message,
+        suggestion: issue.suggestion,
+      })),
+    });
+
+    expect(result.changed).toBe(true);
+    expect(scene.name).toBe('ally debrief');
+    expect(scene.title).toBe('ally debrief');
+    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+  });
+
   it('no-ops when relationship pacing is not blocking', () => {
     const story = makeStory();
     const before = JSON.stringify(story);

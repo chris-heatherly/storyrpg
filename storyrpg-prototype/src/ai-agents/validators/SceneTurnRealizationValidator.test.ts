@@ -4,7 +4,7 @@ import type {
   ArcPressureTreatmentContract,
   SceneTurnContract,
   SeasonScenePlan,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
 } from '../../types/scenePlan';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 
@@ -70,9 +70,9 @@ function plan(contract = turnContract()): SeasonScenePlan {
   };
 }
 
-function sevenPointContract(overrides: Partial<SevenPointBeatRealizationContract> = {}): SevenPointBeatRealizationContract {
+function storyCircleContract(overrides: Partial<StoryCircleBeatRealizationContract> = {}): StoryCircleBeatRealizationContract {
   return {
-    id: 'seven-point-midpoint-mirror',
+    id: 'Story Circle-midpoint-mirror',
     beat: 'midpoint',
     sourceText: 'Kylie sees herself alone in Victor mirror; Stela confesses two truths; the genre changes; the blog skips a day.',
     targetEpisodeNumber: 1,
@@ -104,6 +104,55 @@ function arcPressureContract(overrides: Partial<ArcPressureTreatmentContract> = 
 }
 
 const validator = new SceneTurnRealizationValidator();
+const cismigiuTurn =
+  'Walking home through Cișmigiu at 1am, Kylie is pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks her home, kisses her hand at the threshold, declines to come in, and vanishes.';
+
+function cismigiuEncounter(extraText = '') {
+  return {
+    phases: [{
+      id: 'phase-1',
+      name: 'Cișmigiu',
+      description: cismigiuTurn,
+      situationImage: '',
+      beats: [{
+        id: 'beat-1',
+        phase: 'setup',
+        name: 'Willow',
+        setupText: 'At 1am in Cișmigiu, a shadow pins you against the willow.',
+        choices: [{
+          id: 'fight',
+          text: 'Fight for air.',
+          approach: 'aggressive',
+          outcomes: {
+            success: {
+              tier: 'success',
+              goalTicks: 2,
+              threatTicks: 0,
+              narrativeText: `A second figure in a charcoal suit drops the attacker and walks you home. ${extraText}`,
+            },
+            complicated: {
+              tier: 'complicated',
+              goalTicks: 1,
+              threatTicks: 1,
+              narrativeText: 'The shadow releases you.',
+            },
+            failure: {
+              tier: 'failure',
+              goalTicks: 0,
+              threatTicks: 2,
+              narrativeText: 'The shadow keeps its grip.',
+            },
+          },
+        }],
+      }],
+    }],
+    storylets: {
+      victory: {
+        beats: [{ id: 'victory-b1', text: extraText }],
+      },
+    },
+  };
+}
 
 describe('SceneTurnRealizationValidator', () => {
   it('fails when a treatment turn is mentioned but has no aftermath or handoff', () => {
@@ -190,7 +239,7 @@ describe('SceneTurnRealizationValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
-  it('keeps encounter scene content scoped to encounter validators', () => {
+  it('fails encounter scenes that do not realize their own central turn', () => {
     const result = validator.validate({
       story: story([
         scene({
@@ -203,10 +252,46 @@ describe('SceneTurnRealizationValidator', () => {
       treatmentSourced: true,
     });
 
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].severity).toBe('error');
+    expect(result.issues[0].message).toContain('Encounter scene "enc-1" does not dramatize its central turn');
+  });
+
+  it('passes encounter scenes when the central turn lands in nested outcome and storylet prose', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 'treatment-enc-1-1',
+          encounter: cismigiuEncounter('At the threshold, he kisses your hand, declines to come in, and vanishes into the fog.') as never,
+          turnContract: turnContract({ source: 'encounter', centralTurn: cismigiuTurn }),
+          beats: [],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
     expect(result.issues).toEqual([]);
   });
 
-  it('downgrades non-treatment craft misses to warnings when they are not structurally risky', () => {
+  it('fails encounter scenes when nested prose still skips the threshold tail', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 'treatment-enc-1-1',
+          encounter: cismigiuEncounter() as never,
+          turnContract: turnContract({ source: 'encounter', centralTurn: cismigiuTurn }),
+          beats: [],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].message).toContain('does not dramatize its central turn');
+  });
+
+  it('fails planner-source scene-turn misses because planner turns are load-bearing scene contracts', () => {
     const result = validator.validate({
       story: story([
         scene({
@@ -218,12 +303,52 @@ describe('SceneTurnRealizationValidator', () => {
       treatmentSourced: false,
     });
 
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].severity).toBe('error');
+  });
+
+  it('keeps choice-source misses as warnings when they are not structurally risky', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({ source: 'choice', centralTurn: 'Kylie chooses to laugh off the warning.' }),
+          beats: [beat('b1', 'Kylie notices the club has a side entrance.')],
+        }),
+      ]),
+      treatmentSourced: false,
+    });
+
     expect(result.valid).toBe(true);
     expect(result.issues[0].severity).toBe('warning');
   });
 
-  it('fails when a scene carries a seven-point beat contract but drops the authored event', () => {
-    const zp = sevenPointContract();
+  it('fails generic planner turns that survive into final story metadata', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            source: 'planner',
+            centralTurn: 'Let the fallout settle into the next pressure: rising pressure.',
+          }),
+          beats: [
+            beat('b1', 'Afterward, Kylie locks the door and studies the key card.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ]),
+      treatmentSourced: false,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].severity).toBe('error');
+    expect(result.issues[0].message).toContain('generic planner central turn');
+  });
+
+  it('fails when a scene carries a Story Circle beat contract but drops the authored event', () => {
+    const zp = storyCircleContract();
     const result = validator.validate({
       story: story([
         scene({
@@ -232,7 +357,7 @@ describe('SceneTurnRealizationValidator', () => {
             centralTurn: 'Kylie realizes Victor is dangerous.',
             turnEvent: 'Kylie realizes Victor is dangerous.',
           }),
-          sevenPointBeatContracts: [zp],
+          storyCircleBeatContracts: [zp],
           beats: [
             beat('b1', 'Kylie arrives at the apartment still thinking about Victor.', {
               sequenceIntent: { beatRole: 'setup' },
@@ -250,14 +375,14 @@ describe('SceneTurnRealizationValidator', () => {
         ...plan(),
         scenes: [{
           ...plan().scenes[0],
-          sevenPointBeatContracts: [zp],
+          storyCircleBeatContracts: [zp],
         }],
       },
       treatmentSourced: true,
     });
 
     expect(result.valid).toBe(false);
-    expect(result.issues.some((issue) => issue.message.includes('seven-point midpoint'))).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('Story Circle midpoint'))).toBe(true);
   });
 
   it('fails when a scene carries an arc pressure contract but drops the authored event', () => {
@@ -296,5 +421,111 @@ describe('SceneTurnRealizationValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.some((issue) => issue.message.includes('arc pressure'))).toBe(true);
+  });
+
+  it('ignores arc pressure contracts that target a different episode or scene', () => {
+    const wrongEpisode = arcPressureContract({
+      targetEpisodeNumbers: [2],
+      targetSceneIds: ['s2-1'],
+      sourceText: 'The glamorous new life is underneath a funnel.',
+      eventAtoms: ['glamorous new life underneath a funnel'],
+    });
+    const broadQuestion = arcPressureContract({
+      id: 'arc-pressure-champagne-question',
+      contractKind: 'arc_question',
+      fieldName: 'Arc dramatic question',
+      targetEpisodeNumbers: [1],
+      targetSceneIds: ['s1-1'],
+      sourceText: 'Can Kylie start over in a city that does not know her ex name?',
+      eventAtoms: ['Kylie start over'],
+    });
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract(),
+          arcPressureContracts: [wrongEpisode, broadQuestion],
+          beats: [
+            beat('b1', 'Outside Vâlcescu Club, Mika blocks the red rope with one boot.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Mika adopts Kylie at the door of Vâlcescu Club and hands her a key card to the side entrance.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+            beat('b3', 'Afterward, Mika tucks the card into Kylie’s palm and walks her through the side door before the bouncer can object.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(),
+        scenes: [{
+          ...plan().scenes[0],
+          arcPressureContracts: [wrongEpisode, broadQuestion],
+        }],
+      },
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('arc pressure'))).toBe(false);
+  });
+
+  it('does not merge stale planned arc pressure when the generated scene has explicit current contracts', () => {
+    const midpoint = arcPressureContract({
+      id: 'arc-pressure-midpoint',
+      contractKind: 'arc_midpoint_recontextualization',
+      fieldName: 'Midpoint recontextualization',
+      targetEpisodeNumbers: [2],
+      targetSceneIds: ['s2-1'],
+      sourceText: 'The club is a lure and the glamorous new life is a funnel.',
+      eventAtoms: ['club is a lure'],
+    });
+    const staleLateCrisis = arcPressureContract({
+      id: 'arc-pressure-late-crisis',
+      contractKind: 'arc_late_crisis',
+      fieldName: 'Late-arc crisis / all-is-lost beat',
+      targetEpisodeNumbers: [2],
+      targetSceneIds: ['s2-1'],
+      sourceText: 'At the Equinox weekend the first crack between her voice and his approval appears.',
+      eventAtoms: ['Equinox weekend first crack'],
+    });
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's2-1',
+          turnContract: turnContract({
+            centralTurn: 'Kylie realizes Victor is dangerous.',
+            turnEvent: 'Kylie realizes Victor is dangerous.',
+          }),
+          arcPressureContracts: [midpoint],
+          beats: [
+            beat('b1', 'The blog dashboard climbs while Kylie studies the invitation to Vâlcescu Club.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Kylie realizes Victor is dangerous and that the club is a lure inside a glamorous funnel.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+            beat('b3', 'Afterward, she closes the laptop but keeps the invitation open on her phone.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ], 2),
+      scenePlan: {
+        ...plan(2),
+        scenes: [{
+          ...plan(2).scenes[0],
+          id: 's2-1',
+          episodeNumber: 2,
+          arcPressureContracts: [midpoint, staleLateCrisis],
+        }],
+      },
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('Equinox weekend'))).toBe(false);
   });
 });

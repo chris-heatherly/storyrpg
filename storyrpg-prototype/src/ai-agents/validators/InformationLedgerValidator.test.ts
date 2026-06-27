@@ -36,9 +36,7 @@ function plan(overrides: Partial<SeasonPlan> = {}): SeasonPlan {
 
 describe('InformationLedgerValidator', () => {
   it('accepts a valid standard-season information ledger with 3-4 episode runway', () => {
-    const result = new InformationLedgerValidator().validate(plan(), {
-      episodeStructureMode: 'standard',
-    });
+    const result = new InformationLedgerValidator().validate(plan());
 
     expect(result.valid).toBe(true);
     expect(result.metrics.entryCount).toBe(1);
@@ -65,34 +63,16 @@ describe('InformationLedgerValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('hard cap is 3'))).toBe(true);
   });
 
-  it('requires 5-8 sceneEpisodes of runway for sceneEpisode payoffs', () => {
-    const result = new InformationLedgerValidator().validate(plan({
-      totalEpisodes: 9,
-      episodes: Array.from({ length: 9 }, (_, index) => ({ episodeNumber: index + 1 })) as any,
-      informationLedger: [{
-        ...plan().informationLedger![0],
-        plannedPayoffEpisode: 7,
-        setupTouchEpisodes: [1, 3],
-      }],
-    }), {
-      episodeStructureMode: 'sceneEpisodes',
-    });
-
-    expect(result.valid).toBe(true);
-  });
-
-  it('rejects regular-episode payoffs outside the 3-4 episode runway', () => {
+  it('rejects episode payoffs outside the 3-4 episode runway', () => {
     const result = new InformationLedgerValidator().validate(plan({
       informationLedger: [{
         ...plan().informationLedger![0],
         plannedPayoffEpisode: 6,
         setupTouchEpisodes: [1],
       }],
-    }), {
-      episodeStructureMode: 'standard',
-    });
+    }));
 
     expect(result.valid).toBe(false);
-    expect(result.issues.some((issue) => issue.message.includes('required runway is 3-4 regular episodes'))).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('required runway is 3-4 episodes'))).toBe(true);
   });
 });

@@ -14,6 +14,7 @@ import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { IntensityDistributionValidator } from './IntensityDistributionValidator';
 import { PropIntroductionValidator } from './PropIntroductionValidator';
 import { ChoiceCoverageValidator } from './ChoiceCoverageValidator';
+import { validatorsForLifecycle } from './validatorRegistry';
 
 export type NarrativeDiagnosticStatus = 'passed' | 'warning' | 'failed' | 'skipped';
 
@@ -86,118 +87,138 @@ export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): Narra
   const sceneContents = input.sceneContents ?? [];
 
   const threadLedger = input.threadLedger ?? deriveObservedThreadLedger(sceneContents);
-  if (threadLedger && sceneContents.length > 0) {
-    checks.push(fromBaseResult(
-      'setup_payoff',
-      new SetupPayoffValidator().validate({
-        ledger: threadLedger,
-        sceneContents,
-        currentEpisode: input.episodeNumber,
-      }),
-    ));
-  } else {
-    checks.push(skipped('setup_payoff', 'No ThreadPlanner ledger or beat-level thread markers were available.'));
-  }
+  for (const entry of validatorsForLifecycle('narrative-diagnostics')) {
+    switch (entry.validator) {
+      case 'SetupPayoffValidator':
+        if (threadLedger && sceneContents.length > 0) {
+          checks.push(fromBaseResult(
+            'setup_payoff',
+            new SetupPayoffValidator().validate({
+              ledger: threadLedger,
+              sceneContents,
+              currentEpisode: input.episodeNumber,
+            }),
+          ));
+        } else {
+          checks.push(skipped('setup_payoff', 'No ThreadPlanner ledger or beat-level thread markers were available.'));
+        }
+        break;
 
-  if (sceneContents.length > 0) {
-    checks.push(fromBaseResult(
-      'twist_quality',
-      new TwistQualityValidator().validate({
-        sceneContents,
-        twistPlan: input.twistPlan,
-      }),
-    ));
-  } else {
-    checks.push(skipped('twist_quality', 'No generated scene contents were available.'));
-  }
+      case 'TwistQualityValidator':
+        if (sceneContents.length > 0) {
+          checks.push(fromBaseResult(
+            'twist_quality',
+            new TwistQualityValidator().validate({
+              sceneContents,
+              twistPlan: input.twistPlan,
+            }),
+          ));
+        } else {
+          checks.push(skipped('twist_quality', 'No generated scene contents were available.'));
+        }
+        break;
 
-  if (input.arcTargets) {
-    checks.push(fromBaseResult(
-      'arc_delta',
-      new ArcDeltaValidator().validate({
-        targets: input.arcTargets,
-        startIdentity: input.startIdentity,
-        endIdentity: input.endIdentity,
-        relationshipDeltas: input.relationshipDeltas,
-      }),
-    ));
-  } else {
-    checks.push(skipped('arc_delta', 'No CharacterArcTracker targets were available.'));
-  }
+      case 'ArcDeltaValidator':
+        if (input.arcTargets) {
+          checks.push(fromBaseResult(
+            'arc_delta',
+            new ArcDeltaValidator().validate({
+              targets: input.arcTargets,
+              startIdentity: input.startIdentity,
+              endIdentity: input.endIdentity,
+              relationshipDeltas: input.relationshipDeltas,
+            }),
+          ));
+        } else {
+          checks.push(skipped('arc_delta', 'No CharacterArcTracker targets were available.'));
+        }
+        break;
 
-  if (input.episode) {
-    checks.push(fromBaseResult(
-      'divergence',
-      new DivergenceValidator().validate({ episode: input.episode }),
-    ));
-  } else {
-    checks.push(skipped('divergence', 'Episode assembly had not completed yet.'));
-  }
+      case 'DivergenceValidator':
+        if (input.episode) {
+          checks.push(fromBaseResult(
+            'divergence',
+            new DivergenceValidator().validate({ episode: input.episode }),
+          ));
+        } else {
+          checks.push(skipped('divergence', 'Episode assembly had not completed yet.'));
+        }
+        break;
 
-  if (input.callbackLedger && input.episodeNumber !== undefined) {
-    checks.push(fromReportResult(
-      'callback_coverage',
-      new CallbackCoverageValidator().validate({
-        ledger: input.callbackLedger,
-        currentEpisode: input.episodeNumber,
-        totalEpisodes: input.totalEpisodes ?? input.episodeNumber,
-      }),
-    ));
-  } else {
-    checks.push(skipped('callback_coverage', 'No serialized CallbackLedger was available.'));
-  }
+      case 'CallbackCoverageValidator':
+        if (input.callbackLedger && input.episodeNumber !== undefined) {
+          checks.push(fromReportResult(
+            'callback_coverage',
+            new CallbackCoverageValidator().validate({
+              ledger: input.callbackLedger,
+              currentEpisode: input.episodeNumber,
+              totalEpisodes: input.totalEpisodes ?? input.episodeNumber,
+            }),
+          ));
+        } else {
+          checks.push(skipped('callback_coverage', 'No serialized CallbackLedger was available.'));
+        }
+        break;
 
-  const mappedIssues = collectMappableIssues(checks, input.baseIssues ?? []);
-  if (sceneContents.length > 0 || mappedIssues.length > 0) {
-    checks.push(fromBaseResult(
-      'failure_modes',
-      new NarrativeFailureModeValidator().validate({
-        sceneContents,
-        baseIssues: mappedIssues,
-      }),
-    ));
-  } else {
-    checks.push(skipped('failure_modes', 'No scene contents or prior validation issues were available.'));
-  }
+      case 'NarrativeFailureModeValidator': {
+        const mappedIssues = collectMappableIssues(checks, input.baseIssues ?? []);
+        if (sceneContents.length > 0 || mappedIssues.length > 0) {
+          checks.push(fromBaseResult(
+            'failure_modes',
+            new NarrativeFailureModeValidator().validate({
+              sceneContents,
+              baseIssues: mappedIssues,
+            }),
+          ));
+        } else {
+          checks.push(skipped('failure_modes', 'No scene contents or prior validation issues were available.'));
+        }
+        break;
+      }
 
-  // E5: intensity-tier distribution (needs only scene beats).
-  if (sceneContents.length > 0) {
-    checks.push(fromBaseResult(
-      'intensity_distribution',
-      new IntensityDistributionValidator().validate({ sceneContents }),
-    ));
-  } else {
-    checks.push(skipped('intensity_distribution', 'No generated scene contents were available.'));
-  }
+      case 'IntensityDistributionValidator':
+        if (sceneContents.length > 0) {
+          checks.push(fromBaseResult(
+            'intensity_distribution',
+            new IntensityDistributionValidator().validate({ sceneContents }),
+          ));
+        } else {
+          checks.push(skipped('intensity_distribution', 'No generated scene contents were available.'));
+        }
+        break;
 
-  // #26C: prop/cast-introduction (needs the declared entity set + per-scene references).
-  if (input.knownEntityIds && input.knownEntityIds.length > 0 && sceneContents.length > 0) {
-    checks.push(fromBaseResult(
-      'prop_introduction',
-      new PropIntroductionValidator().validate({
-        knownEntityIds: input.knownEntityIds,
-        sceneContents: sceneContents.map((sc) => ({
-          sceneId: sc.sceneId,
-          sceneName: sc.sceneName,
-          referencedEntityIds: sc.charactersInvolved ?? [],
-        })),
-      }),
-    ));
-  } else {
-    checks.push(skipped('prop_introduction', 'No declared entity set (cast/prop bible) was available.'));
-  }
+      case 'PropIntroductionValidator':
+        if (input.knownEntityIds && input.knownEntityIds.length > 0 && sceneContents.length > 0) {
+          checks.push(fromBaseResult(
+            'prop_introduction',
+            new PropIntroductionValidator().validate({
+              knownEntityIds: input.knownEntityIds,
+              sceneContents: sceneContents.map((sc) => ({
+                sceneId: sc.sceneId,
+                sceneName: sc.sceneName,
+                referencedEntityIds: sc.charactersInvolved ?? [],
+              })),
+            }),
+          ));
+        } else {
+          checks.push(skipped('prop_introduction', 'No declared entity set (cast/prop bible) was available.'));
+        }
+        break;
 
-  // D4: choice coverage (planned choice scenes vs authored).
-  if (input.choicePlannedSceneIds && input.choicePlannedSceneIds.length > 0) {
-    checks.push(fromBaseResult(
-      'choice_coverage',
-      new ChoiceCoverageValidator().validate({
-        plannedChoiceSceneIds: input.choicePlannedSceneIds,
-        authoredChoiceSceneIds: input.choiceAuthoredSceneIds ?? [],
-      }),
-    ));
-  } else {
-    checks.push(skipped('choice_coverage', 'No blueprint choice-point plan was available.'));
+      case 'ChoiceCoverageValidator':
+        if (input.choicePlannedSceneIds && input.choicePlannedSceneIds.length > 0) {
+          checks.push(fromBaseResult(
+            'choice_coverage',
+            new ChoiceCoverageValidator().validate({
+              plannedChoiceSceneIds: input.choicePlannedSceneIds,
+              authoredChoiceSceneIds: input.choiceAuthoredSceneIds ?? [],
+            }),
+          ));
+        } else {
+          checks.push(skipped('choice_coverage', 'No blueprint choice-point plan was available.'));
+        }
+        break;
+    }
   }
 
   const active = checks.filter((check) => check.status !== 'skipped');

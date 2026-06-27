@@ -94,6 +94,7 @@ import { ImageGenerationService } from '../ai-agents/services/imageGenerationSer
 import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
 import { StyleSetupSection } from './generator/StyleSetupSection';
 import { runStoryAnalysis, runStoryGeneration } from '../ai-agents/services/storyGenerationService';
+import { buildGeneratorCreativeBrief } from './generator/buildCreativeBrief';
 
 // Import the real pipeline
 import {
@@ -108,7 +109,7 @@ import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, D
 import { DEFAULT_LLM_MODELS, STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
 import { ART_STYLE_PRESETS } from '../ai-agents/config/artStylePresets';
 import { composeCanonicalStyleString } from '../ai-agents/images/artStyleProfile';
-import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
+import { EndingMode, SourceMaterialAnalysis, STORY_CIRCLE_BEATS, StoryEndingTarget } from '../types/sourceAnalysis';
 import type { MediaSetupTarget, Story } from '../types';
 import {
   storyToTypeScript,
@@ -217,6 +218,16 @@ const SAVED_ART_STYLES_KEY = '@storyrpg_saved_art_styles';
 const RECENT_ART_STYLES_KEY = '@storyrpg_recent_art_styles';
 const MAX_SAVED_ART_STYLES = 12;
 const MAX_RECENT_ART_STYLES = 8;
+const STORY_CIRCLE_LABELS: Record<string, string> = {
+  you: 'YOU',
+  need: 'NEED',
+  go: 'GO',
+  search: 'SEARCH',
+  find: 'FIND',
+  take: 'TAKE',
+  return: 'RETURN',
+  change: 'CHANGE',
+};
 
 const buildSavedArtStyleId = (): string => `style-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -907,14 +918,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   });
 
   const buildAnalysisPreferences = () => ({
-    targetScenesPerEpisode: generationSettings.episodeStructureMode === 'sceneEpisodes'
-      ? generationSettings.sceneEpisodeMaxScenes
-      : 6,
+    targetScenesPerEpisode: 6,
     targetChoicesPerEpisode: 4,
-    episodeStructureMode: generationSettings.episodeStructureMode,
-    sceneEpisodeEncounterCadence: generationSettings.sceneEpisodeEncounterCadence,
-    sceneEpisodeBranchMinEpisodes: generationSettings.sceneEpisodeBranchMinEpisodes,
-    sceneEpisodeBranchMaxEpisodes: generationSettings.sceneEpisodeBranchMaxEpisodes,
     pacing: 'moderate' as const,
   });
   const isRecoverableHistoryJob = (job?: GenerationJob) => job?.status === 'failed' || job?.status === 'cancelled';
@@ -1517,76 +1522,14 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     handleEvent,
   });
 
-  const buildCreativeBrief = (): FullCreativeBrief | null => {
-    let brief: FullCreativeBrief | null = null;
-    
-    if (documentBrief) {
-      brief = { ...documentBrief, story: { ...documentBrief.story, title: customStoryTitle || documentBrief.story.title }, userPrompt: userPrompt.trim() || undefined };
-    } else if (userPrompt.trim()) {
-      brief = {
-        story: { title: customStoryTitle || 'New Story', genre: 'Action', synopsis: userPrompt.substring(0, 100), tone: 'Dramatic', themes: [] },
-        world: { premise: '', timePeriod: '', technologyLevel: '', keyLocations: [] },
-        protagonist: { id: 'p1', name: 'Hero', pronouns: 'he/him', description: '', role: '' },
-        npcs: [],
-        episode: { number: 1, title: 'Episode 1', synopsis: '', startingLocation: '' },
-        userPrompt: userPrompt.trim()
-      } as FullCreativeBrief;
-    } else if (sourceAnalysis) {
-      const firstEpisode = sourceAnalysis.episodeBreakdown?.[0];
-      brief = {
-        story: {
-          title: customStoryTitle || sourceAnalysis.sourceTitle || 'New Story',
-          genre: sourceAnalysis.genre || 'Adventure',
-          synopsis: sourceAnalysis.anchors?.goal || sourceAnalysis.storyArcs?.[0]?.description || sourceAnalysis.sourceTitle || '',
-          tone: sourceAnalysis.tone || 'Dramatic',
-          themes: sourceAnalysis.themes || [],
-        },
-        world: {
-          premise: sourceAnalysis.setting?.worldDetails || sourceAnalysis.setting?.location || '',
-          timePeriod: sourceAnalysis.setting?.timePeriod || '',
-          technologyLevel: '',
-          keyLocations: (sourceAnalysis.keyLocations || []).map((location) => ({
-            id: location.id,
-            name: location.name,
-            type: 'location',
-            description: location.description,
-            importance: location.importance,
-          })),
-        },
-        protagonist: {
-          id: sourceAnalysis.protagonist?.id || 'protagonist',
-          name: sourceAnalysis.protagonist?.name || 'Hero',
-          pronouns: 'they/them',
-          description: sourceAnalysis.protagonist?.description || '',
-          role: 'protagonist',
-        },
-        npcs: (sourceAnalysis.majorCharacters || [])
-          .filter((character) => character.id !== sourceAnalysis.protagonist?.id)
-          .map((character) => ({
-            id: character.id,
-            name: character.name,
-            role: character.role === 'antagonist' ? 'antagonist' : character.role === 'neutral' ? 'neutral' : 'ally',
-            description: character.description,
-            importance: character.importance === 'core' ? 'major' : character.importance === 'supporting' ? 'supporting' : 'minor',
-          })),
-        episode: {
-          number: firstEpisode?.episodeNumber || 1,
-          title: firstEpisode?.title || 'Episode 1',
-          synopsis: firstEpisode?.synopsis || '',
-          startingLocation: sourceAnalysis.keyLocations?.[0]?.id || '',
-        },
-      } as FullCreativeBrief;
-    }
-    
-    // Attach season plan to brief if available - this provides encounter and branching directives
-    if (brief && seasonPlan) {
-      brief.seasonPlan = seasonPlan;
-    }
-
-    if (brief && sourceAnalysis) {
-      brief.endingMode = sourceAnalysis.resolvedEndingMode;
-      brief.endingTargets = sourceAnalysis.resolvedEndings;
-    }
+  const buildCreativeBrief = (sourceAnalysisOverride: SourceMaterialAnalysis | null = sourceAnalysis): FullCreativeBrief | null => {
+    const brief = buildGeneratorCreativeBrief({
+      documentBrief,
+      sourceAnalysis: sourceAnalysisOverride,
+      seasonPlan,
+      customStoryTitle,
+      userPrompt,
+    });
 
     if (brief && Object.keys(characterReferenceUploads).length > 0) {
       brief.characterReferenceImages = Object.fromEntries(
@@ -1985,7 +1928,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       );
       return;
     }
-    const brief = buildCreativeBrief();
+    const updatedSourceAnalysis = sourceAnalysis ? { ...sourceAnalysis, sourceTitle: customStoryTitle || sourceAnalysis.sourceTitle } : null;
+    const brief = buildCreativeBrief(updatedSourceAnalysis);
     if (!brief) { Alert.alert('Error', 'Failed to build story brief.'); return; }
     const proxyAvailable = await ensureProxyAvailable();
     if (!proxyAvailable) {
@@ -2009,8 +1953,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     seenManifestIdsRef.current.clear();
     seenImageJobIdsRef.current.clear();
     generationStartedAtRef.current = Date.now();
-    const updatedSourceAnalysis = sourceAnalysis ? { ...sourceAnalysis, sourceTitle: customStoryTitle || sourceAnalysis.sourceTitle } : null;
-
     if (USE_SERVER_WORKER) {
       try {
         const config = createPipelineConfig();
@@ -2530,7 +2472,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   };
 
   const resetGenerator = () => {
-    setState('config'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null); setCustomStoryTitle('');
+    setState('config'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null);
     setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
     setCurrentJobId(null); setActiveJobId(null);
     setSeasonPlan(null); setSourceAnalysis(null); setAnalysisResult(null); setSelectedEpisodes([]); setSelectedEpisodeCount(1);
@@ -2673,6 +2615,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
 
     const resumeFrom = typeof failure.resumeFromStepId === 'string' ? failure.resumeFromStepId : 'last durable checkpoint';
     const blockedAction = typeof failure.failureArtifactKey === 'string' ? failure.failureArtifactKey : 'credit-spending recovery';
+    const resumeUnavailable = resumePlan?.canResume === false;
 
     return (
       <View style={styles.failureWorkspaceCard}>
@@ -2794,12 +2737,14 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
 
         <View style={styles.failureActions}>
           <TouchableOpacity
-            style={[styles.executeButton, failureWorkspace.resuming && { opacity: 0.6 }]}
+            style={[styles.executeButton, (failureWorkspace.resuming || resumeUnavailable) && { opacity: 0.6 }]}
             onPress={resumeFailedJob}
-            disabled={failureWorkspace.resuming}
+            disabled={failureWorkspace.resuming || resumeUnavailable}
           >
             <Text style={styles.executeButtonText}>
-              {failureWorkspace.resuming
+              {resumeUnavailable
+                ? 'RESUME UNAVAILABLE'
+                : failureWorkspace.resuming
                 ? 'RESUMING...'
                 : failureWorkspace.resumePlan?.strategy === 'scene'
                   ? `RESUME AT ${String(failureWorkspace.resumePlan.resumeFromUnit || 'FAILED SCENE').toUpperCase()}`
@@ -2824,12 +2769,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       : imageProvider === 'stable-diffusion'
         ? 'Stable Diffusion'
         : 'Atlas Cloud';
-  const narrativeStructureLabel = generationSettings.episodeStructureMode === 'sceneEpisodes'
-    ? 'scene-length episodes'
-    : 'standard episodes';
-  const narrativeSceneLabel = generationSettings.episodeStructureMode === 'sceneEpisodes'
-    ? `${generationSettings.sceneEpisodeMaxScenes} scene`
-    : `${generationSettings.targetSceneCount} scenes`;
+  const narrativeStructureLabel = 'standard episodes';
+  const narrativeSceneLabel = `${generationSettings.targetSceneCount} scenes`;
   const storySummaryLines = [
     `Source: ${hasSourceInput ? 'ready' : 'missing'}${customStoryTitle.trim() ? ` • title "${customStoryTitle.trim()}"` : ''}`,
     `Writing: ${llmProvider.toUpperCase()} • ${llmModel}`,
@@ -3214,28 +3155,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
 
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>NARRATIVE SETTINGS</Text>
-                  <TouchableOpacity
-                    style={styles.toggleActionRow}
-                    onPress={() => updateGenerationSetting(
-                      'episodeStructureMode',
-                      generationSettings.episodeStructureMode === 'sceneEpisodes' ? 'standard' : 'sceneEpisodes',
-                    )}
-                    accessibilityRole="switch"
-                    accessibilityState={{ checked: generationSettings.episodeStructureMode === 'sceneEpisodes' }}
-                    accessibilityLabel="Toggle scene-length episodes"
-                  >
-                    <View style={styles.toggleActionTextBlock}>
-                      <Text style={styles.configLabel}>SCENE-LENGTH EPISODES</Text>
-                      <Text style={styles.toggleActionHint}>
-                        {generationSettings.episodeStructureMode === 'sceneEpisodes'
-                          ? 'One dramatic scene per episode, with route branches across episodes.'
-                          : 'Use standard multi-scene episodes for each generated chapter.'}
-                      </Text>
-                    </View>
-                    <View style={[styles.booleanToggle, generationSettings.episodeStructureMode === 'sceneEpisodes' && styles.booleanToggleActive]}>
-                      <View style={[styles.booleanToggleKnob, generationSettings.episodeStructureMode === 'sceneEpisodes' && styles.booleanToggleKnobActive]} />
-                    </View>
-                  </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.inlineDisclosure}
                     onPress={() => setShowAdvancedSettings(true)}
@@ -4355,23 +4274,18 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   </View>
                 )}
 
-                {/* 7-Point Structure */}
-                {sourceAnalysis?.sevenPoint && (
+                {/* Story Circle Structure */}
+                {sourceAnalysis?.storyCircle && (
                   <View style={styles.analysisCard}>
                     <View style={styles.analysisCardHeader}>
                       <Layers size={14} color={TERMINAL.colors.cyan} />
-                      <Text style={styles.analysisCardTitle}>7-POINT STRUCTURE</Text>
+                      <Text style={styles.analysisCardTitle}>STORY CIRCLE</Text>
                     </View>
                     {(
-                      [
-                        ['HOOK', sourceAnalysis.sevenPoint.hook],
-                        ['PLOT TURN 1', sourceAnalysis.sevenPoint.plotTurn1],
-                        ['PINCH 1', sourceAnalysis.sevenPoint.pinch1],
-                        ['MIDPOINT', sourceAnalysis.sevenPoint.midpoint],
-                        ['PINCH 2', sourceAnalysis.sevenPoint.pinch2],
-                        ['CLIMAX', sourceAnalysis.sevenPoint.climax],
-                        ['RESOLUTION', sourceAnalysis.sevenPoint.resolution],
-                      ] as Array<[string, string | undefined]>
+                      STORY_CIRCLE_BEATS.map((beat) => [
+                        STORY_CIRCLE_LABELS[beat] || beat.toUpperCase(),
+                        sourceAnalysis.storyCircle?.[beat],
+                      ]) as Array<[string, string | undefined]>
                     ).map(([label, value], idx) =>
                       value ? (
                         <View key={idx} style={styles.arcItem}>

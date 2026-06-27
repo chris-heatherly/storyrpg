@@ -23,7 +23,7 @@ export function buildVoiceReportJsonSchema(): StructuredJsonSchema {
   return {
     name: 'voice_report',
     description: 'Compact character voice QA report.',
-    maxOutputTokens: 2048,
+    maxOutputTokens: 4096,
     schema: {
       type: 'object',
       additionalProperties: false,

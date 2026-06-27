@@ -37,7 +37,7 @@ export type ChoicePayoff = 'immediate' | { payoffEpisode: number; payoffEpisodeL
 export interface SeasonChoiceMoment {
   id: string;
   episode: number;
-  /** What the decision is, tied to the arc / seven-point beat (LLM-authored). */
+  /** What the decision is, tied to the arc / Story Circle beat (LLM-authored). */
   anchor: string;
   /** When the choice pays off — now, or a specific later episode (a promise). */
   payoff: ChoicePayoff;

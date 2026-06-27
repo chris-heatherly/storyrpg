@@ -165,7 +165,6 @@ export interface DraftImageGenerationDeps {
     unresolved: Array<{ path: string; value: string; filePath: string }>;
   }>;
   buildImageManifestFromStory: (story: Story) => ReturnType<DraftImageEntry['buildImageManifestFromStory']>;
-  validateMicroEpisodeSeason: (story: Story, context: { phase: string }) => void;
   getCollectedVisualPlanningForSave: () => VisualPlanningOutputs | undefined;
   buildStoryGeneratorMetadata: () => Record<string, unknown>;
   getRemediationSummary: () => { attempted: number; succeeded: number; degraded: number };
@@ -475,7 +474,6 @@ export class DraftImageGeneration {
       finalStory.imagesStatus = imageIntegrity.unresolved.length > 0
         ? 'failed'
         : finalImageManifest.imagesStatus;
-      this.deps.validateMicroEpisodeSeason(finalStory, { phase: 'micro_episode_season_final_validation' });
       await saveEarlyDiagnostic(normalizedOutputDir, 'image-integrity-report.json', imageIntegrity);
       if (imageIntegrity.repaired.length > 0 || imageIntegrity.unresolved.length > 0) {
         this.deps.emit({

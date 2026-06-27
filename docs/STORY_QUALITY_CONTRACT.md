@@ -100,8 +100,15 @@ the outcome depends on the failure tier:
 
 | Tier | Examples | Final-attempt behavior |
 |---|---|---|
-| **Hard correctness** | scene-graph references a non-existent scene, bottleneck/starting scene invalid, choice-density floor unmet, required encounter missing, unparseable JSON | **Blocks** — the episode fails (story cannot be played if these are broken). |
-| **Advisory craft/fidelity** | `[TreatmentFidelity]`, `[DramaticStructure]`, `[ThemePressure]`, `[SceneTurnContract]`, `[EpisodePressure]` | **Degrades to a recorded warning** — the blueprint still ships; warnings are emitted as pipeline `warning` events and surfaced on the run, not discarded. |
+| **Hard correctness** | scene-graph references a non-existent scene, bottleneck/starting scene invalid, choice-density floor unmet, required encounter missing, unparseable JSON, `[DramaticStructure]`, `[SceneTurnContract]` | **Blocks after the bounded architecture retry / deterministic repair path** — the episode fails when a scene has no real question, turn, changed state, entry intent, obstacle, consequence, or removability. |
+| **Advisory craft/fidelity** | `[TreatmentFidelity]`, `[ThemePressure]`, `[EpisodePressure]` | **Degrades to a recorded warning** — the blueprint still ships; warnings are emitted as pipeline `warning` events and surfaced on the run, not discarded. |
+
+`[DramaticStructure]` and `[SceneTurnContract]` are now narrow scene-shape
+correctness gates, not broad taste rubrics. Scene-first blueprints receive
+deterministic scene contracts before validation, and both invented and
+planned-scene paths use the same architecture gate policy. The defaults can be
+reversed per environment with `GATE_DRAMATIC_STRUCTURE=0` or
+`GATE_SCENE_TURN_CONTRACT=0`.
 
 Classification lives in `StoryArchitect.classifyBlueprintFailure()` (pure,
 unit-tested). Hard-error keyword checks run only on non-advisory lines so an

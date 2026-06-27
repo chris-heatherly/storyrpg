@@ -31,7 +31,7 @@ function makeAnalysis() {
       incitingIncident: 'Kylie is attacked and rescued by Victor.',
       climax: 'Kylie chooses what she will become at the Hunter Moon ball.',
     },
-    sevenPoint: {
+    legacyStructure: {
       hook: 'Kylie arrives and is attacked.',
       plotTurn1: 'The blog and Victor courtship begin.',
       pinch1: 'Victor reaches into her life.',
@@ -39,6 +39,16 @@ function makeAnalysis() {
       pinch2: 'Mika and Radu truths collapse trust.',
       climax: 'The Hunter Moon ball.',
       resolution: 'Kylie writes the final post.',
+    },
+    storyCircle: {
+      you: 'Kylie arrives in Bucharest trying to turn performance into safety.',
+      need: 'Kylie wants a dazzling new life but needs to keep her voice and selfhood.',
+      go: 'The attack and Victor rescue pull Kylie across the supernatural threshold.',
+      search: 'Kylie tests glamour, friendship, blogging, and vampire rules under pressure.',
+      find: 'Kylie gains proof, intimacy, and access that reveal what Victor wants from her.',
+      take: 'Trust collapses and Kylie pays for attention with danger to voice, friends, and humanity.',
+      return: 'Kylie brings the truth back into public and relational consequence at the ball.',
+      change: 'Kylie chooses what she will become and writes from altered selfhood.',
     },
     storyArcs: [{ id: 'arc-1', name: 'Dusk', description: 'Kylie learns the city.', estimatedEpisodeRange: { start: 1, end: 8 } }],
     protagonist: { id: 'char-kylie', name: 'Kylie', description: 'A blogger.' },
@@ -78,6 +88,16 @@ function makeAnalysis() {
         ['falling'],
         ['climax', 'resolution'],
       ][index];
+      const storyCircleRole = [
+        [{ beat: 'you', roleKind: 'primary' }],
+        [{ beat: 'need', roleKind: 'primary' }],
+        [{ beat: 'go', roleKind: 'primary' }],
+        [{ beat: 'search', roleKind: 'primary' }],
+        [{ beat: 'find', roleKind: 'primary' }],
+        [{ beat: 'take', roleKind: 'primary' }],
+        [{ beat: 'return', roleKind: 'primary' }],
+        [{ beat: 'change', roleKind: 'primary' }],
+      ][index];
       return {
         episodeNumber,
         title: `Episode ${episodeNumber}`,
@@ -91,6 +111,7 @@ function makeAnalysis() {
         estimatedSceneCount: 8,
         estimatedChoiceCount: 4,
         structuralRole: roles,
+        storyCircleRole,
         narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
         treatmentGuidance: extracted.episodes[episodeNumber],
       };
@@ -131,7 +152,7 @@ describe('SeasonPlannerAgent treatment handoff', () => {
         targetChoicesPerEpisode: 4,
         pacing: 'moderate',
       },
-      sevenPointBlocking: false,
+      storyCircleBlocking: false,
     });
 
     expect(result.success).toBe(true);
@@ -153,7 +174,7 @@ describe('SeasonPlannerAgent treatment handoff', () => {
         targetChoicesPerEpisode: 4,
         pacing: 'moderate',
       },
-      sevenPointBlocking: false,
+      storyCircleBlocking: false,
     });
 
     expect(result.success).toBe(true);
@@ -162,9 +183,12 @@ describe('SeasonPlannerAgent treatment handoff', () => {
       .flatMap((scene: any) => scene.requiredBeats ?? [])
       .map((beat: any) => beat.mustDepict)
       .join('\n');
+    const encounterText = (result.data!.episodes[0].plannedEncounters ?? [])
+      .map((encounter: any) => encounter.description)
+      .join('\n');
     expect(requiredText).toContain('Mika\'s key card');
     expect(requiredText).toContain('quartz');
-    expect(requiredText).toContain('rooftop bar at sunset');
+    expect(encounterText.toLowerCase()).toContain('rooftop bar at sunset');
     expect(result.data!.notes.join('\n')).toContain('kept deterministic treatment-bound spine');
   });
 
@@ -181,6 +205,9 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.endingMode).toBe('multiple');
     expect(plan.resolvedEndings).toHaveLength(3);
     expect(plan.episodes[0].plannedEncounters[0].description).toContain('rooftop bar');
+    expect(['go', 'search', 'find', 'take']).toContain(plan.episodes[0].plannedEncounters[0].storyCircleTarget);
+    expect(plan.episodes[0].plannedEncounters[0].storyCircleTargetRationale).toContain('Target');
+    expect(plan.episodes[0].plannedEncounters[0].storyCircleTargetEvidence.protagonistChange).toBeTruthy();
     expect(plan.episodes[0].cliffhangerPlan.hook).toContain('horrible dream');
     expect(plan.episodes[4].cliffhangerPlan.hook).toContain('stag-crest ring');
     expect(plan.episodes[4].cliffhangerPlan.intensity).toBe('high');
@@ -205,6 +232,103 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.seasonPromiseArchitecture!.centralPressure.pressuresLieBy).toContain('attention');
     expect(plan.seasonPromiseArchitecture!.seasonPromise.playerExperiencePromise).toContain('player');
     expect(plan.preferences.targetScenesPerEpisode).toBe(6);
+  });
+
+  it('repairs LLM arc plans that leave final Story Circle beats unowned', () => {
+    const planner = makePlanner();
+    const analysis = makeAnalysis();
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {
+      arcs: [
+        {
+          id: 'arc-1-3',
+          name: 'Opening Glamour',
+          description: 'Kylie enters the dangerous romance.',
+          episodeRange: { start: 1, end: 3 },
+        },
+        {
+          id: 'arc-4-6',
+          name: 'Gathering Shadow',
+          description: 'Victor pressure escalates into cost.',
+          episodeRange: { start: 4, end: 6 },
+        },
+      ],
+    });
+    const plan = (planner as any).buildSeasonPlan(analysis, merged, {
+      targetScenesPerEpisode: 8,
+      targetChoicesPerEpisode: 4,
+      pacing: 'moderate',
+    });
+
+    const owners = new Map<string, string[]>();
+    for (const arc of plan.arcs) {
+      for (const beat of arc.storyCircleSpan?.ownedBeats ?? []) {
+        owners.set(beat, [...(owners.get(beat) ?? []), arc.name]);
+      }
+    }
+
+    expect(owners.get('return')).toEqual(['Gathering Shadow']);
+    expect(owners.get('change')).toEqual(['Gathering Shadow']);
+    expect(plan.arcs.find((arc: any) => arc.id === 'arc-4-6')?.episodeRange).toEqual({ start: 4, end: 8 });
+  });
+
+  it('partitions overlapping LLM arc Story Circle ownership before gating', () => {
+    const planner = makePlanner();
+    const analysis = makeAnalysis();
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {
+      arcs: [
+        {
+          id: 'blog-war',
+          name: 'The Blog War',
+          description: 'The season-long public voice pressure.',
+          episodeRange: { start: 1, end: 8 },
+        },
+        {
+          id: 'mika-crossroad',
+          name: 'Mika\'s Crossroad',
+          description: 'The friend-group loyalty pressure.',
+          episodeRange: { start: 1, end: 4 },
+        },
+      ],
+    });
+    const plan = (planner as any).buildSeasonPlan(analysis, merged, {
+      targetScenesPerEpisode: 8,
+      targetChoicesPerEpisode: 4,
+      pacing: 'moderate',
+    });
+
+    const owners = new Map<string, string[]>();
+    for (const arc of plan.arcs) {
+      for (const beat of arc.storyCircleSpan?.ownedBeats ?? []) {
+        owners.set(beat, [...(owners.get(beat) ?? []), arc.name]);
+      }
+    }
+
+    for (const beat of ['you', 'need', 'go', 'search', 'find', 'take', 'return', 'change']) {
+      expect(owners.get(beat)).toHaveLength(1);
+    }
+    expect(plan.arcs.find((arc: any) => arc.id === 'mika-crossroad')?.episodeRange).toEqual({ start: 1, end: 4 });
+    expect(plan.arcs.find((arc: any) => arc.id === 'blog-war')?.episodeRange).toEqual({ start: 5, end: 8 });
+  });
+
+  it('keeps a three-episode authored late-arc crisis on the final episode', () => {
+    const planner = makePlanner();
+    const guided = (planner as any).applyAuthoredArcGuidance({}, {
+      arcIndex: 1,
+      title: 'Champagne',
+      sourceText: 'Arc 1: Champagne',
+      episodeRange: { start: 1, end: 3 },
+      arcDramaticQuestion: 'Can Kylie start over without letting approval consume her?',
+      relationToSeasonQuestion: 'Tests the season question through Victor approval.',
+      lieFacet: 'Kylie mistakes attention for safety.',
+      midpointRecontextualization: 'The glamorous new life is underneath a funnel.',
+      lateArcCrisis: 'At the Equinox weekend Victor makes clear that the blog and his privacy cannot both win.',
+      finaleAnswer: 'Kylie comes home seeing the cost of being chosen.',
+      handoffPressure: 'The first crack carries into the next arc.',
+      episodeTurnouts: [],
+    }, 3);
+
+    expect(guided.midpointRecontextualization.episodeNumber).toBe(2);
+    expect(guided.lateArcCrisis.episodeNumber).toBe(3);
   });
 
   it('carries refreshed treatment episode turns, central conflict, and aftermath into planned encounters', () => {
@@ -244,6 +368,8 @@ describe('SeasonPlannerAgent treatment handoff', () => {
 
     const encounter = plan.episodes[0].plannedEncounters[0];
     expect(encounter.description).toContain('Central conflict');
+    expect(['go', 'search', 'find', 'take']).toContain(encounter.storyCircleTarget);
+    expect(encounter.storyCircleTargetEvidence.episodeQuestion).toBeTruthy();
     expect(encounter.centralConflict).toContain('miracle worth protecting');
     expect(encounter.aftermathConsequence).toContain('salt burns');
     expect(encounter.encounterSetupContext).toEqual(
@@ -317,14 +443,13 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(plan.episodes[1].cliffhangerPlan.nextEpisodePressure).toContain('understands the record');
   });
 
-  it('carries sceneEpisode treatment contracts into encounters and cliffhangers without encounter anchors', () => {
+  it('carries treatment contracts into encounters and cliffhangers without encounter anchors', () => {
     const planner = makePlanner();
     const analysis = {
       ...makeAnalysis(),
       sourceTitle: 'Harbor Debt',
       totalEstimatedEpisodes: 1,
       treatmentSeasonGuidance: {
-        episodeStructureMode: 'sceneEpisodes',
         informationLedger: 'info-seal',
         rawSectionSummary: ['informationLedger'],
       },
@@ -342,7 +467,6 @@ describe('SeasonPlannerAgent treatment handoff', () => {
         locations: ['Harbor'],
         estimatedSceneCount: 1,
         estimatedChoiceCount: 2,
-        episodeStructureMode: 'sceneEpisodes',
         structuralRole: ['hook'],
         narrativeFunction: { setup: 'auction', conflict: 'bid', resolution: 'registry' },
         treatmentGuidance: {
@@ -366,14 +490,12 @@ describe('SeasonPlannerAgent treatment handoff', () => {
 
     const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {});
     const plan = (planner as any).buildSeasonPlan(analysis, merged, {
-      episodeStructureMode: 'sceneEpisodes',
       targetScenesPerEpisode: 1,
       targetChoicesPerEpisode: 2,
       pacing: 'tight',
     });
 
     const encounter = plan.episodes[0].plannedEncounters[0];
-    expect(plan.episodes[0].episodeStructureMode).toBe('sceneEpisodes');
     expect(encounter.description).toContain('Forced choice');
     expect(encounter.centralConflict).toContain('make herself visible');
     expect(encounter.stakes).toContain('Material: ledger access');
@@ -430,11 +552,15 @@ describe('SeasonPlannerAgent.normalizeChoiceMoments (E1 slice 4)', () => {
   });
 });
 
-describe('SeasonPlannerAgent 7-point spine gate (tier 1)', () => {
-  // A plan with no anchors/sevenPoint fails SevenPointCoverageValidator with errors.
+describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
+  afterEach(() => {
+    delete process.env.GATE_ARC_PRESSURE;
+  });
+
+  // A plan with no anchors/storyCircle fails StoryCircleCoverageValidator with errors.
   const brokenPlan = () => ({
     totalEpisodes: 1, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
-    anchors: undefined, sevenPoint: undefined, episodes: [], resolvedEndings: [],
+    anchors: undefined, legacyStructure: undefined, episodes: [], resolvedEndings: [],
   });
 
   it('throws (blocks) when the season spine is incomplete', async () => {
@@ -442,31 +568,33 @@ describe('SeasonPlannerAgent 7-point spine gate (tier 1)', () => {
     (planner as any).callLLM = async () => '{}';
     (planner as any).buildSeasonPlan = () => brokenPlan();
     await expect(
-      planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: true }),
-    ).rejects.toThrow(/SevenPointGate/);
+      planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, storyCircleBlocking: true }),
+    ).rejects.toThrow(/StoryCircleGate/);
   });
 
-  it('does NOT throw when sevenPointBlocking is off (advisory)', async () => {
+  it('does NOT throw when storyCircleBlocking is off (advisory)', async () => {
+    process.env.GATE_ARC_PRESSURE = '0';
     const planner = makePlanner();
     (planner as any).callLLM = async () => '{}';
     (planner as any).buildSeasonPlan = () => brokenPlan();
-    const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: false });
+    const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, storyCircleBlocking: false });
     expect(result.success).toBe(true);
   });
 
   it('does NOT throw on a complete spine even with blocking on', async () => {
+    process.env.GATE_ARC_PRESSURE = '0';
     const planner = makePlanner();
     (planner as any).callLLM = async () => '{}';
-    // A minimally-complete plan: anchors + sevenPoint present, episodes cover all 7 beats in order.
+    // A minimally-complete plan: anchors + storyCircle present, episodes cover all 8 beats in order.
     (planner as any).buildSeasonPlan = () => ({
-      totalEpisodes: 7, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
+      totalEpisodes: 8, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
       anchors: {
         stakes: 'The fort falls and the valley with it if the line breaks.',
         goal: 'Hold the eastern wall until the relief column arrives.',
         incitingIncident: 'The first assault wave breaches the outer gate at dawn.',
         climax: 'The commander chooses between the wall and the wounded.',
       },
-      sevenPoint: {
+      legacyStructure: {
         hook: 'A soldier wakes to the horns of a siege already underway.',
         plotTurn1: 'The relief column is days late and the captain is dead.',
         pinch1: 'Supplies run out and the healers start triaging the living.',
@@ -475,15 +603,29 @@ describe('SeasonPlannerAgent 7-point spine gate (tier 1)', () => {
         climax: 'The commander chooses between the wall and the wounded.',
         resolution: 'What remains of the garrison counts its faces at dusk.',
       },
+      storyCircle: {
+        you: 'A soldier wakes inside the familiar discipline of the fort under siege.',
+        need: 'The garrison wants survival and needs a commander who can choose what matters.',
+        go: 'The outer gate breach forces the defenders into rules they cannot retreat from.',
+        search: 'The survivors test defenses, alliances, and sacrifice under mounting pressure.',
+        find: 'They discover the traitor and the route that might save part of the fort.',
+        take: 'Saving that route costs supplies, wounded soldiers, and public trust.',
+        return: 'The commander brings the chosen plan back to the broken eastern wall.',
+        change: 'The garrison survives changed, counting who and what the choice preserved.',
+      },
       episodes: [
-        { episodeNumber: 1, structuralRole: ['hook'] }, { episodeNumber: 2, structuralRole: ['plotTurn1'] },
-        { episodeNumber: 3, structuralRole: ['pinch1'] }, { episodeNumber: 4, structuralRole: ['midpoint'] },
-        { episodeNumber: 5, structuralRole: ['pinch2'] }, { episodeNumber: 6, structuralRole: ['climax'] },
-        { episodeNumber: 7, structuralRole: ['resolution'] },
+        { episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary' }] },
+        { episodeNumber: 2, storyCircleRole: [{ beat: 'need', roleKind: 'primary' }] },
+        { episodeNumber: 3, storyCircleRole: [{ beat: 'go', roleKind: 'primary' }] },
+        { episodeNumber: 4, storyCircleRole: [{ beat: 'search', roleKind: 'primary' }] },
+        { episodeNumber: 5, storyCircleRole: [{ beat: 'find', roleKind: 'primary' }] },
+        { episodeNumber: 6, storyCircleRole: [{ beat: 'take', roleKind: 'primary' }] },
+        { episodeNumber: 7, storyCircleRole: [{ beat: 'return', roleKind: 'primary' }] },
+        { episodeNumber: 8, storyCircleRole: [{ beat: 'change', roleKind: 'primary' }] },
       ],
       resolvedEndings: [],
     });
-    const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, sevenPointBlocking: true });
+    const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, storyCircleBlocking: true });
     expect(result.success).toBe(true);
   });
 });

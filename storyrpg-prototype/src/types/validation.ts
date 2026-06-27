@@ -313,6 +313,64 @@ export interface ChoiceAgencyCanonicalReport {
   };
 }
 
+export type ValidatorExecutionLifecycle =
+  | 'source-analysis'
+  | 'season-plan'
+  | 'episode-architecture'
+  | 'phase-validation'
+  | 'quick-validation'
+  | 'full-qa'
+  | 'narrative-diagnostics'
+  | 'plan-fidelity'
+  | 'episode-contract'
+  | 'final-contract'
+  | 'artifact-package';
+
+export type ValidatorExecutionRole =
+  | 'primary'
+  | 'regression-net'
+  | 'shadow'
+  | 'repair-router'
+  | 'aggregate'
+  | 'artifact-only';
+
+export type ValidatorExecutionSeverity = 'error' | 'warning' | 'info' | 'suggestion';
+
+export type ValidatorExecutionRepairRoute =
+  | 'autofix'
+  | 'regen-scene'
+  | 'regen-choices'
+  | 'regen-encounter'
+  | 'regen-episode'
+  | 'plan-time'
+  | 'none';
+
+export interface ValidatorExecutionIssue {
+  severity: ValidatorExecutionSeverity;
+  message: string;
+  code?: string;
+  location?: unknown;
+  source?: string;
+  suggestion?: string;
+}
+
+export interface ValidatorExecutionRecord {
+  validatorId: string;
+  lifecycle: ValidatorExecutionLifecycle;
+  role: ValidatorExecutionRole;
+  gateFlag?: string;
+  gateEnabled: boolean;
+  placement?: string;
+  passed: boolean;
+  issues: ValidatorExecutionIssue[];
+  repair?: {
+    attempted: boolean;
+    succeeded?: boolean;
+    route?: ValidatorExecutionRepairRoute;
+    residualBlockingCount?: number;
+  };
+}
+
 export type TreatmentObligationContract =
   | 'treatment_plan_conformance'
   | 'treatment_obligation_realization'
@@ -397,6 +455,8 @@ export interface ComprehensiveValidationReport {
   metrics: ValidationMetrics;
   /** Shadow-only canonical grouping for choice-agency overlap; does not affect pass/fail or scoring. */
   choiceAgencyCanonicalReport?: ChoiceAgencyCanonicalReport;
+  /** Registry-normalized validator execution ownership records. Additive telemetry only. */
+  executionRecords?: ValidatorExecutionRecord[];
   timestamp: Date;
   duration: number;
 }
@@ -409,6 +469,8 @@ export interface QuickValidationResult {
   canProceed: boolean;
   blockingIssues: ValidationIssue[];
   warningCount: number;
+  /** Registry-normalized validator execution ownership records. Additive telemetry only. */
+  executionRecords?: ValidatorExecutionRecord[];
 }
 
 // ========================================

@@ -32,6 +32,27 @@ function dedupe<T>(values: T[]): T[] {
   return Array.from(new Set(values));
 }
 
+export function isSceneBoundArcPressureKind(kind: ArcPressureTreatmentContractKind): boolean {
+  return kind !== 'arc_identity'
+    && kind !== 'arc_question'
+    && kind !== 'season_relation';
+}
+
+export function arcPressureContractTargetsEpisode(
+  contract: Pick<ArcPressureTreatmentContract, 'targetEpisodeNumbers'>,
+  episodeNumber: number,
+): boolean {
+  return contract.targetEpisodeNumbers.length === 0 || contract.targetEpisodeNumbers.includes(episodeNumber);
+}
+
+export function arcPressureContractTargetsScene(
+  contract: Pick<ArcPressureTreatmentContract, 'targetEpisodeNumbers' | 'targetSceneIds'>,
+  scene: Pick<PlannedScene, 'id' | 'episodeNumber'>,
+): boolean {
+  if (!arcPressureContractTargetsEpisode(contract, scene.episodeNumber)) return false;
+  return contract.targetSceneIds.length === 0 || contract.targetSceneIds.includes(scene.id);
+}
+
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -56,7 +77,7 @@ function midpointEpisode(range: { start: number; end: number }): number {
 }
 
 function crisisEpisode(range: { start: number; end: number }): number {
-  return Math.max(range.start, Math.min(range.end, Math.round(range.start + Math.max(1, range.end - range.start) * (2 / 3))));
+  return Math.max(range.start, Math.min(range.end, Math.ceil(range.start + Math.max(1, range.end - range.start) * (2 / 3))));
 }
 
 function requiredRealizationFor(kind: ArcPressureTreatmentContractKind, sourceText: string): ArcPressureTreatmentRealizationTarget[] {
@@ -279,7 +300,49 @@ export function buildArcPressureContractsForPlan(
     treatmentSeasonGuidance?: TreatmentSeasonGuidance;
   },
 ): ArcPressureTreatmentContract[] {
-  if ((plan.arcPressureContracts ?? []).length > 0) return plan.arcPressureContracts ?? [];
+  const existing = plan.arcPressureContracts ?? [];
+  if (existing.length > 0) {
+    if (plan.treatmentSeasonGuidance?.arcGuidance?.arcs?.length) {
+      const canonical = buildArcPressureContracts({
+        guidance: plan.treatmentSeasonGuidance,
+        arcs: plan.arcs,
+        totalEpisodes: plan.totalEpisodes,
+        treatmentSourced: true,
+      });
+      const canonicalById = new Map(canonical.map((contract) => [contract.id, contract]));
+      const canonicalBySignature = new Map(canonical.map((contract) => [
+        `${contract.arcId}:${contract.contractKind}:${contract.sourceText}`,
+        contract,
+      ]));
+      return existing.map((contract) => {
+        const authoritative = canonicalById.get(contract.id)
+          ?? canonicalBySignature.get(`${contract.arcId}:${contract.contractKind}:${contract.sourceText}`);
+        if (!authoritative) return contract;
+        const targetEpisodesChanged = contract.targetEpisodeNumbers.join(',') !== authoritative.targetEpisodeNumbers.join(',');
+        return {
+          ...contract,
+          blockingLevel: authoritative.blockingLevel,
+          eventAtoms: authoritative.eventAtoms,
+          requiredRealization: authoritative.requiredRealization,
+          targetEpisodeNumbers: authoritative.targetEpisodeNumbers,
+          targetSceneIds: targetEpisodesChanged ? [] : contract.targetSceneIds,
+        };
+      });
+    }
+    const arcRanges = new Map((plan.arcs ?? []).map((arc) => [arc.id, episodeRangeFor(arc, plan.totalEpisodes)]));
+    return existing.map((contract) => {
+      if (contract.contractKind !== 'arc_late_crisis') return contract;
+      const range = arcRanges.get(contract.arcId);
+      if (!range) return contract;
+      const targetEpisodeNumbers = [crisisEpisode(range)];
+      const targetEpisodesChanged = contract.targetEpisodeNumbers.join(',') !== targetEpisodeNumbers.join(',');
+      return {
+        ...contract,
+        targetEpisodeNumbers,
+        targetSceneIds: targetEpisodesChanged ? [] : contract.targetSceneIds,
+      };
+    });
+  }
   return buildArcPressureContracts({
     guidance: plan.treatmentSeasonGuidance,
     arcs: plan.arcs,
@@ -293,7 +356,6 @@ function sceneText(scene: PlannedScene): string {
     scene.title,
     scene.dramaticPurpose,
     scene.stakes,
-    scene.arcLabel,
     scene.turnContract?.centralTurn,
     scene.turnContract?.turnEvent,
     scene.turnContract?.afterState,
@@ -309,7 +371,6 @@ function sceneText(scene: PlannedScene): string {
 function scoreScene(contract: ArcPressureTreatmentContract, scene: PlannedScene): number {
   let score = treatmentFieldCloseMatch(contract.sourceText, sceneText(scene), arcPressureMatchThreshold(contract)) ? 1 : 0;
   if (contract.targetEpisodeNumbers.includes(scene.episodeNumber)) score += 0.45;
-  if (scene.arcLabel && treatmentFieldCloseMatch(contract.arcTitle, scene.arcLabel, 0.45)) score += 0.25;
   if (scene.narrativeRole === 'turn' && (
     contract.contractKind === 'arc_question'
     || contract.contractKind === 'lie_facet'
@@ -328,6 +389,26 @@ function scoreScene(contract: ArcPressureTreatmentContract, scene: PlannedScene)
 function bestSceneForEpisode(contract: ArcPressureTreatmentContract, scenes: PlannedScene[], episodeNumber: number): PlannedScene | undefined {
   const candidates = scenes.filter((scene) => scene.episodeNumber === episodeNumber);
   if (candidates.length === 0) return undefined;
+  if (
+    contract.contractKind === 'arc_episode_turnout'
+    || contract.contractKind === 'arc_finale_answer'
+    || contract.contractKind === 'arc_handoff_pressure'
+  ) {
+    const endingCandidates = candidates.filter((scene) =>
+      scene.narrativeRole === 'release'
+      || scene.narrativeRole === 'payoff'
+    );
+    const orderedEndingCandidates = endingCandidates.length > 0 ? endingCandidates : candidates;
+    if (orderedEndingCandidates.length > 0) {
+      return orderedEndingCandidates
+        .map((scene) => ({ scene, score: scoreScene(contract, scene) }))
+        .sort((a, b) => {
+          const releaseDelta = Number(b.scene.narrativeRole === 'release') - Number(a.scene.narrativeRole === 'release');
+          if (releaseDelta !== 0) return releaseDelta;
+          return b.scene.order - a.scene.order || b.score - a.score;
+        })[0]?.scene;
+    }
+  }
   return candidates
     .map((scene) => ({ scene, score: scoreScene(contract, scene) }))
     .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
@@ -336,6 +417,7 @@ function bestSceneForEpisode(contract: ArcPressureTreatmentContract, scenes: Pla
 function shouldRequireBeat(contract: ArcPressureTreatmentContract): boolean {
   return contract.blockingLevel !== 'warning'
     && contract.contractKind !== 'arc_identity'
+    && contract.contractKind !== 'arc_question'
     && contract.contractKind !== 'season_relation';
 }
 
@@ -358,6 +440,7 @@ function pressureDomain(contract: ArcPressureTreatmentContract): MechanicPressur
 }
 
 function pressureFor(contract: ArcPressureTreatmentContract, scene: PlannedScene): MechanicPressureContract | undefined {
+  if (!isSceneBoundArcPressureKind(contract.contractKind)) return undefined;
   if (!contract.requiredRealization.includes('mechanic_pressure')) return undefined;
   return {
     id: `${contract.id}-pressure`,
@@ -387,7 +470,46 @@ export function assignArcPressureContractsToScenes(
   scenes: PlannedScene[],
 ): ArcPressureTreatmentContract[] {
   const contracts = buildArcPressureContractsForPlan(plan);
+  const canonicalById = new Map(contracts.map((contract) => [contract.id, contract]));
+  const canonicalBySignature = new Map(contracts.map((contract) => [
+    `${contract.arcId}:${contract.contractKind}:${contract.sourceText}`,
+    contract,
+  ]));
+
+  for (const scene of scenes) {
+    const existing = scene.arcPressureContracts ?? [];
+    if (existing.length === 0) continue;
+    const normalized = existing.map((contract) =>
+      canonicalById.get(contract.id)
+      ?? canonicalBySignature.get(`${contract.arcId}:${contract.contractKind}:${contract.sourceText}`)
+      ?? contract
+    );
+    const kept = normalized.filter((contract) =>
+      isSceneBoundArcPressureKind(contract.contractKind)
+      && arcPressureContractTargetsScene(contract, scene)
+    );
+    const removed = normalized.filter((contract) => !kept.some((candidate) => candidate.id === contract.id));
+    if (removed.length === 0 && kept.length === existing.length) {
+      scene.arcPressureContracts = kept;
+      continue;
+    }
+    const removedIds = new Set(removed.map((contract) => contract.id));
+    const removedTexts = new Set(removed.map((contract) => contract.sourceText));
+    scene.arcPressureContracts = kept;
+    scene.requiredBeats = scene.requiredBeats?.filter((beat) =>
+      !removedTexts.has(beat.sourceTurn)
+      && !removedTexts.has(beat.mustDepict)
+      && !Array.from(removedIds).some((id) => beat.id.includes(id) || beat.id.includes(slug(id)))
+    );
+    scene.mechanicPressure = scene.mechanicPressure?.filter((pressure) =>
+      !removedIds.has(pressure.id)
+      && !removedIds.has(pressure.mechanicRef?.flag ?? '')
+      && !removedTexts.has(pressure.storyPressure)
+    );
+  }
+
   for (const contract of contracts) {
+    if (!isSceneBoundArcPressureKind(contract.contractKind)) continue;
     for (const episodeNumber of contract.targetEpisodeNumbers) {
       const target = bestSceneForEpisode(contract, scenes, episodeNumber);
       if (!target) continue;

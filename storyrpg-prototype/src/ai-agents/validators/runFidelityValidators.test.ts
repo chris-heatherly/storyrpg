@@ -13,15 +13,15 @@ const story = { episodes: [] } as unknown as Story;
 
 /**
  * A season plan with a beat anchored to the WRONG episode (plotTurn1 authored for
- * Ep3 but assigned to Ep5) so SevenPointAnchorConformanceValidator emits a blocking
+ * Ep3 but assigned to Ep5) so StoryCircleAnchorConformanceValidator emits a blocking
  * finding when its gate is enabled.
  */
 function misanchoredSeasonPlan(): SeasonPlan {
   return {
     episodes: [
       { episodeNumber: 1, structuralRole: ['hook'] },
-      { episodeNumber: 3, structuralRole: ['rising'] },
-      { episodeNumber: 5, structuralRole: ['plotTurn1'] },
+      { episodeNumber: 3, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }] },
+      { episodeNumber: 5, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }] },
     ],
   } as unknown as SeasonPlan;
 }
@@ -29,7 +29,7 @@ function misanchoredSeasonPlan(): SeasonPlan {
 function treatmentAnalysis(): SourceMaterialAnalysis {
   return {
     sourceFormat: 'story_treatment',
-    treatmentSeasonGuidance: { beatEpisodeAnchors: { hook: 1, plotTurn1: 3 } },
+    treatmentSeasonGuidance: { storyCircleBeatEpisodeAnchors: { you: 1, go: 3 } },
     episodeBreakdown: [],
   } as unknown as SourceMaterialAnalysis;
 }
@@ -67,7 +67,7 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
       sourceAnalysis: treatmentAnalysis(),
     });
     expect(result.treatmentSourced).toBe(true);
-    expect(result.fidelityFindings.some((f) => f.validator === 'SevenPointAnchorConformanceValidator')).toBe(true);
+    expect(result.fidelityFindings.some((f) => f.validator === 'StoryCircleAnchorConformanceValidator')).toBe(true);
   });
 
   it('env "0" is a kill-switch that disables every gate (no findings)', () => {
@@ -83,7 +83,7 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
   });
 
   it('dispatches an enabled validator and surfaces its finding tagged with the validator name', () => {
-    process.env[TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance] = '1';
+    process.env[TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance] = '1';
     const result = runFidelityValidators({
       story,
       seasonPlan: misanchoredSeasonPlan(),
@@ -92,15 +92,22 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.treatmentSourced).toBe(true);
     expect(result.fidelityFindings.length).toBeGreaterThan(0);
     const f = result.fidelityFindings[0];
-    expect(f.validator).toBe('SevenPointAnchorConformanceValidator');
-    expect(f.severity).toBe('error');
+    expect(f.validator).toBe('StoryCircleAnchorConformanceValidator');
+    expect(f.severity).toBe('warning');
     expect(f.findingClass).toBe('authored_contract');
     expect(f.sourceKind).toBe('treatment');
     expect(f.hasConcreteObligation).toBe(true);
+    expect(result.executionRecords?.some((record) =>
+      record.validatorId === 'StoryCircleAnchorConformanceValidator' &&
+      record.gateFlag === TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance &&
+      record.lifecycle === 'final-contract' &&
+      record.role === 'regression-net' &&
+      record.passed === false
+    )).toBe(true);
   });
 
   it('detects a non-treatment source (treatmentSourced=false) and stays a no-op without findings', () => {
-    process.env[TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance] = '1';
+    process.env[TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance] = '1';
     const result = runFidelityValidators({
       story,
       seasonPlan: misanchoredSeasonPlan(),
@@ -240,7 +247,29 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.treatmentSourced).toBe(true);
     expect(result.fidelityFindings.some((finding) =>
       finding.validator === 'AuthoredEpisodeConformanceValidator'
-      || finding.validator === 'SevenPointAnchorConformanceValidator'
+      || finding.validator === 'StoryCircleAnchorConformanceValidator'
+    )).toBe(false);
+  });
+
+  it('does not run plan-only season conformance validators for a generated slice package', () => {
+    const result = runFidelityValidators({
+      story: {
+        episodes: [{ number: 1, scenes: [] }],
+      } as unknown as Story,
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'generated-slice',
+        requestedEpisodeNumbers: [1],
+        generatedEpisodeNumbers: [1],
+        generatedThroughEpisode: 1,
+      },
+    });
+
+    expect(result.treatmentSourced).toBe(true);
+    expect(result.fidelityFindings.some((finding) =>
+      finding.validator === 'AuthoredEpisodeConformanceValidator'
+      || finding.validator === 'StoryCircleAnchorConformanceValidator'
     )).toBe(false);
   });
 
@@ -569,7 +598,31 @@ describe('runPlanTimeFidelityChecks (WS1 plan placement)', () => {
       sourceAnalysis: treatmentAnalysis(),
     });
     expect(result.treatmentSourced).toBe(true);
-    expect(result.blockingErrors.some((f) => f.validator === 'SevenPointAnchorConformanceValidator')).toBe(true);
+    expect(result.blockingErrors.some((f) => f.validator === 'StoryCircleAnchorConformanceValidator')).toBe(true);
+    expect(result.executionRecords?.some((record) =>
+      record.validatorId === 'StoryCircleAnchorConformanceValidator' &&
+      record.gateFlag === TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance &&
+      record.lifecycle === 'plan-fidelity' &&
+      record.role === 'primary'
+    )).toBe(true);
+  });
+
+  it('does not run plan-only season conformance validators for an episode slice before generation', async () => {
+    const { runPlanTimeFidelityChecks } = await import('./runFidelityValidators');
+    const result = runPlanTimeFidelityChecks({
+      seasonPlan: misanchoredSeasonPlan(),
+      sourceAnalysis: treatmentAnalysis(),
+      scope: {
+        mode: 'generated-slice',
+        requestedEpisodeNumbers: [1],
+      },
+    });
+
+    expect(result.treatmentSourced).toBe(true);
+    expect(result.blockingErrors.some((f) =>
+      f.validator === 'AuthoredEpisodeConformanceValidator'
+      || f.validator === 'StoryCircleAnchorConformanceValidator'
+    )).toBe(false);
   });
 
   it('reports nothing on a non-treatment run (mirrors the §4.6 advisory downgrade)', async () => {
@@ -612,7 +665,7 @@ describe('runPlanTimeFidelityChecks (WS1 plan placement)', () => {
     });
 
     const anchorFindings = final.fidelityFindings.filter((finding) =>
-      finding.validator === 'SevenPointAnchorConformanceValidator'
+      finding.validator === 'StoryCircleAnchorConformanceValidator'
     );
     expect(anchorFindings.length).toBeGreaterThan(0);
     expect(anchorFindings.every((finding) => finding.severity === 'warning')).toBe(true);
@@ -637,7 +690,7 @@ describe('runPlanTimeFidelityChecks (WS1 plan placement)', () => {
     });
 
     expect(final.fidelityFindings.some((finding) =>
-      finding.validator === 'SevenPointAnchorConformanceValidator'
+      finding.validator === 'StoryCircleAnchorConformanceValidator'
       && finding.severity === 'error'
     )).toBe(true);
   });
@@ -659,7 +712,7 @@ describe('runPlanTimeFidelityChecks (WS1 plan placement)', () => {
     });
 
     expect(final.fidelityFindings.some((finding) =>
-      finding.validator === 'SevenPointAnchorConformanceValidator'
+      finding.validator === 'StoryCircleAnchorConformanceValidator'
       && finding.severity === 'error'
     )).toBe(true);
   });

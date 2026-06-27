@@ -90,21 +90,6 @@ export interface AgentConfig {
 
 // Generation settings from UI
 export interface GenerationSettingsConfig {
-  episodeStructureMode?: 'standard' | 'sceneEpisodes';
-
-  // Scene-length episode mode
-  sceneEpisodeMinScenes?: number;
-  sceneEpisodeMaxScenes?: number;
-  sceneEpisodeNormalMinBeats?: number;
-  sceneEpisodeNormalTargetBeats?: number;
-  sceneEpisodeNormalMaxBeats?: number;
-  sceneEpisodeEncounterMaxBeats?: number;
-  sceneEpisodeEncounterCadence?: number;
-  sceneEpisodeBranchMinEpisodes?: number;
-  sceneEpisodeBranchMaxEpisodes?: number;
-  sceneEpisodeSceneGraphBranching?: boolean;
-  sceneEpisodeCrossEpisodeBranching?: boolean;
-
   // Scene structure
   /** Max scenes per episode (cap)—engine may generate fewer */
   maxScenesPerEpisode?: number;
@@ -241,13 +226,13 @@ export interface GenerationSettingsConfig {
    */
   seasonCanonBlocking?: boolean;
   /**
-   * 7-point spine gate (two-tier, default ON / opt-out). When true: (tier 1) the
-   * SeasonPlanner BLOCKS if the season's 3-act/7-point spine is incomplete or out of
-   * canonical order; (tier 2) each episode's StoryArchitect blueprint BLOCKS if it
-   * fails to realize the spine beat(s) it was assigned (empty arc.<beat>). Set
-   * SEVEN_POINT_BLOCKING=0 to downgrade both to advisory.
+   * Story Circle spine gate (two-tier, default ON / opt-out). When true: (tier 1)
+   * SeasonPlanner BLOCKS if the season's Story Circle spine is incomplete,
+   * non-contiguous, or out of canonical order; (tier 2) StoryArchitect BLOCKS if
+   * an episode blueprint omits required episodeCircle beats. Set
+   * STORY_CIRCLE_BLOCKING=0 to downgrade both to advisory.
    */
-  sevenPointBlocking?: boolean;
+  storyCircleBlocking?: boolean;
   // Optional cloud uplift (kept disabled by default for local-first rollout)
   cloudModeEnabled?: boolean;
   cloudQueueEndpoint?: string;
@@ -931,7 +916,19 @@ export interface PipelineConfig {
 
 export interface MemoryConfig {
   enabled: boolean;
+  provider?: 'cognee' | 'file' | 'disabled';
   directory?: string; // defaults to ./pipeline-memories
+  baseUrl?: string;
+  apiKey?: string;
+  projectDataset?: string;
+  runDatasetPrefix?: string;
+  validatorDataset?: string;
+  recallEnabled?: boolean;
+  writeEnabled?: boolean;
+  cognifyEnabled?: boolean;
+  maxPromptChars?: number;
+  timeoutMs?: number;
+  failOpen?: boolean;
   pipelineOptimization: boolean; // self-optimization: QA scores, failure patterns
   characterKnowledge: boolean;   // character knowledge: physical traits, ref matching
 }
@@ -1168,8 +1165,10 @@ export function loadConfig(): PipelineConfig {
       seasonCanonEnabled: (env.EXPO_PUBLIC_SEASON_CANON_ENABLED ?? env.SEASON_CANON_ENABLED) !== '0',
       // D2: blocking on by default (opt-out) — set SEASON_CANON_BLOCKING=0 to disable.
       seasonCanonBlocking: (env.EXPO_PUBLIC_SEASON_CANON_BLOCKING ?? env.SEASON_CANON_BLOCKING) !== '0',
-      // 7-point spine gate: blocking on by default (opt-out) — set SEVEN_POINT_BLOCKING=0 to disable.
-      sevenPointBlocking: (env.EXPO_PUBLIC_SEVEN_POINT_BLOCKING ?? env.SEVEN_POINT_BLOCKING) !== '0',
+      // Story Circle spine gate: blocking on by default (opt-out) — set STORY_CIRCLE_BLOCKING=0 to disable.
+      storyCircleBlocking:
+        (env.EXPO_PUBLIC_STORY_CIRCLE_BLOCKING ??
+          env.STORY_CIRCLE_BLOCKING) !== '0',
       // Thread/Twist planning: DEFAULT ON (opt-out) — set STORYRPG_THREAD_TWIST_PLANNING=0 to disable.
       // Populates the ThreadPlanner ledger so the setup_payoff / twist_quality diagnostics run.
       enableThreadAndTwistPlanning:
@@ -1180,8 +1179,30 @@ export function loadConfig(): PipelineConfig {
         (env.EXPO_PUBLIC_STORYRPG_CHARACTER_ARC_TRACKING ?? env.STORYRPG_CHARACTER_ARC_TRACKING) !== '0',
     },
     memory: {
-      enabled: env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' || env.CLAUDE_MEMORY === 'true' || defaultConfig.provider === 'anthropic',
+      enabled:
+        env.STORYRPG_MEMORY_PROVIDER !== 'disabled' &&
+        (
+          Boolean(env.STORYRPG_MEMORY_PROVIDER) ||
+          Boolean(env.COGNEE_BASE_URL) ||
+          env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' ||
+          env.CLAUDE_MEMORY === 'true' ||
+          defaultConfig.provider === 'anthropic'
+        ),
+      provider: (env.STORYRPG_MEMORY_PROVIDER === 'cognee' || env.STORYRPG_MEMORY_PROVIDER === 'file' || env.STORYRPG_MEMORY_PROVIDER === 'disabled')
+        ? env.STORYRPG_MEMORY_PROVIDER
+        : undefined,
       directory: env.EXPO_PUBLIC_MEMORY_DIR || env.MEMORY_DIR || undefined,
+      baseUrl: env.COGNEE_BASE_URL || undefined,
+      apiKey: env.COGNEE_API_KEY || undefined,
+      projectDataset: env.COGNEE_PROJECT_DATASET || 'storyrpg-project',
+      runDatasetPrefix: env.COGNEE_RUN_DATASET_PREFIX || 'storyrpg-run',
+      validatorDataset: env.COGNEE_VALIDATOR_DATASET || 'storyrpg-validator-history',
+      recallEnabled: env.STORYRPG_MEMORY_RECALL !== '0',
+      writeEnabled: env.STORYRPG_MEMORY_WRITE !== '0',
+      cognifyEnabled: env.STORYRPG_MEMORY_COGNIFY !== '0',
+      maxPromptChars: Number.parseInt(env.STORYRPG_MEMORY_MAX_PROMPT_CHARS || '6000', 10) || 6000,
+      timeoutMs: Number.parseInt(env.STORYRPG_MEMORY_TIMEOUT_MS || '8000', 10) || 8000,
+      failOpen: env.STORYRPG_MEMORY_FAIL_OPEN !== '0',
       pipelineOptimization: true,
       characterKnowledge: true,
     },

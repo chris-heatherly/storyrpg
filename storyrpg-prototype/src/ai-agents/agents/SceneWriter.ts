@@ -19,7 +19,9 @@ import { Beat, TextVariant, Consequence, TimingMetadata, SceneVisualSequencePlan
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
@@ -41,7 +43,7 @@ import type {
   MechanicPressureContract,
   RelationshipPacingContract,
   SceneTurnContract,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
 } from '../../types/scenePlan';
 import { enumeratedItems } from '../utils/enumeratedObjective';
 import {
@@ -274,16 +276,22 @@ export interface SceneWriterInput {
   seasonAnchors?: StoryAnchors;
 
   /**
-   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Used to
+   * Season-level legacy-structure beat map (from SeasonPlan.legacyStructure). Used to
    * tell SceneWriter where this scene sits on the season's dramatic curve.
    */
-  seasonSevenPoint?: SevenPointStructure;
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle beat map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /**
    * Which beat(s) of the season this episode is carrying (from
    * SeasonEpisode.structuralRole). Drives scene mood / intensity defaults.
    */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle beat(s) this episode carries. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
+  /** Episode-level fractal Story Circle from StoryArchitect. */
+  episodeCircle?: StoryCircleStructure;
 
   /**
    * Role-mapped ending contract for the final scene of the episode.
@@ -439,7 +447,7 @@ export interface SceneContent {
   turnContract?: SceneTurnContract;
   relationshipPacing?: RelationshipPacingContract[];
   mechanicPressure?: MechanicPressureContract[];
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   arcPressureContracts?: ArcPressureTreatmentContract[];
 
   // Threads planted/paid off in this scene (Phase 5.3).
@@ -555,7 +563,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - The final beat of each scene should land a pointed resolution or consequence, then create forward pressure into the next beat, choice, scene, encounter, or episode.
 - Forward pressure may be a cliffhanger, reveal, unresolved cost, emotional rupture, new danger, changed relationship, choice consequence, or handoff.
 - For non-finale episode endings, heighten next-episode pressure. For finale/resolution endings, resolve the central conflict and show aftermath.
-- When a Seven-Point Cliffhanger Plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
+- When a Legacy-Structure Cliffhanger Plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
 - When characters are in jeopardy or believe they are in jeopardy, dialogue should become more pointed, urgent, interrupted, selective, or stripped down. As fear, danger, exposure, or time pressure increases, reduce explanation and sharpen what characters say.
 - Never write a static meeting where characters only discuss information. If characters talk, ground the conversation in fitting physical activity, spatial pressure, object handling, preparation, travel, hiding, training, repair, cooking, cleaning, fighting, searching, ritual, medical care, escape, or another action appropriate to the circumstances.
 - The physical activity should make the power shift or emotional pressure visible.
@@ -1602,8 +1610,7 @@ Return exactly one complete SceneContent JSON object with:
   private isUnsafeSyntheticBeatText(text: string): boolean {
     return isPlanningRegisterText(text)
       || /\bserves\s+the\s+\w+\s+beat\b/i.test(text)
-      || /\bforward\s+pressure\s*:/i.test(text)
-      || /\bsceneEpisode\b/i.test(text);
+      || /\bforward\s+pressure\s*:/i.test(text);
   }
 
   private createSyntheticLeadInBeat(
@@ -1755,8 +1762,9 @@ Return exactly one complete SceneContent JSON object with:
 
     const structuralContext = buildStructuralContextSection({
       anchors: input.seasonAnchors,
-      sevenPoint: input.seasonSevenPoint,
-      episodeStructuralRole: input.episodeStructuralRole,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: input.episodeStoryCircleRole,
+      episodeCircle: input.episodeCircle,
     });
 
     return `
@@ -1901,10 +1909,10 @@ ${input.sceneBlueprint.stakesArchitectureContracts.map((c) => `- ${c.fieldName} 
 - Existential stakes must be grounded by personal/relational/identity stakes before they pay off. Foreshadow early danger if needed, but do not jump straight to abstract life-or-death scale.
 - Emotional anchors should be planted or used as concrete objects, places, promises, rituals, names, visual motifs, or relationship tells that carry future pressure.
 ` : ''}
-${input.sceneBlueprint.sevenPointBeatContracts?.length ? `
-### Seven-Point Beat Realization Contracts
+${input.sceneBlueprint.storyCircleBeatContracts?.length ? `
+### Legacy-Structure Beat Realization Contracts
 These authored Hook / Plot Turn / Pinch / Midpoint / Climax / Resolution contracts are binding for this scene. Do not paste the structural label into prose; stage the actual beat event and the state change it creates.
-${input.sceneBlueprint.sevenPointBeatContracts.map((c) => `- ${c.beat}: ${c.sourceText}; event atoms: ${joinPromptList(c.eventAtoms, ' | ', c.sourceText)}${c.stateChange ? `; visible state change: ${c.stateChange}` : ''}`).join('\n')}
+${input.sceneBlueprint.storyCircleBeatContracts.map((c) => `- ${c.beat}: ${c.sourceText}; event atoms: ${joinPromptList(c.eventAtoms, ' | ', c.sourceText)}${c.stateChange ? `; visible state change: ${c.stateChange}` : ''}`).join('\n')}
 - Give the beat a local before -> event -> after/handoff shape.
 - If this is a midpoint, pinch, climax, or resolution, make the recontextualization, cost, decisive choice, route consequence, or changed end state visible on-page.
 - Do not satisfy this with summary narration. Use action, reveal, choice pressure, altered access, information movement, relationship posture, or ending state.
@@ -2048,7 +2056,7 @@ ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with 
   createdAt: '',
 })))}
 ${input.cliffhangerPlan ? `
-## Seven-Point Cliffhanger Plan (CRITICAL if this is the episode's final scene)
+## Legacy-Structure Cliffhanger Plan (CRITICAL if this is the episode's final scene)
 - Style: ${input.cliffhangerPlan.style}
 - Structural role: ${input.cliffhangerPlan.mappedStructuralRole}
 - Type: ${input.cliffhangerPlan.type}

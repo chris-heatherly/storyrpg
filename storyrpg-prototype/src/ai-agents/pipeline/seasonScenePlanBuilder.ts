@@ -41,7 +41,7 @@ import { assignWorldTreatmentContractsToScenes } from '../utils/worldTreatmentCo
 import { assignBranchConsequenceContractsToScenes } from '../utils/branchConsequenceContracts';
 import { assignEndingRealizationContractsToScenes } from '../utils/endingRealizationContracts';
 import { assignFailureModeAuditContractsToScenes } from '../utils/failureModeAuditContracts';
-import { assignSevenPointBeatContractsToScenes } from '../utils/sevenPointBeatContracts';
+import { assignStoryCircleBeatContractsToScenes } from '../utils/storyCircleBeatContracts';
 import {
   buildEncounterEventSignature,
   compareEncounterEventSignatures,
@@ -50,6 +50,7 @@ import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObliga
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
+
 /**
  * When an episode carries more authored turns than the normal scene cap, we let
  * the spine grow to fit them rather than starve turns (§6 over-constraining
@@ -119,6 +120,9 @@ export function toSceneEncounter(enc: NonNullable<SeasonEpisode['plannedEncounte
     difficulty: enc.difficulty,
     relevantSkills: enc.relevantSkills ?? [],
     centralConflict: enc.centralConflict,
+    storyCircleTarget: enc.storyCircleTarget,
+    storyCircleTargetRationale: enc.storyCircleTargetRationale,
+    storyCircleTargetEvidence: enc.storyCircleTargetEvidence,
     aftermathConsequence: enc.aftermathConsequence,
     isBranchPoint: Boolean(enc.isBranchPoint),
     branchOutcomes: enc.branchOutcomes,
@@ -129,16 +133,64 @@ type EpisodePlannedEncounter = NonNullable<SeasonEpisode['plannedEncounters']>[n
 
 /**
  * Compose a planning-only dramatic purpose for a scene FRAMING (role + the
- * episode's 7-point beat). It no longer folds the authored episode turns into a
+ * episode's legacy-structure beat). It no longer folds the authored episode turns into a
  * single string — authored turns are now first-class {@link RequiredBeat}s bound
  * to the scene that lands them (see {@link buildEpisodeScenes}). Not player-facing.
  */
 function composeDramaticPurpose(
   role: SceneNarrativeRole,
   ep: SeasonEpisode,
-  sevenPointText: string | undefined,
+  legacyStructureText: string | undefined,
 ): string {
-  const structuralPressure = sevenPointText || `${roleLabel(ep.structuralRole)} pressure`;
+  const structuralPressure = episodeLocalStructuralPressure(ep)
+    || legacyStructureText
+    || `${roleLabel(ep.structuralRole)} pressure`;
+  switch (role) {
+    case 'setup':
+      return `Open the episode through its immediate question: ${structuralPressure}.`;
+    case 'development':
+      return `Escalate the episode pressure through a concrete turn: ${structuralPressure}.`;
+    case 'turn':
+      return `Reverse or reveal something the scene can no longer hide: ${structuralPressure}.`;
+    case 'payoff':
+      return `Pay off an earlier setup through visible action: ${structuralPressure}.`;
+    case 'release':
+      return `Let the fallout settle into the next pressure: ${structuralPressure}.`;
+    default:
+      return structuralPressure;
+  }
+}
+
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value?.replace(/\s+/g, ' ').trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function episodeLocalStructuralPressure(ep: SeasonEpisode): string | undefined {
+  const guidance = ep.treatmentGuidance;
+  if (!guidance) return undefined;
+  const localPressure = uniqueNonEmpty([
+    guidance.episodePromise,
+    guidance.openingSituation,
+    guidance.synopsis,
+    guidance.encounterBuildup,
+    ...(guidance.majorChoicePressures ?? []),
+    guidance.endingPressure,
+    guidance.cliffhangerHook,
+  ]);
+  if (localPressure.length === 0) return undefined;
+  return localPressure.slice(0, 4).join(' ');
+}
+
+function composeRoleOnlyDramaticPurpose(role: SceneNarrativeRole, ep: SeasonEpisode): string {
+  const structuralPressure = `${roleLabel(ep.structuralRole)} pressure`;
   switch (role) {
     case 'setup':
       return `Open the episode through its immediate question: ${structuralPressure}.`;
@@ -161,12 +213,55 @@ function composeDramaticPurpose(
  * staged device to `signature` via {@link PlannedScene.signatureMoment}.
  */
 function requiredBeatFromTurn(sceneId: string, beatIndex: number, turnText: string): RequiredBeat {
+  const requiredText = structuralTreatmentRequiredBeatText(turnText);
   return {
     id: `${sceneId}-rb${beatIndex + 1}`,
-    sourceTurn: turnText,
-    mustDepict: turnText,
+    sourceTurn: requiredText,
+    mustDepict: requiredText,
     tier: 'authored',
   };
+}
+
+type StructuralTreatmentSegments = Partial<Record<'hook' | 'promise' | 'stakes', string>>;
+
+function cleanupStructuralSegment(text: string): string {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/[;,\s]+$/g, '')
+    .trim();
+}
+
+function structuralTreatmentSegments(text: string): StructuralTreatmentSegments | undefined {
+  const matches = Array.from(text.matchAll(/\b(hook|promise|stakes)\s*(?:—|-|:)\s*/gi));
+  if (matches.length === 0) return undefined;
+  const segments: StructuralTreatmentSegments = {};
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const label = match[1].toLowerCase() as keyof StructuralTreatmentSegments;
+    const start = (match.index ?? 0) + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index ?? text.length : text.length;
+    const segment = cleanupStructuralSegment(text.slice(start, end).replace(/^\s*[;:,-]+\s*/, ''));
+    if (segment) segments[label] = segment;
+  }
+  return segments;
+}
+
+function structuralTreatmentRequiredBeatTexts(text: string): string[] {
+  const segments = structuralTreatmentSegments(text);
+  if (!segments) return [text];
+
+  const concrete = [segments.hook, segments.stakes]
+    .filter((segment): segment is string => Boolean(segment?.trim()))
+    .map((segment) => segment.trim());
+  if (concrete.length > 0) return Array.from(new Set(concrete));
+
+  const fallback = Object.values(segments).find((segment) => segment?.trim());
+  return fallback ? [fallback] : [text];
+}
+
+function structuralTreatmentRequiredBeatText(text: string): string {
+  return structuralTreatmentRequiredBeatTexts(text).join('; ');
 }
 
 function roleAfterState(role: SceneNarrativeRole): string {
@@ -948,6 +1043,64 @@ export function promoteCoveredAuthoredEncounters(
   });
 }
 
+function highPressureSignatureForText(value: string | undefined) {
+  const signature = buildEncounterEventSignature([value]);
+  if (
+    signature.pressureActions.size === 0
+    || signature.isSetupOnly
+    || signature.isReferenceOnly
+  ) {
+    return undefined;
+  }
+  return signature;
+}
+
+function sceneRequiredEventTexts(scene: PlannedScene): string[] {
+  return [
+    scene.signatureMoment,
+    ...(scene.requiredBeats ?? [])
+      .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature' || beat.tier === 'coldopen')
+      .flatMap((beat) => [beat.mustDepict, beat.sourceTurn]),
+  ].filter((text): text is string => Boolean(text?.trim()));
+}
+
+function sceneHasMatchingRequiredEvent(scene: PlannedScene, purposeSignature: ReturnType<typeof highPressureSignatureForText>): boolean {
+  if (!purposeSignature) return true;
+  for (const text of sceneRequiredEventTexts(scene)) {
+    const requiredSignature = highPressureSignatureForText(text);
+    if (!requiredSignature) continue;
+    if (compareEncounterEventSignatures(purposeSignature, requiredSignature).matched) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function standardScenePurposeLooksUnsupported(scene: PlannedScene): boolean {
+  if (scene.kind !== 'standard') return false;
+  const purposeSignature = highPressureSignatureForText(scene.dramaticPurpose);
+  return Boolean(purposeSignature && !sceneHasMatchingRequiredEvent(scene, purposeSignature));
+}
+
+function refreshPlannerDerivedTurnContract(scene: PlannedScene): void {
+  if (!scene.turnContract || scene.turnContract.source === 'planner') {
+    scene.turnContract = inferPlannerTurnContract(scene);
+  }
+}
+
+function repairUnsupportedPlanningEventPurposes(ep: SeasonEpisode, scenes: PlannedScene[]): void {
+  for (const scene of scenes) {
+    if (!standardScenePurposeLooksUnsupported(scene)) continue;
+    let replacement = composeDramaticPurpose(scene.narrativeRole, ep, undefined);
+    const replacementSignature = highPressureSignatureForText(replacement);
+    if (replacementSignature && !sceneHasMatchingRequiredEvent(scene, replacementSignature)) {
+      replacement = composeRoleOnlyDramaticPurpose(scene.narrativeRole, ep);
+    }
+    scene.dramaticPurpose = replacement;
+    refreshPlannerDerivedTurnContract(scene);
+  }
+}
+
 /**
  * The episode location whose name a beat's text names, or undefined. Used to pin a
  * scene's setting to the place its authored turn actually happens — the deterministic
@@ -975,6 +1128,37 @@ function matchBeatLocation(text: string | undefined, locations: string[]): strin
     }
   }
   return bestScore > 0 ? best : undefined;
+}
+
+function inferAuthoredLocationFromText(text: string | undefined, locations: string[]): string | undefined {
+  const declared = matchBeatLocation(text, locations);
+  if (declared) return declared;
+
+  const normalized = (text ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!normalized.trim()) return undefined;
+
+  const declaredMatch = (pattern: RegExp) => locations.find((loc) =>
+    pattern.test(loc.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+  );
+  if (/\b(?:cismigiu|park|gardens?)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:cismigiu|park|garden)/) || 'Cișmigiu Gardens';
+  }
+  if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:rooftop|roof|bar)/) || 'Rooftop Bar';
+  }
+  if (/\b(?:valcescu|club|key card|side entrance)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:valcescu|club)/) || 'Vâlcescu Club';
+  }
+  if (/\b(?:bookshop|bookstore|lumina|quartz|crystal)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:book|lumina)/) || 'Lumina Books';
+  }
+  if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:estate|country|maze|garden)/) || "Victor's Estate";
+  }
+  return undefined;
 }
 
 /**
@@ -1160,7 +1344,7 @@ export function bindAuthoredTurnsToScenes(
       // Pin the scene's setting to the place its authored turn names (when it names a
       // declared episode location), overriding the deterministic collapse-to-first.
       // Only the LAST naming turn per scene wins (rare; a scene maps to ~1 turn).
-      const namedLocation = matchBeatLocation(turns[t], ep.locations ?? []);
+      const namedLocation = inferAuthoredLocationFromText(turns[t], ep.locations ?? []);
       if (namedLocation) scene.locations = [namedLocation];
     }
     turnTargets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));
@@ -1174,6 +1358,8 @@ export function bindAuthoredTurnsToScenes(
       || targets[targets.length - 1];
     if (anchor) {
       anchor.signatureMoment = visualAnchor;
+      const namedLocation = inferAuthoredLocationFromText(visualAnchor, ep.locations ?? []);
+      if (namedLocation) anchor.locations = [namedLocation];
       const beatIndex = anchor.requiredBeats?.length ?? 0;
       appendRequiredBeats(anchor, [
         {
@@ -1202,7 +1388,10 @@ export function bindAuthoredTurnsToScenes(
   // are texture/foreshadow and FP-prone to enforce. g17 dropped the entire ep1 cold open (the
   // Sadie FaceTime + grandmother's-chain hook) as an advisory seed; this lets a dedicated gate
   // catch + re-author it instead of shipping a silent warning.
-  if (coldOpen) seedSpecs.push({ text: coldOpen, toOpening: true, tier: 'coldopen' });
+  if (coldOpen) {
+    const text = structuralTreatmentRequiredBeatText(coldOpen);
+    seedSpecs.push({ text, sourceTurn: text, toOpening: true, tier: 'coldopen' });
+  }
   for (const seed of guidance?.consequenceSeeds ?? []) {
     const text = seed?.trim();
     if (text) seedSpecs.push({ text, toOpening: false, tier: 'seed' });
@@ -1256,17 +1445,17 @@ export function bindAuthoredTurnsToScenes(
   assignTreatmentFieldContractsToScenes(ep, scenes);
 }
 
-/** Resolve the 7-point beat text an episode carries (undefined for buffer roles). */
-export function sevenPointTextForEpisode(plan: SeasonPlan, ep: SeasonEpisode): string | undefined {
+/** Resolve the legacy-structure beat text an episode carries (undefined for buffer roles). */
+export function legacyStructureTextForEpisode(plan: SeasonPlan, ep: SeasonEpisode): string | undefined {
   const role = ep.structuralRole?.[0];
   if (!role || role === 'rising' || role === 'falling') return undefined;
-  return plan.sevenPoint?.[role];
+  return plan.legacyStructure?.[role];
 }
 
 /** Build the ordered list of scenes for a single episode. */
 export function buildEpisodeScenes(
   ep: SeasonEpisode,
-  sevenPointText: string | undefined,
+  legacyStructureText: string | undefined,
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
 ): PlannedScene[] {
   const encounters = ep.plannedEncounters ?? [];
@@ -1276,16 +1465,9 @@ export function buildEpisodeScenes(
       .filter((enc) => encounterIsCoveredByAuthoredTurns(enc, turns))
       .map((enc) => enc.id),
   );
-  const actLabel = ep.treatmentGuidance?.actLabel;
-  const arcLabel = ep.treatmentGuidance?.arcLabel;
   const locations = ep.locations ?? [];
   const npcs = ep.mainCharacters ?? [];
 
-  // sceneEpisodes mode: the season planner sets targetScenesPerEpisode to 1.
-  // We honor that by emitting a minimal spine (the encounter if present, else a
-  // single standard scene) — the "1" is a soft target, so multiple encounters
-  // still each get a scene.
-  //
   // Budget the scene count from max(estimatedSceneCount, authoredTurnCount) so an
   // episode that authored more turns than its estimate gets enough scenes to land
   // every turn as a required beat instead of starving turns (§3.2, §6).
@@ -1304,15 +1486,13 @@ export function buildEpisodeScenes(
       order,
       kind: 'standard',
       title: `${role} scene ${order + 1}`,
-      dramaticPurpose: composeDramaticPurpose(role, ep, sevenPointText),
+      dramaticPurpose: composeDramaticPurpose(role, ep, legacyStructureText),
       narrativeRole: role,
       locations: locations.slice(0, 1),
       npcsInvolved: npcs.slice(0, 3),
       setsUp: [],
       paysOff: [],
       stakes: ep.synopsis,
-      actLabel,
-      arcLabel,
       // Budget seed: mark choice-bearing standard scenes so the allocator picks
       // them up as weighted units. choiceType/consequenceTier stay unset here —
       // the allocator owns those.
@@ -1337,15 +1517,16 @@ export function buildEpisodeScenes(
       // treatment (G12 endsong: boilerplate here starved EncounterArchitect).
       dramaticPurpose: enc.description
         ? `${enc.description}${enc.centralConflict ? ` — Central conflict: ${enc.centralConflict}` : ''}`
-        : composeDramaticPurpose('turn', ep, sevenPointText),
+        : composeDramaticPurpose('turn', ep, legacyStructureText),
       narrativeRole: 'turn',
-      locations: locations.slice(0, 1),
+      locations: [inferAuthoredLocationFromText(
+        [enc.description, enc.centralConflict, enc.stakes].filter(Boolean).join(' '),
+        locations,
+      ) || locations[0]].filter((location): location is string => Boolean(location)),
       npcsInvolved: enc.npcsInvolved ?? npcs.slice(0, 3),
       setsUp: [],
       paysOff: [],
       stakes: enc.stakes,
-      actLabel,
-      arcLabel,
       encounter,
       // Budget seed: every encounter is a budgeted unit at encounter weight.
       hasChoice: true,
@@ -1379,10 +1560,26 @@ export function buildEpisodeScenes(
     pushStandard('release');
   }
 
+  const openingScene = scenes.find((scene) => scene.narrativeRole === 'setup') ?? scenes[0];
+  if (ep.treatmentGuidance && openingScene && ep.structuralRole?.includes('hook') && legacyStructureText?.trim()) {
+    const hookText = legacyStructureText.trim();
+    appendRequiredBeats(openingScene, [
+      {
+        id: `${openingScene.id}-hook1`,
+        sourceTurn: hookText,
+        mustDepict: hookText,
+        tier: 'coldopen',
+      },
+    ]);
+    const namedLocation = inferAuthoredLocationFromText(hookText, locations);
+    if (namedLocation) openingScene.locations = [namedLocation];
+  }
+
   // Bind authored turns + the signature device deterministically (shared with the
   // LLM-authored path). This is the single source of truth for turn→scene binding.
   bindAuthoredTurnsToScenes(ep, scenes, infoLedger);
   promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
+  repairUnsupportedPlanningEventPurposes(ep, scenes);
 
   return scenes;
 }
@@ -1409,16 +1606,16 @@ function payoffSceneId(scenes: PlannedScene[]): string | undefined {
  * `setupPayoffEdges` are derived from the season's cross-episode structures.
  */
 export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
-  const sevenPoint = plan.sevenPoint;
+  const legacyStructure = plan.legacyStructure;
   const episodes = [...plan.episodes].sort((a, b) => a.episodeNumber - b.episodeNumber);
 
   const scenesByEpisode = new Map<number, PlannedScene[]>();
   for (const ep of episodes) {
     const role = ep.structuralRole?.[0];
-    const sevenPointText = role && role !== 'rising' && role !== 'falling'
-      ? sevenPoint?.[role]
+    const legacyStructureText = role && role !== 'rising' && role !== 'falling'
+      ? legacyStructure?.[role]
       : undefined;
-    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointText, plan.informationLedger));
+    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureText, plan.informationLedger));
   }
 
   // Resolve setup/payoff edges from the season's cross-episode structures.
@@ -1486,7 +1683,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   const binding = rebindPlannedSceneObligations(rawScenes);
   const scenes = binding.scenes;
   const seasonPromiseContracts = assignSeasonPromiseContractsToScenes(plan, scenes);
-  const sevenPointBeatContracts = assignSevenPointBeatContractsToScenes(plan, scenes);
+  const storyCircleBeatContracts = assignStoryCircleBeatContractsToScenes(plan, scenes);
   const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
   const characterTreatmentContracts = assignCharacterTreatmentContractsToScenes(plan, scenes);
   const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
@@ -1504,7 +1701,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     setupPayoffEdges: edges,
     authoredTreatmentFields: binding.planLevelAuthoredTreatmentFields,
     seasonPromiseContracts,
-    sevenPointBeatContracts,
+    storyCircleBeatContracts,
     arcPressureContracts,
     stakesArchitectureContracts,
     branchConsequenceContracts,

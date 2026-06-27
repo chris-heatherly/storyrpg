@@ -17,6 +17,9 @@
  *   - 'autofix'   : mutates/repairs in place rather than gating.
  */
 
+import type { ArtifactKind } from '../pipeline/artifacts/types';
+import { GATE_REGISTRY, type GatePlacement } from '../remediation/gateRegistry';
+
 export type ValidatorStage =
   | 'season' // SeasonPlannerAgent.finalizePlan
   | 'architecture' // StoryArchitect.validateBlueprint (per-episode)
@@ -27,6 +30,27 @@ export type ValidatorStage =
   | 'final'; // final story assembly gate
 
 export type ValidatorTier = 'blocking' | 'advisory' | 'autofix';
+
+export type ValidatorLifecycle =
+  | 'source-analysis'
+  | 'season-plan'
+  | 'episode-architecture'
+  | 'phase-validation'
+  | 'quick-validation'
+  | 'full-qa'
+  | 'narrative-diagnostics'
+  | 'plan-fidelity'
+  | 'episode-contract'
+  | 'final-contract'
+  | 'artifact-package';
+
+export type ValidatorExecutionRole =
+  | 'primary'
+  | 'regression-net'
+  | 'shadow'
+  | 'repair-router'
+  | 'aggregate'
+  | 'artifact-only';
 
 /**
  * Where a failed validator's repair lands (S1 gating plan). 'plan-time' fixes the
@@ -53,15 +77,52 @@ export interface ValidatorRegistryEntry {
   rolloutFlag?: string;
   /** Max remediation attempts before the failure is surfaced/escalated. */
   maxRemediationAttempts?: number;
+  /** Canonical lifecycle owner. Defaults from `stage` for legacy entries. */
+  lifecycle?: ValidatorLifecycle;
+  /** Execution role at the owning lifecycle. Defaults to `primary`. */
+  role?: ValidatorExecutionRole;
+  /** Runtime gate placement, checked against `GATE_REGISTRY` when rolloutFlag exists. */
+  gatePlacement?: GatePlacement;
+  /** Artifact contracts this validator contributes to. */
+  artifactKinds?: ArtifactKind[];
+  /** Blocking entries should have repair coverage unless explicitly allowlisted. */
+  repairRequiredForBlocking?: boolean;
+  /** Written exception for legacy hard gates that intentionally lack repair. */
+  allowBlockingWithoutRepair?: string;
+}
+
+export interface ArtifactValidatorOwnershipEntry {
+  validator: string;
+  artifactKinds: ArtifactKind[];
+  role: Extract<ValidatorExecutionRole, 'artifact-only' | 'primary' | 'regression-net'>;
+}
+
+export type ArtifactGateTier = 'blocking' | 'advisory';
+
+export interface ArtifactContractEntry {
+  id: string;
+  artifactKind: ArtifactKind;
+  /**
+   * Artifact gate tier describes the contract applied when artifact validation is
+   * executed. It is independent from ValidatorRegistryEntry.tier; advisory
+   * runtime validators can still provide evidence for a blocking artifact
+   * contract without changing runtime enforcement.
+   */
+  tier: ArtifactGateTier;
+  contract: string;
+}
+
+export interface ArtifactGateDefinition extends ArtifactContractEntry {
+  validators: string[];
 }
 
 export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Season planning (SeasonPlannerAgent.finalizePlan) ---
-  // 7-point spine GATE (tier 1, blocking): SeasonPlanner.execute throws when the season's
-  // 3-act/7-point spine is incomplete or out of canonical order. (Tier 2 — each episode's
-  // blueprint must realize its assigned beats — is an inline validateBlueprint throw in
-  // StoryArchitect, like the scene-count/branching checks, so it has no separate registry row.)
-  { validator: 'SevenPointCoverageValidator', stage: 'season', tier: 'blocking', dispatchedFrom: 'SeasonPlannerAgent (execute)' },
+  // Story Circle spine GATE (tier 1, blocking): SeasonPlanner.execute throws when the
+  // eight-beat Story Circle spine is incomplete, out of canonical order, or non-contiguous.
+  // Tier 2 — each episode blueprint must fill all eight episodeCircle beats — is an
+  // inline validateBlueprint throw in StoryArchitect.
+  { validator: 'StoryCircleCoverageValidator', stage: 'season', tier: 'blocking', dispatchedFrom: 'SeasonPlannerAgent (execute)' },
   { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_ARC_PRESSURE', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'CharacterArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'SeasonPromiseValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
@@ -133,7 +194,6 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
 
   // --- Final assembly gate ---
   { validator: 'StructuralValidator', stage: 'final', tier: 'autofix', dispatchedFrom: 'FullStoryPipeline' },
-  { validator: 'MicroEpisodeSeasonValidator', stage: 'final', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },
   { validator: 'FinalStoryContractValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'ResidueObligationValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_RESIDUE_CONSUME', dispatchedFrom: 'FinalStoryContractValidator (planned residue source of truth)' },
   { validator: 'EncounterQualityValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
@@ -160,7 +220,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Treatment-fidelity guardrails (Remediation §4.1–§4.5) ---
   // The five NEW validators that assert the generated story is a faithful EXPANSION
   // of the authored treatment (episode identity, encounter-anchor content, INFO
-  // schedule, signature devices, 7-point anchoring) rather than a re-cut. All are
+  // schedule, signature devices, Story Circle anchoring) rather than a re-cut. All are
   // tiered 'blocking' (§4 calls them blocking) but ship DEFAULT-OFF behind a per-rule
   // rollout flag (treatmentFidelityGate.ts); with every flag unset they never gate.
   // §4.6: when the source is an authored treatment, FinalStoryContractValidator does
@@ -172,9 +232,10 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'EncounterAnchorContentValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_ANCHOR_CONTENT', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'InformationLedgerScheduleValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_INFORMATION_LEDGER_SCHEDULE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   { validator: 'SignatureDevicePresenceValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SIGNATURE_DEVICE_PRESENCE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
-  { validator: 'SevenPointAnchorConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract as net)' },
+  { validator: 'StoryCircleAnchorConformanceValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE', dispatchedFrom: 'FullStoryPipeline (runPlanTimeFidelityChecks pre-generation; enforceFinalStoryContract as net)' },
 
   // --- Gen-4 audit follow-ups (default-off; the metric is always recorded) ---
+  { validator: 'SceneGraphBranchValidator', stage: 'final', tier: 'advisory', remediation: 'regen-choices', dispatchedFrom: 'FullStoryPipeline (validateSceneGraphBranching)' },
   // Dead-branch: a planned multi-target branch point whose choices collapsed to a
   // single target (assembled linear). GATE_BRANCH_FANOUT promotes it to an error.
   { validator: 'SceneGraphBranchValidator (branch-fan-out class)', stage: 'final', tier: 'advisory', remediation: 'regen-choices', rolloutFlag: 'GATE_BRANCH_FANOUT', dispatchedFrom: 'FullStoryPipeline (validateSceneGraphBranching)' },
@@ -216,6 +277,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // must originate in visible story evidence, leave residue, and be spent as earned
   // narrative permission.
   { validator: 'NarrativeMechanicPressureValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_NARRATIVE_MECHANIC_PRESSURE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Sustained set pieces must preserve escalating encounter structure instead of
+  // collapsing to one decision plus summary.
+  { validator: 'EncounterSetPieceDepthValidator', stage: 'final', tier: 'blocking', remediation: 'regen-encounter', rolloutFlag: 'GATE_ENCOUNTER_SETPIECE_DEPTH', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Standard-scene required beats must be dramatized on-page, not merely present
+  // in scene-plan metadata.
+  { validator: 'RequiredBeatRealizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_REQUIRED_BEAT_REALIZATION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Treatment field utilization: every parsed authored treatment field must be
   // consumed into a plan artifact and realized on-page as story pressure,
   // encounter content, choice pressure, information movement, consequence
@@ -248,4 +315,401 @@ export function blockingValidators(): string[] {
 /** Remediation route declared for a validator (by name), or undefined if none/unknown. */
 export function remediationRoute(validator: string): ValidatorRemediation | undefined {
   return VALIDATOR_REGISTRY.find((e) => e.validator === validator)?.remediation;
+}
+
+export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
+  { validator: 'AuthoredEpisodeConformanceValidator', artifactKinds: ['source-analysis'], role: 'primary' },
+  { validator: 'StoryCircleAnchorConformanceValidator', artifactKinds: ['source-analysis'], role: 'primary' },
+  { validator: 'TreatmentFidelityValidator', artifactKinds: ['source-analysis'], role: 'primary' },
+  { validator: 'quoteRecallValidator', artifactKinds: ['source-analysis'], role: 'artifact-only' },
+  { validator: 'SignatureDevicePresenceValidator', artifactKinds: ['source-analysis'], role: 'primary' },
+
+  { validator: 'StoryCircleCoverageValidator', artifactKinds: ['season-plan'], role: 'primary' },
+  { validator: 'SeasonPromiseValidator', artifactKinds: ['season-plan'], role: 'primary' },
+  { validator: 'SeasonBudgetValidator', artifactKinds: ['season-plan'], role: 'artifact-only' },
+  { validator: 'ArcPressureArchitectureValidator', artifactKinds: ['season-plan'], role: 'primary' },
+  { validator: 'InformationLedgerScheduleValidator', artifactKinds: ['season-plan'], role: 'primary' },
+  { validator: 'ConsequenceBudgetValidator', artifactKinds: ['season-plan'], role: 'primary' },
+
+  { validator: 'CharacterArchitectureValidator', artifactKinds: ['character-bible'], role: 'primary' },
+  { validator: 'NPCDepthValidator', artifactKinds: ['character-bible'], role: 'primary' },
+  { validator: 'CharacterIntroductionValidator', artifactKinds: ['character-bible'], role: 'primary' },
+
+  { validator: 'ArcDeltaValidator', artifactKinds: ['character-arc-plan'], role: 'primary' },
+  { validator: 'CharacterArcTracker', artifactKinds: ['character-arc-plan'], role: 'artifact-only' },
+
+  { validator: 'NPCDepthValidator', artifactKinds: ['npc-payoff-ledger'], role: 'primary' },
+  { validator: 'ReferencedEventPresenceValidator', artifactKinds: ['npc-payoff-ledger'], role: 'artifact-only' },
+  { validator: 'SetupPayoffValidator', artifactKinds: ['npc-payoff-ledger'], role: 'primary' },
+
+  { validator: 'SetupPayoffValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
+  { validator: 'CallbackCoverageValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
+  { validator: 'CallbackOpportunitiesValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
+
+  { validator: 'InformationLedgerValidator', artifactKinds: ['information-ledger'], role: 'primary' },
+  { validator: 'InformationLedgerScheduleValidator', artifactKinds: ['information-ledger'], role: 'primary' },
+
+  { validator: 'DramaticStructureValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
+  { validator: 'EpisodePressureArchitectureValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
+  { validator: 'RequiredBeatRealizationValidator', artifactKinds: ['episode-blueprint'], role: 'artifact-only' },
+  { validator: 'EncounterAnchorContentValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
+  { validator: 'TreatmentFidelityValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
+
+  { validator: 'SceneGraphBranchValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+  { validator: 'SceneTurnContractValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+  { validator: 'SceneSpineValidator', artifactKinds: ['scene-plan'], role: 'artifact-only' },
+  { validator: 'SceneTransitionContinuityValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+  { validator: 'ArcPressureArchitectureValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+  { validator: 'TreatmentSeedOnPageValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+
+  { validator: 'DivergenceValidator', artifactKinds: ['branch-plan'], role: 'primary' },
+  { validator: 'BranchMechanicalDivergenceValidator', artifactKinds: ['branch-plan'], role: 'primary' },
+  { validator: 'SceneGraphBranchValidator', artifactKinds: ['branch-plan'], role: 'primary' },
+  { validator: 'ConvergenceLedgerValidator', artifactKinds: ['branch-plan'], role: 'artifact-only' },
+  { validator: 'EndingReachabilityValidator', artifactKinds: ['branch-plan'], role: 'primary' },
+
+  { validator: 'ChoiceDensityValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+  { validator: 'ChoiceDistributionValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+  { validator: 'ChoiceImpactValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+  { validator: 'ChoiceTypePlanConformanceValidator', artifactKinds: ['choice-consequence-plan'], role: 'artifact-only' },
+  { validator: 'ConsequenceBudgetValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+  { validator: 'FlagContractValidator', artifactKinds: ['choice-consequence-plan'], role: 'artifact-only' },
+  { validator: 'SkillSurfaceValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+  { validator: 'StatCheckBalanceValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+  { validator: 'MechanicsLeakageValidator', artifactKinds: ['choice-consequence-plan'], role: 'primary' },
+
+  { validator: 'EncounterAnchorContentValidator', artifactKinds: ['encounter-plan'], role: 'primary' },
+  { validator: 'EncounterQualityValidator', artifactKinds: ['encounter-plan'], role: 'primary' },
+  { validator: 'EncounterSetPieceDepthValidator', artifactKinds: ['encounter-plan'], role: 'artifact-only' },
+  { validator: 'BranchMechanicalDivergenceValidator', artifactKinds: ['encounter-plan'], role: 'primary' },
+  { validator: 'OutcomeTextQualityValidator', artifactKinds: ['encounter-plan'], role: 'artifact-only' },
+
+  { validator: 'StructuralValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'FinalStoryContractValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'MechanicsLeakageValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'SceneGraphBranchValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'ArcDeltaValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'SetupPayoffValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'TreatmentFidelityValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'storyPathAnalyzer', artifactKinds: ['runtime-episode'], role: 'artifact-only' },
+
+  { validator: 'decodeStory', artifactKinds: ['story-package'], role: 'artifact-only' },
+  { validator: 'storyAssetWalker', artifactKinds: ['story-package'], role: 'artifact-only' },
+  { validator: 'FinalStoryContractValidator', artifactKinds: ['story-package'], role: 'primary' },
+  { validator: 'validate-assets', artifactKinds: ['story-package'], role: 'artifact-only' },
+  { validator: 'check-reader-boundary', artifactKinds: ['story-package'], role: 'artifact-only' },
+];
+
+export const ARTIFACT_CONTRACT_REGISTRY: ArtifactContractEntry[] = [
+  {
+    id: 'source-analysis-source-contract',
+    artifactKind: 'source-analysis',
+    tier: 'blocking',
+    contract: 'Preserve source identity, authored episode order, required beats, quote anchors, signature devices, and Story Circle anchors.',
+  },
+  {
+    id: 'season-plan-structure-contract',
+    artifactKind: 'season-plan',
+    tier: 'blocking',
+    contract: 'Preserve season spine, promise architecture, arc pressure, episode dependencies, information schedule, and consequence budget.',
+  },
+  {
+    id: 'character-bible-npc-contract',
+    artifactKind: 'character-bible',
+    tier: 'blocking',
+    contract: 'Preserve valid NPC identities, character architecture, role/voice consistency, introductions, and relationship trajectory readiness.',
+  },
+  {
+    id: 'character-arc-contract',
+    artifactKind: 'character-arc-plan',
+    tier: 'blocking',
+    contract: 'Preserve protagonist identity deltas, NPC relationship trajectories, milestone targets, and per-episode required movement.',
+  },
+  {
+    id: 'npc-payoff-contract',
+    artifactKind: 'npc-payoff-ledger',
+    tier: 'blocking',
+    contract: 'Track NPC-specific promises, relationship consequences, debts, secrets, tells, reversals, reconciliations, and payoffs.',
+  },
+  {
+    id: 'thread-callback-contract',
+    artifactKind: 'thread-ledger',
+    tier: 'blocking',
+    contract: 'Preserve setup/payoff coupling, callback due episodes, plants, payoffs, abandoned hooks, and overdue hooks.',
+  },
+  {
+    id: 'information-ledger-contract',
+    artifactKind: 'information-ledger',
+    tier: 'blocking',
+    contract: 'Preserve clues, mysteries, withheld knowledge, reveal/payoff schedule, audience knowledge state, and related flags.',
+  },
+  {
+    id: 'episode-blueprint-contract',
+    artifactKind: 'episode-blueprint',
+    tier: 'blocking',
+    contract: 'Preserve Story Circle role, episodeCircle, central conflict, arc movement, NPC payoffs, due callbacks, reveals, encounter purpose, and treatment beats.',
+  },
+  {
+    id: 'scene-plan-contract',
+    artifactKind: 'scene-plan',
+    tier: 'blocking',
+    contract: 'Preserve scene-first graph reachability, bottlenecks, reconvergence, turn contracts, pressure architecture, and setup/payoff placement.',
+  },
+  {
+    id: 'branch-plan-contract',
+    artifactKind: 'branch-plan',
+    tier: 'blocking',
+    contract: 'Preserve branch-and-bottleneck topology, no expression branching, reconvergence, branch residue, and cross-episode branch axes.',
+  },
+  {
+    id: 'choice-consequence-contract',
+    artifactKind: 'choice-consequence-plan',
+    tier: 'blocking',
+    contract: 'Preserve choice density/distribution, five-factor impact, stakes triangle, consequence tiering, flag contracts, skill surfaces, and fiction-first mechanics.',
+  },
+  {
+    id: 'encounter-plan-contract',
+    artifactKind: 'encounter-plan',
+    tier: 'blocking',
+    contract: 'Preserve encounter conflict manifestation, depth, clocks, NPC states, escalation, partial-victory cost, storylets, and playable failure.',
+  },
+  {
+    id: 'runtime-episode-contract',
+    artifactKind: 'runtime-episode',
+    tier: 'blocking',
+    contract: 'Preserve playable runtime Episode shape, valid targets, terminal routing, no unresolved templates, no mechanics leakage, arc movement, and path traversal.',
+  },
+  {
+    id: 'story-package-contract',
+    artifactKind: 'story-package',
+    tier: 'blocking',
+    contract: 'Preserve package decode, asset resolution, manifest integrity, reader safety, and playable exported content.',
+  },
+];
+
+export interface NormalizedValidatorOwnershipEntry extends ValidatorRegistryEntry {
+  lifecycle: ValidatorLifecycle;
+  role: ValidatorExecutionRole;
+}
+
+export interface ValidatorOwnershipViolation {
+  validator: string;
+  problem: string;
+}
+
+export interface ValidateValidatorOwnershipRegistryOptions {
+  validatorRegistry?: readonly ValidatorRegistryEntry[];
+  artifactValidatorOwnership?: readonly ArtifactValidatorOwnershipEntry[];
+  artifactContractRegistry?: readonly ArtifactContractEntry[];
+  intentionallyUngatedArtifactKinds?: ReadonlySet<ArtifactKind>;
+}
+
+const gateById = new Map(GATE_REGISTRY.map((gate) => [gate.id, gate]));
+
+function lifecycleForStage(stage: ValidatorStage): ValidatorLifecycle {
+  switch (stage) {
+    case 'season':
+      return 'season-plan';
+    case 'architecture':
+      return 'episode-architecture';
+    case 'phase':
+      return 'phase-validation';
+    case 'quick':
+      return 'quick-validation';
+    case 'full':
+      return 'full-qa';
+    case 'diagnostic':
+      return 'narrative-diagnostics';
+    case 'final':
+      return 'final-contract';
+  }
+}
+
+function normalizeEntry(entry: ValidatorRegistryEntry): NormalizedValidatorOwnershipEntry {
+  return {
+    ...entry,
+    lifecycle: entry.lifecycle ?? lifecycleForStage(entry.stage),
+    role: entry.role ?? 'primary',
+  };
+}
+
+export function validatorById(validator: string): NormalizedValidatorOwnershipEntry | undefined {
+  const entry = VALIDATOR_REGISTRY.find((candidate) => candidate.validator === validator);
+  return entry ? normalizeEntry(entry) : undefined;
+}
+
+export function validatorsForLifecycle(lifecycle: ValidatorLifecycle): NormalizedValidatorOwnershipEntry[] {
+  return VALIDATOR_REGISTRY.map(normalizeEntry).filter((entry) => entry.lifecycle === lifecycle);
+}
+
+export function validatorForGate(flag: string): NormalizedValidatorOwnershipEntry | undefined {
+  const entry = VALIDATOR_REGISTRY.find((candidate) => candidate.rolloutFlag === flag);
+  return entry ? normalizeEntry(entry) : undefined;
+}
+
+export function artifactValidatorsForKind(
+  kind: ArtifactKind,
+  ownership: readonly ArtifactValidatorOwnershipEntry[] = ARTIFACT_VALIDATOR_OWNERSHIP,
+): ArtifactValidatorOwnershipEntry[] {
+  const seen = new Set<string>();
+  const result: ArtifactValidatorOwnershipEntry[] = [];
+  for (const entry of ownership) {
+    if (!entry.artifactKinds.includes(kind) || seen.has(entry.validator)) continue;
+    seen.add(entry.validator);
+    result.push(entry);
+  }
+  return result;
+}
+
+export function validatorNamesForArtifact(kind: ArtifactKind): string[] {
+  return artifactValidatorsForKind(kind).map((entry) => entry.validator);
+}
+
+export function artifactContractForKind(
+  kind: ArtifactKind,
+  contracts: readonly ArtifactContractEntry[] = ARTIFACT_CONTRACT_REGISTRY,
+): ArtifactContractEntry | undefined {
+  return contracts.find((entry) => entry.artifactKind === kind);
+}
+
+export function artifactGateDefinitions(
+  contracts: readonly ArtifactContractEntry[] = ARTIFACT_CONTRACT_REGISTRY,
+  ownership: readonly ArtifactValidatorOwnershipEntry[] = ARTIFACT_VALIDATOR_OWNERSHIP,
+): ArtifactGateDefinition[] {
+  return contracts.map((contract) => ({
+    ...contract,
+    validators: artifactValidatorsForKind(contract.artifactKind, ownership).map((entry) => entry.validator),
+  }));
+}
+
+export function artifactGatesForKind(kind: ArtifactKind): ArtifactGateDefinition[] {
+  return artifactGateDefinitions().filter((gate) => gate.artifactKind === kind);
+}
+
+export function blockingArtifactGatesForKind(kind: ArtifactKind): ArtifactGateDefinition[] {
+  return artifactGatesForKind(kind).filter((gate) => gate.tier === 'blocking');
+}
+
+export function validateValidatorOwnershipRegistry(
+  options: ValidateValidatorOwnershipRegistryOptions = {},
+): ValidatorOwnershipViolation[] {
+  const violations: ValidatorOwnershipViolation[] = [];
+  const validatorRegistry = options.validatorRegistry ?? VALIDATOR_REGISTRY;
+  const artifactValidatorOwnership = options.artifactValidatorOwnership ?? ARTIFACT_VALIDATOR_OWNERSHIP;
+  const artifactContractRegistry = options.artifactContractRegistry ?? ARTIFACT_CONTRACT_REGISTRY;
+  const intentionallyUngatedArtifactKinds = options.intentionallyUngatedArtifactKinds ?? new Set<ArtifactKind>();
+  const knownValidators = new Set(validatorRegistry.map((entry) => entry.validator));
+
+  for (const entry of validatorRegistry) {
+    if (!entry.rolloutFlag) continue;
+    const gate = gateById.get(entry.rolloutFlag);
+    if (!gate) {
+      violations.push({
+        validator: entry.validator,
+        problem: `references unknown rolloutFlag ${entry.rolloutFlag}`,
+      });
+      continue;
+    }
+    if (entry.gatePlacement && entry.gatePlacement !== gate.placement && !gate.auditPlacements?.includes(entry.gatePlacement)) {
+      violations.push({
+        validator: entry.validator,
+        problem: `gatePlacement ${entry.gatePlacement} is not registered for ${entry.rolloutFlag}`,
+      });
+    }
+    const repairFirstViolation =
+      entry.tier === 'blocking' &&
+      gate.defaultOn &&
+      gate.placement === 'season-final' &&
+      !entry.remediation &&
+      !entry.allowBlockingWithoutRepair;
+    if (repairFirstViolation) {
+      violations.push({
+        validator: entry.validator,
+        problem: `default-on season-final blocking gate ${entry.rolloutFlag} needs remediation metadata or an explicit exception`,
+      });
+    }
+  }
+
+  const artifactContractIds = new Set<string>();
+  const artifactContractKinds = new Map<ArtifactKind, number>();
+  for (const contract of artifactContractRegistry) {
+    if (artifactContractIds.has(contract.id)) {
+      violations.push({
+        validator: contract.id,
+        problem: 'duplicate artifact contract id',
+      });
+    }
+    artifactContractIds.add(contract.id);
+
+    artifactContractKinds.set(contract.artifactKind, (artifactContractKinds.get(contract.artifactKind) ?? 0) + 1);
+
+    if (contract.tier !== 'blocking' && contract.tier !== 'advisory') {
+      violations.push({
+        validator: contract.id,
+        problem: `artifact contract has unknown tier ${String(contract.tier)}`,
+      });
+    }
+    if (!contract.contract.trim()) {
+      violations.push({
+        validator: contract.id,
+        problem: 'artifact contract text is empty',
+      });
+    }
+  }
+
+  for (const [kind, count] of artifactContractKinds) {
+    if (count !== 1) {
+      violations.push({
+        validator: kind,
+        problem: `artifact kind has ${count} artifact contract entries`,
+      });
+    }
+  }
+
+  const ownershipKinds = new Set<ArtifactKind>();
+  const ownershipPairs = new Set<string>();
+  for (const entry of artifactValidatorOwnership) {
+    if (entry.role === 'artifact-only') continue;
+    if (!knownValidators.has(entry.validator)) {
+      violations.push({
+        validator: entry.validator,
+        problem: 'artifact ownership entry is not artifact-only and has no validator registry row',
+      });
+    }
+  }
+
+  for (const entry of artifactValidatorOwnership) {
+    for (const kind of entry.artifactKinds) {
+      ownershipKinds.add(kind);
+      const key = `${kind}:${entry.validator}`;
+      if (ownershipPairs.has(key)) {
+        violations.push({
+          validator: entry.validator,
+          problem: `duplicate artifact ownership entry for ${kind}`,
+        });
+      }
+      ownershipPairs.add(key);
+    }
+  }
+
+  for (const kind of ownershipKinds) {
+    if (intentionallyUngatedArtifactKinds.has(kind)) continue;
+    if (!artifactContractKinds.has(kind)) {
+      violations.push({
+        validator: kind,
+        problem: 'artifact ownership kind has no artifact contract entry',
+      });
+    }
+  }
+
+  for (const kind of artifactContractKinds.keys()) {
+    if (!ownershipKinds.has(kind)) {
+      violations.push({
+        validator: kind,
+        problem: 'artifact contract kind has no validator ownership entries',
+      });
+    }
+  }
+
+  return violations;
 }

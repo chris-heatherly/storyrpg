@@ -77,6 +77,32 @@ describe('collectEncounterParticipantRefs', () => {
   });
 });
 
+describe('ContentGenerationPhase cold-open alignment', () => {
+  it('does not inject cold-open planning wrappers into scene metadata', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const phase = new ContentGenerationPhase({} as never);
+    const scene: any = {
+      id: 's1-1',
+      name: 'American Shoes',
+      description: 'Mika adopts Kylie at the door of Vâlcescu Club.',
+      narrativeFunction: 'Kylie enters the club world.',
+      requiredBeats: [{
+        id: 'coldopen-1',
+        tier: 'coldopen',
+        mustDepict: 'Kylie unpacks in the apartment; Sadie asks about vampires.',
+      }],
+      keyBeats: [],
+    };
+
+    (phase as any).alignMandatoryOpeningBeatContext(scene);
+
+    expect(scene.keyBeats).toEqual(['Kylie unpacks in the apartment; Sadie asks about vampires.']);
+    expect(scene.description).toBe('Mika adopts Kylie at the door of Vâlcescu Club.');
+    expect(scene.narrativeFunction).toBe('Kylie enters the club world.');
+    expect(JSON.stringify(scene)).not.toMatch(/Cold-open prelude|Then continue into the planned scene|Open with this cold-open moment/i);
+  });
+});
+
 describe('ContentGenerationPhase treatment density gate', () => {
   it('treats dense standard scenes with sufficient recommended beat budget as expandable', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
@@ -106,6 +132,26 @@ describe('ContentGenerationPhase treatment density gate', () => {
 
     expect(unsafe.map((report) => report.sceneId)).toEqual(['s2-4']);
     expect((phase as any).sceneDensityCanExpandWithBeatBudget(unsafe[0], denseScene)).toBe(true);
+  });
+
+  it('does not expand multi-time scenes with beat budget', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const { analyzeEpisodeTreatmentDensity, unsafeTreatmentDensityReports } = await import('../../remediation/gateRepairRouter');
+    const phase = new ContentGenerationPhase({} as never);
+    const multiTimeScene: any = {
+      id: 's2-5',
+      requiredBeats: [
+        { id: 'rb1', tier: 'signature', mustDepict: 'The long conversation at Vâlcescu Club lasts two hours.' },
+        { id: 'rb2', tier: 'authored', mustDepict: 'By evening, the friends convene at Drăgan Vintage for the debrief.' },
+        { id: 'rb3', tier: 'authored', mustDepict: 'At 3am, Kylie writes the chef into the dictionary as The Mountain.' },
+      ],
+      recommendedBeatCount: 10,
+    };
+    const reports = analyzeEpisodeTreatmentDensity([multiTimeScene], 2);
+    const unsafe = unsafeTreatmentDensityReports(reports);
+
+    expect(unsafe.map((report) => report.sceneId)).toEqual(['s2-5']);
+    expect((phase as any).sceneDensityCanExpandWithBeatBudget(unsafe[0], multiTimeScene)).toBe(false);
   });
 
   it('blocks unsafe planned-scene density before SceneWriter or EncounterArchitect runs', async () => {
@@ -155,10 +201,9 @@ describe('ContentGenerationPhase treatment density gate', () => {
       loadResumeUnit: () => undefined,
       recordRemediationSafe: async () => undefined,
       recordSceneValidationResult: () => undefined,
-      repairSceneEpisodePlayableContract: () => undefined,
       resolveWorldLocationForScene: () => undefined,
       runSceneCriticPass: async () => undefined,
-      sanitizeReaderFacingSceneName: (name) => name || 'Scene',
+      sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
       saveResumeUnit: async () => undefined,
       throwIfFailFast: () => undefined,
       trackEncounterFlagConsequences: () => undefined,

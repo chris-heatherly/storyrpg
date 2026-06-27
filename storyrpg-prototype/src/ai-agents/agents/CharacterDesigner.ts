@@ -14,7 +14,7 @@ import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent
 import type {
   CharacterFashionStyle,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
   CharacterArchitecture,
 } from '../../types/sourceAnalysis';
 import type { InformationLedgerEntry } from '../../types/seasonPlan';
@@ -64,8 +64,8 @@ export interface CharacterDesignerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level 7-point beat map (for long-arc character planning). */
-  seasonSevenPoint?: SevenPointStructure;
+  /** Season-level legacy-structure beat map (for long-arc character planning). */
+  seasonLegacyStructure?: LegacyStructuralMap;
 
   /**
    * Authored character architecture (treatment Section 3): the protagonist's
@@ -432,13 +432,23 @@ Before finalizing:
           { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
         );
       } catch (error) {
-        if (!(error instanceof TruncatedLLMResponseError)) throw error;
-        console.warn(`[CharacterDesigner] first response hit ${error.finishReason || 'token limit'} — retrying with compact character-bible contract.`);
-        response = await this.callLLM(
-          [{ role: 'user', content: this.buildCompactRetryPrompt(prompt, 'The previous character-bible response hit the provider output token limit before a complete JSON object was returned.') }],
-          1,
-          { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
-        );
+        if (error instanceof TruncatedLLMResponseError) {
+          console.warn(`[CharacterDesigner] first response hit ${error.finishReason || 'token limit'} — retrying with compact character-bible contract.`);
+          response = await this.callLLM(
+            [{ role: 'user', content: this.buildCompactRetryPrompt(prompt, 'The previous character-bible response hit the provider output token limit before a complete JSON object was returned.') }],
+            1,
+            { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
+          );
+        } else if (this.isGeminiSafetyEmptyError(error)) {
+          console.warn(`[CharacterDesigner] first response hit Gemini safety-empty content — retrying with a compact source-thinned character-bible contract.`);
+          response = await this.callLLM(
+            [{ role: 'user', content: this.buildSafetyRetryPrompt(input) }],
+            1,
+            { jsonSchema: buildCharacterBibleJsonSchema(input.charactersToCreate.length) },
+          );
+        } else {
+          throw error;
+        }
       }
 
       console.log(`[CharacterDesigner] Received response (${response.length} chars)`);
@@ -786,6 +796,103 @@ CRITICAL REQUIREMENTS:
       `Escape every double quote inside strings as \\", put no raw line breaks inside strings, and use no trailing commas. ` +
       `Hard output caps: no fields beyond the schema; one sentence per scalar field; arrays max 2 items except greetingExamples and signatureLines; ` +
       `greetingExamples exactly 2, signatureLines exactly 3, keyDynamics max 4, relationships max 2 per character. Return only JSON.`;
+  }
+
+  private isGeminiSafetyEmptyError(error: unknown): boolean {
+    const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return msg.includes('gemini returned empty content')
+      && (
+        msg.includes('blockreason=prohibited_content')
+        || msg.includes('blockreason=safety')
+        || msg.includes('finishreason=safety')
+        || msg.includes('prohibited_content')
+      );
+  }
+
+  private buildSafetyRetryPrompt(input: CharacterDesignerInput): string {
+    const characterIds = input.charactersToCreate.map(c => `"${c.id}"`).join(', ');
+    const characterList = input.charactersToCreate
+      .map(c => {
+        const fashion = formatFashionStyleForPrompt(c.fashionStyle);
+        return `- ID: "${c.id}", Name: "${c.name}", Role: ${c.role}, Importance: ${c.importance}\n  Brief: ${this.safetyRetryText(c.briefDescription)}${fashion ? `\n  Fashion Style: ${this.safetyRetryText(fashion)}` : ''}`;
+      })
+      .join('\n');
+
+    return `
+SAFETY RETRY: The prior provider response was empty after prompt-safety filtering.
+Create a compact character bible from the requested roster only. Do not quote or summarize the source document.
+Use non-graphic, non-explicit language. Frame danger, romance, secrets, and supernatural material as emotional/social pressure.
+
+## Story Context
+- Title: ${this.safetyRetryText(input.storyContext.title)}
+- Genre: ${this.safetyRetryText(input.storyContext.genre)}
+- Tone: ${this.safetyRetryText(input.storyContext.tone)}
+- Themes: ${input.storyContext.themes.map((theme) => this.safetyRetryText(theme)).join(', ')}
+
+## Characters to Create (MUST use these exact IDs: ${characterIds})
+${characterList}
+
+Return ONLY valid JSON with this shape:
+{
+  "characters": [
+    {
+      "id": "EXACT_ID_FROM_INPUT",
+      "name": "Character Name",
+      "pronouns": "he/him OR she/her",
+      "overview": "One sentence summary",
+      "role": "protagonist/antagonist/love_interest/mentor/rival/ally/neutral/wildcard",
+      "importance": "major/supporting/minor",
+      "tier": "core | supporting | background",
+      "physicalDescription": "Brief appearance",
+      "distinctiveFeatures": ["visual feature 1", "visual feature 2"],
+      "typicalAttire": "One concise outfit description",
+      "want": "What they desire most",
+      "fear": "What social, emotional, or identity pressure they avoid",
+      "flaw": "Their key weakness",
+      "need": "OPTIONAL dramatic necessity",
+      "truth": "OPTIONAL truth they must recognize or refuse",
+      "wound": "OPTIONAL formative pressure",
+      "microLies": ["OPTIONAL protective belief"],
+      "voiceProfile": {
+        "vocabularyLevel": "simple/moderate/sophisticated",
+        "speechPattern": "How they talk",
+        "verbalTics": ["tic 1"],
+        "emotionalTendency": "How they express emotion",
+        "greetingExamples": ["Hello example 1", "Hello example 2"],
+        "farewellExamples": ["Goodbye example 1"],
+        "underStressExamples": ["Stressed line 1"],
+        "signatureLines": ["Unique line 1", "Unique line 2", "Unique line 3"]
+      },
+      "relationships": [{"targetId": "other-id", "targetName": "Name", "relationshipType": "friend/rival/etc", "currentDynamic": "brief"}],
+      "arcPotential": {"growth": "How they could grow", "fall": "How they could fall"},
+      "secrets": ["One secret"]
+    }
+  ],
+  "relationshipSummary": "Brief overview",
+  "keyDynamics": [{"characters": ["id1", "id2"], "dynamic": "brief", "narrativePotential": "brief"}],
+  "ensembleBalance": "How characters complement each other",
+  "voiceDistinctions": "How to keep voices distinct",
+  "doNotForget": ["Critical character facts"]
+}
+
+Requirements:
+- Each character id must be exactly one of: ${characterIds}
+- Keep every scalar field to one concise sentence.
+- greetingExamples exactly 2; signatureLines exactly 3; relationships max 2 per character.
+- No markdown, no code fences, no extra text.`;
+  }
+
+  private safetyRetryText(value: string | undefined): string {
+    return String(value || '')
+      .replace(/\b(?:blood|bloody|bite|bitten|vampire|vampiric|strigoi|attack|attacker|kill|killer|murder|sex|sexual)\b/gi, (word) => {
+        const lower = word.toLowerCase();
+        if (lower.startsWith('vamp') || lower === 'strigoi') return 'supernatural';
+        if (lower === 'bite' || lower === 'bitten' || lower === 'blood' || lower === 'bloody') return 'danger';
+        if (lower === 'sex' || lower === 'sexual') return 'romantic';
+        return 'threat';
+      })
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private normalizeCharacterBible(bible: CharacterBible): CharacterBible {

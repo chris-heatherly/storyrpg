@@ -1,8 +1,8 @@
 /**
  * Season Scene Plan Types
  *
- * Scene-first planning lives here. The pipeline historically planned the
- * 7-point spine and assigned each episode one of its beats, then *invented*
+ * Scene-first planning lives here. The pipeline historically planned a legacy
+ * structural spine and assigned each episode one of its beats, then *invented*
  * scenes per-episode (inside the generation loop, in StoryArchitect) to land
  * that beat. That made beats the primary unit and scenes derivative and
  * episode-local — a scene could not be planned as "the payoff of a scene two
@@ -10,11 +10,11 @@
  *
  * The Season Scene Plan inverts that. Episodes AND their scenes are enumerated
  * at the SEASON level (by SeasonPlannerAgent), with cross-scene setup/payoff
- * wiring. The 7-point structure stays a season/episode meta-concept: the season
- * owns the {@link SevenPointStructure}, each episode maps to ONE structural role
- * (its `structuralRole`), and a scene serves the season-arc purpose named by its
- * episode's role. Beats (prose units) are NOT planned here — they are generated
- * later, in the per-episode loop, to serve their scene.
+ * wiring. Story Circle stays a season/episode meta-concept: the season owns the
+ * {@link StoryCircleStructure}, each episode maps to a Story Circle role, and a
+ * scene serves the season-arc purpose named by its episode's role. Beats (prose
+ * units) are NOT planned here — they are generated later, in the per-episode
+ * loop, to serve their scene.
  *
  * An encounter is a *kind of scene*, not a parallel structure: an encounter is a
  * {@link PlannedScene} with `kind: 'encounter'` carrying {@link PlannedSceneEncounter}
@@ -25,8 +25,11 @@
 
 import type {
   EncounterCategory,
+  EncounterStoryCircleTarget,
+  EncounterStoryCircleTargetEvidence,
   StructuralRole,
-  SevenPointBeat,
+  StoryCircleBeat,
+  StoryCircleStructure,
 } from './sourceAnalysis';
 import type { ChoiceType } from './choice';
 
@@ -44,7 +47,7 @@ export type SceneKind = 'standard' | 'encounter';
 
 /**
  * The scene's dramatic function WITHIN its episode's arc. This is distinct from
- * the 7-point structural role, which lives on the episode, not the scene. A
+ * the legacy-structure structural role, which lives on the episode, not the scene. A
  * scene's role describes how it advances the purpose its episode carries.
  */
 /**
@@ -468,7 +471,7 @@ export interface FailureModeAuditContract {
   blockingLevel: 'treatment' | 'structural' | 'warning';
 }
 
-export type SevenPointBeatRealizationTarget =
+export type StoryCircleBeatRealizationTarget =
   | 'season_plan'
   | 'scene_turn'
   | 'mechanic_pressure'
@@ -477,16 +480,16 @@ export type SevenPointBeatRealizationTarget =
   | 'final_prose';
 
 /**
- * Generator-only realization contract for authored 3-act / 7-point beat text.
- * The existing seven-point validators prove placement and order; this contract
- * makes the authored beat content traceable into scene turns and final prose.
+ * Generator-only realization contract for authored Story Circle beat text.
+ * The Story Circle validators prove placement and order; this contract makes
+ * authored beat content traceable into scene turns and final prose.
  */
-export interface SevenPointBeatRealizationContract {
+export interface StoryCircleBeatRealizationContract {
   id: string;
-  beat: SevenPointBeat;
+  beat: StoryCircleBeat;
   sourceText: string;
   targetEpisodeNumber?: number;
-  requiredRealization: SevenPointBeatRealizationTarget[];
+  requiredRealization: StoryCircleBeatRealizationTarget[];
   eventAtoms: string[];
   stateChange?: string;
   targetSceneIds: string[];
@@ -516,7 +519,7 @@ export type ArcPressureTreatmentRealizationTarget =
 
 /**
  * Generator-only realization contract for authored arc-plan fields. Acts and
- * seven-point beats keep positional authority; these contracts make each
+ * Story Circle beats keep positional authority; these contracts make each
  * authored arc's question, reframe, crisis, answer, handoff, and per-episode
  * turnout traceable into scene pressure and final prose.
  */
@@ -671,6 +674,12 @@ export interface PlannedSceneEncounter {
   relevantSkills: string[];
   /** Authored treatment pressure this encounter should manifest through play. */
   centralConflict?: string;
+  /** Story Circle pressure point this encounter realizes: go/search/find/take. */
+  storyCircleTarget?: EncounterStoryCircleTarget;
+  /** Why this encounter belongs to that pressure point. */
+  storyCircleTargetRationale?: string;
+  /** Season-planning evidence used to select the target. */
+  storyCircleTargetEvidence?: EncounterStoryCircleTargetEvidence;
   /** What the episode should show after this encounter resolves. */
   aftermathConsequence?: string;
   /** Does this encounter's outcome branch the story? */
@@ -707,11 +716,29 @@ export interface PlannedScene {
   /** Standard scene or encounter. */
   kind: SceneKind;
 
+  /**
+   * Generator-only provenance for planned scenes that are introduced after the
+   * season plan is authored. Validators use this to distinguish intentional
+   * treatment-density splits from arbitrary scene-count growth.
+   */
+  planningOrigin?: {
+    kind: 'binder_split';
+    splitKind:
+      | 'mixed_rooftop_setup'
+      | 'viral_aftermath'
+      | 'public_blog_aftermath'
+      | 'threshold_aftermath'
+      | 'friend_debrief'
+      | 'late_night_writing';
+    parentSceneId: string;
+    reason: string;
+  };
+
   /** Short scene title / slug-like label. */
   title: string;
   /**
    * What story this scene tells and how it serves the purpose its episode
-   * carries (the episode's 7-point role). This is the brief the scene is
+   * carries (the episode's legacy-structure role). This is the brief the scene is
    * written to — beats generated later must serve it.
    */
   dramaticPurpose: string;
@@ -751,14 +778,6 @@ export interface PlannedScene {
 
   /** What's narratively at stake in this scene. */
   stakes?: string;
-
-  /**
-   * The act this scene belongs to, copied from the episode/treatment for
-   * planning context. Optional — not all sources label acts.
-   */
-  actLabel?: string;
-  /** The arc this scene belongs to, copied for planning context. */
-  arcLabel?: string;
 
   /**
    * Present iff `kind === 'encounter'`. Carries the encounter-specific plan.
@@ -853,12 +872,8 @@ export interface PlannedScene {
    */
   failureModeAuditContracts?: FailureModeAuditContract[];
 
-  /**
-   * Authored 7-point beat realization obligations assigned to this scene. These
-   * ensure a scene that carries Hook/Midpoint/Climax/etc. stages the authored
-   * beat events and state change, not only the structural label.
-   */
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  /** Authored Story Circle beat realization obligations assigned to this scene. */
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
 
   /**
    * Authored arc-pressure obligations assigned to this scene. These ensure an
@@ -968,8 +983,8 @@ export interface SeasonScenePlan {
   endingRealizationContracts?: EndingRealizationContract[];
   /** Authored failure-mode audit obligations assigned across the scene plan. */
   failureModeAuditContracts?: FailureModeAuditContract[];
-  /** Authored 7-point beat realization obligations assigned across the scene plan. */
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  /** Authored Story Circle beat realization obligations assigned across the scene plan. */
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   /** Authored arc-pressure obligations assigned across the scene plan. */
   arcPressureContracts?: ArcPressureTreatmentContract[];
   /** Protagonist/core-character obligations assigned across the scene plan. */

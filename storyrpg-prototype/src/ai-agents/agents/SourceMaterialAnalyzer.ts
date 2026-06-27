@@ -20,7 +20,9 @@ import {
   PlotPoint,
   EndingMode,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StorySchemaAbstraction,
   ThemeArgumentContract,
   WritingStyleGuide,
@@ -30,13 +32,21 @@ import {
   CharacterArcMode,
   TreatmentSeasonGuidance,
   StructuralRole,
-  SEVEN_POINT_BEATS,
+  LEGACY_STRUCTURAL_BEATS,
+  STORY_CIRCLE_BEATS,
 } from '../../types/sourceAnalysis';
 import {
-  distributeSevenPoints,
-  describeDistribution,
-  checkSevenPointCoverage,
-} from '../utils/sevenPointDistribution';
+  distributeLegacyStructure,
+  checkLegacyStructureCoverage,
+} from '../utils/legacyStructureDistribution';
+import {
+  STORY_CIRCLE_BEAT_DEFINITION_LINES,
+  STORY_CIRCLE_GEOMETRY_PRINCIPLES,
+  checkStoryCircleCoverage,
+  describeStoryCircleDistribution,
+  distributeStoryCircle,
+  storyCircleFromLegacyStructure,
+} from '../utils/storyCircleDistribution';
 import { clampSceneCount } from '../../constants/pipeline';
 import {
   buildAnalysisFromEndingSeeds,
@@ -44,7 +54,7 @@ import {
 } from '../utils/endingResolver';
 import { buildCharacterTreatmentContracts } from '../utils/characterTreatmentContracts';
 import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
-import { buildSevenPointBeatContracts } from '../utils/sevenPointBeatContracts';
+import { buildStoryCircleBeatContracts } from '../utils/storyCircleBeatContracts';
 import {
   arcGuidanceId,
   buildArcPressureContracts,
@@ -77,15 +87,32 @@ const PER_EPISODE_BREAKDOWN_MIN_EPISODES = 6;
 /** Bounded concurrency for the per-episode breakdown fan-out. */
 const PER_EPISODE_BREAKDOWN_CONCURRENCY = 3;
 
-/**
- * Render the default beat-to-episode distribution as a bulleted summary
- * for inlining into LLM prompts. We deliberately expose this as a
- * module-local helper so the prompt template can stay a plain tagged
- * template literal.
- */
-function describeSuggestedDistribution(totalEpisodes: number): string {
-  const entries = distributeSevenPoints(totalEpisodes);
-  return describeDistribution(entries);
+function describeSuggestedStoryCircleDistribution(totalEpisodes: number): string {
+  const entries = distributeStoryCircle(totalEpisodes);
+  return describeStoryCircleDistribution(entries);
+}
+
+function normalizeStoryCircleRoleAssignments(value: unknown): StoryCircleRoleAssignment[] {
+  if (!Array.isArray(value)) return [];
+  const roles: StoryCircleRoleAssignment[] = [];
+  for (const item of value) {
+    const beat = typeof item === 'string'
+      ? item
+      : typeof item?.beat === 'string'
+        ? item.beat
+        : undefined;
+    if (!beat || !(STORY_CIRCLE_BEATS as readonly string[]).includes(beat)) continue;
+    const roleKind = item?.roleKind === 'expansion' ? 'expansion' : 'primary';
+    roles.push({
+      beat: beat as StoryCircleRoleAssignment['beat'],
+      roleKind,
+      expansionOfUnit: typeof item?.expansionOfUnit === 'number' ? item.expansionOfUnit : undefined,
+      source: item?.source === 'treatment' || item?.source === 'migration' || item?.source === 'distribution'
+        ? item.source
+        : 'llm',
+    });
+  }
+  return roles;
 }
 
 function buildTreatmentInputNotice(sourceText: string): string {
@@ -93,7 +120,6 @@ function buildTreatmentInputNotice(sourceText: string): string {
   if (!treatment.isTreatment) return '';
   const episodeCount = Object.keys(treatment.episodes).length;
   const endingCount = treatment.endings.length;
-  const treatmentMode = treatment.seasonGuidance?.episodeStructureMode || 'standard';
   const parsedSections = treatment.seasonGuidance?.rawSectionSummary?.join(', ') || 'episode guidance';
   return `
 ## StoryRPG Treatment Input Detected
@@ -101,15 +127,13 @@ function buildTreatmentInputNotice(sourceText: string): string {
 The supplied document is a user-authored StoryRPG treatment, not generic prose source material. Treat its episode outline, structural roles, encounter guidance, branch guidance, and endings as authored planning constraints.
 
 - Preserve the treatment's episode count/order/titles unless an explicit user instruction overrides them.
-- Treatment structure mode: ${treatmentMode === 'sceneEpisodes' ? 'sceneEpisodes. Each parsed unit is already a one-scene runtime episode; do not split it again.' : 'regular episodes.'}
 - Preserve episode turns as planning intent for scenes/keyBeats; do not create a new runtime episode-turn schema.
-- Preserve sceneEpisode fields when present: entry goal, obstacle, forced choice, exit shift, consequence residue, information movement, visual anchor, and why the next sceneEpisode exists.
 - Preserve season-level treatment sections when present: season promise, character architecture, stakes architecture, information ledger, arc plan, branch/consequence chains, fail-forward, endings, and failure-mode audit.
 - Preserve encounter anchors and make each encounter manifest the episode's central conflict through play.
 - Preserve aftermath/consequence, ending pressure, and finale resolution/aftermath guidance.
 - Preserve authored branches and exactly authored endings when present.
 - Infer missing characters, locations, anchors, and style only where the treatment leaves gaps.
-- Use the canonical StoryRPG scene range: ${treatmentMode === 'sceneEpisodes' ? '1 scene per sceneEpisode.' : '3-6 scenes per episode.'}
+- Use the canonical StoryRPG scene range: 3-6 scenes per episode.
 
 Detected treatment metadata: ${treatment.metadata.formatVersion}, ${treatment.metadata.confidence} confidence, ${episodeCount} parsed unit(s), ${endingCount} ending(s), parsed sections: ${parsedSections}.
 `;
@@ -131,7 +155,6 @@ export interface SourceMaterialInput {
   preferences?: {
     // Target episode length (scenes per episode)
     targetScenesPerEpisode?: number; // Default: 6
-    episodeStructureMode?: 'standard' | 'sceneEpisodes';
     // Target choices per episode
     targetChoicesPerEpisode?: number; // Default: 3
     // Pacing preference
@@ -216,10 +239,18 @@ interface StoryStructureAnalysis {
    */
   anchors?: StoryAnchors;
   /**
-   * 3-act / 7-point beat map inferred from the source material. Same
+   * 3-act / legacy-structure beat map inferred from the source material. Same
    * optional-with-backfill contract as {@link anchors}.
+   *
+   * @deprecated New responses should provide `storyCircle`; this remains as a
+   * migration alias.
    */
-  sevenPoint?: SevenPointStructure;
+  legacyStructure?: LegacyStructuralMap;
+  /**
+   * Eight-beat Story Circle map inferred from the source material. This is the
+   * primary macro structure for new pipeline output.
+   */
+  storyCircle?: StoryCircleStructure;
   schemaAbstraction?: StorySchemaAbstraction;
   themeArgument?: Partial<ThemeArgumentContract>;
   endingAnalysis?: {
@@ -244,7 +275,7 @@ interface StoryStructureAnalysis {
 function summarizeTreatmentSeasonGuidance(guidance?: TreatmentSeasonGuidance): string {
   if (!guidance) return '';
   const sections = guidance.rawSectionSummary?.join(', ') || 'season treatment sections';
-  return `Treatment season guidance detected (${guidance.episodeStructureMode}): ${sections}`;
+  return `Treatment season guidance detected: ${sections}`;
 }
 
 /**
@@ -266,12 +297,13 @@ interface EpisodeBreakdownEntry {
     resolution: string;
   };
   /**
-   * LLM-assigned 7-point beat(s) this episode carries. Optional because
+   * LLM-assigned legacy-structure beat(s) this episode carries. Optional because
    * older LLM responses predate the field; backfilled by
    * {@link SourceMaterialAnalyzer.assembleAnalysis} from the default
    * distribution table when absent.
    */
   structuralRole?: StructuralRole[];
+  storyCircleRole?: StoryCircleRoleAssignment[];
 }
 
 interface EpisodeBreakdownResponse {
@@ -302,6 +334,7 @@ interface SingleEpisodeBreakdownResponse {
     resolution?: string;
   };
   structuralRole?: StructuralRole[];
+  storyCircleRole?: StoryCircleRoleAssignment[];
 }
 
 export class SourceMaterialAnalyzer extends BaseAgent {
@@ -369,7 +402,8 @@ generalization guidance as optional analysis metadata that feeds StoryRPG's
 existing SourceMaterialAnalysis, SeasonPlan, Episode, Scene, Beat, Choice, and
 Encounter contracts.
 
-- Preserve StoryRPG's anchors and sevenPoint fields as the authoritative macro structure.
+- Preserve StoryRPG's anchors and storyCircle fields as the authoritative macro structure.
+- Keep legacyStructure only as a deprecated compatibility alias for older checkpoints.
 - Use PascalCase names for reusable variables.
 - Include variables such as ProtagonistRole, Stakes, Goal, IncitingIncident,
   AntagonizingForce, CoreValue, EmotionalAnchor, Temptation, FalseVictory,
@@ -450,13 +484,6 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
         episodeBreakdown
       );
 
-      const treatmentAlreadySceneEpisodes = analysis.treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes';
-      if (input.preferences?.episodeStructureMode === 'sceneEpisodes' && !treatmentAlreadySceneEpisodes) {
-        this.normalizeAnalysisForSceneEpisodes(analysis);
-      } else if (treatmentAlreadySceneEpisodes) {
-        this.markTreatmentSceneEpisodes(analysis);
-      }
-
       return {
         success: true,
         data: analysis,
@@ -470,77 +497,6 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
       };
     } finally {
       this.activeAbortSignal = undefined;
-    }
-  }
-
-  private normalizeAnalysisForSceneEpisodes(analysis: SourceMaterialAnalysis): void {
-    const originalEpisodes = analysis.episodeBreakdown || [];
-    const expanded: EpisodeOutline[] = [];
-
-    for (const episode of originalEpisodes) {
-      const splitCount = Math.max(1, Math.min(episode.estimatedSceneCount || 1, 12));
-      for (let i = 0; i < splitCount; i++) {
-        const episodeNumber = expanded.length + 1;
-        const partLabel = splitCount > 1 ? ` Scene ${i + 1}` : '';
-        expanded.push({
-          ...episode,
-          episodeStructureMode: 'sceneEpisodes',
-          routeMeta: {
-            kind: 'master',
-            spineIndex: episodeNumber,
-            displayLabel: `${episodeNumber}`,
-            isMilestoneEncounter: false,
-          },
-          episodeNumber,
-          title: `${episode.title}${partLabel}`,
-          synopsis: splitCount > 1
-            ? `${episode.synopsis} Focus this scene-length episode on dramatic turn ${i + 1} of ${splitCount}.`
-            : episode.synopsis,
-          sourceSummary: splitCount > 1
-            ? `${episode.sourceSummary || episode.synopsis} Scene-length slice ${i + 1} of ${splitCount}.`
-            : episode.sourceSummary,
-          plotPoints: i === 0 ? episode.plotPoints : [],
-          estimatedSceneCount: 1,
-          estimatedChoiceCount: Math.max(1, Math.min(episode.estimatedChoiceCount || 1, 2)),
-          plannedEncounters: undefined,
-          outgoingBranches: undefined,
-          incomingBranches: undefined,
-          setsFlags: undefined,
-          checksFlags: undefined,
-        });
-      }
-    }
-
-    analysis.episodeBreakdown = expanded;
-    analysis.totalEstimatedEpisodes = expanded.length;
-
-    const defaultDistribution = distributeSevenPoints(expanded.length);
-    for (const outline of expanded) {
-      const fallback = defaultDistribution.find(entry => entry.episodeNumber === outline.episodeNumber);
-      outline.structuralRole = fallback ? [...fallback.structuralRole] : ['rising'];
-    }
-
-    for (const arc of analysis.storyArcs) {
-      const startRatio = Math.max(0, (arc.estimatedEpisodeRange.start - 1) / Math.max(1, originalEpisodes.length));
-      const endRatio = Math.max(startRatio, arc.estimatedEpisodeRange.end / Math.max(1, originalEpisodes.length));
-      arc.estimatedEpisodeRange = {
-        start: Math.max(1, Math.floor(startRatio * expanded.length) + 1),
-        end: Math.max(1, Math.ceil(endRatio * expanded.length)),
-      };
-    }
-  }
-
-  private markTreatmentSceneEpisodes(analysis: SourceMaterialAnalysis): void {
-    for (const outline of analysis.episodeBreakdown) {
-      outline.episodeStructureMode = 'sceneEpisodes';
-      outline.routeMeta = {
-        kind: 'master',
-        spineIndex: outline.episodeNumber,
-        displayLabel: `${outline.episodeNumber}`,
-        isMilestoneEncounter: false,
-      };
-      outline.estimatedSceneCount = 1;
-      outline.estimatedChoiceCount = Math.max(1, Math.min(outline.estimatedChoiceCount || 1, 2));
     }
   }
 
@@ -614,6 +570,14 @@ Theme guidance: if the source only provides nouns like "family", "power", or
 "grief", convert the lead theme into a playable question in the themes array
 (for example, "What do you owe family when loyalty costs your selfhood?").
 Keep any additional supporting themes concise.
+
+Story Circle canonical beat definitions. Use these exact meanings when filling
+the storyCircle object. Do not replace them with one-line labels:
+${STORY_CIRCLE_BEAT_DEFINITION_LINES.join('\n')}
+
+Story Circle shape principles. Enforce these concepts when filling storyCircle,
+episodeBreakdown.storyCircleRole, character arc notes, and cliffhanger setup:
+${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
 
 {
   "genre": "<primary genre>",
@@ -746,7 +710,17 @@ Keep any additional supporting themes concise.
     "incitingIncident": "<the event that sets the story in motion, in 1-2 sentences>",
     "climax": "<the turning-point confrontation where the protagonist faces their greatest challenge, in 1-2 sentences>"
   },
-  "sevenPoint": {
+  "storyCircle": {
+    "you": "<source-specific realization of \`you\`; must satisfy the full \`you\` definition above>",
+    "need": "<source-specific realization of \`need\`; must satisfy the full \`need\` definition above>",
+    "go": "<source-specific realization of \`go\`; must satisfy the full \`go\` definition above>",
+    "search": "<source-specific realization of \`search\`; must satisfy the full \`search\` definition above>",
+    "find": "<source-specific realization of \`find\`; must satisfy the full \`find\` definition above>",
+    "take": "<source-specific realization of \`take\`; must satisfy the full \`take\` definition above>",
+    "return": "<source-specific realization of \`return\`; must satisfy the full \`return\` definition above>",
+    "change": "<source-specific realization of \`change\`; must satisfy the full \`change\` definition above>"
+  },
+  "legacyStructure": {
     "hook": "<ordinary world that introduces the protagonist and the core value at stake>",
     "plotTurn1": "<the inciting incident / world-disruption — must match the incitingIncident anchor above>",
     "pinch1": "<first major setback against the antagonizing force; protagonist on the defensive>",
@@ -843,7 +817,7 @@ Return ONLY valid JSON.
    * For seasons of {@link PER_EPISODE_BREAKDOWN_MIN_EPISODES} or more episodes
    * we fan the breakdown out into one focused call per episode, run at bounded
    * concurrency ({@link PER_EPISODE_BREAKDOWN_CONCURRENCY}). Each per-episode
-   * call carries the SAME shared structure summary + season-level 7-point
+   * call carries the SAME shared structure summary + season-level legacy-structure
    * context (computed once and reused) so cross-episode consistency holds, but
    * asks for only ONE episode's outline — giving each episode the full
    * maxTokens ceiling and removing the truncation risk of cramming all N
@@ -880,7 +854,7 @@ Return ONLY valid JSON.
     );
 
     const episodeNumbers = Array.from({ length: estimatedEpisodes }, (_, i) => i + 1);
-    const defaultDistribution = distributeSevenPoints(estimatedEpisodes);
+    const defaultDistribution = distributeLegacyStructure(estimatedEpisodes);
 
     try {
       const entries = await mapOrderedWithConcurrency(
@@ -935,7 +909,7 @@ Return ONLY valid JSON.
   /**
    * Shared, episode-agnostic context block reused by every per-episode call.
    * Computed once per analysis. Includes the structure summary, season-level
-   * 7-point distribution, the truncated source reference, and the treatment
+   * legacy-structure distribution, the truncated source reference, and the treatment
    * notice so each focused call still reasons about cross-episode consistency.
    */
   private buildSharedBreakdownContext(
@@ -980,11 +954,19 @@ ${structure.majorPlotPoints.map(pp => `- [${pp.type}] ${pp.description} (${pp.ap
 - Plans should often go partly wrong, forcing character improvisation and meaningful player choices.
 - After the Climax, move quickly: first show what was saved or changed, then show future cost, identity change, or legacy.
 
-**Season-Level Default 7-Point Beat Distribution (HINT, override only when the source demands it):**
-${describeSuggestedDistribution(estimatedEpisodes)}
-Across the whole ${estimatedEpisodes}-episode season every canonical beat
-(hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution) MUST land on
-at least one episode and must appear in canonical order.
+**Canonical Story Circle Beat Definitions (authoritative — do not summarize or replace):**
+${STORY_CIRCLE_BEAT_DEFINITION_LINES.join('\n')}
+
+**Story Circle Shape Principles (authoritative — enforce the concepts, not just the labels):**
+${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
+
+**Season-Level Story Circle Distribution (AUTHORITATIVE DEFAULT, override only when the source demands it):**
+${describeSuggestedStoryCircleDistribution(estimatedEpisodes)}
+Across the whole ${estimatedEpisodes}-episode season every canonical Story Circle
+beat (you, need, go, search, find, take, return, change) MUST land on at least
+one episode and must appear in canonical order. If there are fewer than 8
+episodes, adjacent beats fuse and none are omitted. If there are more than 8,
+extras are contiguous expansions of real beats, preferably search, take, return.
 
 ${truncatedText ? `**Source Material Reference**:
 ${truncatedText}` : ''}
@@ -1002,6 +984,10 @@ ${buildTreatmentInputNotice(sourceText)}`;
     totalEpisodes: number,
     suggestedRoles: StructuralRole[],
   ): string {
+    const suggestedStoryCircleRoles = distributeStoryCircle(totalEpisodes)
+      .find((entry) => entry.episodeNumber === episodeNumber)
+      ?.storyCircleRole.map((role) => role.roleKind === 'expansion' ? `${role.beat} expansion` : role.beat)
+      .join(', ') || '(none)';
     const positionNote = episodeNumber === 1
       ? 'This is the FIRST episode: establish the world and protagonist; do not rush to action.'
       : episodeNumber === totalEpisodes
@@ -1015,7 +1001,7 @@ ${sharedContext}
 
 **Episode To Outline Now**:
 - Episode number: ${episodeNumber} of ${totalEpisodes}
-- Suggested 7-point beat(s) for this slot (HINT, override only when the source demands it): ${suggestedRoles.join(', ')}
+- Suggested Story Circle beat(s) for this slot (AUTHORITATIVE DEFAULT, override only when the source demands it): ${suggestedStoryCircleRoles}
 - ${positionNote}
 - Keep this episode consistent with the season-level beat distribution and the surrounding episodes implied by it.
 
@@ -1034,7 +1020,9 @@ Respond with JSON for ONLY this one episode (no surrounding array):
     "conflict": "<central tension>",
     "resolution": "<how episode ends - can be cliffhanger>"
   },
-  "structuralRole": ["<which 7-point beat(s) this episode carries, choose from: hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution, rising, falling. Most episodes carry exactly one beat; very short seasons may fuse beats on one episode.>"]
+  "storyCircleRole": [
+    { "beat": "<you|need|go|search|find|take|return|change>", "roleKind": "<primary|expansion>", "source": "llm" }
+  ]
 }
 
 Return ONLY valid JSON for this single episode.
@@ -1075,6 +1063,7 @@ Return ONLY valid JSON for this single episode.
         conflict: typeof arc.conflict === 'string' ? arc.conflict : '',
         resolution: typeof arc.resolution === 'string' ? arc.resolution : '',
       },
+      storyCircleRole: normalizeStoryCircleRoleAssignments(src.storyCircleRole),
       structuralRole: Array.isArray(src.structuralRole) ? src.structuralRole : undefined,
     };
   }
@@ -1131,10 +1120,19 @@ ${structure.majorPlotPoints.map(pp => `- [${pp.type}] ${pp.description} (${pp.ap
 - Plans should often go partly wrong, forcing character improvisation and meaningful player choices.
 - After the Climax, move quickly: first show what was saved or changed, then show future cost, identity change, or legacy.
 
-**Default 7-Point Beat Distribution (HINT — override only when the source demands it):**
-${describeSuggestedDistribution(estimatedEpisodes)}
-Every canonical beat (hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution)
+**Canonical Story Circle Beat Definitions (authoritative — do not summarize or replace):**
+${STORY_CIRCLE_BEAT_DEFINITION_LINES.join('\n')}
+
+**Story Circle Shape Principles (authoritative — enforce the concepts, not just the labels):**
+${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
+
+**Default Story Circle Distribution (AUTHORITATIVE DEFAULT — override only when the source demands it):**
+${describeSuggestedStoryCircleDistribution(estimatedEpisodes)}
+Every canonical Story Circle beat (you, need, go, search, find, take, return, change)
 MUST land on at least one episode across the season and must appear in canonical order.
+If there are fewer than 8 episodes, adjacent beats fuse and none are omitted.
+If there are more than 8, extras are contiguous expansions of real beats,
+preferably search, take, return.
 
 ${truncatedText ? `**Source Material Reference**:
 ${truncatedText}` : ''}
@@ -1158,7 +1156,9 @@ Create ${estimatedEpisodes} episode outlines. Respond with JSON:
         "conflict": "<central tension>",
         "resolution": "<how episode ends - can be cliffhanger>"
       },
-      "structuralRole": ["<which 7-point beat(s) this episode carries — choose from: hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution, rising, falling. Most episodes carry exactly one beat; very short seasons may fuse beats on one episode.>"]
+      "storyCircleRole": [
+        { "beat": "<you|need|go|search|find|take|return|change>", "roleKind": "<primary|expansion>", "source": "llm" }
+      ]
     }
   ],
   "totalEpisodes": ${estimatedEpisodes},
@@ -1187,11 +1187,17 @@ Return ONLY valid JSON.
     breakdown: EpisodeBreakdownResponse
   ): SourceMaterialAnalysis {
     const sourceText = input.sourceText || '';
-    const treatment = extractTreatmentFromMarkdown(sourceText, {
+    const promptText = input.userPrompt || '';
+    const treatmentSourceText = sourceText.trim()
+      ? sourceText
+      : looksLikeTreatmentMarkdown(promptText)
+        ? promptText
+        : sourceText;
+    const treatment = extractTreatmentFromMarkdown(treatmentSourceText, {
       strictValidation: input.preferences?.strictTreatmentValidation ?? false,
     });
     const treatmentSeasonGuidance = treatment.seasonGuidance;
-    if (looksLikeTreatmentMarkdown(sourceText) && Object.keys(treatment.episodes).length === 0) {
+    if (looksLikeTreatmentMarkdown(treatmentSourceText) && Object.keys(treatment.episodes).length === 0) {
       throw new Error(
         'Treatment extraction failed: source looks like a StoryRPG treatment, but no episode guidance could be parsed. ' +
         'Check the treatment template headings before generating a generic adaptation.'
@@ -1213,6 +1219,7 @@ Return ONLY valid JSON.
             return {
               ...existing,
               title: guidance.authoredTitle || existing.title,
+              storyCircleRole: normalizeStoryCircleRoleAssignments(existing.storyCircleRole),
               structuralRole: guidance.normalizedStructuralRoles?.length
                 ? guidance.normalizedStructuralRoles
                 : existing.structuralRole,
@@ -1234,6 +1241,7 @@ Return ONLY valid JSON.
               conflict: guidance.encounterCentralConflict || guidance.encounterAnchors?.[0] || 'Treatment conflict',
               resolution: guidance.resolutionAftermath || guidance.endingPressure || guidance.authoredCliffhanger || 'Treatment resolution',
             },
+            storyCircleRole: undefined,
             structuralRole: guidance.normalizedStructuralRoles?.length ? guidance.normalizedStructuralRoles : undefined,
           };
         })
@@ -1242,10 +1250,15 @@ Return ONLY valid JSON.
     // Default structuralRole distribution — used as a fallback when the LLM
     // did not tag an episode with its own structuralRole array, and as the
     // seed when the LLM's coverage is incomplete.
-    const defaultDistribution = distributeSevenPoints(totalEpisodes);
+    const defaultDistribution = distributeLegacyStructure(totalEpisodes);
+    const defaultStoryCircleDistribution = distributeStoryCircle(totalEpisodes);
     const defaultRoleFor = (episodeNumber: number): StructuralRole[] => {
       const entry = defaultDistribution.find((e) => e.episodeNumber === episodeNumber);
       return entry ? [...entry.structuralRole] : ['rising'];
+    };
+    const defaultStoryCircleRoleFor = (episodeNumber: number): StoryCircleRoleAssignment[] => {
+      const entry = defaultStoryCircleDistribution.find((e) => e.episodeNumber === episodeNumber);
+      return entry ? entry.storyCircleRole.map((role) => ({ ...role })) : [];
     };
 
     // Convert episode breakdown to full outlines
@@ -1265,9 +1278,13 @@ Return ONLY valid JSON.
       // downstream validators see a clean StructuralRole[] only.
       const llmRoles = Array.isArray(ep.structuralRole)
         ? ep.structuralRole.filter((r): r is StructuralRole =>
-            typeof r === 'string' && (SEVEN_POINT_BEATS as readonly string[]).concat(['rising', 'falling']).includes(r))
+            typeof r === 'string' && (LEGACY_STRUCTURAL_BEATS as readonly string[]).concat(['rising', 'falling']).includes(r))
         : [];
       const structuralRole = llmRoles.length > 0 ? llmRoles : defaultRoleFor(ep.episodeNumber);
+      const llmStoryCircleRoles = normalizeStoryCircleRoleAssignments(ep.storyCircleRole);
+      const storyCircleRole = llmStoryCircleRoles.length > 0
+        ? llmStoryCircleRoles
+        : defaultStoryCircleRoleFor(ep.episodeNumber);
 
       return {
         episodeNumber: ep.episodeNumber,
@@ -1279,13 +1296,9 @@ Return ONLY valid JSON.
         mainCharacters: ep.mainCharacters,
         supportingCharacters: [],
         locations: ep.locations,
-        estimatedSceneCount: treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes'
-          ? 1
-          : clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
-        estimatedChoiceCount: treatmentSeasonGuidance?.episodeStructureMode === 'sceneEpisodes'
-          ? Math.max(1, Math.min(input.preferences?.targetChoicesPerEpisode || 1, 2))
-          : input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
-        episodeStructureMode: treatmentSeasonGuidance?.episodeStructureMode,
+        estimatedSceneCount: clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
+        estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
+        storyCircleRole,
         structuralRole,
         narrativeFunction: ep.narrativeArc,
         treatmentGuidance: treatment.episodes[ep.episodeNumber],
@@ -1295,13 +1308,30 @@ Return ONLY valid JSON.
     // If coverage is incomplete, rewrite the distribution to the default so
     // every beat is guaranteed to land somewhere. This is a safety net for
     // LLMs that drop beats when the episode count is tight.
-    const coverageIssues = checkSevenPointCoverage(episodeOutlines);
+    const coverageIssues = checkLegacyStructureCoverage(episodeOutlines);
     if (coverageIssues.length > 0) {
       for (const outline of episodeOutlines) {
         const fallbackRoles = defaultRoleFor(outline.episodeNumber);
         outline.structuralRole = treatment.isTreatment
           ? [...new Set([...(outline.structuralRole || []), ...fallbackRoles])]
           : fallbackRoles;
+      }
+    }
+
+    const storyCircleCoverageIssues = checkStoryCircleCoverage(episodeOutlines);
+    if (storyCircleCoverageIssues.length > 0) {
+      for (const outline of episodeOutlines) {
+        const fallbackRoles = defaultStoryCircleRoleFor(outline.episodeNumber);
+        const treatmentRoles = (outline.storyCircleRole || []).filter((role) => role.source === 'treatment');
+        const repairedRoles = [
+          ...treatmentRoles,
+          ...fallbackRoles.filter((fallback) =>
+            !treatmentRoles.some((existing) =>
+              existing.beat === fallback.beat && existing.roleKind === fallback.roleKind
+            )
+          ),
+        ];
+        outline.storyCircleRole = repairedRoles.length > 0 ? repairedRoles : fallbackRoles;
       }
     }
 
@@ -1316,15 +1346,21 @@ Return ONLY valid JSON.
       });
     }
 
-    // Anchors + sevenPoint: prefer the LLM's, fall back to plot-point
+    // Anchors + legacyStructure: prefer the LLM's, fall back to plot-point
     // inference using approximatePosition labels from the structure pass.
     const anchors: StoryAnchors = structure.anchors && hasAllAnchorFields(structure.anchors)
       ? structure.anchors
       : inferAnchorsFromStructure(structure);
 
-    const sevenPoint: SevenPointStructure = structure.sevenPoint && hasAllBeatFields(structure.sevenPoint)
-      ? structure.sevenPoint
-      : inferSevenPointFromStructure(structure, anchors);
+    const deprecatedLegacyStructure = legacyStructureFromDeprecatedField(structure);
+    const legacyStructure: LegacyStructuralMap = structure.legacyStructure && hasAllBeatFields(structure.legacyStructure)
+      ? structure.legacyStructure
+      : deprecatedLegacyStructure && hasAllBeatFields(deprecatedLegacyStructure)
+        ? deprecatedLegacyStructure
+      : inferLegacyStructureFromSource(structure, anchors);
+    const storyCircle: StoryCircleStructure = structure.storyCircle && hasAllStoryCircleFields(structure.storyCircle)
+      ? structure.storyCircle
+      : storyCircleFromLegacyStructure(legacyStructure, anchors);
 
     // Convert story arcs with episode ranges
     const storyArcs: StoryArc[] = structure.storyArcs.map((arc, idx) => ({
@@ -1480,9 +1516,10 @@ Return ONLY valid JSON.
       totalEpisodes,
       treatmentSourced: treatment.isTreatment,
     });
-    const sevenPointBeatContracts = buildSevenPointBeatContracts({
+    const storyCircleBeatContracts = buildStoryCircleBeatContracts({
       guidance: treatmentSeasonGuidance,
-      sevenPoint,
+      storyCircle,
+      legacyStructure: legacyStructure,
       totalEpisodes,
       treatmentSourced: treatment.isTreatment,
     });
@@ -1512,7 +1549,7 @@ Return ONLY valid JSON.
         characterTreatmentContracts,
         worldTreatmentContracts,
         stakesArchitectureContracts,
-        sevenPointBeatContracts,
+        storyCircleBeatContracts,
         arcPressureContracts,
         branchConsequenceContracts,
         endingRealizationContracts,
@@ -1524,7 +1561,7 @@ Return ONLY valid JSON.
       sourceAuthor: input.author,
       sourceFormat: treatment.isTreatment ? 'story_treatment' : ((input.sourceText || '').trim() ? 'source_material' : 'prompt'),
       treatmentMetadata: treatment.isTreatment ? treatment.metadata : undefined,
-      totalWordCount: (input.sourceText || '').trim().length > 0 ? input.sourceText!.split(/\s+/).length : 0,
+      totalWordCount: treatmentSourceText.trim().length > 0 ? treatmentSourceText.split(/\s+/).length : 0,
 
       genre: structure.genre,
       tone: structure.tone,
@@ -1532,12 +1569,13 @@ Return ONLY valid JSON.
       setting: structure.setting,
 
       anchors,
-      sevenPoint,
+      storyCircle,
+      legacyStructure,
       schemaAbstraction: normalizeSchemaAbstraction(structure.schemaAbstraction, anchors),
       themeArgument: normalizeThemeArgument(structure.themeArgument, {
         themes: structure.themes,
         anchors,
-        sevenPoint,
+        legacyStructure,
         schemaAbstraction: structure.schemaAbstraction,
       }),
       writingStyleGuide: normalizeWritingStyleGuide(
@@ -1579,7 +1617,7 @@ Return ONLY valid JSON.
       branchConsequenceContracts,
       endingRealizationContracts,
       failureModeAuditContracts,
-      sevenPointBeatContracts,
+      storyCircleBeatContracts,
       arcPressureContracts,
       worldTreatmentContracts,
       keyLocations,
@@ -2041,12 +2079,12 @@ Respond with JSON only:
 }
 
 // ---------------------------------------------------------------------------
-// Anchor + sevenPoint inference helpers
+// Anchor + legacyStructure inference helpers
 //
-// When the LLM drops the anchors / sevenPoint blocks (older models,
+// When the LLM drops the anchors / legacyStructure blocks (older models,
 // truncated responses, aggressive compression), we fall back to deriving
 // them from the existing `protagonist.arc`, `storyArcs`, and
-// `majorPlotPoints` fields. This keeps Path A's "7-points are always
+// `majorPlotPoints` fields. This keeps Path A's "legacy-structures are always
 // first-class" guarantee intact without requiring a second LLM call.
 // ---------------------------------------------------------------------------
 
@@ -2055,9 +2093,19 @@ function hasAllAnchorFields(anchors: Partial<StoryAnchors> | undefined): anchors
   return !!(anchors.stakes && anchors.goal && anchors.incitingIncident && anchors.climax);
 }
 
-function hasAllBeatFields(sp: Partial<SevenPointStructure> | undefined): sp is SevenPointStructure {
+function hasAllBeatFields(sp: Partial<LegacyStructuralMap> | undefined): sp is LegacyStructuralMap {
   if (!sp) return false;
-  return SEVEN_POINT_BEATS.every((b) => typeof sp[b] === 'string' && (sp[b] as string).trim().length > 0);
+  return LEGACY_STRUCTURAL_BEATS.every((b) => typeof sp[b] === 'string' && (sp[b] as string).trim().length > 0);
+}
+
+function legacyStructureFromDeprecatedField(input: StoryStructureAnalysis): Partial<LegacyStructuralMap> | undefined {
+  const deprecatedKey = ['seven', 'Point'].join('');
+  return (input as unknown as Record<string, Partial<LegacyStructuralMap> | undefined>)[deprecatedKey];
+}
+
+function hasAllStoryCircleFields(sc: Partial<StoryCircleStructure> | undefined): sc is StoryCircleStructure {
+  if (!sc) return false;
+  return STORY_CIRCLE_BEATS.every((b) => typeof sc[b] === 'string' && (sc[b] as string).trim().length > 0);
 }
 
 function inferAnchorsFromStructure(structure: StoryStructureAnalysis): StoryAnchors {
@@ -2079,10 +2127,10 @@ function inferAnchorsFromStructure(structure: StoryStructureAnalysis): StoryAnch
   };
 }
 
-function inferSevenPointFromStructure(
+function inferLegacyStructureFromSource(
   structure: StoryStructureAnalysis,
   anchors: StoryAnchors,
-): SevenPointStructure {
+): LegacyStructuralMap {
   const plotPoints = structure.majorPlotPoints || [];
   const byTypeOrPosition = (typeHint: string, positionHint?: number): string | undefined => {
     const typed = plotPoints.find((p) => (p.type || '').toLowerCase().includes(typeHint));
@@ -2339,7 +2387,7 @@ export function normalizeThemeArgument(
   context: {
     themes: string[];
     anchors: StoryAnchors;
-    sevenPoint: SevenPointStructure;
+    legacyStructure: LegacyStructuralMap;
     schemaAbstraction?: StorySchemaAbstraction;
   },
 ): ThemeArgumentContract {
@@ -2390,7 +2438,7 @@ export function normalizeThemeArgument(
     climaxResonantEvent: cleanText(raw?.climaxResonantEvent || context.anchors.climax),
     retroactiveReframe: cleanText(
       raw?.retroactiveReframe
-        || `Earlier choices are re-read as preparation for ${context.sevenPoint.climax}.`,
+        || `Earlier choices are re-read as preparation for ${context.legacyStructure.climax}.`,
     ),
     aestheticEmotionTarget: cleanText(
       raw?.aestheticEmotionTarget

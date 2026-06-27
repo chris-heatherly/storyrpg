@@ -6,18 +6,22 @@
 
 import type {
   StoryAnchors,
-  SevenPointStructure,
-  StructuralRole,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
 } from '../../types/sourceAnalysis';
-import { SEVEN_POINT_BEATS } from '../../types/sourceAnalysis';
+import { STORY_CIRCLE_BEATS } from '../../types/sourceAnalysis';
+import {
+  STORY_CIRCLE_BEAT_DEFINITION_LINES,
+  STORY_CIRCLE_GEOMETRY_PRINCIPLES,
+} from '../utils/storyCircleDistribution';
 import { STORY_QUALITY_PIXAR_CRAFT } from './storyQualityContract';
 
 /**
  * Build a reusable prompt section that gives a narrative agent the
- * season-level anchors, the 7-point beat map, and which beat(s) the
- * current episode carries. Call from any agent's prompt builder; returns
- * an empty string when no structural context is supplied so the agent's
- * existing behavior is preserved for callers that predate Path A.
+ * season-level anchors, the Story Circle beat map, and which beat(s) the
+ * current episode carries. Call from any agent's prompt builder; returns an
+ * empty string when no structural context is supplied so the agent's existing
+ * behavior is preserved for callers that predate Path A.
  *
  * Every downstream narrative writer (SceneWriter, ChoiceAuthor,
  * EncounterArchitect, ThreadPlanner, TwistArchitect, CharacterArcTracker,
@@ -26,11 +30,24 @@ import { STORY_QUALITY_PIXAR_CRAFT } from './storyQualityContract';
  */
 export function buildStructuralContextSection(params: {
   anchors?: StoryAnchors;
-  sevenPoint?: SevenPointStructure;
-  episodeStructuralRole?: StructuralRole[];
+  storyCircle?: StoryCircleStructure;
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
+  episodeCircle?: StoryCircleStructure;
 }): string {
-  const { anchors, sevenPoint, episodeStructuralRole } = params;
-  if (!anchors && !sevenPoint && (!episodeStructuralRole || episodeStructuralRole.length === 0)) {
+  const {
+    anchors,
+    storyCircle,
+    episodeStoryCircleRole,
+    episodeCircle,
+  } = params;
+  const storyCircleRole = episodeStoryCircleRole ?? [];
+
+  if (
+    !anchors
+    && !storyCircle
+    && storyCircleRole.length === 0
+    && !episodeCircle
+  ) {
     return '';
   }
 
@@ -43,28 +60,61 @@ export function buildStructuralContextSection(params: {
       ].join('\n')
     : '';
 
-  const beatLines = sevenPoint
-    ? SEVEN_POINT_BEATS.map((beat) => `- ${beat}: ${sevenPoint[beat]}`).join('\n')
+  const storyCircleLines = storyCircle
+    ? STORY_CIRCLE_BEATS.map((beat) => `- ${beat}: ${storyCircle[beat]}`).join('\n')
     : '';
 
-  const roleLine = episodeStructuralRole && episodeStructuralRole.length > 0
-    ? episodeStructuralRole.join(', ')
-    : '(rising / falling buffer — no named beat lands here)';
+  const episodeCircleLines = episodeCircle
+    ? STORY_CIRCLE_BEATS.map((beat) => `- ${beat}: ${episodeCircle[beat]}`).join('\n')
+    : '';
+
+  const roleLine = storyCircleRole.length > 0
+    ? storyCircleRole.map((role) =>
+        role.roleKind === 'expansion'
+          ? `${role.beat} (expansion of primary ${role.beat})`
+          : role.beat
+      ).join(', ')
+    : '(none supplied)';
+
+  const roleDefinitionLines = storyCircleRole.length > 0
+    ? storyCircleRole.map((role) => {
+        const definition = STORY_CIRCLE_BEAT_DEFINITION_LINES.find((line) => line.startsWith(`\`${role.beat}\``));
+        return definition ? `- ${definition}` : `- \`${role.beat}\``;
+      }).join('\n')
+    : '(none supplied)';
 
   return `
 ## Season Anchors (shared reference — every beat, scene, and choice must serve these)
 ${anchorLines || '(none supplied)'}
 
-## Season 7-Point Beat Map
-${beatLines || '(none supplied)'}
+## Canonical Story Circle Beat Definitions (authoritative — do not summarize or replace)
+${STORY_CIRCLE_BEAT_DEFINITION_LINES.join('\n')}
 
-## This Episode's Structural Role
+## Story Circle Shape Principles (authoritative — enforce the concepts, not just the labels)
+${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
+
+## Season Story Circle Beat Map
+${storyCircleLines || '(none supplied)'}
+
+${episodeCircleLines ? `## Episode Story Circle Beat Map (fractal loop — fill all eight beats inside this episode)
+${episodeCircleLines}
+` : ''}
+
+## This Episode's Story Circle Role
 ${roleLine}
 
+## Full Definition(s) For This Episode's Assigned Story Circle Beat(s)
+${roleDefinitionLines}
+
 Keep every line of prose, every choice, and every consequence grounded in
-these anchors. When this episode carries the Climax beat, the narrative
-must land the same event described in the Climax anchor above. When it
-carries a Pinch, the setback must pressure the Stakes anchor directly.
+these anchors, the Story Circle roles, and the Story Circle shape principles.
+Cold opens are the first visible
+realization of \`you + need\`. Non-finale cliffhangers must resolve or alter
+the immediate episode pressure, then launch the next \`need\` or force the
+next \`go\`. \`find\` endings expose the problem created by the prize.
+\`take\` endings carry the strongest hooks: cost, rupture, loss, apparent
+failure, or identity wound. \`change\` endings close the main circle and may
+seed only earned legacy/future pressure.
 `;
 }
 
@@ -446,7 +496,7 @@ residue must survive reconvergence.
    relational, identity, and/or existential. Stakes layers define the pressure;
    the Stakes Triangle makes the pressure playable through want, cost, and
    identity.
-   Major scenes, encounters, dilemmas, climaxes, and sceneEpisodes should stack
+   Major scenes, encounters, dilemmas, and climaxes should stack
    at least three stakes layers. Do not promote material pressure to
    existential stakes until the player understands what personal, relational,
    or identity loss makes the larger threat matter.
@@ -456,7 +506,7 @@ residue must survive reconvergence.
    clarity, regret, or emotional cost rather than volume.
 
 4. **Dramatic Structure At Every Magnitude**
-   Every scene, sceneEpisode, episode, arc, and season needs its own dramatic
+   Every scene, episode, arc, and season needs its own dramatic
    shape: question/pressure, turn or recontextualization, pressure peak or
    highest cost, and resolution or changed state. Lower levels reinforce higher
    levels.
@@ -476,25 +526,24 @@ residue must survive reconvergence.
    Episode structure uses pressure architecture, not rigid TV act counts:
    one central episode question, an opening promise, meaningful episode turns,
    protagonist-facing pressure lanes, changed episode end state, and forward
-   momentum. Do not force 4-5 literal acts and do not use Story Circle as a
-   required shape. A-plot is the external episode pressure. B-plot is playable
-   relationship or identity pressure and may be a scene, a sceneEpisode, an
+   momentum. Use the Story Circle fractally as the required eight-beat episode
+   shape while still keeping each scene active, economical, and consequence-led.
+   A-plot is the external episode pressure. B-plot is playable
+   relationship or identity pressure and may be a scene, an
    underlay inside an A-plot scene, or offscreen pressure surfaced through
    protagonist-visible signals. C-plot is planted future pressure: a future
    seed, callback, world-pressure hint, or tonal counterweight with a visible
    plant and payoff plan. The protagonist remains the viewpoint; do not create
    non-protagonist POV scenes or omniscient cutaways.
    Arc structure is a 3-8 episode pressure movement inside the season, not a
-   competing act schema. The season 7-point spine wins if concepts conflict.
+   competing act schema. The season Story Circle spine wins if concepts conflict.
    Each arc needs a distinct arc question related to the season question, an
    identity pressure facet, a midpoint recontextualization that changes the
    question being asked, a late arc crisis/apparent failure or irreversible
    cost, a finale answer, and handoff pressure unless the arc is also the
-   season finale. Episodes inside the arc function as arc turn-outs, not
-   literal acts: each ending must escalate, reverse, reveal, cost, force a
-   choice, recontextualize, hit crisis, answer, or hand off pressure. In
-   sceneEpisodes mode, distribute these arc beats across the sceneEpisode
-   chain; do not force a single sceneEpisode to contain the entire arc.
+   season finale. Episodes inside the arc function as Story Circle-aligned
+   arc turn-outs: each ending must escalate, reverse, reveal, cost, force a
+   choice, recontextualize, hit crisis, answer, or hand off pressure.
    Character architecture makes this personal: the protagonist has an
    agent-facing Lie/protective belief, origin pressure, Truth, Want, Need, and
    active climax choice. Use these to shape plot pressure and choice design,
@@ -505,14 +554,14 @@ residue must survive reconvergence.
    Season promise architecture defines the season's dramatic question, central
    pressure, premise/player/emotional promises, and completeness target. Use
    it to prevent drift, not to impose TV formulas. Do not force re-pilot
-   structure, fixed tent-poles, or penultimate climax when the seven-point
-   spine, source, sceneEpisodes mode, or player agency calls for another
+   structure, fixed tent-poles, or penultimate climax when the Story Circle
+   spine, source, or player agency calls for another
    shape.
    Information management uses a season ledger: every key secret, threat,
    reveal, plant, or payoff declares who knows it, who does not, whether it is
    suspense/mystery/dramatic irony/surprise/revelation/foreshadowing, and when
    it pays off. Mystery/box questions are capped at 3 per season. Major plants
-   should pay off after 3-4 standard episodes or 5-8 sceneEpisodes; shorter
+   should pay off after 3-4 episodes; shorter
    seasons should still give the largest payoffs as much runway as possible.
 
 5. **Theme As Plot Pressure**
@@ -535,7 +584,7 @@ residue must survive reconvergence.
    world. The player must know enough to roleplay intent.
 
 8. **No Reset Units**
-   Every scene, sceneEpisode, episode, arc, and season must leave residue:
+   Every scene, episode, arc, and season must leave residue:
    changed information, leverage, relationship, identity, resource, danger,
    promise, wound, reputation, location access, or future option.
 `;

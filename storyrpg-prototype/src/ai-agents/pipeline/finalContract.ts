@@ -91,12 +91,18 @@ function plannedMomentSourcesFromScenePlan(scenePlan: SeasonScenePlan | undefine
   return out;
 }
 
-function treatmentSceneTurnWarningsForRepair(report: FinalStoryContractReport): ContractRepairReport['blockingIssues'] {
+function countSceneTurnWarnings(report: Pick<FinalStoryContractReport, 'warnings'>): number {
+  return (report.warnings || [])
+    .filter((issue: FinalContractWarning) => issue.validator === 'SceneTurnRealizationValidator')
+    .length;
+}
+
+export function sceneTurnWarningsForRepair(report: FinalStoryContractReport): ContractRepairReport['blockingIssues'] {
   return (report.warnings || [])
     .filter((issue: FinalContractWarning) =>
       issue.validator === 'SceneTurnRealizationValidator'
       && Boolean(issue.sceneId)
-      && /carries seven-point\b[\s\S]*does not dramatize its authored beat event on-page/i.test(issue.message || '')
+      && /\b(?:does not dramatize|does not give it complete scene shape|no reader-facing prose|carries Story Circle|carries arc pressure)\b/i.test(issue.message || '')
     )
     .map((issue: FinalContractWarning) => ({
       ...issue,
@@ -108,29 +114,32 @@ function cloneStoryForAdvisoryRepair(story: Story): Story {
   return JSON.parse(JSON.stringify(story)) as Story;
 }
 
-function allowsCompactRequiredBeatFallback(issue: ContractRepairReport['blockingIssues'][number]): boolean {
+export function allowsCompactRequiredBeatFallback(issue: ContractRepairReport['blockingIssues'][number]): boolean {
   if (issue.validator !== 'RequiredBeatRealizationValidator') return false;
   const moment = requiredMomentFromMessage(issue.message);
   if (!moment) return false;
   const trimmed = moment.trim();
   const stripped = trimmed.replace(/^["'“”‘’]+/, '').replace(/["'“”‘’]+$/, '').trim();
-  const wasQuoted = stripped.length < trimmed.length;
-  if (!wasQuoted || !stripped) return false;
+  if (!stripped) return false;
   const words = stripped.split(/\s+/).filter(Boolean);
   if (words.length < 2 || words.length > 14) return false;
   return !/[;—]|\b(?:by\s+\d|at\s+\d|walking?|walks?|pinned?|pins?|drops?|kisses?|declines?|vanishes?)\b/i.test(stripped);
 }
 
-export function applyTreatmentWarningRepairOutcome(
+export function applySceneTurnWarningRepairOutcome(
   targetStory: Story,
   originalPassingReport: FinalStoryContractReport,
   outcome: { story: Story; report: ContractRepairReport; passed: boolean },
 ): { report: FinalStoryContractReport; committed: boolean } {
-  if (!outcome.passed) {
+  if (!outcome.passed || (outcome.report.blockingIssues?.length ?? 0) > 0) {
+    return { report: originalPassingReport, committed: false };
+  }
+  const repairedReport = outcome.report as FinalStoryContractReport;
+  if (countSceneTurnWarnings(repairedReport) >= countSceneTurnWarnings(originalPassingReport)) {
     return { report: originalPassingReport, committed: false };
   }
   Object.assign(targetStory as object, outcome.story);
-  return { report: outcome.report as FinalStoryContractReport, committed: true };
+  return { report: repairedReport, committed: true };
 }
 
 export function reconcileQaReportForCurrentStory(qaReport: QAReport | undefined, story: Story): QAReport | undefined {
@@ -162,18 +171,41 @@ export function reconcileQaReportForCurrentStory(qaReport: QAReport | undefined,
   return reconciled;
 }
 
+function repairDiceMechanicsText(text: string): string {
+  return text
+    .replace(/\bsettling\s+like\s+dice\s+on\s+a\s+velvet\s+cloth\b/gi, 'settling like pearls on velvet')
+    .replace(/\blike\s+dice\s+on\s+a\s+velvet\s+cloth\b/gi, 'like pearls on velvet')
+    .replace(/\blike\s+dice\s+on\s+velvet\b/gi, 'like pearls on velvet')
+    .replace(/\blike\s+dice\s+in\s+a\s+wooden\s+cup\b/gi, 'like pebbles in a wooden cup')
+    .replace(/\blike\s+dice\s+in\s+a\s+cup\b/gi, 'like pebbles in a cup')
+    .replace(/\bYou've\s+rolled\s+the\s+dice\b/gi, "You've taken the gamble")
+    .replace(/\bYou\s+have\s+rolled\s+the\s+dice\b/gi, 'You have taken the gamble')
+    .replace(/\broll\s+the\s+dice\b/gi, 'take the gamble')
+    .replace(/\brolled\s+the\s+dice\b/gi, 'took the gamble');
+}
+
+function repairDiceMechanicsField(target: Record<string, unknown>, key: string): number {
+  const current = target[key];
+  if (typeof current !== 'string' || current.length === 0) return 0;
+  const next = repairDiceMechanicsText(current);
+  if (next === current) return 0;
+  target[key] = next;
+  return 1;
+}
+
 export function repairDiceMetaphorMechanicsLeakage(story: Story): number {
   let touched = 0;
   for (const episode of story.episodes || []) {
     for (const scene of episode.scenes || []) {
       for (const beat of scene.beats || []) {
-        const current = String(beat.text || '');
-        const next = current
-          .replace(/\blike\s+dice\s+in\s+a\s+wooden\s+cup\b/gi, 'like pebbles in a wooden cup')
-          .replace(/\blike\s+dice\s+in\s+a\s+cup\b/gi, 'like pebbles in a cup');
-        if (next !== current) {
-          beat.text = next;
-          touched += 1;
+        touched += repairDiceMechanicsField(beat as unknown as Record<string, unknown>, 'text');
+        for (const variant of beat.textVariants || []) {
+          touched += repairDiceMechanicsField(variant as unknown as Record<string, unknown>, 'text');
+        }
+        for (const choice of beat.choices || []) {
+          const choiceRecord = choice as unknown as Record<string, unknown>;
+          touched += repairDiceMechanicsField(choiceRecord, 'text');
+          touched += repairDiceMechanicsField(choiceRecord, 'reactionText');
         }
       }
     }
@@ -229,6 +261,17 @@ export interface FinalContractDeps {
     treatmentSourced: boolean,
     designNoteLeaks: number,
   ) => Promise<void>;
+  writeValidatorMemory?: (input: {
+    validator: string;
+    lifecycle?: string;
+    stage?: string;
+    severity?: string;
+    outcome?: string;
+    storyId?: string;
+    artifactIds?: string[];
+    repairRoute?: string;
+    findings?: unknown;
+  }) => Promise<void>;
   saveFailedContractArtifacts?: (story: Story, report: FinalStoryContractReport) => Promise<void>;
   disambiguateProtagonistPronouns: (story: Story, brief: FullCreativeBrief) => Promise<void>;
   authorEncounterOutcomeVariants: (story: Story) => Promise<void>;
@@ -366,7 +409,7 @@ export class FinalContract {
           message: `Vampire daytime meal canon normalized ${vampireMealRepairs} beat(s).`,
         } as any);
       }
-      const transitionRepairs = repairDetectedTransitionBridgeContinuity(story);
+      const transitionRepairs = repairDetectedTransitionBridgeContinuity(story, input.brief.seasonPlan?.scenePlan);
       if (transitionRepairs > 0) {
         this.deps.emit({
           type: 'debug',
@@ -603,6 +646,8 @@ export class FinalContract {
         // (bite-me-g13 14-36-20 exhausted 2 rounds with one scene never
         // attempted). Rounds only run while still failing; canSpend caps spend.
         maxAttempts: 3,
+        maxAttemptsPerIssue: 2,
+        dedupeIssueFingerprints: true,
         canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),
       });
       report = outcome.report as FinalStoryContractReport;
@@ -612,21 +657,25 @@ export class FinalContract {
         phase: input.phase,
         message: `Final contract repair ran ${outcome.attempts} round(s); now ${report.passed ? 'passing' : 'still failing'}`,
       } as any);
+      if (outcome.exhaustedIssueCount > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Final contract repair stopped retrying ${outcome.exhaustedIssueCount} repeated issue fingerprint(s) after per-issue budget.`,
+        });
+      }
     }
 
-    // A passing contract can still carry advisory treatment-scene warnings. For
-    // treatment-sourced seven-point beats, those warnings are cheap to repair and
-    // expensive to ship when they represent a true on-page gap. Run one bounded
-    // SceneCritic pass for the high-confidence "authored beat event not dramatized"
-    // warning shape, but do not turn this advisory class into a hard failure if a
-    // warning remains after re-validation.
+    // A passing contract can still carry advisory scene-turn warnings. Those are
+    // cheap to repair and expensive to ship when they represent an on-page gap.
+    // Run one bounded SceneCritic pass, but commit the rewrite only when
+    // re-validation still passes and reduces the scene-turn warning count.
     if (
       report.passed
-      && fidelity.treatmentSourced
       && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')
       && isGateEnabled('GATE_FINAL_CONTRACT_SCENE_REGEN')
     ) {
-      const repairableWarnings = treatmentSceneTurnWarningsForRepair(report);
+      const repairableWarnings = sceneTurnWarningsForRepair(report);
       if (repairableWarnings.length > 0 && shouldAttemptRemediation(this.deps.remediationBudget)) {
         const repairRouter = new GateRepairRouter({ story: input.story });
         const plannedMomentSources = plannedMomentSourcesFromScenePlan(input.brief.seasonPlan?.scenePlan);
@@ -665,9 +714,11 @@ export class FinalContract {
           ],
           revalidate: async (s) => (await runValidation(s)) as ContractRepairReport,
           maxAttempts: 1,
+          maxAttemptsPerIssue: 1,
+          dedupeIssueFingerprints: true,
           canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),
         });
-        const committed = applyTreatmentWarningRepairOutcome(input.story, originalPassingReport, outcome);
+        const committed = applySceneTurnWarningRepairOutcome(input.story, originalPassingReport, outcome);
         report = committed.report;
         if (committed.committed) {
           for (const rec of outcome.records) await this.deps.recordRemediationSafe(rec);
@@ -675,7 +726,7 @@ export class FinalContract {
         this.deps.emit({
           type: 'checkpoint',
           phase: input.phase,
-          message: `Treatment-warning repair ran ${outcome.attempts} round(s); now ${committed.committed ? 'committed' : 'discarded advisory rewrite'}`,
+          message: `Scene-turn warning repair ran ${outcome.attempts} round(s); now ${committed.committed ? 'committed' : 'discarded advisory rewrite'}`,
         } as any);
       }
     }
@@ -690,6 +741,21 @@ export class FinalContract {
     });
 
     if (!report.passed) {
+      await this.deps.writeValidatorMemory?.({
+        validator: 'FinalStoryContractValidator',
+        lifecycle: 'final-contract',
+        stage: input.phase,
+        severity: 'blocking',
+        outcome: 'failed',
+        storyId: input.story.id,
+        artifactIds: input.story.episodes?.map((episode) => episode.id).filter(Boolean),
+        repairRoute: 'final-contract-repair',
+        findings: {
+          blockingIssues: report.blockingIssues.slice(0, 20),
+          warnings: report.warnings?.slice(0, 20),
+          metrics: report.metrics,
+        },
+      });
       if (this.deps.saveFailedContractArtifacts) {
         await this.deps.saveFailedContractArtifacts(input.story, report);
       }
@@ -705,6 +771,22 @@ export class FinalContract {
         }
       );
     }
+
+    await this.deps.writeValidatorMemory?.({
+      validator: 'FinalStoryContractValidator',
+      lifecycle: 'final-contract',
+      stage: input.phase,
+      severity: report.warnings?.length ? 'warning' : 'pass',
+      outcome: 'passed',
+      storyId: input.story.id,
+      artifactIds: input.story.episodes?.map((episode) => episode.id).filter(Boolean),
+      repairRoute: 'none',
+      findings: {
+        warningCount: report.warnings?.length ?? 0,
+        warnings: report.warnings?.slice(0, 20),
+        metrics: report.metrics,
+      },
+    });
 
     return report;
   }

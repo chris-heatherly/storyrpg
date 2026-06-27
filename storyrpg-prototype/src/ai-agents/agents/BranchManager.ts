@@ -15,9 +15,12 @@ import { buildBranchSkeleton, type BranchSkeleton } from '../utils/branchTopolog
 import { buildBranchAnnotationJsonSchema } from '../schemas/branchAnnotationSchema';
 import type {
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
+import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
 // Input types
 export interface BranchManagerInput {
@@ -49,8 +52,10 @@ export interface BranchManagerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season 7-point beat map. */
-  seasonSevenPoint?: SevenPointStructure;
+  /** Season legacy-structure beat map. */
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /**
    * Structural beat(s) this episode carries. Midpoint and Plot Turn 2
@@ -58,6 +63,10 @@ export interface BranchManagerInput {
    * Hook / Resolution episodes should keep branches tight.
    */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle role(s) this episode carries. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
+  /** Episode-level fractal Story Circle from StoryArchitect. */
+  episodeCircle?: StoryCircleStructure;
 }
 
 // Output types
@@ -328,6 +337,12 @@ provided. Never invent ids that were not given to you.
     const reconvList = skeleton.reconvergence
       .map((r) => `  - ${label(r.sceneId)} — paths converging here: [${r.incomingPathIds.join(', ')}]`)
       .join('\n');
+    const structuralContext = buildStructuralContextSection({
+      anchors: input.seasonAnchors,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: input.episodeStoryCircleRole,
+      episodeCircle: input.episodeCircle,
+    });
 
     return `
 Annotate the branch structure for this episode. The structure below was computed
@@ -338,6 +353,7 @@ deterministically from the scene graph — treat it as fixed and authoritative.
 - **Genre**: ${input.storyContext.genre}
 - **Tone**: ${input.storyContext.tone}
 
+${structuralContext}
 ## Episode
 - **ID**: ${input.episodeId}
 - **Title**: ${input.episodeTitle}

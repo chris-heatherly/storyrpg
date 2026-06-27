@@ -32,6 +32,9 @@ export function buildSeasonPlanDirectives(
     npcsInvolved: enc.npcsInvolved,
     stakes: enc.stakes,
     centralConflict: enc.centralConflict,
+    storyCircleTarget: enc.storyCircleTarget,
+    storyCircleTargetRationale: enc.storyCircleTargetRationale,
+    storyCircleTargetEvidence: enc.storyCircleTargetEvidence,
     aftermathConsequence: enc.aftermathConsequence,
     relevantSkills: enc.relevantSkills,
     encounterBuildup: enc.encounterBuildup,
@@ -46,9 +49,7 @@ export function buildSeasonPlanDirectives(
       const branch = plan.crossEpisodeBranches.find((candidate) => candidate.id === branchId);
       if (!branch) continue;
       for (const path of branch.paths) {
-        const affectedEp = seasonEp.routeMeta?.kind === 'branch'
-          ? path.affectedEpisodes[Math.max(0, (seasonEp.routeMeta.branchStep || 1) - 1)]
-          : path.affectedEpisodes.find((candidate) => candidate.episodeNumber === epNum);
+        const affectedEp = path.affectedEpisodes.find((candidate) => candidate.episodeNumber === epNum);
         if (!affectedEp) continue;
         incomingBranchEffects.push({
           branchName: branch.name,
@@ -126,7 +127,7 @@ export function buildSeasonPlanDirectives(
     (contract.targetEpisodeNumbers ?? []).includes(epNum)
     || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
   );
-  const sevenPointBeatContracts = (plan.sevenPointBeatContracts || []).filter((contract) =>
+  const storyCircleBeatContracts = (plan.storyCircleBeatContracts || []).filter((contract) =>
     contract.targetEpisodeNumber === epNum
     || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
   );
@@ -165,7 +166,7 @@ export function buildSeasonPlanDirectives(
     characterTreatmentContracts: characterTreatmentContracts.length > 0 ? characterTreatmentContracts : undefined,
     worldTreatmentContracts: worldTreatmentContracts.length > 0 ? worldTreatmentContracts : undefined,
     stakesArchitectureContracts: stakesArchitectureContracts.length > 0 ? stakesArchitectureContracts : undefined,
-    sevenPointBeatContracts: sevenPointBeatContracts.length > 0 ? sevenPointBeatContracts : undefined,
+    storyCircleBeatContracts: storyCircleBeatContracts.length > 0 ? storyCircleBeatContracts : undefined,
     arcPressureContracts: arcPressureContracts.length > 0 ? arcPressureContracts : undefined,
     branchConsequenceContracts: branchConsequenceContracts.length > 0 ? branchConsequenceContracts : undefined,
     endingRealizationContracts: endingRealizationContracts.length > 0 ? endingRealizationContracts : undefined,

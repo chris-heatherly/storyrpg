@@ -82,7 +82,7 @@ export const EpisodeSelectScreen: React.FC<EpisodeSelectScreenProps> = ({
           {playableEpisodes.map((episode, index) => {
             const unlocked = isUnlocked(episode, index);
             const completed = isCompleted(episode.id);
-            const episodeDisplayLabel = episode.routeMeta?.displayLabel || episode.number.toString().padStart(2, '0');
+            const episodeDisplayLabel = episode.number.toString().padStart(2, '0');
 
             return (
               <TouchableOpacity

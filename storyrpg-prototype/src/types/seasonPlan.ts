@@ -16,13 +16,15 @@ import {
   EndingMode,
   StoryEndingTarget,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleBeat,
+  StoryCircleStructure,
+  StoryCircleRoleAssignment,
   StructuralRole,
   CharacterArchitecture,
   ThemeArgumentContract,
 } from './sourceAnalysis';
 import type { CliffhangerType } from './story';
-import type { EpisodeRouteMeta, EpisodeStructureMode } from './story';
 import type { ConditionExpression } from './conditions';
 import type {
   ArcPressureTreatmentContract,
@@ -33,7 +35,7 @@ import type {
   PlannedScene,
   SeasonPromiseRealizationContract,
   SeasonScenePlan,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from './scenePlan';
@@ -56,12 +58,11 @@ export interface CliffhangerPlan {
   emotionalCharge: string;
   nextEpisodePressure: string;
   mappedStructuralRole: StructuralRole;
+  storyCircleLaunchBeat?: StoryCircleBeat;
   style: 'serialized_tv';
 }
 
 export interface SeasonEpisode extends EpisodeOutline {
-  episodeStructureMode?: EpisodeStructureMode;
-  routeMeta?: EpisodeRouteMeta;
   unlockConditions?: ConditionExpression;
 
   // Generation status
@@ -83,6 +84,13 @@ export interface SeasonEpisode extends EpisodeOutline {
   // Story continuity
   setupsForEpisodes: number[];  // Episodes this sets up
   resolvesPlotsFrom: number[]; // Episodes whose plots this resolves
+
+  /**
+   * Primary Story Circle role(s) this episode carries. Fewer-than-eight seasons
+   * fuse adjacent beats in one episode; longer seasons mark extra episodes as
+   * contiguous expansions of a real beat.
+   */
+  storyCircleRole?: StoryCircleRoleAssignment[];
   
   // Character introductions in this episode
   introducesCharacters: string[];
@@ -132,10 +140,20 @@ export type ArcEpisodeTurnoutType =
 
 export interface ArcEpisodeTurnout {
   episodeNumber: number;
+  storyCircleBeat: StoryCircleBeat;
+  storyCircleRoleKind: 'primary' | 'expansion';
   turnType: ArcEpisodeTurnoutType;
   description: string;
   leavesProtagonistWith: string;
   whyThisCannotMoveLater: string;
+}
+
+export interface ArcStoryCircleSpan {
+  startBeat: StoryCircleBeat;
+  endBeat: StoryCircleBeat;
+  ownedBeats: StoryCircleBeat[];
+  startEpisode: number;
+  endEpisode: number;
 }
 
 export interface SeasonArc {
@@ -153,23 +171,18 @@ export interface SeasonArc {
     importance: 'critical' | 'major' | 'minor';
   }>;
   /**
-   * Which 7-point structural beats this arc is responsible for landing.
-   * Optional so legacy plans that predate Path A still deserialize cleanly.
-   * Populated by SeasonPlannerAgent from the season's sevenPoint map + the
-   * per-episode structuralRole assignments that fall inside episodeRange.
-   */
-  beats?: StructuralRole[];
-  /**
    * Arc pressure architecture.
    *
-   * An arc is a 3-8 episode pressure movement inside the season, not a
-   * competing act schema. The season 7-point spine remains authoritative;
-   * these fields explain how the episodes inside this arc turn, reframe,
-   * collapse, resolve, and hand off pressure without resetting.
+   * An arc is a multi-episode pressure movement inside the season Story Circle,
+   * not an act or a competing structure. The Story Circle span states which
+   * contiguous section of the eight-beat loop this arc owns; the turnout list
+   * proves every episode in that span changes the protagonist's pressure state.
    */
+  storyCircleSpan?: ArcStoryCircleSpan;
   arcQuestion?: string;
   seasonQuestionRelation?: string;
   identityPressureFacet?: string;
+  incomingPressureFromArcId?: string;
   midpointRecontextualization?: {
     episodeNumber: number;
     questionBefore: string;
@@ -203,7 +216,7 @@ export interface SeasonPromiseArchitecture {
   /**
    * One season-level dramatic question that fuses the protagonist pressure
    * with the season goal/stakes. This complements theme and arc questions;
-   * it does not replace the seven-point spine.
+   * it does not replace the Story Circle spine.
    */
   seasonDramaticQuestion: string;
   centralPressure: {
@@ -313,7 +326,7 @@ export interface SeasonChoiceMomentSeed {
   id: string;
   /** Episode the decision is made in. */
   episode: number;
-  /** What the decision is, tied to an arc / seven-point beat. */
+  /** What the decision is, tied to an arc / Story Circle beat. */
   anchor: string;
   /** Episode the choice pays off. Omitted or === episode means it pays off immediately. */
   paysOffEpisode?: number;
@@ -413,11 +426,21 @@ export interface SeasonPlan {
   anchors: StoryAnchors;
 
   /**
-   * Season-level 7-point beat map. Mirrors SourceMaterialAnalysis.sevenPoint
+   * Season-level legacy-structure beat map. Mirrors SourceMaterialAnalysis.legacyStructure
    * so downstream agents don't need the source analysis to look up the
    * textual description of a beat carried by a given episode.
+   *
+   * @deprecated Story Circle is the primary structure. This remains for old
+   * artifacts and migration compatibility.
    */
-  sevenPoint: SevenPointStructure;
+  legacyStructure: LegacyStructuralMap;
+
+  /**
+   * Primary season-level Story Circle beat map. Mirrors
+   * SourceMaterialAnalysis.storyCircle so downstream agents can realize the
+   * same eight-beat circle at season and episode scale.
+   */
+  storyCircle?: StoryCircleStructure;
 
   /**
    * Generator-only theme argument contract copied from source analysis. This is
@@ -445,10 +468,10 @@ export interface SeasonPlan {
    */
   stakesArchitectureContracts?: StakesArchitectureContract[];
   /**
-   * Generator-only authored 7-point beat realization contracts. These preserve
-   * Section 7 beat content as staged obligations while playback ignores them.
+   * Generator-only authored Story Circle beat realization contracts. These are
+   * the primary structural beat obligations for new generation.
    */
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   /**
    * Generator-only authored arc-pressure contracts. These preserve Arc Plan
    * fields as staged obligations while playback ignores them.
@@ -482,7 +505,7 @@ export interface SeasonPlan {
 
   /**
    * E1 slice 4: the season's CHOICE MOMENTS, identified up front by the planner
-   * across the master narrative — each is a decision tied to an arc/seven-point beat,
+   * across the master narrative — each is a decision tied to an arc/Story Circle beat,
    * with when it pays off (now or a later episode). Consumed by `seasonChoicePlan` to
    * allocate the 35/30/20/15 choice-type budget across the whole season (and later
    * payoffs seed promises / the SpinePlantMap). Optional — the consumer falls back to

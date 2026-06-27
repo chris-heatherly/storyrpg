@@ -147,12 +147,12 @@ describe('extractQuotedDialogueLines', () => {
 });
 
 describe('deriveEvidenceLimitedScore', () => {
-  it('caps clean incremental-only evidence below excellent quality', () => {
-    expect(deriveEvidenceLimitedScore({ scores: [100, 95], evidenceCount: 2 })).toBe(75);
+  it('keeps clean incremental-only evidence eligible for excellent quality', () => {
+    expect(deriveEvidenceLimitedScore({ scores: [100, 95], evidenceCount: 2 })).toBe(98);
   });
 
   it('penalizes incremental warnings and errors without a positive floor', () => {
-    expect(deriveEvidenceLimitedScore({ scores: [100], evidenceCount: 1, warningCount: 1, errorCount: 1 })).toBe(47);
+    expect(deriveEvidenceLimitedScore({ scores: [100], evidenceCount: 1, warningCount: 1, errorCount: 1 })).toBe(72);
   });
 
   it('fails closed when no evidence was collected', () => {

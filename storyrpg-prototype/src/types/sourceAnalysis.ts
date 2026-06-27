@@ -12,7 +12,7 @@ import type {
   EndingRealizationContract,
   FailureModeAuditCode,
   FailureModeAuditContract,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from './scenePlan';
@@ -20,7 +20,7 @@ import type { CliffhangerType } from './story';
 import type { ThemeImageSystemMotif } from './relationshipValue';
 
 // ========================================
-// 7-POINT STORY STRUCTURE
+// STORY CIRCLE STORY STRUCTURE
 // ========================================
 
 /**
@@ -45,15 +45,16 @@ export interface StoryAnchors {
 }
 
 /**
- * The season-level 3-act / 7-point structural contract.
+ * Deprecated season-level structural contract from the pre-Story-Circle model.
  *
  * Each string names the beat at the season level. Individual episodes carry
  * one or more of these beats as their structural role (see
  * {@link EpisodeOutline.structuralRole}). The `climax` field here SHOULD
  * match the {@link StoryAnchors.climax} anchor either exactly or as a
- * recognizable rephrasing; `SevenPointCoverageValidator` enforces this.
+ * recognizable rephrasing. Story Circle validators are authoritative for new
+ * generation; this remains for old artifacts and migration.
  */
-export interface SevenPointStructure {
+export interface LegacyStructuralMap {
   hook: string;
   plotTurn1: string;
   pinch1: string;
@@ -64,11 +65,68 @@ export interface SevenPointStructure {
 }
 
 /**
- * The names of the seven structural beats in {@link SevenPointStructure}. Used
- * to key the authored Section-7 beat→episode anchor map
+ * The season-level / episode-level Story Circle structural contract.
+ *
+ * The pipeline treats this as the primary structure. Legacy structural fields
+ * remain below as compatibility aliases for old artifacts and checkpoints.
+ */
+export interface StoryCircleStructure {
+  you: string;
+  need: string;
+  go: string;
+  search: string;
+  find: string;
+  take: string;
+  return: string;
+  change: string;
+}
+
+export type StoryCircleBeat = keyof StoryCircleStructure;
+
+export const STORY_CIRCLE_BEATS: ReadonlyArray<StoryCircleBeat> = [
+  'you',
+  'need',
+  'go',
+  'search',
+  'find',
+  'take',
+  'return',
+  'change',
+] as const;
+
+export interface StoryCircleRoleAssignment {
+  beat: StoryCircleBeat;
+  /**
+   * `primary` lands the beat itself. `expansion` is an additional contiguous
+   * unit that deepens the named beat when there are more than eight episodes
+   * or scenes.
+   */
+  roleKind: 'primary' | 'expansion';
+  /** Episode/scene index carrying the primary beat this expands, if applicable. */
+  expansionOfUnit?: number;
+  /** Why this assignment exists. Useful when old Story Circle artifacts migrate. */
+  source?: 'distribution' | 'treatment' | 'llm' | 'migration';
+}
+
+export type EncounterStoryCircleTarget = Extract<StoryCircleBeat, 'go' | 'search' | 'find' | 'take'>;
+
+export interface EncounterStoryCircleTargetEvidence {
+  /** Episode-level Story Circle role(s) used to choose the encounter target. */
+  episodeStoryCircleRole?: StoryCircleBeat[];
+  /** The episode question or pressure this encounter is meant to test. */
+  episodeQuestion?: string;
+  /** How this encounter leaves the protagonist different by the episode end. */
+  protagonistChange?: string;
+  /** Whether this encounter/cliffhanger hands pressure to the next cycle. */
+  cliffhangerHandoff?: 'next_need' | 'next_go' | 'none';
+}
+
+/**
+ * The names of the legacy structural beats in {@link LegacyStructuralMap}. Used
+ * to key the authored historical beat→episode anchor map
  * ({@link TreatmentSeasonGuidance.beatEpisodeAnchors}).
  */
-export type SevenPointBeat = keyof SevenPointStructure;
+export type LegacyStructuralBeat = keyof LegacyStructuralMap;
 
 /**
  * Optional reusable-story abstraction metadata inferred from a known story or
@@ -154,7 +212,7 @@ export interface CharacterFashionStyle {
 }
 
 /**
- * Which beat of the 7-point structure a given episode carries.
+ * Which beat of the legacy-structure structure a given episode carries.
  *
  * `rising` and `falling` are non-beat buffer slots used when an episode sits
  * BETWEEN two named beats and purely escalates / de-escalates tension.
@@ -174,7 +232,7 @@ export type StructuralRole =
  * The seven "real" beats (excluding rising / falling buffers). Exported so
  * validators can iterate the required set.
  */
-export const SEVEN_POINT_BEATS: ReadonlyArray<Exclude<StructuralRole, 'rising' | 'falling'>> = [
+export const LEGACY_STRUCTURAL_BEATS: ReadonlyArray<Exclude<StructuralRole, 'rising' | 'falling'>> = [
   'hook',
   'plotTurn1',
   'pinch1',
@@ -307,8 +365,6 @@ export interface StoryEndingTarget {
 
 export interface TreatmentEpisodeGuidance {
   authoredTitle?: string;
-  actLabel?: string;
-  arcLabel?: string;
   rawStructuralRole?: string;
   normalizedStructuralRoles?: StructuralRole[];
   structuralNote?: string;
@@ -361,7 +417,6 @@ export interface TreatmentEpisodeGuidance {
 }
 
 export interface TreatmentSeasonGuidance {
-  episodeStructureMode: import('./story').EpisodeStructureMode;
   seasonPromiseAndDramaticEngine?: string;
   genre?: string;
   tone?: string;
@@ -421,7 +476,13 @@ export interface TreatmentSeasonGuidance {
    * mapping of record; reconciled against the per-episode `structuralRole`
    * bullets downstream (SourceMaterialAnalyzer / SeasonPlannerAgent).
    */
-  beatEpisodeAnchors?: Partial<Record<SevenPointBeat, number>>;
+  beatEpisodeAnchors?: Partial<Record<LegacyStructuralBeat, number>>;
+  /**
+   * Story Circle beat→episode anchors parsed from authored season-spine text.
+   * New generation should prefer this over `beatEpisodeAnchors`; the legacy map
+   * remains as a migration alias for older treatments and checkpoints.
+   */
+  storyCircleBeatEpisodeAnchors?: Partial<Record<StoryCircleBeat, number>>;
   arcPlan?: string;
   arcGuidance?: {
     rawSection: string;
@@ -579,6 +640,17 @@ export interface PlannedEncounter {
   stakes: string;
   // Authored treatment pressure this encounter should manifest through play
   centralConflict?: string;
+  /**
+   * Which Story Circle pressure point this playable encounter is targeting.
+   * Encounters do not target `you`, `need`, `return`, or `change` directly;
+   * those beats frame the episode while the encounter itself realizes a
+   * pressure event in `go`, `search`, `find`, or `take`.
+   */
+  storyCircleTarget?: EncounterStoryCircleTarget;
+  /** Why this encounter belongs to that Story Circle target. */
+  storyCircleTargetRationale?: string;
+  /** Season-planning evidence used to select the target. */
+  storyCircleTargetEvidence?: EncounterStoryCircleTargetEvidence;
   // What the episode should show after this encounter resolves
   aftermathConsequence?: string;
   // Skills/approaches that should be relevant
@@ -660,9 +732,6 @@ export interface ConsequenceChain {
 // ========================================
 
 export interface EpisodeOutline {
-  episodeStructureMode?: import('./story').EpisodeStructureMode;
-  routeMeta?: import('./story').EpisodeRouteMeta;
-
   episodeNumber: number;
   title: string;
   synopsis: string;
@@ -681,22 +750,28 @@ export interface EpisodeOutline {
   estimatedChoiceCount: number;
 
   /**
-   * Which beat(s) of the season's {@link SevenPointStructure} this episode
+   * Which beat(s) of the season's {@link LegacyStructuralMap} this episode
    * carries. A single episode may fuse multiple beats (e.g. `['hook','plotTurn1']`
    * in a short 3-episode season) or sit BETWEEN beats as a `rising` / `falling`
    * buffer in a long season.
    *
-   * Populated by SeasonPlannerAgent; validated by SevenPointCoverageValidator
-   * (every beat in the season's sevenPoint must be carried by >=1 episode).
-   * Drives arc tone, difficultyTier, branch placement, twist landing, and
-   * character-arc milestones.
+   * Populated by SeasonPlannerAgent as a deprecated compatibility alias.
+   * Story Circle roles are authoritative for new generation, but old artifacts
+   * still use this to drive migration into storyCircleRole.
    */
   structuralRole?: StructuralRole[];
 
   /**
-   * @deprecated in favor of {@link structuralRole} + season-level sevenPoint.
+   * Story Circle beat assignment for this episode. This is the primary
+   * structural field for new generation. `structuralRole` remains as a
+   * deprecated Story Circle compatibility alias while old artifacts migrate.
+   */
+  storyCircleRole?: StoryCircleRoleAssignment[];
+
+  /**
+   * @deprecated in favor of {@link structuralRole} + season-level legacyStructure.
    * Retained so existing SourceMaterialAnalyzer output still typechecks; new
-   * code should read `structuralRole` and consult the season's `sevenPoint`
+   * code should read `structuralRole` and consult the season's `legacyStructure`
    * for the beat text.
    */
   narrativeFunction: {
@@ -764,12 +839,19 @@ export interface SourceMaterialAnalysis {
   anchors: StoryAnchors;
 
   /**
-   * The season-level 3-act / 7-point beat map. Inferred by
-   * SourceMaterialAnalyzer; each episode carries one or more of these beats
-   * via {@link EpisodeOutline.structuralRole}. Validated for coverage and
-   * anchor-consistency by SevenPointCoverageValidator.
+   * Deprecated season-level structural beat map. Inferred by
+   * SourceMaterialAnalyzer as a compatibility alias for old checkpoints.
+   *
+   * @deprecated Story Circle is the primary structure.
    */
-  sevenPoint: SevenPointStructure;
+  legacyStructure: LegacyStructuralMap;
+
+  /**
+   * Primary season-level Story Circle beat map. Each episode carries one or
+   * more of these beats via {@link EpisodeOutline.storyCircleRole}. Validators
+   * enforce coverage, order, contiguity, and realization.
+   */
+  storyCircle?: StoryCircleStructure;
 
   /**
    * Optional reusable-story abstraction. Downstream agents may consult this
@@ -847,7 +929,7 @@ export interface SourceMaterialAnalysis {
   branchConsequenceContracts?: BranchConsequenceRealizationContract[];
   endingRealizationContracts?: EndingRealizationContract[];
   failureModeAuditContracts?: FailureModeAuditContract[];
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   arcPressureContracts?: ArcPressureTreatmentContract[];
   worldTreatmentContracts?: WorldTreatmentRealizationContract[];
 

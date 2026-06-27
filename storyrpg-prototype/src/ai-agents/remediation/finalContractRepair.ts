@@ -73,8 +73,68 @@ export interface FinalContractRepairOutcome {
   passed: boolean;
   /** How many repair rounds ran. */
   attempts: number;
+  /** Unique issue fingerprints skipped because their per-issue repair budget was spent. */
+  exhaustedIssueKeys: string[];
+  exhaustedIssueCount: number;
   /** Ledger records from every handler that changed something. */
   records: Array<Omit<RemediationLedgerRecord, 'timestamp'>>;
+}
+
+type ContractRepairIssue = ContractRepairReport['blockingIssues'][number];
+
+function extractQuotedMoment(value: string): string | undefined {
+  const match = /"([^"]{16,})"/.exec(value);
+  return match?.[1];
+}
+
+function compactFingerprintText(value: string | undefined): string {
+  return (value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+}
+
+function contractRepairIssueFingerprint(issue: ContractRepairIssue): string {
+  const message = issue.message ?? '';
+  const moment = extractQuotedMoment(message) ?? message;
+  return [
+    issue.validator ?? '',
+    issue.type ?? '',
+    issue.category ?? '',
+    issue.severity ?? '',
+    issue.episodeNumber ?? '',
+    issue.sceneId ?? '',
+    issue.beatId ?? '',
+    compactFingerprintText(moment),
+  ].join('::');
+}
+
+function selectRepairableIssuesForRound(
+  issues: ContractRepairIssue[],
+  issueAttempts: Map<string, number>,
+  maxAttemptsPerIssue: number | undefined,
+  dedupeIssueFingerprints: boolean
+): { issues: ContractRepairIssue[]; keys: string[]; exhaustedKeys: string[] } {
+  const selected: ContractRepairIssue[] = [];
+  const selectedKeys = new Set<string>();
+  const exhaustedKeys = new Set<string>();
+
+  for (const issue of issues) {
+    const key = contractRepairIssueFingerprint(issue);
+    if (maxAttemptsPerIssue !== undefined && (issueAttempts.get(key) ?? 0) >= maxAttemptsPerIssue) {
+      exhaustedKeys.add(key);
+      continue;
+    }
+    if (dedupeIssueFingerprints && selectedKeys.has(key)) continue;
+    selected.push(issue);
+    selectedKeys.add(key);
+  }
+
+  return {
+    issues: selected,
+    keys: Array.from(selectedKeys),
+    exhaustedKeys: Array.from(exhaustedKeys),
+  };
 }
 
 /**
@@ -90,6 +150,14 @@ export async function runFinalContractRepair(opts: {
   handlers: ContractRepairHandler[];
   revalidate: (story: Story) => Promise<ContractRepairReport>;
   maxAttempts?: number;
+  /**
+   * Optional per-finding budget. When set, the loop stops re-sending the same
+   * validator fingerprint to handlers after this many changed repair rounds.
+   * Leaving it unset preserves the historical global-attempts-only behavior.
+   */
+  maxAttemptsPerIssue?: number;
+  /** Collapse duplicate issue fingerprints within a single repair round. */
+  dedupeIssueFingerprints?: boolean;
   /** Optional guard: return false to stop spending the remediation budget. */
   canSpend?: () => boolean;
 }): Promise<FinalContractRepairOutcome> {
@@ -97,15 +165,26 @@ export async function runFinalContractRepair(opts: {
   let story = opts.story;
   let report = opts.initialReport;
   const records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> = [];
+  const issueAttempts = new Map<string, number>();
+  const exhaustedIssueKeys = new Set<string>();
   let attempts = 0;
 
   while (!report.passed && attempts < maxAttempts) {
     if (opts.canSpend && !opts.canSpend()) break;
+    const round = selectRepairableIssuesForRound(
+      report.blockingIssues,
+      issueAttempts,
+      opts.maxAttemptsPerIssue,
+      opts.dedupeIssueFingerprints ?? false
+    );
+    for (const key of round.exhaustedKeys) exhaustedIssueKeys.add(key);
+    if (round.issues.length === 0) break;
+
     attempts += 1;
 
     let roundChanged = false;
     for (const handler of opts.handlers) {
-      const result = await handler({ story, blockingIssues: report.blockingIssues });
+      const result = await handler({ story, blockingIssues: round.issues });
       if (result.changed) {
         roundChanged = true;
         story = result.story;
@@ -114,10 +193,21 @@ export async function runFinalContractRepair(opts: {
     }
 
     if (!roundChanged) break; // fixpoint: nothing left any handler can fix
+    for (const key of round.keys) {
+      issueAttempts.set(key, (issueAttempts.get(key) ?? 0) + 1);
+    }
     report = await opts.revalidate(story);
   }
 
-  return { story, report, passed: report.passed, attempts, records };
+  return {
+    story,
+    report,
+    passed: report.passed,
+    attempts,
+    exhaustedIssueKeys: Array.from(exhaustedIssueKeys),
+    exhaustedIssueCount: exhaustedIssueKeys.size,
+    records,
+  };
 }
 
 /**

@@ -319,14 +319,18 @@ aggregator is idempotent. Original spec below.
 Steps per rule: add repair fn → wire into autofix dispatch (emit `fixedCount`) → flip tier
 to `blocking` + `remediation:'autofix'` behind flag → unit test (broken→valid; non-repairable→degrade).
 
-### Bucket B0 — flip exhaustion (~5 rules) — ✅ IMPLEMENTED 2026-06-04 (green, default-off)
+### Bucket B0 — flip exhaustion (~5 rules) — ✅ IMPLEMENTED 2026-06-04; scene-shape gates promoted 2026-06-25
 
 Landed as a pure `remediation/architectGatePolicy.ts` (`classifyArchitectGateWarnings` +
 `ARCHITECT_GATE_TAGS`) + a surgical swap in `FullStoryPipeline.ts` (import L284, attempts 2→3
 at L6696, classify/throw block at L6792). Behind per-rule flags
 `GATE_TREATMENT_FIDELITY` / `GATE_DRAMATIC_STRUCTURE` / `GATE_THEME_PRESSURE` /
-`GATE_SCENE_TURN_CONTRACT` / `GATE_EPISODE_PRESSURE`. With no flag set, behavior is byte-for-byte
-unchanged (verified: 177 pipeline + 54 architect tests pass). Original spec below.
+`GATE_SCENE_TURN_CONTRACT` / `GATE_EPISODE_PRESSURE`. `GATE_DRAMATIC_STRUCTURE`
+and `GATE_SCENE_TURN_CONTRACT` are now default-on after the scene-first builder
+began deriving deterministic scene contracts and validating planned scenes
+through the same architecture policy as invented scenes. The remaining broader
+craft/fidelity gates stay default-off unless explicitly promoted. Kill switches:
+`GATE_DRAMATIC_STRUCTURE=0` and `GATE_SCENE_TURN_CONTRACT=0`.
 
 
 
@@ -557,9 +561,9 @@ the architecture retry loop is `:6694-6724` (`maxArchitectureAttempts = 2`); tag
 | NPCDepth (dimension count) | advisory | scene | yes | no | A | autofix→regen | — |
 | ArcDelta (endpoint presence) | advisory | episode | yes | no | A | autofix | — |
 | MechanicsLeakage (isolated) | advisory | beat | yes | no | A | autofix | — |
-| DramaticStructure | advisory | episode | yes | no | B0 | regen-episode | — |
+| DramaticStructure | blocking by default | episode | yes | no | B0 | regen-episode | Default-on via `GATE_DRAMATIC_STRUCTURE`; reversible with `=0`. |
 | ThemePressure | advisory | episode | yes | no | B0 | regen-episode | — |
-| SceneTurnContract | advisory | scene | yes | no | B0 | regen-episode | — |
+| SceneTurnContract | blocking by default | scene | yes | no | B0 | regen-episode | Default-on via `GATE_SCENE_TURN_CONTRACT`; reversible with `=0`. |
 | EpisodePressureArchitecture | advisory | episode | yes | no | B0 | regen-episode | — |
 | TreatmentFidelity | advisory | episode | partial | no (token overlap) | B0 | regen-episode | — |
 | PropIntroduction | advisory | scene | yes | no | B1 | regen-scene | — |

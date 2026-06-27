@@ -1,17 +1,17 @@
 /**
- * Seven-Point Distribution Helper
+ * Legacy-Structure Distribution Helper
  *
- * Pure, deterministic function that maps the season's 7 structural beats
+ * Pure, deterministic function that maps the season's legacy structural beats
  * (Hook, Plot Turn 1, Pinch 1, Midpoint, Pinch 2, Climax, Resolution) onto
  * N episodes.
  *
  * Usage
  * -----
- *  - `SeasonPlannerAgent` calls {@link distributeSevenPoints} to seed a
+ *  - `SeasonPlannerAgent` calls {@link distributeLegacyStructure} to seed a
  *    default `structuralRole` for every episode.
  *  - The LLM prompt includes the resulting mapping as a HINT, not a rule —
  *    the LLM may reassign beats if the source material strongly demands it.
- *  - `SevenPointCoverageValidator` uses the same helper to build the
+ *  - `StoryCircleCoverageValidator` uses the same helper to build the
  *    expected-coverage report when the planner's output is missing roles.
  *
  * Rules
@@ -76,7 +76,7 @@ export interface DistributionEntry {
  *          Guaranteed to contain every canonical beat at least once,
  *          in canonical order.
  */
-export function distributeSevenPoints(totalEpisodes: number): DistributionEntry[] {
+export function distributeLegacyStructure(totalEpisodes: number): DistributionEntry[] {
   if (!Number.isFinite(totalEpisodes) || totalEpisodes < 1) {
     return [];
   }
@@ -134,7 +134,7 @@ export function describeDistribution(entries: DistributionEntry[]): string {
  * order. Returns a list of human-readable issues; empty array means the
  * coverage is clean.
  */
-export function checkSevenPointCoverage(
+export function checkLegacyStructureCoverage(
   perEpisodeRoles: Array<{ episodeNumber: number; structuralRole?: StructuralRole[] }>
 ): string[] {
   const issues: string[] = [];
@@ -150,7 +150,7 @@ export function checkSevenPointCoverage(
 
   for (const beat of CANONICAL_BEATS) {
     if (!beatToEpisode.has(beat)) {
-      issues.push(`Missing 7-point beat: "${beat}" is not carried by any episode.`);
+      issues.push(`Missing legacy-structure beat: "${beat}" is not carried by any episode.`);
     }
   }
 
@@ -169,12 +169,12 @@ export function checkSevenPointCoverage(
 }
 
 /**
- * Ensure every canonical 7-point beat is carried by some episode (1.5). Any
+ * Ensure every canonical legacy-structure beat is carried by some episode (1.5). Any
  * beat missing from `roleByEpisode` is backfilled onto the episode the default
  * distribution assigns it. No-op when coverage is already complete. Mutates and
  * returns the map.
  */
-export function backfillMissingBeats(
+export function backfillMissingLegacyBeats(
   roleByEpisode: Map<number, StructuralRole[]>,
   defaultDistribution: Array<{ episodeNumber: number; structuralRole: StructuralRole[] }>,
 ): Map<number, StructuralRole[]> {

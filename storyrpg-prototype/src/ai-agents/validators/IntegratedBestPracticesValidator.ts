@@ -57,10 +57,12 @@ import {
   ConsequenceBudgetInput,
   StakesTriangleInput,
   FiveFactorInput,
+  type ValidatorExecutionRecord,
 } from '../../types/validation';
 import { CHOICE_DENSITY_DEFAULTS } from '../../constants/validation';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
+import { createValidatorExecutionRecord } from './validatorExecutionRecords';
 
 // Branching-frequency reference cap fed to ChoiceDistributionValidator's
 // reporting pass. The metric only reports branchingCount vs. this cap today;
@@ -275,12 +277,21 @@ export class IntegratedBestPracticesValidator {
 
     const blockingIssues: ValidationIssue[] = [];
     let warningCount = 0;
+    const executionRecords: ValidatorExecutionRecord[] = [];
+    const recordQuickExecution = (validatorId: string, issues: Array<{ level?: string; severity?: string; message?: string; location?: unknown; suggestion?: string }>): void => {
+      executionRecords.push(createValidatorExecutionRecord({
+        validatorId,
+        lifecycle: 'quick-validation',
+        issues,
+      }));
+    };
 
     // 1. NPC Depth (structural, fast)
     if (this.config.rules.npcDepth.enabled) {
       const npcResult = await this.npcDepthValidator.validate({
         npcs: input.npcs,
       });
+      recordQuickExecution('NPCDepthValidator', npcResult.issues);
 
       for (const issue of npcResult.issues) {
         if (issue.level === 'error') {
@@ -294,6 +305,7 @@ export class IntegratedBestPracticesValidator {
     // 1.5 Choice impact contract (fast, deterministic)
     if (input.choices.length > 0) {
       const impactResult = this.choiceImpactValidator.validate({ choices: input.choices as any });
+      recordQuickExecution('ChoiceImpactValidator', impactResult.issues);
       for (const issue of impactResult.issues) {
         const mapped = toValidationIssue('choice_impact', issue);
         if (mapped.level === 'error') {
@@ -310,6 +322,7 @@ export class IntegratedBestPracticesValidator {
           input.scenes.map((scene) => [scene.id, scene.charactersInvolved || []])
         ),
       });
+      recordQuickExecution('MechanicalStorytellingValidator', mechanicalResult.issues);
       for (const issue of mechanicalResult.issues) {
         const mapped = toValidationIssue('mechanical_storytelling', issue);
         if (mapped.level === 'error') {
@@ -320,6 +333,7 @@ export class IntegratedBestPracticesValidator {
       }
 
       const balanceResult = this.statCheckBalanceValidator.validate({ choices: input.choices as any });
+      recordQuickExecution('StatCheckBalanceValidator', balanceResult.issues);
       for (const issue of balanceResult.issues) {
         const mapped = toValidationIssue('stat_check_balance', issue);
         if (mapped.level === 'error') {
@@ -333,6 +347,7 @@ export class IntegratedBestPracticesValidator {
     // 2. Stakes Triangle (check for missing components only, skip LLM scoring)
     // Required for dilemma choices and any choice that branches (has nextSceneId)
     if (this.config.rules.stakesTriangle.enabled) {
+      const stakesTriangleIssues: ValidationIssue[] = [];
       for (const choice of input.choices) {
         const isHighStakes = choice.choiceType === 'dilemma' || choice.nextSceneId;
         if (isHighStakes) {
@@ -344,21 +359,25 @@ export class IntegratedBestPracticesValidator {
             if (!stakes?.identity) missing.push('IDENTITY');
             const label = choice.choiceType === 'dilemma' ? 'DILEMMA' : `BRANCHING ${choice.choiceType.toUpperCase()}`;
 
-            blockingIssues.push({
+            const issue: ValidationIssue = {
               category: 'stakes_triangle',
               level: 'error',
               message: `${label} choice "${choice.id}" missing stakes: ${missing.join(', ')}`,
               location: { choiceId: choice.id },
               suggestion: `Add ${missing.join(' and ')} to complete the Stakes Triangle`,
-            });
+            };
+            stakesTriangleIssues.push(issue);
+            blockingIssues.push(issue);
           }
         }
       }
+      recordQuickExecution('StakesTriangleValidator', stakesTriangleIssues);
     }
 
     // 3. Five-Factor (heuristic check only, no LLM)
     // Required for dilemma choices and any choice that branches
     if (this.config.rules.fiveFactor.enabled) {
+      const fiveFactorIssues: ValidationIssue[] = [];
       for (const choice of input.choices) {
         const isHighStakes = choice.choiceType === 'dilemma' || choice.nextSceneId;
         if (isHighStakes) {
@@ -369,16 +388,19 @@ export class IntegratedBestPracticesValidator {
           const label = choice.choiceType === 'dilemma' ? 'DILEMMA' : `BRANCHING ${choice.choiceType.toUpperCase()}`;
 
           if (factorCount === 0 && choice.consequences.length === 0) {
-            blockingIssues.push({
+            const issue: ValidationIssue = {
               category: 'five_factor',
               level: 'error',
               message: `${label} choice "${choice.id}" has no consequences and affects 0 factors`,
               location: { choiceId: choice.id },
               suggestion: 'Add consequences that change OUTCOME, PROCESS, INFORMATION, RELATIONSHIP, or IDENTITY',
-            });
+            };
+            fiveFactorIssues.push(issue);
+            blockingIssues.push(issue);
           }
         }
       }
+      recordQuickExecution('FiveFactorValidator', fiveFactorIssues);
     }
 
     // 4. Choice Density - critical check for having ANY choices
@@ -387,6 +409,7 @@ export class IntegratedBestPracticesValidator {
         beats: input.scenes.flatMap(s => s.beats),
         scenes: input.scenes,
       });
+      recordQuickExecution('ChoiceDensityValidator', densityResult.issues);
 
       for (const issue of densityResult.issues) {
         if (issue.level === 'error') {
@@ -402,13 +425,14 @@ export class IntegratedBestPracticesValidator {
     // The 60/25/10/5 target is enforced at plan/season scope, so quick validation
     // should not warn or block merely because this slice's local mix differs.
     if (this.config.rules.consequenceBudget.enabled && input.choices.length > 0) {
-      await this.consequenceBudgetValidator.validate({
+      const budgetResult = await this.consequenceBudgetValidator.validate({
         choices: input.choices.map(c => ({
           id: c.id,
           choiceType: c.choiceType,
           consequences: c.consequences,
         })),
       });
+      recordQuickExecution('ConsequenceBudgetValidator', budgetResult.issues);
     }
 
     // 6. Callback Opportunities — drive SceneWriter textVariants repair
@@ -427,6 +451,7 @@ export class IntegratedBestPracticesValidator {
         callbackLedger: input.callbackLedger,
         generatedThroughEpisode: input.generatedThroughEpisode,
       });
+      recordQuickExecution('CallbackOpportunitiesValidator', callbackResult.issues);
 
       for (const issue of callbackResult.issues) {
         if (issue.level === 'error') {
@@ -445,6 +470,7 @@ export class IntegratedBestPracticesValidator {
         episodeNumber: input.episodeNumber,
         generatedThroughEpisode: input.generatedThroughEpisode || input.episodeNumber,
       });
+      recordQuickExecution('ResidueObligationValidator', residueResult.issues);
       for (const issue of residueResult.issues) {
         const mapped: ValidationIssue = {
           category: 'residue_obligations',
@@ -466,6 +492,7 @@ export class IntegratedBestPracticesValidator {
       texts: collectPlayerFacingTexts(input),
       scanDesignNotes: gateDesignNoteLeak(),
     });
+    recordQuickExecution('MechanicsLeakageValidator', leakageResult.issues);
     for (const issue of leakageResult.issues) {
       const mapped = toValidationIssue('mechanics_leakage', issue);
       if (mapped.level === 'error') {
@@ -484,6 +511,7 @@ export class IntegratedBestPracticesValidator {
       canProceed,
       blockingIssues,
       warningCount,
+      executionRecords,
     };
   }
 
@@ -494,6 +522,14 @@ export class IntegratedBestPracticesValidator {
   async runFullValidation(input: ValidationInput): Promise<ComprehensiveValidationReport> {
     const startTime = Date.now();
     const allIssues: ValidationIssue[] = [];
+    const executionRecords: ValidatorExecutionRecord[] = [];
+    const recordFullExecution = (validatorId: string, issues: Array<{ level?: string; severity?: string; message?: string; location?: unknown; suggestion?: string }>): void => {
+      executionRecords.push(createValidatorExecutionRecord({
+        validatorId,
+        lifecycle: 'full-qa',
+        issues,
+      }));
+    };
 
     // Initialize metrics
     const metrics: ValidationMetrics = {
@@ -537,6 +573,7 @@ export class IntegratedBestPracticesValidator {
 
       const densityResult = await this.choiceDensityValidator.validate(densityInput);
       allIssues.push(...densityResult.issues);
+      recordFullExecution('ChoiceDensityValidator', densityResult.issues);
 
       metrics.choiceDensity = {
         averageGapSeconds: densityResult.metrics.averageGapSeconds,
@@ -564,6 +601,7 @@ export class IntegratedBestPracticesValidator {
         targets: { expression: 35, relationship: 30, strategic: 20, dilemma: 15 },
         maxBranchingChoicesPerEpisode: CHOICE_DISTRIBUTION_BRANCHING_CAP,
       });
+      recordFullExecution('ChoiceDistributionValidator', []);
       metrics.choiceDistribution = {
         totalChoiceSets: raw.totalChoiceSets,
         counts: raw.counts,
@@ -578,7 +616,9 @@ export class IntegratedBestPracticesValidator {
     // 1.5 Choice Impact Validation
     if (input.choices.length > 0) {
       const impactResult = this.choiceImpactValidator.validate({ choices: input.choices as any });
-      allIssues.push(...impactResult.issues.map((issue) => toValidationIssue('choice_impact', issue)));
+      const impactIssues = impactResult.issues.map((issue) => toValidationIssue('choice_impact', issue));
+      allIssues.push(...impactIssues);
+      recordFullExecution('ChoiceImpactValidator', impactIssues);
       metrics.choiceImpact = {
         meaningfulChoices: impactResult.metrics.meaningfulChoices,
         choicesWithImpactFactors: impactResult.metrics.choicesWithImpactFactors,
@@ -592,7 +632,9 @@ export class IntegratedBestPracticesValidator {
           input.scenes.map((scene) => [scene.id, scene.charactersInvolved || []])
         ),
       });
-      allIssues.push(...mechanicalResult.issues.map((issue) => toValidationIssue('mechanical_storytelling', issue)));
+      const mechanicalIssues = mechanicalResult.issues.map((issue) => toValidationIssue('mechanical_storytelling', issue));
+      allIssues.push(...mechanicalIssues);
+      recordFullExecution('MechanicalStorytellingValidator', mechanicalIssues);
       metrics.mechanicalStorytelling = {
         meaningfulChoices: mechanicalResult.metrics.meaningfulChoices,
         choicesWithStoryVerb: mechanicalResult.metrics.choicesWithStoryVerb,
@@ -604,7 +646,9 @@ export class IntegratedBestPracticesValidator {
       };
 
       const balanceResult = this.statCheckBalanceValidator.validate({ choices: input.choices as any });
-      allIssues.push(...balanceResult.issues.map((issue) => toValidationIssue('stat_check_balance', issue)));
+      const balanceIssues = balanceResult.issues.map((issue) => toValidationIssue('stat_check_balance', issue));
+      allIssues.push(...balanceIssues);
+      recordFullExecution('StatCheckBalanceValidator', balanceIssues);
       metrics.statCheckBalance = balanceResult.metrics;
 
       // Skill coverage is a SEASON property — never gated against a generated K-of-N
@@ -615,16 +659,22 @@ export class IntegratedBestPracticesValidator {
         choices: input.choices as any,
         encounters: input.encounterStructures,
       });
-      allIssues.push(...coverageResult.issues.map((issue) => toValidationIssue('skill_coverage', issue)));
+      const coverageIssues = coverageResult.issues.map((issue) => toValidationIssue('skill_coverage', issue));
+      allIssues.push(...coverageIssues);
+      recordFullExecution('SkillCoverageValidator', coverageIssues);
       metrics.skillCoverage = coverageResult.metrics;
     }
 
     const skillSurfaceResult = this.skillSurfaceValidator.validate({ scenes: input.scenes as any, choices: input.choices as any });
-    allIssues.push(...skillSurfaceResult.issues.map((issue) => toValidationIssue('skill_surface', issue)));
+    const skillSurfaceIssues = skillSurfaceResult.issues.map((issue) => toValidationIssue('skill_surface', issue));
+    allIssues.push(...skillSurfaceIssues);
+    recordFullExecution('SkillSurfaceValidator', skillSurfaceIssues);
     metrics.skillSurface = skillSurfaceResult.metrics;
 
     const branchMechanicalResult = this.branchMechanicalDivergenceValidator.validate({ scenes: input.scenes as any });
-    allIssues.push(...branchMechanicalResult.issues.map((issue) => toValidationIssue('branch_mechanical_divergence', issue)));
+    const branchMechanicalIssues = branchMechanicalResult.issues.map((issue) => toValidationIssue('branch_mechanical_divergence', issue));
+    allIssues.push(...branchMechanicalIssues);
+    recordFullExecution('BranchMechanicalDivergenceValidator', branchMechanicalIssues);
     metrics.branchMechanicalDivergence = branchMechanicalResult.metrics;
 
     // 1.6 Mechanics Leakage Validation
@@ -632,7 +682,9 @@ export class IntegratedBestPracticesValidator {
       texts: collectPlayerFacingTexts(input),
       scanDesignNotes: gateDesignNoteLeak(),
     });
-    allIssues.push(...leakageResult.issues.map((issue) => toValidationIssue('mechanics_leakage', issue)));
+    const leakageIssues = leakageResult.issues.map((issue) => toValidationIssue('mechanics_leakage', issue));
+    allIssues.push(...leakageIssues);
+    recordFullExecution('MechanicsLeakageValidator', leakageIssues);
     metrics.mechanicsLeakage = leakageResult.metrics;
 
     // 2. NPC Depth Validation
@@ -640,6 +692,7 @@ export class IntegratedBestPracticesValidator {
       const npcInput: NPCDepthInput = { npcs: input.npcs };
       const npcResult = await this.npcDepthValidator.validate(npcInput);
       allIssues.push(...npcResult.issues);
+      recordFullExecution('NPCDepthValidator', npcResult.issues);
 
       const summary = this.npcDepthValidator.getSummary(npcResult);
       metrics.npcDepth = {
@@ -661,6 +714,7 @@ export class IntegratedBestPracticesValidator {
       };
 
       const budgetResult = await this.consequenceBudgetValidator.validate(budgetInput);
+      recordFullExecution('ConsequenceBudgetValidator', budgetResult.issues);
 
       const totalConsequences = Object.values(budgetResult.consequencesByCategory)
         .reduce((sum, count) => sum + count, 0);
@@ -695,9 +749,12 @@ export class IntegratedBestPracticesValidator {
 
         // Collect issues from all results
         const stakesEntries = Array.from(stakesResults.results.entries());
+        const stakesIssues: ValidationIssue[] = [];
         for (const [, result] of stakesEntries) {
-          allIssues.push(...result.issues);
+          stakesIssues.push(...result.issues);
         }
+        allIssues.push(...stakesIssues);
+        recordFullExecution('StakesTriangleValidator', stakesIssues);
 
         metrics.stakesTriangle = {
           averageScore: stakesResults.averageScore,
@@ -725,9 +782,12 @@ export class IntegratedBestPracticesValidator {
 
         // Collect issues from all results
         const fiveFactorEntries = Array.from(fiveFactorResults.results.entries());
+        const fiveFactorIssues: ValidationIssue[] = [];
         for (const [, result] of fiveFactorEntries) {
-          allIssues.push(...result.issues);
+          fiveFactorIssues.push(...result.issues);
         }
+        allIssues.push(...fiveFactorIssues);
+        recordFullExecution('FiveFactorValidator', fiveFactorIssues);
 
         metrics.fiveFactor = {
           averageFactorCount: fiveFactorResults.averageFactorCount,
@@ -755,6 +815,7 @@ export class IntegratedBestPracticesValidator {
       });
 
       allIssues.push(...callbackResult.issues);
+      recordFullExecution('CallbackOpportunitiesValidator', callbackResult.issues);
 
       metrics.callbackOpportunities = {
         callbackScore: callbackResult.callbackScore,
@@ -768,6 +829,7 @@ export class IntegratedBestPracticesValidator {
 
     // 7. Pixar Principles Validation (optional — requires seasonBible)
     if (input.seasonBible) {
+      const pixarIssues: ValidationIssue[] = [];
       try {
         const pixarReport = this.pixarValidator.validateSeason(
           input.seasonBible,
@@ -781,7 +843,7 @@ export class IntegratedBestPracticesValidator {
               : pxIssue.severity === 'warning'
               ? 'warning'
               : 'suggestion';
-          allIssues.push({
+          const issue: ValidationIssue = {
             category: 'pixar_principles',
             level,
             message:
@@ -794,7 +856,9 @@ export class IntegratedBestPracticesValidator {
               choiceId: (pxIssue.location as unknown as { choiceId?: string })?.choiceId,
             },
             suggestion: pxIssue.suggestion,
-          });
+          };
+          allIssues.push(issue);
+          pixarIssues.push(issue);
         }
       } catch (err) {
         // Keep validator non-fatal; Pixar coverage is advisory
@@ -816,7 +880,7 @@ export class IntegratedBestPracticesValidator {
                   : pxIssue.severity === 'warning'
                   ? 'warning'
                   : 'suggestion';
-              allIssues.push({
+              const issue: ValidationIssue = {
                 category: 'pixar_principles',
                 level,
                 message: pxIssue.description || pxIssue.type,
@@ -824,34 +888,41 @@ export class IntegratedBestPracticesValidator {
                   sceneId: pxIssue.location?.sceneId,
                 },
                 suggestion: pxIssue.suggestion,
-              });
+              };
+              allIssues.push(issue);
+              pixarIssues.push(issue);
             }
           } catch (err) {
             console.warn('[IBPV] PixarPrinciplesValidator.validateEncounter failed:', err);
           }
         }
       }
+      recordFullExecution('PixarPrinciplesValidator', pixarIssues);
     }
 
     // 8. Cliffhanger Validation (episode-level)
     if (input.episode && (input.episodePlan || input.cliffhangerPlan)) {
+      const cliffhangerIssues: ValidationIssue[] = [];
       try {
         const analysis = this.cliffhangerValidator.quickAnalyze(
           input.episode,
           input.cliffhangerPlan || input.episodePlan!,
         );
         if (analysis.quality === 'missing' || analysis.quality === 'weak') {
-          allIssues.push({
+          const issue: ValidationIssue = {
             category: 'cliffhanger',
             level: analysis.quality === 'missing' ? 'error' : 'warning',
             message: `Episode cliffhanger is ${analysis.quality} (score ${analysis.score}/100)`,
             location: { sceneId: undefined },
             suggestion: analysis.suggestions.join('; '),
-          });
+          };
+          allIssues.push(issue);
+          cliffhangerIssues.push(issue);
         }
       } catch (err) {
         console.warn('[IBPV] CliffhangerValidator failed:', err);
       }
+      recordFullExecution('CliffhangerValidator', cliffhangerIssues);
     }
 
     const choiceAgencyCanonicalReport = buildChoiceAgencyCanonicalReport(allIssues);
@@ -886,6 +957,7 @@ export class IntegratedBestPracticesValidator {
       suggestions,
       metrics,
       choiceAgencyCanonicalReport,
+      executionRecords,
       timestamp: new Date(),
       duration: Date.now() - startTime,
     };

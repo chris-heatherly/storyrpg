@@ -37,7 +37,6 @@ describe('informationLedgerContracts', () => {
     const entries = authoredInformationLedgerEntries({
       totalEstimatedEpisodes: 8,
       treatmentSeasonGuidance: {
-        episodeStructureMode: 'standard',
         informationLedger: SECTION,
       },
     }, 8);

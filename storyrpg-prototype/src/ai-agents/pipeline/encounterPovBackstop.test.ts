@@ -105,7 +105,7 @@ describe('encounterPovBackstop (WS0.3)', () => {
     expect(encounter.storylets.victory.beats[0].text).toBe('You straighten your collar.');
   });
 
-  it('leaves embedded choice labels untouched while repairing encounter description prose', () => {
+  it('leaves imperative choice labels untouched while repairing encounter description prose', () => {
     const story = storyWithEncounter('', undefined, {
       description: 'Kylie is pinned to a willow by a shadow, walks her home, and kisses her hand.',
       phases: [{
@@ -133,6 +133,31 @@ describe('encounterPovBackstop (WS0.3)', () => {
     expect(encounter.phases[0].beats[0].setupText).toBe('The shadow digs her claws into the bark. The stranger extends his hand.');
     expect(encounter.phases[0].beats[0].choices[0].text).toBe("Twist violently out of the shadow's grip just as the suited man strikes.");
     expect(encounter.phases[0].beats[0].choices[0].outcomes.complicated.narrativeText).toBe('You let him walk you home.');
+  });
+
+  it('repairs encounter choice text that names the protagonist as a separate person', () => {
+    const story = storyWithEncounter('', undefined, {
+      phases: [{
+        id: 'phase-1',
+        beats: [{
+          id: 'beat-1',
+          choices: [{
+            id: 'c1',
+            text: "Refuse the seat and demand Kylie's location.",
+            approach: 'defiant',
+            outcomes: {
+              success: { narrativeText: 'Victor answers without looking away.' },
+            },
+          }],
+        }],
+      }],
+    });
+
+    expect(findEncounterPovBreaks(story)).toContain("Refuse the seat and demand Kylie's location.");
+    const res = applyEncounterPovBackstop(story);
+    expect(res.residualBreaks).toEqual([]);
+    const choice = (story.episodes[0].scenes[0].encounter as any).phases[0].beats[0].choices[0];
+    expect(choice.text).toBe('Refuse the seat and demand answers.');
   });
 
   it('repairs visual and cost support fields that feed reader packaging', () => {

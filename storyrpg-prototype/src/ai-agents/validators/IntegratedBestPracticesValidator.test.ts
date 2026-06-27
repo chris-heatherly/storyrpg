@@ -47,6 +47,11 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     const result = await validator.runQuickValidation(baseInput());
     expect(result.canProceed).toBe(false);
     expect(result.blockingIssues.some((i) => i.category === 'choice_density')).toBe(true);
+    expect(result.executionRecords?.some((record) =>
+      record.validatorId === 'ChoiceDensityValidator' &&
+      record.lifecycle === 'quick-validation' &&
+      record.passed === false
+    )).toBe(true);
   });
 
   it('quick validation blocks a dilemma choice missing its Stakes Triangle', async () => {
@@ -217,6 +222,10 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
     expect(report.overallPassed).toBe(true);
     expect(report.blockingIssues.some((i) => i.category === 'choice_density')).toBe(true);
     expect(report.metrics).toBeDefined();
+    expect(report.executionRecords?.some((record) =>
+      record.validatorId === 'ChoiceDensityValidator' &&
+      record.lifecycle === 'full-qa'
+    )).toBe(true);
     expect(report.timestamp).toBeInstanceOf(Date);
   });
 });

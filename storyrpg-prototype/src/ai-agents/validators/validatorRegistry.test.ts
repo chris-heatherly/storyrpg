@@ -1,9 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ARTIFACT_CONTRACT_REGISTRY,
+  ARTIFACT_VALIDATOR_OWNERSHIP,
   VALIDATOR_REGISTRY,
+  artifactGateDefinitions,
   blockingValidators,
   remediationRoute,
+  validateValidatorOwnershipRegistry,
+  validatorForGate,
+  validatorNamesForArtifact,
+  validatorsForLifecycle,
   type ValidatorRegistryEntry,
+  type ValidatorLifecycle,
   type ValidatorRemediation,
   type ValidatorStage,
   type ValidatorTier,
@@ -11,6 +19,19 @@ import {
 
 const STAGES: ValidatorStage[] = ['season', 'architecture', 'phase', 'quick', 'full', 'diagnostic', 'final'];
 const TIERS: ValidatorTier[] = ['blocking', 'advisory', 'autofix'];
+const LIFECYCLES: ValidatorLifecycle[] = [
+  'source-analysis',
+  'season-plan',
+  'episode-architecture',
+  'phase-validation',
+  'quick-validation',
+  'full-qa',
+  'narrative-diagnostics',
+  'plan-fidelity',
+  'episode-contract',
+  'final-contract',
+  'artifact-package',
+];
 const REMEDIATIONS: ValidatorRemediation[] = [
   'autofix',
   'regen-scene',
@@ -25,7 +46,7 @@ const REMEDIATIONS: ValidatorRemediation[] = [
 // invariant test below tolerates these so it lands green today; remove names as
 // each blocking gate gets a route, then delete this allowlist to tighten the rule.
 const BLOCKING_WITHOUT_REMEDIATION_ALLOWLIST: ReadonlySet<string> = new Set([
-  'SevenPointCoverageValidator',
+  'StoryCircleCoverageValidator',
   'FinalStoryContractValidator',
   'EncounterQualityValidator',
   'PromiseLedgerValidators',
@@ -90,6 +111,114 @@ describe('validatorRegistry (B4 dispatch map)', () => {
         expect(e.maxRemediationAttempts).toBeGreaterThan(0);
       }
     }
+  });
+
+  it('normalizes legacy stages into executable lifecycle ownership', () => {
+    for (const lifecycle of LIFECYCLES) {
+      const entries = validatorsForLifecycle(lifecycle);
+      for (const entry of entries) {
+        expect(entry.lifecycle).toBe(lifecycle);
+        expect(entry.role).toBeTruthy();
+      }
+    }
+
+    expect(validatorsForLifecycle('season-plan').map((e) => e.validator)).toContain('StoryCircleCoverageValidator');
+    expect(validatorsForLifecycle('quick-validation').map((e) => e.validator)).toContain('ChoiceDensityValidator');
+    expect(validatorsForLifecycle('final-contract').map((e) => e.validator)).toContain('FinalStoryContractValidator');
+  });
+
+  it('keeps rollout flags tied to registered gate policy', () => {
+    expect(validateValidatorOwnershipRegistry()).toEqual([]);
+    expect(validatorForGate('GATE_CHOICE_DISTRIBUTION')?.validator).toBe('ChoiceDistributionValidator');
+    expect(validatorForGate('GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE')?.validator).toBe('StoryCircleAnchorConformanceValidator');
+    expect(validatorForGate('GATE_REQUIRED_BEAT_REALIZATION')?.validator).toBe('RequiredBeatRealizationValidator');
+    expect(validatorForGate('GATE_ENCOUNTER_SETPIECE_DEPTH')?.validator).toBe('EncounterSetPieceDepthValidator');
+  });
+
+  it('owns artifact validator membership without changing artifact contract lists', () => {
+    expect(validatorNamesForArtifact('source-analysis')).toEqual([
+      'AuthoredEpisodeConformanceValidator',
+      'StoryCircleAnchorConformanceValidator',
+      'TreatmentFidelityValidator',
+      'quoteRecallValidator',
+      'SignatureDevicePresenceValidator',
+    ]);
+    expect(validatorNamesForArtifact('runtime-episode')).toEqual([
+      'StructuralValidator',
+      'FinalStoryContractValidator',
+      'MechanicsLeakageValidator',
+      'SceneGraphBranchValidator',
+      'ArcDeltaValidator',
+      'SetupPayoffValidator',
+      'TreatmentFidelityValidator',
+      'storyPathAnalyzer',
+    ]);
+  });
+
+  it('keeps artifact contract blocking separate from runtime validator blocking', () => {
+    const runtimeBlocking = blockingValidators();
+    expect(artifactGateDefinitions().find((gate) => gate.artifactKind === 'choice-consequence-plan')).toMatchObject({
+      tier: 'blocking',
+      validators: expect.arrayContaining(['ChoiceDensityValidator']),
+    });
+    expect(artifactGateDefinitions().find((gate) => gate.artifactKind === 'thread-ledger')).toMatchObject({
+      tier: 'blocking',
+      validators: expect.arrayContaining(['SetupPayoffValidator']),
+    });
+    expect(artifactGateDefinitions().find((gate) => gate.artifactKind === 'character-arc-plan')).toMatchObject({
+      tier: 'blocking',
+      validators: expect.arrayContaining(['ArcDeltaValidator']),
+    });
+    expect(runtimeBlocking).not.toContain('ChoiceDensityValidator');
+    expect(runtimeBlocking).not.toContain('SetupPayoffValidator');
+    expect(runtimeBlocking).not.toContain('ArcDeltaValidator');
+  });
+
+  it('reports artifact contract drift without mutating production metadata', () => {
+    const sourceContract = ARTIFACT_CONTRACT_REGISTRY.find((entry) => entry.artifactKind === 'source-analysis');
+    expect(sourceContract).toBeDefined();
+
+    expect(validateValidatorOwnershipRegistry({
+      artifactContractRegistry: [
+        ...ARTIFACT_CONTRACT_REGISTRY,
+        { ...sourceContract! },
+      ],
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validator: sourceContract!.id, problem: 'duplicate artifact contract id' }),
+      expect.objectContaining({ validator: 'source-analysis', problem: 'artifact kind has 2 artifact contract entries' }),
+    ]));
+
+    expect(validateValidatorOwnershipRegistry({
+      artifactContractRegistry: ARTIFACT_CONTRACT_REGISTRY.filter((entry) => entry.artifactKind !== 'runtime-episode'),
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        validator: 'runtime-episode',
+        problem: 'artifact ownership kind has no artifact contract entry',
+      }),
+    ]));
+
+    expect(validateValidatorOwnershipRegistry({
+      artifactValidatorOwnership: [
+        ...ARTIFACT_VALIDATOR_OWNERSHIP,
+        { validator: 'SetupPayoffValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
+      ],
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        validator: 'SetupPayoffValidator',
+        problem: 'duplicate artifact ownership entry for thread-ledger',
+      }),
+    ]));
+
+    expect(validateValidatorOwnershipRegistry({
+      artifactContractRegistry: ARTIFACT_CONTRACT_REGISTRY.map((entry) =>
+        entry.artifactKind === 'story-package'
+          ? { ...entry, tier: 'unknown', contract: '' } as unknown as typeof entry
+          : entry
+      ),
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validator: 'story-package-contract', problem: 'artifact contract has unknown tier unknown' }),
+      expect.objectContaining({ validator: 'story-package-contract', problem: 'artifact contract text is empty' }),
+    ]));
   });
 
   it('remediationRoute resolves declared routes and undefined otherwise', () => {

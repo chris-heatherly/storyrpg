@@ -12,8 +12,8 @@ import { VALIDATOR_REGISTRY, type ValidatorRegistryEntry } from './validatorRegi
  * test by design — wire a remediation route instead of growing the allowlist.
  */
 const BLOCKING_WITHOUT_REPAIR_ALLOWLIST: ReadonlySet<string> = new Set([
-  // Season-spine hard gate: SeasonPlannerAgent.execute throws on an incomplete/out-of-order 7-point spine; no repair wired.
-  'SevenPointCoverageValidator',
+  // Season-spine hard gate: SeasonPlannerAgent.execute throws on an incomplete/out-of-order Story Circle spine; no repair wired.
+  'StoryCircleCoverageValidator',
   // Umbrella final-assembly contract (structural corruption class); the repair loop lives per-issue-class, not on the umbrella gate.
   'FinalStoryContractValidator',
   // Final-contract encounter gate; encounter regen is not yet wired as its remediation route.

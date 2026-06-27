@@ -20,9 +20,12 @@ import {
   EncounterCategory,
   EndingMode,
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleBeat,
+  StoryCircleStructure,
   StructuralRole,
-  SEVEN_POINT_BEATS,
+  LEGACY_STRUCTURAL_BEATS,
   TreatmentSeasonGuidance,
 } from '../../types/sourceAnalysis';
 import {
@@ -31,6 +34,7 @@ import {
   SeasonArc,
   ArcEpisodeTurnout,
   ArcEpisodeTurnoutType,
+  ArcStoryCircleSpan,
   SeasonCentralPressureType,
   SeasonPromiseArchitecture,
   AudienceKnowledgeState,
@@ -46,14 +50,27 @@ import {
   ResiduePayoffPolicy,
 } from '../../types/seasonPlan';
 import {
-  distributeSevenPoints,
-  describeDistribution,
-  backfillMissingBeats,
-} from '../utils/sevenPointDistribution';
+  distributeLegacyStructure,
+  backfillMissingLegacyBeats,
+} from '../utils/legacyStructureDistribution';
+import {
+  STORY_CIRCLE_BEAT_DEFINITION_LINES,
+  STORY_CIRCLE_GEOMETRY_PRINCIPLES,
+  backfillMissingStoryCircleBeats,
+  describeStoryCircleDistribution,
+  distributeStoryCircle,
+  legacyStructuralRolesToStoryCircleRoles,
+  storyCircleFromLegacyStructure,
+} from '../utils/storyCircleDistribution';
+import {
+  buildEncounterStoryCircleTargetRationale,
+  formatEncounterStoryCircleTargetCriteria,
+  normalizeEncounterStoryCircleTarget,
+} from '../utils/encounterStoryCircleTarget';
 import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { buildSeasonPromiseContracts } from '../utils/seasonPromiseContracts';
 import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
-import { buildSevenPointBeatContracts } from '../utils/sevenPointBeatContracts';
+import { buildStoryCircleBeatContracts } from '../utils/storyCircleBeatContracts';
 import {
   buildArcPressureContracts,
   findAuthoredArcGuidanceForArc,
@@ -66,9 +83,9 @@ import {
   mergeAuthoredInformationLedger,
 } from '../utils/informationLedgerContracts';
 import {
-  SevenPointCoverageValidator,
-  seasonPlanToCoverageInput,
-} from '../validators/SevenPointCoverageValidator';
+  StoryCircleCoverageValidator,
+  seasonPlanToStoryCircleCoverageInput,
+} from '../validators/StoryCircleCoverageValidator';
 import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { gateEnabledPredicate } from '../remediation/gateDefaults';
@@ -143,10 +160,6 @@ export interface SeasonPlannerInput {
   preferences?: {
     targetScenesPerEpisode?: number;
     targetChoicesPerEpisode?: number;
-    episodeStructureMode?: 'standard' | 'sceneEpisodes';
-    sceneEpisodeEncounterCadence?: number;
-    sceneEpisodeBranchMinEpisodes?: number;
-    sceneEpisodeBranchMaxEpisodes?: number;
     pacing?: 'tight' | 'moderate' | 'expansive';
     endingMode?: EndingMode;
     /**
@@ -162,11 +175,11 @@ export interface SeasonPlannerInput {
   existingPlanId?: string;
 
   /**
-   * 7-point spine gate (tier 1). When not explicitly false, a season plan whose 3-act/
-   * 7-point spine is incomplete or out of canonical order is REJECTED (execute throws)
-   * rather than shipped — a season without a complete spine should not generate. Default ON.
+   * Story Circle spine gate (tier 1). When not explicitly false, a season plan
+   * whose Story Circle spine is incomplete, non-contiguous, or out of canonical
+   * order is REJECTED (execute throws). Default ON.
    */
-  sevenPointBlocking?: boolean;
+  storyCircleBlocking?: boolean;
 }
 
 // ========================================
@@ -265,17 +278,13 @@ Your plans must define:
     // On any failure the deterministic spine is kept.
     const isTreatmentSourcedPlan = seasonPlan.episodes.some((ep) => Boolean(ep.treatmentGuidance));
     if (
-      isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
+      isSceneFirstPlanningEnabled() &&
       seasonPlan.scenePlan &&
       !isTreatmentSourcedPlan
     ) {
-      // Standard-mode episodes must stay branchable, so hold the LLM-authored
-      // spine to the deterministic per-episode scene floor; sceneEpisodes mode
-      // legitimately runs single-scene episodes and is exempt.
-      const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
       const authored = await this.authorScenePlanLLM(
         seasonPlan,
-        isSceneEpisodes ? {} : { minScenesPerEpisode: MIN_SCENES_PER_EPISODE },
+        { minScenesPerEpisode: MIN_SCENES_PER_EPISODE },
       );
       if (authored) {
         seasonPlan.scenePlan = authored;
@@ -297,7 +306,7 @@ Your plans must define:
     // budgets are allocated over the spine, then validated, while the spine can
     // still be rejected by the gate below. Scene-first only; no-op otherwise.
     if (
-      isSceneFirstPlanningEnabled(preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard') &&
+      isSceneFirstPlanningEnabled() &&
       seasonPlan.scenePlan
     ) {
       // Build the positional-axis context (Plan Part 3, Layers A–C): map each
@@ -426,19 +435,18 @@ Your plans must define:
       }
     }
 
-    // 7-point spine GATE (tier 1, default ON / opt-out). A season whose 3-act/7-point
-    // spine is incomplete or out of canonical order must not generate — the spine is the
-    // structural contract every downstream episode is authored against. Coverage is
-    // engineered to pass (the structuralRole distribution is built for full coverage), so
-    // this fires only on a genuine structural failure.
-    if (input.sevenPointBlocking !== false) {
-      const coverage = new SevenPointCoverageValidator().validate(seasonPlanToCoverageInput(seasonPlan));
+    // Story Circle spine GATE (tier 1, default ON / opt-out). A season whose
+    // eight-beat Story Circle spine is incomplete, out of canonical order, or
+    // non-contiguous must not generate.
+    const storyCircleBlocking = input.storyCircleBlocking;
+    if (storyCircleBlocking !== false) {
+      const coverage = new StoryCircleCoverageValidator().validate(seasonPlanToStoryCircleCoverageInput(seasonPlan));
       const blockingIssues = coverage.issues.filter((i) => i.severity === 'error');
       if (blockingIssues.length > 0) {
         throw new Error(
-          `[SevenPointGate] Season 7-point spine failed the blocking gate (${blockingIssues.length} issue(s)): ` +
+          `[StoryCircleGate] Season Story Circle spine failed the blocking gate (${blockingIssues.length} issue(s)): ` +
             blockingIssues.map((i) => i.message).join('; ') +
-            '. Set SEVEN_POINT_BLOCKING=0 to downgrade to advisory.',
+            '. Set STORY_CIRCLE_BLOCKING=0 to downgrade to advisory.',
         );
       }
     }
@@ -449,8 +457,6 @@ Your plans must define:
     const treatmentArcPlanSourced = (seasonPlan.arcPressureContracts ?? []).some((contract) => contract.source === 'treatment');
     if (gateEnabledPredicate(PLAN_GATE_FLAGS.arcPressure) || treatmentArcPlanSourced) {
       const arcPressureGateResult = new ArcPressureArchitectureValidator().validate(seasonPlan, {
-        episodeStructureMode:
-          preferences?.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisodes' : 'standard',
         treatmentSourced: treatmentArcPlanSourced,
         arcPressureContracts: seasonPlan.arcPressureContracts,
       });
@@ -574,7 +580,8 @@ Your plans must define:
       .join('\n');
 
     const anchors = analysis.anchors;
-    const sp = analysis.sevenPoint;
+    const sp = analysis.legacyStructure;
+    const storyCircle = analysis.storyCircle ?? storyCircleFromLegacyStructure(sp, anchors);
     const anchorBlock = anchors
       ? [
           `- Stakes: ${anchors.stakes}`,
@@ -583,18 +590,16 @@ Your plans must define:
           `- Climax: ${anchors.climax}`,
         ].join('\n')
       : '(not yet derived — inherit from episode breakdown)';
-    const sevenPointBlock = sp
-      ? SEVEN_POINT_BEATS.map((b) => `- ${b}: ${sp[b]}`).join('\n')
+    const storyCircleBlock = storyCircle
+      ? Object.entries(storyCircle)
+          .map(([beat, description]) => `- ${beat}: ${description}`)
+          .join('\n')
       : '(not yet derived — inherit from episode breakdown)';
-    const distributionHint = describeDistribution(distributeSevenPoints(analysis.totalEstimatedEpisodes));
+    const storyCircleDistributionHint = describeStoryCircleDistribution(distributeStoryCircle(analysis.totalEstimatedEpisodes));
 
-    const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
-    const treatmentMode = analysis.treatmentSeasonGuidance?.episodeStructureMode;
-    const effectiveSceneEpisodes = isSceneEpisodes || treatmentMode === 'sceneEpisodes';
     const treatmentSeasonBlock = analysis.treatmentSeasonGuidance ? `
 ## Authored Treatment Season Guidance
 The source document is a StoryRPG treatment. Preserve these authored sections as planning constraints; do not treat them as optional flavor.
-- Treatment mode: ${analysis.treatmentSeasonGuidance.episodeStructureMode}
 - Parsed sections: ${analysis.treatmentSeasonGuidance.rawSectionSummary?.join(', ') || 'season guidance'}
 ${analysis.treatmentSeasonGuidance.genre ? `\n### Authored Genre\n${analysis.treatmentSeasonGuidance.genre}` : ''}
 ${analysis.treatmentSeasonGuidance.tone ? `\n### Authored Tone\n${analysis.treatmentSeasonGuidance.tone}` : ''}
@@ -627,15 +632,26 @@ This plan is the BLUEPRINT that guides ALL episode generation - encounters, bran
 ## Season Narrative Anchors (MUST be honoured end-to-end)
 ${anchorBlock}
 
-## Season 7-Point Beat Map
-${sevenPointBlock}
+## Canonical Story Circle Beat Definitions (authoritative — do not summarize or replace)
+${STORY_CIRCLE_BEAT_DEFINITION_LINES.join('\n')}
 
-## Default Beat Distribution (HINT — override if the source demands it)
-${distributionHint}
-Every canonical beat MUST land on at least one episode in canonical order.
+## Story Circle Shape Principles (AUTHORITATIVE)
+${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
+
+## Season Story Circle Beat Map
+${storyCircleBlock}
+
+## Default Story Circle Distribution (AUTHORITATIVE DEFAULT)
+${storyCircleDistributionHint}
+Every canonical Story Circle beat MUST land on at least one episode in canonical order.
+For fewer than 8 episodes, adjacent beats fuse and no beat is omitted. For more
+than 8 episodes, extra episodes are contiguous expansions of real beats; prefer
+expanding \`search\`, \`take\`, and \`return\`. Do not use generic rising or falling
+structural buffers for Story Circle roles.
+
 Every \`episodeEncounters\` entry should reflect the difficulty implied by
-the beats its episode carries (Midpoint / Pinch 2 / Climax episodes are
-the hardest).
+the Story Circle beat its episode carries (\`find\`, \`take\`, and climactic
+\`return\` episodes are the hardest).
 
 ## Story Craft Guidance
 Use the source analysis as the authority, but learn from reusable structure:
@@ -650,16 +666,16 @@ Use the source analysis as the authority, but learn from reusable structure:
 - Plan skill surfaces, not just hidden rolls: passive insights (what the protagonist notices), prepared advantages (prior flags/items/relationships that reduce risk), choice affordances, outcome texture, and branch residue.
 - Each episode should identify 2-3 focusSkills, 1-2 growth/preparation opportunities, and at least one expectedPreparedAdvantage that can pay off later as a statCheck modifier or alternate route.
 - Convert broad source themes into one working theme question for the season. Each episode should test that question from a distinct angle through protagonist/player choice, cost, relationship pressure, information, or identity movement.
-- Plan protagonist-facing pressure lanes when the episode has room: A-plot is the external episode pressure; B-plot is playable relationship/identity pressure that can be a scene, a sceneEpisode, an underlay, or offscreen NPC motivation surfaced through protagonist-visible signals; C-plot is usually a future seed, callback, world-pressure hint, or tonal counterweight with a visible plant and payoff plan. Do not create non-protagonist POV scenes, omniscient cutaways, or filler C-plot scenes.
-- Define each arc as a 3-8 episode pressure movement inside the season, not a competing act schema. The season 7-point spine is authoritative; arc architecture explains how a smaller question escalates, recontextualizes, hits a late crisis, resolves, and hands off pressure.
+- Plan protagonist-facing pressure lanes when the episode has room: A-plot is the external episode pressure; B-plot is playable relationship/identity pressure that can be a scene, an underlay, or offscreen NPC motivation surfaced through protagonist-visible signals; C-plot is usually a future seed, callback, world-pressure hint, or tonal counterweight with a visible plant and payoff plan. Do not create non-protagonist POV scenes, omniscient cutaways, or filler C-plot scenes.
+- Define each arc as a 3-8 episode pressure movement inside the Story Circle, not an act or a competing structure. Each arc must own a contiguous Story Circle span with storyCircleSpan.startBeat, endBeat, ownedBeats, startEpisode, and endEpisode.
 - Episode endings inside an arc are arc turn-outs, not literal TV acts. Each must escalate, reverse, reveal, cost, force a choice, recontextualize, crisis-hit, finale-answer, or hand off pressure. Do not end an arc episode with a flat transition.
-- Each arc needs: arcQuestion, seasonQuestionRelation, identityPressureFacet, midpointRecontextualization, lateArcCrisis, finaleAnswer, episodeTurnouts, and handoffPressure when the arc does not end the season. The midpoint must change the question being asked, not merely intensify danger. The late crisis should be apparent failure, irreversible cost, or collapse of the current plan, not mandatory genre-inappropriate despair.
-- In sceneEpisodes mode, an arc is a chain of scene-length runtime episodes. Do not force each sceneEpisode to carry a whole arc by itself; distribute arc setup, recontextualization, crisis, finale, and handoff across the sceneEpisode chain. If the source treatment is already a sceneEpisode treatment, each listed sceneEpisode is already one runtime episode and must not be split again.
+- Every episode is a fractal Story Circle loop inside the season loop. By that episode's \`change\`, the protagonist must be altered in behavior, relationship, self-concept, world-state, or tragic refusal; non-finale cliffhangers then tease the next episode cycle by launching the next \`need\` or forcing the next \`go\`.
+- Each arc needs: storyCircleSpan, arcQuestion, seasonQuestionRelation, identityPressureFacet, finaleAnswer, episodeTurnouts, and handoffPressure when the arc does not end the season. Each episodeTurnout must include episodeNumber, storyCircleBeat, storyCircleRoleKind, turnType, description, leavesProtagonistWith, and whyThisCannotMoveLater.
 - Define Season Promise Architecture without adding fixed TV episode positions. Include one seasonDramaticQuestion, one centralPressure that can be a person/institution/mystery/environment/relationship/internal force/situation, a seasonPromise that names premise/player/emotional promises, and seasonCompleteness that explains how this season satisfies as a complete story while leaving earned future pressure.
-- Episode 1 should establish the premise, player role, protagonist pressure, dramatic engine, and promise of play. Episode 2 may clarify the repeatable engine when season length allows, but do NOT force a rigid re-pilot. Do NOT force penultimate climax or fixed tent-pole episode numbers; the season 7-point distribution remains authoritative.
-- Build an Information Ledger for major questions, threats, secrets, reveals, and payoffs. Use suspense/dramatic irony by default when the player can know the threat without breaking POV. Mystery is capped at 3 box questions per season. For major payoffs, plants should be 3-4 standard episodes ahead or 5-8 sceneEpisodes ahead unless the season is shorter than the runway.
+- Episode 1 cold open is the first visible realization of \`you + need\`: it must establish protagonist foothold, normal pressure, personal stake, and want/lack before the larger engine fully moves.
+- Episode 2 may clarify the repeatable engine when season length allows, but do NOT force a rigid re-pilot. Do NOT force penultimate climax or fixed tent-pole episode numbers; the season Story Circle distribution remains authoritative.
+- Build an Information Ledger for major questions, threats, secrets, reveals, and payoffs. Use suspense/dramatic irony by default when the player can know the threat without breaking POV. Mystery is capped at 3 box questions per season. For major payoffs, plants should be 3-4 episodes ahead unless the season is shorter than the runway.
 - After the Climax, resolve quickly: show what was saved or changed, then show future cost, identity change, or legacy.
-- Ensure the Inciting Incident lands in Act 1 and the Climax lands in Act 3.
 - From the Inciting Incident through the Climax, make difficulty rise and make the protagonist's transformation increasingly necessary to achieve the Goal.
 - Following the Climax, include only brief resolution pressure: first what was saved, redeemed, or improved; then the protagonist's future, cost, identity change, or legacy.
 
@@ -704,12 +720,9 @@ ${analysis.characterArchitecture ? `- Lie: ${analysis.characterArchitecture.prot
 ` : ''}
 
 ## User Preferences
-- Episode structure mode: ${effectiveSceneEpisodes ? 'sceneEpisodes (one runtime episode = one dramatic scene)' : 'standard'}
-- Scenes per episode: ${effectiveSceneEpisodes ? 1 : clampSceneCount(preferences?.targetScenesPerEpisode || 6)}
+- Scenes per episode: ${clampSceneCount(preferences?.targetScenesPerEpisode || 6)}
 - Choices per episode: ${preferences?.targetChoicesPerEpisode || 3}
 - Pacing: ${preferences?.pacing || 'moderate'}
-${effectiveSceneEpisodes ? `- Scene-length episode rules: exactly 1 scene per runtime episode; normal episodes need 6-10 beats, target 8; every episode ends with a cliffhanger or forward-pressure hook; milestone encounters happen every ${preferences?.sceneEpisodeEncounterCadence || 6} master-spine episodes; branch paths last ${preferences?.sceneEpisodeBranchMinEpisodes || 1}-${preferences?.sceneEpisodeBranchMaxEpisodes || 2} episodes before reconverging.
-` : ''}
 
 ## Ending Targets
 - Active ending mode: ${activeEndingMode}
@@ -737,12 +750,15 @@ You must plan THREE critical things at the SEASON level:
 For each episode, design the encounter FIRST as the dramatic anchor, then plan how the episode builds toward it.
 - Each encounter must feel like the episode's reason for existing — the culmination of everything that came before
 - Each encounter must manifest the episode's central conflict / pressure event
+- Before choosing encounter type/style, choose exactly one encounter Story Circle target from \`go\`, \`search\`, \`find\`, or \`take\`.
+- Encounter target criteria:
+${formatEncounterStoryCircleTargetCriteria().split('\n').map((line) => `  - ${line}`).join('\n')}
 - Plan what information/relationships/stakes the pre-encounter scenes must establish so the encounter choices feel loaded
 - Design a DIFFICULTY CURVE across the season (introduction → rising → peak → falling → finale)
 - Vary encounter types — no two consecutive episodes should use the same type
 - Encounters at arc climaxes should be the hardest and most personally costly
 
-In the \`episodeEncounters\` JSON, add an \`encounterBuildup\` field describing what the episode's earlier scenes need to establish for the encounter to land.
+In the \`episodeEncounters\` JSON, add \`storyCircleTarget\`, \`storyCircleTargetRationale\`, \`storyCircleTargetEvidence\`, and \`encounterBuildup\`. The target is the encounter's structural function; the type/style is only how that function is expressed.
 
 ### 2. CROSS-EPISODE BRANCHING
 Player choices should have consequences ACROSS episodes, not just within them.
@@ -778,7 +794,7 @@ Growth should follow the difficulty curve:
 ### 6. CHOICE MOMENTS (season-level)
 Identify the key DECISIONS across the master narrative as \`choiceMoments\` — not every minor pick,
 but the moments that define the season's interactivity. For each:
-- **anchor**: what the decision is, in fiction (tie it to an arc beat or seven-point turn). Never expose stats/mechanics.
+- **anchor**: what the decision is, in fiction (tie it to an arc beat or Story Circle beat). Never expose stats/mechanics.
 - **episode**: where the player makes it.
 - **paysOffEpisode**: when its consequence lands — the SAME episode for an immediate payoff, or a LATER episode for a decision that echoes across the season. Omit for immediate.
 - **flag** (only for later-payoff moments): a snake_case flag the choice sets, so the payoff can be enforced.
@@ -879,6 +895,14 @@ Return this JSON:
         "difficulty": "easy|moderate|hard|extreme",
         "npcsInvolved": ["character names"],
         "stakes": "What's personally at risk for the protagonist — not just plot stakes",
+        "storyCircleTarget": "go|search|find|take",
+        "storyCircleTargetRationale": "Why this encounter target is correct: threshold, adaptation, acquisition, or cost",
+        "storyCircleTargetEvidence": {
+          "episodeStoryCircleRole": ["go"],
+          "episodeQuestion": "The episode pressure this encounter tests",
+          "protagonistChange": "How the protagonist is altered by the encounter and episode ending",
+          "cliffhangerHandoff": "next_need|next_go|none"
+        },
         "relevantSkills": ["athletics", "persuasion", "stealth"],
         "encounterBuildup": "What the episode's earlier scenes must establish so this encounter's choices feel earned — relationships built, information revealed, personal stakes made clear",
         "encounterSetupContext": [
@@ -1015,8 +1039,10 @@ Return this JSON:
 }
 
 CRITICAL RULES:
-${isSceneEpisodes ? '- In sceneEpisodes mode, treat each SeasonPlan episode as one scene-length runtime episode, not a chapter. Use route metadata mentally: master spine episodes carry the canonical arc; branch-only episodes are route paths and do not count toward encounter cadence.\n' : ''}
-${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episodes need encounters by default; other scene-length episodes are normal choice/cliffhanger episodes.` : `- Every episode MUST have at least 1 encounter — and it must be the episode's dramatic anchor`}
+- Every episode MUST have at least 1 encounter — and it must be the episode's dramatic anchor
+- Every encounter MUST have \`storyCircleTarget\` set to exactly one of: \`go\`, \`search\`, \`find\`, \`take\`.
+- Every encounter MUST have \`storyCircleTargetRationale\` explaining why the playable pressure event is a threshold, adaptation test, acquisition, or price.
+- Every encounter MUST have \`storyCircleTargetEvidence.protagonistChange\` naming how the protagonist is altered by the episode; non-finale encounter aftermath/cliffhanger should hand pressure to the next \`need\` or \`go\` when appropriate.
 - Every encounter MUST have an encounterBuildup field describing what earlier scenes must establish
 - Every encounter SHOULD include encounterSetupContext when earlier relationship/flag setup should visibly pay off inside the encounter
 - Use encounterSetupContext entries in the format: "flag:<name> — <effect>" or "relationship:<npcId>.<dimension> <operator> <threshold> — <effect>"
@@ -1028,22 +1054,21 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
 - Consequence chains should span at least 2 episodes
 - Difficulty should generally increase through the season
 - Every non-finale episode MUST have an \`episodeCliffhangers\` entry.
-- Cliffhanger style MUST map to the episode's structuralRole:
-  - hook: shock or emotional hook; Episode 1 must be high-intensity and reveal that the story is bigger, darker, or more personal than expected
-  - plotTurn1: danger, decision, or arrival hook that forces commitment
-  - pinch1: antagonist pressure, loss, betrayal, or exposed vulnerability
-  - midpoint: major revelation/reframe; strongest shock ending after Episode 1
-  - pinch2: emotional collapse, moral cost, relationship rupture, or apparent failure
-  - climax: high-stakes fallout hook only if not finale; otherwise move toward resolution
-  - resolution: legacy/next-season pressure, not a fake unresolved main conflict
-  - rising/falling: serialized-TV hooks, with lower intensity unless cadence requires a spike
+- Cliffhanger style MUST map to the episode's Story Circle role:
+  - \`you + need\`: this is the cold open contract; Episode 1 must establish protagonist foothold, normal pressure, personal stake, and want/lack, then reveal that the story is bigger, darker, more tempting, or more personal than expected
+  - \`go\`: danger, decision, discovery, invitation, refusal, threat, or consequence that forces commitment and makes retreat harder
+  - \`search\`: failed plan, learned rule, exposed identity, tested ally/tool, or new behavior under pressure
+  - \`find\`: apparent victory, answer, access, intimacy, proof, power, rescue, or status that exposes the problem created by the prize
+  - \`take\`: strongest hooks; cost, rupture, loss, apparent failure, public exposure, resource depletion, identity wound, or painful truth
+  - \`return\`: prize-and-wound pressure, reintegration consequence, changed public identity, relationship reckoning, or road-back complication
+  - \`change\`: close the main circle and seed only earned legacy/future pressure, never a fake unresolved main conflict
 - Cadence rule: Episode 1, midpoint, pinch2, and at least every 2-3 episodes in longer seasons should use high-intensity shock, emotional_hook, betrayal, reframe, revelation, or loss.
 - Arc pressure rule: each arc should span 3-8 episodes where practical. If source length forces a shorter or longer arc, explain the exception in warnings.
 - Arc turn-out rule: every episode inside an arc must leave the protagonist with new damage, knowledge, obligation, exposure, compromise, relationship pressure, choice residue, or future pressure. If an episode's arc turnout could be swapped with a later episode, the arc is slack and must be tightened.
 - Arc finale rule: if an arc does not end on the season finale episode, its finaleAnswer must resolve the local arc question and its handoffPressure must launch the next arc. Do not give a non-final arc season-level finality.
 - Season promise rule: deliver the premise/player/emotional promises in fresh variations across the season. Breaking the core promise is a planning failure unless the user explicitly asked for a genre-breaking subversion.
 - Season completeness rule: the final episode must answer the seasonDramaticQuestion enough to satisfy and show changed stakes/character state. Future hooks are allowed only as earned residue, not as a fake unresolved main conflict.
-- Information ledger rule: maximum 3 mystery/box-question entries per season. Every box question needs a planned reveal or payoff before introduction. Major payoffs need setup touches planted 3-4 regular episodes ahead or 5-8 sceneEpisodes ahead. The finale should close more major questions than it opens.
+- Information ledger rule: maximum 3 mystery/box-question entries per season. Every box question needs a planned reveal or payoff before introduction. Major payoffs need setup touches planted 3-4 episodes ahead. The finale should close more major questions than it opens.
 - You are NOT limited to what the source material literally contains — invent more dramatically intense encounters that fit the themes
 - Return ONLY valid JSON
 `;
@@ -1089,6 +1114,11 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       
       for (let i = 0; i < encounterCount; i++) {
         const typeIdx = (idx * 2 + i) % encounterTypes.length;
+        const storyCircleTarget = normalizeEncounterStoryCircleTarget(
+          undefined,
+          ep.storyCircleRole,
+          `${ep.title} ${ep.synopsis} ${ep.narrativeFunction.conflict}`,
+        );
         encounters.push({
           id: `enc-${epNum}-${i + 1}`,
           type: encounterTypes[typeIdx],
@@ -1096,6 +1126,18 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
           difficulty,
           npcsInvolved: ep.mainCharacters.slice(0, 2),
           stakes: ep.narrativeFunction.conflict,
+          storyCircleTarget,
+          storyCircleTargetRationale: buildEncounterStoryCircleTargetRationale(
+            storyCircleTarget,
+            ep.storyCircleRole,
+            ep.narrativeFunction.conflict,
+          ),
+          storyCircleTargetEvidence: {
+            episodeStoryCircleRole: ep.storyCircleRole?.map((role) => role.beat),
+            episodeQuestion: ep.narrativeFunction.conflict,
+            protagonistChange: ep.narrativeFunction.resolution || ep.synopsis,
+            cliffhangerHandoff: epNum < totalEps ? 'next_need' : 'none',
+          },
           relevantSkills: [],
           isBranchPoint: i === encounterCount - 1 && epNum < totalEps,
           branchOutcomes: i === encounterCount - 1 ? {
@@ -1186,22 +1228,45 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
             guidance.entryGoal,
           ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 1);
       if (anchors.length > 0) {
-        merged.episodeEncounters![epKey] = anchors.map((anchor, index) => ({
-          id: `treatment-enc-${ep.episodeNumber}-${index + 1}`,
-          type: this.inferEncounterType(anchor, analysis.genre),
-          description: guidance.encounterCentralConflict
+        merged.episodeEncounters![epKey] = anchors.map((anchor, index) => {
+          const description = guidance.encounterCentralConflict
             ? `${anchor} Central conflict: ${guidance.encounterCentralConflict}`
             : guidance.forcedChoice
               ? `${anchor} Forced choice: ${guidance.forcedChoice}`
-            : anchor,
-          difficulty: this.inferEncounterDifficulty(ep.episodeNumber, analysis.totalEstimatedEpisodes),
-          npcsInvolved: ep.mainCharacters,
-          stakes: guidance.stakesLayers?.join(' | ') || guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
-          centralConflict: guidance.encounterCentralConflict || guidance.dramaticQuestion || guidance.obstacle,
-          aftermathConsequence: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceResidue || guidance.connectsBy,
-          relevantSkills: this.inferRelevantSkills(anchor),
-          encounterBuildup: guidance.encounterBuildup || guidance.entryGoal || guidance.openingSituation,
-          encounterSetupContext: [
+              : anchor;
+          const storyCircleTarget = normalizeEncounterStoryCircleTarget(
+            undefined,
+            ep.storyCircleRole,
+            [
+              description,
+              guidance.encounterCentralConflict,
+              guidance.forcedChoice,
+              guidance.encounterAftermath,
+              guidance.exitShift,
+              guidance.consequenceResidue,
+              ep.narrativeFunction.conflict,
+            ].filter(Boolean).join(' '),
+          );
+          return {
+            id: `treatment-enc-${ep.episodeNumber}-${index + 1}`,
+            type: this.inferEncounterType(anchor, analysis.genre),
+            description,
+            difficulty: this.inferEncounterDifficulty(ep.episodeNumber, analysis.totalEstimatedEpisodes),
+            npcsInvolved: ep.mainCharacters,
+            stakes: guidance.stakesLayers?.join(' | ') || guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
+            centralConflict: guidance.encounterCentralConflict || guidance.dramaticQuestion || guidance.obstacle,
+            storyCircleTarget,
+            storyCircleTargetRationale: buildEncounterStoryCircleTargetRationale(storyCircleTarget, ep.storyCircleRole, description),
+            storyCircleTargetEvidence: {
+              episodeStoryCircleRole: ep.storyCircleRole?.map((role) => role.beat),
+              episodeQuestion: guidance.dramaticQuestion || ep.narrativeFunction.conflict,
+              protagonistChange: guidance.endStateChange || guidance.exitShift || guidance.encounterAftermath || ep.narrativeFunction.resolution,
+              cliffhangerHandoff: ep.episodeNumber < analysis.totalEstimatedEpisodes ? 'next_need' : 'none',
+            },
+            aftermathConsequence: guidance.encounterAftermath || guidance.exitShift || guidance.consequenceResidue || guidance.connectsBy,
+            relevantSkills: this.inferRelevantSkills(anchor),
+            encounterBuildup: guidance.encounterBuildup || guidance.entryGoal || guidance.openingSituation,
+            encounterSetupContext: [
             ...(guidance.dramaticQuestion ? [`question:treatment_ep${ep.episodeNumber} — ${guidance.dramaticQuestion}`] : []),
             ...(guidance.entryGoal ? [`entry_goal:treatment_ep${ep.episodeNumber} — ${guidance.entryGoal}`] : []),
             ...(guidance.obstacle ? [`obstacle:treatment_ep${ep.episodeNumber} — ${guidance.obstacle}`] : []),
@@ -1234,7 +1299,8 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
             partialVictory: guidance.alternativePaths![1] || `The player gets what they want, but residue follows.`,
             defeat: guidance.alternativePaths![2] || `The player pays a visible cost in ${ep.title}.`,
           } : undefined,
-        }));
+          };
+        });
       }
 
       const forwardPressure = guidance.nextEpisodePressure
@@ -1415,8 +1481,12 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
   ): SeasonPlan {
     const now = new Date();
     const planId = `season-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const isSceneEpisodes = preferences?.episodeStructureMode === 'sceneEpisodes';
-    const encounterCadence = Math.max(1, preferences?.sceneEpisodeEncounterCadence || 6);
+    const defaultStoryCircleDistribution = distributeStoryCircle(analysis.totalEstimatedEpisodes);
+    const storyCircleRolesForEpisode = (episodeNumber: number): StoryCircleRoleAssignment[] => {
+      const authored = analysis.episodeBreakdown.find((ep) => ep.episodeNumber === episodeNumber)?.storyCircleRole;
+      if (authored?.length) return authored;
+      return defaultStoryCircleDistribution.find((entry) => entry.episodeNumber === episodeNumber)?.storyCircleRole ?? [];
+    };
 
     // Parse episode dependencies from LLM output or use defaults
     const dependenciesMap: Record<number, number[]> = 
@@ -1432,21 +1502,59 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     for (const [epKey, encounters] of Object.entries(rawEncounters)) {
       const epNum = parseInt(String(epKey));
       if (!isNaN(epNum) && Array.isArray(encounters)) {
-        episodeEncountersMap[epNum] = encounters.map((enc: any) => ({
-          id: enc.id || `enc-${epNum}-${Math.random().toString(36).substr(2, 6)}`,
-          type: (enc.type || 'mixed') as EncounterCategory,
-          description: enc.description || 'Encounter',
-          difficulty: enc.difficulty || 'moderate',
-          npcsInvolved: enc.npcsInvolved || [],
-          stakes: enc.stakes || '',
-          centralConflict: enc.centralConflict || undefined,
-          aftermathConsequence: enc.aftermathConsequence || undefined,
-          relevantSkills: enc.relevantSkills || [],
-          encounterBuildup: enc.encounterBuildup || '',
-          encounterSetupContext: Array.isArray(enc.encounterSetupContext) ? enc.encounterSetupContext : undefined,
-          isBranchPoint: !!enc.isBranchPoint,
-          branchOutcomes: enc.branchOutcomes || undefined,
-        }));
+        const episodeStoryCircleRole = storyCircleRolesForEpisode(epNum);
+        const episodeOutline = analysis.episodeBreakdown.find((ep) => ep.episodeNumber === epNum);
+        episodeEncountersMap[epNum] = encounters.map((enc: any) => {
+          const description = enc.description || 'Encounter';
+          const storyCircleTarget = normalizeEncounterStoryCircleTarget(
+            enc.storyCircleTarget,
+            episodeStoryCircleRole,
+            [
+              description,
+              enc.stakes,
+              enc.centralConflict,
+              enc.aftermathConsequence,
+              episodeOutline?.narrativeFunction?.conflict,
+              episodeOutline?.narrativeFunction?.resolution,
+            ].filter(Boolean).join(' '),
+          );
+          return {
+            id: enc.id || `enc-${epNum}-${Math.random().toString(36).substr(2, 6)}`,
+            type: (enc.type || 'mixed') as EncounterCategory,
+            description,
+            difficulty: enc.difficulty || 'moderate',
+            npcsInvolved: enc.npcsInvolved || [],
+            stakes: enc.stakes || '',
+            centralConflict: enc.centralConflict || undefined,
+            storyCircleTarget,
+            storyCircleTargetRationale: enc.storyCircleTargetRationale
+              || buildEncounterStoryCircleTargetRationale(storyCircleTarget, episodeStoryCircleRole, description),
+            storyCircleTargetEvidence: {
+              episodeStoryCircleRole: Array.isArray(enc.storyCircleTargetEvidence?.episodeStoryCircleRole)
+                ? enc.storyCircleTargetEvidence.episodeStoryCircleRole
+                : episodeStoryCircleRole.map((role) => role.beat),
+              episodeQuestion: enc.storyCircleTargetEvidence?.episodeQuestion
+                || episodeOutline?.treatmentGuidance?.dramaticQuestion
+                || episodeOutline?.narrativeFunction?.conflict
+                || enc.centralConflict
+                || enc.stakes
+                || description,
+              protagonistChange: enc.storyCircleTargetEvidence?.protagonistChange
+                || episodeOutline?.treatmentGuidance?.endStateChange
+                || episodeOutline?.narrativeFunction?.resolution
+                || enc.aftermathConsequence
+                || 'The encounter changes the protagonist\'s leverage, relationship pressure, or self-concept.',
+              cliffhangerHandoff: enc.storyCircleTargetEvidence?.cliffhangerHandoff
+                || (epNum < analysis.totalEstimatedEpisodes ? 'next_need' : 'none'),
+            },
+            aftermathConsequence: enc.aftermathConsequence || undefined,
+            relevantSkills: enc.relevantSkills || [],
+            encounterBuildup: enc.encounterBuildup || '',
+            encounterSetupContext: Array.isArray(enc.encounterSetupContext) ? enc.encounterSetupContext : undefined,
+            isBranchPoint: !!enc.isBranchPoint,
+            branchOutcomes: enc.branchOutcomes || undefined,
+          };
+        });
       }
     }
     for (const [epKey, routes] of Object.entries(rawEndingRoutes)) {
@@ -1522,24 +1630,6 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       setInEpisode: f.setInEpisode || 1,
       checkedInEpisodes: f.checkedInEpisodes || [],
     }));
-    if (isSceneEpisodes) {
-      for (const branch of crossEpisodeBranches) {
-        for (const path of branch.paths) {
-          const routeFlag = this.buildSceneEpisodeRouteFlag(branch.id, path.id);
-          if (seasonFlags.some((f: any) => f.flag === routeFlag)) continue;
-          seasonFlags.push({
-            flag: routeFlag,
-            description: `Route flag for ${branch.name} / ${path.name}; origin choices set exactly one sibling route flag.`,
-            setInEpisode: branch.originEpisode,
-            checkedInEpisodes: [
-              ...path.affectedEpisodes.map(affected => affected.episodeNumber),
-              ...(branch.reconvergence?.episodeNumber ? [branch.reconvergence.episodeNumber] : []),
-            ],
-          });
-        }
-      }
-    }
-
     // Build difficulty curve
     const difficultyCurve = planData.difficultyCurve || analysis.episodeBreakdown.map((ep, idx) => {
       const progress = (idx + 1) / analysis.totalEstimatedEpisodes;
@@ -1556,30 +1646,6 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       };
     });
 
-    if (isSceneEpisodes) {
-      for (const ep of analysis.episodeBreakdown) {
-        const isMilestone = ep.episodeNumber % encounterCadence === 0;
-        const hasAuthoredTreatmentEncounter = Boolean(ep.treatmentGuidance && episodeEncountersMap[ep.episodeNumber]?.length);
-        if (!isMilestone && !hasAuthoredTreatmentEncounter) {
-          episodeEncountersMap[ep.episodeNumber] = [];
-          continue;
-        }
-        if (!episodeEncountersMap[ep.episodeNumber]?.length) {
-          episodeEncountersMap[ep.episodeNumber] = [{
-            id: `scene-episode-milestone-${ep.episodeNumber}`,
-            type: 'dramatic',
-            description: `Milestone confrontation for "${ep.title}"`,
-            difficulty: ep.episodeNumber >= analysis.totalEstimatedEpisodes ? 'extreme' : 'hard',
-            npcsInvolved: ep.mainCharacters.slice(0, 3),
-            stakes: ep.narrativeFunction?.conflict || ep.synopsis,
-            relevantSkills: [],
-            encounterBuildup: `Prior scene-length episodes escalate into the milestone confrontation in "${ep.title}".`,
-            isBranchPoint: false,
-          }];
-        }
-      }
-    }
-
     // Calculate total encounter count
     let totalEncounters = 0;
     const typeDistribution: Record<string, number> = {};
@@ -1593,24 +1659,36 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     // Build the season's structuralRole map. Prefer the structuralRole
     // already present on each EpisodeOutline (set by SourceMaterialAnalyzer
     // when the source material implied one). Otherwise use the default
-    // distribution so the SevenPointCoverageValidator sees full coverage.
-    const defaultDistribution = distributeSevenPoints(analysis.totalEstimatedEpisodes);
+    // distribution so compatibility aliases still have full coverage.
+    const defaultDistribution = distributeLegacyStructure(analysis.totalEstimatedEpisodes);
     const structuralRoleByEpisode = new Map<number, StructuralRole[]>();
     for (const entry of defaultDistribution) {
       structuralRoleByEpisode.set(entry.episodeNumber, [...entry.structuralRole]);
+    }
+    const storyCircleRoleByEpisode = new Map<number, StoryCircleRoleAssignment[]>();
+    for (const entry of defaultStoryCircleDistribution) {
+      storyCircleRoleByEpisode.set(
+        entry.episodeNumber,
+        entry.storyCircleRole.map((role) => ({ ...role })),
+      );
     }
     for (const ep of analysis.episodeBreakdown) {
       if (ep.structuralRole && ep.structuralRole.length > 0) {
         structuralRoleByEpisode.set(ep.episodeNumber, [...ep.structuralRole]);
       }
+      if (ep.storyCircleRole && ep.storyCircleRole.length > 0) {
+        storyCircleRoleByEpisode.set(ep.episodeNumber, ep.storyCircleRole.map((role) => ({ ...role })));
+      } else if (ep.structuralRole && ep.structuralRole.length > 0) {
+        const migrated = legacyStructuralRolesToStoryCircleRoles(ep.structuralRole);
+        if (migrated.length > 0) storyCircleRoleByEpisode.set(ep.episodeNumber, migrated);
+      }
     }
 
-    // 1.5: a PARTIAL LLM-authored distribution can drop a canonical 7-point beat
-    // (e.g. no episode keeps `climax`, leaving the finale without one). Run the
-    // coverage check that already exists but was never called, and backfill any
-    // missing canonical beat onto the episode the default distribution assigns
-    // it — feeding the result back into the map instead of discarding it.
-    backfillMissingBeats(structuralRoleByEpisode, defaultDistribution);
+    // Backfill compatibility roles for old artifacts, then backfill direct
+    // Story Circle roles for new generation. Missing Story Circle beats are
+    // assigned to the default distribution episode instead of being discarded.
+    backfillMissingLegacyBeats(structuralRoleByEpisode, defaultDistribution);
+    backfillMissingStoryCircleBeats(storyCircleRoleByEpisode, defaultStoryCircleDistribution);
 
     // Step 1.2 (defensive second pass): the LLM planner output can re-introduce
     // beat drift via per-episode structuralRole. Reconcile the assembled map
@@ -1649,13 +1727,6 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
 
       // Get encounter data for this episode
       const plannedEncounters = episodeEncountersMap[ep.episodeNumber] || [];
-      const routeMeta = ep.routeMeta || {
-        kind: 'master' as const,
-        spineIndex: ep.episodeNumber,
-        displayLabel: `${ep.episodeNumber}`,
-        isMilestoneEncounter: isSceneEpisodes && ep.episodeNumber % encounterCadence === 0,
-      };
-      
       // Get difficulty tier from curve
       const curveEntry = difficultyCurve.find((d: any) => d.episodeNumber === ep.episodeNumber);
       const difficultyTier = (curveEntry?.difficulty || 'rising') as 'introduction' | 'rising' | 'peak' | 'falling' | 'finale';
@@ -1683,6 +1754,9 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       const structuralRole = structuralRoleByEpisode.get(ep.episodeNumber)
         ?? ep.structuralRole
         ?? (defaultDistribution.find((e) => e.episodeNumber === ep.episodeNumber)?.structuralRole ?? []);
+      const storyCircleRole = storyCircleRoleByEpisode.get(ep.episodeNumber)
+        ?? ep.storyCircleRole
+        ?? (defaultStoryCircleDistribution.find((e) => e.episodeNumber === ep.episodeNumber)?.storyCircleRole ?? []);
       const fallbackCliffhanger = buildDefaultCliffhangerPlan({
         episode: { ...ep, structuralRole },
         totalEpisodes: analysis.totalEstimatedEpisodes,
@@ -1694,6 +1768,9 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         fallbackCliffhanger,
       );
       const mappedRole = selectMappedStructuralRole(structuralRole, ep.episodeNumber);
+      if (!cliffhangerPlan.storyCircleLaunchBeat && storyCircleRole.length > 0) {
+        cliffhangerPlan.storyCircleLaunchBeat = storyCircleRole[storyCircleRole.length - 1]?.beat;
+      }
       if (shouldForceHighIntensityHook(ep.episodeNumber, analysis.totalEstimatedEpisodes, mappedRole)) {
         cliffhangerPlan.intensity = 'high';
         cliffhangerPlan.mappedStructuralRole = mappedRole;
@@ -1704,8 +1781,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
 
       return {
         ...ep,
-        episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' as const : ep.episodeStructureMode,
-        routeMeta,
+        storyCircleRole,
         structuralRole,
         status: 'planned' as const,
         dependsOn: deps,
@@ -1726,19 +1802,13 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       };
     });
 
-    const routedEpisodes = isSceneEpisodes
-      ? this.expandSceneEpisodeRouteEpisodes(episodes, crossEpisodeBranches, {
-          minLength: preferences?.sceneEpisodeBranchMinEpisodes || 1,
-          maxLength: preferences?.sceneEpisodeBranchMaxEpisodes || 2,
-        })
-      : episodes;
+    const routedEpisodes = episodes;
 
     // Build arcs from LLM output or source analysis. Each arc receives a
-    // `beats` array computed from the structuralRoles that fall inside its
-    // episodeRange — this makes it easy for downstream agents (validators,
-    // UI, checkpoint review) to answer "which beats does this arc own?"
-    // without recomputing from the per-episode map.
-    const arcs: SeasonArc[] = (planData.arcs || analysis.storyArcs.map(arc => ({
+    // Story Circle span computed from the episode roles that fall inside its
+    // episodeRange. Arcs are pressure movements inside the eight-beat spine,
+    // not act buckets and not a parallel structural model.
+    let arcs: SeasonArc[] = (planData.arcs || analysis.storyArcs.map(arc => ({
       id: arc.id,
       name: arc.name,
       description: arc.description,
@@ -1752,28 +1822,22 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         findAuthoredArcGuidanceForArc(arc as Partial<SeasonArc>, analysis.treatmentSeasonGuidance),
         analysis.totalEstimatedEpisodes,
       );
-      const beats: StructuralRole[] = [];
-      if (authoredArc.episodeRange) {
-        for (let epNum = authoredArc.episodeRange.start; epNum <= authoredArc.episodeRange.end; epNum++) {
-          const roles = structuralRoleByEpisode.get(epNum) || [];
-          for (const r of roles) {
-            if (r !== 'rising' && r !== 'falling' && !beats.includes(r)) beats.push(r);
-          }
-        }
-      }
+      const episodeRange = authoredArc.episodeRange || { start: 1, end: analysis.totalEstimatedEpisodes };
+      const storyCircleSpan = this.deriveArcStoryCircleSpan(episodeRange, storyCircleRoleByEpisode);
       return {
         ...authoredArc,
-        id: authoredArc.id || `arc-${authoredArc.episodeRange?.start || 1}-${authoredArc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
-        name: authoredArc.name || `Arc ${authoredArc.episodeRange?.start || 1}-${authoredArc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
-        description: authoredArc.description || `Episodes ${authoredArc.episodeRange?.start || 1}-${authoredArc.episodeRange?.end || analysis.totalEstimatedEpisodes}`,
-        episodeRange: authoredArc.episodeRange || { start: 1, end: analysis.totalEstimatedEpisodes },
+        id: authoredArc.id || `arc-${episodeRange.start}-${episodeRange.end}`,
+        name: authoredArc.name || `Arc ${episodeRange.start}-${episodeRange.end}`,
+        description: authoredArc.description || `Episodes ${episodeRange.start}-${episodeRange.end}`,
+        episodeRange,
         keyMoments: authoredArc.keyMoments || [],
         status: 'not_started' as const,
         completionPercentage: 0,
-        beats: beats.length > 0 ? beats : undefined,
-        ...this.normalizeArcPressureArchitecture(authoredArc as SeasonArc, analysis, episodes, beats),
+        storyCircleSpan,
+        ...this.normalizeArcPressureArchitecture(authoredArc as SeasonArc, analysis, episodes, storyCircleSpan),
       };
     });
+    arcs = this.repairArcStoryCircleCoverage(arcs, analysis, episodes, storyCircleRoleByEpisode);
 
     const seasonPromiseArchitecture = this.normalizeSeasonPromiseArchitecture(
       planData.seasonPromiseArchitecture,
@@ -1797,9 +1861,10 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         || analysis.treatmentMetadata?.detected
         || Boolean(analysis.treatmentSeasonGuidance?.stakesArchitecture),
     });
-    const sevenPointBeatContracts = analysis.sevenPointBeatContracts ?? buildSevenPointBeatContracts({
+    const storyCircleBeatContracts = analysis.storyCircleBeatContracts ?? buildStoryCircleBeatContracts({
       guidance: analysis.treatmentSeasonGuidance,
-      sevenPoint: analysis.sevenPoint,
+      storyCircle: analysis.storyCircle,
+      legacyStructure: analysis.legacyStructure,
       totalEpisodes: routedEpisodes.length,
       treatmentSourced: analysis.sourceFormat === 'story_treatment'
         || analysis.treatmentMetadata?.detected
@@ -1839,7 +1904,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
         characterTreatmentContracts,
         worldTreatmentContracts,
         stakesArchitectureContracts,
-        sevenPointBeatContracts,
+        storyCircleBeatContracts,
         arcPressureContracts,
         branchConsequenceContracts,
         endingRealizationContracts,
@@ -1850,7 +1915,6 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       analysis,
       routedEpisodes,
       seasonPromiseArchitecture,
-      isSceneEpisodes,
     );
 
     // E1 slice 4: normalize the planner's season-level choice moments.
@@ -1915,12 +1979,13 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       themes: analysis.themes,
       arcs,
       anchors: analysis.anchors,
-      sevenPoint: analysis.sevenPoint,
+      storyCircle: analysis.storyCircle ?? storyCircleFromLegacyStructure(analysis.legacyStructure, analysis.anchors),
+      legacyStructure: analysis.legacyStructure,
       themeArgument: analysis.themeArgument,
       seasonPromiseArchitecture,
       seasonPromiseContracts,
       stakesArchitectureContracts,
-      sevenPointBeatContracts,
+      storyCircleBeatContracts,
       arcPressureContracts,
       branchConsequenceContracts,
       endingRealizationContracts,
@@ -1959,7 +2024,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       consequenceChains,
       seasonFlags,
       preferences: {
-        targetScenesPerEpisode: isSceneEpisodes ? 1 : clampSceneCount(preferences?.targetScenesPerEpisode || 6),
+        targetScenesPerEpisode: clampSceneCount(preferences?.targetScenesPerEpisode || 6),
         targetChoicesPerEpisode: preferences?.targetChoicesPerEpisode || 3,
         pacing: preferences?.pacing || 'moderate',
       },
@@ -1973,22 +2038,19 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       notes: [],
     };
 
-    // Run the 7-point coverage validator. Issues are accumulated into plan.warnings here
-    // for the diagnostics trail; the actual BLOCKING enforcement (tier 1) happens in
-    // execute() after the plan is built (it throws on error-severity coverage issues unless
-    // sevenPointBlocking is opted out). Keeping the warning-collection here means the trail
-    // is populated even when the gate is disabled.
-    const coverageResult = new SevenPointCoverageValidator().validate(
-      seasonPlanToCoverageInput(plan),
+    // Run the Story Circle coverage validator. Issues are accumulated into
+    // plan.warnings here for the diagnostics trail; the actual BLOCKING
+    // enforcement happens in execute() after the plan is built.
+    const coverageResult = new StoryCircleCoverageValidator().validate(
+      seasonPlanToStoryCircleCoverageInput(plan),
     );
     for (const warning of this.validateTreatmentHandoff(analysis, plan)) {
       plan.warnings.push(warning);
     }
     for (const issue of coverageResult.issues) {
-      plan.warnings.push(`[SevenPointCoverage:${issue.severity}] ${issue.message}`);
+      plan.warnings.push(`[StoryCircleCoverage:${issue.severity}] ${issue.message}`);
     }
     const arcPressureResult = new ArcPressureArchitectureValidator().validate(plan, {
-      episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' : 'standard',
       treatmentSourced: arcPressureContracts.some((contract) => contract.source === 'treatment'),
       arcPressureContracts,
     });
@@ -2006,18 +2068,14 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     for (const issue of seasonPromiseResult.issues) {
       plan.warnings.push(`[SeasonPromise:${issue.severity}] ${issue.message}`);
     }
-    const informationResult = new InformationLedgerValidator().validate(plan, {
-      episodeStructureMode: isSceneEpisodes ? 'sceneEpisodes' : 'standard',
-    });
+    const informationResult = new InformationLedgerValidator().validate(plan);
     for (const issue of informationResult.issues) {
       plan.warnings.push(`[InformationLedger:${issue.severity}] ${issue.message}`);
     }
 
     // Scene-first planning: enumerate scenes (encounters included) at the season
-    // level and attach the spine to the plan + each episode's slice. Default-off;
-    // auto-on for authored sceneEpisodes treatments. When off, downstream falls
-    // back to per-episode scene invention in StoryArchitect.
-    if (isSceneFirstPlanningEnabled(isSceneEpisodes ? 'sceneEpisodes' : 'standard')) {
+    // level and attach the spine to the plan + each episode's slice.
+    if (isSceneFirstPlanningEnabled()) {
       // Unify the downstream input: from-scratch episodes get treatment-shaped
       // guidance synthesized so the scene builder sees one shape on both paths.
       synthesizeTreatmentGuidance(plan);
@@ -2283,11 +2341,10 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     analysis: SourceMaterialAnalysis,
     episodes: SeasonEpisode[],
     seasonPromise: SeasonPromiseArchitecture,
-    isSceneEpisodes: boolean,
   ): InformationLedgerEntry[] {
     const totalEpisodes = Math.max(1, episodes.length || analysis.totalEstimatedEpisodes);
     const finaleEpisode = episodes[episodes.length - 1]?.episodeNumber || totalEpisodes;
-    const targetRunway = isSceneEpisodes ? 5 : 3;
+    const targetRunway = 3;
     const fallbackTouch = Math.max(1, finaleEpisode - targetRunway);
     const normalizedRaw = Array.isArray(rawEntries)
       ? rawEntries.map((entry, index) => this.normalizeInformationLedgerEntry(entry, index, totalEpisodes))
@@ -2520,7 +2577,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
       ? Math.max(range.start, Math.min(range.end, Math.round((range.start + range.end) / 2)))
       : rawArc.midpointRecontextualization?.episodeNumber;
     const crisisEpisode = range
-      ? Math.max(range.start, Math.min(range.end, Math.round(range.start + Math.max(1, range.end - range.start) * (2 / 3))))
+      ? Math.max(range.start, Math.min(range.end, Math.ceil(range.start + Math.max(1, range.end - range.start) * (2 / 3))))
       : rawArc.lateArcCrisis?.episodeNumber;
     const turnouts = guidance.episodeTurnouts?.map((turnout) => ({
       episodeNumber: turnout.episodeNumber,
@@ -2570,13 +2627,220 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     return 'escalation';
   }
 
+  private deriveArcStoryCircleSpan(
+    range: { start: number; end: number },
+    storyCircleRoleByEpisode: Map<number, StoryCircleRoleAssignment[]>,
+  ): ArcStoryCircleSpan | undefined {
+    const ownedBeats: ArcStoryCircleSpan['ownedBeats'] = [];
+    for (let epNum = range.start; epNum <= range.end; epNum += 1) {
+      const roles = storyCircleRoleByEpisode.get(epNum) ?? [];
+      for (const role of roles) {
+        if (role.roleKind === 'expansion') continue;
+        if (!ownedBeats.includes(role.beat)) ownedBeats.push(role.beat);
+      }
+    }
+    if (ownedBeats.length === 0) return undefined;
+    return {
+      startBeat: ownedBeats[0],
+      endBeat: ownedBeats[ownedBeats.length - 1],
+      ownedBeats,
+      startEpisode: range.start,
+      endEpisode: range.end,
+    };
+  }
+
+  private repairArcStoryCircleCoverage(
+    arcs: SeasonArc[],
+    analysis: SourceMaterialAnalysis,
+    episodes: SeasonEpisode[],
+    storyCircleRoleByEpisode: Map<number, StoryCircleRoleAssignment[]>,
+  ): SeasonArc[] {
+    if (arcs.length === 0 || episodes.length === 0) return arcs;
+
+    const repaired = this.partitionArcStoryCircleOwnership(arcs, analysis, episodes, storyCircleRoleByEpisode);
+    const ownerCount = new Map<string, number>();
+    for (const arc of repaired) {
+      for (const beat of arc.storyCircleSpan?.ownedBeats ?? []) {
+        ownerCount.set(beat, (ownerCount.get(beat) ?? 0) + 1);
+      }
+    }
+
+    const missingEpisodes = episodes
+      .filter((episode) => (episode.storyCircleRole ?? []).some((role) =>
+        role.roleKind !== 'expansion' && (ownerCount.get(role.beat) ?? 0) === 0
+      ))
+      .map((episode) => episode.episodeNumber)
+      .sort((a, b) => a - b);
+    if (missingEpisodes.length === 0) return repaired;
+
+    const groups: Array<{ start: number; end: number }> = [];
+    for (const episodeNumber of missingEpisodes) {
+      const current = groups[groups.length - 1];
+      if (current && episodeNumber === current.end + 1) current.end = episodeNumber;
+      else groups.push({ start: episodeNumber, end: episodeNumber });
+    }
+
+    const rebuildArc = (arc: SeasonArc, range: { start: number; end: number }): SeasonArc => {
+      const storyCircleSpan = this.deriveArcStoryCircleSpan(range, storyCircleRoleByEpisode);
+      const rawArc: SeasonArc = {
+        ...arc,
+        episodeRange: range,
+        storyCircleSpan,
+      };
+      return {
+        ...rawArc,
+        ...this.normalizeArcPressureArchitecture(rawArc, analysis, episodes, storyCircleSpan),
+      };
+    };
+
+    for (const group of groups) {
+      const previousIndex = repaired
+        .map((arc, index) => ({ arc, index }))
+        .filter(({ arc }) => arc.episodeRange?.end === group.start - 1)
+        .sort((a, b) => b.arc.episodeRange.end - a.arc.episodeRange.end)[0]?.index;
+
+      if (previousIndex !== undefined) {
+        const previous = repaired[previousIndex];
+        repaired[previousIndex] = rebuildArc(previous, {
+          start: previous.episodeRange.start,
+          end: group.end,
+        });
+        continue;
+      }
+
+      const nextIndex = repaired
+        .map((arc, index) => ({ arc, index }))
+        .filter(({ arc }) => arc.episodeRange?.start === group.end + 1)
+        .sort((a, b) => a.arc.episodeRange.start - b.arc.episodeRange.start)[0]?.index;
+
+      if (nextIndex !== undefined) {
+        const next = repaired[nextIndex];
+        repaired[nextIndex] = rebuildArc(next, {
+          start: group.start,
+          end: next.episodeRange.end,
+        });
+        continue;
+      }
+
+      const range = { start: group.start, end: group.end };
+      const storyCircleSpan = this.deriveArcStoryCircleSpan(range, storyCircleRoleByEpisode);
+      const fallbackArc: SeasonArc = {
+        id: `arc-${range.start}-${range.end}`,
+        name: range.end === analysis.totalEstimatedEpisodes ? 'Final Reckoning' : `Arc ${range.start}-${range.end}`,
+        description: `Episodes ${range.start}-${range.end} carry the remaining Story Circle pressure left uncovered by the authored arc plan.`,
+        episodeRange: range,
+        keyMoments: [],
+        status: 'not_started',
+        completionPercentage: 0,
+        storyCircleSpan,
+        ...this.normalizeArcPressureArchitecture(
+          {
+            id: `arc-${range.start}-${range.end}`,
+            name: range.end === analysis.totalEstimatedEpisodes ? 'Final Reckoning' : `Arc ${range.start}-${range.end}`,
+            description: `Episodes ${range.start}-${range.end}`,
+            episodeRange: range,
+          },
+          analysis,
+          episodes,
+          storyCircleSpan,
+        ),
+      };
+      repaired.push(fallbackArc);
+    }
+
+    return repaired.sort((a, b) => (a.episodeRange?.start ?? 0) - (b.episodeRange?.start ?? 0));
+  }
+
+  private partitionArcStoryCircleOwnership(
+    arcs: SeasonArc[],
+    analysis: SourceMaterialAnalysis,
+    episodes: SeasonEpisode[],
+    storyCircleRoleByEpisode: Map<number, StoryCircleRoleAssignment[]>,
+  ): SeasonArc[] {
+    if (arcs.length <= 1) return arcs;
+
+    const primaryEpisodes = episodes
+      .map((episode) => ({
+        episodeNumber: episode.episodeNumber,
+        beats: (episode.storyCircleRole ?? [])
+          .filter((role) => role.roleKind !== 'expansion')
+          .map((role) => role.beat),
+      }))
+      .filter((entry) => entry.beats.length > 0)
+      .sort((a, b) => a.episodeNumber - b.episodeNumber);
+    if (primaryEpisodes.length === 0) return arcs;
+
+    const entries = arcs.map((arc, index) => {
+      const start = arc.episodeRange?.start ?? 1;
+      const end = arc.episodeRange?.end ?? analysis.totalEstimatedEpisodes;
+      return { arc, index, start, end, width: Math.max(0, end - start) };
+    });
+    const assignedEpisodes = new Map<number, number[]>();
+
+    for (const episode of primaryEpisodes) {
+      const candidates = entries
+        .filter((entry) => episode.episodeNumber >= entry.start && episode.episodeNumber <= entry.end)
+        .sort((a, b) => a.width - b.width || a.start - b.start || a.index - b.index);
+      const owner = candidates[0];
+      if (!owner) continue;
+      assignedEpisodes.set(owner.index, [...(assignedEpisodes.get(owner.index) ?? []), episode.episodeNumber]);
+    }
+
+    const rebuilt: SeasonArc[] = [];
+    const rebuildArc = (arc: SeasonArc, range: { start: number; end: number }, suffix?: number): SeasonArc => {
+      const storyCircleSpan = this.deriveArcStoryCircleSpan(range, storyCircleRoleByEpisode);
+      const rawArc: SeasonArc = {
+        ...arc,
+        id: suffix ? `${arc.id}-part-${suffix}` : arc.id,
+        name: suffix ? `${arc.name} (${range.start}-${range.end})` : arc.name,
+        episodeRange: range,
+        storyCircleSpan,
+      };
+      return {
+        ...rawArc,
+        ...this.normalizeArcPressureArchitecture(rawArc, analysis, episodes, storyCircleSpan),
+      };
+    };
+
+    for (const entry of entries) {
+      const episodeNumbers = Array.from(new Set(assignedEpisodes.get(entry.index) ?? [])).sort((a, b) => a - b);
+      if (episodeNumbers.length === 0) continue;
+      const groups: Array<{ start: number; end: number }> = [];
+      for (const episodeNumber of episodeNumbers) {
+        const current = groups[groups.length - 1];
+        if (current && episodeNumber === current.end + 1) current.end = episodeNumber;
+        else groups.push({ start: episodeNumber, end: episodeNumber });
+      }
+      groups.forEach((range, groupIndex) => {
+        rebuilt.push(rebuildArc(entry.arc, range, groupIndex === 0 ? undefined : groupIndex + 1));
+      });
+    }
+
+    if (rebuilt.length === 0) return arcs;
+
+    const owned = new Set<StoryCircleBeat>();
+    for (const arc of rebuilt) {
+      for (const beat of arc.storyCircleSpan?.ownedBeats ?? []) owned.add(beat);
+    }
+    const originalOwned = new Set<StoryCircleBeat>();
+    for (const arc of arcs) {
+      for (const beat of arc.storyCircleSpan?.ownedBeats ?? []) originalOwned.add(beat);
+    }
+    for (const beat of originalOwned) {
+      if (!owned.has(beat)) return arcs;
+    }
+
+    return rebuilt.sort((a, b) => (a.episodeRange?.start ?? 0) - (b.episodeRange?.start ?? 0));
+  }
+
   private normalizeArcPressureArchitecture(
     rawArc: Partial<SeasonArc>,
     analysis: SourceMaterialAnalysis,
     episodes: SeasonEpisode[],
-    beats: StructuralRole[],
+    storyCircleSpan: ArcStoryCircleSpan | undefined,
   ): Pick<
     SeasonArc,
+    | 'storyCircleSpan'
     | 'arcQuestion'
     | 'seasonQuestionRelation'
     | 'identityPressureFacet'
@@ -2623,6 +2887,7 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
     );
 
     return {
+      storyCircleSpan,
       arcQuestion: rawArc.arcQuestion
         || `What changes for ${analysis.protagonist.name} as "${arcName}" pressures ${arcDescription}?`,
       seasonQuestionRelation: rawArc.seasonQuestionRelation
@@ -2669,10 +2934,15 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
   ): ArcEpisodeTurnout[] {
     return arcEpisodes.map((episode) => {
       const existing = rawTurnouts?.find((turnout) => turnout.episodeNumber === episode.episodeNumber);
-      const turnType = existing?.turnType || this.inferArcTurnoutType(episode, anchors);
+      const storyCircleRole = this.primaryStoryCircleRoleForEpisode(episode) ?? episode.storyCircleRole?.[0];
+      const storyCircleBeat = existing?.storyCircleBeat || storyCircleRole?.beat || 'search';
+      const storyCircleRoleKind = existing?.storyCircleRoleKind || storyCircleRole?.roleKind || 'expansion';
+      const turnType = existing?.turnType || this.inferArcTurnoutType(episode, storyCircleBeat, anchors);
       const cliffhanger = episode.cliffhangerPlan;
       return {
         episodeNumber: episode.episodeNumber,
+        storyCircleBeat,
+        storyCircleRoleKind,
         turnType,
         description: existing?.description
           || cliffhanger?.hook
@@ -2685,21 +2955,29 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
           || episode.narrativeFunction?.resolution
           || `New consequence residue from Episode ${episode.episodeNumber}.`,
         whyThisCannotMoveLater: existing?.whyThisCannotMoveLater
-          || `Episode ${episode.episodeNumber}'s turnout follows from its setup, structural role, and cliffhanger pressure; moving it later would break causal order.`,
+          || `Episode ${episode.episodeNumber}'s turnout follows from its Story Circle role (${storyCircleBeat}) and cliffhanger pressure; moving it later would break causal order.`,
       };
     });
   }
 
+  private primaryStoryCircleRoleForEpisode(episode: SeasonEpisode): StoryCircleRoleAssignment | undefined {
+    return episode.storyCircleRole?.find((role) => role.roleKind !== 'expansion')
+      ?? episode.storyCircleRole?.[0];
+  }
+
   private inferArcTurnoutType(
     episode: SeasonEpisode,
+    storyCircleBeat: StoryCircleRoleAssignment['beat'],
     anchors: { start: number; end: number; midpointEpisode: number; crisisEpisode: number },
   ): ArcEpisodeTurnoutType {
     if (episode.episodeNumber === anchors.start) return 'setup';
     if (episode.episodeNumber === anchors.end) return anchors.end === anchors.start ? 'finale' : 'finale';
-    if (episode.episodeNumber === anchors.midpointEpisode || episode.structuralRole?.includes('midpoint')) return 'recontextualization';
-    if (episode.episodeNumber === anchors.crisisEpisode || episode.structuralRole?.includes('pinch2')) return 'crisis';
-    if (episode.structuralRole?.includes('pinch1')) return 'cost';
-    if (episode.structuralRole?.includes('plotTurn1')) return 'choice';
+    if (storyCircleBeat === 'need' || storyCircleBeat === 'go') return 'choice';
+    if (storyCircleBeat === 'search') return 'escalation';
+    if (storyCircleBeat === 'find') return 'recontextualization';
+    if (storyCircleBeat === 'take') return 'cost';
+    if (storyCircleBeat === 'return') return 'handoff';
+    if (storyCircleBeat === 'change') return 'finale';
     const type = episode.cliffhangerPlan?.type;
     if (type === 'reframe') return 'recontextualization';
     if (type === 'revelation' || type === 'mystery') return 'revelation';
@@ -2716,127 +2994,6 @@ ${isSceneEpisodes ? `- In sceneEpisodes mode, only milestone master-spine episod
 
   private clampEpisode(value: number, start: number, end: number): number {
     return Math.max(start, Math.min(end, value));
-  }
-
-  private expandSceneEpisodeRouteEpisodes(
-    masterEpisodes: SeasonEpisode[],
-    crossEpisodeBranches: CrossEpisodeBranch[],
-    options: { minLength: number; maxLength: number }
-  ): SeasonEpisode[] {
-    if (crossEpisodeBranches.length === 0) {
-      return masterEpisodes.map((episode, index) => ({
-        ...episode,
-        episodeNumber: index + 1,
-        estimatedSceneCount: 1,
-        episodeStructureMode: 'sceneEpisodes' as const,
-        routeMeta: {
-          ...(episode.routeMeta || {}),
-          kind: 'master' as const,
-          spineIndex: episode.routeMeta?.spineIndex || episode.episodeNumber,
-          displayLabel: episode.routeMeta?.displayLabel || `${episode.routeMeta?.spineIndex || episode.episodeNumber}`,
-        },
-      }));
-    }
-
-    const branchesByOrigin = new Map<number, CrossEpisodeBranch[]>();
-    for (const branch of crossEpisodeBranches) {
-      const list = branchesByOrigin.get(branch.originEpisode) || [];
-      list.push(branch);
-      branchesByOrigin.set(branch.originEpisode, list);
-    }
-
-    const masterBySpine = new Map<number, SeasonEpisode>();
-    for (const episode of masterEpisodes) {
-      masterBySpine.set(episode.routeMeta?.spineIndex || episode.episodeNumber, episode);
-    }
-    const maxSpine = Math.max(...masterEpisodes.map(episode => episode.routeMeta?.spineIndex || episode.episodeNumber));
-    const routed: SeasonEpisode[] = [];
-    let runtimeEpisodeNumber = 1;
-
-    for (const master of masterEpisodes) {
-      const spineIndex = master.routeMeta?.spineIndex || master.episodeNumber;
-      const runtimeMasterNumber = runtimeEpisodeNumber++;
-      routed.push({
-        ...master,
-        episodeNumber: runtimeMasterNumber,
-        estimatedSceneCount: 1,
-        episodeStructureMode: 'sceneEpisodes' as const,
-        routeMeta: {
-          ...(master.routeMeta || {}),
-          kind: 'master' as const,
-          spineIndex,
-          displayLabel: master.routeMeta?.displayLabel || `${spineIndex}`,
-        },
-      });
-
-      const originBranches = branchesByOrigin.get(spineIndex) || [];
-      for (const branch of originBranches) {
-        const rejoinSpine = branch.reconvergence?.episodeNumber || Math.min(maxSpine, spineIndex + options.maxLength + 1);
-        branch.paths.forEach((path, pathIndex) => {
-          const affectedEpisodes = path.affectedEpisodes || [];
-          const pathLength = Math.max(
-            options.minLength,
-            Math.min(options.maxLength, affectedEpisodes.length || options.minLength)
-          ) as 1 | 2;
-          const displayLetter = String.fromCharCode(65 + pathIndex);
-          const routeFlag = this.buildSceneEpisodeRouteFlag(branch.id, path.id);
-
-          for (let step = 1; step <= pathLength; step++) {
-            const affected = affectedEpisodes[step - 1];
-            const sourceSpine = affected?.episodeNumber || Math.min(rejoinSpine - 1, spineIndex + step);
-            const sourceEpisode = masterBySpine.get(sourceSpine) || master;
-            routed.push({
-              ...sourceEpisode,
-              episodeNumber: runtimeEpisodeNumber++,
-              title: `${path.name}: ${sourceEpisode.title}`,
-              synopsis: affected?.description || path.condition || sourceEpisode.synopsis,
-              estimatedSceneCount: 1,
-              estimatedChoiceCount: Math.max(1, sourceEpisode.estimatedChoiceCount || 1),
-              plannedEncounters: [],
-              episodeStructureMode: 'sceneEpisodes' as const,
-              routeMeta: {
-                kind: 'branch' as const,
-                spineIndex,
-                branchGroupId: branch.id,
-                branchPathId: path.id,
-                branchStep: step,
-                branchLength: pathLength,
-                rejoinsAtSpineIndex: rejoinSpine,
-                displayLabel: `${spineIndex}${displayLetter}${pathLength > 1 ? `-${step}` : ''}`,
-                hideWhenInactive: true,
-              },
-              unlockConditions: {
-                type: 'flag' as const,
-                flag: routeFlag,
-                value: true,
-              },
-              outgoingBranches: undefined,
-              incomingBranches: [branch.id],
-              checksFlags: [
-                ...(sourceEpisode.checksFlags || []),
-                {
-                  flag: routeFlag,
-                  ifTrue: `Player is on ${path.name}.`,
-                  ifFalse: `Player is not on ${path.name}.`,
-                },
-              ],
-              dependsOn: [runtimeMasterNumber],
-              setupsForEpisodes: [rejoinSpine],
-              resolvesPlotsFrom: [runtimeMasterNumber],
-            } as SeasonEpisode);
-          }
-        });
-      }
-    }
-
-    return routed;
-  }
-
-  private buildSceneEpisodeRouteFlag(branchId: string, pathId: string): string {
-    return `route_${branchId}_${pathId}`
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '');
   }
 
   private validateTreatmentHandoff(analysis: SourceMaterialAnalysis, plan: SeasonPlan): string[] {

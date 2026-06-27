@@ -38,7 +38,7 @@ import {
   buildEpisodeScenes,
   encounterIsCoveredByAuthoredTurns,
   getAuthoredEpisodeEventTexts,
-  sevenPointTextForEpisode,
+  legacyStructureTextForEpisode,
   toSceneEncounter,
   MIN_SCENES_PER_EPISODE,
   promoteCoveredAuthoredEncounters,
@@ -49,7 +49,7 @@ import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTre
 import { assignStakesArchitectureContractsToScenes } from '../utils/stakesArchitectureContracts';
 import { assignArcPressureContractsToScenes } from '../utils/arcPressureContracts';
 import { assignWorldTreatmentContractsToScenes } from '../utils/worldTreatmentContracts';
-import { assignSevenPointBeatContractsToScenes } from '../utils/sevenPointBeatContracts';
+import { assignStoryCircleBeatContractsToScenes } from '../utils/storyCircleBeatContracts';
 
 const VALID_ROLES: ReadonlySet<SceneNarrativeRole> = new Set([
   'setup',
@@ -90,7 +90,7 @@ const VALID_TIERS: ReadonlySet<ConsequenceTier> = new Set([
  * setups/payoffs) and asks for an authored scene list per episode.
  */
 export function buildScenePlanPrompt(plan: SeasonPlan): string {
-  const sevenPoint = plan.sevenPoint;
+  const legacyStructure = plan.legacyStructure;
   // Treatment-sourced run: any episode carries authored turns. When true, the
   // authored turns/signature moments/encounter anchors are FIXED required beats
   // and the model dramatizes them — it does not re-design the episode (§5).
@@ -101,7 +101,7 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
   const episodeBlocks = [...plan.episodes]
     .sort((a, b) => a.episodeNumber - b.episodeNumber)
     .map((ep) => {
-      const beat = sevenPointTextForEpisode(plan, ep);
+      const beat = legacyStructureTextForEpisode(plan, ep);
       const role = ep.structuralRole?.join(' / ') || 'rising/falling buffer';
       const authoredTurns = ep.treatmentGuidance?.episodeTurns ?? [];
       // Treatment runs: render turns as a NUMBERED required-beat checklist (FIXED,
@@ -124,7 +124,7 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
         : 'Authored turns';
       return [
         `Episode ${ep.episodeNumber}: "${ep.title}"`,
-        `  7-point role: ${role}${beat ? ` — beat: "${beat}"` : ''}`,
+        `  legacy-structure role: ${role}${beat ? ` — beat: "${beat}"` : ''}`,
         `  Synopsis: ${ep.synopsis}`,
         `${signature}  ${turnsLabel}:\n${turns}`,
         `  Planned encounters (MUST each appear as one kind:"encounter" scene):\n${encounters}`,
@@ -142,7 +142,7 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
   const stakesArchitectureContracts = (plan.stakesArchitectureContracts ?? [])
     .map((contract) => `  - ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText} (target episodes ${contract.targetEpisodeNumbers.join(', ') || 'infer from stakes pressure'})`)
     .join('\n');
-  const sevenPointBeatContracts = (plan.sevenPointBeatContracts ?? [])
+  const storyCircleBeatContracts = (plan.storyCircleBeatContracts ?? [])
     .map((contract) => `  - ${contract.beat}: ${contract.sourceText} (target episode ${contract.targetEpisodeNumber ?? 'infer from spine'}; atoms: ${contract.eventAtoms.join(' | ') || contract.sourceText})`)
     .join('\n');
   const arcPressureContracts = (plan.arcPressureContracts ?? [])
@@ -154,7 +154,7 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
 
   const framing = isTreatmentSourced
     ? `You are dramatizing an ALREADY-AUTHORED season into scenes. The episodes, their order and
-titles, their 7-point roles, their REQUIRED BEATS (authored turns), their signature moments, and
+titles, their legacy-structure roles, their REQUIRED BEATS (authored turns), their signature moments, and
 their encounter anchors are FIXED. Your job is to produce scenes that DEPICT every required beat in
 its authored order — one clear dramatic job per scene — and to INVENT ONLY the connective tissue:
 transitions, sensory texture, NPC micro-beats, and prose framing between the fixed beats. You may
@@ -171,16 +171,16 @@ written later to serve the scene. Encounters ARE scenes (kind:"encounter").`;
   return `${framing}
 
 SEASON 7-POINT SPINE (a meta-concept that lives at the season level):
-  hook: ${sevenPoint?.hook ?? ''}
-  plotTurn1: ${sevenPoint?.plotTurn1 ?? ''}
-  pinch1: ${sevenPoint?.pinch1 ?? ''}
-  midpoint: ${sevenPoint?.midpoint ?? ''}
-  pinch2: ${sevenPoint?.pinch2 ?? ''}
-  climax: ${sevenPoint?.climax ?? ''}
-  resolution: ${sevenPoint?.resolution ?? ''}
+  hook: ${legacyStructure?.hook ?? ''}
+  plotTurn1: ${legacyStructure?.plotTurn1 ?? ''}
+  pinch1: ${legacyStructure?.pinch1 ?? ''}
+  midpoint: ${legacyStructure?.midpoint ?? ''}
+  pinch2: ${legacyStructure?.pinch2 ?? ''}
+  climax: ${legacyStructure?.climax ?? ''}
+  resolution: ${legacyStructure?.resolution ?? ''}
 
-Each EPISODE serves exactly ONE of the 7 points (its role). Each SCENE you author must serve the
-purpose its episode's role names. Scenes do NOT carry a 7-point label.
+Each EPISODE serves exactly ONE of the legacy structural beats (its role). Each SCENE you author must serve the
+purpose its episode's role names. Scenes do NOT carry a legacy-structure label.
 
 EPISODES:
 ${episodeBlocks}
@@ -195,7 +195,7 @@ STAKES ARCHITECTURE CONTRACTS (assign these to concrete scenes, choices, encount
 ${stakesArchitectureContracts || '  - (none explicit; infer material/relational/identity/existential stakes from the season architecture)'}
 
 SEVEN-POINT BEAT REALIZATION CONTRACTS (assign authored beat content to concrete scenes; the structural label alone is not enough):
-${sevenPointBeatContracts || '  - (none explicit; use the season spine text as guidance)'}
+${storyCircleBeatContracts || '  - (none explicit; use the season spine text as guidance)'}
 
 ARC PRESSURE TREATMENT CONTRACTS (assign authored arc question/reframe/crisis/finale/handoff/turnout pressure to concrete scenes):
 ${arcPressureContracts || '  - (none explicit; use SeasonArc pressure architecture as guidance)'}
@@ -209,7 +209,7 @@ RULES:
 - narrativeRole ∈ {setup, development, turn, payoff, release}.
 - Each season-promise contract must become staged evidence somewhere: visible premise/core fantasy, genre/tone movement, theme pressure, or inaction cost. Do not copy contract labels into prose.
 - Each stakes architecture contract must become staged pressure somewhere: material cost/access/resource, relational risk, identity test, existential threat, escalation step, prerequisite setup, or emotional anchor. Do not copy stake labels into prose.
-- Each seven-point beat realization contract must become a specific scene event/state change. Hook/Plot Turn/Pinch/Midpoint/Climax/Resolution labels are not prose; stage the authored beat atoms.
+- Each Story Circle beat realization contract must become a specific scene event/state change. Hook/Plot Turn/Pinch/Midpoint/Climax/Resolution labels are not prose; stage the authored beat atoms.
 - Each arc pressure contract must become causal story movement somewhere in its target episode: the arc question is tested, the Lie facet is pressured, the midpoint reframes, the late crisis costs/narrows options, the finale answers, the handoff leaves residue, or the episode turnout changes state.
 - Each world/location contract must become staged evidence where relevant: location purpose, authored rule pressure, faction leverage, taboo/cost, or choice pressure. Do not use authored locations as generic backdrops.
 - Every planned encounter must appear as exactly one scene with kind:"encounter" and its encounterId.
@@ -408,8 +408,6 @@ function ensureAuthoredTurnSceneCapacity(ep: SeasonEpisode, scenes: PlannedScene
       setsUp: [],
       paysOff: [],
       stakes: ep.synopsis,
-      actLabel: ep.treatmentGuidance?.actLabel,
-      arcLabel: ep.treatmentGuidance?.arcLabel,
       hasChoice: true,
       budgetWeight: SCENE_BUDGET_WEIGHT,
       turnContract: {
@@ -512,9 +510,8 @@ export function normalizeAuthoredScenePlan(
     /**
      * Minimum scenes an authored episode must carry; an episode below this floor
      * is rebuilt deterministically (same mechanism as a model-skipped episode).
-     * Opt-in — omit (or 0) to preserve prior behavior. Standard-mode runs pass
-     * {@link MIN_SCENES_PER_EPISODE} so a branchable episode is never under-sized;
-     * sceneEpisodes mode and unit tests pass nothing.
+     * Opt-in — omit (or 0) to preserve prior behavior. Pipeline runs pass
+     * {@link MIN_SCENES_PER_EPISODE} so a branchable episode is never under-sized.
      */
     minScenesPerEpisode?: number;
   } = {},
@@ -540,7 +537,7 @@ export function normalizeAuthoredScenePlan(
     const rawScenes = rawByEpisode.get(ep.episodeNumber);
     if (!rawScenes || rawScenes.length === 0) {
       // Gap fill: deterministic scenes for an episode the model skipped.
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep), plan.informationLedger));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger));
       continue;
     }
     const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger);
@@ -552,7 +549,7 @@ export function normalizeAuthoredScenePlan(
     // skipped episode — so adequately-sized authored episodes are untouched and
     // golden parity holds (only fires when the floor is requested AND violated).
     if (normalized.length < minScenesPerEpisode) {
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, sevenPointTextForEpisode(plan, ep), plan.informationLedger));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger));
       continue;
     }
     scenesByEpisode.set(ep.episodeNumber, normalized);
@@ -593,7 +590,7 @@ export function normalizeAuthoredScenePlan(
     scenes.push(...epScenes);
   }
   const seasonPromiseContracts = assignSeasonPromiseContractsToScenes(plan, scenes);
-  const sevenPointBeatContracts = assignSevenPointBeatContractsToScenes(plan, scenes);
+  const storyCircleBeatContracts = assignStoryCircleBeatContractsToScenes(plan, scenes);
   const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
   const characterTreatmentContracts = assignCharacterTreatmentContractsToScenes(plan, scenes);
   const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
@@ -604,7 +601,7 @@ export function normalizeAuthoredScenePlan(
     byEpisode,
     setupPayoffEdges: edges,
     seasonPromiseContracts,
-    sevenPointBeatContracts,
+    storyCircleBeatContracts,
     arcPressureContracts,
     stakesArchitectureContracts,
     characterTreatmentContracts,
@@ -631,8 +628,6 @@ function normalizeEpisodeScenes(
       .filter((enc) => encounterIsCoveredByAuthoredTurns(enc, authoredEventTexts))
       .map((enc) => enc.id),
   );
-  const actLabel = ep.treatmentGuidance?.actLabel;
-  const arcLabel = ep.treatmentGuidance?.arcLabel;
   const built: PlannedScene[] = [];
 
   rawScenes.forEach((rs, index) => {
@@ -672,8 +667,6 @@ function normalizeEpisodeScenes(
       stakes: str(rs.stakes) || ep.synopsis,
       turnContract: rawTurnContract(id, rs, isEncounter ? 'encounter' : (budget.hasChoice ? 'choice' : 'planner')),
       mechanicPressure: rawMechanicPressure(id, rs),
-      actLabel,
-      arcLabel,
       encounter,
       hasChoice: budget.hasChoice,
       choiceType: budget.choiceType,
@@ -715,8 +708,6 @@ function normalizeEpisodeScenes(
         afterState: enc.aftermathConsequence || 'The encounter outcome leaves visible fallout, cost, or changed leverage.',
         handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or next-scene pressure.',
       },
-      actLabel,
-      arcLabel,
       encounter: sceneEncounter,
       hasChoice: budget.hasChoice,
       choiceType: budget.choiceType,

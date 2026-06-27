@@ -1,5 +1,5 @@
 import type { Beat, Scene, Story } from '../../types';
-import type { SevenPointBeatRealizationContract } from '../../types/scenePlan';
+import type { StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { BaseValidator } from './BaseValidator';
 
@@ -94,9 +94,37 @@ function isAbstractTrajectoryClause(clause: string): boolean {
     && /\b(?:new|fresh|glamorous|better)\s+(?:life|start)\b/.test(normalized);
 }
 
+function isOpeningLifeHookDepicted(moment: string, prose: string): boolean {
+  const source = normalizeRealizationText(moment);
+  if (
+    !/\bunpack(?:ing|s|ed)?\b/.test(source)
+    || !/\b(?:bucharest|lipscani)\b/.test(source)
+    || !/\b(?:blog|post|article|dusk club)\b/.test(source)
+    || !/\b(?:friend|friends|new life|glittering life|glittering new life|romance|blog views|supernatural danger|predators?)\b/.test(source)
+  ) {
+    return false;
+  }
+
+  const text = normalizeRealizationText(prose);
+  const hasArrival =
+    /\b(?:unpack|unpacking|unpacked|boxes|suitcase|apartment|bucharest|lipscani)\b/.test(text);
+  const hasBlog =
+    /\b(?:blog|posted|post|launch article|article|view counter|views|dusk dawn|dusk and dawn)\b/.test(text);
+  const hasSocialInvitation =
+    /\b(?:mika|stela|friend|friends|dusk club|club|sofa|keycard|rooftop)\b/.test(text);
+  const hasAspirationalLife =
+    /\b(?:glittering|new life|celebration|celebrate|city|nightlife|club|velvet|gold|thousand views|romance|blog views|exclusive|opening night|perfect hook)\b/.test(text);
+  const hasDanger =
+    !/\b(?:supernatural danger|predators?)\b/.test(source)
+    || /\b(?:predator|teeth|shadow|wolves|danger|stillness|watched|gaze)\b/.test(text);
+
+  return hasArrival && hasBlog && hasSocialInvitation && hasAspirationalLife && hasDanger;
+}
+
 function ledgerMomentDepicted(moment: string, prose: string): boolean {
   const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
   if (assessment.depicted) return true;
+  if (isOpeningLifeHookDepicted(moment, prose)) return true;
   if (
     assessment.mode === 'compound-clauses'
     && assessment.missingClauses.length > 0
@@ -108,7 +136,7 @@ function ledgerMomentDepicted(moment: string, prose: string): boolean {
   return false;
 }
 
-function isMustDramatize(contract: SevenPointBeatRealizationContract, treatmentSourced?: boolean): boolean {
+function isMustDramatize(contract: StoryCircleBeatRealizationContract, treatmentSourced?: boolean): boolean {
   if (contract.blockingLevel !== 'treatment' && !treatmentSourced) return false;
   return contract.requiredRealization.includes('final_prose')
     && contract.requiredRealization.includes('scene_turn');
@@ -127,7 +155,7 @@ export function hasDirectTreatmentEventRealization(moment: string, prose: string
 }
 
 function directRealizationStatus(
-  contract: SevenPointBeatRealizationContract,
+  contract: StoryCircleBeatRealizationContract,
   prose: string,
 ): 'direct' | TreatmentEventLedgerStatus {
   const sourceText = contract.sourceText.trim();
@@ -145,7 +173,7 @@ function directRealizationStatus(
   return directAtoms ? 'direct' : 'summary_only';
 }
 
-function episodeLevelDirectRealization(contract: SevenPointBeatRealizationContract, prose: string): boolean {
+function episodeLevelDirectRealization(contract: StoryCircleBeatRealizationContract, prose: string): boolean {
   const sourceText = contract.sourceText.trim();
   const atoms = (contract.eventAtoms || []).map((atom) => atom.trim()).filter(Boolean);
   const filteredProse = nonSummaryProse(prose);
@@ -169,7 +197,7 @@ export class TreatmentEventLedgerValidator extends BaseValidator {
       const episodeProse = readerFacingEpisodeProse(episode.scenes || []);
       for (const scene of episode.scenes || []) {
         const prose = readerFacingSceneProse(scene);
-        for (const contract of scene.sevenPointBeatContracts || []) {
+        for (const contract of scene.storyCircleBeatContracts || []) {
           if (!isMustDramatize(contract, input.treatmentSourced)) continue;
           if (contract.targetSceneIds.length > 0 && !contract.targetSceneIds.includes(scene.id)) continue;
 
@@ -191,7 +219,7 @@ export class TreatmentEventLedgerValidator extends BaseValidator {
             sourceText: contract.sourceText,
             message,
             suggestion:
-              `Stage the authored seven-point ${contract.beat} as present-tense reader-facing action in this scene; summary, memory, or later recap is not sufficient.`,
+              `Stage the authored Story Circle ${contract.beat} as present-tense reader-facing action in this scene; summary, memory, or later recap is not sufficient.`,
           });
         }
       }

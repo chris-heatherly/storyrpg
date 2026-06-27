@@ -188,6 +188,41 @@ describe('InformationLedgerScheduleValidator', () => {
     expect(result.issues.some((i) => /setup touch/.test(i.message))).toBe(false);
   });
 
+  it('accepts a broad authored setup touch when two distinctive surface tokens land in prose', () => {
+    const result = new InformationLedgerScheduleValidator().validate(
+      [infoEntry({
+        id: 'INFO-D',
+        authoredId: 'INFO-D',
+        label: 'Stela is Romani and her clan are strigoi hunters',
+        description: 'The quartz, herb bag, and candle were consent gestures upgrading wards on Kylie\'s apartment.',
+        sourceText: 'INFO-D source',
+        introducedEpisode: 1,
+        setupTouchEpisodes: [1, 2, 3],
+        setupTouchDetails: [
+          { episodeNumber: 1, requiredSurface: 'The quartz, herb bag, and candle were consent gestures upgrading wards on Kylie\'s apartment.' },
+          { episodeNumber: 2, requiredSurface: 'The quartz, herb bag, and candle were consent gestures upgrading wards on Kylie\'s apartment.' },
+          { episodeNumber: 3, requiredSurface: 'The quartz, herb bag, and candle were consent gestures upgrading wards on Kylie\'s apartment.' },
+        ],
+        plannedRevealEpisode: 5,
+      })],
+      story(
+        {
+          1: ['INFO-D_setup'],
+          2: ['INFO-D_setup'],
+          5: ['INFO-D_reveal'],
+        },
+        [1, 2, 3, 4, 5],
+        {
+          3: 'The quartz consent, the dark-wine craving, the missing model, and the unphotographable man all carry forward.',
+          5: 'Stela explains that the quartz, herb bag, and candle were protection for Kylie.',
+        },
+      ),
+    );
+
+    expect(result.metrics.missingSetupTouchCount).toBe(0);
+    expect(result.issues.some((i) => /episode 3/.test(i.message) && /setup touch/.test(i.message))).toBe(false);
+  });
+
   it('blocks treatment-authored entries when a separate payoff episode is missing', () => {
     const result = new InformationLedgerScheduleValidator().validate(
       [infoEntry({

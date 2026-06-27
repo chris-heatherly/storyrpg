@@ -124,6 +124,7 @@ function normalizeToken(value: string): string {
 // the prose shares essentially nothing with the authored fact — a high-precision
 // "the writer ignored the reveal directive" signal, not a fuzzy guess.
 const REVEAL_DEPICTION_MIN_TOKENS = 1;
+const SETUP_TOUCH_MIN_TOKENS = 2;
 
 const CONTENT_STOPWORDS = new Set([
   'the', 'and', 'that', 'this', 'with', 'from', 'into', 'their', 'they', 'them', 'have',
@@ -174,7 +175,7 @@ function depictsAuthoredSetupTouch(prose: string, entry: InformationLedgerEntry)
     if (want.size === 0) return false;
     let shared = 0;
     for (const word of want) if (present.has(word)) shared += 1;
-    return shared >= Math.min(3, want.size);
+    return shared >= Math.min(SETUP_TOUCH_MIN_TOKENS, want.size);
   });
 }
 

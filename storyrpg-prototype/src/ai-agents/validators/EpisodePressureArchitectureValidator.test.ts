@@ -271,32 +271,6 @@ describe('EpisodePressureArchitectureValidator', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('passes sceneEpisode with B-plot mode sceneEpisode', () => {
-    const bp = blueprint();
-    bp.scenes = [bp.scenes[0]];
-    bp.dramaticAudit!.episodePressureLanes!.bPlot!.mode = 'sceneEpisode';
-    bp.dramaticAudit!.episodePressureLanes!.bPlot!.scenesOrEpisodes = ['episode-1'];
-
-    const result = new EpisodePressureArchitectureValidator().validate(bp, {
-      episodeStructureMode: 'sceneEpisodes',
-    });
-
-    expect(result.valid).toBe(true);
-  });
-
-  it('fails sceneEpisode opening keyBeat with neutral atmosphere only', () => {
-    const bp = blueprint();
-    bp.scenes = [bp.scenes[0]];
-    bp.scenes[0].keyBeats = ['The city wakes under gray clouds while people begin their day.'];
-
-    const result = new EpisodePressureArchitectureValidator().validate(bp, {
-      episodeStructureMode: 'sceneEpisodes',
-    });
-
-    expect(result.valid).toBe(false);
-    expect(result.issues.map(issue => issue.message).join('\n')).toContain('opening keyBeat is neutral');
-  });
-
   it('fails missing episode end state delta', () => {
     const bp = blueprint();
     bp.dramaticAudit!.episodeEndStateDelta = '';

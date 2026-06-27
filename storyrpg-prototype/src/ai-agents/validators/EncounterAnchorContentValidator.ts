@@ -37,9 +37,10 @@
  */
 
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
-import type { Beat, Episode, Scene, Story } from '../../types';
-import type { EncounterPhase } from '../../types/encounter';
+import type { Episode, Scene, Story } from '../../types';
 import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/scenePlan';
+export { collectEncounterMetaTexts, collectReaderFacingTexts } from './encounterTextSurfaces';
+import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
 /** Context for {@link EncounterAnchorContentValidator.validate}. */
 export interface EncounterAnchorContentContext {
@@ -58,10 +59,6 @@ export interface EncounterAnchorContentContext {
 
 /** Default depiction threshold — a substantial-but-not-verbatim overlap. */
 export const DEFAULT_MIN_DEPICT_SCORE = 0.34;
-
-/** Placeholder/residue text that does NOT count as a reader-facing beat. */
-const PLACEHOLDER_TEXT_PATTERN =
-  /^\s*(\[?(tbd|todo|placeholder|to be (written|generated|continued)|continued|coming soon)\]?\.?)\s*$/i;
 
 const STOPWORDS = new Set([
   'about', 'after', 'again', 'against', 'also', 'and', 'because', 'become', 'before', 'being', 'between',
@@ -117,94 +114,6 @@ function isDepicted(needle: string | undefined, haystack: string, minScore: numb
   const normalizedHaystack = normalize(haystack);
   if (normalizedHaystack.includes(normalizedNeedle)) return true;
   return tokenOverlapScore(needle, haystack) >= minScore;
-}
-
-/** True iff `text` is a real reader-facing beat (non-blank, non-placeholder). */
-function isReaderFacingText(text: string | undefined): boolean {
-  const trimmed = (text ?? '').trim();
-  if (trimmed.length === 0) return false;
-  return !PLACEHOLDER_TEXT_PATTERN.test(trimmed);
-}
-
-/** Collect every reader-facing beat text from a final scene (flat beats + encounter phases). */
-export function collectReaderFacingTexts(scene: Scene): string[] {
-  const texts: string[] = [];
-  for (const beat of scene.beats ?? []) {
-    if (isReaderFacingText(beat.text)) texts.push(beat.text);
-    for (const variant of beat.textVariants ?? []) {
-      if (isReaderFacingText(variant.text)) texts.push(variant.text);
-    }
-  }
-  const collectBeatText = (beat: unknown): void => {
-    // Standard Beat carries `text`; EncounterBeat carries `setupText` (+ escalationText).
-    const withText = beat as Partial<Beat> & { setupText?: string; escalationText?: string };
-    for (const text of [withText.text, withText.setupText, withText.escalationText]) {
-      if (isReaderFacingText(text)) texts.push(text!);
-    }
-    for (const variant of (withText as Partial<Beat>).textVariants ?? []) {
-      if (isReaderFacingText(variant.text)) texts.push(variant.text);
-    }
-  };
-
-  const phases: EncounterPhase[] = scene.encounter?.phases ?? [];
-  for (const phase of phases) {
-    for (const beat of phase.beats ?? []) collectBeatText(beat);
-    if (isReaderFacingText(phase.onSuccess?.outcomeText)) texts.push(phase.onSuccess!.outcomeText);
-    if (isReaderFacingText(phase.onFailure?.outcomeText)) texts.push(phase.onFailure!.outcomeText);
-  }
-
-  // Storylets are where most branching encounter prose lives (victory / partialVictory
-  // / defeat / escape follow-ups). Their beats are reader-facing and frequently carry
-  // the encounter's authored "dark half" (e.g. the attack/rescue that resolves a
-  // two-location anchor) — so they MUST be collected, else an anchor depicted only in
-  // its storylets is wrongly reported as not depicted.
-  const storylets = scene.encounter?.storylets;
-  const storyletList = Array.isArray(storylets)
-    ? storylets
-    : Object.values((storylets ?? {}) as Record<string, unknown>);
-  for (const storylet of storyletList) {
-    if (!storylet || typeof storylet !== 'object') continue;
-    for (const beat of (storylet as { beats?: unknown[] }).beats ?? []) collectBeatText(beat);
-  }
-  return texts;
-}
-
-/**
- * Reader-facing encounter META texts that {@link collectReaderFacingTexts} does not
- * cover: clock names/descriptions, stakes, encounter-level outcomes, and the nested
- * choice-tree narrativeTexts. G12 shipped misgendered goalClock/stakes prose and
- * third-person outcome/storylet prose in exactly these fields — the POV/pronoun
- * scans need them. Kept separate from collectReaderFacingTexts so the anchor-
- * depiction semantics there are unchanged.
- */
-export function collectEncounterMetaTexts(scene: Scene): string[] {
-  const enc = scene.encounter as unknown as Record<string, unknown> | undefined;
-  if (!enc) return [];
-  const texts: string[] = [];
-  const KEYS = new Set([
-    'narrativeText', 'outcomeText', 'setupText', 'escalationText',
-    'visualMoment', 'visualNarrative', 'visibleCost', 'visibleComplication',
-    'immediateEffect', 'lingeringEffect',
-    'description', 'victory', 'defeat', 'onSuccess', 'onFailure',
-  ]);
-  const seen = new Set<object>();
-  const visit = (node: unknown): void => {
-    if (!node || typeof node !== 'object' || seen.has(node)) return;
-    seen.add(node as object);
-    if (Array.isArray(node)) {
-      for (const item of node) visit(item);
-      return;
-    }
-    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-      if (typeof value === 'string') {
-        if (KEYS.has(key) && isReaderFacingText(value)) texts.push(value);
-      } else if (value && typeof value === 'object') {
-        visit(value);
-      }
-    }
-  };
-  visit(enc);
-  return texts;
 }
 
 /**

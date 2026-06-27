@@ -28,12 +28,14 @@
  * AuthoredEpisodeConformance) remain out of scope (StructuralValidator.autoFix).
  */
 
+import type { Scene as StoryScene } from '../../types';
 import type { Story } from '../../types/story';
 import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
+import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
 import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
 import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
 import { missingMomentTokens, requiredMomentFromMessage } from './realizationScoring';
@@ -254,10 +256,11 @@ interface EncounterProseBeat {
   setupText?: string;
   escalationText?: string;
 }
+type RepairableTextCarrier = EncounterProseBeat & { textVariants?: Array<{ text?: string }> };
 interface RepairableStoryScene {
   id?: string;
   name?: string;
-  beats?: Array<{ id?: string; text?: string }>;
+  beats?: RepairableTextCarrier[];
   requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
   signatureMoment?: string;
   encounter?: {
@@ -313,6 +316,42 @@ function repairableBeatsFor(scene: RepairableStoryScene): Array<{ id?: string; t
   return gatherEncounterProseBeats(scene);
 }
 
+function readerFacingTextForCarrier(carrier: RepairableTextCarrier): string {
+  return [carrier.text, carrier.setupText, carrier.escalationText].filter(Boolean).join(' ').trim();
+}
+
+function setReaderFacingTextForCarrier(carrier: RepairableTextCarrier, text: string): void {
+  if (
+    (carrier.text === undefined || carrier.text === '')
+    && typeof carrier.setupText === 'string'
+    && carrier.setupText.length > 0
+  ) {
+    carrier.setupText = text;
+    return;
+  }
+  if (
+    (carrier.text === undefined || carrier.text === '')
+    && (carrier.setupText === undefined || carrier.setupText === '')
+    && typeof carrier.escalationText === 'string'
+    && carrier.escalationText.length > 0
+  ) {
+    carrier.escalationText = text;
+    return;
+  }
+  carrier.text = text;
+}
+
+function mutableTextCarriersFor(scene: RepairableStoryScene): RepairableTextCarrier[] {
+  if (scene.beats?.length) return scene.beats;
+  const enc = scene.encounter;
+  if (!enc) return [];
+  const out: RepairableTextCarrier[] = [];
+  for (const phase of enc.phases || []) out.push(...(phase.beats || []));
+  const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
+  for (const storylet of storylets) out.push(...(storylet?.beats || []));
+  return out.filter((carrier) => readerFacingTextForCarrier(carrier).length > 0);
+}
+
 /**
  * The scene's prose as the realization validators scan it (scene name + flat
  * beat text/variants + encounter phase/storylet text/setupText/escalationText/
@@ -330,6 +369,7 @@ function sceneProseForScoring(scene: RepairableStoryScene): string {
   collect(scene.beats as ProseBeat[] | undefined);
   const enc = scene.encounter;
   if (enc) {
+    parts.push(...collectReaderFacingTexts(scene as unknown as StoryScene));
     for (const phase of enc.phases || []) collect(phase.beats as ProseBeat[] | undefined);
     const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
     for (const storylet of storylets) collect(storylet?.beats as ProseBeat[] | undefined);
@@ -347,6 +387,7 @@ function defaultSceneProseForScoring(scene: RepairableStoryScene): string {
   collect(scene.beats);
   const enc = scene.encounter;
   if (enc) {
+    parts.push(...collectReaderFacingTexts(scene as unknown as StoryScene));
     for (const phase of enc.phases || []) collect(phase.beats);
     const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
     for (const storylet of storylets) collect(storylet?.beats);
@@ -366,11 +407,15 @@ function uniqueRequiredMoments(...groups: RequiredMoment[][]): RequiredMoment[] 
   return out;
 }
 
-function requiredMomentsLostByRewrite(
+function requiredMomentLabel(moment: RequiredMoment): string {
+  return `[${moment.tier}] ${moment.moment}`;
+}
+
+function requiredMomentsLostAfterRewrite(
   before: RepairableStoryScene,
   after: RepairableStoryScene,
   plannedSource?: SceneContractSource,
-): string[] {
+): RequiredMoment[] {
   const moments = uniqueRequiredMoments(requiredMomentsFor(before), requiredMomentsFor(plannedSource));
   if (moments.length === 0) return [];
   const beforeProse = defaultSceneProseForScoring(before);
@@ -379,8 +424,68 @@ function requiredMomentsLostByRewrite(
     .filter((moment) =>
       evaluateMomentRealization(moment.validator, moment.moment, beforeProse).depicted
       && !evaluateMomentRealization(moment.validator, moment.moment, afterProse).depicted,
-    )
-    .map((moment) => `[${moment.tier}] ${moment.moment}`);
+    );
+}
+
+function requiredMomentsLostByRewrite(
+  before: RepairableStoryScene,
+  after: RepairableStoryScene,
+  plannedSource?: SceneContractSource,
+): string[] {
+  return requiredMomentsLostAfterRewrite(before, after, plannedSource).map(requiredMomentLabel);
+}
+
+function targetCarrierForRequiredMoment(scene: RepairableStoryScene, moment: RequiredMoment): RepairableTextCarrier | undefined {
+  const carriers = mutableTextCarriersFor(scene);
+  if (carriers.length === 0) return undefined;
+  const stopwords = stopwordsForRealization(moment.validator);
+  const momentTokens = new Set(contentTokensForRealization(moment.moment, stopwords));
+  let best = carriers[0];
+  let bestScore = -1;
+  for (const carrier of carriers) {
+    const text = readerFacingTextForCarrier(carrier);
+    const tokens = new Set(contentTokensForRealization(text, stopwords));
+    const score = [...momentTokens].filter((token) => tokens.has(token)).length;
+    if (score > bestScore) {
+      best = carrier;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function preserveLostRequiredMoments(
+  before: RepairableStoryScene,
+  after: RepairableStoryScene,
+  plannedSource?: SceneContractSource,
+): { preserved: number; remainingLost: string[] } {
+  let preserved = 0;
+  const lost = requiredMomentsLostAfterRewrite(before, after, plannedSource);
+  for (const moment of lost) {
+    const carrier = targetCarrierForRequiredMoment(after, moment);
+    if (!carrier) continue;
+    const sentence = fictionFacingRequiredBeatSentence(moment.moment);
+    const currentText = readerFacingTextForCarrier(carrier);
+    if (normalizeRealizationText(currentText).includes(normalizeRealizationText(sentence))) continue;
+    setReaderFacingTextForCarrier(carrier, `${currentText.trim()} ${sentence}`.trim());
+    preserved += 1;
+  }
+  return {
+    preserved,
+    remainingLost: requiredMomentsLostByRewrite(before, after, plannedSource),
+  };
+}
+
+function realizedRequiredMomentLabels(
+  scene: RepairableStoryScene,
+  plannedSource?: SceneContractSource,
+): string[] {
+  const moments = uniqueRequiredMoments(requiredMomentsFor(scene), requiredMomentsFor(plannedSource));
+  if (moments.length === 0) return [];
+  const prose = defaultSceneProseForScoring(scene);
+  return moments
+    .filter((moment) => evaluateMomentRealization(moment.validator, moment.moment, prose).depicted)
+    .map(requiredMomentLabel);
 }
 
 /** Predict the re-validation: does the scene's prose now depict every flagged moment? */
@@ -447,6 +552,9 @@ function fictionFacingRequiredBeatSentence(moment: string): string {
     .replace(/^(?:and|or|then)\s+/i, '')
     .replace(/^That her job is\b/i, 'Your job is')
     .replace(/\bKylie's\b/g, 'your')
+    .replace(/\bKylie\s+at\s+her\b/i, 'You are at your')
+    .replace(/\bKylie\s+at\b/i, 'You are at')
+    .replace(/\bKylie\s+watches\b/i, 'You watch')
     .replace(/\bKylie\s+publishes\b/i, 'You publish')
     .replace(/\bKylie\s+published\b/i, 'You published')
     .replace(/\bKylie\s+plants\b/i, 'You plant')
@@ -502,6 +610,8 @@ function appendSceneTurnFallback(scene: RepairableStoryScene, issues: Repairable
   let appended = 0;
   for (const issue of issues) {
     if (issue.validator !== 'SceneTurnRealizationValidator') continue;
+    if (/generic planner central turn/i.test(issue.message || '')) continue;
+    if (scene.encounter) continue;
     const moment = requiredMomentFromMessage(issue.message);
     if (!moment) continue;
     if (requiredBeatFullyLandedForRepair(moment, sceneProseForScoring(scene))) continue;
@@ -621,12 +731,27 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
   // because A no longer appears in the current contract's blocking list.
   const cumulativeMomentIssuesByScene = new Map<string, RepairableIssue[]>();
   return async ({ story, blockingIssues }) => {
+    const clusterRoutedSceneKeys = new Set<string>();
+    if (opts.routeIssue) {
+      for (const issue of blockingIssues ?? []) {
+        if (!issue.sceneId) continue;
+        const route = opts.routeIssue(issue);
+        if (route.kind === 'scene_cluster_rewrite') {
+          clusterRoutedSceneKeys.add(`${issue.episodeNumber ?? ''}:${issue.sceneId}`);
+        }
+      }
+    }
     const groups = selectSceneProseRepairs(
       blockingIssues,
       opts.maxScenesPerRound ?? 4,
       attemptedScenes,
       opts.routeIssue
         ? (issue) => {
+            const sceneKey = `${issue.episodeNumber ?? ''}:${issue.sceneId}`;
+            if (clusterRoutedSceneKeys.has(sceneKey)) {
+              opts.emit?.(`Scene-prose contract repair deferred ${issue.sceneId || '(unknown scene)'} to cluster repair because the scene has scene-cluster routed blocker(s).`);
+              return false;
+            }
             const route = opts.routeIssue!(issue);
             if (route.kind !== 'same_scene_retry') {
               opts.emit?.(`Scene-prose contract repair routed away from ${issue.sceneId || '(unknown scene)'}: ${route.kind} (${route.reason})`);
@@ -667,6 +792,11 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
       // Encounter scenes carry prose in encounter.phases/storylets, not
       // scene.beats — merge the rewrite back to the surface it came from.
       const isEncounterScene = !scene.beats?.length;
+      const plannedSource = plannedMomentSourceFor(opts.plannedMomentSources, sceneId);
+      const preservedMomentLabels = realizedRequiredMomentLabels(scene, plannedSource);
+      const preservationNotes = preservedMomentLabels.length > 0
+        ? `\n\nLOCKED EXISTING MOMENTS: this scene already depicts these required moments. Preserve them on-page while making the repair; do not paraphrase them away or delete their concrete nouns/dialogue.\n- ${preservedMomentLabels.join('\n- ')}`
+        : '';
       try {
         // Up to two critic passes per scene per round: the first works from a
         // checklist of the moment's still-missing content words; if the merged
@@ -676,12 +806,16 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         // burned an entire repair round before re-validation caught it.
         let sceneMerged = 0;
         let predictedClear = false;
+        let lostRequiredMomentsForRetry: string[] = [];
         for (let attempt = 1; attempt <= 2 && !predictedClear; attempt++) {
           const beats = repairableBeatsFor(scene); // re-read: attempt 2 sees attempt 1's merge
+          const retryNotes = lostRequiredMomentsForRetry.length > 0
+            ? `\n\nPREVIOUS REWRITE WAS REJECTED because it deleted these already-realized required moments. This retry must keep them explicitly on-page while adding the missing repair:\n- ${lostRequiredMomentsForRetry.join('\n- ')}`
+            : '';
           const critique = await withTimeout(
             critic.execute({
               scene: adaptSceneForCritic(scene, beats),
-              directorNotes: buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene)),
+              directorNotes: `${buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene))}${preservationNotes}${retryNotes}`,
             }),
             PIPELINE_TIMEOUTS.llmAgent,
             `SceneCritic.contractRepair(${sceneId}#${attempt})`,
@@ -703,18 +837,24 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
               ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
               : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
             if (merged > 0) {
-              const lostRequiredMoments = requiredMomentsLostByRewrite(
+              const preservation = preserveLostRequiredMoments(
                 beforeRewrite,
                 scene,
-                plannedMomentSourceFor(opts.plannedMomentSources, sceneId),
+                plannedSource,
               );
-              if (lostRequiredMoments.length > 0) {
+              if (preservation.remainingLost.length > 0) {
                 restoreRepairableScene(scene, beforeRewrite);
+                lostRequiredMomentsForRetry = preservation.remainingLost;
                 opts.emit?.(
                   `Scene-prose contract repair: rejected rewrite for ${sceneId} because it lost already-realized required moment(s): ` +
-                  lostRequiredMoments.join('; '),
+                  preservation.remainingLost.join('; '),
                 );
               } else {
+                if (preservation.preserved > 0) {
+                  opts.emit?.(
+                    `Scene-prose contract repair: preserved ${preservation.preserved} already-realized required moment(s) in ${sceneId} after rewrite.`,
+                  );
+                }
                 sceneMerged += merged;
               }
             }
@@ -840,42 +980,63 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
         const beats = repairableBeatsFor(scene);
         if (beats.length === 0) continue;
         const isEncounterScene = !scene.beats?.length;
+        const plannedSource = plannedMomentSourceFor(opts.plannedMomentSources, sceneId);
+        const preservedMomentLabels = realizedRequiredMomentLabels(scene, plannedSource);
+        const preservationNotes = preservedMomentLabels.length > 0
+          ? `\n\nLOCKED EXISTING MOMENTS: the current ${role} scene already depicts these required moments. Preserve them on-page while making the repair; do not paraphrase them away or delete their concrete nouns/dialogue.\n- ${preservedMomentLabels.join('\n- ')}`
+          : '';
         try {
-          const critique = await withTimeout(
-            critic.execute({
-              scene: adaptSceneForCritic(scene, beats),
-              directorNotes: `${sharedNotes}\n\nThis is the ${role} scene in the repair cluster. ${role === 'center'
-                ? 'Make the central turn visible and followed through.'
-                : 'Make this neighbor support continuity into or out of the central turn without stealing the turn.'}`,
-            }),
-            PIPELINE_TIMEOUTS.llmAgent,
-            `SceneCritic.clusterRepair(${centerId}:${sceneId})`,
-          );
-          criticCalls += 1;
-          if (critique.success && critique.data) {
-            const warnUnmatched = (ids: string[]) => opts.emit?.(
-              `Scene-cluster contract repair: ${ids.length} rewritten beat(s) [${ids.join(', ')}] in ${sceneId} matched no beat.`,
+          let lostRequiredMomentsForRetry: string[] = [];
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            const attemptBeats = attempt === 1 ? beats : repairableBeatsFor(scene);
+            const retryNotes = lostRequiredMomentsForRetry.length > 0
+              ? `\n\nPREVIOUS REWRITE WAS REJECTED because it deleted these already-realized required moments. This retry must keep them explicitly on-page while adding the missing repair:\n- ${lostRequiredMomentsForRetry.join('\n- ')}`
+              : '';
+            const critique = await withTimeout(
+              critic.execute({
+                scene: adaptSceneForCritic(scene, attemptBeats),
+                directorNotes: `${sharedNotes}\n\nThis is the ${role} scene in the repair cluster. ${role === 'center'
+                  ? 'Make the central turn visible and followed through.'
+                  : 'Make this neighbor support continuity into or out of the central turn without stealing the turn.'}${preservationNotes}${retryNotes}`,
+              }),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneCritic.clusterRepair(${centerId}:${sceneId}#${attempt})`,
             );
-            const beforeRewrite = cloneRepairableScene(scene);
-            const merged = isEncounterScene
-              ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
-              : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
-            if (merged > 0) {
-              const lostRequiredMoments = requiredMomentsLostByRewrite(
-                beforeRewrite,
-                scene,
-                plannedMomentSourceFor(opts.plannedMomentSources, sceneId),
+            criticCalls += 1;
+            if (critique.success && critique.data) {
+              const warnUnmatched = (ids: string[]) => opts.emit?.(
+                `Scene-cluster contract repair: ${ids.length} rewritten beat(s) [${ids.join(', ')}] in ${sceneId} matched no beat.`,
               );
-              if (lostRequiredMoments.length > 0) {
-                restoreRepairableScene(scene, beforeRewrite);
-                opts.emit?.(
-                  `Scene-cluster contract repair: rejected rewrite for ${sceneId} because it lost already-realized required moment(s): ` +
-                  lostRequiredMoments.join('; '),
+              const beforeRewrite = cloneRepairableScene(scene);
+              const merged = isEncounterScene
+                ? mergeRewrittenEncounterBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched)
+                : mergeRewrittenBeatsIntoStory(story as never, sceneId, critique.data.rewrittenBeats as never, warnUnmatched);
+              if (merged > 0) {
+                const preservation = preserveLostRequiredMoments(
+                  beforeRewrite,
+                  scene,
+                  plannedSource,
                 );
-              } else {
-                totalMerged += merged;
+                if (preservation.remainingLost.length > 0) {
+                  restoreRepairableScene(scene, beforeRewrite);
+                  lostRequiredMomentsForRetry = preservation.remainingLost;
+                  opts.emit?.(
+                    `Scene-cluster contract repair: rejected rewrite for ${sceneId} because it lost already-realized required moment(s): ` +
+                    preservation.remainingLost.join('; '),
+                  );
+                  if (attempt < 2) continue;
+                } else {
+                  if (preservation.preserved > 0) {
+                    opts.emit?.(
+                      `Scene-cluster contract repair: preserved ${preservation.preserved} already-realized required moment(s) in ${sceneId} after rewrite.`,
+                    );
+                  }
+                  totalMerged += merged;
+                  break;
+                }
               }
             }
+            break;
           }
         } catch (err) {
           opts.emit?.(`Scene-cluster contract repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`);

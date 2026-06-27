@@ -48,6 +48,38 @@ function identityRecognitionLine(item: AppliedConsequence): string | undefined {
   return normalizeFeedbackSentence(item.narrativeHint?.split('—')[1] || item.narrativeHint);
 }
 
+function skillRecognitionLine(item: AppliedConsequence): string | undefined {
+  const source = `${item.label} ${item.narrativeHint ?? ''}`.toLowerCase();
+  if (source.includes('persuasion') || source.includes('charm') || source.includes('deception')) {
+    return item.direction === 'down'
+      ? 'Your next words come less easily.'
+      : 'Your next words come a little steadier.';
+  }
+  if (source.includes('investigation') || source.includes('perception') || source.includes('insight')) {
+    return item.direction === 'down'
+      ? 'The next clue feels harder to hold.'
+      : 'The next clue feels easier to hold.';
+  }
+  if (source.includes('stealth') || source.includes('sleight')) {
+    return item.direction === 'down'
+      ? 'Silence feels harder to keep.'
+      : 'Silence comes a little more naturally.';
+  }
+  if (source.includes('combat') || source.includes('athletics') || source.includes('acrobatics')) {
+    return item.direction === 'down'
+      ? 'Your body remembers the cost.'
+      : 'Your body answers a little faster.';
+  }
+  if (source.includes('survival') || source.includes('medicine')) {
+    return item.direction === 'down'
+      ? 'The world feels harder to read.'
+      : 'The world gives up a little more of its pattern.';
+  }
+  return item.direction === 'down'
+    ? 'The mistake stays with you.'
+    : 'The lesson settles in before the moment passes.';
+}
+
 export function buildChoiceRecognitionLine(feedback: AppliedConsequence[]): string | undefined {
   const relationship = feedback.find((item) => item.type === 'relationship' && !isNeutralRelationshipFeedback(item));
   if (relationship) return normalizeFeedbackSentence(relationship.narrativeHint);
@@ -59,13 +91,14 @@ export function buildChoiceRecognitionLine(feedback: AppliedConsequence[]): stri
   if (attribute) return normalizeFeedbackSentence(attribute.narrativeHint);
 
   const skill = feedback.find((item) => item.type === 'skill');
-  if (skill) return normalizeFeedbackSentence(skill.narrativeHint);
+  if (skill) return skillRecognitionLine(skill);
 
   return undefined;
 }
 
 function fictionFirstLineForItem(item: AppliedConsequence): string | undefined {
   if (item.type === 'identity') return identityRecognitionLine(item);
+  if (item.type === 'skill') return skillRecognitionLine(item);
   return normalizeFeedbackSentence(item.narrativeHint || item.label);
 }
 
@@ -73,7 +106,7 @@ function asSecondaryClause(sentence: string): string {
   const clause = trimTerminalPunctuation(sentence).trim();
   const practicedMatch = /^You feel more practiced in (.+)$/i.exec(clause);
   if (practicedMatch) {
-    return `you become more practiced in ${practicedMatch[1]}`;
+    return 'the lesson settles in';
   }
   return lowercaseFirst(clause);
 }

@@ -98,7 +98,11 @@ import {
 } from '../../types';
 import {
   StoryAnchors,
-  SevenPointStructure,
+  EncounterStoryCircleTarget,
+  EncounterStoryCircleTargetEvidence,
+  LegacyStructuralMap,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
 } from '../../types/sourceAnalysis';
 import {
@@ -164,6 +168,9 @@ export interface EncounterArchitectInput {
   encounterType: EncounterType;
   encounterStyle?: EncounterNarrativeStyle;
   encounterDescription: string;
+  encounterStoryCircleTarget?: EncounterStoryCircleTarget;
+  encounterStoryCircleTargetRationale?: string;
+  encounterStoryCircleTargetEvidence?: EncounterStoryCircleTargetEvidence;
   encounterStakes?: string;
   encounterRequiredNpcIds?: string[];
   encounterRelevantSkills?: string[];
@@ -245,11 +252,17 @@ export interface EncounterArchitectInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level 7-point beat map. */
-  seasonSevenPoint?: SevenPointStructure;
+  /** Season-level legacy-structure beat map. */
+  seasonLegacyStructure?: LegacyStructuralMap;
+  /** Primary season-level Story Circle beat map. */
+  seasonStoryCircle?: StoryCircleStructure;
 
   /** Which beat(s) of the season this episode carries. */
   episodeStructuralRole?: StructuralRole[];
+  /** Primary Story Circle beat(s) this episode carries. */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
+  /** Episode-level fractal Story Circle from StoryArchitect. */
+  episodeCircle?: StoryCircleStructure;
 
   // Pre-encounter state context: flags and relationship thresholds from earlier scenes
   // that are designed to echo inside this encounter as narrative shading, unlocked choices,
@@ -1090,6 +1103,25 @@ export class EncounterArchitect extends BaseAgent {
       );
     }
     return lines.join('\n');
+  }
+
+  private formatEncounterStoryCircleTarget(input: EncounterArchitectInput): string {
+    if (!input.encounterStoryCircleTarget) {
+      return '- Story Circle Target: Infer from the supplied episode role, but keep the encounter to one of go/search/find/take.';
+    }
+    const targetMeanings: Record<EncounterStoryCircleTarget, string> = {
+      go: 'force threshold commitment into unfamiliar rules; old rules stop working and retreat gets harder',
+      search: 'test adaptation under pressure; plans fail, rules are learned, allies/tools/skills are tested, and choices expose identity',
+      find: 'grant the wanted thing, answer, access, proof, rescue, power, status, or apparent victory while exposing the next problem',
+      take: 'demand payment: cost, loss, wound, rupture, exposure, depletion, compromise, apparent failure, or painful truth',
+    };
+    return [
+      `- Story Circle Target: ${input.encounterStoryCircleTarget} — ${targetMeanings[input.encounterStoryCircleTarget]}`,
+      input.encounterStoryCircleTargetRationale ? `- Target Rationale: ${input.encounterStoryCircleTargetRationale}` : '',
+      input.encounterStoryCircleTargetEvidence?.protagonistChange
+        ? `- Targeted Protagonist Change: ${input.encounterStoryCircleTargetEvidence.protagonistChange}`
+        : '',
+    ].filter(Boolean).join('\n');
   }
 
   private getMinimumRequiredBeatCount(input: EncounterArchitectInput): number {
@@ -1956,6 +1988,7 @@ ${input.priorStateContext.significantChoices.length > 0 ? `Prior choices: ${inpu
 - Type: ${input.encounterType} | Style: ${input.encounterStyle || 'auto'}
 - Difficulty: ${input.difficulty}
 - Stakes: ${input.encounterStakes || 'Keep stakes personal to the protagonist'}
+${this.formatEncounterStoryCircleTarget(input)}
 - Skills: ${skillsList}
 - Beat Plan:
 ${beatPlan}
@@ -3748,8 +3781,9 @@ RULES:
 
     const structuralContext = buildStructuralContextSection({
       anchors: input.seasonAnchors,
-      sevenPoint: input.seasonSevenPoint,
-      episodeStructuralRole: input.episodeStructuralRole,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: input.episodeStoryCircleRole,
+      episodeCircle: input.episodeCircle,
     });
 
     return `
@@ -3793,6 +3827,7 @@ The encounter's OPENING/setup prose must ground the new time and place and how t
 - **Type**: ${input.encounterType}
 - **Style**: ${input.encounterStyle || 'auto'}
 - **Description**: ${input.encounterDescription}
+${this.formatEncounterStoryCircleTarget(input)}
 - **Personal Stakes**: ${input.encounterStakes || 'Use the scene description and prior buildup to infer the stakes'}
 - **Required NPC IDs**: ${(input.encounterRequiredNpcIds || []).join(', ') || 'Use the NPC list below'}
 - **Relevant Skills**: ${(input.encounterRelevantSkills || []).join(', ') || 'Use available skills below'}
@@ -4366,6 +4401,7 @@ Generate a SIMPLE 2-beat encounter for the following scene. This is a simplified
 - Type: ${input.encounterType}
 - Difficulty: ${input.difficulty}
 - Stakes: ${input.encounterStakes || 'Keep the stakes personal and specific to the protagonist'}
+${this.formatEncounterStoryCircleTarget(input)}
 - Relevant Skills: ${(input.encounterRelevantSkills || []).join(', ') || `${skill1}, ${skill2}, ${skill3}`}
 - Beat Plan:
 ${(input.encounterBeatPlan && input.encounterBeatPlan.length > 0)
@@ -4971,6 +5007,7 @@ The prior Gemini attempt exhausted its structured output budget. Keep this answe
 - Name: ${input.sceneName}
 - Situation: ${input.sceneDescription.slice(0, 360)}
 - Stakes: ${(input.encounterStakes || 'Keep stakes personal').slice(0, 260)}
+${this.formatEncounterStoryCircleTarget(input)}
 - Skills: ${skillsList}
 - NPCs: ${npcNames || 'None'}${continuity}
 ${authoredBeats ? `\n## Must Touch These Beats\n${authoredBeats}\n` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
@@ -5040,6 +5077,7 @@ ${input.episodeSoFarSummary ? `\n## Episode So Far (continuity is MANDATORY — 
 - Type: ${input.encounterType} | Style: ${input.encounterStyle || 'auto'}
 - Difficulty: ${input.difficulty}
 - Stakes: ${input.encounterStakes || 'Keep stakes personal'}
+${this.formatEncounterStoryCircleTarget(input)}
 - Skills: ${skillsList}
 ${this.buildAuthoredAnchorSection(input)}
 
@@ -5174,6 +5212,7 @@ Return ONLY valid JSON.
 ## Context
 - Scene: ${input.sceneName} — ${input.sceneDescription}
 - Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
+${this.formatEncounterStoryCircleTarget(input)}
 - NPCs: ${npcsList}
 ## Genre-Aware Jeopardy
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
@@ -5271,6 +5310,7 @@ Replace ALL placeholders. Return ONLY the JSON object.`;
 Return ONLY valid JSON.
 
 ## Scene: ${input.sceneName}
+${this.formatEncounterStoryCircleTarget(input)}
 ## Opening choices: ${choiceIds}
 ## Opening setupText: "${phase1.openingBeat.setupText}"
 
@@ -5533,6 +5573,7 @@ If intimacy matters, stage it as distance, restraint, eye contact, invitation, r
 ## Scene: ${sceneLine}
 ## Type: ${typeLine}
 ## Stakes: ${stakesLine}
+${this.formatEncounterStoryCircleTarget(input)}
 ## NPCs: ${npcsList || 'None'}
 ## Story: ${storyLine}
 ## Genre-Aware Jeopardy: ${jeopardyLine}

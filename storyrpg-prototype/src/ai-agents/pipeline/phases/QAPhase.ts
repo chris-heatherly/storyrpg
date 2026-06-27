@@ -128,6 +128,28 @@ export interface QAPhaseDeps {
   ) => Parameters<ChoiceAuthor['execute']>[0]['storyVerbs'];
 }
 
+function cloneMutableList<T>(items: T[]): T[] {
+  return items.map((item) => {
+    if (typeof structuredClone === 'function') return structuredClone(item);
+    return JSON.parse(JSON.stringify(item)) as T;
+  });
+}
+
+function restoreMutableList<T>(target: T[], snapshot: T[]): void {
+  target.splice(0, target.length, ...cloneMutableList(snapshot));
+}
+
+function shouldAdoptQARepair(previous: QAReport, next: QAReport): boolean {
+  const previousCritical = previous.criticalIssues?.length ?? 0;
+  const nextCritical = next.criticalIssues?.length ?? 0;
+
+  if (previous.passesQA && !next.passesQA) return false;
+  if (nextCritical > previousCritical) return false;
+  if (next.passesQA && !previous.passesQA) return true;
+  if (nextCritical < previousCritical) return next.overallScore >= previous.overallScore - 5;
+  return next.overallScore >= previous.overallScore;
+}
+
 // ========================================
 // PHASE IMPLEMENTATION
 // ========================================
@@ -249,7 +271,8 @@ export class QAPhase {
         if (qaReport.passesQA && qaReport.criticalIssues.length === 0) break;
 
         // === KARPATHY LOOP: QA-driven targeted repair ===
-        const previousScore = qaReport.overallScore;
+        const previousQaReport = qaReport;
+        const previousScore = previousQaReport.overallScore;
         context.emit({
           type: 'phase_start',
           phase: 'qa_repair',
@@ -257,6 +280,8 @@ export class QAPhase {
         });
 
         let repairsMade = 0;
+        const sceneContentsBeforeRepair = cloneMutableList(sceneContents);
+        const choiceSetsBeforeRepair = cloneMutableList(choiceSets);
 
         // Repair scenes with continuity errors
         if (qaReport.continuity && qaReport.continuity.issues.length > 0) {
@@ -400,11 +425,24 @@ export class QAPhase {
             brief, sceneContents, choiceSets, characterBible, episodeBlueprint, context
           );
 
-          context.emit({
-            type: 'phase_complete',
-            phase: 'qa_repair',
-            message: `QA repair pass ${qaRepairPass + 1}: ${qaReport.overallScore}/100 (was ${previousScore}/100), ${qaReport.passesQA ? 'PASSES' : 'still below threshold'}`,
-          });
+          const repairedReport = qaReport;
+          if (shouldAdoptQARepair(previousQaReport, repairedReport)) {
+            context.emit({
+              type: 'phase_complete',
+              phase: 'qa_repair',
+              message: `QA repair pass ${qaRepairPass + 1}: ${qaReport.overallScore}/100 (was ${previousScore}/100), ${qaReport.passesQA ? 'PASSES' : 'still below threshold'}`,
+            });
+          } else {
+            restoreMutableList(sceneContents, sceneContentsBeforeRepair);
+            restoreMutableList(choiceSets, choiceSetsBeforeRepair);
+            qaReport = previousQaReport;
+            context.emit({
+              type: 'warning',
+              phase: 'qa_repair',
+              message: `QA repair pass ${qaRepairPass + 1}: rejected candidate score ${repairedReport.overallScore}/100 (kept ${qaReport.overallScore}/100) because repair did not improve QA outcome`,
+            });
+            break;
+          }
         } else {
           context.emit({
             type: 'phase_complete',

@@ -39,7 +39,7 @@ function treatment(
   return {
     episodes: episodes as ExtractedTreatment['episodes'],
     seasonGuidance: seasonSpine
-      ? ({ episodeStructureMode: 'standard', seasonSpine } as ExtractedTreatment['seasonGuidance'])
+      ? ({ seasonSpine } as ExtractedTreatment['seasonGuidance'])
       : undefined,
   };
 }

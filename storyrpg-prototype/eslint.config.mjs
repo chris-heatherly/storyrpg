@@ -116,7 +116,6 @@ export default tseslint.config(
       'src/ai-agents/agents/image-team/ImageAgentTeam.ts',
       'src/ai-agents/agents/image-team/StoryboardAgent.ts',
       'src/ai-agents/pipeline/EpisodePipeline.ts',
-      'src/ai-agents/pipeline/FullStoryPipeline.microEpisodeRepair.test.ts',
       'src/ai-agents/pipeline/FullStoryPipeline.references.test.ts',
       'src/ai-agents/pipeline/FullStoryPipeline.spotImageBackfill.test.ts',
       'src/ai-agents/pipeline/phases/index.ts',

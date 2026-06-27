@@ -15,6 +15,7 @@ import {
   compareTreatmentFingerprints,
   computeTreatmentFingerprint,
   extractBeatEpisodeAnchors,
+  extractStoryCircleBeatEpisodeAnchors,
   normalizeTreatmentTitle,
 } from './treatmentFingerprint';
 
@@ -29,7 +30,7 @@ function treatment(
   return {
     episodes,
     seasonGuidance: seasonSpine
-      ? ({ episodeStructureMode: 'standard', seasonSpine } as ExtractedTreatment['seasonGuidance'])
+      ? ({ seasonSpine } as ExtractedTreatment['seasonGuidance'])
       : undefined,
   };
 }
@@ -89,6 +90,31 @@ describe('extractBeatEpisodeAnchors', () => {
 
   it('returns an empty map when there is no spine', () => {
     expect(extractBeatEpisodeAnchors(undefined)).toEqual({});
+  });
+});
+
+describe('extractStoryCircleBeatEpisodeAnchors', () => {
+  it('parses Story Circle (EpN) anchors line-by-line', () => {
+    const spine = [
+      'You (Ep1): the ordinary pressure',
+      'Need (Ep2): the missing truth',
+      'Go (Ep3): crossing the threshold',
+      'Search (Ep4): adaptive pressure',
+      'Find (Ep5): the midpoint discovery',
+      'Take (Ep7): the real price',
+      'Return (Ep9): carrying the cost home',
+      'Change (Ep10): the new identity',
+    ].join('\n');
+    expect(extractStoryCircleBeatEpisodeAnchors(spine)).toEqual({
+      you: 1,
+      need: 2,
+      go: 3,
+      search: 4,
+      find: 5,
+      take: 7,
+      return: 9,
+      change: 10,
+    });
   });
 });
 

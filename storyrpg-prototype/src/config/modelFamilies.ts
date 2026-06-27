@@ -37,7 +37,7 @@ export const PIPELINE_TASKS: readonly PipelineTaskMeta[] = [
   {
     id: 'architect',
     label: 'Planning / Architecture',
-    description: 'Season structure, 7-point spine, treatment. Highest-stakes reasoning — quality here cascades through the whole run.',
+    description: 'Season Story Circle, arc pressure, treatment. Highest-stakes reasoning — quality here cascades through the whole run.',
     crossProvider: false,
   },
   {

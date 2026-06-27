@@ -154,18 +154,6 @@ describe('SceneTurnContractValidator', () => {
     expect(result.issues.map(issue => issue.message).join('\n')).toContain('lacks an exit shift');
   });
 
-  it('labels sceneEpisode failures clearly', () => {
-    const bp = blueprint();
-    bp.scenes[0].sequenceIntent!.objective = '';
-    bp.scenes[0].dramaticQuestion = '';
-    bp.scenes[0].wantVsNeed = '';
-
-    const result = new SceneTurnContractValidator().validate(bp, { episodeStructureMode: 'sceneEpisodes' });
-
-    expect(result.valid).toBe(false);
-    expect(result.issues[0].message).toContain('sceneEpisode scene');
-  });
-
   it('fails a major multi-character scene without a power dynamic shift', () => {
     const bp = blueprint();
     bp.scenes[0] = {

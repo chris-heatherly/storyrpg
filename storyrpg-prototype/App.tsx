@@ -33,7 +33,6 @@ import { GENERATOR_STORAGE_KEYS } from './src/hooks/useGeneratorSettings';
 import { fetchStoryByCatalogEntry } from './src/services/storyLibrary';
 import { useGeneratorRunner } from './src/hooks/useGeneratorRunner';
 import { useAppNavigationStore } from './src/stores/appNavigationStore';
-import { getNextPlayableEpisode } from './src/engine/storyEngine';
 import {
   captureAttributionFromUrl,
   identifyAnonymousPlayer,
@@ -528,29 +527,6 @@ function AppContent() {
   const handleEpisodeComplete = () => {
     if (currentEpisode?.id) {
       incrementPersonProperty('episodes_completed_count');
-    }
-
-    const isSceneEpisodeStory = currentStory?.episodes.some(
-      episode => episode.episodeStructureMode === 'sceneEpisodes' || episode.routeMeta
-    );
-    if (isSceneEpisodeStory && currentStory && currentEpisode) {
-      const completedEpisodes = player.completedEpisodes.includes(currentEpisode.id)
-        ? player.completedEpisodes
-        : [...player.completedEpisodes, currentEpisode.id];
-      const nextEpisode = getNextPlayableEpisode(
-        currentStory,
-        currentEpisode.id,
-        { ...player, completedEpisodes }
-      );
-
-      if (nextEpisode) {
-        loadEpisode(nextEpisode.id);
-        if (nextEpisode.startingSceneId) {
-          loadScene(nextEpisode.startingSceneId, nextEpisode);
-        }
-        navigateTo('reading');
-        return;
-      }
     }
 
     navigateTo('episodes');

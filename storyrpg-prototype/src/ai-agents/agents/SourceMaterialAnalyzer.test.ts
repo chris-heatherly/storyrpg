@@ -16,6 +16,7 @@ import {
 } from './SourceMaterialAnalyzer';
 import type { StoryAnchors, StorySchemaAbstraction } from '../../types/sourceAnalysis';
 import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
+import { checkStoryCircleCoverage } from '../utils/storyCircleDistribution';
 
 const anchors: StoryAnchors = {
   stakes: 'The mountain village and the protagonist dignity.',
@@ -125,7 +126,6 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
     expect(extracted.metadata.confidence).toBe('high');
     expect(Object.keys(extracted.episodes)).toHaveLength(2);
     expect(extracted.episodes[1]?.authoredTitle).toBe('The Lantern Job');
-    expect(extracted.episodes[1]?.actLabel).toBe('Act 1');
     expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['hook', 'plotTurn1']);
     expect(extracted.episodes[1]?.episodeTurns).toEqual(
       expect.arrayContaining([
@@ -239,11 +239,9 @@ If Mara exposes Jonas in Episode 1, Episode 2 begins with guarded access. If she
     const extracted = extractTreatmentFromMarkdown(regularTreatment);
 
     expect(extracted.isTreatment).toBe(true);
-    expect(extracted.seasonGuidance?.episodeStructureMode).toBe('standard');
     expect(extracted.seasonGuidance?.informationLedger).toContain('info-ledger');
     expect(extracted.seasonGuidance?.arcPlan).toContain('ledger is evidence or bait');
     expect(extracted.episodes[1]?.dramaticQuestion).toContain('Will Mara take');
-    expect(extracted.episodes[1]?.arcLabel).toBe('The Harbor Debt');
     expect(extracted.episodes[1]?.aPressure).toContain('missing ledger');
     expect(extracted.episodes[1]?.bPressure).toContain('Jonas');
     expect(extracted.episodes[1]?.cSeed).toContain('red wax');
@@ -254,6 +252,65 @@ If Mara exposes Jonas in Episode 1, Episode 2 begins with guarded access. If she
     expect(extracted.episodes[1]?.endingTurnout).toContain('Mara');
     expect(extracted.episodes[1]?.endStateChange).toContain('outside');
     expect(extracted.endings).toHaveLength(3);
+  });
+
+  it('replaces invalid LLM Story Circle duplicates with the default spine for treatment analysis', () => {
+    const analyzer: any = new SourceMaterialAnalyzer({
+      provider: 'anthropic',
+      model: 'test',
+      apiKey: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+    const treatment = readFileSync(join(__dirname, '../fixtures/bite-me-treatment.md'), 'utf8');
+    const structure = {
+      genre: 'paranormal romance',
+      tone: 'glossy',
+      themes: ['voice'],
+      setting: { timePeriod: 'now', location: 'Bucharest', worldDetails: 'nightlife' },
+      protagonist: { name: 'Kylie Marinescu', description: 'A food writer.', arc: 'Claims her voice.' },
+      majorCharacters: [],
+      keyLocations: [],
+      directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+      adaptationGuidance: { narrativeVoice: 'witty', keyThemesToPreserve: ['voice'], iconicMoments: [] },
+      storyArcs: [{ name: 'Voice', description: 'Kylie keeps her voice.', chapters: 'season' }],
+      majorPlotPoints: [],
+      estimatedScope: { complexity: 'complex', estimatedEpisodes: 8, reasoning: 'treatment' },
+      writingStyleGuide: { source: 'inferred_from_material', summary: 'witty' },
+      endingAnalysis: { detectedMode: 'multiple', reasoning: 'routes', explicitEndings: [] },
+    };
+    const defaultBeats = ['you', 'need', 'go', 'search', 'find', 'take', 'return', 'change'];
+    const breakdown = {
+      totalEpisodes: 8,
+      breakdownNotes: 'LLM duplicated the starting-world beat in the finale.',
+      episodes: defaultBeats.map((beat, index) => ({
+        episodeNumber: index + 1,
+        title: `Episode ${index + 1}`,
+        synopsis: `Synopsis ${index + 1}`,
+        sourceChapters: `Episode ${index + 1}`,
+        plotPoints: [`Beat ${index + 1}`],
+        mainCharacters: ['Kylie Marinescu'],
+        locations: ['Bucharest'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        storyCircleRole: index === 7
+          ? [
+              { beat: 'you', roleKind: 'primary', source: 'llm' },
+              { beat: 'change', roleKind: 'primary', source: 'llm' },
+            ]
+          : [{ beat, roleKind: 'primary', source: 'llm' }],
+      })),
+    };
+
+    const analysis = analyzer.assembleAnalysis(
+      { title: 'Bite Me', sourceText: treatment, preferences: {} },
+      structure,
+      breakdown,
+    );
+
+    expect(checkStoryCircleCoverage(analysis.episodeBreakdown)).toEqual([]);
+    expect(analysis.episodeBreakdown[7].storyCircleRole).toEqual([
+      { beat: 'change', roleKind: 'primary', source: 'distribution' },
+    ]);
   });
 
   it('extracts authored regular-episode variants without swallowing the finale', () => {
@@ -351,8 +408,6 @@ A StoryRPG branching-narrative season treatment.
 
     expect(extracted.isTreatment).toBe(true);
     expect(Object.keys(extracted.episodes).map(Number)).toEqual([1, 10, 11]);
-    expect(extracted.episodes[1]?.actLabel).toBe('I.');
-    expect(extracted.episodes[1]?.arcLabel).toBe('1.');
     expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['hook']);
     expect(extracted.episodes[1]?.episodeTurns).toHaveLength(3);
     expect(extracted.episodes[1]?.aPressure).toContain('ambush');
@@ -518,29 +573,29 @@ A StoryRPG branching-narrative season treatment.
     expect(ep1?.informationMovement).toContain('catchable Mika lie');
   });
 
-  it('extracts sceneEpisode treatment fields and marks the treatment as sceneEpisodes', () => {
-    const sceneEpisodeTreatment = `
-# Harbor Debt SceneEpisode Treatment
+  it('extracts episode treatment fields and marks the treatment as episodes', () => {
+    const episodeTreatment = `
+# Harbor Debt Episode Treatment
 
 ## 1. Story Premise
 
-This is the SCENEEPISODE version.
+This is the EPISODE version.
 
 ## 6. Information Ledger
 
 - ID: info-seal
-- Introduced sceneEpisode: 1
-- Setup touch sceneEpisodes: 2, 4
-- Planned reveal or payoff sceneEpisode: 7
+- Introduced episode: 1
+- Setup touch episodes: 2, 4
+- Planned reveal or payoff episode: 7
 
-## 9. SceneEpisode Outline
+## 9. Episode Outline
 
-### SceneEpisode 1: The Auction Bell
+### Episode 1: The Auction Bell
 
 - **Act:** Act 1
 - **Arc:** The Harbor Debt
 - **Structural role:** Hook
-- **SceneEpisode dramatic question:** Will Mara make herself visible to save the ledger?
+- **Episode dramatic question:** Will Mara make herself visible to save the ledger?
 - **Opening image / hook function:** The auction bell rings with no one touching it.
 - **Entry goal:** Buy the fish crate quietly.
 - **Obstacle:** The syndicate bids with Jonas's family ring.
@@ -557,13 +612,13 @@ This is the SCENEEPISODE version.
 - **Alternative path or branchlet:** Challenge creates public suspicion; secrecy creates private debt.
 - **Consequence residue:** The auctioneer now knows Mara's father's name.
 - **Visual anchor:** A red seal stuck to a wet ledger page.
-- **Why the next sceneEpisode exists because of this one:** The named father forces Mara to visit the closed registry.
+- **Why the next episode exists because of this one:** The named father forces Mara to visit the closed registry.
 
-## 10. Cross-SceneEpisode Branches And Consequence Chains
+## 10. Cross-Episode Branches And Consequence Chains
 
 ### Branch A - Public Bid
 
-The public challenge changes sceneEpisode 3's access and reconverges at the registry.
+The public challenge changes episode 3's access and reconverges at the registry.
 
 ## 13. Alternate Endings
 
@@ -589,10 +644,9 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
 - **Target conditions:** Protect Jonas and expose the syndicate.
 `;
 
-    const extracted = extractTreatmentFromMarkdown(sceneEpisodeTreatment);
+    const extracted = extractTreatmentFromMarkdown(episodeTreatment);
 
     expect(extracted.isTreatment).toBe(true);
-    expect(extracted.seasonGuidance?.episodeStructureMode).toBe('sceneEpisodes');
     expect(extracted.seasonGuidance?.informationLedger).toContain('info-seal');
     expect(extracted.episodes[1]?.dramaticQuestion).toContain('make herself visible');
     expect(extracted.episodes[1]?.entryGoal).toContain('fish crate');
@@ -612,14 +666,14 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
 
 ## Episode Outline
 
-#### SceneEp 1 — The Auction Bell
+#### Episode 1 — The Auction Bell
 
 - **Dramatic question:** Will Mara stand up in public?
 - **Act/Arc:** Act 1 / Arc 1.
 - Forced choice: Challenge the bid or let the crate vanish.
 - Exit shift: Mara leaves publicly exposed.
 - Meaningful choices: Challenge publicly; bargain privately.
-- Why next sceneEp exists: The exposed bid sends Mara to the registry.
+- Why the next episode exists because of this one: The exposed bid sends Mara to the registry.
 
 #### Scene 2 - The Closed Registry
 
@@ -642,8 +696,6 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
     expect(extracted.isTreatment).toBe(true);
     expect(Object.keys(extracted.episodes)).toHaveLength(2);
     expect(extracted.episodes[1]?.authoredTitle).toBe('The Auction Bell');
-    expect(extracted.episodes[1]?.actLabel).toBe('Act 1');
-    expect(extracted.episodes[1]?.arcLabel).toBe('Arc 1.');
     expect(extracted.episodes[1]?.dramaticQuestion).toContain('stand up');
     expect(extracted.episodes[1]?.forcedChoice).toContain('Challenge');
     expect(extracted.episodes[1]?.majorChoicePressures?.join(' ')).toContain('bargain privately');
@@ -654,19 +706,19 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
 
   it('extracts episode guidance when filled treatment uses number-and-title bullets', () => {
     const bulletTreatment = `
-# Harbor Debt SceneEpisode Treatment
+# Harbor Debt Episode Treatment
 
-## SceneEpisode Outline
+## Episode Outline
 
-- **SceneEpisode number and title:** 1 - The Auction Bell
-- **SceneEpisode dramatic question:** Will Mara make herself visible?
+- **Episode number and title:** 1 - The Auction Bell
+- **Episode dramatic question:** Will Mara make herself visible?
 - **Entry goal:** Buy the fish crate quietly.
 - **Obstacle:** The syndicate bids with Jonas's ring.
 - **Forced choice:** Challenge the bid or let the crate vanish.
 - **Exit shift:** Mara leaves exposed.
-- **Why the next sceneEpisode exists because of this one:** The named father sends Mara to the registry.
+- **Why the next episode exists because of this one:** The named father sends Mara to the registry.
 
-- SceneEpisode number and title: SE2 — The Closed Registry
+- Episode number and title: Episode 2 — The Closed Registry
 - Entry goal: Get the birth record.
 - Obstacle: Jonas has already pulled the page.
 - Consequence residue: Mara owes the archivist a favor.
@@ -693,12 +745,19 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
   });
 
   it('does not treat the prompt guide itself as a filled treatment', () => {
-    const promptGuide = readFileSync(join(__dirname, '../../../../docs/STORY_TREATMENT_SCENEEPISODE_PROMPT.md'), 'utf8');
+    const promptGuide = `
+# StoryRPG Treatment Prompt Guide
+
+Use this guide to create a planning document. It is not itself a filled story treatment.
+
+## Episode Outline
+
+For each episode, provide a title, dramatic question, entry goal, obstacle, forced choice, exit shift, and consequence residue.
+`;
     const extracted = extractTreatmentFromMarkdown(promptGuide);
 
     expect(extracted.isTreatment).toBe(false);
     expect(extracted.metadata.detected).toBe(false);
-    expect(extracted.metadata.warnings.join(' ')).toContain('prompt guide');
   });
 
   it('detects malformed treatment-like input and blocks silent generic fallback', () => {
@@ -957,6 +1016,67 @@ The public challenge changes sceneEpisode 3's access and reconverges at the regi
     expect(analysis.episodeBreakdown[1].structuralRole).toEqual(expect.arrayContaining(['pinch1']));
     expect(analysis.episodeBreakdown[0].treatmentGuidance.encounterCentralConflict).toContain('miracle worth protecting');
     expect(analysis.resolvedEndings).toHaveLength(3);
+  });
+
+  it('extracts treatment episode guidance from a prompt when no source text was uploaded', () => {
+    const analyzer = new SourceMaterialAnalyzer({
+      provider: 'anthropic',
+      model: 'test',
+      apiKey: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+
+    const structure: any = {
+      genre: 'supernatural mystery',
+      tone: 'salt-stung dread',
+      themes: ['grief', 'truth'],
+      setting: { timePeriod: 'present', location: 'harbor town', worldDetails: 'A lighthouse that answers grief' },
+      protagonist: { name: 'Mara', description: 'A new lighthouse keeper.', arc: 'Learns truth must release grief.' },
+      majorCharacters: [],
+      keyLocations: [],
+      directLanguageFragments: { dialogue: [], prose: [], terminology: [] },
+      storyArcs: [{ name: 'The Light', description: 'Mara learns what the lighthouse imprisons.', chapters: 'all' }],
+      majorPlotPoints: [
+        { description: 'The lantern answers with her sister voice.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
+        { description: 'Mara opens the storm door.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+      ],
+      estimatedScope: { complexity: 'moderate', estimatedEpisodes: 1, reasoning: 'LLM undercounted' },
+      endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
+    };
+    const breakdown: any = {
+      episodes: [{
+        episodeNumber: 1,
+        title: 'Wrong LLM Title',
+        synopsis: 'Mara arrives.',
+        sourceChapters: '1',
+        plotPoints: ['Mara arrives'],
+        mainCharacters: ['Mara'],
+        locations: ['Lighthouse'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        structuralRole: ['rising'],
+      }],
+      totalEpisodes: 1,
+      breakdownNotes: 'undercounted',
+    };
+
+    const analysis = (analyzer as any).assembleAnalysis(
+      {
+        title: 'Harbor Light',
+        sourceText: '',
+        userPrompt: `Use this treatment as source of truth.\n\n${refreshedTreatment}`,
+      },
+      structure,
+      breakdown,
+    );
+
+    expect(analysis.sourceFormat).toBe('story_treatment');
+    expect(analysis.totalEstimatedEpisodes).toBe(2);
+    expect(analysis.episodeBreakdown.map((episode: any) => episode.title)).toEqual([
+      'The Lantern Job',
+      'Breakwater Oath',
+    ]);
+    expect(analysis.episodeBreakdown[0].treatmentGuidance.encounterCentralConflict).toContain('miracle worth protecting');
   });
 });
 

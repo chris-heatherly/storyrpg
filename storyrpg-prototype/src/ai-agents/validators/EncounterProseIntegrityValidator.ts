@@ -56,6 +56,11 @@ function excerptAround(text: string, index: number): string {
   return text.slice(start, end).replace(/\s+/g, ' ').trim();
 }
 
+function isGrammaticalYouObject(text: string, index: number): boolean {
+  const prefix = text.slice(Math.max(0, index - 32), index).toLowerCase();
+  return /\b(?:give|gives|gave|giving|allow|allows|allowed|leave|leaves|left|offer|offers|offered)\s+$/.test(prefix);
+}
+
 function collectEncounterStrings(scene: Scene): Array<{ location: string; text: string }> {
   const encounter = scene.encounter as unknown;
   const texts: Array<{ location: string; text: string }> = [];
@@ -101,6 +106,7 @@ export class EncounterProseIntegrityValidator extends BaseValidator {
           for (const { name, pattern } of MALFORMED_YOU_PATTERNS) {
             const match = pattern.exec(item.text);
             if (!match || match.index === undefined) continue;
+            if (name === 'malformed-you-noun' && isGrammaticalYouObject(item.text, match.index)) continue;
             const excerpt = excerptAround(item.text, match.index);
             findings.push({
               sceneId: scene.id,

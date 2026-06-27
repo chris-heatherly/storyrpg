@@ -11,9 +11,13 @@
 import { AgentConfig, GenerationSettingsConfig } from '../config';
 import {
   StoryAnchors,
-  SevenPointStructure,
+  LegacyStructuralMap,
+  EncounterStoryCircleTarget,
+  EncounterStoryCircleTargetEvidence,
+  StoryCircleRoleAssignment,
+  StoryCircleStructure,
   StructuralRole,
-  SEVEN_POINT_BEATS,
+  STORY_CIRCLE_BEATS,
   TreatmentEpisodeGuidance,
   ThemeArgumentContract,
 } from '../../types/sourceAnalysis';
@@ -22,6 +26,7 @@ import {
   BRANCH_AND_BOTTLENECK,
   CRAFT_PRESSURE_GUIDANCE,
   CORE_DRAMATIC_STRUCTURE_RULES,
+  buildStructuralContextSection as buildSharedStructuralContextSection,
   buildGenreAwareJeopardyGuidance,
 } from '../prompts/storytellingPrinciples';
 import { STORY_ARCHITECT_BLUEPRINT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
@@ -39,6 +44,7 @@ import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
+import { applySceneContract } from '../utils/sceneContractBuilders';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type {
   PlannedScene,
@@ -55,7 +61,7 @@ import type {
   RelationshipPacingContract,
   SceneTurnContract,
   SeasonPromiseRealizationContract,
-  SevenPointBeatRealizationContract,
+  StoryCircleBeatRealizationContract,
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
@@ -71,10 +77,24 @@ import {
   isUnsafeTreatmentDensityReport,
   type TreatmentDensityReport,
 } from '../remediation/gateRepairRouter';
+import { treatmentFieldTokens } from '../utils/treatmentFieldContracts';
+import {
+  legacyStructuralRolesToStoryCircleRoles,
+  storyCircleFromLegacyStructure,
+} from '../utils/storyCircleDistribution';
+import {
+  buildEncounterStoryCircleTargetRationale,
+  isEncounterStoryCircleTarget,
+  normalizeEncounterStoryCircleTarget,
+} from '../utils/encounterStoryCircleTarget';
 import {
   rebindPlannedSceneObligations,
   type PlannedSceneBindingReport,
 } from '../remediation/plannedSceneObligationBinder';
+import {
+  arcPressureContractTargetsEpisode,
+  isSceneBoundArcPressureKind,
+} from '../utils/arcPressureContracts';
 
 /**
  * Smallest episode (by scene count) that should be asked to carry a SECOND
@@ -86,6 +106,7 @@ import {
  * `minSceneGraphBranchesPerEpisode` override is always respected when higher.
  */
 const BRANCH_FLOOR_2_MIN_SCENES = 6;
+const MAX_BINDER_SPLIT_SCENE_CAP_EXTENSION = 4;
 
 // Input types
 export interface StoryArchitectInput {
@@ -134,19 +155,30 @@ export interface StoryArchitectInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /**
-   * Season-level 7-point beat map (from SeasonPlan.sevenPoint). Gives
-   * StoryArchitect the text of every beat so it can weave the correct
-   * beat into this episode's arc block.
-   */
-  seasonSevenPoint?: SevenPointStructure;
+  /** @deprecated Story Circle is the primary structure. */
+  seasonLegacyStructure?: LegacyStructuralMap;
 
   /**
-   * Which beat(s) of the season sevenPoint this specific episode carries
+   * Season-level Story Circle beat map (from SeasonPlan.storyCircle). This is
+   * the primary macro structure for the episode blueprint.
+   */
+  seasonStoryCircle?: StoryCircleStructure;
+
+  /**
+   * Which beat(s) of the season legacyStructure this specific episode carries
    * (from SeasonEpisode.structuralRole). Drives which `arc.*` fields are
    * required vs. optional and what dramatic function the episode serves.
+   *
+   * @deprecated Use episodeStoryCircleRole for new generation.
    */
   episodeStructuralRole?: StructuralRole[];
+
+  /**
+   * Which Story Circle beat(s) this episode carries at the season level.
+   * Longer seasons may pass expansion roles; shorter seasons may fuse adjacent
+   * primary beats.
+   */
+  episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 
   /**
    * Role-mapped episode ending contract. The final non-encounter scene should
@@ -167,6 +199,9 @@ export interface StoryArchitectInput {
       npcsInvolved: string[];
       stakes: string;
       centralConflict?: string;
+      storyCircleTarget?: EncounterStoryCircleTarget;
+      storyCircleTargetRationale?: string;
+      storyCircleTargetEvidence?: EncounterStoryCircleTargetEvidence;
       aftermathConsequence?: string;
       relevantSkills: string[];
       encounterBuildup?: string;
@@ -239,7 +274,7 @@ export interface StoryArchitectInput {
     characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
     worldTreatmentContracts?: WorldTreatmentRealizationContract[];
     stakesArchitectureContracts?: StakesArchitectureContract[];
-    sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+    storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
     arcPressureContracts?: ArcPressureTreatmentContract[];
     branchConsequenceContracts?: BranchConsequenceRealizationContract[];
     endingRealizationContracts?: EndingRealizationContract[];
@@ -313,7 +348,6 @@ export type EpisodeTurnType =
 
 export type BPlotMode =
   | 'scene'
-  | 'sceneEpisode'
   | 'underlay'
   | 'offscreen_pressure';
 
@@ -462,6 +496,11 @@ export interface SceneBlueprint {
   // that serve the scene's planned purpose and discharge the right setups.
   // The scene's dramatic function within its episode's arc.
   narrativeRole?: SceneNarrativeRole;
+  // Generator-only provenance for scenes inserted by the treatment binder.
+  planningOrigin?: PlannedScene['planningOrigin'];
+  // Elaborate-mode planned-scene choice budget hint. Used only for validation
+  // and repair policy; player-facing scenes never render this directly.
+  plannedHasChoice?: boolean;
   // Planning-only statement of what story this scene tells (the brief beats serve).
   dramaticPurpose?: string;
   // Scene ids (this season) this scene plants for / discharges.
@@ -490,7 +529,7 @@ export interface SceneBlueprint {
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
   seasonPromiseContracts?: SeasonPromiseRealizationContract[];
   stakesArchitectureContracts?: StakesArchitectureContract[];
-  sevenPointBeatContracts?: SevenPointBeatRealizationContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   arcPressureContracts?: ArcPressureTreatmentContract[];
   branchConsequenceContracts?: BranchConsequenceRealizationContract[];
   endingRealizationContracts?: EndingRealizationContract[];
@@ -586,6 +625,9 @@ export interface SceneBlueprint {
   encounterStyle?: EncounterNarrativeStyle;
   encounterDescription?: string;
   encounterCentralConflict?: string;
+  encounterStoryCircleTarget?: EncounterStoryCircleTarget;
+  encounterStoryCircleTargetRationale?: string;
+  encounterStoryCircleTargetEvidence?: EncounterStoryCircleTargetEvidence;
   encounterStakes?: string;
   encounterRequiredNpcIds?: string[];
   encounterRelevantSkills?: string[];
@@ -613,19 +655,13 @@ export interface EpisodeBlueprint {
   synopsis: string;
 
   /**
-   * Episode-level 7-point arc summary.
+   * Deprecated episode-level compatibility summary.
+   * Story Circle enforcement happens through episodeCircle.
    *
-   * This is a REPLACEMENT for the old `{ hook, risingAction, climax, resolution }`
-   * shape. `risingAction` is no longer captured as a single field; the
-   * progressive tension is now carried by the dedicated beat fields below.
-   * `plotTurn2` is intentionally fused into `climax` (the season's Plot Turn 2
-   * IS the decisive confrontation), matching how the season-level
-   * {@link SevenPointStructure} is laid out.
-   *
-   * For buffer episodes (episodes with `structuralRole` of `rising` or
-   * `falling`), the writer fills the 1-2 beats the episode actually lands and
-   * leaves the others as empty strings. The SevenPointCoverageValidator only
-   * enforces coverage at the SEASON level.
+   * For legacy buffer episodes (episodes with `structuralRole` of `rising` or
+   * `falling`), the writer fills the 1-2 compatibility beats the episode
+   * actually lands and leaves the others as empty strings. New generation uses
+   * `episodeCircle`, which must fill all eight Story Circle beats.
    */
   arc: {
     hook: string;          // Ordinary world + core value introduced
@@ -638,7 +674,18 @@ export interface EpisodeBlueprint {
   };
 
   /**
-   * Which beats of the season-level sevenPoint this episode is responsible
+   * Episode-level Story Circle. Unlike the legacy `arc` compatibility block,
+   * this must fill all eight beats so each episode has its own complete loop.
+   */
+  episodeCircle?: StoryCircleStructure;
+
+  /**
+   * Season-level Story Circle beat(s) this episode carries.
+   */
+  storyCircleRole?: StoryCircleRoleAssignment[];
+
+  /**
+   * Which beats of the season-level legacyStructure this episode is responsible
    * for landing. Copied through from the SeasonPlannerAgent's assignment so
    * validators can assert the episode's arc fields are populated for the
    * beats it owns.
@@ -671,11 +718,6 @@ export interface EpisodeBlueprint {
 }
 
 export class StoryArchitect extends BaseAgent {
-  private episodeStructureMode: GenerationSettingsConfig['episodeStructureMode'];
-  private sceneEpisodeConfig: {
-    minScenes: number;
-    maxScenes: number;
-  };
   private encounterMinimums: {
     short: number;    // 3-4 scenes
     medium: number;   // 5-7 scenes
@@ -687,18 +729,14 @@ export class StoryArchitect extends BaseAgent {
     allowLinearBottleneckEpisodes: boolean;
   };
   private lastStructuralFeedback: string[] = [];
-  /** 7-point spine gate (tier 2): block when an assigned beat-role isn't realized. Default ON. */
-  private sevenPointBlocking: boolean;
+  /** Story Circle spine gate (tier 2): block when episodeCircle obligations are not realized. Default ON. */
+  private storyCircleBlocking: boolean;
 
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
     super('Story Architect', config);
     this.includeSystemPrompt = true;
-    this.sevenPointBlocking = generationConfig?.sevenPointBlocking !== false;
-    this.episodeStructureMode = generationConfig?.episodeStructureMode || 'standard';
-    this.sceneEpisodeConfig = {
-      minScenes: generationConfig?.sceneEpisodeMinScenes ?? 1,
-      maxScenes: generationConfig?.sceneEpisodeMaxScenes ?? 1,
-    };
+    this.storyCircleBlocking =
+      generationConfig?.storyCircleBlocking !== false;
     
     // Configure minimum encounters per episode length
     this.encounterMinimums = {
@@ -715,14 +753,18 @@ export class StoryArchitect extends BaseAgent {
   
   // Get minimum encounters based on scene count
   private getMinEncounters(sceneCount: number): number {
-    if (this.episodeStructureMode === 'sceneEpisodes') return 0;
     if (sceneCount <= 4) return this.encounterMinimums?.short ?? 0;
     if (sceneCount <= 7) return this.encounterMinimums?.medium ?? 1;
     return this.encounterMinimums?.long ?? 1;
   }
 
+  private getMinEncountersForBlueprint(sceneCount: number, input?: StoryArchitectInput): number {
+    const plannedEncounterCount = input?.seasonPlanDirectives?.plannedEncounters?.length ?? 0;
+    if (plannedEncounterCount > 0) return plannedEncounterCount;
+    return this.getMinEncounters(sceneCount);
+  }
+
   private getMinimumChoiceSceneCount(sceneCount: number): number {
-    if (this.episodeStructureMode === 'sceneEpisodes') return 1;
     return Math.ceil(sceneCount * 0.4);
   }
 
@@ -1223,6 +1265,16 @@ export class StoryArchitect extends BaseAgent {
         }
       : plannedEncounter;
     const encounterType = this.normalizeEncounterType(effectivePlannedEncounter.type);
+    const encounterStoryCircleTarget = normalizeEncounterStoryCircleTarget(
+      effectivePlannedEncounter.storyCircleTarget,
+      undefined,
+      [
+        effectivePlannedEncounter.description,
+        effectivePlannedEncounter.stakes,
+        effectivePlannedEncounter.centralConflict,
+        effectivePlannedEncounter.aftermathConsequence,
+      ].filter(Boolean).join(' '),
+    );
     const existingSkills = scene.encounterRelevantSkills || [];
     const plannedSkills = effectivePlannedEncounter.relevantSkills || [];
     const npcIds = new Set([...(scene.npcsPresent || []), ...(scene.encounterRequiredNpcIds || []), ...(effectivePlannedEncounter.npcsInvolved || [])]);
@@ -1237,6 +1289,14 @@ export class StoryArchitect extends BaseAgent {
     scene.encounterCentralConflict = scene.encounterCentralConflict?.trim()
       ? scene.encounterCentralConflict
       : effectivePlannedEncounter.centralConflict;
+    scene.encounterStoryCircleTarget = encounterStoryCircleTarget;
+    scene.encounterStoryCircleTargetRationale = effectivePlannedEncounter.storyCircleTargetRationale
+      || buildEncounterStoryCircleTargetRationale(
+        encounterStoryCircleTarget,
+        undefined,
+        effectivePlannedEncounter.description,
+      );
+    scene.encounterStoryCircleTargetEvidence = effectivePlannedEncounter.storyCircleTargetEvidence;
     scene.encounterStakes = scene.encounterStakes?.trim()
       ? scene.encounterStakes
       : effectivePlannedEncounter.stakes || `The outcome of ${effectivePlannedEncounter.description} changes the protagonist's immediate safety and trust.`;
@@ -1576,13 +1636,12 @@ export class StoryArchitect extends BaseAgent {
 
   /**
    * Does this episode have to carry a real scene-graph branch? True by default;
-   * linear-bottleneck and sceneEpisodes modes are exempt. Mirrors the gate the
+   * linear-bottleneck episodes are exempt. Mirrors the gate the
    * content-time {@link SceneGraphBranchValidator} enforces.
    */
   private episodeRequiresSceneGraphBranch(): boolean {
     return this.sceneGraphBranching.required
-      && !this.sceneGraphBranching.allowLinearBottleneckEpisodes
-      && this.episodeStructureMode !== 'sceneEpisodes';
+      && !this.sceneGraphBranching.allowLinearBottleneckEpisodes;
   }
 
   /**
@@ -1718,7 +1777,6 @@ export class StoryArchitect extends BaseAgent {
 
   private shouldRemoveCurrentExistentialStake(value: string | undefined): boolean {
     if (!this.hasBlueprintText(value)) return true;
-    if (this.episodeStructureMode === 'sceneEpisodes') return true;
     return /\bexistential\b/i.test(value)
       && /\bunknown to|unaware|hidden from|not yet known|audience knows/i.test(value);
   }
@@ -2072,7 +2130,7 @@ export class StoryArchitect extends BaseAgent {
       ...(blueprint.dramaticAudit?.episodePressureLanes?.bPlot || guidance.bPressure ? {
         bPlot: {
           mode: blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.mode
-            || (this.episodeStructureMode === 'sceneEpisodes' ? 'sceneEpisode' : 'scene'),
+            || 'scene',
           relationshipOrIdentityPressure: this.pickBlueprintText(
             blueprint.dramaticAudit?.episodePressureLanes?.bPlot?.relationshipOrIdentityPressure,
             guidance.bPressure,
@@ -2179,14 +2237,6 @@ export class StoryArchitect extends BaseAgent {
       }
     }
 
-    if (this.episodeStructureMode === 'sceneEpisodes' && blueprint.scenes?.[0]) {
-      const firstScene = blueprint.scenes[0];
-      const pressureBeat = `Pressure: ${guidance.obstacle || guidance.forcedChoice || guidance.themePressure || guidance.liePressure || episodeQuestion}`;
-      firstScene.keyBeats = Array.isArray(firstScene.keyBeats) ? firstScene.keyBeats : [];
-      if (!/\b(pressure|threat|danger|risk|cost|want|need|fear|question|choice|choose|decide|reveal|secret|must|promise|trust|relationship|identity|help|refus\w*|confront\w*)\b|[?]/i.test(firstScene.keyBeats[0] || '')) {
-        firstScene.keyBeats.unshift(pressureBeat);
-      }
-    }
   }
 
   private sanitizeInformationOwners(owners: unknown): InformationOwner[] {
@@ -2241,16 +2291,31 @@ export class StoryArchitect extends BaseAgent {
 
     choiceScene.choicePoint.reminderPlan = {
       immediate: choiceScene.choicePoint.reminderPlan?.immediate
-        || `Show immediate residue from the authored path: ${authoredResidue[0]}`,
+        || `The aftermath changes what characters say, hide, risk, or trust: ${this.fictionFirstResidueSummary(authoredResidue[0])}`,
       shortTerm: choiceScene.choicePoint.reminderPlan?.shortTerm
-        || `Keep this authored residue visible after reconvergence: ${authoredResidue[0]}`,
+        || `The consequence stays visible through changed access, posture, information, or danger: ${this.fictionFirstResidueSummary(authoredResidue[0])}`,
       ...(choiceScene.choicePoint.reminderPlan?.later
         ? { later: choiceScene.choicePoint.reminderPlan.later }
-        : { later: `Future scenes should remember: ${authoredResidue[0]}` }),
+        : { later: `Later pressure can return through trust, knowledge, access, or risk: ${this.fictionFirstResidueSummary(authoredResidue[0])}` }),
     };
 
     this.registerConsequenceSeedEmitters(blueprint, input, guidance);
     this.registerBranchAxisEmitters(blueprint, input);
+  }
+
+  private fictionFirstResidueSummary(text: string): string {
+    return text
+      .replace(/\bshow\s+immediate\s+residue\s+from\s+(?:the\s+)?authored\s+path:?\s*/gi, '')
+      .replace(/\bkeep\s+this\s+authored\s+residue\s+visible\s+after\s+reconvergence:?\s*/gi, '')
+      .replace(/\bfuture\s+scenes?\s+should\s+remember:?\s*/gi, '')
+      .replace(/\bauthored\s+(?:path|residue)\b/gi, 'choice')
+      .replace(/\breconvergence\b/gi, 'the aftermath')
+      .replace(/\bresidue\b/gi, 'aftermath')
+      .replace(/\bthe\s+next\s+scene\b/gi, 'what follows')
+      .replace(/\blater\s+episode\b/gi, 'later')
+      .replace(/\bin\s+a\s+later\s+episode\b/gi, 'later')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   /**
@@ -2261,7 +2326,7 @@ export class StoryArchitect extends BaseAgent {
    * episode as `seasonPlanDirectives.flagsToSet`. The finale's ending-route logic
    * READS those axes — but nothing ever SET them (only destination-keyed
    * `treatment_branch_<sceneId>` and `route_*` flags were emitted, and `route_*`
-   * only in sceneEpisodes mode), so the named endings were mechanically
+   * only in route-sliced plans), so the named endings were mechanically
    * unreachable in `standard` mode (Gen-4 defect).
    *
    * This deterministically, for the ending axes whose `setInEpisode` is this
@@ -2273,9 +2338,9 @@ export class StoryArchitect extends BaseAgent {
    *       ({@link emitSceneBranchAxes}) attaches a real `setFlag` (round-robin
    *       across the scene's choices, so distinct choices drive distinct axes).
    *
-   * Works in BOTH `standard` and `sceneEpisodes` modes because the axes come
+   * Works across regular and route-sliced plans because the axes come
    * from `flagsToSet` (derived from `seasonFlags`), not from the
-   * sceneEpisodes-only `route_*` path.
+   * `route_*` path.
    */
   private registerBranchAxisEmitters(
     blueprint: EpisodeBlueprint,
@@ -2483,6 +2548,25 @@ export class StoryArchitect extends BaseAgent {
         );
       }
       matchedScene.encounterType = this.normalizeEncounterType(plannedEncounter.type);
+      matchedScene.encounterStoryCircleTarget = normalizeEncounterStoryCircleTarget(
+        matchedScene.encounterStoryCircleTarget || plannedEncounter.storyCircleTarget,
+        undefined,
+        [
+          matchedScene.encounterDescription,
+          matchedScene.encounterStakes,
+          plannedEncounter.description,
+          plannedEncounter.stakes,
+          plannedEncounter.centralConflict,
+          plannedEncounter.aftermathConsequence,
+        ].filter(Boolean).join(' '),
+      );
+      matchedScene.encounterStoryCircleTargetRationale = matchedScene.encounterStoryCircleTargetRationale
+        || plannedEncounter.storyCircleTargetRationale
+        || buildEncounterStoryCircleTargetRationale(
+          matchedScene.encounterStoryCircleTarget,
+          undefined,
+          plannedEncounter.description,
+        );
       if (!matchedScene.encounterStakes?.trim()) {
         throw new Error(`Encounter scene "${matchedScene.id}" is missing encounterStakes`);
       }
@@ -2515,18 +2599,6 @@ export class StoryArchitect extends BaseAgent {
   }
 
   protected getAgentSpecificPrompt(): string {
-    const sceneEpisodeMode = this.episodeStructureMode === 'sceneEpisodes'
-      ? `
-## SCENE-LENGTH EPISODE MODE
-
-This run uses scene-length episodes. One runtime episode equals one dramatic scene.
-- The blueprint MUST contain exactly one scene.
-- Normal episodes use one non-encounter scene with a choicePoint and a cliffhanger/forward-pressure ending.
-- Milestone episodes use one encounter scene when season plan directives include a planned encounter.
-- Do not require scene-to-scene branching inside the episode. Structural branching happens across episodes via route flags.
-- The single scene should escalate tension across its beats and hand off into the next runtime episode.
-`
-      : '';
     return `
 ## Your Role: Story Architect
 
@@ -2588,6 +2660,8 @@ For encounter scenes, set:
 - \`encounterType\`: "combat" | "chase" | "stealth" | "social" | "romantic" | "dramatic" | "puzzle" | "exploration" | "investigation" | "negotiation" | "survival" | "heist" | "mixed"
 - \`encounterStyle\`: "action" | "social" | "romantic" | "dramatic" | "mystery" | "stealth" | "adventure" | "mixed"
 - \`encounterDescription\`: Exactly what the protagonist must overcome — be specific
+- \`encounterStoryCircleTarget\`: "go" | "search" | "find" | "take" — preserve the planned encounter target exactly
+- \`encounterStoryCircleTargetRationale\`: Why the encounter is a threshold, adaptation test, acquisition, or price
 - \`encounterStakes\`: The personal stakes this encounter is cashing in
 - \`encounterRequiredNpcIds\`: Every NPC ID that must actively participate in the encounter
 - \`encounterRelevantSkills\`: The skills/approaches the encounter should test
@@ -2671,7 +2745,6 @@ Dilemma choices set tint flags (e.g., "tint:mercy") that color subsequent scenes
 Expression choices should set memorable flags. Plan at least 1 callback per episode where a later scene references an earlier choice.
 
 Remember: The encounter is the heart. Design outward from it.
-${sceneEpisodeMode}
 `
   }
 
@@ -2911,12 +2984,12 @@ ${sceneEpisodeMode}
       optionHints: options.length >= 2 ? options : [pressure],
       consequenceDomain: existingChoice?.consequenceDomain || this.inferChoiceConsequenceDomain(pressure, guidance),
       reminderPlan: {
-        immediate: existingChoice?.reminderPlan?.immediate || `The choice changes the leverage around ${scene.name}.`,
-        shortTerm: existingChoice?.reminderPlan?.shortTerm || 'The next scene should dramatize the concrete residue of that choice.',
+        immediate: existingChoice?.reminderPlan?.immediate || 'Someone opens a door, withholds a truth, or shifts their tone before the moment passes.',
+        shortTerm: existingChoice?.reminderPlan?.shortTerm || 'The aftermath stays visible in what characters offer, hide, risk, or refuse.',
         ...(existingChoice?.reminderPlan?.later
           ? { later: existingChoice.reminderPlan.later }
           : residue[0]
-            ? { later: `Carry forward treatment residue: ${residue[0]}` }
+            ? { later: `Let the consequence return through trust, knowledge, access, or risk: ${this.fictionFirstResidueSummary(residue[0])}` }
             : {}),
       },
       expectedResidue: Array.from(new Set([
@@ -2947,6 +3020,9 @@ ${sceneEpisodeMode}
       npcsInvolved: scene.npcsInvolved ?? [],
       stakes: scene.stakes ?? '',
       centralConflict: enc.centralConflict,
+      storyCircleTarget: enc.storyCircleTarget,
+      storyCircleTargetRationale: enc.storyCircleTargetRationale,
+      storyCircleTargetEvidence: enc.storyCircleTargetEvidence,
       aftermathConsequence: enc.aftermathConsequence,
       relevantSkills: enc.relevantSkills ?? [],
       isBranchPoint: enc.isBranchPoint,
@@ -2999,7 +3075,8 @@ ${sceneEpisodeMode}
     const scenes: SceneBlueprint[] = planned.map((p, idx) => {
       const isEncounter = p.kind === 'encounter';
       const nextId = sceneIds[idx + 1];
-      const requiredBeats = [...(p.requiredBeats ?? []), ...(p.encounter?.requiredBeats ?? [])];
+      const arcPressureBinding = this.sanitizePlannedSceneArcPressure(p, input);
+      const requiredBeats = [...arcPressureBinding.requiredBeats, ...(p.encounter?.requiredBeats ?? [])];
       const localPurpose = this.localPurposeForPlannedScene(p, requiredBeats);
       const localKeyBeats = this.collectLocalSceneKeyBeats(p, requiredBeats, localPurpose);
       const repairedLocation = this.inferPlannedSceneLocationFromRequiredBeats(
@@ -3043,6 +3120,8 @@ ${sceneEpisodeMode}
         npcsPresent: this.plannedSceneNpcPresence(p, requiredBeats, input),
         narrativeFunction: localPurpose,
         narrativeRole: p.narrativeRole,
+        planningOrigin: p.planningOrigin,
+        plannedHasChoice: p.hasChoice,
         dramaticPurpose: localPurpose,
         setsUp: p.setsUp,
         paysOff: p.paysOff,
@@ -3052,12 +3131,12 @@ ${sceneEpisodeMode}
         signatureMoment: p.signatureMoment,
         turnContract: p.turnContract,
         relationshipPacing: p.relationshipPacing,
-        mechanicPressure: p.mechanicPressure,
+        mechanicPressure: arcPressureBinding.mechanicPressure,
         authoredTreatmentFields: p.authoredTreatmentFields,
         seasonPromiseContracts: p.seasonPromiseContracts,
         stakesArchitectureContracts: p.stakesArchitectureContracts,
-        sevenPointBeatContracts: p.sevenPointBeatContracts,
-        arcPressureContracts: p.arcPressureContracts,
+        storyCircleBeatContracts: p.storyCircleBeatContracts,
+        arcPressureContracts: arcPressureBinding.arcPressureContracts,
         branchConsequenceContracts: p.branchConsequenceContracts,
         endingRealizationContracts: p.endingRealizationContracts,
         failureModeAuditContracts: p.failureModeAuditContracts,
@@ -3101,23 +3180,27 @@ ${sceneEpisodeMode}
       if (directive) this.applyPlannedEncounterToScene(scenes[i], directive);
     }
 
-    // Arc block: fill the beats this episode owns from the season sevenPoint.
+    // Arc block: fill the beats this episode owns from the season legacyStructure.
     const emptyArc = { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' };
     const arc = { ...emptyArc };
-    const sevenPoint = input.seasonSevenPoint;
+    const legacyStructure = input.seasonLegacyStructure;
     for (const role of input.episodeStructuralRole ?? []) {
       if (role === 'rising' || role === 'falling') continue;
-      if (sevenPoint && sevenPoint[role]) arc[role] = sevenPoint[role];
+      if (legacyStructure && legacyStructure[role]) arc[role] = legacyStructure[role];
     }
+    const storyCircleRole = this.resolveEpisodeStoryCircleRole(input);
+    const episodeCircle = this.buildEpisodeCircle(input, arc);
 
     const bottleneckScenes = scenes.filter((s) => s.purpose === 'bottleneck' || s.isEncounter).map((s) => s.id);
 
-    return {
+    const blueprint: EpisodeBlueprint = {
       episodeId: input.episodeNumber != null ? `episode-${input.episodeNumber}` : 'episode',
       number: input.episodeNumber,
       title: input.episodeTitle,
       synopsis: input.episodeSynopsis,
       arc,
+      episodeCircle,
+      storyCircleRole,
       structuralRole: input.episodeStructuralRole,
       themes: [],
       scenes,
@@ -3129,6 +3212,182 @@ ${sceneEpisodeMode}
       narrativePromises: [],
       treatmentBindingReport: binding.report,
     };
+    this.applySceneContractsToPlannedBlueprint(blueprint, input);
+    return blueprint;
+  }
+
+  private applySceneContractsToPlannedBlueprint(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    const episodePressure = this.pickBlueprintText(
+      blueprint.dramaticAudit?.episodeQuestion,
+      guidance?.dramaticQuestion,
+      guidance?.forcedChoice,
+      guidance?.obstacle,
+      input.episodeSynopsis,
+    );
+    const episodeTheme = this.pickBlueprintText(
+      blueprint.dramaticAudit?.themePressure,
+      guidance?.themePressure,
+      guidance?.liePressure,
+    );
+
+    for (let index = 0; index < (blueprint.scenes || []).length; index += 1) {
+      const scene = blueprint.scenes[index];
+      applySceneContract(scene, {
+        episodeNumber: input.episodeNumber,
+        episodeTitle: input.episodeTitle,
+        episodeSynopsis: input.episodeSynopsis,
+        sceneIndex: index,
+        nextSceneId: scene.leadsTo?.[0],
+        episodePressure,
+        episodeTheme,
+        role: scene.narrativeRole,
+      });
+      if (scene.choicePoint) {
+        scene.choicePoint.stakes = {
+          want: scene.choicePoint.stakes?.want || `Pursue the scene turn: ${scene.turnContract?.centralTurn || scene.name}`,
+          cost: isPlaceholderStake(scene.choicePoint.stakes?.cost)
+            ? `Risk the changed state or residue from ${scene.name}.`
+            : scene.choicePoint.stakes?.cost || `Risk the changed state or residue from ${scene.name}.`,
+          identity: isPlaceholderStake(scene.choicePoint.stakes?.identity)
+            ? scene.personalStake || `Reveal who the protagonist becomes under this scene pressure.`
+            : scene.choicePoint.stakes?.identity || scene.personalStake || `Reveal who the protagonist becomes under this scene pressure.`,
+        };
+      }
+    }
+  }
+
+  private validatePreparedBlueprintForPlannedScenes(
+    blueprint: EpisodeBlueprint,
+    input: StoryArchitectInput,
+  ): { success: true; warnings?: string[] } | { success: false; error: string } {
+    const warnings: string[] = [];
+    const addWarnings = (items: string[]) => {
+      for (const item of items) {
+        const text = item.trim();
+        if (text && !warnings.includes(text)) warnings.push(text);
+      }
+    };
+
+    try {
+      this.validateBlueprint(blueprint, input);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
+      if (!cls.advisoryOnly) {
+        return { success: false, error: errorMsg };
+      }
+      addWarnings(errorMsg.split('\n'));
+    }
+
+    const structuralIssues = this.collectStructuralIssues(blueprint, input);
+    if (structuralIssues.length > 0) {
+      const message = structuralIssues.join('\n');
+      const cls = StoryArchitect.classifyBlueprintFailure(message);
+      if (!cls.advisoryOnly) {
+        return { success: false, error: message };
+      }
+      addWarnings(structuralIssues);
+    }
+
+    return {
+      success: true,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
+  }
+
+  private sanitizePlannedSceneArcPressure(
+    scene: PlannedScene,
+    input: StoryArchitectInput,
+  ): {
+    requiredBeats: RequiredBeat[];
+    mechanicPressure: MechanicPressureContract[] | undefined;
+    arcPressureContracts: ArcPressureTreatmentContract[] | undefined;
+  } {
+    const expectedLateCrisisEpisode = input.seasonPlanDirectives?.arcPressure?.lateArcCrisis?.episodeNumber;
+    const arcPressureContracts = scene.arcPressureContracts ?? [];
+    if (arcPressureContracts.length === 0) {
+      return {
+        requiredBeats: scene.requiredBeats ?? [],
+        mechanicPressure: scene.mechanicPressure,
+        arcPressureContracts: scene.arcPressureContracts,
+      };
+    }
+
+    const removedContracts = arcPressureContracts.filter((contract) =>
+      this.shouldRemovePlannedSceneArcPressure(contract, scene, input, expectedLateCrisisEpisode)
+    );
+    const removedIds = new Set(removedContracts.map((contract) => contract.id));
+    const removedText = new Set(removedContracts.map((contract) => contract.sourceText));
+    if (removedIds.size === 0) {
+      return {
+        requiredBeats: scene.requiredBeats ?? [],
+        mechanicPressure: scene.mechanicPressure,
+        arcPressureContracts: arcPressureContracts.map((contract) => contract.contractKind === 'arc_late_crisis'
+          ? {
+              ...contract,
+              targetEpisodeNumbers: expectedLateCrisisEpisode ? [expectedLateCrisisEpisode] : contract.targetEpisodeNumbers,
+              targetSceneIds: contract.targetSceneIds?.length ? contract.targetSceneIds : [scene.id],
+            }
+          : contract),
+      };
+    }
+
+    return {
+      requiredBeats: (scene.requiredBeats ?? []).filter((beat) =>
+        !beat.id.includes('arc-pressure-arc-late-crisis')
+        && !removedText.has(beat.sourceTurn)
+        && !removedText.has(beat.mustDepict)
+      ),
+      mechanicPressure: scene.mechanicPressure?.filter((pressure) =>
+        !removedIds.has(pressure.id)
+        && !removedIds.has(pressure.mechanicRef?.flag ?? '')
+        && !removedText.has(pressure.storyPressure)
+      ),
+      arcPressureContracts: arcPressureContracts.filter((contract) => !removedIds.has(contract.id)),
+    };
+  }
+
+  private shouldRemovePlannedSceneArcPressure(
+    contract: ArcPressureTreatmentContract,
+    scene: PlannedScene,
+    input: StoryArchitectInput,
+    expectedLateCrisisEpisode?: number,
+  ): boolean {
+    if (!isSceneBoundArcPressureKind(contract.contractKind)) return true;
+    if (!arcPressureContractTargetsEpisode(contract, input.episodeNumber)) return true;
+    if (contract.targetSceneIds?.length && !contract.targetSceneIds.includes(scene.id)) return true;
+    if (
+      contract.contractKind === 'arc_late_crisis'
+      && expectedLateCrisisEpisode
+      && input.episodeNumber !== expectedLateCrisisEpisode
+    ) {
+      return true;
+    }
+    return contract.contractKind === 'arc_late_crisis'
+      && this.shouldDeferLateCrisisToNextEpisode(contract, input);
+  }
+
+  private shouldDeferLateCrisisToNextEpisode(
+    contract: ArcPressureTreatmentContract,
+    input: StoryArchitectInput,
+  ): boolean {
+    const nextEpisodeText = [
+      input.cliffhangerPlan?.nextEpisodePressure,
+      input.seasonPlanDirectives?.treatmentGuidance?.nextEpisodePressure,
+      input.seasonPlanDirectives?.treatmentGuidance?.cliffhangerQuestion,
+    ].filter(Boolean).join(' ');
+    if (!nextEpisodeText) return false;
+    const namesNextEpisode = new RegExp(`\\bepisode\\s+${input.episodeNumber + 1}\\b`, 'i').test(nextEpisodeText)
+      || /\bnext episode\b/i.test(nextEpisodeText);
+    if (!namesNextEpisode) return false;
+    const sourceTokens = new Set(treatmentFieldTokens(contract.sourceText));
+    const nextTokens = new Set(treatmentFieldTokens(nextEpisodeText));
+    let overlap = 0;
+    for (const token of sourceTokens) {
+      if (nextTokens.has(token)) overlap += 1;
+    }
+    return overlap >= 3;
   }
 
   private inferPlannedSceneLocationFromRequiredBeats(
@@ -3189,6 +3448,7 @@ ${sceneEpisodeMode}
       this.ensureDramaticAuditMinimums(blueprint, input);
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
+      this.applySceneContractsToPlannedBlueprint(blueprint, input);
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
@@ -3230,7 +3490,20 @@ ${sceneEpisodeMode}
         };
       }
 
-      return { success: true, data: blueprint, rawResponse: '' };
+      const plannedValidation = this.validatePreparedBlueprintForPlannedScenes(blueprint, input);
+      if (plannedValidation.success === false) {
+        return {
+          success: false,
+          error: plannedValidation.error,
+        };
+      }
+
+      return {
+        success: true,
+        data: blueprint,
+        rawResponse: '',
+        warnings: plannedValidation.warnings,
+      };
     }
 
     const prompt = this.buildPrompt(input);
@@ -3253,7 +3526,7 @@ ${sceneEpisodeMode}
 
       messages[0].content += `\n\n⚠️ PREVIOUS ATTEMPT FAILED — FIX ALL ISSUES BELOW:${structuralFeedback}
 REQUIREMENTS:
-- The scenes array MUST contain ${this.episodeStructureMode === 'sceneEpisodes' ? 'exactly 1 scene' : `3-${input.targetSceneCount} scenes`}
+- The scenes array MUST contain 3-${input.targetSceneCount} scenes
 - The first scene MUST have a choicePoint
 - At least ${Math.ceil(input.targetSceneCount * 0.5)} out of up to ${input.targetSceneCount} scenes must have choicePoint
 - Include choicePoint with type, stakes (want/cost/identity), and description for each choice scene
@@ -3406,7 +3679,7 @@ REQUIREMENTS:
         
         // Filter out invalid scene references and self-routes. A scene that
         // points to itself becomes its own dependency prerequisite and blocks
-        // content generation, especially in single-scene sceneEpisodes.
+        // content generation, especially in compact scene plans.
         scene.leadsTo = scene.leadsTo.filter(targetId => {
           if (targetId === scene.id) {
             console.warn(`[StoryArchitect] Removed self leadsTo reference: ${scene.id} -> ${targetId}`);
@@ -3532,10 +3805,9 @@ REQUIREMENTS:
         blueprint.synopsis = '';
       }
 
-      // Ensure arc object exists with the full 7-point shape. Missing fields
-      // are backfilled to '' so downstream code can rely on their presence;
-      // SevenPointCoverageValidator enforces that episodes actually populate
-      // the beats their structuralRole claims to cover.
+      // Ensure the legacy arc object exists with the old compatibility shape.
+      // Missing fields are backfilled to '' so old downstream code can rely on
+      // their presence; Story Circle enforcement happens through episodeCircle.
       if (!blueprint.arc) {
         blueprint.arc = {
           hook: '',
@@ -3564,6 +3836,10 @@ REQUIREMENTS:
       if (!blueprint.structuralRole && input.episodeStructuralRole) {
         blueprint.structuralRole = [...input.episodeStructuralRole];
       }
+      if (!blueprint.storyCircleRole || blueprint.storyCircleRole.length === 0) {
+        blueprint.storyCircleRole = this.resolveEpisodeStoryCircleRole(input);
+      }
+      blueprint.episodeCircle = this.normalizeEpisodeCircle(blueprint.episodeCircle, input, blueprint.arc);
 
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
@@ -3708,12 +3984,14 @@ REQUIREMENTS:
     const isStructuralError = hardText.includes('non-existent scene') ||
                                hardText.includes('Bottleneck scene') ||
                                hardText.includes('Starting scene') ||
-                               hardText.includes('must have at least');
+                               hardText.includes('must have at least') ||
+                               hardText.includes('must have no more than');
+    const isDuplicateEventError = hardText.includes('appears to restage the same high-pressure event');
     const isParseError = hardText.includes('Failed to parse JSON response') ||
                          hardText.includes('Expected double-quoted property name') ||
                          hardText.includes('Unexpected token');
 
-    const hasHard = isChoiceDensityError || isEncounterPlanningError || isStructuralError || isParseError;
+    const hasHard = isChoiceDensityError || isEncounterPlanningError || isStructuralError || isDuplicateEventError || isParseError;
 
     return {
       hasHard,
@@ -3810,14 +4088,12 @@ ${input.memoryContext ? `
 ${input.memoryContext}
 ` : ''}
 ## Requirements
-- Scene count: ${this.episodeStructureMode === 'sceneEpisodes' ? 'exactly 1 scene' : `exactly within the hard range of 3-${input.targetSceneCount} scenes`}
+- Scene count: exactly within the hard range of 3-${input.targetSceneCount} scenes
 - Episode turns: plan 3-6 major episode turns through the scene graph, keyBeats, encounterBuildup, choicePoints, sequenceIntent, and cliffhanger planning. Do not add a separate chapter-beat schema.
 - Major choice points: ${input.majorChoiceCount} significant decisions
 - Use branch-and-bottleneck structure
 - Every major choice needs WANT, COST, and IDENTITY stakes
-${this.episodeStructureMode === 'sceneEpisodes'
-  ? '- **Scene-length central pressure**: If the season plan marks this episode as a milestone encounter, manifest the pressure as the one encounter scene. Otherwise, build one non-encounter dramatic scene with at least one choicePoint and a final cliffhanger/forward-pressure beat.'
-  : "- **Encounter as central conflict**: The episode's central conflict MUST manifest in an encounter scene. Buildup scenes make that encounter feel earned; aftermath scenes show what the encounter changed."}
+- **Encounter as central conflict**: The episode's central conflict MUST manifest in an encounter scene. Buildup scenes make that encounter feel earned; aftermath scenes show what the encounter changed.
 - **Encounter is the chronological climax**: Order scenes so the central encounter sits at its true story-time. Every aftermath scene (the next morning, the drive home, the afterglow, a post-event debrief) MUST come AFTER the encounter in both scene order and timeline — never before it; a later-in-time scene placed before the encounter is a continuity inversion. And do NOT dramatize the encounter's central beat (the kiss, the rescue, the confrontation) in an earlier buildup scene and then re-stage it in the encounter — buildup raises pressure toward that beat, it never pre-plays it.
 - **Intensity guidance in keyBeats**: For each scene, indicate which keyBeats are the dominant peak(s) (prefix with "PEAK:") and suggest where rest/breathing beats should fall (prefix with "REST:"). The SceneWriter uses this to shape the intensity arc. Example: ["REST: the quiet village at dawn", "PEAK: confrontation erupts at the market", "the aftermath settles"]
 - **Diegetic timeline**: Give every scene a "timeOfDay" (dawn|morning|midday|afternoon|dusk|evening|night) and a "timeJumpFromPrevious" describing the gap from the previous scene ("continuous", "later that night", "the next morning — the protagonist returns home"). Time must move plausibly: no noon scene directly after a midnight scene without the jump named, and a location change always needs a timeJumpFromPrevious that says how the protagonist got there.
@@ -3856,7 +4132,6 @@ Each scene should build toward its keyMoment.
 The beat sequence may include rest, contrast, reversal, dread, or aftermath, but the scene should not feel flat. The final beat should land a pointed resolution, consequence, reveal, emotional shift, choice, or handoff.
 
 Non-finale episode endings should open authored forward pressure into the next episode. Finale/resolution endings should resolve the main conflict and show aftermath rather than forcing a fake cliffhanger.
-${this.episodeStructureMode === 'sceneEpisodes' ? 'SCENE-LENGTH MODE: The single scene is the whole runtime episode. Its final beat must land the supplied cliffhanger/forward-pressure contract, escalating season tension through action, drama, stakes, revelation, cost, or emotional pressure.' : ''}
 
 ## Conflict And Action Planning
 
@@ -3892,7 +4167,7 @@ Populate \`dramaticAudit\` at the episode level and \`dramaticStructure\`,
 - \`dramaticAudit.controllingIdeaPressure\`: what in this episode makes the controlling idea more plausible or costly.
 - \`dramaticAudit.counterIdeaPressure\`: what in this episode makes the counter-idea persuasive.
 - \`dramaticAudit.valueLadderPressure\`: which value rung is tested and how it appears through action, relationship behavior, visual motif, or consequence.
-- \`dramaticAudit.openingPromise\`: hook, episodePromise, activePressure, and optionalStakes. In \`sceneEpisodes\`, this is carried by the first beat or first 1-2 beats, not a separate cold-open scene.
+- \`dramaticAudit.openingPromise\`: hook, episodePromise, activePressure, and optionalStakes.
 - \`dramaticAudit.episodePressureLanes\`: A/B/C pressure architecture. A-plot is required external pressure; B-plot is protagonist-facing relationship/identity pressure; C-plot is a future seed.
 - \`dramaticAudit.episodeEndStateDelta\`: what is different by episode end: identity, relationship, leverage, knowledge, danger, reputation, access, resource, future option, or emotional footing.
 - \`dramaticAudit.nextEpisodePressure\`: non-finale forward pressure grown from consequence, choice residue, reveal, relationship rupture, new danger, promise, C-plot seed, or unresolved cost.
@@ -3920,7 +4195,7 @@ Stakes layers and the Stakes Triangle work together:
 - Stakes layers answer: what kind of loss is on the table?
 - The Stakes Triangle answers: what does the player want, what does it cost, and what identity does it express?
 - Existential stakes must be personally grounded. Do not write only "the world is at risk"; name the person, home, future, freedom, identity, or irreversible loss that makes it felt.
-- Major scenes, encounters, dilemmas, climaxes, and \`sceneEpisodes\` must stack at least three stakes layers.
+- Major scenes, encounters, dilemmas, and climaxes must stack at least three stakes layers.
 - Stakes must escalate gradually. Establish what the protagonist personally stands to lose before expanding to existential or world-scale stakes.
 - Key beats should form a stakes ladder: each beat raises risk, reveals cost, narrows options, shifts leverage, or deepens consequence until the pressurePeak. Rest beats can raise dread, clarity, regret, or emotional cost.
 
@@ -3935,18 +4210,14 @@ Scene Turn Contract:
 - "Decision" does not always mean visible player choice. In bottleneck, rest, or aftermath scenes it can be a commitment, refusal, revelation, sacrifice, tradeoff, or irreversible reaction.
 - In multi-character scenes, make the power dynamic shift at least once. This may be dominance, leverage, trust, vulnerability, intimacy, distance, information, status, threat, debt, or public/private advantage.
 - Every scene must pass the removability test: if removing it changes no later knowledge, relationship, consequence, choice pressure, state, setup/payoff, theme pressure, stakes, route state, or emotional footing, rewrite it.
-- \`sceneEpisodes\` must satisfy this contract especially clearly because the one scene is also the whole runtime episode.
 
 Episode Pressure Architecture:
-- Do not use Story Circle and do not force 4-5 literal acts. Use episode turns instead.
-- The opening promise should hook the player, state the episode's playable promise, and put active pressure onscreen. For \`sceneEpisodes\`, the first keyBeat must already contain pressure, desire, threat, question, choice, revelation, or relationship tension.
+- Use Story Circle fractally at the episode level: the blueprint must include a complete \`episodeCircle\` with all eight beats, while the scenes/keyBeats dramatize those beats without exposing labels to the player. Do not force 4-5 literal acts.
+- The opening promise should hook the player, state the episode's playable promise, and put active pressure onscreen.
 - A-plot is required: the external episode pressure that intersects the climax/encounter/major choice.
-- B-plot is playable relationship or identity pressure. It can be a dedicated scene, a dedicated \`sceneEpisode\`, an underlay inside A-plot scenes, or offscreen NPC motivation that surfaces through protagonist-visible signals. B-plot scenes must still include the protagonist.
+- B-plot is playable relationship or identity pressure. It can be a dedicated scene, an underlay inside A-plot scenes, or offscreen NPC motivation that surfaces through protagonist-visible signals. B-plot scenes must still include the protagonist.
 - C-plot is a future-pressure seed, not a required scene lane: callback, world-pressure hint, tonal counterweight, object/motif setup, or future reveal. Give it a visible plant and payoff plan; do not bloat the episode with filler.
 - The protagonist remains the viewpoint. Do not create non-protagonist POV scenes or omniscient cutaways.
-
-For \`sceneEpisodes\`, the single scene must satisfy both scene-level craft and
-episode-level dramatic shape.
 
 ## Genre-Aware Jeopardy Policy
 ${buildGenreAwareJeopardyGuidance(input.genre)}
@@ -3967,7 +4238,7 @@ ${this.buildCliffhangerPlanSection(input)}
   "synopsis": "Brief episode summary",
   "dramaticAudit": {
     "episodeQuestion": "The episode-level dramatic question the player wants answered",
-    "episodeQuestionSetup": "How the opening scene or first sceneEpisode beat poses/promises the episode question",
+    "episodeQuestionSetup": "How the opening scene or opening scene poses/promises the episode question",
     "episodeQuestionAnswer": "How the climax, encounter, major choice, or final turn answers, complicates, or reframes the question",
     "themeQuestion": "The season theme as a playable question, not a noun",
     "themePressure": "How the episode tests the season theme through conflict, cost, choice, information, relationship, or identity",
@@ -3978,7 +4249,7 @@ ${this.buildCliffhangerPlanSection(input)}
     "counterIdeaPressure": "What makes the counter-idea genuinely persuasive here",
     "valueLadderPressure": "Which value rung is tested and how it becomes visible",
     "openingPromise": {
-      "hook": "Immediate hook for the first scene or first sceneEpisode beat",
+      "hook": "Immediate hook for the first scene or opening scene",
       "episodePromise": "The kind of pressure/play this episode promises",
       "activePressure": "The pressure already active at the start",
       "optionalStakes": "Optional personal stakes established in the opening"
@@ -3989,7 +4260,7 @@ ${this.buildCliffhangerPlanSection(input)}
         "climaxIntersection": "How the A-plot intersects the climax, encounter, or major choice"
       },
       "bPlot": {
-        "mode": "scene|sceneEpisode|underlay|offscreen_pressure",
+        "mode": "scene|underlay|offscreen_pressure",
         "relationshipOrIdentityPressure": "The protagonist-facing relationship or identity pressure",
         "offscreenNpcMotivation": "Optional NPC motive/secret/fear happening offscreen",
         "protagonistVisibleSignals": ["What the protagonist can notice: behavior, clue, withholding, changed trust, rumor, delayed reveal"],
@@ -4034,6 +4305,19 @@ ${this.buildCliffhangerPlanSection(input)}
       }
     ]
   },
+  "episodeCircle": {
+    "you": "Episode-specific realization of \`you\`; must satisfy the full \`you\` definition in the structural context above",
+    "need": "Episode-specific realization of \`need\`; must satisfy the full \`need\` definition in the structural context above",
+    "go": "Episode-specific realization of \`go\`; must satisfy the full \`go\` definition in the structural context above",
+    "search": "Episode-specific realization of \`search\`; must satisfy the full \`search\` definition in the structural context above",
+    "find": "Episode-specific realization of \`find\`; must satisfy the full \`find\` definition in the structural context above",
+    "take": "Episode-specific realization of \`take\`; must satisfy the full \`take\` definition in the structural context above",
+    "return": "Episode-specific realization of \`return\`; must satisfy the full \`return\` definition in the structural context above",
+    "change": "Episode-specific realization of \`change\`; must satisfy the full \`change\` definition in the structural context above"
+  },
+  "storyCircleRole": [
+    { "beat": "you|need|go|search|find|take|return|change", "roleKind": "primary|expansion", "source": "llm" }
+  ],
   "arc": {
     "hook": "Ordinary world + core value introduced (fill if this episode carries the 'hook' beat)",
     "plotTurn1": "Inciting incident / world-disruption (fill if this episode carries 'plotTurn1')",
@@ -4140,6 +4424,8 @@ ${this.buildCliffhangerPlanSection(input)}
       "isEncounter": true,
       "plannedEncounterId": "enc-1-1",
       "encounterType": "social",
+      "encounterStoryCircleTarget": "take",
+      "encounterStoryCircleTargetRationale": "The encounter demands a public cost for using the proof; success still wounds trust and identity.",
       "encounterDescription": "Protagonist must stand their ground against the antagonist's accusations/force using the relationships and information built in earlier scenes",
       "encounterStakes": "If the protagonist fails here, they lose both public credibility and a relationship they have been trying to preserve",
       "themePressure": "The confrontation forces the player to decide what truth costs when loyalty is public",
@@ -4214,10 +4500,10 @@ CRITICAL REQUIREMENTS:
 5a. Include \`dramaticAudit\` with episodeQuestion, episodeQuestionSetup, episodeQuestionAnswer, openingPromise, episodePressureLanes, episodeEndStateDelta, nextEpisodePressure, themeQuestion, themePressure, themeAngle, themeChoicePressure, personalStake, stakesLayers, majorTurns, and informationPlan.
 5b. Every scene must include \`dramaticStructure\`, \`personalStake\`, \`themePressure\`, \`stakesLayers\`, \`transitionOut\`, and \`residue\`.
 5c. Every \`leadsTo\` target must have a matching \`transitionOut.toSceneId\` whose connector is "therefore" or "but".
-5d. Major scenes, encounters, dilemmas, climaxes, and sceneEpisodes must include at least three stakes layers. Dilemmas and climaxes must include relational or identity stakes. Existential stakes must be personally grounded and earned.
+5d. Major scenes, encounters, dilemmas, and climaxes must include at least three stakes layers. Dilemmas and climaxes must include relational or identity stakes. Existential stakes must be personally grounded and earned.
 5e. Major choicePoints must include \`themeAnswer\`; the theme must be answerable by protagonist/player choice, not by external rescue or coincidence.
 5f. Every scene must satisfy the Scene Turn Contract through existing fields: entry intent, active obstacle, forced decision, and exit shift. Multi-character scenes must shift power at least once, and every scene must pass the removability test.
-5g. Episode pressure lanes must be protagonist-facing. B-plots may be scenes or sceneEpisodes only when the protagonist directly experiences the relationship/identity pressure. C-plots are future seeds with visible plants and payoff plans, not filler scenes.
+5g. Episode pressure lanes must be protagonist-facing. B-plots may be scenes only when the protagonist directly experiences the relationship/identity pressure. C-plots are future seeds with visible plants and payoff plans, not filler scenes.
 
 CHOICE PAYOFF REQUIREMENTS:
 - For every scene that can be reached by a player choice (i.e., it appears in another scene's leadsTo because of a choicePoint), include "incomingChoiceContext" — a string describing what player choice leads to this scene and what it means dramatically.
@@ -4227,10 +4513,11 @@ CHOICE PAYOFF REQUIREMENTS:
 - Starting scenes do NOT need incomingChoiceContext.
 
 ENCOUNTER REQUIREMENTS:
-- At least ${this.getMinEncounters(input.targetSceneCount)} scene(s) MUST be an encounter (isEncounter: true)
+- At least ${this.getMinEncountersForBlueprint(input.targetSceneCount, input)} scene(s) MUST be an encounter (isEncounter: true)
 - The encounter MUST manifest the episode's central conflict / pressure event. It is where the episode's relationships, information, risks, prior choices, player capabilities, and current stakes are tested through play.
-- Encounter scenes MUST have: isEncounter, plannedEncounterId (when pre-planned encounters exist), encounterType, encounterDescription, encounterStakes, encounterRequiredNpcIds, encounterRelevantSkills, encounterBeatPlan, encounterDifficulty, encounterBuildup
+- Encounter scenes MUST have: isEncounter, plannedEncounterId (when pre-planned encounters exist), encounterType, encounterStoryCircleTarget, encounterDescription, encounterStakes, encounterRequiredNpcIds, encounterRelevantSkills, encounterBeatPlan, encounterDifficulty, encounterBuildup
 - encounterType MUST be one of: "combat", "chase", "stealth", "social", "romantic", "dramatic", "puzzle", "exploration", "investigation", "negotiation", "survival", "heist", "mixed"
+- encounterStoryCircleTarget MUST be one of: "go", "search", "find", "take". Preserve the season plan target exactly; \`go\` forces threshold commitment, \`search\` tests adaptation, \`find\` grants the wanted thing or answer while exposing the next problem, and \`take\` demands payment/cost.
 - encounterStyle MUST reflect the dramatic mode of the encounter even when the structural type is broad
 - encounterDifficulty MUST be one of: "easy", "moderate", "hard", "extreme"
 - encounterStakes must describe the PERSONAL stakes, not just tactical stakes
@@ -4273,50 +4560,55 @@ If you don't include enough choice points, the story will be rejected as non-int
 `;
   }
 
-  /**
-   * Surface the season-level anchors, the full 7-point map, and the beats
-   * this episode is responsible for landing. The 7-point / anchor data
-   * drives the `arc.*` fields and the dramatic function of every scene.
-   */
   private buildStructuralContextSection(input: StoryArchitectInput): string {
-    const { seasonAnchors, seasonSevenPoint, episodeStructuralRole } = input;
-    if (!seasonAnchors && !seasonSevenPoint && (!episodeStructuralRole || episodeStructuralRole.length === 0)) {
-      return '';
+    return buildSharedStructuralContextSection({
+      anchors: input.seasonAnchors,
+      storyCircle: input.seasonStoryCircle,
+      episodeStoryCircleRole: this.resolveEpisodeStoryCircleRole(input),
+    });
+  }
+
+  private resolveEpisodeStoryCircleRole(input: StoryArchitectInput): StoryCircleRoleAssignment[] {
+    if (input.episodeStoryCircleRole?.length) {
+      return input.episodeStoryCircleRole.map((role) => ({ ...role }));
     }
+    return legacyStructuralRolesToStoryCircleRoles(input.episodeStructuralRole);
+  }
 
-    const anchorLines = seasonAnchors
-      ? [
-          `- Stakes: ${seasonAnchors.stakes}`,
-          `- Goal: ${seasonAnchors.goal}`,
-          `- Inciting Incident: ${seasonAnchors.incitingIncident}`,
-          `- Climax: ${seasonAnchors.climax}`,
-        ].join('\n')
-      : '';
+  private normalizeEpisodeCircle(
+    episodeCircle: Partial<StoryCircleStructure> | undefined,
+    input: StoryArchitectInput,
+    arc?: EpisodeBlueprint['arc'],
+  ): StoryCircleStructure {
+    const fallback = this.buildEpisodeCircle(input, arc);
+    const normalized = { ...fallback };
+    for (const beat of STORY_CIRCLE_BEATS) {
+      const value = episodeCircle?.[beat];
+      if (typeof value === 'string' && value.trim().length > 0) {
+        normalized[beat] = value.trim();
+      }
+    }
+    return normalized;
+  }
 
-    const beatLines = seasonSevenPoint
-      ? SEVEN_POINT_BEATS.map((beat) => `- ${beat}: ${seasonSevenPoint[beat]}`).join('\n')
-      : '';
-
-    const roleLine = episodeStructuralRole && episodeStructuralRole.length > 0
-      ? episodeStructuralRole.join(', ')
-      : '(not assigned — treat as a rising / falling buffer episode)';
-
-    return `
-## Season Anchors (shared reference — every beat must serve these)
-${anchorLines || '(none supplied)'}
-
-## Season 7-Point Beat Map
-${beatLines || '(none supplied)'}
-
-## This Episode's Structural Role
-${roleLine}
-
-Populate \`arc.<beat>\` ONLY for beats listed in this episode's structural role.
-Leave the other \`arc.*\` fields as empty strings — the season sevenPoint above
-already carries them at other episodes. The \`arc.climax\` field MUST, when
-filled, reference or rephrase the season Climax anchor above so the season
-reads as a single story.
-`;
+  private buildEpisodeCircle(
+    input: StoryArchitectInput,
+    arc?: EpisodeBlueprint['arc'],
+  ): StoryCircleStructure {
+    const seasonCircle = input.seasonStoryCircle
+      ?? (input.seasonLegacyStructure ? storyCircleFromLegacyStructure(input.seasonLegacyStructure, input.seasonAnchors) : undefined);
+    const title = input.episodeTitle || `Episode ${input.episodeNumber}`;
+    const synopsis = input.episodeSynopsis || input.synopsis || 'the episode pressure';
+    return {
+      you: `In "${title}", establish the episode's known world or current normal before disruption: ${seasonCircle?.you || synopsis}`,
+      need: `Name the episode want/lack that starts motion and makes the pressure active: ${seasonCircle?.need || synopsis}`,
+      go: `Cross the episode threshold so old tactics stop working: ${seasonCircle?.go || arc?.plotTurn1 || synopsis}`,
+      search: `Test adaptation under pressure through failed plans, new rules, allies, tools, and identity-revealing choices: ${seasonCircle?.search || arc?.pinch1 || synopsis}`,
+      find: `Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: ${seasonCircle?.find || arc?.midpoint || synopsis}`,
+      take: `Make the episode's find cost something visible: ${seasonCircle?.take || arc?.pinch2 || synopsis}`,
+      return: `Carry the prize and wound back toward the episode's consequence field, relationship, home, arena, or public identity: ${seasonCircle?.return || arc?.climax || synopsis}`,
+      change: `Prove the episode's new equilibrium through changed behavior, relationship, self-concept, world-state, or tragic refusal: ${seasonCircle?.change || arc?.resolution || synopsis}`,
+    };
   }
 
   private buildCliffhangerPlanSection(input: StoryArchitectInput): string {
@@ -4324,7 +4616,7 @@ reads as a single story.
     if (!plan) return '';
 
     return `
-## Seven-Point Cliffhanger Plan (final scene contract)
+## Story Circle Cliffhanger Plan (final scene contract)
 - Style: ${plan.style}
 - Structural role: ${plan.mappedStructuralRole}
 - Type: ${plan.type}
@@ -4354,7 +4646,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     if (directives.arcPressure) {
       const arc = directives.arcPressure;
       section += '### Arc Pressure Architecture\n';
-      section += 'The season 7-point spine remains authoritative. This arc is a 3-8 episode pressure movement inside that spine; do not create literal act structure or non-protagonist POV scenes.\n\n';
+      section += 'The season Story Circle spine remains authoritative. This arc is a 3-8 episode pressure movement inside that spine; do not create literal act structure or non-protagonist POV scenes.\n\n';
       section += `- Arc: ${arc.arcName} (${arc.arcId})\n`;
       if (arc.arcQuestion) {
         section += `- Arc question: ${arc.arcQuestion}\n`;
@@ -4386,7 +4678,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (arc.handoffPressure) {
         section += `- Handoff pressure: ${arc.handoffPressure}\n`;
       }
-      section += 'Use this episode to land its arc turn-out through consequence, reversal, discovery, cost, escalation, choice residue, crisis, finale, or handoff. If episodeStructureMode is sceneEpisodes, this single-scene episode carries only its assigned arc turn-out, not the whole arc.\n\n';
+      section += 'Use this episode to land its arc turn-out through consequence, reversal, discovery, cost, escalation, choice residue, crisis, finale, or handoff.\n\n';
     }
 
     if (directives.characterArchitecture) {
@@ -4414,7 +4706,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           }
         }
       }
-      section += 'Episode scenes should pressure one clean slice of the Lie/Truth gap. In sceneEpisodes mode, the single sceneEpisode should expose, reward, punish, tempt, reframe, or force a choice around one aspect of this gap.\n\n';
+      section += 'Episode scenes should pressure one clean slice of the Lie/Truth gap: expose, reward, punish, tempt, reframe, or force a choice around one aspect of this gap.\n\n';
     }
 
     if (directives.themeArgument) {
@@ -4459,7 +4751,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     if (directives.seasonPromiseArchitecture) {
       const promise = directives.seasonPromiseArchitecture;
       section += '### Season Promise Architecture\n';
-      section += 'Follow this contract without adding fixed TV tent-poles, mandatory re-pilots, or penultimate-climax rules. The seven-point spine remains authoritative.\n\n';
+      section += 'Follow this contract without adding fixed TV tent-poles, mandatory re-pilots, or penultimate-climax rules. The Story Circle spine remains authoritative.\n\n';
       section += `- Season dramatic question: ${promise.seasonDramaticQuestion}\n`;
       section += `- Central pressure (${promise.centralPressure.type}): ${promise.centralPressure.description}\n`;
       section += `  Pressures the protagonist by: ${promise.centralPressure.pressuresLieBy}\n`;
@@ -4478,7 +4770,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (promise.seasonCompleteness.openFuturePressure) {
         section += `  Earned future pressure: ${promise.seasonCompleteness.openFuturePressure}\n`;
       }
-      section += 'This episode should either establish, vary, complicate, pay off, or hand forward the season promise. In sceneEpisodes mode, do that through one focused scene-length turn.\n\n';
+      section += 'This episode should either establish, vary, complicate, pay off, or hand forward the season promise.\n\n';
     }
 
     if (directives.seasonPromiseContracts?.length) {
@@ -4504,22 +4796,22 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       section += 'Material stakes should alter resource/access/reputation/information pressure. Relational stakes should alter behavior, trust, betrayal, repair, alliance, or route pressure. Identity stakes should test self-concept and agency. Existential stakes must be grounded by earlier personal stakes before full payoff.\n\n';
     }
 
-    if (directives.sevenPointBeatContracts?.length) {
-      section += '### Seven-Point Beat Realization Contracts\n';
-      section += 'These authored 3-act / 7-point beat texts are binding content obligations for this episode. The structural role label is not enough: assign the beat to scene turns, choices, reveals, mechanic pressure, or episode ending state and stage the actual event/function on-page.\n\n';
-      for (const contract of directives.sevenPointBeatContracts) {
+    if (directives.storyCircleBeatContracts?.length) {
+      section += '### Story Circle Beat Realization Contracts\n';
+      section += 'These authored Story Circle beat texts are binding content obligations for this episode. The Story Circle role label is not enough: assign the beat to scene turns, choices, reveals, mechanic pressure, or episode ending state and stage the actual event/function on-page.\n\n';
+      for (const contract of directives.storyCircleBeatContracts) {
         section += `- ${contract.beat}: ${contract.sourceText}\n`;
         section += `  Event atoms: ${contract.eventAtoms.join(' | ') || contract.sourceText}\n`;
         if (contract.stateChange) {
           section += `  State change to make visible: ${contract.stateChange}\n`;
         }
       }
-      section += 'Hook must establish engine pressure, Plot Turn 1 must cross a threshold, Pinches must tighten cost/options, Midpoint must recontextualize the story, Climax must drive decisive choice/consequence, and Resolution must show changed end state. Do not solve this with summary sentences.\n\n';
+      section += 'Honor the full Story Circle definitions in the structural context above; do not solve this with summary sentences or metadata-only labels.\n\n';
     }
 
     if (directives.arcPressureContracts?.length) {
       section += '### Arc Pressure Treatment Realization Contracts\n';
-      section += 'These authored arc-plan fields are binding for this episode. Acts and seven-point roles define placement; these arc contracts define the pressure movement that must be felt through scene turns, choices, information movement, mechanic pressure, episode endings, or handoff. Do not paste arc labels into prose.\n\n';
+      section += 'These authored arc-plan fields are binding for this episode. Story Circle roles define placement; these arc contracts define the pressure movement that must be felt through scene turns, choices, information movement, mechanic pressure, episode endings, or handoff. Do not paste arc labels into prose.\n\n';
       for (const contract of directives.arcPressureContracts) {
         section += `- ${contract.arcTitle} / ${contract.fieldName} (${contract.contractKind}): ${contract.sourceText}\n`;
         section += `  Target episodes: ${contract.targetEpisodeNumbers.join(', ') || 'planned as needed'}; realize through: ${contract.requiredRealization.join(', ')}\n`;
@@ -4588,7 +4880,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         }
         section += `  Payoff plan: ${entry.payoffPlan}\n`;
       }
-      section += 'For sceneEpisodes, this one scene-length episode should perform one clean information job: plant, touch, reveal, pay off, close, or sharpen one question.\n\n';
+      section += 'This episode should perform clear information jobs: plant, touch, reveal, pay off, close, or sharpen key questions.\n\n';
     }
 
     if (directives.endingMode) {
@@ -4638,12 +4930,6 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (guidance.toneRegister) {
         section += `- Tone register: ${guidance.toneRegister}\n`;
       }
-      if (guidance.actLabel) {
-        section += `- Act: ${guidance.actLabel}\n`;
-      }
-      if (guidance.arcLabel) {
-        section += `- Arc: ${guidance.arcLabel}\n`;
-      }
       if (guidance.rawStructuralRole) {
         section += `- Structural role: ${guidance.rawStructuralRole}\n`;
       }
@@ -4666,7 +4952,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         });
       }
       if (guidance.entryGoal || guidance.obstacle || guidance.forcedChoice || guidance.exitShift) {
-        section += 'Scene/sceneEpisode contract that must be expressed through generated scenes:\n';
+        section += 'Scene contract that must be expressed through generated scenes:\n';
         if (guidance.entryGoal) section += `- Entry goal: ${guidance.entryGoal}\n`;
         if (guidance.obstacle) section += `- Obstacle: ${guidance.obstacle}\n`;
         if (guidance.forcedChoice) section += `- Forced choice: ${guidance.forcedChoice}\n`;
@@ -4786,6 +5072,13 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         if (enc.centralConflict) {
           section += `  Central conflict to manifest through play: ${enc.centralConflict}\n`;
         }
+        if (enc.storyCircleTarget) {
+          section += `  Encounter Story Circle target: ${enc.storyCircleTarget}\n`;
+          section += `  Target rationale: ${enc.storyCircleTargetRationale || 'Honor the season planner target; do not retarget locally.'}\n`;
+          if (enc.storyCircleTargetEvidence?.protagonistChange) {
+            section += `  Protagonist change evidence: ${enc.storyCircleTargetEvidence.protagonistChange}\n`;
+          }
+        }
         if (enc.aftermathConsequence) {
           section += `  Aftermath/consequence to pay off after the encounter: ${enc.aftermathConsequence}\n`;
         }
@@ -4818,6 +5111,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         section += `- **${effect.branchName}** → ${effect.pathName} (${effect.impact}): ${effect.description}\n`;
       }
       section += '\n';
+      section += 'For each encounter scene, preserve the planned encounter Story Circle target on the scene as `encounterStoryCircleTarget` and build its `encounterBeatPlan` to realize that target: `go` forces threshold commitment, `search` tests adaptation, `find` grants the wanted thing or answer while exposing the next problem, and `take` demands payment/cost. Do not retarget a planned encounter unless the treatment explicitly contradicts it.\n\n';
     }
 
     if (directives.flagsToCheck && directives.flagsToCheck.length > 0) {
@@ -4834,9 +5128,6 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       section += 'This episode should establish these flags for future episodes:\n\n';
       for (const flag of directives.flagsToSet) {
         section += `- **${flag.flag}**: ${flag.description}\n`;
-      }
-      if (this.episodeStructureMode === 'sceneEpisodes') {
-        section += 'Scene-length branch origins must turn route flags into choice consequences: exactly one sibling route flag should be set by the player choice, and main route branching should happen through route-gated future episodes rather than nextSceneId scene routing.\n';
       }
       section += '\n';
     }
@@ -4926,7 +5217,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
     }
 
-    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes && this.episodeStructureMode !== 'sceneEpisodes') {
+    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes) {
       const branchPointCount = blueprint.scenes.filter(scene =>
         scene.choicePoint?.branches &&
         scene.choicePoint.type !== 'expression' &&
@@ -4945,22 +5236,20 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     }
 
     // Choice density pre-check (non-throwing)
-    if (this.episodeStructureMode === 'sceneEpisodes' && blueprint.scenes.length !== this.sceneEpisodeConfig.maxScenes) {
-      issues.push(`Scene-length episode blueprint has ${blueprint.scenes.length} scene(s); expected exactly ${this.sceneEpisodeConfig.maxScenes}`);
-    } else if (blueprint.scenes.length > input.targetSceneCount) {
-      issues.push(`Blueprint has ${blueprint.scenes.length} scenes; maximum is ${input.targetSceneCount}`);
+    const effectiveTargetSceneCount = this.effectiveTargetSceneCount(blueprint, input);
+    if (blueprint.scenes.length > effectiveTargetSceneCount) {
+      issues.push(`Blueprint has ${blueprint.scenes.length} scenes; maximum is ${effectiveTargetSceneCount}`);
     }
 
     const scenesWithChoices = blueprint.scenes.filter(s => s.choicePoint);
     const density = scenesWithChoices.length / blueprint.scenes.length;
-    const hasEncounterScene = blueprint.scenes.some(scene => scene.isEncounter);
-    if (density < 0.4 && !(this.episodeStructureMode === 'sceneEpisodes' && hasEncounterScene)) {
+    if (density < 0.4) {
       issues.push(`Choice density ${Math.round(density * 100)}% is below 40% minimum (${scenesWithChoices.length}/${blueprint.scenes.length} scenes have choices)`);
     }
 
     if (this.isFirstSeasonEpisode(input)) {
       const startingScene = blueprint.scenes.find(s => s.id === blueprint.startingSceneId);
-      if (startingScene && !startingScene.choicePoint && !(this.episodeStructureMode === 'sceneEpisodes' && startingScene.isEncounter)) {
+      if (startingScene && !startingScene.choicePoint) {
         issues.push(
           `First scene "${startingScene.id}" of episode 1 has no choicePoint. ` +
           `The first scene of the first episode of each season must include a player choice.`
@@ -4970,7 +5259,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
 
     // Encounter coverage pre-check
     const encounterScenes = blueprint.scenes.filter(s => s.isEncounter);
-    const minEncounters = this.getMinEncounters(blueprint.scenes.length);
+    const minEncounters = this.getMinEncountersForBlueprint(blueprint.scenes.length, input);
     if (encounterScenes.length < minEncounters) {
       issues.push(`Only ${encounterScenes.length} encounter scene(s), need at least ${minEncounters}`);
     }
@@ -4980,9 +5269,55 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     issues.push(...this.collectThemePressureIssues(blueprint, false));
     issues.push(...this.collectSceneTurnContractIssues(blueprint, false));
     issues.push(...this.collectEpisodePressureIssues(blueprint, input, false));
+    issues.push(...this.collectBlueprintDuplicateEventIssues(blueprint));
     issues.push(...this.collectTreatmentDensityIssues(blueprint, input));
 
     return issues;
+  }
+
+  private collectBlueprintDuplicateEventIssues(blueprint: EpisodeBlueprint): string[] {
+    const staged = blueprint.scenes
+      .map((scene, index) => {
+        const signature = buildEncounterEventSignature(this.sceneBlueprintEventTexts(scene));
+        return { scene, index, signature };
+      })
+      .filter((entry) =>
+        entry.signature.pressureActions.size > 0
+        && !entry.signature.isSetupOnly
+        && !entry.signature.isReferenceOnly
+      );
+
+    const issues: string[] = [];
+    for (let i = 0; i < staged.length; i += 1) {
+      for (let j = i + 1; j < staged.length; j += 1) {
+        const first = staged[i];
+        const second = staged[j];
+        const match = compareEncounterEventSignatures(first.signature, second.signature);
+        if (!match.matched) continue;
+        issues.push(
+          `Scene "${second.scene.id}" appears to restage the same high-pressure event as "${first.scene.id}" ` +
+          `(${match.matchedSignals.join(', ') || 'shared event signature'}). ` +
+          `Merge the event into one encounter/scene, or rewrite "${second.scene.id}" as consequence, recap, warning, or a distinct escalation.`,
+        );
+      }
+    }
+    return issues;
+  }
+
+  private sceneBlueprintEventTexts(scene: SceneBlueprint): string[] {
+    return [
+      scene.name,
+      scene.description,
+      scene.location,
+      scene.dramaticPurpose,
+      scene.signatureMoment,
+      scene.turnContract?.centralTurn,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.handoff,
+      ...(scene.requiredBeats ?? []).map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
+      ...(scene.authoredTreatmentFields ?? []).map((field) => field.sourceText),
+      ...(scene.keyBeats ?? []),
+    ].filter((part): part is string => Boolean(part?.trim()));
   }
 
   private collectTreatmentDensityIssues(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
@@ -5004,44 +5339,52 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     const hardOverage = Math.max(0, report.hardUnits - report.threshold.hardUnits);
     if (hardOverage > 0) return false;
     if (report.threshold.profile === 'encounter') return false;
-    if (report.explicitTimeJumpCount >= 2 && report.totalUnits > report.threshold.totalUnits) return false;
+    if (report.explicitTimeJumpCount >= 2) return false;
     const recommendedBeatCount = scene.recommendedBeatCount ?? 0;
     if (recommendedBeatCount <= 0) return false;
     return recommendedBeatCount >= Math.ceil(report.totalUnits) + 1;
   }
 
+  private binderSplitCapExtension(blueprint: EpisodeBlueprint): number {
+    const eligibleSplitScenes = (blueprint.scenes || []).filter((scene) =>
+      scene.planningOrigin?.kind === 'binder_split' &&
+      !scene.isEncounter
+    );
+    return Math.min(eligibleSplitScenes.length, MAX_BINDER_SPLIT_SCENE_CAP_EXTENSION);
+  }
+
+  private effectiveTargetSceneCount(blueprint: EpisodeBlueprint, input: StoryArchitectInput): number {
+    return input.targetSceneCount + this.binderSplitCapExtension(blueprint);
+  }
+
   private validateBlueprint(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
-    // 7-point spine VERIFICATION (tier 2). The season plan assigned this episode certain
-    // spine beats (structuralRole); the blueprint must REALIZE each assigned canonical beat
-    // with non-empty arc.<beat> content. An empty assigned beat means the episode silently
-    // dropped a structural beat the season's spine depends on. Buffer roles (rising/falling)
-    // have no arc field and are skipped. Blocks by default; opt out with SEVEN_POINT_BLOCKING=0.
-    const assignedRoles = blueprint.structuralRole ?? input.episodeStructuralRole ?? [];
-    const arc = blueprint.arc;
-    if (arc && assignedRoles.length > 0) {
-      const CANONICAL = ['hook', 'plotTurn1', 'pinch1', 'midpoint', 'pinch2', 'climax', 'resolution'] as const;
-      const missingBeats = assignedRoles
-        .filter((r): r is (typeof CANONICAL)[number] => (CANONICAL as readonly string[]).includes(r))
-        .filter((beat) => !String((arc as Record<string, unknown>)[beat] ?? '').trim());
-      if (missingBeats.length > 0) {
-        const msg = `[SevenPointGate] Episode ${input.episodeNumber} was assigned spine beat(s) [${missingBeats.join(', ')}] but its blueprint left them unrealized (empty arc.<beat>).`;
-        if (this.sevenPointBlocking) {
-          throw new Error(`${msg} Set SEVEN_POINT_BLOCKING=0 to downgrade to advisory.`);
-        }
-        console.warn(msg);
+    // Story Circle VERIFICATION (tier 2). Every episode is a complete fractal
+    // loop, so the blueprint must fill all eight episodeCircle beats. The
+    // season-level storyCircleRole tells which macro beat this episode carries,
+    // but it does not exempt the episode from having its own local circle.
+    const episodeCircle = blueprint.episodeCircle ?? this.normalizeEpisodeCircle(undefined, input, blueprint.arc);
+    const missingEpisodeCircleBeats = STORY_CIRCLE_BEATS.filter((beat) =>
+      !String(episodeCircle[beat] ?? '').trim()
+    );
+    if (missingEpisodeCircleBeats.length > 0) {
+      const msg = `[StoryCircleGate] Episode ${input.episodeNumber} blueprint is missing episodeCircle beat(s) [${missingEpisodeCircleBeats.join(', ')}].`;
+      if (this.storyCircleBlocking) {
+        throw new Error(`${msg} Set STORY_CIRCLE_BLOCKING=0 to downgrade to advisory.`);
       }
+      console.warn(msg);
     }
 
     // Check scene count
-    if (this.episodeStructureMode === 'sceneEpisodes') {
-      if (blueprint.scenes.length !== this.sceneEpisodeConfig.maxScenes) {
-        throw new Error(`Scene-length blueprint must have exactly ${this.sceneEpisodeConfig.maxScenes} scene`);
-      }
-    } else if (blueprint.scenes.length < 3) {
+    if (blueprint.scenes.length < 3) {
       throw new Error('Blueprint must have at least 3 scenes');
     }
-    if (this.episodeStructureMode !== 'sceneEpisodes' && blueprint.scenes.length > input.targetSceneCount) {
-      throw new Error(`Blueprint must have no more than ${input.targetSceneCount} scenes`);
+    const effectiveTargetSceneCount = this.effectiveTargetSceneCount(blueprint, input);
+    if (blueprint.scenes.length > effectiveTargetSceneCount) {
+      const binderSplitExtension = effectiveTargetSceneCount - input.targetSceneCount;
+      const capDetail = binderSplitExtension > 0
+        ? ` (${input.targetSceneCount} base + ${binderSplitExtension} binder-split helper scene${binderSplitExtension === 1 ? '' : 's'})`
+        : '';
+      throw new Error(`Blueprint must have no more than ${effectiveTargetSceneCount} scenes${capDetail}`);
     }
 
     // Check starting scene exists
@@ -5113,7 +5456,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
     }
 
-    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes && this.episodeStructureMode !== 'sceneEpisodes') {
+    if (this.sceneGraphBranching.required && !this.sceneGraphBranching.allowLinearBottleneckEpisodes) {
       const validBranchPointCount = blueprint.scenes.filter(scene =>
         scene.choicePoint?.branches &&
         scene.choicePoint.type !== 'expression' &&
@@ -5134,9 +5477,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     }
 
     const encounterScenes = blueprint.scenes.filter(scene => scene.isEncounter);
-    if (encounterScenes.length < this.getMinEncounters(blueprint.scenes.length)) {
+    const minEncounters = this.getMinEncountersForBlueprint(blueprint.scenes.length, input);
+    if (encounterScenes.length < minEncounters) {
       throw new Error(
-        `Blueprint only defines ${encounterScenes.length} encounter scene(s); expected at least ${this.getMinEncounters(blueprint.scenes.length)}`
+        `Blueprint only defines ${encounterScenes.length} encounter scene(s); expected at least ${minEncounters}`
       );
     }
     for (const scene of encounterScenes) {
@@ -5160,6 +5504,24 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
       if (!scene.encounterType) {
         throw new Error(`Encounter scene "${scene.id}" is missing encounterType (must be one of: combat, chase, stealth, social, romantic, dramatic, puzzle, exploration, investigation, negotiation, survival, heist, mixed)`);
+      }
+      if (!isEncounterStoryCircleTarget(scene.encounterStoryCircleTarget)) {
+        scene.encounterStoryCircleTarget = normalizeEncounterStoryCircleTarget(
+          scene.encounterStoryCircleTarget,
+          blueprint.storyCircleRole,
+          [
+            scene.encounterDescription,
+            scene.encounterStakes,
+            scene.encounterCentralConflict,
+            scene.description,
+          ].filter(Boolean).join(' '),
+        );
+        scene.encounterStoryCircleTargetRationale = scene.encounterStoryCircleTargetRationale
+          || buildEncounterStoryCircleTargetRationale(
+            scene.encounterStoryCircleTarget,
+            blueprint.storyCircleRole,
+            scene.encounterDescription || scene.description,
+          );
       }
     }
     this.validatePlannedEncounterCoverage(blueprint, input);
@@ -5205,7 +5567,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     // a choice. Later episodes keep the existing "brief opening into
     // second-scene choice" flexibility.
     const firstScene = blueprint.scenes.find(s => s.id === blueprint.startingSceneId);
-    if (firstScene && this.isFirstSeasonEpisode(input) && !firstScene.choicePoint && !(this.episodeStructureMode === 'sceneEpisodes' && firstScene.isEncounter)) {
+    if (firstScene && this.isFirstSeasonEpisode(input) && !firstScene.choicePoint) {
       console.warn(`[StoryArchitect] First scene of episode 1 has no choice point`);
       throw new Error(
         `First scene "${firstScene.name}" has no choicePoint. ` +
@@ -5213,7 +5575,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       );
     }
 
-    if (firstScene && !this.isFirstSeasonEpisode(input) && !firstScene.choicePoint && !(this.episodeStructureMode === 'sceneEpisodes' && firstScene.isEncounter)) {
+    if (firstScene && !this.isFirstSeasonEpisode(input) && !firstScene.choicePoint) {
       // First scene doesn't have a choice - check if second scene does
       const secondSceneIds = firstScene.leadsTo;
       const secondScenes = secondSceneIds.map(id => blueprint.scenes.find(s => s.id === id)).filter(Boolean);
@@ -5376,30 +5738,51 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
 
   private repairSceneTurnContracts(blueprint: EpisodeBlueprint): void {
     for (const scene of blueprint.scenes || []) {
-      if (scene.choicePoint || this.sceneHasForcedDecision(scene)) continue;
-
-      const forcedReaction = this.buildForcedReactionText(scene);
       scene.keyBeats = Array.isArray(scene.keyBeats) ? scene.keyBeats : [];
-      if (!scene.keyBeats.some((beat) => beat.includes(forcedReaction))) {
-        scene.keyBeats.push(`PEAK: ${forcedReaction}`);
+
+      if (!scene.choicePoint && !this.sceneHasForcedDecision(scene)) {
+        const forcedReaction = this.buildForcedReactionText(scene);
+        if (!scene.keyBeats.some((beat) => beat.includes(forcedReaction))) {
+          scene.keyBeats.push(`PEAK: ${forcedReaction}`);
+        }
+
+        scene.dramaticStructure = {
+          question: scene.dramaticStructure?.question || scene.dramaticQuestion || `What changes in ${scene.name}?`,
+          turn: scene.dramaticStructure?.turn || scene.conflictEngine || scene.keyBeats[0] || forcedReaction,
+          pressurePeak: this.pickBlueprintText(scene.dramaticStructure?.pressurePeak, forcedReaction),
+          changedState: this.pickBlueprintText(
+            scene.dramaticStructure?.changedState,
+            `${scene.name} leaves the protagonist committed to a changed course because ${forcedReaction}`,
+          ),
+        };
+
+        scene.residue = Array.isArray(scene.residue) ? scene.residue : [];
+        if (!scene.residue.some((residue) => residue.description?.includes(forcedReaction))) {
+          scene.residue.push({
+            type: 'danger',
+            description: forcedReaction,
+          });
+        }
       }
 
-      scene.dramaticStructure = {
-        question: scene.dramaticStructure?.question || scene.dramaticQuestion || `What changes in ${scene.name}?`,
-        turn: scene.dramaticStructure?.turn || scene.conflictEngine || scene.keyBeats[0] || forcedReaction,
-        pressurePeak: this.pickBlueprintText(scene.dramaticStructure?.pressurePeak, forcedReaction),
-        changedState: this.pickBlueprintText(
-          scene.dramaticStructure?.changedState,
-          `${scene.name} leaves the protagonist committed to a changed course because ${forcedReaction}`,
-        ),
-      };
-
-      scene.residue = Array.isArray(scene.residue) ? scene.residue : [];
-      if (!scene.residue.some((residue) => residue.description?.includes(forcedReaction))) {
-        scene.residue.push({
-          type: 'danger',
-          description: forcedReaction,
-        });
+      if ((scene.npcsPresent?.length || scene.encounterRequiredNpcIds?.length) && !this.sceneHasPowerShift(scene)) {
+        const powerShift = this.buildPowerShiftText(scene);
+        if (!scene.keyBeats.some((beat) => beat.includes(powerShift))) {
+          scene.keyBeats.push(`PEAK: ${powerShift}`);
+        }
+        scene.dramaticStructure = {
+          question: scene.dramaticStructure?.question || scene.dramaticQuestion || `What changes in ${scene.name}?`,
+          turn: this.pickBlueprintText(scene.dramaticStructure?.turn, powerShift),
+          pressurePeak: this.pickBlueprintText(scene.dramaticStructure?.pressurePeak, powerShift),
+          changedState: this.pickBlueprintText(scene.dramaticStructure?.changedState, powerShift),
+        };
+        scene.residue = Array.isArray(scene.residue) ? scene.residue : [];
+        if (!scene.residue.some((residue) => residue.description?.includes(powerShift))) {
+          scene.residue.push({
+            type: 'relationship',
+            description: powerShift,
+          });
+        }
       }
     }
   }
@@ -5414,6 +5797,24 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       ...(scene.residue || []).map((residue) => residue.description),
     ].filter(Boolean).join(' ');
     return /\b(decide|decides|decision|choose|chooses|choice|chose|commit|commits|commitment|refuse|refuses|refusal|accept|accepts|reject|rejects|reveal|reveals|hide|hides|sacrifice|sacrifices|tradeoff|trade-off|risk|risks|betray|betrays|trust|trusts|confront|confronts|promise|promises|confess|confesses|answer|answers|must|cannot|can no longer|turns toward|turns away|irreversible)\b/i.test(text);
+  }
+
+  private sceneHasPowerShift(scene: SceneBlueprint): boolean {
+    const text = [
+      scene.dramaticStructure?.turn,
+      scene.dramaticStructure?.pressurePeak,
+      scene.dramaticStructure?.changedState,
+      scene.sequenceIntent?.turningPoint,
+      scene.sequenceIntent?.endState,
+      scene.choicePoint?.description,
+      scene.choicePoint?.stakes?.cost,
+      scene.choicePoint?.stakes?.identity,
+      scene.encounterDescription,
+      scene.encounterStakes,
+      ...(scene.keyBeats || []),
+      ...(scene.residue || []).map((residue) => residue.description),
+    ].filter(Boolean).join(' ');
+    return /\b(power|upper hand|advantage|leverage|status|control|pressure|dominance|vulnerab\w*|expos\w*|corner\w*|accus\w*|challenge\w*|confront\w*|threat\w*|blackmail|humiliat\w*|trust|mistrust|betray\w*|alliance|distance|closer|withdraw\w*|submit\w*|yield\w*|defy|defies|refus\w*|authority|permission|debt|favor|owes?|credibility|reputation|silence|voice|public|private)\b/i.test(text);
   }
 
   private buildForcedReactionText(scene: SceneBlueprint): string {
@@ -5434,6 +5835,23 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     return `The pressure forces an irreversible reaction: the protagonist must commit, refuse, reveal, or accept a cost around ${target}; ${pressure}`;
   }
 
+  private buildPowerShiftText(scene: SceneBlueprint): string {
+    const pressure = this.pickBlueprintText(
+      scene.conflictEngine,
+      scene.dramaticStructure?.pressurePeak,
+      scene.personalStake,
+      scene.description,
+      scene.name,
+    );
+    const relationship = this.pickBlueprintText(
+      scene.wantVsNeed,
+      scene.dramaticQuestion,
+      scene.narrativeFunction,
+      'the relationship pressure in the scene',
+    );
+    return `The power dynamic shifts: trust, leverage, or vulnerability changes hands around ${relationship}; ${pressure}`;
+  }
+
   private collectTreatmentFidelityIssues(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
     const result = new TreatmentFidelityValidator().validate({
       blueprint,
@@ -5450,7 +5868,6 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     logWarnings: boolean
   ): string[] {
     const result = new DramaticStructureValidator().validate(blueprint, {
-      episodeStructureMode: this.episodeStructureMode,
       requireSceneLevelMetadata: true,
     });
 
@@ -5490,9 +5907,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     blueprint: EpisodeBlueprint,
     logWarnings: boolean
   ): string[] {
-    const result = new SceneTurnContractValidator().validate(blueprint, {
-      episodeStructureMode: this.episodeStructureMode,
-    });
+    const result = new SceneTurnContractValidator().validate(blueprint);
 
     if (logWarnings) {
       for (const issue of result.issues) {
@@ -5517,7 +5932,6 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       input.cliffhangerPlan?.mappedStructuralRole === 'resolution'
     );
     const result = new EpisodePressureArchitectureValidator().validate(blueprint, {
-      episodeStructureMode: this.episodeStructureMode,
       isFinale,
       targetSceneCount: input.targetSceneCount,
     });

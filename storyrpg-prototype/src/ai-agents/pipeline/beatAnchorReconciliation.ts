@@ -2,13 +2,13 @@
  * Section-7 beat-anchor reconciliation (Treatment-Fidelity Remediation Phase 1,
  * Step 1.2 — RC4 residual + RC2/RC7 gaps).
  *
- * Section 7 of an authored treatment anchors each 7-point beat to a specific
+ * Section 7 of an authored treatment anchors each legacy-structure beat to a specific
  * episode (e.g. `Plot turn 1 (Ep3)`, `Pinch 1 (Ep4)`, `Climax (Ep10)`). Phase 1
  * Step 1.1 parses those into a structured
- * `seasonGuidance.beatEpisodeAnchors: Partial<Record<SevenPointBeat, number>>`.
+ * `seasonGuidance.beatEpisodeAnchors: Partial<Record<LegacyStructuralBeat, number>>`.
  *
  * The per-episode `structuralRole` array (assigned by the LLM and/or the default
- * seven-point distribution) is a SECOND, independently-derived statement of where
+ * Story Circle distribution) is a SECOND, independently-derived statement of where
  * each beat lives. When those two disagree the authored Section-7 anchor is the
  * spine of record ("expand, do not rewrite"): we move the beat onto the anchored
  * episode and log the conflict. In strict mode the conflict throws instead.
@@ -17,8 +17,8 @@
  * logging side-effects via the injected `log` callback so this stays testable.
  */
 
-import type { SevenPointBeat, StructuralRole } from '../../types/sourceAnalysis';
-import { SEVEN_POINT_BEATS } from '../../types/sourceAnalysis';
+import type { LegacyStructuralBeat, StructuralRole } from '../../types/sourceAnalysis';
+import { LEGACY_STRUCTURAL_BEATS } from '../../types/sourceAnalysis';
 import { TreatmentValidationError } from '../utils/treatmentExtraction';
 
 /** Minimal shape this reconciler needs from an episode outline. */
@@ -29,7 +29,7 @@ export interface BeatAnchorReconcilable {
 }
 
 export interface BeatAnchorConflict {
-  beat: SevenPointBeat;
+  beat: LegacyStructuralBeat;
   /** Episode the Section-7 anchor says the beat belongs to. */
   anchoredEpisode: number;
   /** Episodes whose structuralRole currently carries the beat (before fix). */
@@ -43,9 +43,9 @@ export interface BeatAnchorReconciliationResult {
   messages: string[];
 }
 
-const BEAT_SET = new Set<string>(SEVEN_POINT_BEATS as readonly string[]);
+const BEAT_SET = new Set<string>(LEGACY_STRUCTURAL_BEATS as readonly string[]);
 
-function isAnchorableBeat(beat: string): beat is SevenPointBeat {
+function isAnchorableBeat(beat: string): beat is LegacyStructuralBeat {
   return BEAT_SET.has(beat);
 }
 
@@ -65,7 +65,7 @@ function isAnchorableBeat(beat: string): beat is SevenPointBeat {
  */
 export function reconcileBeatAnchors(
   episodes: BeatAnchorReconcilable[],
-  anchors: Partial<Record<SevenPointBeat, number>> | undefined,
+  anchors: Partial<Record<LegacyStructuralBeat, number>> | undefined,
   options: { strict?: boolean; log?: (message: string) => void } = {},
 ): BeatAnchorReconciliationResult {
   const conflicts: BeatAnchorConflict[] = [];

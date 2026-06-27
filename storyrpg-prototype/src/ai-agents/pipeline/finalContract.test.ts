@@ -3,10 +3,12 @@ import type { Story } from '../../types/story';
 import type { FinalStoryContractReport } from '../validators';
 import { MechanicsLeakageValidator } from '../validators/MechanicsLeakageValidator';
 import {
-  applyTreatmentWarningRepairOutcome,
+  applySceneTurnWarningRepairOutcome,
+  allowsCompactRequiredBeatFallback,
   reconcileQaReportForCurrentStory,
   repairDiceMetaphorMechanicsLeakage,
   repairVampireDaytimeMealCanon,
+  sceneTurnWarningsForRepair,
 } from './finalContract';
 
 function storyWithBeat(text: string): Story {
@@ -36,14 +38,39 @@ function storyWithBeat(text: string): Story {
   } as unknown as Story;
 }
 
-const passingReport = { passed: true, blockingIssues: [], warnings: [] } as unknown as FinalStoryContractReport;
+const passingReport = {
+  passed: true,
+  blockingIssues: [],
+  warnings: [{
+    validator: 'SceneTurnRealizationValidator',
+    sceneId: 's1',
+    message: 'Scene "s1" does not dramatize its central turn on-page: "Mika hands Kylie the key card.".',
+  }],
+} as unknown as FinalStoryContractReport;
 
-describe('applyTreatmentWarningRepairOutcome', () => {
+describe('scene-turn warning repair helpers', () => {
+  it('allows compact required-beat fallback for extracted quoted moments', () => {
+    expect(allowsCompactRequiredBeatFallback({
+      validator: 'RequiredBeatRealizationValidator',
+      message: 'Authored required beat is missing from the final prose of episode 2 scene "s2-2-debrief": "each one fed straight into the blog while the friend group reacts.". The authored turn must be dramatized on-page, not dropped or truncated.',
+    })).toBe(true);
+  });
+
+  it('selects repairable scene-turn warnings beyond treatment Story Circle misses', () => {
+    const repairable = sceneTurnWarningsForRepair(passingReport);
+    expect(repairable).toHaveLength(1);
+    expect(repairable[0]).toMatchObject({
+      validator: 'SceneTurnRealizationValidator',
+      sceneId: 's1',
+      severity: 'error',
+    });
+  });
+
   it('discards failed advisory rewrites and preserves the original passing report', () => {
     const target = storyWithBeat('original prose');
     const candidate = storyWithBeat('bad advisory rewrite');
 
-    const result = applyTreatmentWarningRepairOutcome(target, passingReport, {
+    const result = applySceneTurnWarningRepairOutcome(target, passingReport, {
       story: candidate,
       passed: false,
       report: {
@@ -57,12 +84,28 @@ describe('applyTreatmentWarningRepairOutcome', () => {
     expect(target.episodes[0].scenes[0].beats?.[0].text).toBe('original prose');
   });
 
-  it('commits advisory rewrites only when revalidation passes', () => {
+  it('discards advisory rewrites that do not reduce scene-turn warnings', () => {
+    const target = storyWithBeat('original prose');
+    const candidate = storyWithBeat('same-warning advisory rewrite');
+    const repairedReport = { ...passingReport };
+
+    const result = applySceneTurnWarningRepairOutcome(target, passingReport, {
+      story: candidate,
+      passed: true,
+      report: repairedReport as unknown as FinalStoryContractReport,
+    });
+
+    expect(result.committed).toBe(false);
+    expect(result.report).toBe(passingReport);
+    expect(target.episodes[0].scenes[0].beats?.[0].text).toBe('original prose');
+  });
+
+  it('commits advisory rewrites only when revalidation passes and scene-turn warnings improve', () => {
     const target = storyWithBeat('original prose');
     const candidate = storyWithBeat('improved advisory rewrite');
     const repairedReport = { passed: true, blockingIssues: [], warnings: [] };
 
-    const result = applyTreatmentWarningRepairOutcome(target, passingReport, {
+    const result = applySceneTurnWarningRepairOutcome(target, passingReport, {
       story: candidate,
       passed: true,
       report: repairedReport,
@@ -171,6 +214,37 @@ describe('repairDiceMetaphorMechanicsLeakage', () => {
     expect(new MechanicsLeakageValidator().validate({
       texts: [{ id: beat.id, text: beat.text, sceneId: 's1', beatId: beat.id }],
     }).valid).toBe(true);
+  });
+
+  it('rewrites safe dice-on-velvet metaphors from viral-count prose', () => {
+    const story = storyWithBeat('The numbers blur past ten thousand. They finally slow, settling like dice on a velvet cloth. Eighty-thousand reads.');
+    const beat = story.episodes[0].scenes[0].beats![0];
+    expect(new MechanicsLeakageValidator().validate({
+      texts: [{ id: beat.id, text: beat.text, sceneId: 's1', beatId: beat.id }],
+    }).valid).toBe(false);
+
+    const touched = repairDiceMetaphorMechanicsLeakage(story);
+
+    expect(touched).toBe(1);
+    expect(beat.text).toContain('settling like pearls on velvet');
+    expect(new MechanicsLeakageValidator().validate({
+      texts: [{ id: beat.id, text: beat.text, sceneId: 's1', beatId: beat.id }],
+    }).valid).toBe(true);
+  });
+
+  it('rewrites dice idioms in player-facing choice reactions', () => {
+    const story = storyWithBeat('You close the laptop.');
+    const beat = story.episodes[0].scenes[0].beats![0] as any;
+    beat.choices = [{
+      id: 'choice-1',
+      text: 'Pitch the partnership',
+      reactionText: "You've rolled the dice, turning panic into a calculated business proposition.",
+    }];
+
+    const touched = repairDiceMetaphorMechanicsLeakage(story);
+
+    expect(touched).toBe(1);
+    expect(beat.choices[0].reactionText).toBe("You've taken the gamble, turning panic into a calculated business proposition.");
   });
 });
 

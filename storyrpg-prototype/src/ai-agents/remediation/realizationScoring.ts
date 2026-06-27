@@ -41,7 +41,7 @@ export function missingMomentTokens(validator: string | undefined, moment: strin
  *   `… does not dramatize its central turn on-page: "<MOMENT>".`
  *   `… mentions its central turn but does not give it a complete scene shape …: "<MOMENT>".`
  *   `… does not dramatize its authored beat event on-page: "<MOMENT>".`
- *   `… stages seven-point … but does not give it complete scene shape …: "<MOMENT>".`
+ *   `… stages Story Circle … but does not give it complete scene shape …: "<MOMENT>".`
  *   `… does not dramatize the authored arc event on-page: "<MOMENT>".`
  *   `… stages arc pressure … but does not give it complete scene shape …: "<MOMENT>".`
  * EncounterAnchorContentValidator (now also routed to the scene-prose repair):
@@ -60,7 +60,10 @@ export function requiredMomentFromMessage(message: string | undefined): string |
   if (turn?.[1]) return turn[1].trim();
   const treatmentPlant = /(?:Treatment plant|Cold open) not found[\s\S]*?: "([\s\S]*?)"\. (?:A cold open|The episode-opening hook)/.exec(message);
   if (treatmentPlant?.[1]) return treatmentPlant[1].trim();
-  const sceneTurn = /(?:does not dramatize (?:its central turn|its authored beat event|the authored arc event) on-page|(?:mentions its central turn|stages seven-point [^:]+|stages arc pressure [^:]+) but does not give it (?:a )?complete scene shape[\s\S]*?): "([\s\S]*)"\.\s*$/.exec(message);
+  const sceneTurnStart = /(?:does not dramatize (?:its central turn|its authored beat event|the authored arc event) on-page|(?:mentions its central turn|stages Story Circle [^:]+|stages arc pressure [^:]+) but does not give it (?:a )?complete scene shape[\s\S]*?): "/.exec(message);
+  const sceneTurnTail = extractQuotedTail(message, sceneTurnStart);
+  if (sceneTurnTail) return sceneTurnTail;
+  const sceneTurn = /(?:does not dramatize (?:its central turn|its authored beat event|the authored arc event) on-page|(?:mentions its central turn|stages Story Circle [^:]+|stages arc pressure [^:]+) but does not give it (?:a )?complete scene shape[\s\S]*?): "([\s\S]*)"\.\s*$/.exec(message);
   if (sceneTurn?.[1]) return sceneTurn[1].trim();
   const treatmentLedger = /Treatment event ledger (?:miss|summary-only realization)[\s\S]*?: "([\s\S]*)"\.\s*$/.exec(message);
   if (treatmentLedger?.[1]) return treatmentLedger[1].trim();
@@ -72,6 +75,14 @@ export function requiredMomentFromMessage(message: string | undefined): string |
     .map((match) => match[1]?.trim())
     .filter((span): span is string => Boolean(span && !isNonMomentQuotedSpan(span)));
   return quotedSpans.at(-1);
+}
+
+function extractQuotedTail(message: string, startMatch: RegExpExecArray | null): string | undefined {
+  if (!startMatch) return undefined;
+  const start = startMatch.index + startMatch[0].length;
+  const end = message.lastIndexOf('"');
+  if (end <= start) return undefined;
+  return message.slice(start, end).trim();
 }
 
 function isNonMomentQuotedSpan(span: string): boolean {

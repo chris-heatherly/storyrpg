@@ -28,7 +28,7 @@
  */
 
 import type { SeasonEpisode, SeasonPlan } from '../../types/seasonPlan';
-import type { SevenPointBeat } from '../../types/sourceAnalysis';
+import type { LegacyStructuralBeat } from '../../types/sourceAnalysis';
 import type { ExtractedTreatment } from '../utils/treatmentExtraction';
 import {
   type AnchorableBeat,
@@ -91,7 +91,7 @@ function resolveBeatAnchors(
   return extractBeatEpisodeAnchors(treatment.seasonGuidance?.seasonSpine);
 }
 
-function episodeCarriesBeat(episode: SeasonEpisode | undefined, beat: SevenPointBeat): boolean {
+function episodeCarriesBeat(episode: SeasonEpisode | undefined, beat: LegacyStructuralBeat): boolean {
   return Array.isArray(episode?.structuralRole) && episode!.structuralRole!.includes(beat);
 }
 
@@ -207,7 +207,7 @@ export class AuthoredEpisodeConformanceValidator extends BaseValidator {
         issues.push(this.error(
           `Beat "${beat}" is authored on episode ${anchoredEpisode} (Section 7) but that episode's structuralRole carries [${carriedRoles}].`,
           `seasonPlan.episodes.${anchoredEpisode}.structuralRole`,
-          `Assign structuralRole "${beat}" to episode ${anchoredEpisode}; do not relocate an authored 7-point beat.`,
+          `Assign structuralRole "${beat}" to episode ${anchoredEpisode}; do not relocate an authored legacy-structure beat.`,
         ));
       }
     }

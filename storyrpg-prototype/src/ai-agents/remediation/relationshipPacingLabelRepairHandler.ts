@@ -6,6 +6,8 @@ type MutableRecord = Record<string, unknown>;
 const RELATIONSHIP_VALIDATOR = 'RelationshipPacingValidator';
 
 const LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bthe\s+dusk club is now three\b/gi, 'they joke about calling it the Dusk Club'],
+  [/\bdusk club is now three\b/gi, 'Dusk Club is still just a joke between three near-strangers'],
   [/\binner circle\b/gi, 'people moving around him'],
   [/\binside the circle\b/gi, 'near the edge of the circle'],
   [/\bone of us\b/gi, 'almost invited in'],
@@ -100,6 +102,13 @@ function rewriteBeat(beat: MutableRecord): number {
   return rewritten;
 }
 
+function rewriteSceneHeader(scene: MutableRecord): number {
+  let rewritten = 0;
+  rewritten += rewriteStringField(scene, 'name');
+  rewritten += rewriteStringField(scene, 'title');
+  return rewritten;
+}
+
 export function buildRelationshipPacingLabelRepairHandler(): ContractRepairHandler {
   return ({ story, blockingIssues }) => {
     if (!hasRelationshipPacingBlocker(blockingIssues)) return { story, changed: false };
@@ -111,6 +120,7 @@ export function buildRelationshipPacingLabelRepairHandler(): ContractRepairHandl
     for (const episode of (story as Story).episodes ?? []) {
       for (const scene of episode.scenes ?? []) {
         if (!scene.id || !sceneIds.has(scene.id)) continue;
+        rewritten += rewriteSceneHeader(scene as unknown as MutableRecord);
         for (const beat of scene.beats ?? []) rewritten += rewriteBeat(beat as unknown as MutableRecord);
       }
     }

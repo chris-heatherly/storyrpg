@@ -25,6 +25,14 @@ const input: EncounterArchitectInput = {
   encounterType: 'dramatic',
   encounterStyle: 'dramatic',
   encounterDescription: 'The protagonist must survive a charged confrontation.',
+  encounterStoryCircleTarget: 'take',
+  encounterStoryCircleTargetRationale: 'The confrontation demands a relationship cost for pursuing the truth.',
+  encounterStoryCircleTargetEvidence: {
+    episodeStoryCircleRole: ['take'],
+    episodeQuestion: 'Will Alex pay the cost of naming the truth?',
+    protagonistChange: 'Alex leaves with changed trust and a clearer self-concept.',
+    cliffhangerHandoff: 'next_need',
+  },
   encounterStakes: 'A key relationship and the protagonist identity are on the line.',
   encounterRequiredNpcIds: ['eros'],
   encounterRelevantSkills: ['persuasion', 'resolve'],
@@ -1070,6 +1078,13 @@ describe('prose discipline and NPC voice injection', () => {
     for (const prompt of buildAllPrompts(voicedInput)) {
       expect(prompt).toContain(ENCOUNTER_PROSE_DISCIPLINE);
       expect(prompt.split('## PROSE DISCIPLINE').length - 1).toBe(1);
+    }
+  });
+
+  it('renders the planned encounter Story Circle target in every generation prompt', () => {
+    for (const prompt of buildAllPrompts(voicedInput)) {
+      expect(prompt).toContain('Story Circle Target: take');
+      expect(prompt).toContain('demands a relationship cost');
     }
   });
 

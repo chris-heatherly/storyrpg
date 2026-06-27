@@ -160,6 +160,17 @@ describe('episodeCheckpoints', () => {
     ]));
   });
 
+  it('invalidates resumed episodes whose QA score is below the quality floor', () => {
+    expect(findResumedEpisodeInvalidationReasons({
+      episode: makeEpisode(1),
+      qaReport: {
+        overallScore: 86,
+        passesQA: true,
+        criticalIssues: [],
+      },
+    })).toContain('qa_below_quality_floor');
+  });
+
   it('invalidates resumed episodes when required quality sidecars are missing', () => {
     expect(findResumedEpisodeInvalidationReasons({
       episode: makeEpisode(1),

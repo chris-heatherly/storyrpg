@@ -110,6 +110,49 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
   });
 
+  it('rewrites hook/promise/stakes treatment cards as concrete prose obligations', () => {
+    const story = storyWithLeaks();
+    const beat = story.episodes[0].scenes[0].beats[0] as any;
+    beat.text = 'Hook — Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window; promise — reinvention, glamour, a city that owes her a better story; stakes — a FaceTime to her niece Sadie ("are there vampires in Romania?").';
+
+    const result = buildPlanningRegisterMetadataRepairHandler()({
+      story,
+      blockingIssues: [{
+        type: 'planning_register_prose',
+        validator: 'PlanningRegisterLeakValidator',
+        sceneId: 'scene-1',
+        beatId: 'beat-1',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(beat.text).toBe(
+      'Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window; a FaceTime to her niece Sadie ("are there vampires in Romania?").',
+    );
+    expect(beat.text).not.toMatch(/\bHook\s*—|\bpromise\s*—|\bstakes\s*—/i);
+    expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
+  });
+
+  it('strips cold-open wrapper metadata and keeps the planned scene text', () => {
+    const story = storyWithLeaks();
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.description = 'Cold-open prelude: Kylie unpacks in a Belle Époque walk-up; a FaceTime to Sadie asks about vampires.\n\nThen continue into the planned scene: Mika adopts Kylie at the door of Vâlcescu Club on night two.';
+
+    const result = buildPlanningRegisterMetadataRepairHandler()({
+      story,
+      blockingIssues: [{
+        type: 'planning_register_prose',
+        validator: 'PlanningRegisterLeakValidator',
+        sceneId: 'scene-1',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(scene.description).toBe('Mika adopts Kylie at the door of Vâlcescu Club on night two.');
+    expect(scene.description).not.toMatch(/Cold-open prelude|Then continue into the planned scene/i);
+    expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
+  });
+
   it('no-ops when the final contract is not blocked by planning-register prose', () => {
     const story = storyWithLeaks();
     const before = JSON.stringify(story);

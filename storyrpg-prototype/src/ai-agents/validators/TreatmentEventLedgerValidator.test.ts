@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Beat, Scene, Story } from '../../types';
-import type { SevenPointBeatRealizationContract } from '../../types/scenePlan';
+import type { StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import {
   hasDirectTreatmentEventRealization,
   TreatmentEventLedgerValidator,
@@ -8,9 +8,9 @@ import {
 
 const HOOK = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is rescued by a mysterious man in the park.';
 
-function contract(overrides: Partial<SevenPointBeatRealizationContract> = {}): SevenPointBeatRealizationContract {
+function contract(overrides: Partial<StoryCircleBeatRealizationContract> = {}): StoryCircleBeatRealizationContract {
   return {
-    id: 'seven-point-hook-kylie-bucharest-blog-park-rescue',
+    id: 'Story Circle-hook-kylie-bucharest-blog-park-rescue',
     beat: 'hook',
     sourceText: HOOK,
     targetEpisodeNumber: 1,
@@ -32,7 +32,7 @@ function scene(overrides: Partial<Scene> & { id: string }): Scene {
     name: overrides.name ?? overrides.id,
     beats: overrides.beats ?? [],
     startingBeatId: overrides.startingBeatId ?? overrides.beats?.[0]?.id ?? '',
-    sevenPointBeatContracts: overrides.sevenPointBeatContracts,
+    storyCircleBeatContracts: overrides.storyCircleBeatContracts,
   } as Scene;
 }
 
@@ -69,7 +69,7 @@ describe('TreatmentEventLedgerValidator', () => {
             beat('b1', 'FaceTime freezes on Sadie asking whether Romania has vampires. Your suitcase waits by the Bucharest apartment door.'),
             beat('b2', 'You open a blank blog page and title it Bite Me, then delete the words twice.'),
           ],
-          sevenPointBeatContracts: [contract()],
+          storyCircleBeatContracts: [contract()],
         }),
       ]),
       treatmentSourced: true,
@@ -90,7 +90,7 @@ describe('TreatmentEventLedgerValidator', () => {
         scene({
           id: 's1-1',
           beats: [beat('b1', 'You joke with Sadie from the Bucharest sublet, but the park rescue never happens on-page.')],
-          sevenPointBeatContracts: [contract({ blockingLevel: 'warning' })],
+          storyCircleBeatContracts: [contract({ blockingLevel: 'warning' })],
         }),
       ]),
       treatmentSourced: true,
@@ -110,7 +110,7 @@ describe('TreatmentEventLedgerValidator', () => {
             text: 'Your suitcase wheels clatter over Bucharest pavement.',
             textVariants: { text: 'In the park fog, a mysterious man pulls you away from danger while the first blog idea takes shape.' },
           } as unknown as Beat],
-          sevenPointBeatContracts: [contract()],
+          storyCircleBeatContracts: [contract()],
         }),
       ]),
       treatmentSourced: true,
@@ -128,7 +128,7 @@ describe('TreatmentEventLedgerValidator', () => {
             beat('b1', 'Two weeks ago, Kylie had landed in Bucharest fleeing heartbreak, had started a blog, and had been rescued by a mysterious man in the park.'),
             beat('b2', 'You write it down again as if the recap can make it less strange.'),
           ],
-          sevenPointBeatContracts: [contract()],
+          storyCircleBeatContracts: [contract()],
         }),
       ]),
       treatmentSourced: true,
@@ -139,7 +139,7 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(hasDirectTreatmentEventRealization(HOOK, result.findings[0].message)).toBe(false);
   });
 
-  it('accepts broad seven-point events realized directly across the target episode', () => {
+  it('accepts broad Story Circle events realized directly across the target episode', () => {
     const result = validator.validate({
       story: story([
         scene({
@@ -148,7 +148,7 @@ describe('TreatmentEventLedgerValidator', () => {
             beat('b1', 'Kylie lands in Bucharest with two suitcases and heartbreak packed under your ribs.'),
             beat('b2', 'A blank blog waits on your laptop; tonight you start a blog and decide what a new life should sound like.'),
           ],
-          sevenPointBeatContracts: [contract()],
+          storyCircleBeatContracts: [contract()],
         }),
         scene({
           id: 's1-5',
@@ -181,9 +181,66 @@ describe('TreatmentEventLedgerValidator', () => {
             beat('b2', 'The blank blog cursor blinks under the title Bucharest, Day One while you delete the engagement photo, block his number, and twist the diamond ring off your finger.'),
             beat('b3', 'Mika lifts you into red heels and walks you past the velvet rope, turning the club into the first room of the life you came here to claim.'),
           ],
-          sevenPointBeatContracts: [contract({
+          storyCircleBeatContracts: [contract({
             sourceText: 'Kylie lands in Bucharest fleeing a broken engagement, starts a blog, and begins building a glamorous new life.',
             eventAtoms: ['Kylie lands in Bucharest fleeing a broken engagement, starts a blog, and begins building a glamorous new life'],
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('accepts the Bite Me opening-life hook when unpacking, blog launch, friends, and aspiration are staged on-page', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [
+            beat('b1', 'Half-unpacked boxes turn the Lipscani apartment into an obstacle course while the Dusk & Dawn Bucharest view counter ticks past a thousand. You posted the launch article just hours ago.'),
+            beat('b2', 'Mika lounges on the sofa and grins at the numbers. "A thousand views before midnight. The Dusk Club is not just a thing, babe, it is your first real celebration."'),
+            beat('b3', 'She flips a Vâlcescu Club keycard between two fingers and promises the city will finally look as glittering as you came here to make it.'),
+            beat('b4', 'Stela turns over a gold chain at the window and warns that fabulous new friends in Bucharest always come with shadows.'),
+          ],
+          storyCircleBeatContracts: [contract({
+            sourceText: 'Kylie unpacking in Bucharest, launching her blog, and meeting fabulous new friends, establishing her desire for a glittering new life.',
+            eventAtoms: [
+              'Kylie unpacking in Bucharest',
+              'launching her blog',
+              'meeting fabulous new friends',
+              'establishing her desire for a glittering new life',
+            ],
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('accepts the alternate Bite Me Dusk Club hook when repaired prose stages blog ambition and predator danger', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [
+            beat('b1', "You tape up the last cardboard box, 'OLD LIFE' scrawled on the side, and shove it against the wall. The sunset bleeds violet and gold across Lipscani while you frame the shot for Chapter One: Bucharest."),
+            beat('b2', "Mika taps a glossy black card against your arm. 'You want to launch The Dusk Club for real? You want to make a splash?'"),
+            beat('b3', "Your blog needs an exclusive, and this feels like your opening night. Across the rooftop bar, an elegant man raises his glass, beautiful with the placid stillness of a predator that knows it has already been seen."),
+          ],
+          storyCircleBeatContracts: [contract({
+            sourceText: 'Kylie unpacking in Lipscani, launching the Dusk Club, seeking romance and blog views while missing the supernatural danger around her.',
+            eventAtoms: [
+              'Kylie unpacking in Lipscani',
+              'launching the Dusk Club',
+              'seeking romance and blog views',
+              'missing the supernatural danger around her',
+            ],
           })],
         }),
       ]),
@@ -202,7 +259,7 @@ describe('TreatmentEventLedgerValidator', () => {
           beats: [
             beat('b1', 'Two weeks ago, Kylie had landed in Bucharest fleeing heartbreak, had started a blog, and had been rescued by a mysterious man in the park.'),
           ],
-          sevenPointBeatContracts: [contract()],
+          storyCircleBeatContracts: [contract()],
         }),
         scene({
           id: 's1-2',
@@ -228,7 +285,7 @@ describe('TreatmentEventLedgerValidator', () => {
             beat('b2', 'In Cișmigiu Park, fog slides between the lamps. A shadow lunges from the path, and a mysterious man steps between you and the scream.'),
             beat('b3', 'He rescues you with one hard shove and a warning in Romanian, leaving your blog post trembling open on your phone.'),
           ],
-          sevenPointBeatContracts: [contract()],
+          storyCircleBeatContracts: [contract()],
         }),
       ]),
       treatmentSourced: true,

@@ -74,7 +74,7 @@ function plannedSeasonPlan(treatmentGuidance: TreatmentEpisodeGuidance = guidanc
     tone: 'tense',
     themes: ['truth costs comfort'],
     anchors: {},
-    sevenPoint: { hook: 'Mara finds the locked wing.' },
+    legacyStructure: { hook: 'Mara finds the locked wing.' },
     arcs: [],
     endingMode: 'single',
     resolvedEndings: [],
@@ -178,10 +178,10 @@ function finalStoryForScene(sceneId: string, text: string): Story {
   return story;
 }
 
-function sevenPointPlan(): SeasonPlan {
+function storyCirclePlan(): SeasonPlan {
   const plan = plannedSeasonPlan();
   Object.assign(plan, {
-    sevenPoint: {
+    legacyStructure: {
       hook: 'Mara opens the portrait and the archive starts hunting her.',
       plotTurn1: 'Mara crosses the locked threshold.',
       pinch1: 'The steward narrows the exits.',
@@ -191,12 +191,11 @@ function sevenPointPlan(): SeasonPlan {
       resolution: 'Mara leaves with the key and a new enemy.',
     },
     treatmentSeasonGuidance: {
-      episodeStructureMode: 'standard',
       seasonSpine: '- **Hook:** Mara opens the portrait and the archive starts hunting her.',
       beatEpisodeAnchors: { hook: 1 },
     },
   });
-  plan.sevenPointBeatContracts = undefined;
+  plan.storyCircleBeatContracts = undefined;
   plan.scenePlan = buildSeasonScenePlan(plan);
   return plan;
 }
@@ -254,7 +253,6 @@ function arcPressurePlan(): SeasonPlan {
       completionPercentage: 0,
     }],
     treatmentSeasonGuidance: {
-      episodeStructureMode: 'standard',
       arcGuidance: {
         rawSection: 'Arc plan',
         arcs: [{
@@ -425,15 +423,15 @@ describe('TreatmentFieldUtilizationValidator', () => {
     expect(plan.scenePlan?.scenes.some((scene) => (scene.authoredTreatmentFields ?? []).length > 0)).toBe(true);
   });
 
-  it('passes plan-time validation when authored seven-point beat text is assigned to a scene artifact', () => {
-    const plan = sevenPointPlan();
+  it('passes plan-time validation when authored Story Circle beat text is assigned to a scene artifact', () => {
+    const plan = storyCirclePlan();
     const result = new TreatmentFieldUtilizationValidator().validatePlan({
       seasonPlan: plan,
     });
 
-    expect(result.issues.filter((issue) => issue.message.includes('Seven-point beat'))).toEqual([]);
-    expect(plan.scenePlan?.sevenPointBeatContracts?.some((contract) => contract.beat === 'hook')).toBe(true);
-    expect(plan.scenePlan?.scenes.some((scene) => (scene.sevenPointBeatContracts ?? []).some((contract) => contract.beat === 'hook'))).toBe(true);
+    expect(result.issues.filter((issue) => issue.message.includes('Story Circle beat'))).toEqual([]);
+    expect(plan.scenePlan?.storyCircleBeatContracts?.some((contract) => contract.beat === 'you')).toBe(true);
+    expect(plan.scenePlan?.scenes.some((scene) => (scene.storyCircleBeatContracts ?? []).some((contract) => contract.beat === 'you'))).toBe(true);
   });
 
   it('passes plan-time validation when authored arc pressure is assigned to scene artifacts', () => {
@@ -476,9 +474,9 @@ describe('TreatmentFieldUtilizationValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('not realized in reader-facing story pressure'))).toBe(true);
   });
 
-  it('fails final validation when a structural seven-point beat drops its authored event', () => {
-    const plan = sevenPointPlan();
-    const sceneId = plan.scenePlan?.sevenPointBeatContracts?.[0]?.targetSceneIds?.[0] ?? 's1-1';
+  it('fails final validation when a structural Story Circle beat drops its authored event', () => {
+    const plan = storyCirclePlan();
+    const sceneId = plan.scenePlan?.storyCircleBeatContracts?.[0]?.targetSceneIds?.[0] ?? 's1-1';
     const result = new TreatmentFieldUtilizationValidator().validate({
       seasonPlan: plan,
       story: finalStoryForScene(sceneId, 'Mara waits in a quiet room. Nothing changes.'),
@@ -487,7 +485,7 @@ describe('TreatmentFieldUtilizationValidator', () => {
     });
 
     expect(result.valid).toBe(false);
-    expect(result.issues.some((issue) => issue.message.includes('Seven-point beat "hook"'))).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('Story Circle beat "you"'))).toBe(true);
   });
 
   it('extracts world/location guidance and builds load-bearing contracts', () => {
@@ -583,6 +581,36 @@ describe('TreatmentFieldUtilizationValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.some((issue) => issue.message.includes('World/location treatment field'))).toBe(true);
+  });
+
+  it('defers season-spanning world rules during partial final validation', () => {
+    const contract = {
+      ...worldContracts().find((candidate) => candidate.contractKind === 'supernatural_rule')!,
+      targetEpisodeNumbers: [1, 2],
+      targetSceneIds: ['s1-1'],
+      sourceText: 'Strigoi require invitations in episode one, reveal their mirror rule in episode two, and pay off the broken-threshold law in the finale.',
+    };
+    const plan = {
+      ...plannedSeasonPlan({}),
+      totalEpisodes: 2,
+      worldTreatmentContracts: [contract],
+      scenePlan: {
+        scenes: [{ id: 's1-1', episodeNumber: 1, title: 'The Gate', order: 1, worldTreatmentContracts: [contract] }],
+        byEpisode: { 1: ['s1-1'] },
+        setupPayoffEdges: [],
+        worldTreatmentContracts: [contract],
+      },
+    } as unknown as SeasonPlan;
+
+    const result = new TreatmentFieldUtilizationValidator().validate({
+      sourceAnalysis: { ...analysis({}), worldTreatmentContracts: [contract] } as SourceMaterialAnalysis,
+      seasonPlan: plan,
+      story: finalStoryForScene('s1-1', 'Mara notices the archive door has rules nobody will explain yet.'),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+
+    expect(result.issues.filter((issue) => issue.message.includes('World/location treatment field'))).toEqual([]);
   });
 
   it('extracts stakes architecture guidance and builds contracts for every stake lane', () => {
@@ -825,6 +853,33 @@ describe('TreatmentFieldUtilizationValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.some((issue) => issue.message.includes('Failure mode audit field'))).toBe(true);
+  });
+
+  it('defers season-spanning failure-mode audit prose checks during partial final validation', () => {
+    const contract = failureModeContract({
+      targetSceneIds: ['s1-1'],
+      targetEpisodeNumbers: [1, 2],
+      sourceText: 'Reset disease avoided: every episode changes the end-state, with episode one opening the archive and episode two making the household hunt the missing key.',
+    });
+    const result = new TreatmentFieldUtilizationValidator().validate({
+      sourceAnalysis: { ...analysis({}), failureModeAuditContracts: [contract] } as SourceMaterialAnalysis,
+      seasonPlan: {
+        ...plannedSeasonPlan({}),
+        totalEpisodes: 2,
+        failureModeAuditContracts: [contract],
+        scenePlan: {
+          scenes: [{ id: 's1-1', episodeNumber: 1, title: 'The Gate', order: 1, failureModeAuditContracts: [contract] }],
+          byEpisode: { 1: ['s1-1'] },
+          setupPayoffEdges: [],
+          failureModeAuditContracts: [contract],
+        },
+      } as unknown as SeasonPlan,
+      story: finalStoryForScene('s1-1', 'Mara opens the archive and cannot return to pretending it is only wallpaper.'),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+
+    expect(result.issues.filter((issue) => issue.message.includes('Failure mode audit field'))).toEqual([]);
   });
 });
 

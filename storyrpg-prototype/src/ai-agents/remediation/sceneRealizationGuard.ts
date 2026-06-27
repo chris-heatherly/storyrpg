@@ -95,6 +95,12 @@ function isChoiceContingentSeed(moment: string): boolean {
     .test(moment);
 }
 
+function isSocialUmbrellaAuthoredMoment(moment: string): boolean {
+  if (!/\badopts?\b/i.test(moment)) return false;
+  return !/\b(swaps?|hands?|gives?|presses?|kisses?|walks?|rescues?|drops?|pins?|opens?|takes?|declines?|refuses?)\b/i
+    .test(moment.replace(/\badopts?\b/ig, ''));
+}
+
 function isConcreteSceneSeed(moment: string): boolean {
   if (isChoiceContingentSeed(moment)) return false;
   if (isTitleLikeAbstractLabel(moment)) return false;
@@ -124,6 +130,7 @@ export function requiredMomentsFor(source: SceneContractSource | undefined): Req
     // treatment_seed_* flag is not enough: those flags often carry agent-facing
     // secret/backstory labels that must never be inserted as player prose.
     if (tier === 'connective') continue;
+    if (tier === 'authored' && isSocialUmbrellaAuthoredMoment(moment)) continue;
     if (tier === 'seed' && !isConcreteSceneSeed(moment)) continue;
     moments.push({
       moment,

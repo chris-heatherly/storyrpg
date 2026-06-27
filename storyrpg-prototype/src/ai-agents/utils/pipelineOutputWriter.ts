@@ -23,6 +23,12 @@ import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
 import { appendQualityLedger } from './qualityLedger';
 import { analyzeStory as analyzeSentenceOpeners } from './sentenceOpenerStats';
+import {
+  deriveStoryCircleQualityScore,
+  type StoryCircleQualityScoreBasis,
+  type StoryCircleQualityScoreOptions,
+  type StoryCircleQualityScoreReport,
+} from './qualityScoring';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { 
   ColorScript,
@@ -513,17 +519,8 @@ export interface PipelineOutputs {
   };
 }
 
-export interface QualityScoreBasis {
-  qaScore?: number;
-  validationScore?: number;
-  finalStoryContractScore?: number;
-  validatorComplianceScore?: number;
-  validatorBlockingIssues?: number;
-  validatorWarnings?: number;
-  evidenceCoverage: number;
-  caps: string[];
-  penalties: string[];
-}
+export type QualityScoreBasis = StoryCircleQualityScoreBasis;
+export type QualityScoreReport = StoryCircleQualityScoreReport;
 
 export interface OutputManifest {
   storyTitle: string;
@@ -957,34 +954,6 @@ function runNameFromDir(outputDir: string): string {
   return trimmed.slice(trimmed.lastIndexOf('/') + 1);
 }
 
-function clampScore(score: number): number {
-  return Math.max(0, Math.min(100, Math.round(score)));
-}
-
-function finalStoryContractScore(report?: FinalStoryContractReport): number | undefined {
-  if (!report) return undefined;
-  const metrics = report.metrics || {};
-  const uniqueWarningCount = new Set((report.warnings || []).map(w => {
-    const warning = w as Record<string, unknown>;
-    return [
-      warning.type,
-      warning.validator,
-      warning.sceneId,
-      warning.episodeNumber,
-      warning.message,
-    ].filter(value => value != null).join(':');
-  })).size;
-  const warningPenalty = Math.min(uniqueWarningCount * 4, 30);
-  const raw = 100
-    - (report.blockingIssues?.length || 0) * 25
-    - warningPenalty
-    - (metrics.requestedEpisodesMissing || 0) * 20
-    - (metrics.failedIncrementalResults || 0) * 15
-    - (metrics.callbackIssues || 0) * 10
-    - (metrics.mechanicsLeaks || 0) * 10;
-  return clampScore(raw);
-}
-
 export function reconcileBestPracticesReportForFinalStory(
   report: ComprehensiveValidationReport | undefined,
   story: Story | undefined,
@@ -1041,80 +1010,15 @@ function findChoiceInStory(story: Story, choiceId: string): any | undefined {
   return undefined;
 }
 
-export function deriveRunQualityScore(outputs: Pick<PipelineOutputs, 'qaReport' | 'bestPracticesReport' | 'finalStoryContractReport'>): {
+export function deriveRunQualityScore(
+  outputs: Pick<PipelineOutputs, 'brief' | 'finalStory' | 'qaReport' | 'bestPracticesReport' | 'finalStoryContractReport' | 'incrementalValidationResults'>,
+  options: StoryCircleQualityScoreOptions = {},
+): {
   score: number;
   basis: QualityScoreBasis;
+  report: QualityScoreReport;
 } {
-  const qaScore = outputs.qaReport?.overallScore;
-  const validationScore = outputs.bestPracticesReport?.overallScore;
-  const contractScore = finalStoryContractScore(outputs.finalStoryContractReport);
-  const validatorBlockingIssues =
-    (outputs.bestPracticesReport?.blockingIssues?.length || 0) +
-    (outputs.finalStoryContractReport?.blockingIssues?.length || 0);
-  const validatorWarnings =
-    (outputs.bestPracticesReport?.warnings?.length || 0) +
-    (outputs.finalStoryContractReport?.warnings?.length || 0);
-  const validatorComplianceScore = clampScore(
-    (validationScore ?? 0) * 0.40 +
-    (contractScore ?? 0) * 0.60,
-  );
-  const caps: string[] = [];
-  const penalties: string[] = [];
-
-  if (!outputs.qaReport) {
-    penalties.push('missing_qarunner_report');
-    caps.push('missing_qa_cap_69');
-  } else if (!outputs.qaReport.passesQA || outputs.qaReport.criticalIssues.length > 0) {
-    caps.push('qa_failed_cap_69');
-  }
-
-  if (!outputs.bestPracticesReport) {
-    penalties.push('missing_best_practices_validation');
-    caps.push('missing_validation_cap_69');
-  } else if (!outputs.bestPracticesReport.overallPassed || outputs.bestPracticesReport.blockingIssues.length > 0) {
-    caps.push('validation_failed_cap_69');
-  }
-
-  if (!outputs.finalStoryContractReport) {
-    penalties.push('missing_final_story_contract');
-    caps.push('missing_final_contract_cap_69');
-  } else if (!outputs.finalStoryContractReport.passed || outputs.finalStoryContractReport.blockingIssues.length > 0) {
-    caps.push('final_contract_failed_cap_49');
-  }
-
-  if (validatorBlockingIssues > 0) penalties.push(`validator_blocking_issues_${validatorBlockingIssues}`);
-  if (validatorWarnings > 0) penalties.push(`validator_warnings_${validatorWarnings}`);
-
-  const evidenceCoverage = Math.round(
-    ((outputs.qaReport ? 0.20 : 0) +
-      (outputs.bestPracticesReport ? 0.30 : 0) +
-      (outputs.finalStoryContractReport ? 0.50 : 0)) * 100,
-  );
-  let score = clampScore(
-    (qaScore ?? 0) * 0.20 +
-    (validationScore ?? 0) * 0.30 +
-    (contractScore ?? 0) * 0.50,
-  );
-
-  for (const cap of caps) {
-    if (cap.endsWith('_cap_49')) score = Math.min(score, 49);
-    else if (cap.endsWith('_cap_69')) score = Math.min(score, 69);
-  }
-
-  return {
-    score,
-    basis: {
-      qaScore,
-      validationScore,
-      finalStoryContractScore: contractScore,
-      validatorComplianceScore,
-      validatorBlockingIssues,
-      validatorWarnings,
-      evidenceCoverage,
-      caps,
-      penalties,
-    },
-  };
+  return deriveStoryCircleQualityScore(outputs, options);
 }
 
 /**
@@ -1765,7 +1669,8 @@ export async function savePipelineOutputs(
     const validationSize = await writeJsonFile(validationPath, {
       overallPassed: outputs.bestPracticesReport.overallPassed,
       overallScore: outputs.bestPracticesReport.overallScore,
-      qualityScore: outputs.bestPracticesReport.qualityScore ?? outputs.bestPracticesReport.overallScore,
+      validationScore: outputs.bestPracticesReport.overallScore,
+      legacyValidationQualityScore: outputs.bestPracticesReport.qualityScore,
       metrics: outputs.bestPracticesReport.metrics,
       issuesSummary: {
         blocking: outputs.bestPracticesReport.blockingIssues.length,
@@ -2296,9 +2201,17 @@ export async function savePipelineOutputs(
   const storyScenes = storyEpisodes.flatMap(ep => ep.scenes || []);
   const storyEncounters = storyScenes.map(s => s.encounter).filter(Boolean);
 
-  // Create manifest
-  const quality = deriveRunQualityScore(outputs);
+  const quality = deriveRunQualityScore(outputs, { outputDir });
+  const qualityReportPath = outputDir + '07c-quality-score-report.json';
+  const qualityReportSize = await writeJsonFile(qualityReportPath, quality.report);
+  files.push({
+    name: 'Quality Score Report',
+    path: qualityReportPath,
+    type: 'quality-score',
+    size: qualityReportSize,
+  });
 
+  // Create manifest
   const manifest: OutputManifest = {
     storyTitle,
     storyId,

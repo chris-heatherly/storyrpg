@@ -4,7 +4,7 @@
 //
 // The five §4 treatment-fidelity validators (AuthoredEpisodeConformance /
 // EncounterAnchorContent / InformationLedgerSchedule / SignatureDevicePresence /
-// SevenPointAnchorConformance) are registered in `validatorRegistry.ts` and gated
+// StoryCircleAnchorConformance) are registered in `validatorRegistry.ts` and gated
 // by `treatmentFidelityGate.ts`, but nothing dispatched them — they were inert in
 // a normal run. This module is the dispatch seam: `FullStoryPipeline`'s final-gate
 // (`enforceFinalStoryContract`) calls {@link runFidelityValidators} in ONE line and
@@ -31,7 +31,8 @@ import type { SeasonScenePlan, PlannedScene } from '../../types/scenePlan';
 import type {
   SourceMaterialAnalysis,
   TreatmentEpisodeGuidance,
-  SevenPointBeat,
+  LegacyStructuralBeat,
+  StoryCircleBeat,
 } from '../../types/sourceAnalysis';
 import type { ExtractedTreatment } from '../utils/treatmentExtraction';
 import type { ValidationIssue } from './BaseValidator';
@@ -60,15 +61,18 @@ import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 import {
-  SevenPointAnchorConformanceValidator,
-  seasonPlanToAnchorConformanceInput,
-} from './SevenPointAnchorConformanceValidator';
+  StoryCircleAnchorConformanceValidator,
+  seasonPlanToStoryCircleAnchorConformanceInput,
+} from './StoryCircleAnchorConformanceValidator';
+import { legacyRoleToStoryCircleBeats } from '../utils/storyCircleDistribution';
 import {
   buildValidationPhaseBaseline,
   fidelityFindingFingerprint,
   planArtifactsMatchBaseline,
   type ValidationPhaseBaseline,
 } from './validationPhaseBaseline';
+import type { ValidatorExecutionRecord } from '../../types/validation';
+import { createValidatorExecutionRecordsFromGroupedIssues } from './validatorExecutionRecords';
 import type {
   FinalContractFindingClass,
   FinalContractRepairTarget,
@@ -93,6 +97,8 @@ export interface FidelityFinding {
 export interface RunFidelityValidatorsResult {
   /** All findings emitted by the enabled §4 validators (error/warning only). */
   fidelityFindings: FidelityFinding[];
+  /** Registry-normalized execution ownership records. Additive telemetry only. */
+  executionRecords?: ValidatorExecutionRecord[];
   /**
    * Whether this run's source-of-record is an authored treatment. §4.6: when true,
    * `FinalStoryContractValidator` keeps fidelity errors BLOCKING instead of
@@ -115,9 +121,29 @@ export interface RunFidelityValidatorsInput {
 
 const EMPTY: RunFidelityValidatorsResult = { fidelityFindings: [], treatmentSourced: false };
 
+function storyCircleBeatEpisodeAnchorsFromAnalysis(
+  analysis: SourceMaterialAnalysis | undefined,
+): Partial<Record<StoryCircleBeat, number>> | undefined {
+  const guidance = analysis?.treatmentSeasonGuidance;
+  if (!guidance) return undefined;
+  if (guidance.storyCircleBeatEpisodeAnchors && Object.keys(guidance.storyCircleBeatEpisodeAnchors).length > 0) {
+    return guidance.storyCircleBeatEpisodeAnchors;
+  }
+  const legacyAnchors = guidance.beatEpisodeAnchors as Partial<Record<LegacyStructuralBeat, number>> | undefined;
+  if (!legacyAnchors || Object.keys(legacyAnchors).length === 0) return undefined;
+  const converted: Partial<Record<StoryCircleBeat, number>> = {};
+  for (const [legacyBeat, episodeNumber] of Object.entries(legacyAnchors)) {
+    if (typeof episodeNumber !== 'number') continue;
+    for (const beat of legacyRoleToStoryCircleBeats(legacyBeat as LegacyStructuralBeat)) {
+      converted[beat] = converted[beat] ?? episodeNumber;
+    }
+  }
+  return Object.keys(converted).length > 0 ? converted : undefined;
+}
+
 const PLAN_ONLY_FINAL_VALIDATORS = new Set([
   'AuthoredEpisodeConformanceValidator',
-  'SevenPointAnchorConformanceValidator',
+  'StoryCircleAnchorConformanceValidator',
 ]);
 
 export type FidelityValidationScopeMode = 'episode-incremental' | 'generated-slice' | 'full-season';
@@ -193,7 +219,7 @@ function scopedPlannedScene(scene: PlannedScene, active: Set<number> | undefined
     branchConsequenceContracts: scopedContracts(scene.branchConsequenceContracts, active, activeSceneIds),
     endingRealizationContracts: scopedContracts(scene.endingRealizationContracts, active, activeSceneIds),
     failureModeAuditContracts: scopedContracts(scene.failureModeAuditContracts, active, activeSceneIds),
-    sevenPointBeatContracts: scopedContracts(scene.sevenPointBeatContracts, active, activeSceneIds),
+    storyCircleBeatContracts: scopedContracts(scene.storyCircleBeatContracts, active, activeSceneIds),
     arcPressureContracts: scopedContracts(scene.arcPressureContracts, active, activeSceneIds),
     characterTreatmentContracts: scopedContracts(scene.characterTreatmentContracts, active, activeSceneIds),
     worldTreatmentContracts: scopedContracts(scene.worldTreatmentContracts, active, activeSceneIds),
@@ -222,7 +248,7 @@ function scopedScenePlan(scenePlan: SeasonScenePlan | undefined, active: Set<num
     branchConsequenceContracts: scopedContracts(scenePlan.branchConsequenceContracts, active, activeSceneIds),
     endingRealizationContracts: scopedContracts(scenePlan.endingRealizationContracts, active, activeSceneIds),
     failureModeAuditContracts: scopedContracts(scenePlan.failureModeAuditContracts, active, activeSceneIds),
-    sevenPointBeatContracts: scopedContracts(scenePlan.sevenPointBeatContracts, active, activeSceneIds),
+    storyCircleBeatContracts: scopedContracts(scenePlan.storyCircleBeatContracts, active, activeSceneIds),
     arcPressureContracts: scopedContracts(scenePlan.arcPressureContracts, active, activeSceneIds),
     characterTreatmentContracts: scopedContracts(scenePlan.characterTreatmentContracts, active, activeSceneIds),
     worldTreatmentContracts: scopedContracts(scenePlan.worldTreatmentContracts, active, activeSceneIds),
@@ -275,7 +301,7 @@ function scopeSeasonPlan(seasonPlan: SeasonPlan | undefined, active: Set<number>
     choiceMoments: (seasonPlan.choiceMoments ?? []).filter((moment) => active.has(moment.episode) || active.has(moment.paysOffEpisode ?? -1)),
     seasonPromiseContracts: scopedContracts(seasonPlan.seasonPromiseContracts, active, activeSceneIds),
     stakesArchitectureContracts: scopedContracts(seasonPlan.stakesArchitectureContracts, active, activeSceneIds),
-    sevenPointBeatContracts: scopedContracts(seasonPlan.sevenPointBeatContracts, active, activeSceneIds),
+    storyCircleBeatContracts: scopedContracts(seasonPlan.storyCircleBeatContracts, active, activeSceneIds),
     arcPressureContracts: scopedContracts(seasonPlan.arcPressureContracts, active, activeSceneIds),
     branchConsequenceContracts: scopedContracts(seasonPlan.branchConsequenceContracts, active, activeSceneIds),
     endingRealizationContracts: scopedContracts(seasonPlan.endingRealizationContracts, active, activeSceneIds),
@@ -291,7 +317,7 @@ function scopeSourceAnalysis(analysis: SourceMaterialAnalysis | undefined, activ
     ...analysis,
     episodeBreakdown: scopedEpisodeArray(analysis.episodeBreakdown, active, (episode) => episode.episodeNumber) ?? [],
     stakesArchitectureContracts: scopedContracts(analysis.stakesArchitectureContracts, active),
-    sevenPointBeatContracts: scopedContracts(analysis.sevenPointBeatContracts, active),
+    storyCircleBeatContracts: scopedContracts(analysis.storyCircleBeatContracts, active),
     arcPressureContracts: scopedContracts(analysis.arcPressureContracts, active),
     branchConsequenceContracts: scopedContracts(analysis.branchConsequenceContracts, active),
     endingRealizationContracts: scopedContracts(analysis.endingRealizationContracts, active),
@@ -374,9 +400,14 @@ function isTreatmentSourced(
  * never be confirmed or repaired.
  */
 const LOCATION_SCENE_RE = /:ep(\d+):([^:]+)/;
+const LOCATION_SCENE_ONLY_RE = /^(?:worldTreatment|stakesArchitecture|arcPressure|failureModeAudit|branchConsequence|endingRealization):(?:[^:]+:)?([^:]+)/;
 function locationSceneRef(location?: string): { episodeNumber?: number; sceneId?: string } {
   const m = location ? LOCATION_SCENE_RE.exec(location) : null;
-  if (!m) return {};
+  if (!m) {
+    const sceneOnly = location ? LOCATION_SCENE_ONLY_RE.exec(location) : null;
+    if (!sceneOnly || /^(?:season|episode|unknown|location)$/i.test(sceneOnly[1])) return {};
+    return { sceneId: sceneOnly[1] };
+  }
   return { episodeNumber: Number(m[1]), sceneId: m[2] };
 }
 
@@ -411,8 +442,8 @@ const FIDELITY_POLICY_BY_VALIDATOR: Record<string, Partial<FidelityFinding>> = {
     sourceKind: 'treatment',
     hasConcreteObligation: true,
   },
-  SevenPointAnchorConformanceValidator: {
-    gateId: TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance,
+  StoryCircleAnchorConformanceValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance,
     findingClass: 'authored_contract',
     sourceKind: 'treatment',
     hasConcreteObligation: true,
@@ -557,7 +588,9 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   EncounterAnchorContentValidator: TREATMENT_FIDELITY_GATE_FLAGS.encounterAnchorContent,
   InformationLedgerScheduleValidator: TREATMENT_FIDELITY_GATE_FLAGS.informationLedgerSchedule,
   SignatureDevicePresenceValidator: TREATMENT_FIDELITY_GATE_FLAGS.signatureDevicePresence,
-  SevenPointAnchorConformanceValidator: TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance,
+  StoryCircleAnchorConformanceValidator: TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance,
+  EncounterSetPieceDepthValidator: 'GATE_ENCOUNTER_SETPIECE_DEPTH',
+  RequiredBeatRealizationValidator: 'GATE_REQUIRED_BEAT_REALIZATION',
   SceneTransitionContinuityValidator: 'GATE_SCENE_TRANSITION_CONTINUITY',
   SceneTurnRealizationValidator: 'GATE_SCENE_TURN_REALIZATION',
   RelationshipPacingValidator: 'GATE_RELATIONSHIP_PACING',
@@ -582,11 +615,10 @@ function collectFidelityFindings(
   const unscopedSeasonPlan = input.seasonPlan;
   const unscopedSourceAnalysis = input.sourceAnalysis;
   const incrementalEpisodeSeal = input.scope?.mode === 'episode-incremental';
+  const sliceOnlyValidation = Boolean(input.scope && input.scope.mode !== 'full-season');
   const findings: FidelityFinding[] = [];
 
-  const beatEpisodeAnchors = unscopedSourceAnalysis?.treatmentSeasonGuidance?.beatEpisodeAnchors as
-    | Partial<Record<SevenPointBeat, number>>
-    | undefined;
+  const storyCircleBeatEpisodeAnchors = storyCircleBeatEpisodeAnchorsFromAnalysis(unscopedSourceAnalysis);
   const scenePlan = seasonPlan?.scenePlan;
 
   const guard = (fn: () => FidelityFinding[]): void => {
@@ -599,7 +631,7 @@ function collectFidelityFindings(
   };
 
   // 4.1 — authored episode identity (count/order/title/anchor). Needs the treatment + plan.
-  if (!incrementalEpisodeSeal && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance) && unscopedSourceAnalysis && unscopedSeasonPlan) {
+  if (!sliceOnlyValidation && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance) && unscopedSourceAnalysis && unscopedSeasonPlan) {
     guard(() => {
       const result = new AuthoredEpisodeConformanceValidator().validate({
         treatment: treatmentFromAnalysis(unscopedSourceAnalysis),
@@ -789,12 +821,12 @@ function collectFidelityFindings(
   }
 
   // 4.5 — each authored beat→episode anchor is honored in the final season.
-  if (!incrementalEpisodeSeal && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance) && unscopedSeasonPlan && beatEpisodeAnchors) {
+  if (!sliceOnlyValidation && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance) && unscopedSeasonPlan && storyCircleBeatEpisodeAnchors) {
     guard(() => {
-      const result = new SevenPointAnchorConformanceValidator().validate(
-        seasonPlanToAnchorConformanceInput(unscopedSeasonPlan, beatEpisodeAnchors),
+      const result = new StoryCircleAnchorConformanceValidator().validate(
+        seasonPlanToStoryCircleAnchorConformanceInput(unscopedSeasonPlan, storyCircleBeatEpisodeAnchors),
       );
-      return toFindings('SevenPointAnchorConformanceValidator', result.issues);
+      return toFindings('StoryCircleAnchorConformanceValidator', result.issues);
     });
   }
 
@@ -807,8 +839,14 @@ export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFid
     collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced),
     input,
   );
+  const executionRecords = createValidatorExecutionRecordsFromGroupedIssues(findings, {
+    lifecycle: 'final-contract',
+    role: 'regression-net',
+    placement: 'season-final',
+    validatorGateFlags: FIDELITY_VALIDATOR_FLAGS,
+  });
   if (findings.length === 0 && !treatmentSourced) return EMPTY;
-  return { fidelityFindings: findings, treatmentSourced };
+  return { fidelityFindings: findings, executionRecords, treatmentSourced };
 }
 
 /**
@@ -830,6 +868,8 @@ export interface PlanTimeFidelityResult {
   blockingErrors: FidelityFinding[];
   treatmentSourced: boolean;
   baseline?: ValidationPhaseBaseline;
+  /** Registry-normalized execution ownership records. Additive telemetry only. */
+  executionRecords?: ValidatorExecutionRecord[];
 }
 
 const EMPTY_PLAN_TIME: PlanTimeFidelityResult = {
@@ -841,7 +881,7 @@ const EMPTY_PLAN_TIME: PlanTimeFidelityResult = {
 /**
  * The two §4 validators whose inputs are plan-vs-treatment only (no generated
  * story): AuthoredEpisodeConformance (episode count/order/title) and
- * SevenPointAnchorConformance (beat→episode anchors). Both previously gated
+ * StoryCircleAnchorConformance (beat→episode anchors). Both previously gated
  * ONLY at the season-final contract, where a deterministic plan mismatch
  * killed the whole run after the full generation spend (median 73 min in the
  * 2026-06-11 audit). This check runs the SAME validators at `plan` placement —
@@ -861,10 +901,19 @@ const EMPTY_PLAN_TIME: PlanTimeFidelityResult = {
 export function runPlanTimeFidelityChecks(input: {
   seasonPlan?: SeasonPlan;
   sourceAnalysis?: SourceMaterialAnalysis;
+  scope?: FidelityValidationScope;
 }): PlanTimeFidelityResult {
-  const { seasonPlan, sourceAnalysis } = input;
+  const active = activeEpisodesFor({
+    story: { episodes: [] } as unknown as Story,
+    seasonPlan: input.seasonPlan,
+    sourceAnalysis: input.sourceAnalysis,
+    scope: input.scope,
+  });
+  const seasonPlan = scopeSeasonPlan(input.seasonPlan, active);
+  const sourceAnalysis = scopeSourceAnalysis(input.sourceAnalysis, active);
   const treatmentSourced = isTreatmentSourced(sourceAnalysis, seasonPlan);
   if (!treatmentSourced || !seasonPlan || !sourceAnalysis) return EMPTY_PLAN_TIME;
+  const sliceOnlyValidation = Boolean(input.scope && input.scope.mode !== 'full-season');
 
   const findings: FidelityFinding[] = [];
   const guard = (fn: () => FidelityFinding[]): void => {
@@ -875,7 +924,7 @@ export function runPlanTimeFidelityChecks(input: {
     }
   };
 
-  if (isGateEnabledAt(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance, 'plan')) {
+  if (!sliceOnlyValidation && isGateEnabledAt(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance, 'plan')) {
     guard(() => {
       const result = new AuthoredEpisodeConformanceValidator().validate({
         treatment: treatmentFromAnalysis(sourceAnalysis),
@@ -885,15 +934,13 @@ export function runPlanTimeFidelityChecks(input: {
     });
   }
 
-  const beatEpisodeAnchors = sourceAnalysis.treatmentSeasonGuidance?.beatEpisodeAnchors as
-    | Partial<Record<SevenPointBeat, number>>
-    | undefined;
-  if (isGateEnabledAt(TREATMENT_FIDELITY_GATE_FLAGS.sevenPointAnchorConformance, 'plan') && beatEpisodeAnchors) {
+  const storyCircleBeatEpisodeAnchors = storyCircleBeatEpisodeAnchorsFromAnalysis(sourceAnalysis);
+  if (!sliceOnlyValidation && isGateEnabledAt(TREATMENT_FIDELITY_GATE_FLAGS.storyCircleAnchorConformance, 'plan') && storyCircleBeatEpisodeAnchors) {
     guard(() => {
-      const result = new SevenPointAnchorConformanceValidator().validate(
-        seasonPlanToAnchorConformanceInput(seasonPlan, beatEpisodeAnchors),
+      const result = new StoryCircleAnchorConformanceValidator().validate(
+        seasonPlanToStoryCircleAnchorConformanceInput(seasonPlan, storyCircleBeatEpisodeAnchors),
       );
-      return toFindings('SevenPointAnchorConformanceValidator', result.issues);
+      return toFindings('StoryCircleAnchorConformanceValidator', result.issues);
     });
   }
 
@@ -946,5 +993,11 @@ export function runPlanTimeFidelityChecks(input: {
     blockingErrors: findings.filter((f) => f.severity === 'error'),
     treatmentSourced,
     baseline: buildValidationPhaseBaseline({ sourceAnalysis, seasonPlan, findings }),
+    executionRecords: createValidatorExecutionRecordsFromGroupedIssues(findings, {
+      lifecycle: 'plan-fidelity',
+      role: 'primary',
+      placement: 'plan',
+      validatorGateFlags: FIDELITY_VALIDATOR_FLAGS,
+    }),
   };
 }

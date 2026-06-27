@@ -215,6 +215,55 @@ describe('QAPhase', () => {
     expect(events.some(e => e.type === 'phase_complete' && (e as any).phase === 'qa_repair')).toBe(true);
   });
 
+  it('rejects QA repair candidates that make the QA outcome worse', async () => {
+    const failing = makeQAReport({
+      overallScore: 72,
+      passesQA: false,
+      criticalIssues: ['continuity'],
+      continuity: {
+        issues: [
+          {
+            severity: 'error',
+            description: 'Hero teleports',
+            suggestedFix: 'Add travel beat',
+            location: { sceneId: 'scene-1' },
+          },
+        ],
+      },
+    });
+    const worse = makeQAReport({
+      overallScore: 60,
+      passesQA: false,
+      criticalIssues: ['continuity'],
+      continuity: { issues: [] },
+    });
+    const runFullQA = vi.fn(async () => worse);
+    runFullQA.mockResolvedValueOnce(failing);
+    const deps = makeDeps({
+      qaRunner: { runFullQA } as any,
+      sceneWriter: {
+        execute: vi.fn(async () => ({
+          success: true,
+          data: {
+            sceneId: 'scene-1',
+            sceneName: 'Scene One',
+            beats: [{ id: 'beat-1', text: 'A worse repair happens.' }],
+          },
+        })),
+      } as any,
+    });
+    const events: PipelineEvent[] = [];
+    const input = makeInput();
+
+    const result = await new QAPhase(deps).run(input, makeContext(events));
+
+    expect(runFullQA).toHaveBeenCalledTimes(2);
+    expect(result.qaReport?.overallScore).toBe(72);
+    expect(input.sceneContents[0].beats[0].text).toBe('Something happens.');
+    expect(events.some(e => e.type === 'warning' && (e as any).phase === 'qa_repair'
+      && (e as any).message.includes('rejected candidate score 60/100'))).toBe(true);
+  });
+
   it('stops the repair loop when nothing is repairable and warns below threshold', async () => {
     const failing = makeQAReport({ overallScore: 40, passesQA: false, criticalIssues: ['vibes'] });
     const deps = makeDeps({

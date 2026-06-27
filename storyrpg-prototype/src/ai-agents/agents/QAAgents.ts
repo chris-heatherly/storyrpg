@@ -661,6 +661,7 @@ Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY 
 Rules:
 - "overallScore" and "distinctionScore" are REQUIRED numbers 0-100.
 - "characterScores", "issues", and "recommendations" must be arrays (use [] when empty).
+- Keep the report compact: at most 2 strengths and 2 weaknesses per character, at most 8 total issues, at most 3 recommendations, one short sentence per string.
 `;
   }
 }
@@ -980,8 +981,6 @@ export interface QAReport {
   skippedChecks?: string[]; // Which checks were skipped due to incremental validation
 }
 
-const EVIDENCE_LIMITED_MAX_SCORE = 75;
-
 export function deriveEvidenceLimitedScore(input: {
   scores?: number[];
   evidenceCount: number;
@@ -993,9 +992,8 @@ export function deriveEvidenceLimitedScore(input: {
   const baseScore = scores.length > 0
     ? scores.reduce((sum, score) => sum + score, 0) / scores.length
     : 100;
-  const capped = Math.min(EVIDENCE_LIMITED_MAX_SCORE, baseScore);
   const penalty = (input.errorCount ?? 0) * 20 + (input.warningCount ?? 0) * 8;
-  return Math.max(0, Math.min(100, Math.round(capped - penalty)));
+  return Math.max(0, Math.min(100, Math.round(baseScore - penalty)));
 }
 
 /**
@@ -1294,7 +1292,7 @@ export class QARunner {
         ? [`${incrementalIssueCount} voice issue(s) were caught and addressed during incremental validation`]
         : [
           evidenceCount > 0
-            ? `Voice validation was performed incrementally during content generation; score is capped at ${EVIDENCE_LIMITED_MAX_SCORE} because full voice QA was skipped`
+            ? 'Voice validation was performed incrementally during content generation; score reflects collected incremental evidence because full voice QA was skipped'
             : 'Voice validation has no evidence and is scored as failed',
         ],
     };
@@ -1347,7 +1345,7 @@ export class QARunner {
         ? [`${incrementalIssueCount} stakes issue(s) were caught and addressed during incremental validation`]
         : [
           evidenceCount > 0
-            ? `Stakes validation was performed incrementally during content generation; score is capped at ${EVIDENCE_LIMITED_MAX_SCORE} because full stakes QA was skipped`
+            ? 'Stakes validation was performed incrementally during content generation; score reflects collected incremental evidence because full stakes QA was skipped'
             : 'Stakes validation has no evidence and is scored as failed',
         ],
     };

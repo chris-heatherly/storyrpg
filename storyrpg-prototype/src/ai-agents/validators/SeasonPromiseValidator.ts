@@ -179,7 +179,7 @@ export class SeasonPromiseValidator extends BaseValidator {
         issues.push(this.warning(
           'Episode 1 does not obviously establish the premisePromise.',
           'season.episodes[1]',
-          'The opening episode/sceneEpisode should establish premise, player role, dramatic engine, and promise of play.',
+          'The opening episode should establish premise, player role, dramatic engine, and promise of play.',
         ));
       }
     }

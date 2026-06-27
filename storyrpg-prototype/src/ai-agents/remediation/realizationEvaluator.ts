@@ -132,7 +132,7 @@ function actionRequirementsFor(moment: string, prose: string): ActionRequirement
     ]));
   }
   if (/\bvanish(?:es|ed|ing)?\b|\bdisappear(?:s|ed|ing)?\b/.test(needle)) {
-    add('vanish', /\b(?:vanish(?:es|ed|ing)?|disappear(?:s|ed|ing)?|gone|melts?\s+into|lost\s+to)\b/.test(hay));
+    add('vanish', /\b(?:vanish(?:es|ed|ing)?|disappear(?:s|ed|ing)?|gone|melts?\s+into|dissolv(?:e|es|ed|ing)\s+into|reced(?:e|es|ed|ing)\s+into\s+(?:the\s+)?(?:shadow|shadows|dark|darkness|fog|mist|smoke)|lost\s+to)\b/.test(hay));
   }
   if (/\bdrops?\s+(?:the\s+)?attacker\b|\bdispatch(?:es|ed)?\s+(?:the\s+)?attacker\b/.test(needle)) {
     add('drop-attacker', anyPatternPresent(hay, [

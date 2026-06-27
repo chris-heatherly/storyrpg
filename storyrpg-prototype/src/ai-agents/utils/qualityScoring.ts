@@ -1,0 +1,2012 @@
+import type { Story } from '../../types';
+import { STORY_CIRCLE_BEATS, type StoryCircleBeat, type StoryCircleStructure } from '../../types/sourceAnalysis';
+import type { ComprehensiveValidationReport } from '../../types/validation';
+import type { QAReport } from '../agents/QAAgents';
+import type {
+  FinalStoryContractIssue,
+  FinalStoryContractReport,
+} from '../validators/FinalStoryContractValidator';
+
+export type QualityDomainId =
+  | 'story_circle_spine'
+  | 'dramatic_structure_architecture'
+  | 'scene_coherence_prose_continuity'
+  | 'choice_agency'
+  | 'branching_consequence_memory'
+  | 'character_npc_relationship_quality'
+  | 'gameplay_mechanics_as_fiction'
+  | 'encounters';
+
+export type QualitySeverity = 'critical' | 'error' | 'warning' | 'suggestion';
+
+export interface QualityFinding {
+  id: string;
+  severity: QualitySeverity;
+  source: string;
+  validator?: string;
+  message: string;
+  location?: string;
+  mappedDomain?: QualityDomainId;
+  conceptId?: string;
+}
+
+export interface QualityConceptScore {
+  id: string;
+  label: string;
+  weight: number;
+  score: number;
+  criticalMisses: number;
+  errors: number;
+  warnings: number;
+  suggestions: number;
+  findings: QualityFinding[];
+}
+
+export interface QualityDomainScore {
+  id: QualityDomainId;
+  label: string;
+  weight: number;
+  active: boolean;
+  score: number;
+  criticalMisses: number;
+  errors: number;
+  warnings: number;
+  suggestions: number;
+  evidence: string[];
+  missingEvidence: string[];
+  findings: QualityFinding[];
+  concepts: QualityConceptScore[];
+}
+
+export interface QualityCap {
+  id: string;
+  maxScore: number;
+  reason: string;
+  domainId?: QualityDomainId;
+}
+
+export interface StoryCircleBeatEvidence {
+  beat: StoryCircleBeat;
+  status: 'realized' | 'metadata-only' | 'missing';
+  expected: string[];
+  evidence: string[];
+  firstEpisodeIndex?: number;
+  firstSceneIndex?: number;
+}
+
+export interface StoryCircleQualityScoreBasis {
+  version: 3;
+  profile: 'authored-treatment' | 'freeform';
+  rawScore: number;
+  finalScore: number;
+  evidenceCoverage: number;
+  caps: QualityCap[];
+  domains: QualityDomainScore[];
+  storyCircle: {
+    beats: Record<StoryCircleBeat, StoryCircleBeatEvidence>;
+    missingBeats: StoryCircleBeat[];
+    metadataOnlyBeats: StoryCircleBeat[];
+    ordered: boolean;
+  };
+  legacySubscores: {
+    qaScore?: number;
+    validationScore?: number;
+    finalStoryContractScore?: number;
+  };
+  unmappedFindings: QualityFinding[];
+  penalties: string[];
+}
+
+export interface StoryCircleQualityScoreReport extends StoryCircleQualityScoreBasis {
+  generatedAt: string;
+  formula: {
+    rawQualityScore: string;
+    domainScore: string;
+    conceptScore: string;
+    finalQualityScore: string;
+  };
+  scoringNotes: string[];
+}
+
+export interface StoryCircleQualityScoreResult {
+  score: number;
+  basis: StoryCircleQualityScoreBasis;
+  report: StoryCircleQualityScoreReport;
+}
+
+export interface StoryCircleQualityScoreInputs {
+  brief?: Record<string, any>;
+  finalStory?: Story | null;
+  qaReport?: QAReport | null;
+  bestPracticesReport?: ComprehensiveValidationReport | null;
+  finalStoryContractReport?: FinalStoryContractReport | null;
+  incrementalValidationResults?: unknown[] | null;
+}
+
+export interface StoryCircleQualityScoreOptions {
+  outputDir?: string;
+  now?: Date;
+  weightsMarkdownPath?: string;
+}
+
+type ConceptAccumulator = Omit<QualityConceptScore, 'score'>;
+type DomainAccumulator = Omit<QualityDomainScore, 'score' | 'concepts'> & {
+  concepts: Record<string, ConceptAccumulator>;
+  defaultConceptId: string;
+};
+
+interface StoryCircleEvidenceSummary {
+  beats: Record<StoryCircleBeat, StoryCircleBeatEvidence>;
+  missingBeats: StoryCircleBeat[];
+  metadataOnlyBeats: StoryCircleBeat[];
+  ordered: boolean;
+  orderedViolation?: string;
+  hasStoryCircleEvidence: boolean;
+}
+
+interface StaticStorySignals {
+  finalStoryPresent: boolean;
+  sceneCount: number;
+  beatCount: number;
+  majorScenesWithoutTurn: number;
+  totalChoices: number;
+  meaningfulChoices: number;
+  choicesWithConsequences: number;
+  leakage: QualityFinding[];
+  repeatedOrCentralLeakage: boolean;
+  invalidEncounterTargets: string[];
+  cosmeticBranching: boolean;
+}
+
+interface SidecarFinding {
+  severity: QualitySeverity;
+  source: string;
+  validator?: string;
+  message: string;
+  location?: string;
+}
+
+interface QualityConceptDefinition {
+  id: string;
+  label: string;
+  weight: number;
+  keywords?: string[];
+}
+
+interface QualityDomainDefinition {
+  id: QualityDomainId;
+  label: string;
+  weight: number;
+  defaultConceptId: string;
+  concepts: QualityConceptDefinition[];
+}
+
+const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
+  {
+    id: 'story_circle_spine',
+    label: 'Story Circle spine',
+    weight: 20,
+    defaultConceptId: 'complete_loop',
+    concepts: [
+      { id: 'complete_loop', label: 'Complete you -> need -> go -> search -> find -> take -> return -> change loop', weight: 16, keywords: ['complete loop', 'primary story circle beat', 'missing primary'] },
+      { id: 'beat_order_causal_progression', label: 'Beat order and causal progression', weight: 14, keywords: ['order', 'causal', 'chronology', 'out of order'] },
+      { id: 'you_known_world_pressure', label: 'you: known-world pressure', weight: 9, keywords: ['you', 'known-world', 'baseline'] },
+      { id: 'need_active_want_lack', label: 'need: active want/lack', weight: 10, keywords: ['need', 'want', 'lack'] },
+      { id: 'go_threshold_crossing', label: 'go: threshold crossing', weight: 10, keywords: ['go', 'threshold'] },
+      { id: 'search_adaptation_pressure', label: 'search: adaptation under pressure', weight: 11, keywords: ['search', 'adaptation'] },
+      { id: 'find_apparent_victory', label: 'find: wanted thing / answer / apparent victory', weight: 10, keywords: ['find', 'answer', 'apparent victory'] },
+      { id: 'take_real_price', label: 'take: real price / loss / sacrifice', weight: 12, keywords: ['take', 'price', 'loss', 'sacrifice'] },
+      { id: 'return_prize_wound', label: 'return: prize and wound carried back', weight: 8, keywords: ['return', 'prize', 'wound'] },
+      { id: 'change_transformation_equilibrium', label: 'change: transformation / new equilibrium', weight: 10, keywords: ['change', 'transformation', 'equilibrium'] },
+    ],
+  },
+  {
+    id: 'dramatic_structure_architecture',
+    label: 'Dramatic structure / season story architecture',
+    weight: 18,
+    defaultConceptId: 'season_dramatic_question',
+    concepts: [
+      { id: 'season_dramatic_question', label: 'Season dramatic question / central promise', weight: 18, keywords: ['dramatic question', 'central promise', 'seasonpromise', 'source fidelity', 'authored'] },
+      { id: 'stakes_escalation', label: 'Stakes escalation', weight: 16, keywords: ['stakes', 'escalation', 'stakestriangle'] },
+      { id: 'scene_to_scene_causality', label: 'Scene-to-scene causal progression', weight: 15, keywords: ['causal progression', 'scene-to-scene'] },
+      { id: 'setup_payoff_architecture', label: 'Setup/payoff architecture', weight: 14, keywords: ['setup_payoff', 'setup', 'payoff', 'promise ledger'] },
+      { id: 'arc_pressure_reversals_turns', label: 'Arc pressure / reversals / turns', weight: 12, keywords: ['arcpressure', 'arc pressure', 'reversal', 'turn'] },
+      { id: 'climax_resolution_payoff', label: 'Climax and resolution payoff', weight: 12, keywords: ['climax', 'resolution'] },
+      { id: 'information_reveal_control', label: 'Information/reveal control', weight: 6, keywords: ['informationledger', 'information ledger', 'reveal'] },
+      { id: 'cold_opens_cliffhangers', label: 'Cold opens and cliffhangers', weight: 5, keywords: ['cold open', 'cliffhanger'] },
+      { id: 'theme_pressure', label: 'Theme pressure', weight: 2, keywords: ['theme'] },
+    ],
+  },
+  {
+    id: 'scene_coherence_prose_continuity',
+    label: 'Scene coherence / prose continuity',
+    weight: 17,
+    defaultConceptId: 'scene_clear_dramatic_turn',
+    concepts: [
+      { id: 'scene_clear_dramatic_turn', label: 'Scene has a clear dramatic turn', weight: 20, keywords: ['sceneturn', 'scene turn', 'dramatic turn'] },
+      { id: 'natural_coherent_scene_read', label: 'Scene reads naturally and coherently', weight: 18, keywords: ['scene coherence', 'coherent', 'natural'] },
+      { id: 'no_out_of_place_story_concepts', label: 'No out-of-place story concepts', weight: 14, keywords: ['wrong scene', 'out-of-place', 'beat placement'] },
+      { id: 'clean_transitions_continuity', label: 'Clean transitions and continuity', weight: 12, keywords: ['transition', 'continuity'] },
+      { id: 'pov_clarity', label: 'POV clarity', weight: 10, keywords: ['povclarity', 'pov clarity'] },
+      { id: 'concrete_on_page_realization', label: 'Concrete on-page realization', weight: 10, keywords: ['requiredbeat', 'beat realization', 'concrete', 'on-page'] },
+      { id: 'tone_voice_consistency', label: 'Tone/voice consistency', weight: 8, keywords: ['tone', 'voice consistency'] },
+      { id: 'no_planning_register_or_mechanics_leakage', label: 'No planning-register or mechanics leakage', weight: 8, keywords: ['planning-register', 'mechanics leakage', 'scaffolding', 'design note'] },
+    ],
+  },
+  {
+    id: 'choice_agency',
+    label: 'Choice agency',
+    weight: 15,
+    defaultConceptId: 'meaningful_agency',
+    concepts: [
+      { id: 'meaningful_agency', label: 'Meaningful agency', weight: 22, keywords: ['meaningful agency', 'no player choice', 'choice surface'] },
+      { id: 'want_cost_identity', label: 'Want / cost / identity', weight: 18, keywords: ['want', 'cost', 'identity'] },
+      { id: 'choice_affects_story_state', label: 'Choice affects outcome, process, information, relationship, or identity', weight: 16, keywords: ['outcome', 'process', 'information', 'relationship', 'identity', 'state evidence'] },
+      { id: 'choice_from_scene_pressure', label: 'Choice arises naturally from scene pressure', weight: 14, keywords: ['scene pressure', 'pressure'] },
+      { id: 'dilemmas', label: 'Dilemmas', weight: 10, keywords: ['dilemma'] },
+      { id: 'strategic_choices', label: 'Strategic choices', weight: 7, keywords: ['strategic'] },
+      { id: 'relationship_choices', label: 'Relationship choices', weight: 7, keywords: ['relationship choice'] },
+      { id: 'expression_choices', label: 'Expression choices', weight: 4, keywords: ['expression choice'] },
+      { id: 'distribution_percentages', label: 'Distribution percentages', weight: 2, keywords: ['distribution', 'percentage'] },
+    ],
+  },
+  {
+    id: 'branching_consequence_memory',
+    label: 'Branching / consequence memory',
+    weight: 13,
+    defaultConceptId: 'branch_residue_survives',
+    concepts: [
+      { id: 'branch_residue_survives', label: 'Branch residue survives reconvergence', weight: 20, keywords: ['residue', 'reconvergence'] },
+      { id: 'specific_remembered_consequences', label: 'Consequences are specific and remembered', weight: 17, keywords: ['consequence memory', 'specific consequence', 'remembered'] },
+      { id: 'cross_episode_payoffs', label: 'Cross-episode payoffs', weight: 15, keywords: ['cross-episode', 'callback', 'payoff'] },
+      { id: 'meaningfully_different_branches', label: 'Branches create meaningfully different experiences', weight: 14, keywords: ['divergence', 'different experience'] },
+      { id: 'convergent_spine_intact', label: 'Convergent spine stays intact', weight: 10, keywords: ['convergent spine', 'reconverge'] },
+      { id: 'ending_route_effects', label: 'Ending eligibility / route effects', weight: 8, keywords: ['endingreachability', 'ending eligibility', 'route effect'] },
+      { id: 'failure_recovery', label: 'Failure recovery', weight: 6, keywords: ['failure recovery'] },
+      { id: 'branch_graph_correctness', label: 'Branch graph correctness', weight: 6, keywords: ['branch graph', 'scenegraphbranch'] },
+      { id: 'branch_cap_telemetry', label: 'Branch cap telemetry', weight: 4, keywords: ['branch cap', 'cap telemetry'] },
+    ],
+  },
+  {
+    id: 'character_npc_relationship_quality',
+    label: 'Character / NPC / relationship quality',
+    weight: 10,
+    defaultConceptId: 'protagonist_want_need_lie_truth',
+    concepts: [
+      { id: 'protagonist_want_need_lie_truth', label: 'Protagonist want / need / lie / truth', weight: 20, keywords: ['protagonist', 'want', 'need', 'lie', 'truth'] },
+      { id: 'character_change_pressure', label: 'Character change under pressure', weight: 18, keywords: ['character change', 'arcdelta', 'arc_delta'] },
+      { id: 'npc_desire_pressure_function', label: 'NPCs have clear desire, pressure, and function', weight: 14, keywords: ['npc', 'desire', 'function'] },
+      { id: 'relationship_pacing_earned', label: 'Relationship pacing is earned', weight: 12, keywords: ['relationship pacing', 'earned'] },
+      { id: 'relationship_payoffs_visible', label: 'Relationship payoffs are visible', weight: 10, keywords: ['relationship payoff'] },
+      { id: 'supporting_characters_choice_pressure', label: 'Supporting characters create choice pressure', weight: 9, keywords: ['supporting character', 'choice pressure'] },
+      { id: 'antagonist_opposition_pressure', label: 'Antagonist/opposition pressure', weight: 7, keywords: ['antagonist', 'opposition'] },
+      { id: 'character_introductions', label: 'Character introductions', weight: 5, keywords: ['character introduction'] },
+      { id: 'visual_identity_flavor', label: 'Visual identity / flavor', weight: 5, keywords: ['visual identity', 'flavor'] },
+    ],
+  },
+  {
+    id: 'gameplay_mechanics_as_fiction',
+    label: 'Gameplay mechanics as fiction',
+    weight: 5,
+    defaultConceptId: 'fiction_first_presentation',
+    concepts: [
+      { id: 'fiction_first_presentation', label: 'Fiction-first presentation', weight: 22, keywords: ['fiction-first', 'mechanicsleakage', 'stat check', 'skill check', 'dc'] },
+      { id: 'mechanics_create_story_pressure', label: 'Mechanics create story pressure', weight: 18, keywords: ['mechanicalstorytelling', 'narrativemechanicpressure', 'story pressure'] },
+      { id: 'hidden_state_visible_residue', label: 'Hidden state produces visible residue', weight: 16, keywords: ['hidden state', 'visible residue'] },
+      { id: 'skill_stat_surfaces_diegetic', label: 'Skill/stat surfaces feel diegetic', weight: 12, keywords: ['skill surface', 'diegetic', 'skillcoverage', 'statcheckbalance'] },
+      { id: 'identity_state_matters', label: 'Identity state matters', weight: 10, keywords: ['identity state'] },
+      { id: 'relationship_state_matters', label: 'Relationship state matters', weight: 10, keywords: ['relationship state'] },
+      { id: 'flags_scores_tags_reliable', label: 'Flags/scores/tags are reliable', weight: 7, keywords: ['flagcontract', 'flag', 'score', 'tag'] },
+      { id: 'inventory_items', label: 'Inventory/items', weight: 3, keywords: ['inventory', 'item'] },
+      { id: 'numeric_balance', label: 'Numeric balance', weight: 2, keywords: ['numeric balance', 'balance'] },
+    ],
+  },
+  {
+    id: 'encounters',
+    label: 'Encounters',
+    weight: 2,
+    defaultConceptId: 'encounter_story_pressure',
+    concepts: [
+      { id: 'encounter_story_pressure', label: 'Encounter as story pressure, not filler', weight: 17, keywords: ['encounter', 'story pressure', 'filler'] },
+      { id: 'meaningful_outcome_states', label: 'Meaningful success / complicated / failure outcomes', weight: 15, keywords: ['success', 'complicated', 'failure outcome'] },
+      { id: 'encounter_story_circle_target', label: 'Encounter Story Circle target', weight: 12, keywords: ['encounterstorycircletarget', 'story circle target'] },
+      { id: 'cost_aftermath_consequence', label: 'Cost and aftermath consequence', weight: 11, keywords: ['aftermath', 'cost'] },
+      { id: 'branching_outcome_quality', label: 'Branching outcome quality', weight: 10, keywords: ['branching outcome'] },
+      { id: 'setup_context_prior_scenes', label: 'Setup context from prior scenes', weight: 9, keywords: ['setup context'] },
+      { id: 'skill_approach_variety', label: 'Skill/approach variety', weight: 8, keywords: ['approach variety', 'skill'] },
+      { id: 'clocks_tactical_structure', label: 'Clocks/tactical structure', weight: 6, keywords: ['clock', 'tactical'] },
+      { id: 'environmental_elements', label: 'Environmental elements', weight: 5, keywords: ['environmental'] },
+      { id: 'npc_dispositions_tells', label: 'NPC dispositions/tells', weight: 4, keywords: ['disposition', 'tell'] },
+      { id: 'visual_encounter_staging', label: 'Visual encounter staging', weight: 3, keywords: ['visual encounter', 'staging'] },
+    ],
+  },
+];
+
+const STOPWORDS = new Set([
+  'about',
+  'after',
+  'again',
+  'against',
+  'also',
+  'because',
+  'before',
+  'being',
+  'between',
+  'could',
+  'every',
+  'from',
+  'have',
+  'into',
+  'more',
+  'must',
+  'only',
+  'over',
+  'that',
+  'their',
+  'there',
+  'they',
+  'this',
+  'through',
+  'under',
+  'when',
+  'where',
+  'which',
+  'while',
+  'with',
+  'would',
+  'your',
+]);
+
+const LEAKAGE_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\b(?:stat|skill)\s+check\b/i, label: 'visible stat/skill check language' },
+  { pattern: /\bDC\s*\d+\b/i, label: 'visible DC language' },
+  { pattern: /\bdifficulty\s+class\b/i, label: 'visible difficulty class language' },
+  { pattern: /\broll(?:ed|ing)?\s+(?:a|the)?\s*d(?:ice|20)\b/i, label: 'visible dice roll language' },
+  { pattern: /\b(?:modifier|bonus|penalty)\s+(?:of\s+)?[+-]?\d+\b/i, label: 'visible modifier language' },
+  { pattern: /\bsuccess\s+chance\b/i, label: 'visible success chance language' },
+  { pattern: /\bfailure\s+chance\b/i, label: 'visible failure chance language' },
+  { pattern: /\b(?:state flag|story flag|callbackHookId|branch residue|scene turn)\b/i, label: 'pipeline scaffolding language' },
+  { pattern: /\bstory\s+circle\b/i, label: 'structural scaffolding language' },
+  { pattern: /\bmechanic(?:s|al)?\s+(?:pressure|state|score|tag)\b/i, label: 'mechanics scaffolding language' },
+];
+
+export function deriveStoryCircleQualityScore(
+  inputs: StoryCircleQualityScoreInputs,
+  options: StoryCircleQualityScoreOptions = {},
+): StoryCircleQualityScoreResult {
+  const now = options.now ?? new Date();
+  const profile = determineProfile(inputs.brief);
+  const domainDefinitions = resolveDomainDefinitions(options.weightsMarkdownPath);
+  const domains = createDomainAccumulators(domainDefinitions);
+  const unmappedFindings: QualityFinding[] = [];
+  const caps: QualityCap[] = [];
+  const storyCircle = buildStoryCircleEvidence(inputs.finalStory, inputs.brief);
+  const staticSignals = collectStaticStorySignals(inputs.finalStory);
+  const sidecarFindings = readQualitySidecarFindings(options.outputDir);
+
+  addStoryCircleFindings(domains, storyCircle);
+  addStaticSignalFindings(domains, staticSignals);
+  collectReportFindings(inputs, sidecarFindings).forEach((finding) => {
+    const mappedDomain = mapFindingToDomain(finding);
+    const qualityFinding = toQualityFinding(finding, mappedDomain);
+    if (mappedDomain) {
+      addFinding(domains[mappedDomain], qualityFinding);
+    } else {
+      unmappedFindings.push(qualityFinding);
+    }
+  });
+
+  if (unmappedFindings.length > 0) {
+    addFinding(domains.scene_coherence_prose_continuity, {
+      id: makeFindingId('quality-score', 'unmapped-validator-evidence', 'warning'),
+      severity: 'warning',
+      source: 'quality-score',
+      validator: 'QualityScoreV3',
+      message: `${unmappedFindings.length} validator finding(s) did not map to a StoryRPG quality concept domain.`,
+      mappedDomain: 'scene_coherence_prose_continuity',
+      conceptId: 'natural_coherent_scene_read',
+    });
+  }
+
+  const finalStoryContractScore = legacyFinalStoryContractScore(inputs.finalStoryContractReport);
+  const legacySubscores = {
+    qaScore: normalizeScore((inputs.qaReport as any)?.overallScore),
+    validationScore: normalizeScore(inputs.bestPracticesReport?.overallScore),
+    finalStoryContractScore,
+  };
+
+  applyCaps(caps, storyCircle, staticSignals, inputs);
+  const evidenceCoverage = computeEvidenceCoverage(inputs, storyCircle, staticSignals, profile);
+  if (evidenceCoverage < 75) {
+    caps.push({
+      id: 'evidence_coverage_below_75',
+      maxScore: 69,
+      reason: `Evidence coverage is ${evidenceCoverage}%, below the 75% floor.`,
+    });
+  } else if (evidenceCoverage < 90) {
+    caps.push({
+      id: 'evidence_coverage_below_90',
+      maxScore: 79,
+      reason: `Evidence coverage is ${evidenceCoverage}%, below the 90% high-confidence floor.`,
+    });
+  }
+
+  const domainScores = Object.values(domains).map(finalizeDomainScore);
+  const rawScore = weightedScore(domainScores);
+  const cappedScore = applyScoreCaps(Math.round(rawScore), caps);
+  const highScoreEligible = enforceAboveNinetyRequirements(cappedScore, caps, domainScores, storyCircle, staticSignals);
+  const finalScore = highScoreEligible.score;
+  highScoreEligible.addedCaps.forEach((cap) => caps.push(cap));
+
+  const basis: StoryCircleQualityScoreBasis = {
+    version: 3,
+    profile,
+    rawScore,
+    finalScore,
+    evidenceCoverage,
+    caps,
+    domains: domainScores,
+    storyCircle: {
+      beats: storyCircle.beats,
+      missingBeats: storyCircle.missingBeats,
+      metadataOnlyBeats: storyCircle.metadataOnlyBeats,
+      ordered: storyCircle.ordered,
+    },
+    legacySubscores,
+    unmappedFindings,
+    penalties: caps.map((cap) => `${cap.id}: ${cap.reason}`),
+  };
+
+  return {
+    score: finalScore,
+    basis,
+    report: {
+      ...basis,
+      generatedAt: now.toISOString(),
+      formula: {
+        rawQualityScore: 'sum(domain.weight * domain.score) / sum(activeDomain.weight)',
+        domainScore: 'sum(concept.weight * concept.score) / sum(domain.concept.weight)',
+        conceptScore: 'clamp0to100(100 - criticalMisses*25 - errors*18 - warnings*7 - suggestions*2)',
+        finalQualityScore: 'applyCaps(round(rawQualityScore), caps)',
+      },
+      scoringNotes: [
+        'Story Circle is the only structural scoring model.',
+        'Legacy-structure fields are ignored; legacy-structure-only evidence receives no scoring credit.',
+        'qaScore, validationScore, and finalStoryContractScore are retained only as diagnostics.',
+      ],
+    },
+  };
+}
+
+function createDomainAccumulators(definitions: QualityDomainDefinition[]): Record<QualityDomainId, DomainAccumulator> {
+  return definitions.reduce((acc, definition) => {
+    acc[definition.id] = {
+      id: definition.id,
+      label: definition.label,
+      weight: definition.weight,
+      active: definition.weight > 0,
+      criticalMisses: 0,
+      errors: 0,
+      warnings: 0,
+      suggestions: 0,
+      evidence: [],
+      missingEvidence: [],
+      findings: [],
+      concepts: definition.concepts.reduce((conceptAcc, concept) => {
+        conceptAcc[concept.id] = {
+          id: concept.id,
+          label: concept.label,
+          weight: concept.weight,
+          criticalMisses: 0,
+          errors: 0,
+          warnings: 0,
+          suggestions: 0,
+          findings: [],
+        };
+        return conceptAcc;
+      }, {} as Record<string, ConceptAccumulator>),
+      defaultConceptId: definition.defaultConceptId,
+    };
+    return acc;
+  }, {} as Record<QualityDomainId, DomainAccumulator>);
+}
+
+function resolveDomainDefinitions(weightsMarkdownPath?: string): QualityDomainDefinition[] {
+  const definitions = cloneDomainDefinitions(DEFAULT_DOMAIN_DEFINITIONS);
+  const overrides = readWeightOverrides(weightsMarkdownPath);
+  if (!overrides) {
+    return definitions;
+  }
+
+  definitions.forEach((domain) => {
+    const domainWeight = overrides.domainWeights.get(normalizeWeightLabel(domain.label));
+    if (typeof domainWeight === 'number') {
+      domain.weight = domainWeight;
+    }
+    const conceptOverrides = overrides.conceptWeights.get(normalizeWeightLabel(domain.label));
+    if (!conceptOverrides) {
+      return;
+    }
+    domain.concepts.forEach((concept) => {
+      const conceptWeight = conceptOverrides.get(normalizeWeightLabel(concept.label));
+      if (typeof conceptWeight === 'number') {
+        concept.weight = conceptWeight;
+      }
+    });
+  });
+
+  return definitions;
+}
+
+function cloneDomainDefinitions(definitions: QualityDomainDefinition[]): QualityDomainDefinition[] {
+  return definitions.map((domain) => ({
+    ...domain,
+    concepts: domain.concepts.map((concept) => ({ ...concept, keywords: [...(concept.keywords ?? [])] })),
+  }));
+}
+
+function determineProfile(brief?: Record<string, any>): 'authored-treatment' | 'freeform' {
+  if (!brief) {
+    return 'freeform';
+  }
+  const sourceAnalysis = brief.multiEpisode?.sourceAnalysis;
+  const hasTreatmentSource =
+    typeof brief.rawDocument === 'string' && brief.rawDocument.trim().length > 0;
+  const sourceFormat = sourceAnalysis?.sourceFormat ?? brief.sourceFormat;
+  const hasTreatmentArtifacts =
+    hasTreatmentSource ||
+    sourceFormat === 'treatment' ||
+    sourceFormat === 'document' ||
+    Boolean(brief.treatment) ||
+    Boolean(sourceAnalysis?.treatmentObligations) ||
+    Boolean(brief.seasonPlan?.treatmentObligations);
+  return hasTreatmentArtifacts ? 'authored-treatment' : 'freeform';
+}
+
+function addStoryCircleFindings(
+  domains: Record<QualityDomainId, DomainAccumulator>,
+  storyCircle: StoryCircleEvidenceSummary,
+): void {
+  STORY_CIRCLE_BEATS.forEach((beat) => {
+    const beatEvidence = storyCircle.beats[beat];
+    if (beatEvidence.status === 'realized') {
+      domains.story_circle_spine.evidence.push(`${beat}: ${beatEvidence.evidence[0] ?? 'realized on-page'}`);
+      return;
+    }
+
+    if (beatEvidence.status === 'metadata-only') {
+      addFinding(domains.story_circle_spine, {
+        id: makeFindingId('story-circle', `${beat}-metadata-only`, 'error'),
+        severity: beat === 'take' || beat === 'change' ? 'critical' : 'error',
+        source: 'story-circle',
+        validator: 'QualityScoreV3',
+        message: `Story Circle beat "${beat}" is labeled in metadata but not proven in final prose.`,
+        mappedDomain: 'story_circle_spine',
+        conceptId: storyCircleConceptId(beat),
+      });
+      return;
+    }
+
+    addFinding(domains.story_circle_spine, {
+      id: makeFindingId('story-circle', `${beat}-missing`, 'critical'),
+      severity: 'critical',
+      source: 'story-circle',
+      validator: 'QualityScoreV3',
+      message: `Primary Story Circle beat "${beat}" is missing from final scoring evidence.`,
+      mappedDomain: 'story_circle_spine',
+      conceptId: storyCircleConceptId(beat),
+    });
+  });
+
+  if (storyCircle.missingBeats.length > 0) {
+    addFinding(domains.story_circle_spine, {
+      id: makeFindingId('story-circle', 'complete-loop-missing-beats', 'critical'),
+      severity: 'critical',
+      source: 'story-circle',
+      validator: 'QualityScoreV3',
+      message: `Story Circle loop is incomplete: ${storyCircle.missingBeats.join(', ')} missing.`,
+      mappedDomain: 'story_circle_spine',
+      conceptId: 'complete_loop',
+    });
+  } else if (storyCircle.metadataOnlyBeats.length > 0) {
+    addFinding(domains.story_circle_spine, {
+      id: makeFindingId('story-circle', 'complete-loop-metadata-only', 'error'),
+      severity: 'error',
+      source: 'story-circle',
+      validator: 'QualityScoreV3',
+      message: `Story Circle loop has metadata-only beat(s): ${storyCircle.metadataOnlyBeats.join(', ')}.`,
+      mappedDomain: 'story_circle_spine',
+      conceptId: 'complete_loop',
+    });
+  }
+
+  if (!storyCircle.ordered) {
+    addFinding(domains.story_circle_spine, {
+      id: makeFindingId('story-circle', 'beat-order', 'critical'),
+      severity: 'critical',
+      source: 'story-circle',
+      validator: 'QualityScoreV3',
+      message: storyCircle.orderedViolation ?? 'Story Circle beats are materially out of order.',
+      mappedDomain: 'story_circle_spine',
+      conceptId: 'beat_order_causal_progression',
+    });
+  }
+
+  if (!storyCircle.hasStoryCircleEvidence) {
+    domains.story_circle_spine.missingEvidence.push('No final Story Circle beat evidence was found.');
+  }
+}
+
+function addStaticSignalFindings(
+  domains: Record<QualityDomainId, DomainAccumulator>,
+  signals: StaticStorySignals,
+): void {
+  if (!signals.finalStoryPresent) {
+    addFinding(domains.scene_coherence_prose_continuity, {
+      id: makeFindingId('story', 'missing-final-story', 'critical'),
+      severity: 'critical',
+      source: 'story',
+      validator: 'QualityScoreV3',
+      message: 'No final playable story content was available for scoring.',
+      mappedDomain: 'scene_coherence_prose_continuity',
+      conceptId: 'natural_coherent_scene_read',
+    });
+    return;
+  }
+
+  if (signals.sceneCount === 0 || signals.beatCount === 0) {
+    addFinding(domains.scene_coherence_prose_continuity, {
+      id: makeFindingId('story', 'missing-scene-beat-content', 'critical'),
+      severity: 'critical',
+      source: 'story',
+      validator: 'QualityScoreV3',
+      message: 'Final story lacks playable scene/beat content.',
+      mappedDomain: 'scene_coherence_prose_continuity',
+      conceptId: 'concrete_on_page_realization',
+    });
+  } else {
+    domains.scene_coherence_prose_continuity.evidence.push(`${signals.sceneCount} scene(s) and ${signals.beatCount} beat(s) available for final-content scoring.`);
+  }
+
+  if (signals.majorScenesWithoutTurn > 1) {
+    addFinding(domains.scene_coherence_prose_continuity, {
+      id: makeFindingId('scene-turn', 'multiple-scenes-without-turn', 'error'),
+      severity: 'error',
+      source: 'scene-turn',
+      validator: 'QualityScoreV3',
+      message: `${signals.majorScenesWithoutTurn} major scenes lack realized scene-turn evidence.`,
+      mappedDomain: 'scene_coherence_prose_continuity',
+      conceptId: 'scene_clear_dramatic_turn',
+    });
+  } else if (signals.majorScenesWithoutTurn === 1) {
+    addFinding(domains.scene_coherence_prose_continuity, {
+      id: makeFindingId('scene-turn', 'one-scene-without-turn', 'warning'),
+      severity: 'warning',
+      source: 'scene-turn',
+      validator: 'QualityScoreV3',
+      message: 'One major scene lacks realized scene-turn evidence.',
+      mappedDomain: 'scene_coherence_prose_continuity',
+      conceptId: 'scene_clear_dramatic_turn',
+    });
+  }
+
+  if (signals.totalChoices === 0) {
+    addFinding(domains.choice_agency, {
+      id: makeFindingId('agency', 'no-player-choices', 'critical'),
+      severity: 'critical',
+      source: 'agency',
+      validator: 'QualityScoreV3',
+      message: 'Final story contains no player choice surface.',
+      mappedDomain: 'choice_agency',
+      conceptId: 'meaningful_agency',
+    });
+  } else {
+    domains.choice_agency.evidence.push(`${signals.meaningfulChoices}/${signals.totalChoices} choice(s) carry route, consequence, check, or state evidence.`);
+    if (signals.meaningfulChoices === 0) {
+      addFinding(domains.choice_agency, {
+        id: makeFindingId('agency', 'cosmetic-choices', 'error'),
+        severity: 'error',
+        source: 'agency',
+        validator: 'QualityScoreV3',
+        message: 'Player choices are present but appear cosmetic or residue-free.',
+        mappedDomain: 'choice_agency',
+        conceptId: 'meaningful_agency',
+      });
+    }
+  }
+
+  if (signals.totalChoices > 0 && signals.choicesWithConsequences === 0) {
+    addFinding(domains.branching_consequence_memory, {
+      id: makeFindingId('mechanics-memory', 'missing-choice-consequence-memory', 'warning'),
+      severity: 'warning',
+      source: 'mechanics-memory',
+      validator: 'QualityScoreV3',
+      message: 'Choice surface lacks explicit consequence or memory evidence.',
+      mappedDomain: 'branching_consequence_memory',
+      conceptId: 'specific_remembered_consequences',
+    });
+  } else if (signals.choicesWithConsequences > 0) {
+    domains.branching_consequence_memory.evidence.push(`${signals.choicesWithConsequences} choice(s) carry consequence or memory evidence.`);
+  }
+
+  signals.leakage.forEach((finding) => addFinding(domains.gameplay_mechanics_as_fiction, finding));
+
+  signals.invalidEncounterTargets.forEach((target) => {
+    addFinding(domains.encounters, {
+      id: makeFindingId('encounter-story-circle-target', target, 'error'),
+      severity: 'error',
+      source: 'encounter-story-circle-target',
+      validator: 'QualityScoreV3',
+      message: `Central encounter Story Circle target "${target}" does not match go/search/find/take.`,
+      mappedDomain: 'encounters',
+      conceptId: 'encounter_story_circle_target',
+    });
+  });
+}
+
+function collectReportFindings(
+  inputs: StoryCircleQualityScoreInputs,
+  sidecarFindings: SidecarFinding[],
+): SidecarFinding[] {
+  const findings: SidecarFinding[] = [];
+  const finalContract = inputs.finalStoryContractReport;
+
+  finalContract?.blockingIssues?.forEach((issue) => {
+    findings.push({
+      severity: finalContractIssueSeverity(issue, 'error'),
+      source: 'final-story-contract',
+      validator: issue.validator,
+      message: issue.message,
+      location: (issue as any).path,
+    });
+  });
+
+  finalContract?.warnings?.forEach((issue) => {
+    findings.push({
+      severity: finalContractIssueSeverity(issue, 'warning'),
+      source: 'final-story-contract',
+      validator: issue.validator,
+      message: issue.message,
+      location: (issue as any).path,
+    });
+  });
+
+  const validation = inputs.bestPracticesReport as any;
+  validation?.blockingIssues?.forEach((issue: any) => {
+    findings.push({
+      severity: issue?.severity === 'critical' ? 'critical' : 'error',
+      source: 'validation',
+      validator: issue?.validator ?? issue?.type,
+      message: stringifyMessage(issue),
+      location: issue?.path ?? issue?.location,
+    });
+  });
+  validation?.warnings?.forEach((issue: any) => {
+    findings.push({
+      severity: 'warning',
+      source: 'validation',
+      validator: issue?.validator ?? issue?.type,
+      message: stringifyMessage(issue),
+      location: issue?.path ?? issue?.location,
+    });
+  });
+  validation?.suggestions?.forEach((issue: any) => {
+    findings.push({
+      severity: 'suggestion',
+      source: 'validation',
+      validator: issue?.validator ?? issue?.type,
+      message: stringifyMessage(issue),
+      location: issue?.path ?? issue?.location,
+    });
+  });
+
+  const qa = inputs.qaReport as any;
+  qa?.criticalIssues?.forEach((message: unknown) => {
+    findings.push({
+      severity: 'critical',
+      source: 'qa-report',
+      validator: 'QAReport',
+      message: String(message),
+    });
+  });
+  qa?.continuityIssues?.forEach((message: unknown) => {
+    findings.push({
+      severity: 'error',
+      source: 'qa-report',
+      validator: 'ContinuityQA',
+      message: String(message),
+    });
+  });
+  qa?.characterConsistency?.issues?.forEach((message: unknown) => {
+    findings.push({
+      severity: 'warning',
+      source: 'qa-report',
+      validator: 'CharacterConsistencyQA',
+      message: String(message),
+    });
+  });
+  qa?.choiceQuality?.issues?.forEach((message: unknown) => {
+    findings.push({
+      severity: 'warning',
+      source: 'qa-report',
+      validator: 'ChoiceQualityQA',
+      message: String(message),
+    });
+  });
+
+  sidecarFindings.forEach((finding) => findings.push(finding));
+  return findings;
+}
+
+function finalContractIssueSeverity(issue: FinalStoryContractIssue, fallback: QualitySeverity): QualitySeverity {
+  const severity = (issue as any).severity;
+  if (severity === 'critical' || severity === 'error' || severity === 'warning' || severity === 'suggestion') {
+    return severity;
+  }
+  const type = String((issue as any).type ?? issue.validator ?? '').toLowerCase();
+  if (type.includes('hard') || type.includes('blocking') || type.includes('critical')) {
+    return 'critical';
+  }
+  return fallback;
+}
+
+function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefined {
+  const haystack = `${finding.validator ?? ''} ${finding.source} ${finding.message}`.toLowerCase();
+
+  if (
+    haystack.includes('encounterstorycircletarget') ||
+    haystack.includes('encounter anchor') ||
+    haystack.includes('encounteranchor') ||
+    haystack.includes('encounter') ||
+    haystack.includes('clock') ||
+    haystack.includes('tactical') ||
+    haystack.includes('environmental')
+  ) {
+    return 'encounters';
+  }
+
+  if (
+    haystack.includes('storycircle') ||
+    haystack.includes('story circle') ||
+    haystack.includes('episodecircle') ||
+    haystack.includes('story_circle') ||
+    haystack.includes('threshold crossing') ||
+    haystack.includes('return-with-difference')
+  ) {
+    return 'story_circle_spine';
+  }
+
+  if (
+    haystack.includes('sceneturn') ||
+    haystack.includes('scene turn') ||
+    haystack.includes('requiredbeat') ||
+    haystack.includes('beat realization') ||
+    haystack.includes('scene coherence') ||
+    haystack.includes('chronology') ||
+    haystack.includes('wrong scene') ||
+    haystack.includes('beat placement') ||
+    haystack.includes('transition') ||
+    haystack.includes('povclarity') ||
+    haystack.includes('sentenceopener') ||
+    haystack.includes('outcometextquality') ||
+    haystack.includes('failure_modes') ||
+    haystack.includes('intensity_distribution')
+  ) {
+    return 'scene_coherence_prose_continuity';
+  }
+
+  if (
+    haystack.includes('seasonpromise') ||
+    haystack.includes('dramatic question') ||
+    haystack.includes('central promise') ||
+    haystack.includes('stakes') ||
+    haystack.includes('setup_payoff') ||
+    haystack.includes('setup/payoff') ||
+    haystack.includes('promise ledger') ||
+    haystack.includes('arcpressure') ||
+    haystack.includes('arc pressure') ||
+    haystack.includes('reversal') ||
+    haystack.includes('climax') ||
+    haystack.includes('resolution') ||
+    haystack.includes('informationledger') ||
+    haystack.includes('information ledger') ||
+    haystack.includes('reveal') ||
+    haystack.includes('cliffhanger') ||
+    haystack.includes('twist_quality') ||
+    haystack.includes('twistquality') ||
+    haystack.includes('cold open') ||
+    haystack.includes('dramatic structure') ||
+    haystack.includes('theme') ||
+    haystack.includes('treatment') ||
+    haystack.includes('source fidelity') ||
+    haystack.includes('authored') ||
+    haystack.includes('signaturedevice')
+  ) {
+    return 'dramatic_structure_architecture';
+  }
+
+  if (
+    haystack.includes('branch') ||
+    haystack.includes('divergence') ||
+    haystack.includes('endingreachability') ||
+    haystack.includes('residue') ||
+    haystack.includes('callback') ||
+    haystack.includes('consequence memory') ||
+    haystack.includes('reconvergence') ||
+    haystack.includes('route effect') ||
+    haystack.includes('branch graph') ||
+    haystack.includes('scenegraphbranch') ||
+    haystack.includes('cosmetic')
+  ) {
+    return 'branching_consequence_memory';
+  }
+
+  if (
+    haystack.includes('choice') ||
+    haystack.includes('consequencetier') ||
+    haystack.includes('stakestriangle') ||
+    haystack.includes('fivefactor') ||
+    haystack.includes('dilemma') ||
+    haystack.includes('strategic') ||
+    haystack.includes('distribution')
+  ) {
+    return 'choice_agency';
+  }
+
+  if (
+    haystack.includes('flagcontract') ||
+    haystack.includes('mechanicalstorytelling') ||
+    haystack.includes('narrativemechanicpressure') ||
+    haystack.includes('statcheckbalance') ||
+    haystack.includes('skillcoverage') ||
+    haystack.includes('skill surface') ||
+    haystack.includes('fiction-first') ||
+    haystack.includes('mechanicsleakage') ||
+    haystack.includes('stat check') ||
+    haystack.includes('skill check') ||
+    haystack.includes('hidden state') ||
+    haystack.includes('inventory') ||
+    haystack.includes('numeric balance') ||
+    haystack.includes('mechanic')
+  ) {
+    return 'gameplay_mechanics_as_fiction';
+  }
+
+  if (
+    haystack.includes('voice') ||
+    haystack.includes('npc') ||
+    haystack.includes('relationship') ||
+    haystack.includes('identity') ||
+    haystack.includes('arcdelta') ||
+    haystack.includes('arc_delta') ||
+    haystack.includes('character')
+  ) {
+    return 'character_npc_relationship_quality';
+  }
+
+  if (
+    haystack.includes('leak') ||
+    haystack.includes('design note') ||
+    haystack.includes('scaffolding') ||
+    haystack.includes('player-facing prose')
+  ) {
+    return 'scene_coherence_prose_continuity';
+  }
+
+  return undefined;
+}
+
+function mapFindingToConcept(domainId: QualityDomainId, finding: SidecarFinding | QualityFinding): string | undefined {
+  if ('conceptId' in finding && finding.conceptId) {
+    return finding.conceptId;
+  }
+  const domain = DEFAULT_DOMAIN_DEFINITIONS.find((definition) => definition.id === domainId);
+  if (!domain) {
+    return undefined;
+  }
+  const haystack = `${finding.validator ?? ''} ${finding.source} ${finding.message}`.toLowerCase();
+  const matched = domain.concepts.find((concept) =>
+    (concept.keywords ?? []).some((keyword) => haystack.includes(keyword.toLowerCase())),
+  );
+  return matched?.id ?? domain.defaultConceptId;
+}
+
+function toQualityFinding(finding: SidecarFinding, mappedDomain?: QualityDomainId): QualityFinding {
+  return {
+    id: makeFindingId(finding.source, `${finding.validator ?? 'unknown'}-${finding.message}`, finding.severity),
+    severity: finding.severity,
+    source: finding.source,
+    validator: finding.validator,
+    message: finding.message,
+    location: finding.location,
+    mappedDomain,
+    conceptId: mappedDomain ? mapFindingToConcept(mappedDomain, finding) : undefined,
+  };
+}
+
+function addFinding(domain: DomainAccumulator, finding: QualityFinding): void {
+  if (domain.findings.some((existing) => existing.id === finding.id)) {
+    return;
+  }
+  domain.findings.push(finding);
+  if (finding.severity === 'critical') {
+    domain.criticalMisses += 1;
+  } else if (finding.severity === 'error') {
+    domain.errors += 1;
+  } else if (finding.severity === 'warning') {
+    domain.warnings += 1;
+  } else {
+    domain.suggestions += 1;
+  }
+
+  const conceptId = finding.conceptId && domain.concepts[finding.conceptId]
+    ? finding.conceptId
+    : mapFindingToConcept(domain.id, finding) ?? domain.defaultConceptId;
+  const concept = domain.concepts[conceptId];
+  if (!concept || concept.findings.some((existing) => existing.id === finding.id)) {
+    return;
+  }
+  concept.findings.push(finding);
+  if (finding.severity === 'critical') {
+    concept.criticalMisses += 1;
+  } else if (finding.severity === 'error') {
+    concept.errors += 1;
+  } else if (finding.severity === 'warning') {
+    concept.warnings += 1;
+  } else {
+    concept.suggestions += 1;
+  }
+}
+
+function finalizeDomainScore(domain: DomainAccumulator): QualityDomainScore {
+  const concepts = Object.values(domain.concepts).map(finalizeConceptScore);
+  const score = weightedConceptScore(concepts);
+  const { defaultConceptId: _defaultConceptId, concepts: _concepts, ...rest } = domain;
+  return { ...rest, concepts, score };
+}
+
+function finalizeConceptScore(concept: ConceptAccumulator): QualityConceptScore {
+  const score = clampScore(
+    100 -
+      concept.criticalMisses * 25 -
+      concept.errors * 18 -
+      concept.warnings * 7 -
+      concept.suggestions * 2,
+  );
+  return { ...concept, score };
+}
+
+function weightedConceptScore(concepts: QualityConceptScore[]): number {
+  const activeConcepts = concepts.filter((concept) => concept.weight > 0);
+  const weighted = activeConcepts.reduce((sum, concept) => sum + concept.weight * concept.score, 0);
+  const totalWeight = activeConcepts.reduce((sum, concept) => sum + concept.weight, 0);
+  return totalWeight > 0 ? Math.round(weighted / totalWeight) : 0;
+}
+
+function weightedScore(domains: QualityDomainScore[]): number {
+  const activeDomains = domains.filter((domain) => domain.active && domain.weight > 0);
+  const weighted = activeDomains.reduce((sum, domain) => sum + domain.weight * domain.score, 0);
+  const totalWeight = activeDomains.reduce((sum, domain) => sum + domain.weight, 0);
+  return totalWeight > 0 ? weighted / totalWeight : 0;
+}
+
+function applyCaps(
+  caps: QualityCap[],
+  storyCircle: StoryCircleEvidenceSummary,
+  signals: StaticStorySignals,
+  inputs: StoryCircleQualityScoreInputs,
+): void {
+  if (storyCircle.missingBeats.length > 0) {
+    caps.push({
+      id: 'story_circle_primary_beat_missing',
+      maxScore: 69,
+      reason: `Missing primary Story Circle beat(s): ${storyCircle.missingBeats.join(', ')}.`,
+      domainId: 'story_circle_spine',
+    });
+  }
+
+  if (!storyCircle.ordered) {
+    caps.push({
+      id: 'story_circle_beats_out_of_order',
+      maxScore: 69,
+      reason: storyCircle.orderedViolation ?? 'Story Circle beats are materially out of order.',
+      domainId: 'story_circle_spine',
+    });
+  }
+
+  const take = storyCircle.beats.take;
+  if (!take || take.status !== 'realized') {
+    caps.push({
+      id: 'take_price_missing_or_weak',
+      maxScore: 59,
+      reason: 'Story Circle take/price beat is missing, weak, or metadata-only.',
+      domainId: 'story_circle_spine',
+    });
+  }
+
+  const change = storyCircle.beats.change;
+  if (!change || change.status !== 'realized') {
+    caps.push({
+      id: 'change_equilibrium_missing_or_weak',
+      maxScore: 59,
+      reason: 'Story Circle change/transformed-equilibrium beat is missing, weak, or metadata-only.',
+      domainId: 'story_circle_spine',
+    });
+  }
+
+  if (storyCircle.metadataOnlyBeats.length > 0) {
+    caps.push({
+      id: 'episode_circle_metadata_only',
+      maxScore: 69,
+      reason: `Story Circle beat(s) labeled but not realized in final prose: ${storyCircle.metadataOnlyBeats.join(', ')}.`,
+      domainId: 'story_circle_spine',
+    });
+  }
+
+  if (signals.invalidEncounterTargets.length > 0) {
+    caps.push({
+      id: 'encounter_story_circle_target_mismatch',
+      maxScore: 79,
+      reason: 'Central encounter target does not match go/search/find/take.',
+      domainId: 'encounters',
+    });
+  }
+
+  if (signals.majorScenesWithoutTurn > 1) {
+    caps.push({
+      id: 'major_scenes_without_turn',
+      maxScore: 69,
+      reason: 'More than one major scene lacks a realized scene turn.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+
+  const hasWrongChronologyFinding = inputs.finalStoryContractReport?.blockingIssues?.some((issue) =>
+    /wrong scene|chronolog|beat placement|critical beat/i.test(`${issue.validator ?? ''} ${issue.message}`),
+  ) ?? false;
+  if (hasWrongChronologyFinding) {
+    caps.push({
+      id: 'critical_beat_wrong_scene_or_chronology',
+      maxScore: 69,
+      reason: 'A critical beat appears in the wrong scene or chronology.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+
+  if (signals.leakage.length > 0) {
+    caps.push({
+      id: 'player_facing_mechanics_leakage',
+      maxScore: 69,
+      reason: 'Player-facing mechanics or scaffolding leakage exists.',
+      domainId: 'gameplay_mechanics_as_fiction',
+    });
+  }
+
+  if (signals.repeatedOrCentralLeakage) {
+    caps.push({
+      id: 'repeated_or_central_leakage',
+      maxScore: 49,
+      reason: 'Repeated or central player-facing mechanics/scaffolding leakage exists.',
+      domainId: 'gameplay_mechanics_as_fiction',
+    });
+  }
+
+  const hasDivergenceFinding = inputs.finalStoryContractReport?.blockingIssues?.some((issue) =>
+    /divergence|cosmetic|residue-free|residue free/i.test(`${issue.validator ?? ''} ${issue.message}`),
+  ) ?? false;
+  if (signals.cosmeticBranching || hasDivergenceFinding) {
+    caps.push({
+      id: 'branching_cosmetic_or_residue_free',
+      maxScore: 79,
+      reason: 'Branching is cosmetic or residue-free.',
+      domainId: 'branching_consequence_memory',
+    });
+  }
+
+  if (!signals.finalStoryPresent || inputs.finalStoryContractReport?.passed === false) {
+    caps.push({
+      id: 'final_package_playability_hard_blocker',
+      maxScore: 49,
+      reason: 'A final package/playability hard blocker remains.',
+    });
+  }
+
+  if (signals.totalChoices === 0) {
+    caps.push({
+      id: 'meaningful_player_agency_missing',
+      maxScore: 69,
+      reason: 'Meaningful player agency is missing from the final playable story.',
+      domainId: 'choice_agency',
+    });
+  }
+}
+
+function applyScoreCaps(score: number, caps: QualityCap[]): number {
+  return caps.reduce((current, cap) => Math.min(current, cap.maxScore), score);
+}
+
+function enforceAboveNinetyRequirements(
+  score: number,
+  caps: QualityCap[],
+  domains: QualityDomainScore[],
+  storyCircle: StoryCircleEvidenceSummary,
+  signals: StaticStorySignals,
+): { score: number; addedCaps: QualityCap[] } {
+  if (score <= 90) {
+    return { score, addedCaps: [] };
+  }
+  const addedCaps: QualityCap[] = [];
+  const noCaps = caps.length === 0;
+  const allStoryCircleRealized = STORY_CIRCLE_BEATS.every((beat) => storyCircle.beats[beat].status === 'realized');
+  const allCoreDomainsAtLeast85 = domains
+    .filter((domain) => domain.active)
+    .every((domain) => domain.score >= 85);
+  const noLeakage = signals.leakage.length === 0;
+  const meaningfulAgency = signals.totalChoices > 0 && signals.meaningfulChoices > 0;
+
+  if (!noCaps || !allStoryCircleRealized || !allCoreDomainsAtLeast85 || !noLeakage || !meaningfulAgency) {
+    addedCaps.push({
+      id: 'above_90_requirements_not_met',
+      maxScore: 90,
+      reason: 'Scores above 90 require no caps, all Story Circle beats realized on-page, all core domains at least 85, no leakage, and meaningful agency.',
+    });
+    return { score: Math.min(score, 90), addedCaps };
+  }
+
+  return { score, addedCaps };
+}
+
+function computeEvidenceCoverage(
+  inputs: StoryCircleQualityScoreInputs,
+  storyCircle: StoryCircleEvidenceSummary,
+  signals: StaticStorySignals,
+  profile: 'authored-treatment' | 'freeform',
+): number {
+  const checks = [
+    signals.finalStoryPresent,
+    signals.sceneCount > 0 && signals.beatCount > 0,
+    storyCircle.hasStoryCircleEvidence,
+    Boolean(inputs.finalStoryContractReport),
+    true,
+    signals.totalChoices > 0,
+  ];
+
+  if (profile === 'authored-treatment') {
+    checks.push(hasTreatmentEvidence(inputs));
+  }
+
+  const available = checks.filter(Boolean).length;
+  return Math.round((available / checks.length) * 100);
+}
+
+function hasTreatmentEvidence(inputs: StoryCircleQualityScoreInputs): boolean {
+  const brief = inputs.brief;
+  if (!brief) {
+    return false;
+  }
+  return Boolean(
+    brief.rawDocument ||
+      brief.treatment ||
+      brief.multiEpisode?.sourceAnalysis?.treatmentObligations ||
+      brief.seasonPlan?.treatmentObligations ||
+      inputs.finalStoryContractReport?.treatmentObligationCanonicalReport,
+  );
+}
+
+function buildStoryCircleEvidence(story?: Story | null, brief?: Record<string, any>): StoryCircleEvidenceSummary {
+  const beats = {} as Record<StoryCircleBeat, StoryCircleBeatEvidence>;
+  const expectedByBeat = new Map<StoryCircleBeat, string[]>();
+  const metadataByBeat = new Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>();
+  const prose = collectFinalProse(story).join('\n').toLowerCase();
+
+  STORY_CIRCLE_BEATS.forEach((beat) => {
+    expectedByBeat.set(beat, []);
+    metadataByBeat.set(beat, []);
+  });
+
+  collectExpectedStoryCircleText(expectedByBeat, brief);
+  collectFinalStoryCircleMetadata(metadataByBeat, expectedByBeat, story);
+
+  STORY_CIRCLE_BEATS.forEach((beat) => {
+    const expected = uniqueStrings(expectedByBeat.get(beat) ?? []);
+    const metadata = metadataByBeat.get(beat) ?? [];
+    const proseMatches = expected
+      .filter((text) => textProvesExpectation(prose, text))
+      .map((text) => `final prose matches "${trimForEvidence(text)}"`);
+
+    if (proseMatches.length > 0) {
+      const first = metadata[0];
+      beats[beat] = {
+        beat,
+        status: 'realized',
+        expected,
+        evidence: proseMatches,
+        firstEpisodeIndex: first?.episodeIndex,
+        firstSceneIndex: first?.sceneIndex,
+      };
+      return;
+    }
+
+    if (metadata.length > 0 || expected.length > 0) {
+      const first = metadata[0];
+      beats[beat] = {
+        beat,
+        status: 'metadata-only',
+        expected,
+        evidence: metadata.map((item) => item.text),
+        firstEpisodeIndex: first?.episodeIndex,
+        firstSceneIndex: first?.sceneIndex,
+      };
+      return;
+    }
+
+    beats[beat] = {
+      beat,
+      status: 'missing',
+      expected: [],
+      evidence: [],
+    };
+  });
+
+  const missingBeats = STORY_CIRCLE_BEATS.filter((beat) => beats[beat].status === 'missing');
+  const metadataOnlyBeats = STORY_CIRCLE_BEATS.filter((beat) => beats[beat].status === 'metadata-only');
+  const order = checkStoryCircleOrder(beats);
+
+  return {
+    beats,
+    missingBeats,
+    metadataOnlyBeats,
+    ordered: order.ordered,
+    orderedViolation: order.violation,
+    hasStoryCircleEvidence: STORY_CIRCLE_BEATS.some((beat) => beats[beat].status !== 'missing'),
+  };
+}
+
+function collectExpectedStoryCircleText(
+  expectedByBeat: Map<StoryCircleBeat, string[]>,
+  brief?: Record<string, any>,
+): void {
+  if (!brief) {
+    return;
+  }
+
+  addStoryCircleStructure(expectedByBeat, brief.seasonPlan?.storyCircle);
+  addStoryCircleStructure(expectedByBeat, brief.multiEpisode?.sourceAnalysis?.storyCircle);
+
+  const seasonContracts = brief.seasonPlan?.storyCircleBeatContracts;
+  if (Array.isArray(seasonContracts)) {
+    seasonContracts.forEach((contract: any) => addContractExpectedText(expectedByBeat, contract));
+  }
+
+  const sourceContracts = brief.multiEpisode?.sourceAnalysis?.storyCircleBeatContracts;
+  if (Array.isArray(sourceContracts)) {
+    sourceContracts.forEach((contract: any) => addContractExpectedText(expectedByBeat, contract));
+  }
+
+  const episodes = brief.seasonPlan?.episodes;
+  if (Array.isArray(episodes)) {
+    episodes.forEach((episode: any) => {
+      addStoryCircleRoleText(expectedByBeat, episode?.storyCircleRole, episode?.summary);
+    });
+  }
+
+  const breakdown = brief.multiEpisode?.sourceAnalysis?.episodeBreakdown;
+  if (Array.isArray(breakdown)) {
+    breakdown.forEach((episode: any) => {
+      addStoryCircleRoleText(expectedByBeat, episode?.storyCircleRole, episode?.summary);
+    });
+  }
+}
+
+function collectFinalStoryCircleMetadata(
+  metadataByBeat: Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>,
+  expectedByBeat: Map<StoryCircleBeat, string[]>,
+  story?: Story | null,
+): void {
+  const episodes = Array.isArray((story as any)?.episodes) ? (story as any).episodes : [];
+  episodes.forEach((episode: any, episodeIndex: number) => {
+    addEpisodeCircleMetadata(metadataByBeat, expectedByBeat, episode?.episodeCircle, episodeIndex);
+    addStoryCircleRoleMetadata(metadataByBeat, expectedByBeat, episode?.storyCircleRole, episode?.title, episodeIndex);
+
+    const scenes = Array.isArray(episode?.scenes) ? episode.scenes : [];
+    scenes.forEach((scene: any, sceneIndex: number) => {
+      const contracts = scene?.storyCircleBeatContracts ?? scene?.storyCircleContracts ?? scene?.beatRealizationContracts;
+      if (Array.isArray(contracts)) {
+        contracts.forEach((contract: any) => {
+          const beat = normalizeStoryCircleBeat(contract?.beat ?? contract?.storyCircleBeat ?? contract?.targetBeat);
+          if (!beat) {
+            return;
+          }
+          const text = contract?.sourceText ?? contract?.target ?? contract?.requirement ?? contract?.description ?? contract?.summary;
+          pushBeatMetadata(metadataByBeat, beat, text ?? `scene ${scene.id ?? sceneIndex + 1} contract`, episodeIndex, sceneIndex);
+          pushExpectedText(expectedByBeat, beat, text);
+        });
+      }
+
+      const target = normalizeStoryCircleBeat(scene?.encounterStoryCircleTarget ?? scene?.storyCircleTarget);
+      if (target) {
+        pushBeatMetadata(metadataByBeat, target, `encounter target ${target}`, episodeIndex, sceneIndex);
+      }
+    });
+  });
+}
+
+function addStoryCircleStructure(
+  expectedByBeat: Map<StoryCircleBeat, string[]>,
+  storyCircle?: Partial<StoryCircleStructure>,
+): void {
+  if (!storyCircle || typeof storyCircle !== 'object') {
+    return;
+  }
+  STORY_CIRCLE_BEATS.forEach((beat) => pushExpectedText(expectedByBeat, beat, storyCircle[beat]));
+}
+
+function addContractExpectedText(expectedByBeat: Map<StoryCircleBeat, string[]>, contract: any): void {
+  const beat = normalizeStoryCircleBeat(contract?.beat ?? contract?.storyCircleBeat ?? contract?.targetBeat);
+  if (!beat) {
+    return;
+  }
+  pushExpectedText(
+    expectedByBeat,
+    beat,
+    contract?.sourceText ?? contract?.target ?? contract?.requirement ?? contract?.description ?? contract?.summary,
+  );
+}
+
+function addStoryCircleRoleText(
+  expectedByBeat: Map<StoryCircleBeat, string[]>,
+  role: unknown,
+  summary: unknown,
+): void {
+  const roles = normalizeStoryCircleRoles(role);
+  roles.forEach((beat) => pushExpectedText(expectedByBeat, beat, summary));
+}
+
+function addEpisodeCircleMetadata(
+  metadataByBeat: Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>,
+  expectedByBeat: Map<StoryCircleBeat, string[]>,
+  episodeCircle: unknown,
+  episodeIndex: number,
+): void {
+  if (!episodeCircle || typeof episodeCircle !== 'object') {
+    return;
+  }
+  STORY_CIRCLE_BEATS.forEach((beat) => {
+    const text = (episodeCircle as any)[beat];
+    if (typeof text === 'string' && text.trim().length > 0) {
+      pushBeatMetadata(metadataByBeat, beat, text, episodeIndex);
+      pushExpectedText(expectedByBeat, beat, text);
+    }
+  });
+}
+
+function addStoryCircleRoleMetadata(
+  metadataByBeat: Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>,
+  expectedByBeat: Map<StoryCircleBeat, string[]>,
+  role: unknown,
+  title: unknown,
+  episodeIndex: number,
+): void {
+  normalizeStoryCircleRoles(role).forEach((beat) => {
+    const text = typeof title === 'string' ? `episode role ${beat}: ${title}` : `episode role ${beat}`;
+    pushBeatMetadata(metadataByBeat, beat, text, episodeIndex);
+    pushExpectedText(expectedByBeat, beat, typeof title === 'string' ? title : undefined);
+  });
+}
+
+function pushBeatMetadata(
+  metadataByBeat: Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>,
+  beat: StoryCircleBeat,
+  text: unknown,
+  episodeIndex?: number,
+  sceneIndex?: number,
+): void {
+  const value = typeof text === 'string' && text.trim().length > 0 ? text.trim() : beat;
+  metadataByBeat.get(beat)?.push({ text: value, episodeIndex, sceneIndex });
+}
+
+function pushExpectedText(expectedByBeat: Map<StoryCircleBeat, string[]>, beat: StoryCircleBeat, text: unknown): void {
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return;
+  }
+  expectedByBeat.get(beat)?.push(text.trim());
+}
+
+function normalizeStoryCircleRoles(role: unknown): StoryCircleBeat[] {
+  if (Array.isArray(role)) {
+    return role.map(normalizeStoryCircleBeat).filter(Boolean) as StoryCircleBeat[];
+  }
+  const beat = normalizeStoryCircleBeat(role);
+  return beat ? [beat] : [];
+}
+
+function normalizeStoryCircleBeat(value: unknown): StoryCircleBeat | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return STORY_CIRCLE_BEATS.includes(normalized as StoryCircleBeat)
+    ? (normalized as StoryCircleBeat)
+    : undefined;
+}
+
+function storyCircleConceptId(beat: StoryCircleBeat): string {
+  return {
+    you: 'you_known_world_pressure',
+    need: 'need_active_want_lack',
+    go: 'go_threshold_crossing',
+    search: 'search_adaptation_pressure',
+    find: 'find_apparent_victory',
+    take: 'take_real_price',
+    return: 'return_prize_wound',
+    change: 'change_transformation_equilibrium',
+  }[beat];
+}
+
+function checkStoryCircleOrder(beats: Record<StoryCircleBeat, StoryCircleBeatEvidence>): { ordered: boolean; violation?: string } {
+  let previousOrder = -1;
+  let previousBeat: StoryCircleBeat | undefined;
+  for (const beat of STORY_CIRCLE_BEATS) {
+    const evidence = beats[beat];
+    if (evidence.status === 'missing' || evidence.firstEpisodeIndex === undefined) {
+      continue;
+    }
+    const order = evidence.firstEpisodeIndex * 1000 + (evidence.firstSceneIndex ?? 0);
+    if (order < previousOrder) {
+      return {
+        ordered: false,
+        violation: `Story Circle beat "${beat}" appears before "${previousBeat}" in final chronology.`,
+      };
+    }
+    previousOrder = order;
+    previousBeat = beat;
+  }
+  return { ordered: true };
+}
+
+function textProvesExpectation(prose: string, expectation: string): boolean {
+  const tokens = meaningfulTokens(expectation);
+  if (tokens.length === 0) {
+    return false;
+  }
+  const requiredMatches = tokens.length <= 3 ? tokens.length : Math.min(4, Math.ceil(tokens.length * 0.35));
+  const matches = tokens.filter((token) => prose.includes(token)).length;
+  return matches >= requiredMatches;
+}
+
+function meaningfulTokens(text: string): string[] {
+  return uniqueStrings(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9']+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !STOPWORDS.has(token))
+      .slice(0, 24),
+  );
+}
+
+function collectStaticStorySignals(story?: Story | null): StaticStorySignals {
+  const finalStoryPresent = Boolean(story);
+  const episodes = Array.isArray((story as any)?.episodes) ? (story as any).episodes : [];
+  let sceneCount = 0;
+  let beatCount = 0;
+  let majorScenesWithoutTurn = 0;
+  let totalChoices = 0;
+  let meaningfulChoices = 0;
+  let choicesWithConsequences = 0;
+  const invalidEncounterTargets: string[] = [];
+  const prose: string[] = [];
+
+  episodes.forEach((episode: any) => {
+    const scenes = Array.isArray(episode?.scenes) ? episode.scenes : [];
+    scenes.forEach((scene: any) => {
+      sceneCount += 1;
+      const beats = Array.isArray(scene?.beats) ? scene.beats : [];
+      beatCount += beats.length;
+      const addChoice = (choice: any) => {
+        totalChoices += 1;
+        if (typeof choice?.text === 'string') {
+          prose.push(choice.text);
+        }
+        if (typeof choice?.outcomeText === 'string') {
+          prose.push(choice.outcomeText);
+        }
+
+        const hasConsequence = Array.isArray(choice?.consequences) && choice.consequences.length > 0;
+        const hasMemory = Boolean(choice?.memoryImpact ?? choice?.residue ?? choice?.flagEffects ?? choice?.relationshipEffects);
+        const hasRoute = Boolean(choice?.nextSceneId ?? choice?.targetSceneId ?? choice?.goto ?? choice?.branchId);
+        const hasCheck = Boolean(choice?.statCheck ?? choice?.skillCheck ?? choice?.check);
+        if (hasConsequence || hasMemory) {
+          choicesWithConsequences += 1;
+        }
+        if (hasConsequence || hasMemory || hasRoute || hasCheck) {
+          meaningfulChoices += 1;
+        }
+      };
+
+      beats.forEach((beat: any) => {
+        if (typeof beat?.text === 'string') {
+          prose.push(beat.text);
+        }
+        const beatChoices = Array.isArray(beat?.choices) ? beat.choices : [];
+        beatChoices.forEach(addChoice);
+      });
+
+      const hasTurnEvidence = Boolean(
+        scene?.turnContract ??
+          scene?.sceneTurn ??
+          scene?.dramaticTurn ??
+          scene?.sceneTurnRealization ??
+          scene?.turnType,
+      );
+      if (beats.length > 0 && !hasTurnEvidence) {
+        majorScenesWithoutTurn += 1;
+      }
+
+      const encounterTarget = scene?.encounterStoryCircleTarget ?? scene?.storyCircleTarget;
+      if ((scene?.isEncounter || scene?.encounter || encounterTarget) && encounterTarget) {
+        const target = String(encounterTarget);
+        if (!['go', 'search', 'find', 'take'].includes(target)) {
+          invalidEncounterTargets.push(target);
+        }
+      }
+
+      const choices = Array.isArray(scene?.choices) ? scene.choices : [];
+      choices.forEach(addChoice);
+    });
+  });
+
+  const leakage = detectLeakage(prose.join('\n'));
+  return {
+    finalStoryPresent,
+    sceneCount,
+    beatCount,
+    majorScenesWithoutTurn,
+    totalChoices,
+    meaningfulChoices,
+    choicesWithConsequences,
+    leakage,
+    repeatedOrCentralLeakage: leakage.length > 1,
+    invalidEncounterTargets: uniqueStrings(invalidEncounterTargets),
+    cosmeticBranching: totalChoices > 0 && meaningfulChoices === 0,
+  };
+}
+
+function collectFinalProse(story?: Story | null): string[] {
+  const prose: string[] = [];
+  const episodes = Array.isArray((story as any)?.episodes) ? (story as any).episodes : [];
+  episodes.forEach((episode: any) => {
+    const scenes = Array.isArray(episode?.scenes) ? episode.scenes : [];
+    scenes.forEach((scene: any) => {
+      if (typeof scene?.title === 'string') {
+        prose.push(scene.title);
+      }
+      const beats = Array.isArray(scene?.beats) ? scene.beats : [];
+      beats.forEach((beat: any) => {
+        if (typeof beat?.text === 'string') {
+          prose.push(beat.text);
+        }
+        const beatChoices = Array.isArray(beat?.choices) ? beat.choices : [];
+        beatChoices.forEach((choice: any) => {
+          if (typeof choice?.text === 'string') {
+            prose.push(choice.text);
+          }
+          if (typeof choice?.outcomeText === 'string') {
+            prose.push(choice.outcomeText);
+          }
+        });
+      });
+      const choices = Array.isArray(scene?.choices) ? scene.choices : [];
+      choices.forEach((choice: any) => {
+        if (typeof choice?.text === 'string') {
+          prose.push(choice.text);
+        }
+        if (typeof choice?.outcomeText === 'string') {
+          prose.push(choice.outcomeText);
+        }
+      });
+    });
+  });
+  return prose;
+}
+
+function detectLeakage(prose: string): QualityFinding[] {
+  if (!prose.trim()) {
+    return [];
+  }
+  return LEAKAGE_PATTERNS.flatMap(({ pattern, label }) => {
+    const matches = prose.match(pattern);
+    if (!matches) {
+      return [];
+    }
+    return [
+      {
+        id: makeFindingId('leakage-scan', label, 'error'),
+        severity: 'error' as const,
+        source: 'leakage-scan',
+        validator: 'QualityScoreV3',
+        message: `Player-facing prose contains ${label}.`,
+        mappedDomain: 'gameplay_mechanics_as_fiction' as const,
+        conceptId: 'fiction_first_presentation',
+      },
+    ];
+  });
+}
+
+function readQualitySidecarFindings(outputDir?: string): SidecarFinding[] {
+  if (!outputDir) {
+    return [];
+  }
+  const fs = getNodeFs();
+  if (!fs) {
+    return [];
+  }
+
+  try {
+    if (!fs.existsSync(outputDir)) {
+      return [];
+    }
+    const files = fs.readdirSync(outputDir).filter((file: string) =>
+      /(?:narrative-diagnostics|incremental-contract|branch-metrics|treatment-density-report|residue-ledger|season-canon)\.json$/.test(file),
+    );
+    return files.flatMap((file: string) => extractSidecarFindings(file, readJsonFile(fs, `${outputDir.replace(/\/$/, '')}/${file}`)));
+  } catch {
+    return [];
+  }
+}
+
+interface WeightOverrides {
+  domainWeights: Map<string, number>;
+  conceptWeights: Map<string, Map<string, number>>;
+}
+
+function readWeightOverrides(weightsMarkdownPath?: string): WeightOverrides | undefined {
+  const fs = getNodeFs();
+  if (!fs) {
+    return undefined;
+  }
+
+  const candidates = uniqueStrings([
+    weightsMarkdownPath ?? '',
+    typeof process !== 'undefined' ? `${process.cwd()}/docs/QUALITY_SCORE_WEIGHTS.md` : '',
+    typeof process !== 'undefined' ? `${process.cwd()}/../docs/QUALITY_SCORE_WEIGHTS.md` : '',
+  ]);
+
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate)) {
+        return parseWeightMarkdown(fs.readFileSync(candidate, 'utf8'));
+      }
+    } catch {
+      // Ignore malformed/unreadable override files and fall back to typed defaults.
+    }
+  }
+
+  return undefined;
+}
+
+function parseWeightMarkdown(markdown: string): WeightOverrides {
+  const overrides: WeightOverrides = {
+    domainWeights: new Map(),
+    conceptWeights: new Map(),
+  };
+  let mode: 'none' | 'categories' | 'concepts' = 'none';
+  let currentDomain = '';
+
+  markdown.split(/\r?\n/).forEach((line) => {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      const title = stripHeadingWeight(heading[1].trim());
+      if (normalizeWeightLabel(title) === 'category weights') {
+        mode = 'categories';
+        currentDomain = '';
+        return;
+      }
+      currentDomain = normalizeWeightLabel(title);
+      mode = 'concepts';
+      if (!overrides.conceptWeights.has(currentDomain)) {
+        overrides.conceptWeights.set(currentDomain, new Map());
+      }
+      return;
+    }
+
+    if (!line.trim().startsWith('|') || line.includes('---')) {
+      return;
+    }
+    const cells = line
+      .split('|')
+      .map((cell) => cell.trim())
+      .filter(Boolean);
+    if (cells.length < 2 || /^category$/i.test(cells[0]) || /^concept$/i.test(cells[0])) {
+      return;
+    }
+
+    const label = normalizeWeightLabel(cells[0]);
+    const weight = parseWeightValue(cells[1]);
+    if (weight === undefined) {
+      return;
+    }
+
+    if (mode === 'categories') {
+      overrides.domainWeights.set(label, weight);
+    } else if (mode === 'concepts' && currentDomain) {
+      overrides.conceptWeights.get(currentDomain)?.set(label, weight);
+    }
+  });
+
+  return overrides;
+}
+
+function parseWeightValue(value: string): number | undefined {
+  const match = value.match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return undefined;
+  }
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stripHeadingWeight(value: string): string {
+  return value.replace(/\s*(?:--|-|—)\s*\d+(?:\.\d+)?%?\s*$/, '').trim();
+}
+
+function normalizeWeightLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/→|->/g, ' ')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function extractSidecarFindings(file: string, data: any): SidecarFinding[] {
+  if (!data || typeof data !== 'object') {
+    return [];
+  }
+  const findings: SidecarFinding[] = [];
+  const source = `sidecar:${file}`;
+
+  if (Array.isArray(data.checks)) {
+    data.checks.forEach((check: any) => {
+      const passed =
+        check?.passed === true ||
+        check?.status === 'passed' ||
+        (typeof check?.score === 'number' && check.score >= 80);
+      if (passed) {
+        return;
+      }
+      findings.push({
+        severity: check?.severity === 'critical' ? 'critical' : check?.severity === 'error' ? 'error' : 'warning',
+        source,
+        validator: check?.name ?? check?.id,
+        message: check?.message ?? check?.summary ?? `${check?.name ?? 'diagnostic check'} did not pass.`,
+      });
+    });
+  }
+
+  ['blockingIssues', 'errors', 'warnings', 'suggestions', 'issues'].forEach((key) => {
+    const values = data[key];
+    if (!Array.isArray(values)) {
+      return;
+    }
+    values.forEach((issue: any) => {
+      const severity: QualitySeverity =
+        key === 'blockingIssues' || key === 'errors'
+          ? 'error'
+          : key === 'suggestions'
+            ? 'suggestion'
+            : 'warning';
+      findings.push({
+        severity,
+        source,
+        validator: issue?.validator ?? issue?.type ?? issue?.id,
+        message: stringifyMessage(issue),
+        location: issue?.path ?? issue?.location,
+      });
+    });
+  });
+
+  if (file.includes('branch-metrics')) {
+    const branchScore = normalizeScore(data.branchDivergenceScore ?? data.divergenceScore ?? data.meaningfulBranchScore);
+    if (branchScore !== undefined && branchScore < 60) {
+      findings.push({
+        severity: 'error',
+        source,
+        validator: 'BranchMetrics',
+        message: `Branch divergence score is ${branchScore}, indicating cosmetic or residue-free branching.`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+function getNodeFs(): any | undefined {
+  try {
+    const getBuiltinModule = (typeof process !== 'undefined'
+      ? (process as unknown as { getBuiltinModule?: (mod: string) => unknown }).getBuiltinModule
+      : undefined);
+    if (typeof getBuiltinModule === 'function') {
+      const builtin = getBuiltinModule('fs');
+      if (builtin) {
+        return builtin;
+      }
+    }
+    const req = (Function('return typeof require !== "undefined" ? require : null'))() as
+      | ((mod: string) => unknown)
+      | null;
+    return req ? req('fs') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readJsonFile(fs: any, filePath: string): any {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+function legacyFinalStoryContractScore(report?: FinalStoryContractReport | null): number | undefined {
+  if (!report) {
+    return undefined;
+  }
+  const blocking = report.blockingIssues?.length ?? 0;
+  const warnings = report.warnings?.length ?? 0;
+  const metrics = report.metrics;
+  const mechanicalLeaks =
+    (metrics?.mechanicsLeaks ?? 0) +
+    (metrics?.designNoteLeaks ?? 0) +
+    (metrics?.requestedEpisodesMissing ?? 0) +
+    (metrics?.failedIncrementalResults ?? 0);
+  const validEncounterScenes = metrics?.validEncounterScenes ?? 0;
+  const encounterScenesChecked = metrics?.encounterScenesChecked ?? 0;
+  const encounterPenalty =
+    encounterScenesChecked > 0
+      ? Math.max(0, Math.round(((encounterScenesChecked - validEncounterScenes) / encounterScenesChecked) * 25))
+      : 0;
+  return clampScore(100 - blocking * 18 - warnings * 5 - mechanicalLeaks * 10 - encounterPenalty);
+}
+
+function stringifyMessage(issue: any): string {
+  if (typeof issue === 'string') {
+    return issue;
+  }
+  if (issue?.message) {
+    return String(issue.message);
+  }
+  if (issue?.summary) {
+    return String(issue.summary);
+  }
+  return JSON.stringify(issue);
+}
+
+function normalizeScore(score: unknown): number | undefined {
+  return typeof score === 'number' && Number.isFinite(score) ? clampScore(score) : undefined;
+}
+
+function clampScore(score: number): number {
+  if (!Number.isFinite(score)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+}
+
+function trimForEvidence(value: string): string {
+  const trimmed = value.replace(/\s+/g, ' ').trim();
+  return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
+}
+
+function makeFindingId(source: string, message: string, severity: QualitySeverity): string {
+  return `${source}:${severity}:${message}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 160);
+}

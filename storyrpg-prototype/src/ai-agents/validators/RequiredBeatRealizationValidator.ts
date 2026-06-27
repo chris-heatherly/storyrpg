@@ -98,6 +98,39 @@ function isChoiceContingentSeed(mustDepict: string): boolean {
     .test(mustDepict);
 }
 
+function isCompositeSynopsisSeed(mustDepict: string): boolean {
+  const normalized = normalizeRealizationText(mustDepict);
+  const contentWords = normalized.split(/\s+/).filter(Boolean);
+  if (contentWords.length < 12) return false;
+
+  const clauseCount = mustDepict
+    .split(/[,;]|\band\b/gi)
+    .map((clause) => clause.trim())
+    .filter(Boolean)
+    .length;
+  if (clauseCount < 4) return false;
+
+  const lifecycleVerbs = normalized.match(
+    /\b(?:arrives?|arrived|builds?|built|launch(?:es|ed)?|lets?|courted|courts?|ignoring|ignored|becomes?|became|begins?|began|discovers?|learns?|realizes?|chooses?|decides?)\b/g,
+  ) ?? [];
+
+  return new Set(lifecycleVerbs).size >= 3;
+}
+
+function isHiddenInformationSeed(mustDepict: string): boolean {
+  const detailText = mustDepict.includes(':')
+    ? mustDepict.split(':').slice(1).join(':').trim()
+    : mustDepict;
+  const normalized = normalizeRealizationText(detailText);
+  const hasHiddenCue = /\b(?:secret(?:ly)?|betray(?:al|s|ed|ing)?|debt|debts|owed|owes|bound|contract|assigned|steering|reel(?:s|ed|ing)?|manipulat(?:es|ed|ing|ion)|truth|true nature|real nature|reveal(?:s|ed)?|behind the scenes)\b/
+    .test(normalized);
+  if (!hasHiddenCue) return false;
+
+  const hasConcreteOnPageCue = /\b(?:stray dog|courtyard|key ?card|card|quartz|herbs?|chain|necklace|letter|photo|phone|mirror|window|door|blood|hand|pocket|table)\b/
+    .test(normalized);
+  return !hasConcreteOnPageCue;
+}
+
 /** All reader-facing prose on a single beat (text + variant texts). */
 function beatProse(beat: Beat): string {
   return [beat.text, ...((beat.textVariants || []).map((variant) => variant.text))]
@@ -276,7 +309,10 @@ export class RequiredBeatRealizationValidator extends BaseValidator {
         const message = `Treatment plant not found on-page in episode ${beat.episodeNumber} (bound to scene "${beat.sceneId}"): "${beat.text}". A cold open, recurring object, or information-ledger tell from the treatment was dropped.`;
         const where = `seedBeat:ep${beat.episodeNumber}:${beat.sceneId}:${beat.beatId}`;
         const suggestion = 'Plant this seed on-page somewhere in the episode — it sets up a later payoff that becomes unearned if the setup is missing.';
-        issues.push(blockSeedMiss ? this.error(message, where, suggestion) : this.warning(message, where, suggestion));
+        const shouldBlockSeedMiss = blockSeedMiss
+          && !isCompositeSynopsisSeed(beat.text)
+          && !isHiddenInformationSeed(beat.text);
+        issues.push(shouldBlockSeedMiss ? this.error(message, where, suggestion) : this.warning(message, where, suggestion));
       }
     }
 

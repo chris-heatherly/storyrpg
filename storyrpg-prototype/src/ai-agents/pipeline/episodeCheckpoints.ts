@@ -268,6 +268,7 @@ export function loadResumedEpisodeDiagnostics<Q = unknown, B = unknown>(
 
 interface ResumedQAReportShape {
   overallScore?: number;
+  qualityScore?: number;
   passesQA?: boolean;
   criticalIssues?: unknown[];
   voice?: {
@@ -305,6 +306,7 @@ export interface ResumedEpisodeInvalidationInput {
 }
 
 const QUALITY_SCAN_SKIPPED_KEY = /(id|flag|next|starting|imageData|base64|url|path|uri|sha|hash)$/i;
+const RESUMED_EPISODE_MIN_QA_SCORE = 90;
 
 function hasPlanningRegisterLeak(value: unknown, key = ''): boolean {
   if (typeof value === 'string') {
@@ -328,6 +330,8 @@ export function findResumedEpisodeInvalidationReasons(input: ResumedEpisodeInval
   }
   if (qa) {
     if (qa.passesQA === false) reasons.push('qa_failed');
+    const qaScore = typeof qa.qualityScore === 'number' ? qa.qualityScore : qa.overallScore;
+    if (typeof qaScore === 'number' && qaScore < RESUMED_EPISODE_MIN_QA_SCORE) reasons.push('qa_below_quality_floor');
     if ((qa.criticalIssues?.length ?? 0) > 0) reasons.push('qa_critical_issues');
     const voiceRecommendations = (qa.voice?.recommendations ?? []).join(' ');
     if ((qa.voice?.overallScore ?? 0) <= 0 && /voice check failed|manual review required/i.test(voiceRecommendations)) {

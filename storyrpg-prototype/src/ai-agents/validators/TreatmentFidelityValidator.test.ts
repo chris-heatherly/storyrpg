@@ -179,7 +179,7 @@ describe('TreatmentFidelityValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
-  it('does not require future whole-treatment source anchors for a partial sceneEpisode slice', () => {
+  it('does not require future whole-treatment source anchors for a partial episode slice', () => {
     const story = {
       id: 'bite-me',
       title: 'Bite Me',
@@ -191,15 +191,15 @@ describe('TreatmentFidelityValidator', () => {
       episodes: Array.from({ length: 6 }, (_, index) => ({
         id: `episode-${index + 1}`,
         number: index + 1,
-        title: `SceneEp ${index + 1}`,
-        synopsis: 'A pressure-bearing sceneEpisode.',
+        title: `Episode ${index + 1}`,
+        synopsis: 'A pressure-bearing episode.',
         coverImage: '',
         startingSceneId: 'scene-1',
         scenes: [{
           id: 'scene-1',
           name: 'Bucharest Pressure',
           startingBeatId: 'beat-1',
-          beats: [{ id: 'beat-1', text: 'Kylie makes a choice that changes the next sceneEpisode.' }],
+          beats: [{ id: 'beat-1', text: 'Kylie makes a choice that changes the next episode.' }],
         }],
       })),
     } satisfies Story;
@@ -215,12 +215,12 @@ describe('TreatmentFidelityValidator', () => {
         majorCharacters: [],
         keyLocations: [],
         adaptationGuidance: {
-          elementsToPreserve: ['Friend group dynamics and betrayals that pay off after sceneEpisode 20'],
+          elementsToPreserve: ['Friend group dynamics and betrayals that pay off after episode 20'],
         },
         episodeBreakdown: [],
       } as any,
       sourceText: [
-        'Future sceneEpisodes include Club Nocturne, Daniel Hayes, Sadie, The Mountain, and Cișmigiu.',
+        'Future episodes include Club Nocturne, Daniel Hayes, Sadie, The Mountain, and Cișmigiu.',
         'The blog readership later reaches 80K, 310K, 470K, 130K, 180K, 240K, 260K, 280K, and 800K.',
       ].join('\n'),
     });

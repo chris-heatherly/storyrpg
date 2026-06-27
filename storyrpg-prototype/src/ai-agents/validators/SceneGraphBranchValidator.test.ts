@@ -349,24 +349,6 @@ describe('SceneGraphBranchValidator', () => {
     expect(result.issues.some(issue => issue.type === 'missing_choice_bridge')).toBe(true);
   });
 
-  it('allows sceneEpisode route-flag branchlets without nextSceneId scene routing', () => {
-    const ep = episode([
-      scene('scene-1', [], [{ id: 'choice-a' }, { id: 'choice-b' }]),
-    ]);
-    const bp = blueprint([
-      { id: 'scene-1', leadsTo: ['future-route-a', 'future-route-b'], branches: true, type: 'dilemma' },
-    ]);
-
-    const result = new SceneGraphBranchValidator().validateEpisode(ep, bp, {
-      requireSceneGraphBranching: false,
-      allowLinearBottleneckEpisodes: true,
-      ignoreBlueprintBranchesWithoutSceneRouting: true,
-    });
-
-    expect(result.valid).toBe(true);
-    expect(result.issues.some(issue => issue.type === 'lost_branch_during_assembly')).toBe(false);
-  });
-
   it('warns when an important NPC is staged visually before the beat prose introduces them', () => {
     const ep = episode([
       {

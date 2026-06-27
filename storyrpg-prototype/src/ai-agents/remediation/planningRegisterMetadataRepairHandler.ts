@@ -22,6 +22,7 @@ const SCENE_METADATA_FIELDS = [
 
 const PLANNING_PREFIX_PATTERNS: RegExp[] = [
   /^\s*(?:Everything\.\s*)?Then\s+continue\s+into\s+the\s+planned\s+scene\s*:\s*/i,
+  /^\s*Cold-open\s+prelude\s*:\s*/i,
   /^\s*Escalate\s+the\s+episode\s+pressure\s+through\s+a\s+concrete\s+turn\s*:\s*/i,
   /^\s*Let\s+the\s+fallout\s+settle\s+into\s+the\s+next\s+pressure\s*:\s*/i,
   /^\s*Forward\s+pressure\s*:\s*/i,
@@ -52,9 +53,50 @@ function stripTreatmentEchoLabel(text: string): string {
   return text.replace(/^\s*[a-z_]+:treatment[_a-z0-9-]*\s*[—:-]\s*/i, '');
 }
 
+function stripColdOpenPlanningWrapper(text: string): string {
+  const match = text.match(/^\s*Cold-open\s+prelude\s*:\s*([\s\S]*?)(?:\n{2,}|\s+)?Then\s+continue\s+into\s+the\s+planned\s+scene\s*:\s*([\s\S]+)$/i);
+  if (match) return cleanupSentence(match[2]);
+  return text
+    .replace(/\bOpen\s+with\s+this\s+cold-open\s+moment\s+before\s+the\s+scene's\s+main\s+pressure,\s*then\s+transition\s+into\s+the\s+planned\s+scene\s*:\s*/gi, '')
+    .replace(/\bOpen\s+on\s+the\s+required\s+cold-open\s+prelude,\s*then\s+fulfill\s+the\s+planned\s+scene\s+function\s*:\s*/gi, '')
+    .replace(/\bThen\s+continue\s+into\s+the\s+planned\s+scene\s*:\s*/gi, '')
+    .replace(/\bCold-open\s+prelude\s*:\s*/gi, '');
+}
+
+type StructuralTreatmentSegments = Partial<Record<'hook' | 'promise' | 'stakes', string>>;
+
+function cleanupStructuralSegment(text: string): string {
+  return cleanupSentence(text.replace(/[;,\s]+$/g, ''));
+}
+
+function structuralTreatmentSegments(text: string): StructuralTreatmentSegments | undefined {
+  const matches = Array.from(text.matchAll(/\b(hook|promise|stakes)\s*(?:—|-|:)\s*/gi));
+  if (matches.length === 0) return undefined;
+  const segments: StructuralTreatmentSegments = {};
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const label = match[1].toLowerCase() as keyof StructuralTreatmentSegments;
+    const start = (match.index ?? 0) + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index ?? text.length : text.length;
+    const segment = cleanupStructuralSegment(text.slice(start, end).replace(/^\s*[;:,-]+\s*/, ''));
+    if (segment) segments[label] = segment;
+  }
+  return segments;
+}
+
+function stripStructuralTreatmentLabels(text: string): string {
+  const segments = structuralTreatmentSegments(text);
+  if (!segments) return text;
+  const concrete = [segments.hook, segments.stakes]
+    .filter((segment): segment is string => Boolean(segment?.trim()));
+  if (concrete.length > 0) return cleanupSentence(concrete.join('; '));
+  const fallback = Object.values(segments).find((segment) => segment?.trim());
+  return fallback ? cleanupSentence(fallback) : text;
+}
+
 function sanitizeLedgerPlanningText(text: string): string | undefined {
   if (!isPlanningRegisterText(text)) return undefined;
-  const stripped = stripTreatmentEchoLabel(stripPlanningPrefix(text));
+  const stripped = stripStructuralTreatmentLabels(stripPlanningPrefix(stripTreatmentEchoLabel(stripColdOpenPlanningWrapper(text))));
   const safe = cleanupSentence(authorFacingInformationMovementText(stripped));
   if (!safe || safe === text || isPlanningRegisterText(safe) || isWeakReplacement(safe)) return undefined;
   return safe;

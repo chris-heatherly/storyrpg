@@ -427,4 +427,80 @@ describe('CharacterDesigner provider truncation recovery', () => {
     expect(retryPrompt).toContain('COMPACT RETRY');
     expect(retryPrompt).toContain('output token limit');
   });
+
+  it('routes Gemini prohibited-content empty responses to a source-thinned safety retry', async () => {
+    const designer = new CharacterDesigner({ provider: 'gemini', model: 'test', apiKey: 'test', maxTokens: 1000, temperature: 0 });
+    const good = JSON.stringify({
+      characters: [
+        {
+          id: 'char-a',
+          name: 'A',
+          pronouns: 'she/her',
+          role: 'protagonist',
+          importance: 'major',
+          tier: 'core',
+          overview: 'A guarded lead trying to reclaim her story.',
+          want: 'She wants authorship over the attention around her.',
+          fear: 'She fears intimacy will become public leverage.',
+          flaw: 'She turns uncertainty into performance too quickly.',
+          physicalDescription: 'A sharp-eyed woman with composed posture.',
+          distinctiveFeatures: ['watchful eyes', 'careful stillness'],
+          typicalAttire: 'Practical black travel layers.',
+          voiceProfile: {
+            vocabularyLevel: 'sophisticated',
+            speechPattern: 'Precise and dry.',
+            verbalTics: ['No, wait.'],
+            emotionalTendency: 'Jokes when cornered.',
+            greetingExamples: ['You made it.', 'Tell me the worst part first.'],
+            farewellExamples: ['Text me when you get home.'],
+            underStressExamples: ['Slow down. What did you actually see?'],
+            signatureLines: ['I am taking notes.', 'That is not nothing.', 'Try again, but honest.'],
+          },
+          relationships: [],
+          arcPotential: { growth: 'She claims authorship.', fall: 'She mistakes attention for intimacy.' },
+          secrets: ['She edits fear into charm.'],
+        },
+      ],
+      relationshipSummary: 'A compact ensemble built around attention and trust.',
+      keyDynamics: [],
+      ensembleBalance: 'The roster balances romantic pressure and friend intimacy.',
+      gaps: [],
+      voiceDistinctions: 'A is precise and guarded.',
+      doNotForget: ['A watches before she acts.'],
+    });
+
+    let calls = 0;
+    let retryPrompt = '';
+    BaseAgent.setLlmTransportOverride(async (req) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('Failed to parse Gemini response as JSON: Gemini returned empty content (finishReason=unknown, blockReason=PROHIBITED_CONTENT).');
+      }
+      if (calls === 2) {
+        retryPrompt = req.messages.map((m) => String(m.content)).join('\n');
+      }
+      return good;
+    });
+
+    const result = await designer.execute({
+      charactersToCreate: [{
+        id: 'char-a',
+        name: 'A',
+        role: 'protagonist',
+        importance: 'major',
+        briefDescription: 'A vampire-adjacent lead whose story includes a bite and blood danger.',
+      }],
+      storyContext: { title: 'Bite Me', genre: 'Supernatural romance', tone: 'Tense', themes: ['desire', 'danger'] },
+      worldContext: 'Raw source text with vampire bite blood details should not be included in the retry.',
+      rawDocument: 'This source text should not appear in the safety retry.',
+    });
+
+    expect(result.success).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(retryPrompt).toContain('SAFETY RETRY');
+    expect(retryPrompt).not.toContain('This source text should not appear');
+    expect(retryPrompt).toContain('supernatural-adjacent lead');
+    expect(retryPrompt).not.toMatch(/\bvampire\b/i);
+    expect(retryPrompt).not.toMatch(/\bblood\b/i);
+  });
 });

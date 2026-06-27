@@ -32,8 +32,6 @@ function makeFullAssembly() {
     getEpisodeScopedSceneId: (_brief: unknown, sceneId: string) => sceneId,
     sanitizeReaderFacingSceneName: (name: string | undefined, fallback?: string) => name || fallback || '',
     sanitizeSceneContentForReader: vi.fn(),
-    validateMicroEpisodeSeason: vi.fn(),
-    validateMicroEpisodeStructure: vi.fn(),
     wireEncounterTreeImages: vi.fn(() => ({ setupCount: 0, outcomeCount: 0 })),
   } as unknown as AssemblyDeps);
 }
@@ -56,6 +54,28 @@ describe('Assembly.assembleBeatChoices (shared attachment for both assembly path
     const out = attach({ id: 's2', leadsTo: ['s3'] }, blueprint, 'b1', map);
     expect(out).toHaveLength(1);
     expect(out[0].nextSceneId).toBe('s3');
+  });
+
+  it('omits rendered nextSceneId when a choice routes through a generated bridge beat', () => {
+    const map = new Map([[
+      's2::b1',
+      {
+        choices: [{
+          id: 'c1',
+          text: 'go',
+          nextSceneId: 's3',
+          nextBeatId: 'b1-bridge-c1',
+          routeContext: { bridgePurpose: 'choice_transition' },
+        }],
+      },
+    ]]);
+    const blueprint = { scenes: [{ id: 's1' }, { id: 's2' }, { id: 's3' }] };
+    const out = attach({ id: 's2', leadsTo: ['s3'] }, blueprint, 'b1', map);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].nextBeatId).toBe('b1-bridge-c1');
+    expect(out[0].nextSceneId).toBeUndefined();
+    expect(map.get('s2::b1')!.choices[0].nextSceneId).toBe('s3');
   });
 
   it('re-points a choice that routes BACKWARD onto a forward leadsTo target', () => {

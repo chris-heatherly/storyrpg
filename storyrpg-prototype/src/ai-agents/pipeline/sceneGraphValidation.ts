@@ -157,13 +157,12 @@ export class SceneGraphValidation {
       residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
     }
   ): Promise<SceneGraphBranchValidationResult> {
-    const isSceneEpisodeMode = this.deps.config.generation?.episodeStructureMode === 'sceneEpisodes';
     const hasSafeBranchSlot = blueprintHasSafeSceneGraphBranchSlot(blueprint);
     const branchOptions = {
-      requireSceneGraphBranching: (isSceneEpisodeMode || !hasSafeBranchSlot) ? false : this.deps.config.generation?.requireSceneGraphBranching,
+      requireSceneGraphBranching: !hasSafeBranchSlot ? false : this.deps.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.deps.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: (isSceneEpisodeMode || !hasSafeBranchSlot) ? true : this.deps.config.generation?.allowLinearBottleneckEpisodes,
-      ignoreBlueprintBranchesWithoutSceneRouting: isSceneEpisodeMode,
+      allowLinearBottleneckEpisodes: !hasSafeBranchSlot ? true : this.deps.config.generation?.allowLinearBottleneckEpisodes,
+      ignoreBlueprintBranchesWithoutSceneRouting: false,
       // Gen-4 audit: flag planned multi-target branch points that assembled as a
       // linear pass-through (dead branch). Default-off; metric always recorded.
       requireBlueprintBranchFanOut: hasSafeBranchSlot && isGateEnabled('GATE_BRANCH_FANOUT'),
@@ -173,7 +172,7 @@ export class SceneGraphValidation {
     // Repair a branch the blueprint planned but assembly dropped (intermittent),
     // then re-validate. Deterministic: wires/synthesizes nextSceneId onto the
     // branch scene's choice point. See branchRepair.ts / PROJECT_AUDIT.
-    if (!result.valid && !isSceneEpisodeMode) {
+    if (!result.valid) {
       const lostBranch = result.issues.some(
         issue => issue.type === 'lost_branch_during_assembly' || issue.type === 'missing_scene_graph_branch'
       );
@@ -441,13 +440,9 @@ export class SceneGraphValidation {
       undefined,
     );
     const validation = this.deps.sceneGraphBranchValidator.validateEpisode(episode, blueprint, {
-      requireSceneGraphBranching: this.deps.config.generation?.episodeStructureMode === 'sceneEpisodes'
-        ? false
-        : this.deps.config.generation?.requireSceneGraphBranching,
+      requireSceneGraphBranching: this.deps.config.generation?.requireSceneGraphBranching,
       minSceneGraphBranchesPerEpisode: this.deps.config.generation?.minSceneGraphBranchesPerEpisode,
-      allowLinearBottleneckEpisodes: this.deps.config.generation?.episodeStructureMode === 'sceneEpisodes'
-        ? true
-        : this.deps.config.generation?.allowLinearBottleneckEpisodes,
+      allowLinearBottleneckEpisodes: this.deps.config.generation?.allowLinearBottleneckEpisodes,
     });
     const repairedBlueprintSetup = blueprintSetupRepairs.length > 0 || choiceSetSetupRepairs > 0;
     if (validation.valid) return repairedBlueprintSetup;
@@ -542,7 +537,12 @@ export class SceneGraphValidation {
         },
         plannedConsequenceTier: plannedConsequenceTiers[sceneBlueprint.id],
         seasonAnchors: brief.seasonPlan?.anchors,
-        seasonSevenPoint: brief.seasonPlan?.sevenPoint,
+        seasonStoryCircle: brief.seasonPlan?.storyCircle,
+        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
+        episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
+          (episodeEntry) => episodeEntry.episodeNumber === brief.episode.number,
+        )?.storyCircleRole,
+        episodeCircle: blueprint.episodeCircle,
         episodeStructuralRole: brief.seasonPlan?.episodes.find(
           (episodeEntry) => episodeEntry.episodeNumber === brief.episode.number,
         )?.structuralRole,

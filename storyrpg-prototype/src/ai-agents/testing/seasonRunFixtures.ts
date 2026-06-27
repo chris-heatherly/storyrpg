@@ -30,7 +30,7 @@ import { requestText, worldBible, characterBible, sceneFixture } from './fullRun
  * what generateMultipleEpisodes and the brief-from-analysis helpers actually
  * read: setting/keyLocations (world brief), protagonist/majorCharacters
  * (character brief), episodeBreakdown + totalEstimatedEpisodes (episode loop),
- * anchors/sevenPoint (season spine context).
+ * anchors/legacyStructure (season spine context).
  */
 export function buildSeasonAnalysis(): Record<string, unknown> {
   return {
@@ -58,7 +58,7 @@ export function buildSeasonAnalysis(): Record<string, unknown> {
       incitingIncident: 'The catalogue commission excludes the east wing.',
       climax: 'Mara confronts the family\'s lawyer with the gallery ledger.',
     },
-    sevenPoint: {
+    legacyStructure: {
       hook: 'The catalogue commission excludes the east wing.',
       plotTurn1: 'The portrait swings inward on a hidden passage.',
       pinch1: 'Edric appears in the library doorway.',

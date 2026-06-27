@@ -212,7 +212,7 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_RELATIONSHIP_PACING', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // WS1 (2026-06-12): relocated from season-final to plan placement — anchors
   // are fully known before generation (see GATE_AUTHORED_EPISODE_CONFORMANCE).
-  { id: 'GATE_SEVEN_POINT_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true },
   { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
 ] satisfies GateSpec[];
 

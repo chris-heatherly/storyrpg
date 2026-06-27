@@ -323,6 +323,7 @@ export type ValidatorExecutionLifecycle =
   | 'narrative-diagnostics'
   | 'plan-fidelity'
   | 'episode-contract'
+  | 'artifact-contract'
   | 'final-contract'
   | 'artifact-package';
 
@@ -457,8 +458,29 @@ export interface ComprehensiveValidationReport {
   choiceAgencyCanonicalReport?: ChoiceAgencyCanonicalReport;
   /** Registry-normalized validator execution ownership records. Additive telemetry only. */
   executionRecords?: ValidatorExecutionRecord[];
+  /** Memory-derived validator context. Additive audit metadata only; never pass/fail authority. */
+  memoryEvidence?: ValidatorEvidenceSummary[];
   timestamp: Date;
   duration: number;
+}
+
+export interface ValidatorEvidenceSummary {
+  validator: string;
+  lifecycle: string;
+  evidenceMode: 'none' | 'advisory-memory' | 'corroborated-evidence' | 'artifact-required';
+  artifactIds: string[];
+  sourceSnippetCount: number;
+  priorFailureCount: number;
+  relatedFindingCount: number;
+  corroboratedFactCount: number;
+  confidence: number;
+  provenance: Array<{
+    query: string;
+    datasets: string[];
+    nodeNames: string[];
+    resultCount: number;
+  }>;
+  retrievalWarnings: string[];
 }
 
 // ========================================
@@ -471,6 +493,8 @@ export interface QuickValidationResult {
   warningCount: number;
   /** Registry-normalized validator execution ownership records. Additive telemetry only. */
   executionRecords?: ValidatorExecutionRecord[];
+  /** Memory-derived validator context. Additive audit metadata only; never pass/fail authority. */
+  memoryEvidence?: ValidatorEvidenceSummary[];
 }
 
 // ========================================

@@ -62,6 +62,7 @@ import { saveEarlyDiagnostic } from '../../utils/pipelineOutputWriter';
 import { buildSceneTimelineHandoff } from '../../utils/sceneTimeline';
 import { StoryVerb } from '../../utils/storyVerbs';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../../utils/withTimeout';
+import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
 import {
   CharacterVoiceProfile,
   FinalStoryContractValidator,
@@ -152,6 +153,16 @@ export interface ContentGenerationPhaseDeps {
   getThreadPlanner: () => ThreadPlannerLike;
   getTwistArchitect: () => TwistArchitectLike;
   getCharacterArcTracker: () => CharacterArcTrackerLike;
+  writeAgentOutcome?: (record: {
+    role: AgentMemoryRole;
+    lifecycle: string;
+    storyId?: string;
+    episodeNumber?: number;
+    artifactIds?: string[];
+    outcome?: string;
+    summary?: string;
+    payload?: unknown;
+  }) => Promise<void>;
 
   // --- Run-scoped state (accessor-backed) ---
   /** Assigned by this phase (fresh runner per episode). */
@@ -163,6 +174,7 @@ export interface ContentGenerationPhaseDeps {
   /** Reset by this phase at episode start, appended via captureEncounterTelemetry. */
   encounterTelemetry: EncounterTelemetry[];
   readonly cachedPipelineMemory: string | null;
+  getAgentMemoryContext?: (request: AgentMemoryRequest) => Promise<string | null>;
   readonly callbackLedger: CallbackLedger;
   readonly dependencySchedulerStats: { hasCycle: boolean; waveCount: number; fallbackToSerial: boolean };
   readonly episodeArcTargets: Map<number, CharacterArcTargets>;
@@ -274,6 +286,27 @@ export class ContentGenerationPhase {
   readonly name = 'content_generation';
 
   constructor(private readonly deps: ContentGenerationPhaseDeps) {}
+
+  private async memoryContextFor(
+    role: AgentMemoryRole,
+    lifecycle: string,
+    brief: FullCreativeBrief,
+    sceneBlueprint?: SceneBlueprint,
+    artifactIds: string[] = [],
+  ): Promise<string | undefined> {
+    if (!this.deps.getAgentMemoryContext) return this.deps.cachedPipelineMemory || undefined;
+    const block = await this.deps.getAgentMemoryContext({
+      agentRole: role,
+      lifecycle,
+      storyId: brief.story.title,
+      episodeNumber: brief.episode?.number,
+      treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
+      sceneId: sceneBlueprint?.id,
+      characterIds: sceneBlueprint?.npcsPresent,
+      artifactIds,
+    });
+    return block || this.deps.cachedPipelineMemory || undefined;
+  }
 
   private sceneDensityCanExpandWithBeatBudget(report: TreatmentDensityReport, scene: SceneBlueprint | undefined): boolean {
     if (!scene) return false;
@@ -427,6 +460,10 @@ export class ContentGenerationPhase {
     if (isThreadTwistPlanningEnabled(context.config.generation)) {
       const ttEpisode = episodeNumber ?? brief.episode.number;
       const ttSeasonEpisode = brief.seasonPlan?.episodes.find((e) => e.episodeNumber === ttEpisode);
+      await Promise.all([
+        this.memoryContextFor('ThreadPlanner', 'thread-planning', brief, undefined, ['thread-ledger']),
+        this.memoryContextFor('TwistArchitect', 'twist-planning', brief, undefined, ['twist-plan']),
+      ]);
       const { threadLedger, twistPlan } = await planEpisodeThreadsAndTwist({
         enabled: true,
         threadPlanner: this.deps.getThreadPlanner(),
@@ -443,6 +480,30 @@ export class ContentGenerationPhase {
       });
       if (threadLedger) mergeIntoSeasonLedger(this.deps.seasonThreadLedger, threadLedger, ttEpisode);
       if (twistPlan) this.deps.episodeTwistPlans.set(ttEpisode, twistPlan);
+      if (this.deps.writeAgentOutcome) {
+        await Promise.all([
+          threadLedger ? this.deps.writeAgentOutcome({
+            role: 'ThreadPlanner',
+            lifecycle: 'thread-planning',
+            storyId: brief.story.title,
+            episodeNumber: ttEpisode,
+            artifactIds: ['thread-ledger'],
+            outcome: 'adopted',
+            summary: 'Thread ledger adopted for episode scene authoring.',
+            payload: threadLedger,
+          }) : Promise.resolve(),
+          twistPlan ? this.deps.writeAgentOutcome({
+            role: 'TwistArchitect',
+            lifecycle: 'twist-planning',
+            storyId: brief.story.title,
+            episodeNumber: ttEpisode,
+            artifactIds: ['twist-plan'],
+            outcome: 'adopted',
+            summary: 'Twist plan adopted for episode scene authoring.',
+            payload: twistPlan,
+          }) : Promise.resolve(),
+        ]);
+      }
       if (outputDirectory && (threadLedger || twistPlan)) {
         await saveEarlyDiagnostic(outputDirectory, `episode-${ttEpisode}-thread-twist-plan.json`, {
           generatedAt: new Date().toISOString(),
@@ -460,6 +521,7 @@ export class ContentGenerationPhase {
     if (isCharacterArcTrackingEnabled(context.config.generation)) {
       const atEpisode = episodeNumber ?? brief.episode.number;
       const atSeasonEpisode = brief.seasonPlan?.episodes.find((e) => e.episodeNumber === atEpisode);
+      await this.memoryContextFor('CharacterArcTracker', 'character-arc-planning', brief, undefined, ['character-arc-targets']);
       const { arcTargets } = await planEpisodeArcTargets({
         enabled: true,
         characterArcTracker: this.deps.getCharacterArcTracker(),
@@ -478,6 +540,18 @@ export class ContentGenerationPhase {
       });
       if (arcTargets) {
         this.deps.episodeArcTargets.set(atEpisode, arcTargets);
+        if (this.deps.writeAgentOutcome) {
+          await this.deps.writeAgentOutcome({
+            role: 'CharacterArcTracker',
+            lifecycle: 'character-arc-planning',
+            storyId: brief.story.title,
+            episodeNumber: atEpisode,
+            artifactIds: ['character-arc-targets'],
+            outcome: 'adopted',
+            summary: 'Character arc targets adopted for episode scene authoring.',
+            payload: arcTargets,
+          });
+        }
         if (outputDirectory) {
           await saveEarlyDiagnostic(outputDirectory, `episode-${atEpisode}-arc-targets.json`, {
             generatedAt: new Date().toISOString(),
@@ -1014,7 +1088,7 @@ export class ContentGenerationPhase {
                 encounterBuildup: sceneBlueprint.encounterBuildup || 'Foreshadow the encounter stakes without depicting or resolving the encounter event itself.',
               }
             : undefined,
-          memoryContext: this.deps.cachedPipelineMemory || undefined,
+          memoryContext: await this.memoryContextFor('SceneWriter', 'scene-authoring', brief, sceneBlueprint, ['episode-blueprint']),
           branchContext: branchContextByScene.get(sceneBlueprint.id),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonStoryCircle: brief.seasonPlan?.storyCircle,
@@ -1199,7 +1273,7 @@ export class ContentGenerationPhase {
             nextSceneContext,
             incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
             sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-            memoryContext: this.deps.cachedPipelineMemory || undefined,
+            memoryContext: await this.memoryContextFor('SceneWriter', 'scene-retry', brief, sceneBlueprint, ['episode-blueprint']),
           };
           const {
             input: retrySceneWriterInputForAuthoring,
@@ -1506,7 +1580,7 @@ export class ContentGenerationPhase {
               }),
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: this.deps.cachedPipelineMemory || undefined,
+              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-authoring', brief, sceneBlueprint, ['choice-set']),
               storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
               growthTemplates: (() => {
                 // Attach the episode-level growth template to the FIRST
@@ -1755,7 +1829,7 @@ export class ContentGenerationPhase {
                       }),
                       optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                       sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                      memoryContext: this.deps.cachedPipelineMemory || undefined,
+                      memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-stakes-repair', brief, sceneBlueprint, ['choice-set']),
                       storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
                     }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
 
@@ -2059,7 +2133,7 @@ export class ContentGenerationPhase {
                   : undefined,
                 incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.deps.cachedPipelineMemory || undefined,
+                memoryContext: await this.memoryContextFor('SceneWriter', 'scene-regeneration', brief, sceneBlueprint, ['scene-content']),
               }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneBlueprint.id} regen-${sceneRegenAttempt})`);
 
               if (!revisedSceneResult.success || !revisedSceneResult.data) {
@@ -2213,7 +2287,7 @@ export class ContentGenerationPhase {
                     }),
                     optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
                     sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                    memoryContext: this.deps.cachedPipelineMemory || undefined,
+                    memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-regeneration', brief, sceneBlueprint, ['choice-set']),
                     storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
                   }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen-choices-${choicesRegenAttempt})`);
 
@@ -2573,7 +2647,7 @@ export class ContentGenerationPhase {
             brief.episode?.number ?? 1,
             [...(sceneBlueprint.revealsInfoIds ?? []), ...(sceneBlueprint.paysOffInfoIds ?? [])],
           ),
-          memoryContext: this.deps.cachedPipelineMemory || undefined,
+          memoryContext: await this.memoryContextFor('EncounterArchitect', 'encounter-authoring', brief, sceneBlueprint, ['encounter-structure']),
           storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonStoryCircle: brief.seasonPlan?.storyCircle,

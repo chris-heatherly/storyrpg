@@ -27,6 +27,7 @@ export type ValidatorStage =
   | 'quick' // IntegratedBestPracticesValidator.runQuickValidation (generation-time)
   | 'full' // IntegratedBestPracticesValidator.runFullValidation (QA-time)
   | 'diagnostic' // narrativeDiagnostics.runNarrativeDiagnostics
+  | 'artifact-contract' // artifact evidence contract checks
   | 'final'; // final story assembly gate
 
 export type ValidatorTier = 'blocking' | 'advisory' | 'autofix';
@@ -41,6 +42,7 @@ export type ValidatorLifecycle =
   | 'narrative-diagnostics'
   | 'plan-fidelity'
   | 'episode-contract'
+  | 'artifact-contract'
   | 'final-contract'
   | 'artifact-package';
 
@@ -66,6 +68,12 @@ export type ValidatorRemediation =
   | 'plan-time'
   | 'none';
 
+export type ValidatorMemoryEvidenceMode =
+  | 'none'
+  | 'advisory-memory'
+  | 'corroborated-evidence'
+  | 'artifact-required';
+
 export interface ValidatorRegistryEntry {
   validator: string;
   stage: ValidatorStage;
@@ -89,6 +97,11 @@ export interface ValidatorRegistryEntry {
   repairRequiredForBlocking?: boolean;
   /** Written exception for legacy hard gates that intentionally lack repair. */
   allowBlockingWithoutRepair?: string;
+  /**
+   * Whether orchestration may attach Cognee-derived context for audit/repair
+   * guidance. Validators still decide from current typed artifacts and policy.
+   */
+  memoryEvidenceMode?: ValidatorMemoryEvidenceMode;
 }
 
 export interface ArtifactValidatorOwnershipEntry {
@@ -317,6 +330,15 @@ export function remediationRoute(validator: string): ValidatorRemediation | unde
   return VALIDATOR_REGISTRY.find((e) => e.validator === validator)?.remediation;
 }
 
+export function memoryEvidenceModeForValidator(validator: string): ValidatorMemoryEvidenceMode {
+  const entry = VALIDATOR_REGISTRY.find((e) => e.validator === validator);
+  if (entry?.memoryEvidenceMode) return entry.memoryEvidenceMode;
+  if (!entry) return 'advisory-memory';
+  if (entry.stage === 'final' && entry.tier === 'blocking') return 'corroborated-evidence';
+  if (entry.stage === 'artifact-contract') return 'artifact-required';
+  return 'advisory-memory';
+}
+
 export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
   { validator: 'AuthoredEpisodeConformanceValidator', artifactKinds: ['source-analysis'], role: 'primary' },
   { validator: 'StoryCircleAnchorConformanceValidator', artifactKinds: ['source-analysis'], role: 'primary' },
@@ -520,6 +542,8 @@ function lifecycleForStage(stage: ValidatorStage): ValidatorLifecycle {
       return 'full-qa';
     case 'diagnostic':
       return 'narrative-diagnostics';
+    case 'artifact-contract':
+      return 'artifact-contract';
     case 'final':
       return 'final-contract';
   }

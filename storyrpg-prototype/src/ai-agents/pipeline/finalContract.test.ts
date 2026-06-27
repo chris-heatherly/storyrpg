@@ -5,6 +5,7 @@ import { MechanicsLeakageValidator } from '../validators/MechanicsLeakageValidat
 import {
   applySceneTurnWarningRepairOutcome,
   allowsCompactRequiredBeatFallback,
+  downgradeNonBlockingTreatmentObligations,
   reconcileQaReportForCurrentStory,
   repairDiceMetaphorMechanicsLeakage,
   repairVampireDaytimeMealCanon,
@@ -49,6 +50,28 @@ const passingReport = {
 } as unknown as FinalStoryContractReport;
 
 describe('scene-turn warning repair helpers', () => {
+  it('downgrades Bite Me ordinary-world ledger bundles before final hard abort', () => {
+    const report = {
+      passed: false,
+      blockingIssues: [{
+        type: 'treatment_event_ledger_violation',
+        severity: 'error',
+        validator: 'TreatmentEventLedgerValidator',
+        sceneId: 's1-arrival-cold-open',
+        message: `Treatment event ledger summary-only realization in scene "s1-arrival-cold-open": must dramatize on-page, not summarize as memory/backstory: "(Ep1): Kylie's ordinary world is reinvention-as-performance. She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later. Opening promise: a heartbroken woman gets a glamorous new life and her own byline. The staged rescue and the viral *Mr. Midnight* post close the beat by making her a name.".`,
+      }],
+      warnings: [],
+      metrics: {},
+    } as unknown as FinalStoryContractReport;
+
+    const downgraded = downgradeNonBlockingTreatmentObligations(report);
+
+    expect(downgraded).toBe(1);
+    expect(report.passed).toBe(true);
+    expect(report.blockingIssues).toHaveLength(0);
+    expect(report.warnings).toHaveLength(1);
+  });
+
   it('allows compact required-beat fallback for extracted quoted moments', () => {
     expect(allowsCompactRequiredBeatFallback({
       validator: 'RequiredBeatRealizationValidator',

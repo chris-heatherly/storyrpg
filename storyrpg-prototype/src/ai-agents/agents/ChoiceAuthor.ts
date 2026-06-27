@@ -2408,11 +2408,18 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     const protagonistSlug = protagonistName.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const id = String(candidate.id || '').trim().toLowerCase();
     const name = String(candidate.name || '').trim().toLowerCase();
+    const protagonistNorm = protagonistName.replace(/[^a-z0-9]/g, '');
+    const idNorm = id.replace(/[^a-z0-9]/g, '');
+    const nameNorm = name.replace(/[^a-z0-9]/g, '');
     return Boolean(
       (protagonistName && name === protagonistName) ||
+      (protagonistName && name.startsWith(`${protagonistName} `)) ||
       (protagonistName && id === protagonistName) ||
       (protagonistSlug && id === protagonistSlug) ||
-      (protagonistSlug && id === `char-${protagonistSlug}`)
+      (protagonistSlug && id === `char-${protagonistSlug}`) ||
+      (protagonistSlug && id.startsWith(`char-${protagonistSlug}-`)) ||
+      (protagonistSlug && id.startsWith(`${protagonistSlug}-`)) ||
+      (protagonistNorm.length >= 4 && (idNorm.startsWith(`char${protagonistNorm}`) || nameNorm.startsWith(protagonistNorm)))
     );
   }
 

@@ -46,6 +46,7 @@ import { capabilityFactStrings } from '../characterCanonFacts';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
+import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -91,6 +92,7 @@ export interface QAPhaseDeps {
   readonly incrementalValidator: IncrementalValidationRunner | null;
   readonly sceneValidationResults: SceneValidationResult[];
   readonly cachedPipelineMemory: string | null;
+  getAgentMemoryContext?: (request: AgentMemoryRequest) => Promise<string | null>;
 
   // --- Helpers shared with other monolith regions (injected closures) ---
   requirePhases: (phase: string, prerequisites: string[]) => void;
@@ -158,6 +160,28 @@ export class QAPhase {
   readonly name = 'qa';
 
   constructor(private readonly deps: QAPhaseDeps) {}
+
+  private async memoryContextFor(
+    role: AgentMemoryRole,
+    lifecycle: string,
+    brief: FullCreativeBrief,
+    sceneId?: string,
+    characterIds?: string[],
+    artifactIds: string[] = [],
+  ): Promise<string | undefined> {
+    if (!this.deps.getAgentMemoryContext) return this.deps.cachedPipelineMemory || undefined;
+    const block = await this.deps.getAgentMemoryContext({
+      agentRole: role,
+      lifecycle,
+      storyId: brief.story.title,
+      episodeNumber: brief.episode?.number,
+      treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
+      sceneId,
+      characterIds,
+      artifactIds,
+    });
+    return block || this.deps.cachedPipelineMemory || undefined;
+  }
 
   /**
    * The full Phase 5 block from generate(): gate, parallel QA + best
@@ -339,7 +363,7 @@ export class QAPhase {
               dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
               incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: this.deps.cachedPipelineMemory || undefined,
+              memoryContext: await this.memoryContextFor('SceneWriter', 'qa-scene-repair', brief, sceneBlueprint.id, sceneBlueprint.npcsPresent, ['qa-report', 'scene-content']),
             }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} qa-repair-${qaRepairPass + 1})`);
 
             if (repairResult.success && repairResult.data) {
@@ -403,7 +427,7 @@ export class QAPhase {
               }),
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: this.deps.cachedPipelineMemory || undefined,
+              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'qa-choice-repair', brief, sceneBlueprint.id, sceneBlueprint.npcsPresent, ['qa-report', 'choice-set']),
               storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${weakCs.beatId} qa-repair-${qaRepairPass + 1})`);
 

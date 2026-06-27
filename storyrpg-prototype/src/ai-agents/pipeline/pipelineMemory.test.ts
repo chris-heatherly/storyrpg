@@ -98,6 +98,7 @@ describe('CogneeHttpMemoryProvider', () => {
     const packet = await provider.recall({
       datasets: ['storyrpg-project'],
       queries: ['branching failures'],
+      nodeNames: ['agent:StoryArchitect'],
       topK: 3,
     });
 
@@ -108,6 +109,8 @@ describe('CogneeHttpMemoryProvider', () => {
       query: 'branching failures',
       topK: 3,
       onlyContext: true,
+      nodeNames: ['agent:StoryArchitect'],
+      nodeName: 'agent:StoryArchitect',
     });
     expect(packet?.sourceSnippets).toEqual(['Prior failure: branch fan-out collapsed.']);
     expect(packet?.queryLog[0]).toMatchObject({ query: 'branching failures', resultCount: 1 });
@@ -145,5 +148,64 @@ describe('PipelineMemory', () => {
     const character = await memory.readCharacterMemory('Avery Vale');
     expect(character).toContain('Character Knowledge: Avery Vale');
     expect(character).toContain('black bob');
+  });
+
+  it('builds scoped agent recall with role datasets, node names, and prompt policy', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => '',
+      json: async () => ([{ search_result: 'SceneWriter should preserve callback residue.' }]),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const memory = new PipelineMemory({ config: makeConfig() });
+
+    const context = await memory.recallForAgent({
+      agentRole: 'SceneWriter',
+      lifecycle: 'scene-authoring',
+      storyId: 'Bite Me',
+      episodeNumber: 3,
+      sceneId: 'scene-2',
+      characterIds: ['mara-voss'],
+      artifactIds: ['episode-blueprint'],
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.datasets).toEqual(expect.arrayContaining([
+      'storyrpg-project',
+      'storyrpg-run-bite-me',
+      'storyrpg-character-mara-voss',
+      'storyrpg-validator-history',
+      'storyrpg-agent-history',
+    ]));
+    expect(body.nodeNames).toEqual(expect.arrayContaining([
+      'agent:SceneWriter',
+      'episode:3',
+      'scene:scene-2',
+      'character:mara-voss',
+      'artifact:episode-blueprint',
+    ]));
+    expect(context.renderedPromptBlock).toContain('Retrieved Pipeline Memory');
+    expect(context.renderedPromptBlock).toContain('Advisory context; do not contradict fixed canon.');
+  });
+
+  it('normalizes validator recall as advisory evidence with no uncorroborated facts', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => '',
+      json: async () => ([{ search_result: 'Blocking failure: treatment event was skipped; repair route was regen-scene.' }]),
+    }));
+    const memory = new PipelineMemory({ config: makeConfig() });
+
+    const evidence = await memory.recallForValidator({
+      validator: 'TreatmentFieldUtilizationValidator',
+      lifecycle: 'final-contract',
+      storyId: 'Bite Me',
+      artifactIds: ['story-json'],
+      evidenceMode: 'corroborated-evidence',
+    });
+
+    expect(evidence.facts).toEqual([]);
+    expect(evidence.priorFailures).toHaveLength(1);
+    expect(evidence.retrievalWarnings.join('\n')).toContain('corroborated against current typed artifacts');
   });
 });

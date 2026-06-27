@@ -653,6 +653,40 @@ describe('ChoiceAuthor relationship consequence repair', () => {
       .toEqual(['char-mihaela-mika-dragan', 'char-mihaela-mika-dragan']);
   });
 
+  it('retargets protagonist relationship consequences when the protagonist prompt uses a short name', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Make the joke land with Mika',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'char-kylie-marinescu', dimension: 'trust', change: 5 }],
+        },
+        {
+          id: 'c2',
+          text: 'Let Victor see the bruise in your voice',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'Kylie Marinescu', dimension: 'trust', change: -3 }],
+        },
+      ],
+    });
+    const input = makeInput({
+      protagonistInfo: { name: 'Kylie', pronouns: 'she/her' },
+      npcsInScene: [
+        { id: 'char-kylie-marinescu', name: 'Kylie Marinescu', pronouns: 'she/her', description: 'Player protagonist' },
+        { id: 'char-mihaela-mika-dragan', name: 'Mika Drăgan', pronouns: 'she/her', description: 'Friend' },
+      ],
+    });
+
+    const result = author.normalizeChoiceSet(choiceSet, input);
+
+    expect(result.choices.flatMap((choice: any) => choice.consequences.map((c: any) => c.npcId)))
+      .toEqual(['char-mihaela-mika-dragan', 'char-mihaela-mika-dragan']);
+  });
+
   it('caps first-meeting relationship deltas from the pacing contract', () => {
     const author: any = new ChoiceAuthor(config);
     const choiceSet = makeChoiceSet({

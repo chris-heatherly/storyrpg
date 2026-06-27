@@ -57,6 +57,7 @@ import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
+import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
@@ -530,13 +531,25 @@ function toFindings(validator: string, issues: ValidationIssue[], downgradeToWar
     if (issue.severity !== 'error' && issue.severity !== 'warning') continue;
     const sceneRef = locationSceneRef(issue.location);
     const policy = policyForFinding(validator, issue);
+    const obligation = classifyTreatmentObligation({ validator, message: issue.message, severity: issue.severity });
+    const downgradeObligation = !obligation.blocksFinalProse && (
+      validator === 'RequiredBeatRealizationValidator'
+      || validator === 'SignatureDevicePresenceValidator'
+      || validator === 'TreatmentEventLedgerValidator'
+      || validator === 'TreatmentFieldUtilizationValidator'
+    );
     out.push({
       validator,
-      severity: downgradeToWarning ? 'warning' : issue.severity,
+      severity: downgradeToWarning || downgradeObligation ? 'warning' : issue.severity,
       message: issue.message,
-      suggestion: issue.suggestion,
+      suggestion: downgradeObligation
+        ? `${issue.suggestion ?? obligation.reason} ${obligation.reason}`
+        : issue.suggestion,
       ...sceneRef,
       ...policy,
+      findingClass: downgradeObligation ? 'shadow_advisory' : policy.findingClass,
+      sourceKind: downgradeObligation ? 'heuristic' : policy.sourceKind,
+      hasConcreteObligation: downgradeObligation ? false : policy.hasConcreteObligation,
       repairTarget: policy.repairTarget ?? (
         sceneRef.episodeNumber || sceneRef.sceneId
           ? { episodeNumber: sceneRef.episodeNumber, sceneId: sceneRef.sceneId }

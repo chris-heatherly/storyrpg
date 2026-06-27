@@ -1,6 +1,6 @@
 import type { Story, Episode, Scene, Beat, Choice, Consequence } from '../../types';
 import type { QAReport } from '../agents/QAAgents';
-import type { ComprehensiveValidationReport, TreatmentObligationCanonicalReport } from '../../types/validation';
+import type { ComprehensiveValidationReport, TreatmentObligationCanonicalReport, ValidatorEvidenceSummary } from '../../types/validation';
 import type { SceneValidationResult } from './IncrementalValidators';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 import { IncrementalEncounterValidator } from './IncrementalValidators';
@@ -189,6 +189,8 @@ export interface FinalStoryContractReport {
   };
   /** Shadow-only canonical grouping for treatment-fidelity overlap; does not affect pass/fail or scoring. */
   treatmentObligationCanonicalReport?: TreatmentObligationCanonicalReport;
+  /** Memory-derived context. Additive audit metadata only; never pass/fail authority. */
+  memoryEvidence?: ValidatorEvidenceSummary[];
   generatedAt: string;
 }
 

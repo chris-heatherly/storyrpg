@@ -167,6 +167,38 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('SKIP: broad Bite Me arrival/identity summary is not treated as one hard prose beat', () => {
+    const broad =
+      "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.";
+    const result = run({
+      plan: plan([plannedScene('s1-arrival-cold-open', 1, { requiredBeats: [requiredBeat('broad', broad, 'authored')] })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-arrival-cold-open', [beat('b1', 'You arrive in Bucharest with your bags and your grandmother’s old address.')]),
+        ]),
+      ]),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('SKIP: abstract opening promise is not treated as one hard prose beat', () => {
+    const result = run({
+      plan: plan([plannedScene('s1-arrival-cold-open', 1, {
+        requiredBeats: [requiredBeat('promise', 'Opening promise: a heartbroken woman gets a glamorous new life and her own byline.', 'authored')],
+      })]),
+      story: story([
+        episode(1, [
+          generatedScene('s1-arrival-cold-open', [beat('b1', 'You arrive under wet Bucharest light with your suitcase handle cutting into your palm.')]),
+        ]),
+      ]),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
   it('SKIP: a beat whose episode was not generated this run does not false-fail (partial season)', () => {
     const result = run({
       plan: plan([

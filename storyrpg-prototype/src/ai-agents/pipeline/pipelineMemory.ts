@@ -21,6 +21,8 @@ export interface PipelineMemoryPacket {
     searchType: string;
     topK: number;
     resultCount: number;
+    datasets?: string[];
+    nodeNames?: string[];
   }>;
   warnings: string[];
 }
@@ -44,6 +46,8 @@ export interface PipelineMemoryRecord {
 export interface PipelineMemoryRecallRequest {
   queries?: string[];
   datasets?: string[];
+  nodeNames?: string[];
+  searchType?: string;
   topK?: number;
   maxPromptChars?: number;
 }
@@ -52,6 +56,7 @@ export interface MemoryProvider {
   readonly name: PipelineMemoryProviderName;
   remember(record: PipelineMemoryRecord): Promise<void>;
   recall(request: PipelineMemoryRecallRequest): Promise<PipelineMemoryPacket | null>;
+  cognify?(datasets: string[], options?: { background?: boolean }): Promise<void>;
   readCharacterMemory(characterName: string): Promise<string | null>;
 }
 
@@ -62,9 +67,116 @@ export interface PipelineMemoryDeps {
 const DEFAULT_PROJECT_DATASET = 'storyrpg-project';
 const DEFAULT_RUN_DATASET_PREFIX = 'storyrpg-run';
 const DEFAULT_VALIDATOR_DATASET = 'storyrpg-validator-history';
+const AGENT_HISTORY_DATASET = 'storyrpg-agent-history';
 const DEFAULT_MAX_PROMPT_CHARS = 6000;
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_TOP_K = 6;
+
+export type AgentMemoryRole =
+  | 'SourceMaterialAnalyzer'
+  | 'WorldBuilder'
+  | 'CharacterDesigner'
+  | 'StoryArchitect'
+  | 'BranchManager'
+  | 'SceneWriter'
+  | 'ChoiceAuthor'
+  | 'EncounterArchitect'
+  | 'ThreadPlanner'
+  | 'TwistArchitect'
+  | 'CharacterArcTracker'
+  | 'ImageAgentTeam'
+  | 'AudioGenerationService'
+  | 'VideoDirectorAgent'
+  | 'QARunner'
+  | 'FinalContract';
+
+export interface AgentMemoryRequest {
+  agentRole: AgentMemoryRole;
+  lifecycle: string;
+  storyId?: string;
+  episodeNumber?: number;
+  sourceFingerprint?: string;
+  treatmentId?: string;
+  characterIds?: string[];
+  sceneId?: string;
+  validatorNames?: string[];
+  artifactIds?: string[];
+  queries?: string[];
+  datasets?: string[];
+  nodeNames?: string[];
+  topK?: number;
+  maxPromptChars?: number;
+}
+
+export interface AgentMemoryContext {
+  renderedPromptBlock: string | null;
+  retrievals: PipelineMemoryPacket[];
+  datasetNames: string[];
+  nodeNames: string[];
+  warnings: string[];
+  provenance: Array<{
+    query: string;
+    datasets: string[];
+    nodeNames: string[];
+    resultCount: number;
+  }>;
+}
+
+export type ValidatorEvidenceMode = 'none' | 'advisory-memory' | 'corroborated-evidence' | 'artifact-required';
+
+export interface ValidatorEvidenceRequest {
+  validator: string;
+  lifecycle: string;
+  storyId?: string;
+  episodeNumber?: number;
+  sourceFingerprint?: string;
+  artifactIds?: string[];
+  validatorNames?: string[];
+  evidenceMode?: ValidatorEvidenceMode;
+  queries?: string[];
+  datasets?: string[];
+  nodeNames?: string[];
+  topK?: number;
+  maxPromptChars?: number;
+}
+
+export interface ValidatorEvidenceBundle {
+  validator: string;
+  lifecycle: string;
+  artifactIds: string[];
+  facts: Array<{
+    fact: string;
+    corroboratedBy: string[];
+    confidence: number;
+  }>;
+  priorFailures: string[];
+  relatedFindings: string[];
+  sourceSnippets: string[];
+  confidence: number;
+  provenance: Array<{
+    query: string;
+    datasets: string[];
+    nodeNames: string[];
+    resultCount: number;
+  }>;
+  retrievalWarnings: string[];
+}
+
+export interface PipelineMemoryOutcomeRecord {
+  role?: AgentMemoryRole;
+  validator?: string;
+  lifecycle?: string;
+  storyId?: string;
+  episodeNumber?: number;
+  sceneId?: string;
+  artifactIds?: string[];
+  outcome?: string;
+  title?: string;
+  summary?: string;
+  payload?: unknown;
+  nodeSet?: string[];
+  dataset?: string;
+}
 
 function compactJson(value: unknown, maxChars = 12_000): string {
   try {
@@ -75,7 +187,7 @@ function compactJson(value: unknown, maxChars = 12_000): string {
   }
 }
 
-function slugifyMemoryKey(value: string): string {
+export function slugifyMemoryKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'memory';
 }
 
@@ -113,6 +225,158 @@ function emptyPacket(warnings: string[] = []): PipelineMemoryPacket {
     queryLog: [],
     warnings,
   };
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((v) => (v || '').trim()).filter(Boolean)));
+}
+
+function runDatasetName(defaults: ReturnType<typeof memoryDefaults>, storyId?: string): string | undefined {
+  return storyId ? `${defaults.runDatasetPrefix}-${slugifyMemoryKey(storyId)}` : undefined;
+}
+
+function sourceDatasetName(sourceFingerprint?: string, treatmentId?: string): string | undefined {
+  const key = sourceFingerprint || treatmentId;
+  return key ? `storyrpg-source-${slugifyMemoryKey(key)}` : undefined;
+}
+
+function characterDatasetNames(characterIds?: string[]): string[] {
+  return (characterIds || []).map((id) => `storyrpg-character-${slugifyMemoryKey(id)}`);
+}
+
+function defaultAgentQueries(request: AgentMemoryRequest): string[] {
+  const scope = [
+    request.storyId ? `story ${request.storyId}` : null,
+    request.episodeNumber != null ? `episode ${request.episodeNumber}` : null,
+    request.sceneId ? `scene ${request.sceneId}` : null,
+    request.characterIds?.length ? `characters ${request.characterIds.join(', ')}` : null,
+    request.artifactIds?.length ? `artifacts ${request.artifactIds.join(', ')}` : null,
+  ].filter(Boolean).join(', ');
+  const base = scope ? `${request.agentRole} ${request.lifecycle} for ${scope}` : `${request.agentRole} ${request.lifecycle}`;
+  const byRole: Partial<Record<AgentMemoryRole, string[]>> = {
+    SourceMaterialAnalyzer: [
+      `${base}: treatment-fidelity rules, source quote obligations, prior source-analysis failures`,
+    ],
+    WorldBuilder: [
+      `${base}: worldbuilding rules, source constraints, location continuity failures`,
+    ],
+    CharacterDesigner: [
+      `${base}: character facts, reference-image consistency, voice and relationship depth findings`,
+    ],
+    StoryArchitect: [
+      `${base}: Story Circle structure rules, branch topology failures, plan-time fidelity findings`,
+    ],
+    BranchManager: [
+      `${base}: branch fanout, reconvergence, bottleneck, skipped setup, branch-target failures`,
+    ],
+    SceneWriter: [
+      `${base}: scene-local canon, prior residue, callback obligations, continuity failures, prose repair lessons`,
+    ],
+    ChoiceAuthor: [
+      `${base}: choice impact, consequence budget, callback debt, branch target, witness-id findings`,
+    ],
+    EncounterArchitect: [
+      `${base}: encounter anchors, outcome variants, POV prose integrity, encounter QA history`,
+    ],
+    ThreadPlanner: [
+      `${base}: setup payoff ledgers, callback debts, thread pacing lessons`,
+    ],
+    TwistArchitect: [
+      `${base}: foreshadowing, reversal timing, reveal integrity, twist quality failures`,
+    ],
+    CharacterArcTracker: [
+      `${base}: identity deltas, relationship milestones, arc target failures`,
+    ],
+    ImageAgentTeam: [
+      `${base}: style bible, character appearance, pose diversity, provider failure memories`,
+    ],
+    AudioGenerationService: [
+      `${base}: voice casting, narration style, audio provider failure memories`,
+    ],
+    VideoDirectorAgent: [
+      `${base}: visual continuity, camera direction, video provider failure memories`,
+    ],
+    QARunner: [
+      `${base}: validation failures, successful repairs, recurring quality issues`,
+    ],
+    FinalContract: [
+      `${base}: final contract failures, repair routes, regression notes`,
+    ],
+  };
+  return byRole[request.agentRole] || [`${base}: relevant StoryRPG generation memory`];
+}
+
+function defaultValidatorQueries(request: ValidatorEvidenceRequest): string[] {
+  const scope = [
+    request.storyId ? `story ${request.storyId}` : null,
+    request.episodeNumber != null ? `episode ${request.episodeNumber}` : null,
+    request.artifactIds?.length ? `artifacts ${request.artifactIds.join(', ')}` : null,
+  ].filter(Boolean).join(', ');
+  return [
+    `${request.validator} ${request.lifecycle}${scope ? ` for ${scope}` : ''}: prior failures, related findings, repair routes, source obligations, regression notes`,
+  ];
+}
+
+function agentNodeNames(request: AgentMemoryRequest): string[] {
+  return uniqueStrings([
+    `agent:${request.agentRole}`,
+    request.lifecycle,
+    request.episodeNumber != null ? `episode:${request.episodeNumber}` : undefined,
+    request.sceneId ? `scene:${request.sceneId}` : undefined,
+    ...(request.characterIds || []).map((id) => `character:${slugifyMemoryKey(id)}`),
+    ...(request.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
+    ...(request.nodeNames || []),
+  ]);
+}
+
+function validatorNodeNames(request: ValidatorEvidenceRequest): string[] {
+  return uniqueStrings([
+    `validator:${request.validator}`,
+    request.lifecycle,
+    request.episodeNumber != null ? `episode:${request.episodeNumber}` : undefined,
+    ...(request.validatorNames || []).map((name) => `validator:${name}`),
+    ...(request.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
+    ...(request.nodeNames || []),
+  ]);
+}
+
+function packetProvenance(packet: PipelineMemoryPacket, nodeNames: string[]): AgentMemoryContext['provenance'] {
+  return packet.queryLog.map((entry) => ({
+    query: entry.query,
+    datasets: entry.datasets || packet.datasetNames,
+    nodeNames: entry.nodeNames || nodeNames,
+    resultCount: entry.resultCount,
+  }));
+}
+
+function renderAgentMemoryContext(
+  request: AgentMemoryRequest,
+  packets: PipelineMemoryPacket[],
+  maxChars: number,
+): string | null {
+  const snippets = uniqueStrings(packets.flatMap((packet) => packet.sourceSnippets));
+  const warnings = uniqueStrings(packets.flatMap((packet) => packet.warnings));
+  if (!snippets.length && !warnings.length) return null;
+  const lines = [
+    'Retrieved Pipeline Memory',
+    'Advisory context; do not contradict fixed canon.',
+    `Role: ${request.agentRole}`,
+    `Lifecycle: ${request.lifecycle}`,
+    request.episodeNumber != null ? `Episode: ${request.episodeNumber}` : null,
+    request.sceneId ? `Scene: ${request.sceneId}` : null,
+    '',
+    snippets.length ? 'Relevant Memory:' : null,
+    ...snippets.map((snippet) => `- ${snippet}`),
+    warnings.length ? '\nMemory Warnings:' : null,
+    ...warnings.map((warning) => `- ${warning}`),
+  ].filter((line) => line != null) as string[];
+  const rendered = lines.join('\n');
+  return rendered.length > maxChars ? `${rendered.slice(0, maxChars)}\n... [retrieved memory truncated]` : rendered;
+}
+
+function summarizeValidatorSnippet(snippet: string): string {
+  const clean = snippet.replace(/\s+/g, ' ').trim();
+  return clean.length > 500 ? `${clean.slice(0, 500)}...` : clean;
 }
 
 function normalizeSearchResults(payload: unknown): string[] {
@@ -153,6 +417,8 @@ class DisabledMemoryProvider implements MemoryProvider {
   async recall(): Promise<PipelineMemoryPacket | null> {
     return null;
   }
+
+  async cognify(): Promise<void> {}
 
   async readCharacterMemory(): Promise<string | null> {
     return null;
@@ -210,6 +476,8 @@ class FileMemoryProvider implements MemoryProvider {
     };
   }
 
+  async cognify(): Promise<void> {}
+
   async readCharacterMemory(characterName: string): Promise<string | null> {
     const store = this.getMemoryStoreInstance();
     const path = `/memories/characters/${slugifyMemoryKey(characterName)}.md`;
@@ -264,14 +532,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     }
 
     if (this.config.cognifyEnabled && record.cognify !== false) {
-      const cognifyResponse = await fetchWithTimeout(this.endpoint('cognify'), {
-        method: 'POST',
-        headers: this.headers(true),
-        body: JSON.stringify({ datasets: [dataset], runInBackground: true }),
-      }, this.timeoutMs());
-      if (!cognifyResponse.ok) {
-        throw new Error(`Cognee cognify failed: ${cognifyResponse.status} ${await cognifyResponse.text()}`);
-      }
+      await this.cognify([dataset], { background: true });
     }
   }
 
@@ -284,6 +545,8 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     ];
     const topK = request.topK || DEFAULT_TOP_K;
     const maxPromptChars = request.maxPromptChars || defaults.maxPromptChars;
+    const searchType = request.searchType || 'GRAPH_COMPLETION';
+    const nodeNames = request.nodeNames || [];
     const packet = emptyPacket();
     packet.datasetNames = datasets;
 
@@ -292,11 +555,12 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
         method: 'POST',
         headers: this.headers(true),
         body: JSON.stringify({
-          searchType: 'GRAPH_COMPLETION',
+          searchType,
           query,
           datasets,
           topK,
           onlyContext: true,
+          ...(nodeNames.length ? { nodeNames, nodeName: nodeNames[0] } : {}),
         }),
       }, this.timeoutMs());
       if (!response.ok) {
@@ -304,7 +568,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
       }
       const payload = await response.json();
       const snippets = normalizeSearchResults(payload);
-      packet.queryLog.push({ query, searchType: 'GRAPH_COMPLETION', topK, resultCount: snippets.length });
+      packet.queryLog.push({ query, searchType, topK, resultCount: snippets.length, datasets, nodeNames });
       packet.sourceSnippets.push(...snippets);
     }
 
@@ -319,6 +583,22 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
       packet.summary = `Cognee memory compacted to ${maxPromptChars} characters.`;
     }
     return packet;
+  }
+
+  async cognify(datasets: string[], options: { background?: boolean } = {}): Promise<void> {
+    if (!this.config.cognifyEnabled || !this.baseUrl || datasets.length === 0) return;
+    const cognifyResponse = await fetchWithTimeout(this.endpoint('cognify'), {
+      method: 'POST',
+      headers: this.headers(true),
+      body: JSON.stringify({
+        datasets,
+        runInBackground: options.background !== false,
+        run_in_background: options.background !== false,
+      }),
+    }, this.timeoutMs());
+    if (!cognifyResponse.ok) {
+      throw new Error(`Cognee cognify failed: ${cognifyResponse.status} ${await cognifyResponse.text()}`);
+    }
   }
 
   async readCharacterMemory(characterName: string): Promise<string | null> {
@@ -393,6 +673,29 @@ export class PipelineMemory {
     return storyId ? `${this.defaults.runDatasetPrefix}-${slugifyMemoryKey(storyId)}` : this.defaults.projectDataset;
   }
 
+  private agentDatasets(request: AgentMemoryRequest): string[] {
+    return uniqueStrings([
+      this.defaults.projectDataset,
+      runDatasetName(this.defaults, request.storyId),
+      sourceDatasetName(request.sourceFingerprint, request.treatmentId),
+      ...characterDatasetNames(request.characterIds),
+      this.defaults.validatorDataset,
+      AGENT_HISTORY_DATASET,
+      ...(request.datasets || []),
+    ]);
+  }
+
+  private validatorDatasets(request: ValidatorEvidenceRequest): string[] {
+    return uniqueStrings([
+      this.defaults.projectDataset,
+      runDatasetName(this.defaults, request.storyId),
+      sourceDatasetName(request.sourceFingerprint),
+      this.defaults.validatorDataset,
+      AGENT_HISTORY_DATASET,
+      ...(request.datasets || []),
+    ]);
+  }
+
   async writeRecord(record: PipelineMemoryRecord): Promise<void> {
     const config = this.config;
     if (!config?.enabled || config.writeEnabled === false) return;
@@ -408,9 +711,145 @@ export class PipelineMemory {
     }), null);
   }
 
+  async recallForAgent(request: AgentMemoryRequest): Promise<AgentMemoryContext> {
+    const maxPromptChars = request.maxPromptChars || this.defaults.maxPromptChars;
+    const datasets = this.agentDatasets(request);
+    const nodeNames = agentNodeNames(request);
+    const queries = request.queries?.length ? request.queries : defaultAgentQueries(request);
+    const packet = await this.recallPacket({
+      queries,
+      datasets,
+      nodeNames,
+      topK: request.topK || DEFAULT_TOP_K,
+      maxPromptChars,
+    });
+    const retrievals = packet ? [packet] : [];
+    const warnings = uniqueStrings([
+      ...retrievals.flatMap((p) => p.warnings),
+      !packet ? 'Memory recall unavailable; proceeding with deterministic artifacts only.' : undefined,
+    ]);
+    return {
+      renderedPromptBlock: renderAgentMemoryContext(request, retrievals, maxPromptChars),
+      retrievals,
+      datasetNames: uniqueStrings(retrievals.flatMap((p) => p.datasetNames).concat(datasets)),
+      nodeNames,
+      warnings,
+      provenance: retrievals.flatMap((p) => packetProvenance(p, nodeNames)),
+    };
+  }
+
+  async recallForValidator(request: ValidatorEvidenceRequest): Promise<ValidatorEvidenceBundle> {
+    const datasets = this.validatorDatasets(request);
+    const nodeNames = validatorNodeNames(request);
+    const queries = request.queries?.length ? request.queries : defaultValidatorQueries(request);
+    const packet = await this.recallPacket({
+      queries,
+      datasets,
+      nodeNames,
+      topK: request.topK || DEFAULT_TOP_K,
+      maxPromptChars: request.maxPromptChars || this.defaults.maxPromptChars,
+    });
+    const snippets = uniqueStrings(packet?.sourceSnippets || []).map(summarizeValidatorSnippet);
+    const priorFailures = snippets.filter((snippet) => /\b(fail(?:ed|ure)?|blocking|regression|error|repair)\b/i.test(snippet));
+    const relatedFindings = snippets.filter((snippet) => /\b(finding|validator|warning|issue|gate)\b/i.test(snippet));
+    const retrievalWarnings = uniqueStrings([
+      ...(packet?.warnings || []),
+      request.evidenceMode === 'corroborated-evidence' || request.evidenceMode === 'artifact-required'
+        ? 'Cognee evidence must be corroborated against current typed artifacts before deterministic use.'
+        : 'Cognee snippets are advisory memory only and do not change validator pass/fail decisions.',
+      !packet ? 'Memory evidence unavailable; validator must use current artifacts only.' : undefined,
+    ]);
+    return {
+      validator: request.validator,
+      lifecycle: request.lifecycle,
+      artifactIds: request.artifactIds || [],
+      facts: [],
+      priorFailures,
+      relatedFindings,
+      sourceSnippets: snippets,
+      confidence: snippets.length ? 0.35 : 0,
+      provenance: packet ? packetProvenance(packet, nodeNames) : [],
+      retrievalWarnings,
+    };
+  }
+
   async readPipelineMemory(): Promise<string | null> {
     const packet = await this.recallPacket();
     return renderPipelineMemoryPacket(packet, this.defaults.maxPromptChars);
+  }
+
+  async writeAgentOutcome(record: PipelineMemoryOutcomeRecord): Promise<void> {
+    const storyDataset = runDatasetName(this.defaults, record.storyId);
+    await this.writeRecord({
+      kind: 'generation',
+      dataset: record.dataset || storyDataset || AGENT_HISTORY_DATASET,
+      title: record.title || `${record.role || 'Agent'} ${record.outcome || 'outcome'}`,
+      text: [
+        record.role ? `Agent: ${record.role}` : null,
+        record.lifecycle ? `Lifecycle: ${record.lifecycle}` : null,
+        record.episodeNumber != null ? `Episode: ${record.episodeNumber}` : null,
+        record.sceneId ? `Scene: ${record.sceneId}` : null,
+        record.outcome ? `Outcome: ${record.outcome}` : null,
+        record.artifactIds?.length ? `Artifacts: ${record.artifactIds.join(', ')}` : null,
+        record.summary || null,
+        record.payload !== undefined ? `Payload:\n${compactJson(record.payload, 8000)}` : null,
+      ].filter(Boolean).join('\n'),
+      metadata: record as unknown as Record<string, unknown>,
+      nodeSet: uniqueStrings([
+        record.role ? `agent:${record.role}` : 'agent',
+        record.lifecycle,
+        record.episodeNumber != null ? `episode:${record.episodeNumber}` : undefined,
+        record.sceneId ? `scene:${record.sceneId}` : undefined,
+        ...(record.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
+        ...(record.nodeSet || []),
+      ]),
+    });
+  }
+
+  async writeValidatorOutcome(record: PipelineMemoryOutcomeRecord): Promise<void> {
+    await this.writeValidatorMemory({
+      validator: record.validator || 'validator',
+      lifecycle: record.lifecycle,
+      storyId: record.storyId,
+      artifactIds: record.artifactIds,
+      outcome: record.outcome,
+      findings: record.payload ?? record.summary,
+    });
+  }
+
+  async writeArtifactSnapshot(record: PipelineMemoryOutcomeRecord): Promise<void> {
+    await this.writeRecord({
+      kind: 'artifact',
+      dataset: record.dataset || this.runDataset(record.storyId),
+      title: record.title || `Artifact snapshot${record.artifactIds?.length ? `: ${record.artifactIds.join(', ')}` : ''}`,
+      text: [
+        record.lifecycle ? `Lifecycle: ${record.lifecycle}` : null,
+        record.episodeNumber != null ? `Episode: ${record.episodeNumber}` : null,
+        record.sceneId ? `Scene: ${record.sceneId}` : null,
+        record.summary || null,
+        record.payload !== undefined ? `Snapshot:\n${compactJson(record.payload, 10_000)}` : null,
+      ].filter(Boolean).join('\n'),
+      metadata: record as unknown as Record<string, unknown>,
+      nodeSet: uniqueStrings([
+        'artifact',
+        record.lifecycle,
+        record.episodeNumber != null ? `episode:${record.episodeNumber}` : undefined,
+        record.sceneId ? `scene:${record.sceneId}` : undefined,
+        ...(record.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
+        ...(record.nodeSet || []),
+      ]),
+    });
+  }
+
+  async cognifyDatasets(datasets: string[], options: { background?: boolean } = { background: true }): Promise<void> {
+    const config = this.config;
+    if (!config?.enabled || config.cognifyEnabled === false) return;
+    const uniqueDatasets = uniqueStrings(datasets);
+    if (!uniqueDatasets.length) return;
+    await this.bestEffort('cognify datasets', async () => {
+      const provider = this.getProvider();
+      if (provider.cognify) await provider.cognify(uniqueDatasets, options);
+    }, undefined);
   }
 
   async writeGenerationMemory(opts: {

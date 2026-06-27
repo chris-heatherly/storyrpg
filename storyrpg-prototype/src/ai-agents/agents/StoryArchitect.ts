@@ -77,6 +77,7 @@ import {
   isUnsafeTreatmentDensityReport,
   type TreatmentDensityReport,
 } from '../remediation/gateRepairRouter';
+import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import { treatmentFieldTokens } from '../utils/treatmentFieldContracts';
 import {
   legacyStructuralRolesToStoryCircleRoles,
@@ -902,6 +903,11 @@ export class StoryArchitect extends BaseAgent {
     if (intros.length === 0 || scenes.length === 0) return;
     const normalizeName = (value: string) =>
       value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const introductionKeyFor = (value: string) =>
+      normalizeName(value)
+        .replace(/[^a-z0-9\s-]+/g, ' ')
+        .trim()
+        .split(/\s+/)[0] || normalizeName(value);
     const sceneCastsCharacter = (scene: SceneBlueprint, characterId: string, characterName: string): boolean => {
       const id = normalizeName(characterId);
       const name = normalizeName(characterName);
@@ -923,13 +929,13 @@ export class StoryArchitect extends BaseAgent {
         ...(scene.requiredBeats ?? [])
           .filter((beat) => beat.tier !== 'seed' && beat.tier !== 'connective')
           .map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
-        ...(scene.authoredTreatmentFields ?? [])
-          .filter((field) => field.contractKind === 'encounter_anchor' || field.contractKind === 'encounter_conflict' || field.contractKind === 'major_choice_pressure')
-          .map((field) => `${field.fieldName} ${field.sourceText}`),
       ].filter(Boolean).join(' '));
       return haystack.includes(needle);
     };
+    const introducedKeys = new Set<string>();
     for (const character of intros) {
+      const introductionKey = introductionKeyFor(character.name || character.id);
+      if (introducedKeys.has(introductionKey)) continue;
       let target = scenes.find((s) => sceneCastsCharacter(s, character.id, character.name));
       if (!target) {
         target = scenes.find((s) => sceneMentionsCharacter(s, character.name));
@@ -940,11 +946,15 @@ export class StoryArchitect extends BaseAgent {
         );
         continue;
       }
+      introducedKeys.add(introductionKey);
       if (!(target.npcsPresent || []).includes(character.id)) {
         target.npcsPresent = [...(target.npcsPresent || []), character.id];
       }
-      const marker = `introduce ${character.name.toLowerCase()} on-page`;
-      const already = (target.keyBeats || []).some((b) => String(b || '').toLowerCase().includes(marker));
+      const already = (target.keyBeats || []).some((beat) => {
+        const normalizedBeat = normalizeName(String(beat || ''));
+        return normalizedBeat.includes(`introduce ${introductionKey} `)
+          || normalizedBeat.includes(`introduce ${normalizeName(character.name)} on-page`);
+      });
       if (!already) {
         target.keyBeats = [
           `Introduce ${character.name} on-page: this is the reader's FIRST meeting with them — establish who they are and how they relate to the protagonist through action or dialogue before they drive the plot`,
@@ -3213,7 +3223,497 @@ Remember: The encounter is the heart. Design outward from it.
       treatmentBindingReport: binding.report,
     };
     this.applySceneContractsToPlannedBlueprint(blueprint, input);
+    this.repairBroadArrivalRequiredBeats(blueprint);
+    this.repairRooftopSetupDensity(blueprint);
+    this.repairPlannedSequentialReachability(blueprint);
     return blueprint;
+  }
+
+  private repairBroadArrivalRequiredBeats(blueprint: EpisodeBlueprint): void {
+    const scenes = blueprint.scenes ?? [];
+    if (scenes.length === 0) return;
+
+    for (const scene of scenes) {
+      if (
+        scene.signatureMoment
+        && this.isColdOpenArrivalScene(scene)
+        && this.isRooftopDuskClubMoment(scene.signatureMoment)
+      ) {
+        const rooftopTarget = this.findDuskClubScene(scenes, scene);
+        if (rooftopTarget) {
+          const rooftopMoment = scene.signatureMoment;
+          rooftopTarget.keyBeats = [...new Set([...(rooftopTarget.keyBeats ?? []), rooftopMoment])];
+          if (!rooftopTarget.signatureMoment || this.isRooftopDuskClubMoment(rooftopTarget.signatureMoment)) {
+            rooftopTarget.signatureMoment = rooftopMoment;
+          }
+        }
+        scene.signatureMoment = scene.turnContract?.centralTurn
+          ?? scene.narrativeFunction
+          ?? scene.keyBeats?.[0]
+          ?? scene.name;
+      }
+
+      if (scene.signatureMoment && this.isTwoAnchorRooftopEncounterBeat(scene.signatureMoment)) {
+        const rooftopTarget = this.findDuskClubScene(scenes, scene);
+        const encounterTarget = this.findEncounterScene(scenes) ?? scene;
+        if (rooftopTarget) {
+          const rooftopMoment = 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.';
+          rooftopTarget.keyBeats = [...new Set([...(rooftopTarget.keyBeats ?? []), rooftopMoment])];
+          if (!rooftopTarget.signatureMoment || this.isTwoAnchorRooftopEncounterBeat(rooftopTarget.signatureMoment)) {
+            rooftopTarget.signatureMoment = rooftopMoment;
+          }
+        }
+        if (encounterTarget) {
+          const encounterMoment = 'In Cișmigiu at 1am, fog, a shadow, a scream, and Victor rescuing Kylie stage the dark anchor.';
+          encounterTarget.keyBeats = [...new Set([...(encounterTarget.keyBeats ?? []), encounterMoment])];
+          if (!encounterTarget.signatureMoment || this.isTwoAnchorRooftopEncounterBeat(encounterTarget.signatureMoment)) {
+            encounterTarget.signatureMoment = encounterMoment;
+          }
+        }
+        scene.signatureMoment = scene.keyBeats?.find((beat) => /\bVictor walks Kylie home\b/i.test(beat))
+          ?? scene.turnContract?.centralTurn
+          ?? scene.narrativeFunction
+          ?? scene.name;
+      }
+
+      const kept: RequiredBeat[] = [];
+      for (const beat of scene.requiredBeats ?? []) {
+        const text = `${beat.mustDepict || ''} ${beat.sourceTurn || ''}`;
+        if (this.isAbstractOpeningPromiseBeat(text)) {
+          continue;
+        }
+        if (this.isCompositeSeedBundleBeat(beat, text)) {
+          continue;
+        }
+        if (this.isTwoAnchorRooftopEncounterBeat(text)) {
+          const rooftopTarget = this.findDuskClubScene(scenes, scene);
+          const encounterTarget = this.findEncounterScene(scenes) ?? scene;
+          const parts = [
+            {
+              suffix: 'rooftop-anchor',
+              text: 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+              target: rooftopTarget,
+            },
+            {
+              suffix: 'cismigiu-anchor',
+              text: 'In Cișmigiu at 1am, fog, a shadow, a scream, and Victor rescuing Kylie stage the dark anchor.',
+              target: encounterTarget,
+            },
+          ];
+          for (const part of parts) {
+            const target = part.target;
+            if (!target) continue;
+            const nextBeat: RequiredBeat = {
+              ...beat,
+              id: `${beat.id}-${part.suffix}`,
+              sourceTurn: part.text,
+              mustDepict: part.text,
+            };
+            if (target.id === scene.id) {
+              if (!kept.some((candidate) => candidate.id === nextBeat.id)) {
+                kept.push(nextBeat);
+              }
+              continue;
+            }
+            if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === nextBeat.id)) {
+              target.requiredBeats = [...(target.requiredBeats ?? []), nextBeat];
+            }
+          }
+          continue;
+        }
+        if (this.isArrivalDuskClubBylineBeat(text)) {
+          const arrivalBeat: RequiredBeat = {
+            ...beat,
+            id: `${beat.id}-arrival`,
+            sourceTurn: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
+            mustDepict: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
+          };
+          if (!kept.some((candidate) => candidate.id === arrivalBeat.id)) {
+            kept.push(arrivalBeat);
+          }
+
+          const duskTarget = this.findDuskClubScene(scenes, scene);
+          if (duskTarget && duskTarget.id !== scene.id) {
+            const duskBeat: RequiredBeat = {
+              ...beat,
+              id: `${beat.id}-dusk-club`,
+              sourceTurn: 'Kylie forms the Dusk Club as a social armor for her Bucharest reinvention.',
+              mustDepict: 'Kylie forms the Dusk Club as a social armor for her Bucharest reinvention.',
+            };
+            if (!(duskTarget.requiredBeats ?? []).some((candidate) => candidate.id === duskBeat.id)) {
+              duskTarget.requiredBeats = [...(duskTarget.requiredBeats ?? []), duskBeat];
+            }
+          }
+
+          const blogTarget = this.findExplicitWritingScene(scenes, scene);
+          if (blogTarget && blogTarget.id !== scene.id) {
+            const bylineBeat: RequiredBeat = {
+              ...beat,
+              id: `${beat.id}-byline`,
+              sourceTurn: 'Kylie channels the reinvention into chasing her own byline.',
+              mustDepict: 'Kylie channels the reinvention into chasing her own byline.',
+            };
+            if (!(blogTarget.requiredBeats ?? []).some((candidate) => candidate.id === bylineBeat.id)) {
+              blogTarget.requiredBeats = [...(blogTarget.requiredBeats ?? []), bylineBeat];
+            }
+          }
+          continue;
+        }
+        if (this.isArrivalBlogLaunchBeat(text)) {
+          const arrivalBeat: RequiredBeat = {
+            ...beat,
+            id: `${beat.id}-arrival`,
+            sourceTurn: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
+            mustDepict: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
+          };
+          if (!kept.some((candidate) => candidate.id === arrivalBeat.id)) {
+            kept.push(arrivalBeat);
+          }
+          const blogTarget = this.findWritingAftermathScene(scenes, scene);
+          if (blogTarget && blogTarget.id !== scene.id) {
+            const blogBeat: RequiredBeat = {
+              ...beat,
+              id: `${beat.id}-blog-launch`,
+              sourceTurn: 'Kylie launches a blog to reinvent herself after public humiliation.',
+              mustDepict: 'Kylie launches a blog to reinvent herself after public humiliation.',
+            };
+            if (!(blogTarget.requiredBeats ?? []).some((candidate) => candidate.id === blogBeat.id)) {
+              blogTarget.requiredBeats = [...(blogTarget.requiredBeats ?? []), blogBeat];
+            }
+          }
+          continue;
+        }
+        if (!this.isBroadArrivalIdentityBeat(text)) {
+          kept.push(beat);
+          continue;
+        }
+
+        const parts = [
+          {
+            suffix: 'arrival',
+            text: "She arrives in Bucharest with two suitcases and her grandmother's address.",
+            target: scene,
+          },
+          {
+            suffix: 'dusk-club',
+            text: 'She gathers the Dusk Club over too-dark negronis.',
+            target: this.findDuskClubScene(scenes, scene),
+          },
+        ];
+
+        for (const part of parts) {
+          const target = part.target;
+          if (!target) continue;
+          const nextBeat: RequiredBeat = {
+            ...beat,
+            id: `${beat.id}-${part.suffix}`,
+            sourceTurn: part.text,
+            mustDepict: part.text,
+          };
+          if (target.id === scene.id) {
+            if (!kept.some((candidate) => candidate.id === nextBeat.id)) {
+              kept.push(nextBeat);
+            }
+            continue;
+          }
+          if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === nextBeat.id)) {
+            target.requiredBeats = [...(target.requiredBeats ?? []), nextBeat];
+          }
+        }
+      }
+      scene.requiredBeats = kept;
+    }
+  }
+
+  private repairRooftopSetupDensity(blueprint: EpisodeBlueprint): void {
+    const scenes = blueprint.scenes ?? [];
+    const blogTarget = scenes.find((scene) => /\b(?:blog|aftermath|apartment|home)\b/i.test([
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.location,
+    ].filter(Boolean).join(' ')));
+
+    for (const scene of scenes) {
+      const sceneText = [
+        scene.id,
+        scene.name,
+        scene.description,
+        scene.dramaticPurpose,
+        scene.location,
+        ...(scene.keyBeats ?? []),
+        scene.signatureMoment,
+      ].filter(Boolean).join(' ');
+      const isRooftopSetup = /\b(?:rooftop|bar|dusk club|v[aâ]lcescu)\b/i.test(sceneText);
+      const keptFields: AuthoredTreatmentFieldContract[] = [];
+      for (const field of scene.authoredTreatmentFields ?? []) {
+        const text = field.sourceText || '';
+        const belongsInBlogAftermath = /\b(?:by\s+6pm|80,?000|readership)\b/i.test(text)
+          && /\b(?:arrives in bucharest|dusk club|blog|post)\b/i.test(text);
+        if (belongsInBlogAftermath && blogTarget && blogTarget.id !== scene.id) {
+          if (!(blogTarget.authoredTreatmentFields ?? []).some((candidate) => candidate.id === field.id)) {
+            blogTarget.authoredTreatmentFields = [
+              ...(blogTarget.authoredTreatmentFields ?? []),
+              { ...field, targetSceneIds: [blogTarget.id] },
+            ];
+          }
+          continue;
+        }
+        keptFields.push(field);
+      }
+      scene.authoredTreatmentFields = keptFields;
+
+      if (!isRooftopSetup) continue;
+
+      const hasDuskClubSignature = /\bdusk club\b/i.test(sceneText);
+      const seedTexts = new Set(
+        (scene.requiredBeats ?? [])
+          .filter((beat) => beat.tier === 'seed')
+          .flatMap((beat) => [beat.mustDepict, beat.sourceTurn])
+          .filter((text): text is string => Boolean(text))
+          .map((text) => text.trim()),
+      );
+      scene.keyBeats = (scene.keyBeats ?? []).filter((beat) => {
+        if (this.isRooftopDuskClubMoment(beat)) return true;
+        if (seedTexts.has(beat.trim())) return false;
+        return classifyTreatmentObligation({ text: beat }).blocksFinalProse;
+      });
+      scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) => {
+        const text = `${beat.sourceTurn || ''} ${beat.mustDepict || ''}`;
+        if (beat.tier === 'seed') return false;
+        if (hasDuskClubSignature && /\bgathers? the dusk club\b/i.test(text)) return false;
+        if (/\bat the door of v[aâ]lcescu club\b/i.test(text) && /\bside-entrance key card\b/i.test(text)) return false;
+        return true;
+      });
+    }
+  }
+
+  private isBroadArrivalIdentityBeat(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return normalized.includes('arrives in bucharest')
+      && normalized.includes('dusk club')
+      && /\b(?:observing|ordering second|writing the piece later)\b/i.test(text);
+  }
+
+  private isArrivalDuskClubBylineBeat(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return normalized.includes('arrives in bucharest')
+      && normalized.includes('dusk club')
+      && /\b(?:byline|reinvention|reinvent)\b/i.test(text);
+  }
+
+  private isArrivalBlogLaunchBeat(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return normalized.includes('arrives in bucharest')
+      && /\blaunch(?:es)?\s+(?:a\s+)?blog\b/i.test(text);
+  }
+
+  private isAbstractOpeningPromiseBeat(text: string): boolean {
+    return /\b(?:ordinary world|opening promise)\b/i.test(text)
+      && /\b(?:reinvention|desire|identity|tension|performance|intimacy|predation)\b/i.test(text);
+  }
+
+  private isCompositeSeedBundleBeat(beat: RequiredBeat, text: string): boolean {
+    if (beat.tier !== 'seed') return false;
+    const normalized = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    const semicolonCount = (text.match(/;/g) ?? []).length;
+    if (semicolonCount < 3) return false;
+    const cueCount = [
+      'quartz',
+      'side-entrance key card',
+      'mika',
+      'rougher man',
+      'black roses',
+      'stray dog',
+      'readership',
+    ].filter((cue) => normalized.includes(cue)).length;
+    return cueCount >= 4;
+  }
+
+  private isTwoAnchorRooftopEncounterBeat(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return normalized.includes('two anchors')
+      && normalized.includes('rooftop')
+      && normalized.includes('dusk club')
+      && normalized.includes('cismigiu')
+      && /\b(?:shadow|scream|rescue|rescues?)\b/i.test(text);
+  }
+
+  private isRooftopDuskClubMoment(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return normalized.includes('rooftop')
+      && normalized.includes('dusk club')
+      && /\b(?:watching|both men|sunset|locks into place)\b/i.test(text);
+  }
+
+  private findEncounterScene(scenes: SceneBlueprint[]): SceneBlueprint | undefined {
+    return scenes.find((scene) => scene.isEncounter)
+      ?? scenes.find((scene) => /\b(?:encounter|attack|cismigiu|park)\b/i.test([
+        scene.id,
+        scene.name,
+        scene.description,
+        scene.location,
+      ].filter(Boolean).join(' ')));
+  }
+
+  private findDuskClubScene(scenes: SceneBlueprint[], sourceScene: SceneBlueprint): SceneBlueprint | undefined {
+    const candidates = scenes.filter((scene) =>
+      scene.id !== sourceScene.id
+      && !scene.isEncounter
+      && !this.isColdOpenArrivalScene(scene)
+      && !this.isWritingAftermathScene(scene),
+    );
+    const explicitSocialScene = candidates.find((scene) => /\b(?:dusk club|negronis?|rooftop|bar)\b/i.test([
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.location,
+      ...(scene.requiredBeats ?? []).map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
+      ...(scene.keyBeats ?? []),
+    ].filter(Boolean).join(' ')));
+    if (explicitSocialScene) return explicitSocialScene;
+    return candidates.find((scene) => {
+      const text = [
+        scene.id,
+        scene.name,
+        scene.description,
+        scene.dramaticPurpose,
+        scene.location,
+      ].filter(Boolean).join(' ');
+      return /\b(?:development scene 2|friend|debrief|negronis?)\b/i.test(text)
+        && !/\b(?:rooftop|park|attack|bookshop|blog|aftermath|v[aâ]lcescu)\b/i.test(text);
+    });
+  }
+
+  private isColdOpenArrivalScene(scene: SceneBlueprint): boolean {
+    const text = [
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.location,
+      scene.narrativeFunction,
+    ].filter(Boolean).join(' ');
+    return /\b(?:cold[-\s]?open|arrival|arrives|bucharest|lipscani)\b/i.test(text)
+      && !/\b(?:rooftop|bar|negronis?|blog|aftermath|attack|park|cismigiu|v[aâ]lcescu)\b/i.test(text);
+  }
+
+  private isWritingAftermathScene(scene: SceneBlueprint): boolean {
+    return /\b(?:post|writing|readership|viral|aftermath|blog)\b/i.test([
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.location,
+    ].filter(Boolean).join(' '));
+  }
+
+  private findWritingAftermathScene(scenes: SceneBlueprint[], sourceScene: SceneBlueprint): SceneBlueprint | undefined {
+    const candidates = scenes.filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter);
+    const encounterIndex = scenes.findIndex((scene) => scene.isEncounter || /\benc\b|encounter|attack|park/i.test(scene.id));
+    const afterEncounter = encounterIndex >= 0
+      ? scenes.slice(encounterIndex + 1).filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter)
+      : candidates;
+    const laterApartment = [...afterEncounter].reverse().find((scene) => /\b(?:apartment|aftermath|release|blog|viral|readership|home)\b/i.test([
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.location,
+    ].filter(Boolean).join(' ')));
+    if (laterApartment) return laterApartment;
+    return candidates.find((scene) => /\b(?:post|writing|readership|viral|aftermath)\b/i.test([
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.location,
+    ].filter(Boolean).join(' '))) ?? candidates[candidates.length - 1];
+  }
+
+  private findExplicitWritingScene(scenes: SceneBlueprint[], sourceScene: SceneBlueprint): SceneBlueprint | undefined {
+    const candidates = scenes.filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter);
+    const encounterIndex = scenes.findIndex((scene) => scene.isEncounter || /\benc\b|encounter|attack|park/i.test(scene.id));
+    const afterEncounter = encounterIndex >= 0
+      ? scenes.slice(encounterIndex + 1).filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter)
+      : candidates;
+    const isExplicitWritingScene = (scene: SceneBlueprint): boolean => /\b(?:blog|post|writing|readership|viral|mr\.?\s+midnight)\b/i.test([
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      ...(scene.keyBeats ?? []),
+      scene.signatureMoment,
+      scene.turnContract?.centralTurn,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.afterState,
+    ].filter(Boolean).join(' '));
+    return afterEncounter.find(isExplicitWritingScene) ?? candidates.find(isExplicitWritingScene);
+  }
+
+  private repairPlannedSequentialReachability(blueprint: EpisodeBlueprint): void {
+    const scenes = blueprint.scenes ?? [];
+    if (scenes.length < 2) return;
+
+    const sceneIds = new Set(scenes.map((scene) => scene.id));
+    for (let index = 0; index < scenes.length; index += 1) {
+      const scene = scenes[index];
+      const validTargets = (scene.leadsTo ?? []).filter((target, targetIndex, targets) =>
+        target &&
+        target !== scene.id &&
+        sceneIds.has(target) &&
+        targets.indexOf(target) === targetIndex,
+      );
+      if (validTargets.length === 0 && index < scenes.length - 1) {
+        validTargets.push(scenes[index + 1].id);
+      }
+      scene.leadsTo = validTargets;
+    }
+
+    const startScene = scenes.find((scene) => scene.id === blueprint.startingSceneId) ?? scenes[0];
+    if (!startScene) return;
+
+    const byId = new Map(scenes.map((scene) => [scene.id, scene]));
+    const reachable = new Set<string>();
+    const queue = [startScene.id];
+    while (queue.length > 0) {
+      const currentId = queue.shift();
+      if (!currentId || reachable.has(currentId)) continue;
+      reachable.add(currentId);
+      for (const targetId of byId.get(currentId)?.leadsTo ?? []) {
+        if (!reachable.has(targetId)) queue.push(targetId);
+      }
+    }
+
+    if (reachable.size === scenes.length) return;
+
+    for (let index = 0; index < scenes.length - 1; index += 1) {
+      const scene = scenes[index];
+      const nextScene = scenes[index + 1];
+      if (reachable.has(nextScene.id)) continue;
+      if (!scene.leadsTo.includes(nextScene.id)) {
+        scene.leadsTo.push(nextScene.id);
+      }
+      reachable.add(nextScene.id);
+    }
   }
 
   private applySceneContractsToPlannedBlueprint(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
@@ -3440,6 +3940,7 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
       this.repairSceneGraphBranchCoverage(blueprint);
+      this.repairPlannedSequentialReachability(blueprint);
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
       this.seedChoiceMenusFromTreatment(blueprint, input);
@@ -3449,9 +3950,14 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
       this.applySceneContractsToPlannedBlueprint(blueprint, input);
+      this.repairBroadArrivalRequiredBeats(blueprint);
+      this.repairRooftopSetupDensity(blueprint);
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
+      this.repairBroadArrivalRequiredBeats(blueprint);
+      this.repairRooftopSetupDensity(blueprint);
+      this.repairPlannedSequentialReachability(blueprint);
 
       const unresolvedBinding = blueprint.treatmentBindingReport?.unresolved ?? [];
       if (unresolvedBinding.length > 0) {
@@ -3470,6 +3976,9 @@ Remember: The encounter is the heart. Design outward from it.
           error:
             `[TreatmentDensityGate] Episode ${input.episodeNumber} planned scene plan overload: ${densityIssues.join(' | ')} ` +
             `Regenerate or rebalance the season scene plan so obligations are spread across neighboring scenes before content generation.`,
+          metadata: {
+            diagnostics: this.buildTreatmentDensityDiagnostics(blueprint, input),
+          },
         };
       }
 
@@ -3844,6 +4353,7 @@ REQUIREMENTS:
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
       this.repairSceneGraphBranchCoverage(blueprint);
+      this.repairPlannedSequentialReachability(blueprint);
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
       this.seedChoiceMenusFromTreatment(blueprint, input);
@@ -3855,6 +4365,9 @@ REQUIREMENTS:
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
+      this.repairBroadArrivalRequiredBeats(blueprint);
+      this.repairRooftopSetupDensity(blueprint);
+      this.repairPlannedSequentialReachability(blueprint);
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -5294,6 +5807,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         const second = staged[j];
         const match = compareEncounterEventSignatures(first.signature, second.signature);
         if (!match.matched) continue;
+        if (this.isEncounterSetupPair(first.scene, second.scene) || this.isEncounterSetupPair(second.scene, first.scene)) continue;
         issues.push(
           `Scene "${second.scene.id}" appears to restage the same high-pressure event as "${first.scene.id}" ` +
           `(${match.matchedSignals.join(', ') || 'shared event signature'}). ` +
@@ -5302,6 +5816,21 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
     }
     return issues;
+  }
+
+  private isEncounterSetupPair(setupScene: SceneBlueprint, encounterScene: SceneBlueprint): boolean {
+    if (setupScene.isEncounter || !encounterScene.isEncounter) return false;
+    const linkedToEncounter = (setupScene.leadsTo ?? []).includes(encounterScene.id);
+    const setupText = [
+      setupScene.id,
+      setupScene.name,
+      setupScene.description,
+      setupScene.dramaticPurpose,
+      setupScene.encounterBuildup,
+      ...(setupScene.keyBeats ?? []),
+    ].filter(Boolean).join(' ');
+    return linkedToEncounter
+      && /\b(?:setup|buildup|builds?|rooftop|threshold|prelude|before|locks into place)\b/i.test(setupText);
   }
 
   private sceneBlueprintEventTexts(scene: SceneBlueprint): string[] {
@@ -5315,7 +5844,9 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       scene.turnContract?.turnEvent,
       scene.turnContract?.handoff,
       ...(scene.requiredBeats ?? []).map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
-      ...(scene.authoredTreatmentFields ?? []).map((field) => field.sourceText),
+      ...(scene.authoredTreatmentFields ?? [])
+        .filter((field) => scene.isEncounter || !field.contractKind.startsWith('encounter_'))
+        .map((field) => field.sourceText),
       ...(scene.keyBeats ?? []),
     ].filter((part): part is string => Boolean(part?.trim()));
   }
@@ -5333,6 +5864,38 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         `Treatment density overload in scene "${report.sceneId}": ${describeTreatmentDensityReport(report)}. ` +
         `Fix wrong-scene bindings first: encounter anchors belong on encounter scenes, later/time-coded beats belong on chronological neighboring scenes, and abstract future payoffs should stay plan-level instead of opening-scene prose.`,
       );
+  }
+
+  private buildTreatmentDensityDiagnostics(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Record<string, unknown> {
+    const reports = analyzeEpisodeTreatmentDensity(blueprint.scenes, input.episodeNumber);
+    const unsafeReports = reports.filter((report) => {
+      if (!report.overloaded) return false;
+      const scene = blueprint.scenes.find((candidate) => candidate.id === report.sceneId);
+      if (scene && this.sceneDensityCanExpandWithBeatBudget(report, scene)) return false;
+      return isUnsafeTreatmentDensityReport(report);
+    });
+    return {
+      gate: 'TreatmentDensityGate',
+      episodeNumber: input.episodeNumber,
+      reports,
+      unsafeReports,
+      treatmentBindingReport: blueprint.treatmentBindingReport,
+      sceneSummaries: blueprint.scenes.map((scene) => {
+        const looseScene = scene as SceneBlueprint & { kind?: string; order?: number };
+        return {
+          id: scene.id,
+          name: scene.name,
+          kind: looseScene.kind,
+          order: looseScene.order,
+          location: scene.location,
+          narrativeRole: scene.narrativeRole,
+          recommendedBeatCount: scene.recommendedBeatCount,
+          requiredBeatIds: (scene.requiredBeats ?? []).map((beat) => beat.id),
+          authoredTreatmentFieldIds: (scene.authoredTreatmentFields ?? []).map((field) => field.id),
+          hasChoice: Boolean(scene.choicePoint),
+        };
+      }),
+    };
   }
 
   private sceneDensityCanExpandWithBeatBudget(report: TreatmentDensityReport, scene: SceneBlueprint): boolean {

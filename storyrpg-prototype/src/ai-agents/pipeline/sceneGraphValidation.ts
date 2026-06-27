@@ -23,6 +23,7 @@ import { SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet, type ChoiceAuthorInput } from '../agents/ChoiceAuthor';
 import { SceneCritic } from '../agents/SceneCritic';
 import { EncounterStructure } from '../agents/EncounterArchitect';
+import type { AgentMemoryRequest } from './pipelineMemory';
 import {
   SceneGraphBranchValidator,
   DuplicateEstablishingBeatValidator,
@@ -102,6 +103,7 @@ export interface SceneGraphValidationDeps {
   /** Current SceneCritic instance, or null when one was never constructed. */
   readonly sceneCritic: SceneCritic | null;
   readonly cachedPipelineMemory: string | null;
+  getAgentMemoryContext?: (request: AgentMemoryRequest) => Promise<string | null>;
   sceneGraphBranchValidator: Pick<SceneGraphBranchValidator, 'validateEpisode'>;
   duplicateEstablishingBeatValidator: Pick<DuplicateEstablishingBeatValidator, 'validateEpisode'>;
   treatmentSeedOnPageValidator: Pick<TreatmentSeedOnPageValidator, 'validateEpisode'>;
@@ -528,7 +530,16 @@ export class SceneGraphValidation {
         }),
         optionCount: Math.max(sceneBlueprint.choicePoint?.optionHints?.length || 0, Math.min(3, sceneBlueprint.leadsTo.length)),
         sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-        memoryContext: this.deps.cachedPipelineMemory || undefined,
+        memoryContext: (await this.deps.getAgentMemoryContext?.({
+          agentRole: 'ChoiceAuthor',
+          lifecycle: 'scene-graph-branch-repair',
+          storyId: brief.story.title,
+          episodeNumber: brief.episode?.number,
+          treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
+          sceneId: sceneBlueprint.id,
+          characterIds: sceneBlueprint.npcsPresent,
+          artifactIds: ['scene-graph-validation', 'choice-set'],
+        })) || this.deps.cachedPipelineMemory || undefined,
         storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
         branchContext: {
           role: 'linear',

@@ -147,6 +147,9 @@ export interface SourceMaterialInput {
   // Manual prompt or additional instructions
   userPrompt?: string;
 
+  // Advisory generator-side retrieval context. Typed artifacts remain authoritative.
+  memoryContext?: string;
+
   // Optional metadata
   title?: string;
   author?: string;
@@ -439,6 +442,9 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
     const targetScenes = clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode);
     const targetChoices = input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode;
     const pacing = input.preferences?.pacing || 'moderate';
+    const userPromptWithMemory = input.memoryContext
+      ? [input.userPrompt || '', input.memoryContext].filter(Boolean).join('\n\n')
+      : input.userPrompt;
     const extractedTreatment = extractTreatmentFromMarkdown(input.sourceText || '');
     if (extractedTreatment.isTreatment) {
       console.log(
@@ -458,7 +464,7 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
       const structureAnalysis = await this.analyzeStoryStructure(
         input.sourceText || '',
         input.title,
-        input.userPrompt,
+        userPromptWithMemory,
         explicitWritingStyleInstruction
       );
 
@@ -472,7 +478,7 @@ ${SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE}
         input.sourceText || '',
         structureAnalysis,
         { targetScenes, targetChoices, pacing },
-        input.userPrompt
+        userPromptWithMemory
       );
 
       console.log(`[SourceMaterialAnalyzer] Created ${episodeBreakdown.episodes.length} episode outlines`);

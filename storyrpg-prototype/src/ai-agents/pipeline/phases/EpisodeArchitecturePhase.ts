@@ -224,6 +224,7 @@ export class EpisodeArchitecturePhase {
             episodeNumber: brief.episode.number,
             episodeTitle: brief.episode.title,
             hasSeasonPlanDirectives: !!seasonPlanDirectives,
+            diagnostics: result!.metadata?.diagnostics,
           },
         }
       );

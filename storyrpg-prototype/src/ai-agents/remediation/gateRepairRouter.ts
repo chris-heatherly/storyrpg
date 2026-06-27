@@ -2,6 +2,7 @@ import type { Story } from '../../types/story';
 import type { SceneBlueprint } from '../agents/StoryArchitect';
 import type { ContractRepairReport } from './finalContractRepair';
 import { evaluateMomentRealization, normalizeRealizationText } from './realizationEvaluator';
+import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 
 export type RepairDirectiveKind =
   | 'deterministic_cleanup'
@@ -65,6 +66,7 @@ export interface TreatmentDensityReport {
 }
 
 type RepairIssue = ContractRepairReport['blockingIssues'][number];
+type ClassifierSeverity = 'error' | 'warning' | 'info' | 'suggestion';
 
 interface StorySceneLike {
   id?: string;
@@ -155,6 +157,12 @@ function textOf(value: unknown): string {
     record.label,
     record.fieldName,
   ].filter((part): part is string => typeof part === 'string').join(' ');
+}
+
+function classifierSeverity(value: unknown): ClassifierSeverity | undefined {
+  return value === 'error' || value === 'warning' || value === 'info' || value === 'suggestion'
+    ? value
+    : undefined;
 }
 
 function normalizedWords(value: string): string[] {
@@ -578,6 +586,10 @@ export class GateRepairRouter {
     }
 
     if (validator === 'RequiredBeatRealizationValidator') {
+      const obligation = classifyTreatmentObligation({ validator, message: issueText, severity: classifierSeverity(issue.severity) });
+      if (!obligation.blocksFinalProse) {
+        return directive('partial_scope_defer', issue, obligation.reason);
+      }
       if (unsafeDensity) return directive('blueprint_rebalance', issue, `Required beat is assigned to an overloaded scene: ${density?.overloadReasons.join('; ')}`);
       if (hasTimeOrOrderCue && isLocalizedTemporalCompletion(issue, this.context.story)) {
         return directive('same_scene_retry', issue, 'Required beat already lands in-scene; only compact time/count wording is missing.');
@@ -587,6 +599,10 @@ export class GateRepairRouter {
     }
 
     if (validator === 'TreatmentEventLedgerValidator') {
+      const obligation = classifyTreatmentObligation({ validator, message: issueText, severity: classifierSeverity(issue.severity) });
+      if (!obligation.blocksFinalProse) {
+        return directive('partial_scope_defer', issue, obligation.reason);
+      }
       if (/\b(?:out[- ]of[- ]scene|wrong scene|assigned elsewhere|another scene|planned scene|not scheduled)\b/i.test(issueText)) {
         return directive('blueprint_rebalance', issue, 'Treatment event appears assigned to the wrong scene.');
       }
@@ -642,6 +658,10 @@ export class GateRepairRouter {
     }
 
     if (validator === 'SignatureDevicePresenceValidator' || validator === 'ReferencedEventPresenceValidator' || validator === 'CharacterIntroductionValidator') {
+      const obligation = classifyTreatmentObligation({ validator, message: issueText, severity: classifierSeverity(issue.severity) });
+      if (validator === 'SignatureDevicePresenceValidator' && !obligation.blocksFinalProse) {
+        return directive('partial_scope_defer', issue, obligation.reason);
+      }
       if (unsafeDensity) return directive('blueprint_rebalance', issue, `Localized fidelity issue sits on overloaded scene: ${density?.overloadReasons.join('; ')}`);
       if (hasTimeOrOrderCue) return directive('scene_cluster_rewrite', issue, 'Localized fidelity issue includes time/order cues.');
       return directive('same_scene_retry', issue, 'Localized fidelity issue is safe for same-scene retry.');

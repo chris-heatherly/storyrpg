@@ -182,7 +182,16 @@ import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePh
 import { EncounterImagePhase } from './phases/EncounterImagePhase';
 import { CoverArtPhase } from './phases/CoverArtPhase';
 import { ImageSupport } from './imageSupport';
-import { PipelineMemory, renderPipelineMemoryPacket, type PipelineMemoryPacket } from './pipelineMemory';
+import {
+  PipelineMemory,
+  renderPipelineMemoryPacket,
+  type AgentMemoryRequest,
+  type AgentMemoryRole,
+  type PipelineMemoryPacket,
+  type ValidatorEvidenceBundle,
+} from './pipelineMemory';
+import { AgentMemoryContextBuilder } from './agentMemoryContextBuilder';
+import { ValidatorEvidenceService } from './validatorEvidenceService';
 import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
 import { DraftImageGeneration, type DraftImageGenerationDeps } from './draftImageGeneration';
@@ -668,6 +677,8 @@ export class FullStoryPipeline {
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
   private cachedPipelineMemory: PipelineMemoryPacket | null = null;
+  private _agentMemoryContextBuilder?: AgentMemoryContextBuilder;
+  private _validatorEvidenceService?: ValidatorEvidenceService;
   private planTimeFidelityFindings: FidelityFinding[] = [];
   private planTimeFidelityBaseline?: ValidationPhaseBaseline;
 
@@ -1150,7 +1161,7 @@ export class FullStoryPipeline {
     }
   }
 
-  private enforceFinalStoryContract(input: {
+  private async enforceFinalStoryContract(input: {
     story: Story;
     brief: FullCreativeBrief;
     requestedEpisodeNumbers?: number[];
@@ -1159,7 +1170,19 @@ export class FullStoryPipeline {
     phase: string;
     validationScope?: import('../validators/runFidelityValidators').FidelityValidationScope;
   }): Promise<FinalStoryContractReport | undefined> {
-    return this.finalContract().enforceFinalStoryContract(input);
+    const evidence = await this.recallValidatorEvidence(
+      'FinalStoryContractValidator',
+      input.phase || 'final-contract',
+      input.brief,
+      { artifactIds: ['story-json', 'qa-report', 'final-contract'], evidenceMode: 'corroborated-evidence' },
+    );
+    const report = await this.finalContract().enforceFinalStoryContract(input);
+    if (report) {
+      report.memoryEvidence = [
+        this.validatorEvidenceService().summarize(evidence, 'corroborated-evidence'),
+      ];
+    }
+    return report;
   }
 
   private enforceEpisodeIncrementalContractWithTimeout(
@@ -3364,6 +3387,12 @@ export class FullStoryPipeline {
       // (ChoiceAuthor + scoped SceneWriter rewrites), one re-validation, and
       // the blocking ValidationError. Repairs mutate sceneContents/choiceSets
       // in place via the shared array refs.
+	      const quickMemoryEvidence = await this.recallValidatorEvidence(
+	        'IntegratedBestPracticesValidator',
+	        'quick-validation',
+	        brief,
+	        { artifactIds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	      );
 	      const quickValidation = await this.quickValidationPhase().run(
 	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
 	        {
@@ -3373,6 +3402,9 @@ export class FullStoryPipeline {
 	        }
 	      );
 	      if (quickValidation) {
+	        quickValidation.memoryEvidence = [
+	          this.validatorEvidenceService().summarize(quickMemoryEvidence, 'advisory-memory'),
+	        ];
 	        this.writeValidatorMemory({
 	          validator: 'IntegratedBestPracticesValidator',
 	          lifecycle: 'quick-validation',
@@ -3385,6 +3417,7 @@ export class FullStoryPipeline {
 	            blockingIssues: quickValidation.blockingIssues.slice(0, 20),
 	            warningCount: quickValidation.warningCount,
 	            executionRecords: quickValidation.executionRecords,
+	            memoryEvidence: quickValidation.memoryEvidence,
 	          },
 	        }).catch(() => {});
 	      }
@@ -3396,7 +3429,13 @@ export class FullStoryPipeline {
       // QA phase extracted to phases/QAPhase.ts (pure move): QARunner + best
       // practices in parallel, the choice-distribution checkpoint, the
       // QA-driven targeted repair loop, and the threshold warning. Repairs
-      // mutate sceneContents/choiceSets in place via the shared array refs.
+	      // mutate sceneContents/choiceSets in place via the shared array refs.
+	      const qaMemoryEvidence = await this.recallValidatorEvidence(
+	        'IntegratedBestPracticesValidator',
+	        'full-qa',
+	        brief,
+	        { artifactIds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	      );
 	      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
 	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
 	        {
@@ -3406,6 +3445,9 @@ export class FullStoryPipeline {
 	        }
 	      );
 	      if (bestPracticesReport) {
+	        bestPracticesReport.memoryEvidence = [
+	          this.validatorEvidenceService().summarize(qaMemoryEvidence, 'advisory-memory'),
+	        ];
 	        this.writeValidatorMemory({
 	          validator: 'IntegratedBestPracticesValidator',
 	          lifecycle: 'full-qa',
@@ -3420,6 +3462,7 @@ export class FullStoryPipeline {
 	            warnings: bestPracticesReport.warnings.slice(0, 20),
 	            suggestions: bestPracticesReport.suggestions.slice(0, 10),
 	            executionRecords: bestPracticesReport.executionRecords,
+	            memoryEvidence: bestPracticesReport.memoryEvidence,
 	          },
 	        }).catch(() => {});
 	      }
@@ -3515,6 +3558,10 @@ export class FullStoryPipeline {
         // Set image service output directory to story's images folder
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
+          await this.getScopedAgentMemoryContext('ImageAgentTeam', 'image-generation', brief, {
+            artifactIds: ['style-bible', 'character-bible', 'scene-content', 'image-diagnostics'],
+            characterIds: characterBible.characters.map((character) => character.id),
+          });
           if (this.useStoryboardV2ImagePipeline()) {
             const storyboardResult = await this.imageWorkerQueue.run(() =>
               this.measurePhase(
@@ -3615,6 +3662,20 @@ export class FullStoryPipeline {
             phase: 'images', 
             message: `Generated ${imageResults?.beatImages.size || 0} beat images, ${imageResults?.sceneImages.size || 0} scene images` 
           });
+          await this.agentMemoryContextBuilder().writeOutcome({
+            role: 'ImageAgentTeam',
+            lifecycle: 'image-generation',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            artifactIds: ['image-diagnostics'],
+            outcome: 'completed',
+            summary: `Image generation completed with ${imageResults?.beatImages?.size || 0} beat image(s), ${imageResults?.sceneImages?.size || 0} scene image(s), and ${encounterImageDiagnostics.length} encounter diagnostic record(s).`,
+            payload: {
+              beatImageCount: imageResults?.beatImages?.size || 0,
+              sceneImageCount: imageResults?.sceneImages?.size || 0,
+              encounterDiagnosticCount: encounterImageDiagnostics.length,
+            },
+          });
           this.markPhaseComplete('images');
         }
 
@@ -3668,6 +3729,9 @@ export class FullStoryPipeline {
       if (this.config.videoGen?.enabled && imageResults?.beatImages && imageResults.beatImages.size > 0) {
         this.requirePhases('video_generation', ['images']);
         this.emit({ type: 'phase_start', phase: 'video_generation', message: 'Phase 5.7: Generating video animations from still images...' });
+        await this.getScopedAgentMemoryContext('VideoDirectorAgent', 'video-generation', brief, {
+          artifactIds: ['scene-content', 'image-results', 'video-diagnostics'],
+        });
         try {
           const videosDir = (outputDirectory || './generated-content') + 'videos/';
           this.videoService.setOutputDirectory(videosDir);
@@ -3679,6 +3743,16 @@ export class FullStoryPipeline {
           );
           videoDiagnostics = videoRunResult.diagnostics;
           videoResults = videoRunResult.videoResults;
+          await this.agentMemoryContextBuilder().writeOutcome({
+            role: 'VideoDirectorAgent',
+            lifecycle: 'video-generation',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            artifactIds: ['video-diagnostics'],
+            outcome: 'completed',
+            summary: `Video generation completed with ${videoResults?.size || 0} clip(s).`,
+            payload: { videoCount: videoResults?.size || 0, diagnostics: videoDiagnostics },
+          });
 
           this.emit({
             type: 'phase_complete',
@@ -3813,6 +3887,10 @@ export class FullStoryPipeline {
       // Audio pre-generation extracted to phases/AudioPhase.ts (pure move);
       // gate condition, events, diagnostics, and the 08-final-story rewrite
       // all live there now.
+      await this.getScopedAgentMemoryContext('AudioGenerationService', 'audio-generation', brief, {
+        artifactIds: ['story-json', 'character-bible', 'audio-diagnostics'],
+        characterIds: characterBible.characters.map((character) => character.id),
+      });
       await new AudioPhase({
         audioService: this.audioService,
         audioWorkerQueue: this.audioWorkerQueue,
@@ -3828,6 +3906,16 @@ export class FullStoryPipeline {
           addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
+      await this.agentMemoryContextBuilder().writeOutcome({
+        role: 'AudioGenerationService',
+        lifecycle: 'audio-generation',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode?.number,
+        artifactIds: ['audio-diagnostics'],
+        outcome: 'completed',
+        summary: `Audio phase completed with ${audioDiagnostics.length} diagnostic record(s).`,
+        payload: { diagnosticCount: audioDiagnostics.length, diagnostics: audioDiagnostics },
+      });
 
       // Browser QA extracted to phases/BrowserQAPhase.ts (pure move). The
       // phase may replace `story` (assets reassembled during remediation).
@@ -4014,6 +4102,9 @@ export class FullStoryPipeline {
   // keeps all three call sites (single-episode, world retry, multi-episode)
   // unchanged while the body lives in the typed phase module.
   private async runWorldBuilding(brief: FullCreativeBrief): Promise<WorldBible> {
+    const memoryContext = await this.getScopedAgentMemoryContext('WorldBuilder', 'world-building', brief, {
+      artifactIds: ['source-analysis', 'season-plan'],
+    });
     return new WorldBuildingPhase(this.worldBuilder).run(
       {
         story: brief.story,
@@ -4021,7 +4112,7 @@ export class FullStoryPipeline {
         world: brief.world,
         startingLocationId: brief.episode.startingLocation,
         rawDocument: brief.rawDocument,
-        memoryContext: this.renderedPipelineMemory || undefined,
+        memoryContext: memoryContext || undefined,
         locationIntroductions: brief.seasonPlan?.locationIntroductions,
         debug: this.config.debug,
       },
@@ -4041,9 +4132,13 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     worldBible: WorldBible
   ): Promise<CharacterBible> {
+    const memoryContext = await this.getScopedAgentMemoryContext('CharacterDesigner', 'character-design', brief, {
+      artifactIds: ['source-analysis', 'world-bible'],
+      characterIds: [brief.protagonist.id, ...brief.npcs.map((npc) => npc.id)],
+    });
     const deps = { characterDesigner: this.characterDesigner } satisfies Partial<CharacterDesignPhaseDeps> as unknown as CharacterDesignPhaseDeps;
     Object.defineProperties(deps, {
-      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
+      cachedPipelineMemory: { get: () => memoryContext || this.renderedPipelineMemory },
     });
     return new CharacterDesignPhase(deps).run(brief, worldBible, {
       config: this.config,
@@ -4061,6 +4156,10 @@ export class FullStoryPipeline {
     worldBible: WorldBible,
     characterBible: CharacterBible
   ): Promise<EpisodeBlueprint> {
+    const memoryContext = await this.getScopedAgentMemoryContext('StoryArchitect', 'episode-architecture', brief, {
+      artifactIds: ['source-analysis', 'season-plan', 'world-bible', 'character-bible'],
+      characterIds: characterBible.characters.map((character) => character.id),
+    });
     const deps = {
       storyArchitect: this.storyArchitect,
       emitPlanUpdate: this.emitPlanUpdate.bind(this),
@@ -4068,7 +4167,7 @@ export class FullStoryPipeline {
       recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
     } satisfies Partial<EpisodeArchitecturePhaseDeps> as unknown as EpisodeArchitecturePhaseDeps;
     Object.defineProperties(deps, {
-      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
+      cachedPipelineMemory: { get: () => memoryContext || this.renderedPipelineMemory },
       generationPlan: { get: () => this.generationPlan },
       architectAdvisoryWarnings: { get: () => this.architectAdvisoryWarnings },
       seasonChoicePlan: {
@@ -4104,15 +4203,31 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     blueprint: EpisodeBlueprint
   ): Promise<BranchAnalysis | null> {
+    await this.getScopedAgentMemoryContext('BranchManager', 'branch-analysis', brief, {
+      artifactIds: ['episode-blueprint'],
+    });
     const deps = { branchManager: this.branchManager } satisfies Partial<BranchAnalysisPhaseDeps> as unknown as BranchAnalysisPhaseDeps;
     Object.defineProperties(deps, {
       branchShadowDiffs: { get: () => this.branchShadowDiffs },
     });
-    return new BranchAnalysisPhase(deps).run(brief, blueprint, {
+    const result = await new BranchAnalysisPhase(deps).run(brief, blueprint, {
       config: this.config,
       emit: this.emit.bind(this),
       addCheckpoint: this.addCheckpoint.bind(this),
     });
+    if (result) {
+      await this.agentMemoryContextBuilder().writeOutcome({
+        role: 'BranchManager',
+        lifecycle: 'branch-analysis',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode?.number,
+        artifactIds: ['branch-analysis'],
+        outcome: 'adopted',
+        summary: 'Branch analysis adopted by the generation pipeline.',
+        payload: result,
+      });
+    }
+    return result;
   }
 
   // Extracted to phases/ContentGenerationPhase.ts (pure move). Thin delegating
@@ -4136,6 +4251,8 @@ export class FullStoryPipeline {
       getThreadPlanner: () => this.getThreadPlanner(),
       getTwistArchitect: () => this.getTwistArchitect(),
       getCharacterArcTracker: () => this.getCharacterArcTracker(),
+      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
+      writeAgentOutcome: this.agentMemoryContextBuilder().writeOutcome.bind(this.agentMemoryContextBuilder()),
       assertSceneDependencyInvariants: this.assertSceneDependencyInvariants.bind(this),
       buildBranchFallbackChoiceSet: this.buildBranchFallbackChoiceSet.bind(this),
       buildDeterministicChoiceSet: (sceneBlueprint, choiceBeat) =>
@@ -4256,6 +4373,7 @@ export class FullStoryPipeline {
       getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
       buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
       deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
     } satisfies Partial<QAPhaseDeps> as unknown as QAPhaseDeps;
     // Accessor-backed run-scoped state: reads on the phase side always see
     // the pipeline's current values.
@@ -4277,6 +4395,7 @@ export class FullStoryPipeline {
       getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
       buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
       deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
     } satisfies Partial<QuickValidationPhaseDeps> as unknown as QuickValidationPhaseDeps;
     // Accessor-backed run-scoped state: reads on the phase side always see
     // the pipeline's current values.
@@ -4650,11 +4769,19 @@ export class FullStoryPipeline {
         : 'Phase 0: Analyzing story concept from prompt'
     });
 
+    const memoryContext = await this.getAgentMemoryContext({
+      agentRole: 'SourceMaterialAnalyzer',
+      lifecycle: 'source-analysis',
+      storyId: title,
+      treatmentId: title,
+      artifactIds: ['source-analysis'],
+    });
     const result = await withTimeoutAbort((signal) => this.sourceMaterialAnalyzer.execute({
       sourceText: sourceText || '',
       title,
       preferences,
       userPrompt,
+      memoryContext: memoryContext || undefined,
     }, { signal }), PIPELINE_TIMEOUTS.sourceAnalysis, 'SourceMaterialAnalyzer.execute');
 
     if (!result.success || !result.data) {
@@ -4750,6 +4877,12 @@ export class FullStoryPipeline {
         && planTimeRequestedEpisodes.length >= analysis.totalEstimatedEpisodes
         && Array.from({ length: analysis.totalEstimatedEpisodes }, (_, idx) => idx + 1)
           .every((episodeNumber) => planTimeRequestedEpisodes.includes(episodeNumber));
+      const planFidelityEvidence = await this.recallValidatorEvidence(
+        'runPlanTimeFidelityChecks',
+        'plan-fidelity',
+        baseBrief,
+        { artifactIds: ['source-analysis', 'season-plan'], evidenceMode: 'advisory-memory' },
+      );
       const planFidelity = runPlanTimeFidelityChecks({
         seasonPlan: baseBrief.seasonPlan,
         sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? analysis,
@@ -4774,6 +4907,9 @@ export class FullStoryPipeline {
 	            findings: planFidelity.findings,
 	            blockingErrors: planFidelity.blockingErrors,
 	            baseline: planFidelity.baseline,
+	            memoryEvidence: [
+	              this.validatorEvidenceService().summarize(planFidelityEvidence, 'advisory-memory'),
+	            ],
 	          },
 	        }).catch(() => {});
 	      }
@@ -6732,6 +6868,12 @@ export class FullStoryPipeline {
       });
 
       try {
+        const architectureDiagnostics = epError instanceof PipelineError
+          ? epError.context?.diagnostics
+          : undefined;
+        if (architectureDiagnostics) {
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-architecture-failure-diagnostics.json`, architectureDiagnostics);
+        }
         await savePipelineErrorLog(outputDirectory, [{
           timestamp: new Date().toISOString(),
           phase: `episode_${i}`,
@@ -8771,6 +8913,7 @@ export class FullStoryPipeline {
         buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
         buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
         deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+        getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
         getUnresolvedCallbacksForPrompt: this.getUnresolvedCallbacksForPrompt.bind(this),
         resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
       } satisfies Partial<SceneGraphValidationDeps> as unknown as SceneGraphValidationDeps;
@@ -9587,6 +9730,61 @@ export class FullStoryPipeline {
 
   private get renderedPipelineMemory(): string | null {
     return renderPipelineMemoryPacket(this.cachedPipelineMemory, this.config.memory?.maxPromptChars);
+  }
+
+  private agentMemoryContextBuilder(): AgentMemoryContextBuilder {
+    if (!this._agentMemoryContextBuilder) {
+      this._agentMemoryContextBuilder = new AgentMemoryContextBuilder(this.pipelineMemory());
+    }
+    return this._agentMemoryContextBuilder;
+  }
+
+  private validatorEvidenceService(): ValidatorEvidenceService {
+    if (!this._validatorEvidenceService) {
+      this._validatorEvidenceService = new ValidatorEvidenceService(this.pipelineMemory());
+    }
+    return this._validatorEvidenceService;
+  }
+
+  private async getAgentMemoryContext(request: AgentMemoryRequest): Promise<string | null> {
+    return this.agentMemoryContextBuilder().renderedPromptBlock(request);
+  }
+
+  private async getScopedAgentMemoryContext(
+    agentRole: AgentMemoryRole,
+    lifecycle: string,
+    brief: FullCreativeBrief,
+    extra: Partial<AgentMemoryRequest> = {},
+  ): Promise<string | null> {
+    return this.getAgentMemoryContext({
+      agentRole,
+      lifecycle,
+      storyId: brief.story.title,
+      episodeNumber: brief.episode?.number,
+      treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
+      ...extra,
+    });
+  }
+
+  private async recallValidatorEvidence(
+    validator: string,
+    lifecycle: string,
+    briefOrStoryId?: FullCreativeBrief | string,
+    extra: Partial<Parameters<ValidatorEvidenceService['recall']>[0]> = {},
+  ): Promise<ValidatorEvidenceBundle> {
+    const storyId = typeof briefOrStoryId === 'string' ? briefOrStoryId : briefOrStoryId?.story.title;
+    const episodeNumber = typeof briefOrStoryId === 'string' ? undefined : briefOrStoryId?.episode?.number;
+    const sourceFingerprint = typeof briefOrStoryId === 'string'
+      ? undefined
+      : briefOrStoryId?.multiEpisode?.sourceAnalysis?.sourceTitle;
+    return this.validatorEvidenceService().recall({
+      validator,
+      lifecycle,
+      storyId,
+      episodeNumber,
+      sourceFingerprint,
+      ...extra,
+    });
   }
 
   async writeGenerationMemory(opts: Parameters<PipelineMemory['writeGenerationMemory']>[0]): Promise<void> {

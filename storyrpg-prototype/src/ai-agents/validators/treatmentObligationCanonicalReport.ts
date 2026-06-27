@@ -6,6 +6,7 @@ import type {
 } from '../../types/validation';
 import type { FinalStoryContractIssue } from './FinalStoryContractValidator';
 import type { FidelityFinding } from './runFidelityValidators';
+import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 
 type TreatmentFindingInput = FidelityFinding & {
   phase?: TreatmentObligationFinding['phase'];
@@ -189,7 +190,7 @@ function classifyTreatmentFinding(finding: TreatmentFindingInput): Pick<Treatmen
       return { contract: 'treatment_plan_conformance', repairRoute: 'plan-repair', targetSurface: 'plan' };
 
     case 'TreatmentEventLedgerValidator':
-      return { contract: 'treatment_obligation_realization', repairRoute: 'scene-regen', targetSurface: 'scene-prose' };
+      return classifyTreatmentObligation({ validator: finding.validator, message });
 
     case 'EncounterAnchorContentValidator':
       return { contract: 'treatment_encounter_anchor_realization', repairRoute: 'encounter-regen', targetSurface: 'encounter' };
@@ -198,7 +199,7 @@ function classifyTreatmentFinding(finding: TreatmentFindingInput): Pick<Treatmen
       return { contract: 'treatment_information_schedule', repairRoute: 'ledger-repair', targetSurface: 'information-ledger' };
 
     case 'SignatureDevicePresenceValidator':
-      return { contract: 'treatment_signature_realization', repairRoute: 'judge-and-regen', targetSurface: 'signature-device' };
+      return classifyTreatmentObligation({ validator: finding.validator, message });
 
     case 'SeasonPromiseRealizationValidator':
       return /not consumed into concrete plan artifacts/i.test(message)
@@ -219,7 +220,7 @@ function classifyTreatmentFinding(finding: TreatmentFindingInput): Pick<Treatmen
 
     case 'RequiredBeatRealizationValidator':
       if (!/authored|treatment|required beat/i.test(message)) return undefined;
-      return { contract: 'treatment_obligation_realization', repairRoute: 'scene-regen', targetSurface: 'scene-prose' };
+      return classifyTreatmentObligation({ validator: finding.validator, message });
 
     case 'SceneTurnRealizationValidator':
       if (!/treatment|authored|central turn/i.test(message)) return undefined;

@@ -303,9 +303,199 @@ describe('StoryArchitect treatment fidelity validation', () => {
         },
       ],
     };
+    const setupToEncounterBlueprint: any = {
+      scenes: [
+        {
+          id: 's1-rooftop-setup',
+          name: 'Rooftop setup',
+          description: 'The rooftop social pressure builds toward the night encounter.',
+          location: 'Rooftop Bar',
+          leadsTo: ['treatment-enc-1-1'],
+          keyBeats: ['The Dusk Club locks into place before the dangerous walk home.'],
+        },
+        {
+          id: 'treatment-enc-1-1',
+          name: 'Cișmigiu attack encounter',
+          description: 'At 1am in Cișmigiu Gardens, a shadow attacks Kylie and Victor rescues her.',
+          location: 'Cișmigiu Gardens',
+          isEncounter: true,
+          keyBeats: ['The shadow attack and Victor rescue are staged.'],
+        },
+      ],
+    };
 
     expect((architect as any).collectBlueprintDuplicateEventIssues(duplicateBlueprint).join('\n')).toContain('restage the same high-pressure event');
     expect((architect as any).collectBlueprintDuplicateEventIssues(recapBlueprint)).toEqual([]);
+    expect((architect as any).collectBlueprintDuplicateEventIssues(setupToEncounterBlueprint)).toEqual([]);
+  });
+
+  it('does not hard-bind composite seed bundles as one scene-local required beat', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const beat = {
+      id: 's1-1-seed8',
+      tier: 'seed',
+      sourceTurn: "The quartz (the apartment's standing ward); the side-entrance key card; Mika's half-second of stillness; the rougher man at the kitchen entrance; the black roses and cream-stock card delivered impossibly fast; the stray dog in the courtyard, watching; the readership number climbing at episode's end.",
+      mustDepict: "The quartz (the apartment's standing ward); the side-entrance key card; Mika's half-second of stillness; the rougher man at the kitchen entrance; the black roses and cream-stock card delivered impossibly fast; the stray dog in the courtyard, watching; the readership number climbing at episode's end.",
+    };
+
+    expect((architect as any).isCompositeSeedBundleBeat(beat, `${beat.sourceTurn} ${beat.mustDepict}`)).toBe(true);
+  });
+
+  it('splits two-anchor rooftop plus Cișmigiu signature beats before scene writing', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const text = 'Two anchors, light then dark — the rooftop bar at sunset where the Dusk Club locks into place and Kylie catches both men watching her; then Cișmigiu at 1am, eight seconds of fog, a shadow, a scream, and a rescue.';
+
+    expect((architect as any).isTwoAnchorRooftopEncounterBeat(text)).toBe(true);
+  });
+
+  it('rebounds broad cold-open obligations to social and blog scenes before density validation', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const blueprint: any = {
+      scenes: [
+        {
+          id: 's1-arrival-cold-open',
+          name: 'Arrival Cold Open',
+          description: 'Kylie arrives in Bucharest with two suitcases.',
+          location: 'Lipscani',
+          narrativeFunction: 'Kylie reaches Bucharest and tries to reinvent herself.',
+          signatureMoment: 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+          requiredBeats: [
+            {
+              id: 's1-1-hook1',
+              tier: 'hook',
+              mustDepict: 'Kylie arrives in Bucharest and forms the Dusk Club, seeking reinvention and her own byline.',
+              sourceTurn: 'Kylie arrives in Bucharest and forms the Dusk Club, seeking reinvention and her own byline.',
+            },
+            {
+              id: 's1-1-story-circle-you-part-1',
+              tier: 'authored',
+              mustDepict: '(Ep1): Kylie’s ordinary world is reinvention-as-performance.',
+              sourceTurn: '(Ep1): Kylie’s ordinary world is reinvention-as-performance.',
+            },
+            {
+              id: 's1-1-story-circle-you-part-3',
+              tier: 'authored',
+              mustDepict: 'Opening promise: desire, intimacy, and predation will blur.',
+              sourceTurn: 'Opening promise: desire, intimacy, and predation will blur.',
+            },
+          ],
+          authoredTreatmentFields: [
+            {
+              id: 'field-viral',
+              sourceText: 'by 6pm it has 80,000 reads. Kylie arrives in Bucharest, christening the Dusk Club, then writes a post.',
+              label: 'final prose',
+              targetSceneIds: ['s1-arrival-cold-open'],
+            },
+          ],
+        },
+        {
+          id: 's1-rooftop-setup',
+          name: 'Dusk Club Rooftop',
+          description: 'The Dusk Club is christened over negronis at a rooftop bar.',
+          location: 'Rooftop Bar',
+          requiredBeats: [],
+          keyBeats: [],
+        },
+        {
+          id: 's1-blog-aftermath',
+          name: 'Blog Aftermath',
+          description: 'Kylie writes the first viral Mr. Midnight post.',
+          location: 'Lipscani Apartment',
+          requiredBeats: [],
+          authoredTreatmentFields: [],
+        },
+      ],
+    };
+
+    (architect as any).repairBroadArrivalRequiredBeats(blueprint);
+    (architect as any).repairRooftopSetupDensity(blueprint);
+
+    const coldOpen = blueprint.scenes[0];
+    const rooftop = blueprint.scenes[1];
+    const blog = blueprint.scenes[2];
+
+    expect(coldOpen.signatureMoment).not.toContain('rooftop bar');
+    expect(coldOpen.requiredBeats.map((beat: any) => beat.id)).toEqual(['s1-1-hook1-arrival']);
+    expect(rooftop.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-dusk-club');
+    expect(rooftop.signatureMoment).toContain('rooftop bar');
+    expect(blog.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-byline');
+    expect(blog.authoredTreatmentFields.map((field: any) => field.id)).toContain('field-viral');
+    expect(coldOpen.authoredTreatmentFields ?? []).toEqual([]);
+  });
+
+  it('does not hard-bind defensive writing strategy to a generic release scene', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const blueprint: any = {
+      scenes: [
+        {
+          id: 's1-arrival-cold-open',
+          name: 'Kylie arrives in Bucharest',
+          description: 'Kylie arrives and gathers herself.',
+          location: 'Lipscani',
+          requiredBeats: [{
+            id: 's1-1-story-circle-you-part-2',
+            tier: 'authored',
+            mustDepict: "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.",
+            sourceTurn: "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.",
+          }],
+        },
+        {
+          id: 'treatment-enc-1-1',
+          name: 'Cișmigiu attack',
+          description: 'A shadow attacks in the park.',
+          location: 'Cișmigiu Gardens',
+          isEncounter: true,
+        },
+        {
+          id: 's1-6',
+          name: "Aftermath pressure changes Kylie's footing",
+          description: 'release scene 6',
+          location: "Kylie's Lipscani Apartment",
+          requiredBeats: [],
+        },
+      ],
+    };
+
+    (architect as any).repairBroadArrivalRequiredBeats(blueprint);
+
+    const release = blueprint.scenes[2];
+    expect(release.requiredBeats ?? []).toEqual([]);
+    expect(blueprint.scenes[0].requiredBeats.map((beat: any) => beat.id)).toEqual([
+      's1-1-story-circle-you-part-2-arrival',
+    ]);
+  });
+
+  it('removes seed and spoiler prompt pollution from rooftop setup while keeping the signature', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const blueprint: any = {
+      scenes: [
+        {
+          id: 's1-rooftop-setup',
+          name: 'Rooftop bar at sunset',
+          description: 'The rooftop meeting turns the city from possibility into visible romantic and social pressure.',
+          location: 'Vâlcescu Club',
+          signatureMoment: 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+          keyBeats: [
+            'Mika\'s half-second of stillness',
+            'the black roses and cream-stock card delivered impossibly fast',
+            'Mika is a succubus bound to Victor\'s coven by a 57-year contract, acting as his lure and spy.',
+            'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+          ],
+          requiredBeats: [
+            { id: 'seed-1', tier: 'seed', mustDepict: 'Mika\'s half-second of stillness', sourceTurn: 'Mika\'s half-second of stillness' },
+            { id: 'seed-2', tier: 'seed', mustDepict: 'the black roses and cream-stock card delivered impossibly fast', sourceTurn: 'the black roses and cream-stock card delivered impossibly fast' },
+            { id: 'seed-3', tier: 'seed', mustDepict: 'Mika is a succubus bound to Victor\'s coven by a 57-year contract, acting as his lure and spy.', sourceTurn: 'Mika is a succubus bound to Victor\'s coven by a 57-year contract, acting as his lure and spy.' },
+          ],
+        },
+      ],
+    };
+
+    (architect as any).repairRooftopSetupDensity(blueprint);
+
+    expect(blueprint.scenes[0].keyBeats).toEqual([
+      'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+    ]);
+    expect(blueprint.scenes[0].requiredBeats).toEqual([]);
   });
 
   it('repairs authored branchlet and seed residue into blueprint memory fields before validation', () => {

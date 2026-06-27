@@ -17,7 +17,7 @@ import {
   type ValidatorTier,
 } from './validatorRegistry';
 
-const STAGES: ValidatorStage[] = ['season', 'architecture', 'phase', 'quick', 'full', 'diagnostic', 'final'];
+const STAGES: ValidatorStage[] = ['season', 'architecture', 'phase', 'quick', 'full', 'diagnostic', 'artifact-contract', 'final'];
 const TIERS: ValidatorTier[] = ['blocking', 'advisory', 'autofix'];
 const LIFECYCLES: ValidatorLifecycle[] = [
   'source-analysis',

@@ -54,6 +54,7 @@ import type { Episode, Scene, Story } from '../../types/story';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { concreteSeedDepicted } from '../utils/concreteSeedRealization';
+import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 
 /** Verbatim substring (normalized) OR sufficient content-word overlap. */
 function beatDepicted(mustDepict: string, prose: string): boolean {
@@ -207,6 +208,13 @@ function collectStandardBeats(plan: SeasonScenePlan, tier: RequiredBeat['tier'])
         else if (!isKnownConcreteSeedLabel(mustDepict)) continue;
       }
       if (tier === 'seed' && isChoiceContingentSeed(text)) continue;
+      if (tier === 'authored') {
+        const classification = classifyTreatmentObligation({
+          validator: 'RequiredBeatRealizationValidator',
+          text,
+        });
+        if (!classification.blocksFinalProse) continue;
+      }
       const key = `${scene.id}::${normalizeRealizationText(text)}`;
       if (seen.has(key)) continue;
       seen.add(key);

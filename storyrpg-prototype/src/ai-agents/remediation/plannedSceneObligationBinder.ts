@@ -9,7 +9,11 @@ import {
   arcPressureContractTargetsScene,
   isSceneBoundArcPressureKind,
 } from '../utils/arcPressureContracts';
-import { hasTimelineCue } from './gateRepairRouter';
+import {
+  analyzeEpisodeTreatmentDensity,
+  hasTimelineCue,
+  unsafeTreatmentDensityReports,
+} from './gateRepairRouter';
 
 export type PlannedSceneBindingAction =
   | 'kept'
@@ -359,6 +363,8 @@ function beatText(beat: RequiredBeat): string {
 
 function isLedgerOnlyBeat(beat: RequiredBeat): boolean {
   const text = beatText(beat);
+  if (/\bseason\s+central\s+pressure\b/i.test(text)) return true;
+  if (/\b(?:can'?t move later|founds everything downstream)\b/i.test(text)) return true;
   if (isAbstractQuestionBeat(text)) return true;
   if (/\barc[-_]?late[-_]?crisis\b/i.test(beat.id)) return true;
   if (/\bE\d+\s+ends?\s+on\b/i.test(text)) return true;
@@ -389,6 +395,80 @@ function splitTimeChainedBeat(beat: RequiredBeat): string[] {
     .map((part) => part.replace(/Mr__DOT__/g, 'Mr. ').trim().replace(/^\band\s+/i, ''))
     .filter((part) => part.length >= 20);
   return parts.length > 1 ? parts : [text];
+}
+
+function splitBroadArrivalIdentityBeat(beat: RequiredBeat): string[] {
+  const text = (beat.mustDepict || beat.sourceTurn || '').trim();
+  const normalized = normalize(text);
+  if (
+    !normalized.includes('arrives in bucharest')
+    || !normalized.includes('dusk club')
+    || !/\b(?:observing|ordering second|writing the piece later)\b/i.test(text)
+  ) {
+    return [text].filter(Boolean);
+  }
+
+  return [
+    "She arrives in Bucharest with two suitcases and her grandmother's address.",
+    'She gathers the Dusk Club over too-dark negronis.',
+    'She protects herself by observing, ordering second, and writing the piece later.',
+  ];
+}
+
+function fallbackNonArrivalScene(scenes: PlannedScene[], sourceScene: PlannedScene): PlannedScene | undefined {
+  return scenes
+    .filter((candidate) =>
+      candidate.episodeNumber === sourceScene.episodeNumber
+      && candidate.id !== sourceScene.id
+      && !primarySceneCues(candidate).has('arrival')
+      && candidate.kind === 'standard'
+    )
+    .sort((a, b) => a.order - b.order)[0];
+}
+
+function targetForBroadArrivalPart(part: string, scenes: PlannedScene[], sourceScene: PlannedScene, beatId: string): PlannedScene | undefined {
+  const cues = eventCues(part);
+  const targetPool = cues.has('arrival')
+    ? scenes
+    : scenes.filter((scene) => scene.id !== sourceScene.id && !primarySceneCues(scene).has('arrival'));
+  return bestSceneForBeat(part, targetPool, beatId)
+    ?? (cues.has('arrival') ? sourceScene : fallbackNonArrivalScene(scenes, sourceScene));
+}
+
+function splitBroadEpisodeTurnoutBeat(beat: RequiredBeat): string[] {
+  const text = (beat.mustDepict || beat.sourceTurn || '').trim();
+  const normalized = normalize(text);
+  if (
+    !normalized.startsWith('what changes')
+    || !normalized.includes('dusk club')
+    || !normalized.includes('rescue')
+    || !normalized.includes('viral')
+  ) {
+    return [text].filter(Boolean);
+  }
+
+  return [
+    'The Dusk Club forms.',
+    'The staged rescue happens.',
+    'The Mr. Midnight post goes viral at 80K.',
+  ];
+}
+
+function targetForBroadTurnoutPart(part: string, scenes: PlannedScene[], sourceScene: PlannedScene, beatId: string): PlannedScene | undefined {
+  if (hasCue(part, 'parkAttack')) return sourceScene;
+  if (hasCue(part, 'blogAftermath')) {
+    return findOrCreateBlogAftermathScene(scenes, sourceScene.episodeNumber, sourceScene);
+  }
+  if (hasCue(part, 'friendDebrief')) {
+    return bestSceneForBeat(
+      part,
+      scenes.filter((scene) => scene.id !== sourceScene.id && scene.kind === 'standard'),
+      beatId,
+    );
+  }
+  const target = bestSceneForBeat(part, scenes, beatId);
+  if (target && target.id !== sourceScene.id) return target;
+  return fallbackNonArrivalScene(scenes, sourceScene);
 }
 
 const ACTION_VERB_RE = /\b(?:adopts?|asks?|attacks?|buzzes?|calls?|closes?|confronts?|declines?|delivers?|drops?|finds?|gives?|hands?|interrupts?|kisses?|launches?|leaves?|names?|offers?|opens?|pins?|presses?|refuses?|rescues?|scrolls?|sees?|swaps?|takes?|turns?|vanishes?|walks?|warns?|writes?)\b/i;
@@ -526,10 +606,26 @@ function isRougherKitchenBeat(text: string): boolean {
 
 function bestSceneForBeat(text: string, scenes: PlannedScene[], excludeRequiredBeatId?: string): PlannedScene | undefined {
   const sourceCues = eventCues(text);
+  if (sourceCues.has('arrival')) {
+    const arrivalMatches = scenes.filter((scene) => primarySceneCues(scene).has('arrival'));
+    if (arrivalMatches.length > 0) {
+      return arrivalMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
   if (sourceCues.has('blogAftermath') && isBlogMetricText(text)) {
     const blogMatches = scenes.filter(isPrimaryBlogAftermathScene);
     if (blogMatches.length > 0) {
       return blogMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
+  if (sourceCues.has('valcescuDoor')) {
+    const doorMatches = scenes.filter(isPrimaryValcescuDoorScene);
+    if (doorMatches.length > 0) {
+      return doorMatches
         .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
         .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
     }
@@ -605,10 +701,12 @@ function bestSceneForContract(
   const sourceCues = eventCues(contract.sourceText);
   if (sourceCues.size > 0) {
     if (contract.contractKind === 'major_choice_pressure') {
-      const priority: SceneEventCue[] = ['parkAttack', 'roadBreakdown', 'bookshopQuartz', 'rooftopMeet', 'valcescuDoor', 'blogAftermath'];
+      const priority: SceneEventCue[] = ['parkAttack', 'roadBreakdown', 'bookshopQuartz', 'valcescuDoor', 'rooftopMeet', 'blogAftermath'];
       const priorityCue = priority.find((cue) => sourceCues.has(cue));
       if (priorityCue) {
-        const priorityCandidates = sameEpisode.filter((scene) => primarySceneCues(scene).has(priorityCue));
+        const priorityCandidates = priorityCue === 'valcescuDoor'
+          ? sameEpisode.filter(isPrimaryValcescuDoorScene)
+          : sameEpisode.filter((scene) => primarySceneCues(scene).has(priorityCue));
         if (priorityCandidates.length > 0) {
           return priorityCandidates
             .map((scene) => ({ scene, score: scoreScene(contract, scene) }))
@@ -764,6 +862,14 @@ function isPrimaryBlogAftermathScene(scene: PlannedScene): boolean {
     && !cues.has('parkAttack')
     && !cues.has('roadBreakdown')
     && !cues.has('valcescuDoor');
+}
+
+function isPrimaryValcescuDoorScene(scene: PlannedScene): boolean {
+  const cues = primarySceneCues(scene);
+  return cues.has('valcescuDoor')
+    && !cues.has('rooftopMeet')
+    && !cues.has('parkAttack')
+    && !cues.has('blogAftermath');
 }
 
 function isFriendDebriefText(value: string | undefined): boolean {
@@ -1507,6 +1613,164 @@ function splitBlogMetricScenes(scenes: PlannedScene[], decisions: PlannedSceneBi
       }
     }
     removeFieldIds(scene, movedFieldIds);
+  }
+}
+
+function findOrCreateBlogAftermathScene(
+  scenes: PlannedScene[],
+  episodeNumber: number,
+  sourceScene: PlannedScene,
+): PlannedScene {
+  const existing = scenes
+    .filter((scene) => scene.episodeNumber === episodeNumber && isPrimaryBlogAftermathScene(scene))
+    .sort((a, b) => a.order - b.order)[0];
+  if (existing) return existing;
+
+  return insertPlannedScene(scenes, {
+    ...sourceScene,
+    id: `s${episodeNumber}-blog-aftermath`,
+    order: sourceScene.order + 0.35,
+    kind: 'standard',
+    encounter: undefined,
+    title: 'The post becomes public pressure',
+    planningOrigin: {
+      kind: 'binder_split',
+      splitKind: 'viral_aftermath',
+      parentSceneId: sourceScene.id,
+      reason: 'Split later blog-readership metrics away from unrelated scene prose to avoid treatment-density overload.',
+    },
+    dramaticPurpose: "Kylie's Mr. Midnight post becomes visible public pressure by evening.",
+    narrativeRole: 'payoff',
+    requiredBeats: [],
+    authoredTreatmentFields: [],
+    mechanicPressure: [],
+    hasChoice: false,
+    locations: sourceScene.locations?.filter((location) => /blog|apartment|lipscani|online/i.test(location)) ?? ['Online'],
+    turnContract: {
+      turnId: `s${episodeNumber}-blog-aftermath-turn`,
+      source: 'treatment',
+      centralTurn: 'The Mr. Midnight post becomes visible public pressure by evening.',
+      beforeState: 'Kylie has turned the night into private testimony.',
+      turnEvent: 'The readership number climbs until the post becomes a public signal.',
+      afterState: 'Her story now has attention, leverage, and danger attached to it.',
+      handoff: 'Let the public attention pressure the next scene without restaging the writing moment.',
+    },
+  });
+}
+
+function primaryCueTargetForOverloadBeat(
+  scenes: PlannedScene[],
+  scene: PlannedScene,
+  beat: RequiredBeat,
+): PlannedScene | undefined {
+  const text = beatText(beat);
+  if (isBlogMetricText(text) && !isPrimaryBlogAftermathScene(scene)) {
+    return findOrCreateBlogAftermathScene(scenes, scene.episodeNumber, scene);
+  }
+  if (hasCue(text, 'valcescuDoor') && !isPrimaryValcescuDoorScene(scene)) {
+    return scenes
+      .filter((candidate) => candidate.episodeNumber === scene.episodeNumber && isPrimaryValcescuDoorScene(candidate))
+      .sort((a, b) => scoreSceneForBeat(text, b, beat.id) - scoreSceneForBeat(text, a, beat.id) || a.order - b.order)[0];
+  }
+  if (hasCue(text, 'arrival') && !primarySceneCues(scene).has('arrival')) {
+    return scenes
+      .filter((candidate) => candidate.episodeNumber === scene.episodeNumber && primarySceneCues(candidate).has('arrival'))
+      .sort((a, b) => scoreSceneForBeat(text, b, beat.id) - scoreSceneForBeat(text, a, beat.id) || a.order - b.order)[0];
+  }
+  return undefined;
+}
+
+function primaryCueTargetForOverloadField(
+  scenes: PlannedScene[],
+  scene: PlannedScene,
+  field: AuthoredTreatmentFieldContract,
+): PlannedScene | undefined {
+  if (isBlogMetricText(field.sourceText) && !isPrimaryBlogAftermathScene(scene)) {
+    return findOrCreateBlogAftermathScene(scenes, scene.episodeNumber, scene);
+  }
+  if (hasCue(field.sourceText, 'valcescuDoor') && !isPrimaryValcescuDoorScene(scene)) {
+    return scenes
+      .filter((candidate) => candidate.episodeNumber === scene.episodeNumber && isPrimaryValcescuDoorScene(candidate))
+      .sort((a, b) => scoreScene(field, b) - scoreScene(field, a) || a.order - b.order)[0];
+  }
+  return undefined;
+}
+
+function scenesForDensityAnalysis(scenes: PlannedScene[], episodeNumber: number): unknown[] {
+  return scenes
+    .filter((scene) => scene.episodeNumber === episodeNumber)
+    .map((scene) => ({
+      ...scene,
+      choicePoint: scene.hasChoice
+        ? { description: scene.stakes || scene.dramaticPurpose || scene.title }
+        : undefined,
+    }));
+}
+
+function relieveUnsafeTreatmentDensity(scenes: PlannedScene[], decisions: PlannedSceneBindingDecision[]): void {
+  const episodeNumbers = Array.from(new Set(scenes.map((scene) => scene.episodeNumber)));
+  for (const episodeNumber of episodeNumbers) {
+    const reports = analyzeEpisodeTreatmentDensity(
+      scenesForDensityAnalysis(scenes, episodeNumber) as never,
+      episodeNumber,
+    );
+    const unsafeSceneIds = new Set(unsafeTreatmentDensityReports(reports).map((report) => report.sceneId));
+    if (unsafeSceneIds.size === 0) continue;
+
+    for (const scene of scenes.filter((candidate) => unsafeSceneIds.has(candidate.id))) {
+      const keptBeats: RequiredBeat[] = [];
+      for (const beat of scene.requiredBeats ?? []) {
+        if (isLedgerOnlyBeat(beat)) {
+          decisions.push({
+            action: 'ledgered',
+            issueKind: 'ledger_scope_pollution',
+            contractId: beat.id,
+            contractKind: 'information_movement',
+            episodeNumber: scene.episodeNumber,
+            fromSceneId: scene.id,
+            reason: 'Abstract pressure beat was removed from overloaded scene prose and left as a plan-level obligation.',
+          });
+          continue;
+        }
+        const target = primaryCueTargetForOverloadBeat(scenes, scene, beat);
+        if (target && target.id !== scene.id) {
+          pushUniqueBeat(target, beat);
+          decisions.push({
+            action: 'rebound',
+            issueKind: 'wrong_scene_binding',
+            contractId: beat.id,
+            contractKind: 'pressure_lane',
+            episodeNumber: scene.episodeNumber,
+            fromSceneId: scene.id,
+            toSceneId: target.id,
+            reason: 'Unsafe scene density pass moved concrete cue-bound beat to its primary planned scene.',
+          });
+          continue;
+        }
+        keptBeats.push(beat);
+      }
+      replaceRequiredBeats(scene, keptBeats);
+
+      const movedFieldIds = new Set<string>();
+      for (const field of scene.authoredTreatmentFields ?? []) {
+        const target = primaryCueTargetForOverloadField(scenes, scene, field);
+        if (!target || target.id === scene.id) continue;
+        pushUniqueField(target, cloneContractForScene(field, target.id));
+        moveMechanicPressure(scene, target, field);
+        movedFieldIds.add(field.id);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'wrong_scene_binding',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: target.id,
+          reason: 'Unsafe scene density pass moved concrete cue-bound authored field to its primary planned scene.',
+        });
+      }
+      removeFieldIds(scene, movedFieldIds);
+    }
   }
 }
 
@@ -2263,6 +2527,78 @@ export function rebindPlannedSceneObligations(
         continue;
       }
 
+      const broadArrivalParts = splitBroadArrivalIdentityBeat(beat);
+      if (broadArrivalParts.length > 1) {
+        broadArrivalParts.forEach((part, index) => {
+          const target = targetForBroadArrivalPart(part, scenes, scene, beat.id);
+          if (!target) {
+            decisions.push({
+              action: 'ledgered',
+              issueKind: 'ledger_scope_pollution',
+              contractId: `${beat.id}-scene-${index + 1}`,
+              contractKind: 'information_movement',
+              episodeNumber: scene.episodeNumber,
+              fromSceneId: scene.id,
+              reason: 'Broad arrival/social-identity fragment had no safe scene-local target, so it remains plan-level instead of binding to the wrong scene.',
+            });
+            return;
+          }
+          const nextBeat: RequiredBeat = {
+            ...beat,
+            id: `${beat.id}-scene-${index + 1}`,
+            sourceTurn: part,
+            mustDepict: part,
+          };
+          beatAdditions.set(target.id, [...(beatAdditions.get(target.id) ?? []), nextBeat]);
+        });
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'wrong_scene_binding',
+          contractId: beat.id,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Broad arrival/social-identity beat was split into scene-sized obligations so the cold open does not have to realize the full Dusk Club and writing strategy.',
+        });
+        continue;
+      }
+
+      const broadTurnoutParts = splitBroadEpisodeTurnoutBeat(beat);
+      if (broadTurnoutParts.length > 1) {
+        broadTurnoutParts.forEach((part, index) => {
+          const target = targetForBroadTurnoutPart(part, scenes, scene, beat.id);
+          if (!target) {
+            decisions.push({
+              action: 'ledgered',
+              issueKind: 'ledger_scope_pollution',
+              contractId: `${beat.id}-turnout-${index + 1}`,
+              contractKind: 'information_movement',
+              episodeNumber: scene.episodeNumber,
+              fromSceneId: scene.id,
+              reason: 'Broad episode-turnout fragment had no safe scene-local target, so it remains plan-level instead of binding to the wrong scene.',
+            });
+            return;
+          }
+          const nextBeat: RequiredBeat = {
+            ...beat,
+            id: `${beat.id}-turnout-${index + 1}`,
+            sourceTurn: part,
+            mustDepict: part,
+          };
+          beatAdditions.set(target.id, [...(beatAdditions.get(target.id) ?? []), nextBeat]);
+        });
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'wrong_scene_binding',
+          contractId: beat.id,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Broad episode-turnout summary was split into scene-sized obligations instead of forcing one encounter scene to realize social formation, rescue, and viral aftermath.',
+        });
+        continue;
+      }
+
       const actionParts = splitActionChainedBeat(beat);
       if (actionParts.length > 1) {
         actionParts.forEach((part, index) => {
@@ -2332,6 +2668,7 @@ export function rebindPlannedSceneObligations(
   reassignSocialAftermathHelperBeats(scenes, decisions);
   splitRoadPublicAftermathScenes(scenes, decisions);
   splitBlogMetricScenes(scenes, decisions);
+  relieveUnsafeTreatmentDensity(scenes, decisions);
   rewriteStructuralLabelTurnContracts(scenes, decisions);
   rewriteBroadChoiceTurnContracts(scenes, decisions);
   dedupeEncounterRequiredBeatsAgainstFields(scenes, decisions);

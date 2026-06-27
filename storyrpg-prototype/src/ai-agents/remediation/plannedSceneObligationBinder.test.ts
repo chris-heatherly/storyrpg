@@ -650,6 +650,242 @@ describe('planned scene obligation binder', () => {
     expect(unsafeTreatmentDensityReports(density)).toHaveLength(0);
   });
 
+  it('moves arrival beats out of later rooftop setup scenes when a cold-open arrival scene exists', () => {
+    const arrivalBeat = {
+      id: 's1-1-story-circle-you-part-2',
+      sourceTurn: "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.",
+      mustDepict: "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.",
+      tier: 'authored' as const,
+    };
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-arrival-cold-open',
+        order: 0,
+        title: 'Kylie arrives in Bucharest',
+        dramaticPurpose: 'Kylie arrives in Bucharest to reinvent herself.',
+        locations: ["Kylie's Lipscani Apartment"],
+        turnContract: {
+          turnId: 'arrival-turn',
+          source: 'treatment',
+          centralTurn: 'Kylie arrives in Bucharest to reinvent herself.',
+          beforeState: 'Kylie has not yet claimed the city.',
+          turnEvent: 'Kylie arrives in Bucharest to reinvent herself.',
+          afterState: 'The city becomes possible.',
+          handoff: 'Move to the first social pressure.',
+        },
+        requiredBeats: [
+          {
+            id: 's1-1-hook1',
+            sourceTurn: 'Kylie arrives in Bucharest to reinvent herself.',
+            mustDepict: 'Kylie arrives in Bucharest to reinvent herself.',
+            tier: 'coldopen',
+          },
+        ],
+      }),
+      scene({
+        id: 's1-rooftop-setup',
+        order: 2,
+        title: 'Rooftop bar at sunset',
+        dramaticPurpose: 'The rooftop meeting turns the city from possibility into visible romantic and social pressure.',
+        locations: ['Rooftop Bar'],
+        requiredBeats: [arrivalBeat],
+      }),
+    ], { episodeNumber: 1 });
+
+    expect(result.scenes.find((item) => item.id === 's1-rooftop-setup')?.requiredBeats ?? []).toHaveLength(0);
+    expect(result.scenes.find((item) => item.id === 's1-arrival-cold-open')?.requiredBeats?.map((beat) => beat.id)).toContain(`${arrivalBeat.id}-scene-1`);
+    expect(result.report.decisions.some((decision) =>
+      decision.contractId === arrivalBeat.id &&
+      decision.action === 'rebound' &&
+      decision.fromSceneId === 's1-rooftop-setup'
+    )).toBe(true);
+  });
+
+  it('splits broad arrival plus Dusk Club identity beats before assigning them to the cold open', () => {
+    const broadBeat = {
+      id: 's1-1-story-circle-you-part-2',
+      sourceTurn: "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.",
+      mustDepict: "She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later.",
+      tier: 'authored' as const,
+    };
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-arrival-cold-open',
+        order: 0,
+        title: 'Kylie arrives in Bucharest',
+        dramaticPurpose: 'Kylie arrives in Bucharest to reinvent herself.',
+        locations: ["Kylie's Lipscani Apartment"],
+        requiredBeats: [broadBeat],
+      }),
+      scene({
+        id: 's1-1',
+        order: 1,
+        title: 'Dusk Club negronis',
+        dramaticPurpose: 'Kylie meets Mika and Stela and learns to protect herself by observing the room.',
+        locations: ['Vâlcescu Club'],
+      }),
+    ], { episodeNumber: 1 });
+
+    const arrivalBeatIds = result.scenes.find((item) => item.id === 's1-arrival-cold-open')?.requiredBeats?.map((beat) => beat.id) ?? [];
+    const socialBeatIds = result.scenes.find((item) => item.id === 's1-1')?.requiredBeats?.map((beat) => beat.id) ?? [];
+
+    expect(arrivalBeatIds).toEqual(['s1-1-story-circle-you-part-2-scene-1']);
+    expect(socialBeatIds).toEqual([
+      's1-1-story-circle-you-part-2-scene-2',
+      's1-1-story-circle-you-part-2-scene-3',
+    ]);
+    expect(result.scenes.flatMap((item) => item.requiredBeats ?? []).some((beat) => beat.id === broadBeat.id)).toBe(false);
+  });
+
+  it('splits broad episode-turnout summaries away from the encounter scene', () => {
+    const turnoutBeat = {
+      id: 's1-6-arc-pressure-arc-episode-turnout-part-2',
+      sourceTurn: 'What changes: the Dusk Club forms, the staged rescue happens, Mr. Midnight goes viral at 80K.',
+      mustDepict: 'What changes: the Dusk Club forms, the staged rescue happens, Mr. Midnight goes viral at 80K.',
+      tier: 'authored' as const,
+    };
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-1',
+        order: 1,
+        title: 'Dusk Club negronis',
+        dramaticPurpose: 'Kylie gathers the Dusk Club over too-dark negronis.',
+        locations: ['Vâlcescu Club'],
+      }),
+      scene({
+        id: 'treatment-enc-1-1',
+        order: 2,
+        kind: 'encounter',
+        title: 'Cișmigiu attack at 1am',
+        dramaticPurpose: 'The staged rescue happens in the fog of Cișmigiu Gardens.',
+        locations: ['Cișmigiu Gardens'],
+        requiredBeats: [turnoutBeat],
+        encounter: {
+          type: 'combat',
+          difficulty: 'moderate',
+          relevantSkills: ['notice'],
+          description: 'The staged rescue happens in Cișmigiu Gardens.',
+          isBranchPoint: true,
+        },
+      }),
+      scene({
+        id: 's1-blog-aftermath',
+        order: 3,
+        title: 'The post goes viral',
+        dramaticPurpose: 'The Mr. Midnight post goes viral at 80K.',
+        locations: ["Kylie's Lipscani Apartment"],
+        narrativeRole: 'payoff',
+      }),
+    ], { episodeNumber: 1 });
+
+    expect(result.scenes.find((item) => item.id === 's1-1')?.requiredBeats?.map((beat) => beat.id)).toContain(`${turnoutBeat.id}-turnout-1`);
+    expect(result.report.decisions.some((decision) =>
+      decision.contractId === `${turnoutBeat.id}-turnout-2` &&
+      decision.action === 'ledgered' &&
+      decision.fromSceneId === 'treatment-enc-1-1'
+    )).toBe(true);
+    expect(result.scenes.find((item) => item.id === 's1-blog-aftermath')?.requiredBeats?.map((beat) => beat.id)).toContain(`${turnoutBeat.id}-turnout-3`);
+    expect(result.scenes.flatMap((item) => item.requiredBeats ?? []).some((beat) => beat.id === turnoutBeat.id)).toBe(false);
+  });
+
+  it('relieves unsafe rooftop overload by moving Valcescu, blog metric, and abstract season pressure obligations', () => {
+    const valcescuChoice = contract(
+      'valcescu-choice',
+      'major_choice_pressure',
+      'At the Vâlcescu Club side entrance on night two, Mika gives Kylie a key card and Victor tests how much she will risk.',
+      ['s1-rooftop-setup'],
+    );
+    const rooftopFields = Array.from({ length: 6 }, (_, index) => contract(
+      `rooftop-pressure-${index + 1}`,
+      'pressure_lane',
+      `Rooftop bar social pressure ${index + 1}: Kylie studies Mika, Victor, and the room without leaving the rooftop turn.`,
+      ['s1-rooftop-setup'],
+    ));
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-arrival-cold-open',
+        order: 0,
+        title: 'Kylie arrives in Bucharest',
+        dramaticPurpose: 'Kylie arrives in Bucharest with two suitcases and her grandmother address.',
+        locations: ["Kylie's Lipscani Apartment"],
+        requiredBeats: [
+          {
+            id: 'arrival',
+            sourceTurn: 'Kylie arrives in Bucharest with two suitcases.',
+            mustDepict: 'Kylie arrives in Bucharest with two suitcases.',
+            tier: 'coldopen',
+          },
+        ],
+      }),
+      scene({
+        id: 's1-valcescu-door',
+        order: 1,
+        title: 'Vâlcescu Club side entrance',
+        dramaticPurpose: 'Mika adopts Kylie at the Vâlcescu Club side entrance with a key card.',
+        locations: ['Vâlcescu Club'],
+        hasChoice: true,
+      }),
+      scene({
+        id: 's1-rooftop-setup',
+        order: 2,
+        title: 'Rooftop bar at sunset',
+        dramaticPurpose: 'At the rooftop bar, Mika clocks Victor across the room and steers Kylie toward food.',
+        locations: ['Rooftop Bar'],
+        hasChoice: true,
+        authoredTreatmentFields: [valcescuChoice, ...rooftopFields],
+        requiredBeats: [
+          {
+            id: 'rooftop',
+            sourceTurn: 'At a rooftop bar, Mika clocks Victor across the room and says they should eat first.',
+            mustDepict: 'At a rooftop bar, Mika clocks Victor across the room and says they should eat first.',
+            tier: 'authored',
+          },
+          {
+            id: 'worst-dates',
+            sourceTurn: 'Mika and Kylie trade worst-date stories while the room keeps shifting around Victor.',
+            mustDepict: 'Mika and Kylie trade worst-date stories while the room keeps shifting around Victor.',
+            tier: 'authored',
+          },
+          {
+            id: 'food-deflection',
+            sourceTurn: 'Mika sees Victor across the rooftop bar and steers Kylie toward food first.',
+            mustDepict: 'Mika sees Victor across the rooftop bar and steers Kylie toward food first.',
+            tier: 'authored',
+          },
+          {
+            id: 'blog-metric',
+            sourceTurn: 'By 6pm, the Dating After Dusk post has 80,000 reads and a brand-deal DM pile.',
+            mustDepict: 'By 6pm, the Dating After Dusk post has 80,000 reads and a brand-deal DM pile.',
+            tier: 'authored',
+          },
+          {
+            id: 'season-pressure',
+            sourceTurn: 'Season central pressure: Kylie turns danger into sellable story while Victor keeps testing whether she is observer or participant.',
+            mustDepict: 'Season central pressure: Kylie turns danger into sellable story while Victor keeps testing whether she is observer or participant.',
+            tier: 'authored',
+          },
+        ],
+      }),
+    ], { episodeNumber: 1 });
+
+    const rooftop = result.scenes.find((item) => item.id === 's1-rooftop-setup')!;
+    const valcescu = result.scenes.find((item) => item.id === 's1-valcescu-door')!;
+    const blogAftermath = result.scenes.find((item) => item.id === 's1-blog-aftermath')!;
+
+    expect(rooftop.requiredBeats?.map((beat) => beat.id)).toEqual(['rooftop', 'worst-dates', 'food-deflection']);
+    expect(rooftop.authoredTreatmentFields?.map((field) => field.id)).not.toContain('valcescu-choice');
+    expect(valcescu.authoredTreatmentFields?.map((field) => field.id)).toEqual(['valcescu-choice']);
+    expect(blogAftermath.requiredBeats?.map((beat) => beat.id)).toEqual(['blog-metric']);
+    expect(result.report.decisions.some((decision) => decision.contractId === 'season-pressure' && decision.action === 'ledgered')).toBe(true);
+
+    const density = analyzeEpisodeTreatmentDensity(result.scenes.map((item) => ({
+      ...item,
+      choicePoint: item.kind === 'standard' && item.hasChoice !== false ? { description: item.stakes || item.dramaticPurpose } : undefined,
+      requiredBeats: [...(item.requiredBeats ?? []), ...(item.encounter?.requiredBeats ?? [])],
+    })) as never, 1);
+    expect(unsafeTreatmentDensityReports(density)).toHaveLength(0);
+  });
+
   it('rebounds rougher kitchen entrance seeds from the club-door scene to the rooftop scene', () => {
     const result = rebindPlannedSceneObligations([
       scene({

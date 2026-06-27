@@ -54,6 +54,7 @@ import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
 import type { FidelityValidationScope } from '../validators/runFidelityValidators';
 import type { ValidationPhaseBaseline } from '../validators/validationPhaseBaseline';
+import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import { RemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
@@ -112,6 +113,48 @@ export function sceneTurnWarningsForRepair(report: FinalStoryContractReport): Co
 
 function cloneStoryForAdvisoryRepair(story: Story): Story {
   return JSON.parse(JSON.stringify(story)) as Story;
+}
+
+const CLASSIFIED_TREATMENT_VALIDATORS = new Set([
+  'RequiredBeatRealizationValidator',
+  'SignatureDevicePresenceValidator',
+  'TreatmentEventLedgerValidator',
+  'TreatmentFieldUtilizationValidator',
+]);
+
+export function downgradeNonBlockingTreatmentObligations(report: FinalStoryContractReport): number {
+  if (!report.blockingIssues?.length) return 0;
+  const kept: typeof report.blockingIssues = [];
+  const downgraded: typeof report.blockingIssues = [];
+
+  for (const issue of report.blockingIssues) {
+    if (!CLASSIFIED_TREATMENT_VALIDATORS.has(issue.validator || '')) {
+      kept.push(issue);
+      continue;
+    }
+    const classification = classifyTreatmentObligation({
+      validator: issue.validator,
+      message: issue.message,
+      severity: issue.severity,
+    });
+    if (classification.blocksFinalProse) {
+      kept.push(issue);
+      continue;
+    }
+    downgraded.push({
+      ...issue,
+      severity: 'warning',
+      suggestion: issue.suggestion
+        ? `${issue.suggestion} ${classification.reason}`
+        : classification.reason,
+    });
+  }
+
+  if (downgraded.length === 0) return 0;
+  report.blockingIssues = kept;
+  report.warnings = [...(report.warnings || []), ...downgraded];
+  report.passed = kept.length === 0;
+  return downgraded.length;
 }
 
 export function allowsCompactRequiredBeatFallback(issue: ContractRepairReport['blockingIssues'][number]): boolean {
@@ -486,6 +529,14 @@ export class FinalContract {
           r.blockingIssues = kept;
           r.passed = kept.length === 0;
         }
+      }
+      const downgradedTreatmentObligations = downgradeNonBlockingTreatmentObligations(r);
+      if (downgradedTreatmentObligations > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Final contract downgraded ${downgradedTreatmentObligations} non-prose treatment obligation(s).`,
+        } as any);
       }
       return r;
     };

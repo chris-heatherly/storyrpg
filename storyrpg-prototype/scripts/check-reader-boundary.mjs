@@ -22,6 +22,12 @@ const forbiddenBundleStrings = [
   'ANTHROPIC_API_KEY',
   'STABLE_DIFFUSION',
   'LORA_TRAINER',
+  'COGNEE_BASE_URL',
+  'COGNEE_API_KEY',
+  'STORYRPG_MEMORY_PROVIDER',
+  'pipelineMemory',
+  'AgentMemoryContextBuilder',
+  'ValidatorEvidenceService',
   'GENERATION PROJECTS',
 ];
 

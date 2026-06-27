@@ -34,6 +34,7 @@ import { QuickValidationResult, ValidationError } from '../../../types/validatio
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
+import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -70,6 +71,7 @@ export interface QuickValidationPhaseDeps {
   // --- Run-scoped state (accessor-backed; reads see the monolith's current values) ---
   readonly sceneValidationResults: SceneValidationResult[];
   readonly cachedPipelineMemory: string | null;
+  getAgentMemoryContext?: (request: AgentMemoryRequest) => Promise<string | null>;
 
   // --- Helpers shared with other monolith regions (injected closures) ---
   prepareValidationInput: (
@@ -99,6 +101,28 @@ export class QuickValidationPhase {
   readonly name = 'quick_validation';
 
   constructor(private readonly deps: QuickValidationPhaseDeps) {}
+
+  private async memoryContextFor(
+    role: AgentMemoryRole,
+    lifecycle: string,
+    brief: FullCreativeBrief,
+    sceneId?: string,
+    characterIds?: string[],
+    artifactIds: string[] = [],
+  ): Promise<string | undefined> {
+    if (!this.deps.getAgentMemoryContext) return this.deps.cachedPipelineMemory || undefined;
+    const block = await this.deps.getAgentMemoryContext({
+      agentRole: role,
+      lifecycle,
+      storyId: brief.story.title,
+      episodeNumber: brief.episode?.number,
+      treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
+      sceneId,
+      characterIds,
+      artifactIds,
+    });
+    return block || this.deps.cachedPipelineMemory || undefined;
+  }
 
   /**
    * Returns the quick-validation result the caller should carry forward
@@ -263,7 +287,7 @@ export class QuickValidationPhase {
               }),
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: this.deps.cachedPipelineMemory || undefined,
+              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'quick-validation-choice-repair', brief, sceneBlueprint.id, sceneBlueprint.npcsPresent, ['quick-validation', 'choice-set']),
               storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
 
@@ -321,7 +345,7 @@ export class QuickValidationPhase {
                 }),
                 optionCount: targetScene.choicePoint?.optionHints?.length || 3,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.deps.cachedPipelineMemory || undefined,
+                memoryContext: await this.memoryContextFor('ChoiceAuthor', 'quick-validation-density-repair', brief, targetScene.id, targetScene.npcsPresent, ['quick-validation', 'choice-set']),
                 storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
               }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${lastBeat.id} density-repair)`);
 

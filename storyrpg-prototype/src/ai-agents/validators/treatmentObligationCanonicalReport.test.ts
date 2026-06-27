@@ -192,4 +192,58 @@ describe('treatment obligation canonical report', () => {
     expect(report.suppressedDuplicates[0].suppressed.sourceValidator).toBe('SignatureDevicePresenceValidator');
     expect(report.suppressedDuplicates[0].canonicalId).toBe(report.findings[0].id);
   });
+
+  it('routes composite Bite Me seed bundles to information-ledger repair', () => {
+    const report = buildTreatmentObligationCanonicalReport({
+      treatmentSourced: true,
+      fidelityFindings: [
+        finding({
+          validator: 'RequiredBeatRealizationValidator',
+          message: 'Treatment plant not found on-page in episode 1 (bound to scene "s1-blog-aftermath"): "The quartz (the apartment\'s standing ward); the side-entrance key card; Mika\'s half-second of stillness; the rougher man at the kitchen entrance; the black roses and cream-stock card delivered impossibly fast; the stray dog in the courtyard, watching; the readership number climbing at episode\'s end.". A cold open, recurring object, or information-ledger tell from the treatment was dropped.',
+        }),
+      ],
+    });
+
+    expect(report.findings[0]).toMatchObject({
+      contract: 'treatment_information_schedule',
+      repairRoute: 'ledger-repair',
+      targetSurface: 'information-ledger',
+    });
+  });
+
+  it('routes abstract opening promises away from scene prose realization', () => {
+    const report = buildTreatmentObligationCanonicalReport({
+      treatmentSourced: true,
+      fidelityFindings: [
+        finding({
+          validator: 'RequiredBeatRealizationValidator',
+          message: 'Authored required beat is missing from the final prose of episode 1 scene "s1-arrival-cold-open": "Opening promise: a heartbroken woman gets a glamorous new life and her own byline.". The authored turn must be dramatized on-page, not dropped or truncated.',
+        }),
+      ],
+    });
+
+    expect(report.findings[0]).toMatchObject({
+      contract: 'treatment_season_promise_realization',
+      repairRoute: 'plan-repair',
+      targetSurface: 'season-promise',
+    });
+  });
+
+  it('routes composite two-anchor signatures to plan repair instead of scene stuffing', () => {
+    const report = buildTreatmentObligationCanonicalReport({
+      treatmentSourced: true,
+      fidelityFindings: [
+        finding({
+          validator: 'SignatureDevicePresenceValidator',
+          message: 'Signature device is missing from the final prose of episode 1 scene "s1-5": "Two anchors, light then dark — the rooftop bar at sunset where the Dusk Club locks into place and Kylie catches both men watching her; then Cișmigiu at 1am, eight seconds of fog, a shadow, a scream, and a rescue.". The staged signature moment must be depicted, not summarized away.',
+        }),
+      ],
+    });
+
+    expect(report.findings[0]).toMatchObject({
+      contract: 'treatment_signature_realization',
+      repairRoute: 'plan-repair',
+      targetSurface: 'signature-device',
+    });
+  });
 });

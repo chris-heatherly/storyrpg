@@ -28,6 +28,11 @@ const forbiddenBundleStrings = [
   'pipelineMemory',
   'AgentMemoryContextBuilder',
   'ValidatorEvidenceService',
+  'ArtifactMemoryService',
+  'ArtifactContextResolver',
+  'FactMemoryService',
+  'MemoryQueryPlanner',
+  'PipelineFactRecord',
   'GENERATION PROJECTS',
 ];
 

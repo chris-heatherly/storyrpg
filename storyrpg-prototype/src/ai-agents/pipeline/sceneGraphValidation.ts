@@ -538,7 +538,8 @@ export class SceneGraphValidation {
           treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
           sceneId: sceneBlueprint.id,
           characterIds: sceneBlueprint.npcsPresent,
-          artifactIds: ['scene-graph-validation', 'choice-set'],
+          artifactKinds: ['validator-report', 'choice-set'],
+          factKinds: ['branch-topology', 'choice-consequence', 'validator-failure', 'repair-learning'],
         })) || this.deps.cachedPipelineMemory || undefined,
         storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
         branchContext: {

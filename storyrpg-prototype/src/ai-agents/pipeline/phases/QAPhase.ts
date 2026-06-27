@@ -47,6 +47,7 @@ import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
+import type { PipelineMemoryArtifactKind } from '../artifactMemoryTypes';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -167,7 +168,7 @@ export class QAPhase {
     brief: FullCreativeBrief,
     sceneId?: string,
     characterIds?: string[],
-    artifactIds: string[] = [],
+    artifactKinds: PipelineMemoryArtifactKind[] = [],
   ): Promise<string | undefined> {
     if (!this.deps.getAgentMemoryContext) return this.deps.cachedPipelineMemory || undefined;
     const block = await this.deps.getAgentMemoryContext({
@@ -178,7 +179,7 @@ export class QAPhase {
       treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
       sceneId,
       characterIds,
-      artifactIds,
+      artifactKinds,
     });
     return block || this.deps.cachedPipelineMemory || undefined;
   }

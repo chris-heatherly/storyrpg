@@ -9,6 +9,12 @@
 
 import { PipelineConfig, type MemoryConfig } from '../config';
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
+import type {
+  PipelineFactRecord,
+  PipelineMemoryArtifactKind,
+  PipelineMemoryFactKind,
+} from './artifactMemoryTypes';
+import { planAgentMemoryQueries, planValidatorMemoryQueries } from './memoryQueryPlanner';
 
 export type PipelineMemoryProviderName = 'cognee' | 'file' | 'disabled';
 
@@ -34,6 +40,7 @@ export interface PipelineMemoryRecord {
     | 'character'
     | 'validator'
     | 'artifact'
+    | 'fact'
     | 'project';
   dataset?: string;
   title: string;
@@ -47,6 +54,11 @@ export interface PipelineMemoryRecallRequest {
   queries?: string[];
   datasets?: string[];
   nodeNames?: string[];
+  artifactKinds?: PipelineMemoryArtifactKind[];
+  artifactIds?: string[];
+  factKinds?: PipelineMemoryFactKind[];
+  factIds?: string[];
+  recallMode?: 'facts-first' | 'artifact-projection' | 'validator-history' | 'exact-artifact-pointer';
   searchType?: string;
   topK?: number;
   maxPromptChars?: number;
@@ -100,7 +112,11 @@ export interface AgentMemoryRequest {
   characterIds?: string[];
   sceneId?: string;
   validatorNames?: string[];
+  artifactKinds?: PipelineMemoryArtifactKind[];
   artifactIds?: string[];
+  factKinds?: PipelineMemoryFactKind[];
+  factIds?: string[];
+  recallMode?: 'facts-first' | 'artifact-projection' | 'validator-history' | 'exact-artifact-pointer';
   queries?: string[];
   datasets?: string[];
   nodeNames?: string[];
@@ -130,9 +146,13 @@ export interface ValidatorEvidenceRequest {
   storyId?: string;
   episodeNumber?: number;
   sourceFingerprint?: string;
+  artifactKinds?: PipelineMemoryArtifactKind[];
   artifactIds?: string[];
+  factKinds?: PipelineMemoryFactKind[];
+  factIds?: string[];
   validatorNames?: string[];
   evidenceMode?: ValidatorEvidenceMode;
+  recallMode?: 'facts-first' | 'artifact-projection' | 'validator-history' | 'exact-artifact-pointer';
   queries?: string[];
   datasets?: string[];
   nodeNames?: string[];
@@ -160,6 +180,14 @@ export interface ValidatorEvidenceBundle {
     resultCount: number;
   }>;
   retrievalWarnings: string[];
+  validatedFacts?: PipelineFactRecord[];
+  candidateFacts?: PipelineFactRecord[];
+  artifactPointers?: Array<{
+    artifactKind: PipelineMemoryArtifactKind;
+    artifactId: string;
+    contentHash?: string;
+  }>;
+  corroborationRequired?: boolean;
 }
 
 export interface PipelineMemoryOutcomeRecord {
@@ -169,6 +197,7 @@ export interface PipelineMemoryOutcomeRecord {
   storyId?: string;
   episodeNumber?: number;
   sceneId?: string;
+  artifactKinds?: PipelineMemoryArtifactKind[];
   artifactIds?: string[];
   outcome?: string;
   title?: string;
@@ -244,79 +273,6 @@ function characterDatasetNames(characterIds?: string[]): string[] {
   return (characterIds || []).map((id) => `storyrpg-character-${slugifyMemoryKey(id)}`);
 }
 
-function defaultAgentQueries(request: AgentMemoryRequest): string[] {
-  const scope = [
-    request.storyId ? `story ${request.storyId}` : null,
-    request.episodeNumber != null ? `episode ${request.episodeNumber}` : null,
-    request.sceneId ? `scene ${request.sceneId}` : null,
-    request.characterIds?.length ? `characters ${request.characterIds.join(', ')}` : null,
-    request.artifactIds?.length ? `artifacts ${request.artifactIds.join(', ')}` : null,
-  ].filter(Boolean).join(', ');
-  const base = scope ? `${request.agentRole} ${request.lifecycle} for ${scope}` : `${request.agentRole} ${request.lifecycle}`;
-  const byRole: Partial<Record<AgentMemoryRole, string[]>> = {
-    SourceMaterialAnalyzer: [
-      `${base}: treatment-fidelity rules, source quote obligations, prior source-analysis failures`,
-    ],
-    WorldBuilder: [
-      `${base}: worldbuilding rules, source constraints, location continuity failures`,
-    ],
-    CharacterDesigner: [
-      `${base}: character facts, reference-image consistency, voice and relationship depth findings`,
-    ],
-    StoryArchitect: [
-      `${base}: Story Circle structure rules, branch topology failures, plan-time fidelity findings`,
-    ],
-    BranchManager: [
-      `${base}: branch fanout, reconvergence, bottleneck, skipped setup, branch-target failures`,
-    ],
-    SceneWriter: [
-      `${base}: scene-local canon, prior residue, callback obligations, continuity failures, prose repair lessons`,
-    ],
-    ChoiceAuthor: [
-      `${base}: choice impact, consequence budget, callback debt, branch target, witness-id findings`,
-    ],
-    EncounterArchitect: [
-      `${base}: encounter anchors, outcome variants, POV prose integrity, encounter QA history`,
-    ],
-    ThreadPlanner: [
-      `${base}: setup payoff ledgers, callback debts, thread pacing lessons`,
-    ],
-    TwistArchitect: [
-      `${base}: foreshadowing, reversal timing, reveal integrity, twist quality failures`,
-    ],
-    CharacterArcTracker: [
-      `${base}: identity deltas, relationship milestones, arc target failures`,
-    ],
-    ImageAgentTeam: [
-      `${base}: style bible, character appearance, pose diversity, provider failure memories`,
-    ],
-    AudioGenerationService: [
-      `${base}: voice casting, narration style, audio provider failure memories`,
-    ],
-    VideoDirectorAgent: [
-      `${base}: visual continuity, camera direction, video provider failure memories`,
-    ],
-    QARunner: [
-      `${base}: validation failures, successful repairs, recurring quality issues`,
-    ],
-    FinalContract: [
-      `${base}: final contract failures, repair routes, regression notes`,
-    ],
-  };
-  return byRole[request.agentRole] || [`${base}: relevant StoryRPG generation memory`];
-}
-
-function defaultValidatorQueries(request: ValidatorEvidenceRequest): string[] {
-  const scope = [
-    request.storyId ? `story ${request.storyId}` : null,
-    request.episodeNumber != null ? `episode ${request.episodeNumber}` : null,
-    request.artifactIds?.length ? `artifacts ${request.artifactIds.join(', ')}` : null,
-  ].filter(Boolean).join(', ');
-  return [
-    `${request.validator} ${request.lifecycle}${scope ? ` for ${scope}` : ''}: prior failures, related findings, repair routes, source obligations, regression notes`,
-  ];
-}
-
 function agentNodeNames(request: AgentMemoryRequest): string[] {
   return uniqueStrings([
     `agent:${request.agentRole}`,
@@ -324,7 +280,10 @@ function agentNodeNames(request: AgentMemoryRequest): string[] {
     request.episodeNumber != null ? `episode:${request.episodeNumber}` : undefined,
     request.sceneId ? `scene:${request.sceneId}` : undefined,
     ...(request.characterIds || []).map((id) => `character:${slugifyMemoryKey(id)}`),
-    ...(request.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
+    ...(request.artifactKinds || []).flatMap((kind) => [`artifact:${kind}`, `artifact-kind:${kind}`]),
+    ...(request.artifactIds || []).flatMap((id) => [`artifact:${slugifyMemoryKey(id)}`, `artifact-id:${slugifyMemoryKey(id)}`]),
+    ...(request.factKinds || []).map((kind) => `fact-kind:${kind}`),
+    ...(request.factIds || []).map((id) => `fact-id:${slugifyMemoryKey(id)}`),
     ...(request.nodeNames || []),
   ]);
 }
@@ -335,8 +294,18 @@ function validatorNodeNames(request: ValidatorEvidenceRequest): string[] {
     request.lifecycle,
     request.episodeNumber != null ? `episode:${request.episodeNumber}` : undefined,
     ...(request.validatorNames || []).map((name) => `validator:${name}`),
-    ...(request.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
+    ...(request.artifactKinds || []).flatMap((kind) => [`artifact:${kind}`, `artifact-kind:${kind}`]),
+    ...(request.artifactIds || []).flatMap((id) => [`artifact:${slugifyMemoryKey(id)}`, `artifact-id:${slugifyMemoryKey(id)}`]),
+    ...(request.factKinds || []).map((kind) => `fact-kind:${kind}`),
+    ...(request.factIds || []).map((id) => `fact-id:${slugifyMemoryKey(id)}`),
     ...(request.nodeNames || []),
+  ]);
+}
+
+function factNodeNames(factKinds?: PipelineMemoryFactKind[], factIds?: string[]): string[] {
+  return uniqueStrings([
+    ...(factKinds || []).map((kind) => `fact-kind:${kind}`),
+    ...(factIds || []).map((id) => `fact-id:${slugifyMemoryKey(id)}`),
   ]);
 }
 
@@ -546,7 +515,12 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     const topK = request.topK || DEFAULT_TOP_K;
     const maxPromptChars = request.maxPromptChars || defaults.maxPromptChars;
     const searchType = request.searchType || 'GRAPH_COMPLETION';
-    const nodeNames = request.nodeNames || [];
+    const nodeNames = uniqueStrings([
+      ...(request.nodeNames || []),
+      ...(request.artifactKinds || []).flatMap((kind) => [`artifact:${kind}`, `artifact-kind:${kind}`]),
+      ...(request.artifactIds || []).flatMap((id) => [`artifact:${slugifyMemoryKey(id)}`, `artifact-id:${slugifyMemoryKey(id)}`]),
+      ...factNodeNames(request.factKinds, request.factIds),
+    ]);
     const packet = emptyPacket();
     packet.datasetNames = datasets;
 
@@ -715,18 +689,26 @@ export class PipelineMemory {
     const maxPromptChars = request.maxPromptChars || this.defaults.maxPromptChars;
     const datasets = this.agentDatasets(request);
     const nodeNames = agentNodeNames(request);
-    const queries = request.queries?.length ? request.queries : defaultAgentQueries(request);
-    const packet = await this.recallPacket({
-      queries,
+    const plannedQueries = planAgentMemoryQueries(request);
+    const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
+      queries: [plan.query],
       datasets,
-      nodeNames,
-      topK: request.topK || DEFAULT_TOP_K,
+      nodeNames: uniqueStrings([
+        ...nodeNames,
+        ...factNodeNames(plan.factKinds, request.factIds),
+      ]),
+      artifactKinds: request.artifactKinds,
+      artifactIds: request.artifactIds,
+      factKinds: plan.factKinds,
+      factIds: request.factIds,
+      recallMode: request.recallMode || 'facts-first',
+      topK: request.topK || plan.topK || DEFAULT_TOP_K,
       maxPromptChars,
-    });
-    const retrievals = packet ? [packet] : [];
+    })));
+    const retrievals = packets.filter((packet): packet is PipelineMemoryPacket => Boolean(packet));
     const warnings = uniqueStrings([
       ...retrievals.flatMap((p) => p.warnings),
-      !packet ? 'Memory recall unavailable; proceeding with deterministic artifacts only.' : undefined,
+      retrievals.length === 0 ? 'Memory recall unavailable; proceeding with deterministic artifacts only.' : undefined,
     ]);
     return {
       renderedPromptBlock: renderAgentMemoryContext(request, retrievals, maxPromptChars),
@@ -741,23 +723,32 @@ export class PipelineMemory {
   async recallForValidator(request: ValidatorEvidenceRequest): Promise<ValidatorEvidenceBundle> {
     const datasets = this.validatorDatasets(request);
     const nodeNames = validatorNodeNames(request);
-    const queries = request.queries?.length ? request.queries : defaultValidatorQueries(request);
-    const packet = await this.recallPacket({
-      queries,
+    const plannedQueries = planValidatorMemoryQueries(request);
+    const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
+      queries: [plan.query],
       datasets,
-      nodeNames,
-      topK: request.topK || DEFAULT_TOP_K,
+      nodeNames: uniqueStrings([
+        ...nodeNames,
+        ...factNodeNames(plan.factKinds, request.factIds),
+      ]),
+      artifactKinds: request.artifactKinds,
+      artifactIds: request.artifactIds,
+      factKinds: plan.factKinds,
+      factIds: request.factIds,
+      recallMode: request.recallMode || 'facts-first',
+      topK: request.topK || plan.topK || DEFAULT_TOP_K,
       maxPromptChars: request.maxPromptChars || this.defaults.maxPromptChars,
-    });
-    const snippets = uniqueStrings(packet?.sourceSnippets || []).map(summarizeValidatorSnippet);
+    })));
+    const retrievals = packets.filter((packet): packet is PipelineMemoryPacket => Boolean(packet));
+    const snippets = uniqueStrings(retrievals.flatMap((packet) => packet.sourceSnippets)).map(summarizeValidatorSnippet);
     const priorFailures = snippets.filter((snippet) => /\b(fail(?:ed|ure)?|blocking|regression|error|repair)\b/i.test(snippet));
     const relatedFindings = snippets.filter((snippet) => /\b(finding|validator|warning|issue|gate)\b/i.test(snippet));
     const retrievalWarnings = uniqueStrings([
-      ...(packet?.warnings || []),
+      ...retrievals.flatMap((packet) => packet.warnings),
       request.evidenceMode === 'corroborated-evidence' || request.evidenceMode === 'artifact-required'
         ? 'Cognee evidence must be corroborated against current typed artifacts before deterministic use.'
         : 'Cognee snippets are advisory memory only and do not change validator pass/fail decisions.',
-      !packet ? 'Memory evidence unavailable; validator must use current artifacts only.' : undefined,
+      retrievals.length === 0 ? 'Memory evidence unavailable; validator must use current artifacts only.' : undefined,
     ]);
     return {
       validator: request.validator,
@@ -768,8 +759,15 @@ export class PipelineMemory {
       relatedFindings,
       sourceSnippets: snippets,
       confidence: snippets.length ? 0.35 : 0,
-      provenance: packet ? packetProvenance(packet, nodeNames) : [],
+      provenance: retrievals.flatMap((packet) => packetProvenance(packet, nodeNames)),
       retrievalWarnings,
+      validatedFacts: [],
+      candidateFacts: [],
+      artifactPointers: (request.artifactIds || []).map((artifactId) => ({
+        artifactId,
+        artifactKind: request.artifactKinds?.[0] || 'story-json',
+      })),
+      corroborationRequired: request.evidenceMode === 'corroborated-evidence' || request.evidenceMode === 'artifact-required',
     };
   }
 
@@ -790,6 +788,7 @@ export class PipelineMemory {
         record.episodeNumber != null ? `Episode: ${record.episodeNumber}` : null,
         record.sceneId ? `Scene: ${record.sceneId}` : null,
         record.outcome ? `Outcome: ${record.outcome}` : null,
+        record.artifactKinds?.length ? `Artifact kinds: ${record.artifactKinds.join(', ')}` : null,
         record.artifactIds?.length ? `Artifacts: ${record.artifactIds.join(', ')}` : null,
         record.summary || null,
         record.payload !== undefined ? `Payload:\n${compactJson(record.payload, 8000)}` : null,
@@ -800,6 +799,7 @@ export class PipelineMemory {
         record.lifecycle,
         record.episodeNumber != null ? `episode:${record.episodeNumber}` : undefined,
         record.sceneId ? `scene:${record.sceneId}` : undefined,
+        ...(record.artifactKinds || []).flatMap((kind) => [`artifact:${kind}`, `artifact-kind:${kind}`]),
         ...(record.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
         ...(record.nodeSet || []),
       ]),
@@ -838,6 +838,42 @@ export class PipelineMemory {
         ...(record.artifactIds || []).map((id) => `artifact:${slugifyMemoryKey(id)}`),
         ...(record.nodeSet || []),
       ]),
+    });
+  }
+
+  async writeFactSnapshot(fact: PipelineFactRecord): Promise<void> {
+    await this.writeRecord({
+      kind: 'fact',
+      dataset: this.runDataset(fact.storyId),
+      title: `${fact.factKind}: ${fact.subjectId || fact.factId}`,
+      text: [
+        `Fact ID: ${fact.factId}`,
+        `Fact kind: ${fact.factKind}`,
+        `Status: ${fact.status}`,
+        fact.episodeNumber != null ? `Episode: ${fact.episodeNumber}` : null,
+        fact.sceneId ? `Scene: ${fact.sceneId}` : null,
+        fact.subjectId ? `Subject: ${fact.subjectId}` : null,
+        fact.predicate ? `Predicate: ${fact.predicate}` : null,
+        `Statement: ${fact.statement}`,
+        fact.artifactRefs.length ? `Artifact refs: ${fact.artifactRefs.map((ref) => `${ref.artifactKind}:${ref.artifactId}:${ref.contentHash.slice(0, 12)}`).join(', ')}` : null,
+      ].filter(Boolean).join('\n'),
+      metadata: fact as unknown as Record<string, unknown>,
+      nodeSet: uniqueStrings([
+        `fact-kind:${fact.factKind}`,
+        `fact-id:${slugifyMemoryKey(fact.factId)}`,
+        `fact-status:${fact.status}`,
+        fact.episodeNumber != null ? `episode:${fact.episodeNumber}` : undefined,
+        fact.sceneId ? `scene:${fact.sceneId}` : undefined,
+        ...(fact.characterIds || []).map((id) => `character:${slugifyMemoryKey(id)}`),
+        ...(fact.locationIds || []).map((id) => `location:${slugifyMemoryKey(id)}`),
+        ...fact.artifactRefs.flatMap((ref) => [
+          `artifact:${ref.artifactKind}`,
+          `artifact-kind:${ref.artifactKind}`,
+          `artifact-id:${slugifyMemoryKey(ref.artifactId)}`,
+        ]),
+        ...(fact.validatorRefs || []).map((ref) => `validator:${ref.validator}`),
+      ]),
+      cognify: false,
     });
   }
 

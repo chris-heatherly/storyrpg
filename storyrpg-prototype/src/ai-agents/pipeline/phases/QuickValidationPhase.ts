@@ -35,6 +35,7 @@ import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
+import type { PipelineMemoryArtifactKind } from '../artifactMemoryTypes';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -108,7 +109,7 @@ export class QuickValidationPhase {
     brief: FullCreativeBrief,
     sceneId?: string,
     characterIds?: string[],
-    artifactIds: string[] = [],
+    artifactKinds: PipelineMemoryArtifactKind[] = [],
   ): Promise<string | undefined> {
     if (!this.deps.getAgentMemoryContext) return this.deps.cachedPipelineMemory || undefined;
     const block = await this.deps.getAgentMemoryContext({
@@ -119,7 +120,7 @@ export class QuickValidationPhase {
       treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
       sceneId,
       characterIds,
-      artifactIds,
+      artifactKinds,
     });
     return block || this.deps.cachedPipelineMemory || undefined;
   }
@@ -287,7 +288,7 @@ export class QuickValidationPhase {
               }),
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'quick-validation-choice-repair', brief, sceneBlueprint.id, sceneBlueprint.npcsPresent, ['quick-validation', 'choice-set']),
+              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'quick-validation-choice-repair', brief, sceneBlueprint.id, sceneBlueprint.npcsPresent, ['quick-validation-report', 'choice-set']),
               storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
 
@@ -345,7 +346,7 @@ export class QuickValidationPhase {
                 }),
                 optionCount: targetScene.choicePoint?.optionHints?.length || 3,
                 sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: await this.memoryContextFor('ChoiceAuthor', 'quick-validation-density-repair', brief, targetScene.id, targetScene.npcsPresent, ['quick-validation', 'choice-set']),
+                memoryContext: await this.memoryContextFor('ChoiceAuthor', 'quick-validation-density-repair', brief, targetScene.id, targetScene.npcsPresent, ['quick-validation-report', 'choice-set']),
                 storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
               }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${lastBeat.id} density-repair)`);
 

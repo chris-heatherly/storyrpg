@@ -192,6 +192,10 @@ import {
 } from './pipelineMemory';
 import { AgentMemoryContextBuilder } from './agentMemoryContextBuilder';
 import { ValidatorEvidenceService } from './validatorEvidenceService';
+import { ArtifactMemoryService } from './artifactMemoryService';
+import { ArtifactContextResolver } from './artifactContextResolver';
+import { FactMemoryService } from './factMemoryService';
+import type { PipelineMemoryArtifactKind, PipelineMemoryFactKind, WritePipelineArtifactInput } from './artifactMemoryTypes';
 import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
 import { DraftImageGeneration, type DraftImageGenerationDeps } from './draftImageGeneration';
@@ -679,6 +683,9 @@ export class FullStoryPipeline {
   private cachedPipelineMemory: PipelineMemoryPacket | null = null;
   private _agentMemoryContextBuilder?: AgentMemoryContextBuilder;
   private _validatorEvidenceService?: ValidatorEvidenceService;
+  private _artifactMemoryService?: ArtifactMemoryService;
+  private _artifactContextResolver?: ArtifactContextResolver;
+  private _factMemoryService?: FactMemoryService;
   private planTimeFidelityFindings: FidelityFinding[] = [];
   private planTimeFidelityBaseline?: ValidationPhaseBaseline;
 
@@ -1174,13 +1181,30 @@ export class FullStoryPipeline {
       'FinalStoryContractValidator',
       input.phase || 'final-contract',
       input.brief,
-      { artifactIds: ['story-json', 'qa-report', 'final-contract'], evidenceMode: 'corroborated-evidence' },
+      { artifactKinds: ['story-json', 'qa-report', 'final-contract'], evidenceMode: 'corroborated-evidence' },
     );
     const report = await this.finalContract().enforceFinalStoryContract(input);
     if (report) {
       report.memoryEvidence = [
         this.validatorEvidenceService().summarize(evidence, 'corroborated-evidence'),
       ];
+      await this.writeArtifactMemory({
+        artifactKind: 'final-contract',
+        storyId: input.brief.story.title,
+        episodeNumber: input.brief.episode?.number,
+        lifecycle: input.phase || 'final-contract',
+        validator: 'FinalStoryContractValidator',
+        payload: report,
+        projection: {
+          title: `${input.brief.story.title} final contract`,
+          summary: `Final contract ${report.passed ? 'passed' : 'failed'} with ${report.blockingIssues.length} blocking issue(s) and ${report.warnings.length} warning(s).`,
+          metrics: {
+            passed: report.passed,
+            blockingIssueCount: report.blockingIssues.length,
+            warningCount: report.warnings.length,
+          },
+        },
+      });
     }
     return report;
   }
@@ -3116,6 +3140,23 @@ export class FullStoryPipeline {
         brief.episode.startingLocation = worldBible.locations[0].id;
         this.emit({ type: 'debug', phase: 'world', message: `Set starting location to first generated: ${brief.episode.startingLocation}` });
       }
+      await this.writeArtifactMemory({
+        artifactKind: 'world-bible',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'world-building',
+        agentRole: 'WorldBuilder',
+        payload: worldBible,
+        projection: {
+          title: `${brief.story.title} world bible`,
+          summary: `World bible with ${worldBible.locations?.length || 0} location(s), ${worldBible.factions?.length || 0} faction(s), and ${worldBible.worldRules?.length || 0} world rule(s).`,
+          metrics: {
+            locationCount: worldBible.locations?.length || 0,
+            factionCount: worldBible.factions?.length || 0,
+            worldRuleCount: worldBible.worldRules?.length || 0,
+          },
+        },
+      });
 
       // === PHASE 2: CHARACTER DESIGN ===
       await this.checkCancellation();
@@ -3212,6 +3253,22 @@ export class FullStoryPipeline {
         emit: this.emit.bind(this),
         addCheckpoint: this.addCheckpoint.bind(this),
       });
+      await this.writeArtifactMemory({
+        artifactKind: 'character-bible',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'character-design',
+        agentRole: 'CharacterDesigner',
+        characterIds: characterBible.characters?.map((character) => character.id) || [],
+        payload: characterBible,
+        projection: {
+          title: `${brief.story.title} character bible`,
+          summary: `Character bible with ${characterBible.characters?.length || 0} character profile(s).`,
+          metrics: {
+            characterCount: characterBible.characters?.length || 0,
+          },
+        },
+      });
 
       // === PHASE 3: EPISODE ARCHITECTURE ===
       await this.checkCancellation();
@@ -3262,6 +3319,23 @@ export class FullStoryPipeline {
           });
         }
       }
+      await this.writeArtifactMemory({
+        artifactKind: 'episode-blueprint',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'episode-architecture',
+        agentRole: 'StoryArchitect',
+        payload: episodeBlueprint,
+        projection: {
+          title: `${brief.story.title} episode ${brief.episode.number} blueprint`,
+          summary: `Episode blueprint with ${episodeBlueprint.scenes?.length || 0} scene(s), ${episodeBlueprint.scenes?.filter((scene) => scene.choicePoint).length || 0} choice point(s), and ${episodeBlueprint.scenes?.filter((scene) => scene.isEncounter).length || 0} encounter scene(s).`,
+          metrics: {
+            sceneCount: episodeBlueprint.scenes?.length || 0,
+            choicePointCount: episodeBlueprint.scenes?.filter((scene) => scene.choicePoint).length || 0,
+            encounterSceneCount: episodeBlueprint.scenes?.filter((scene) => scene.isEncounter).length || 0,
+          },
+        },
+      });
 
       // === PHASE 3.5: BRANCH ANALYSIS ===
       this.emit({ type: 'phase_start', phase: 'branch_analysis', message: 'Phase 3.5: Analyzing branch structure' });
@@ -3270,6 +3344,23 @@ export class FullStoryPipeline {
       this.markPhaseComplete('branch_analysis');
       if (branchAnalysis) {
         this.addCheckpoint('Branch Analysis', branchAnalysis, false);
+        await this.writeArtifactMemory({
+          artifactKind: 'branch-analysis',
+          storyId: brief.story.title,
+          episodeNumber: brief.episode.number,
+          lifecycle: 'branch-analysis',
+          agentRole: 'BranchManager',
+          payload: branchAnalysis,
+          projection: {
+            title: `${brief.story.title} episode ${brief.episode.number} branch analysis`,
+            summary: `Branch analysis with ${branchAnalysis.branchPaths?.length || 0} path(s), ${branchAnalysis.reconvergencePoints?.length || 0} reconvergence point(s), and ${branchAnalysis.recommendations?.length || 0} recommendation(s).`,
+            metrics: {
+              branchPathCount: branchAnalysis.branchPaths?.length || 0,
+              reconvergencePointCount: branchAnalysis.reconvergencePoints?.length || 0,
+              recommendationCount: branchAnalysis.recommendations?.length || 0,
+            },
+          },
+        });
         
         // Act on recommendations from branch analysis (recommendations are strings)
         if (branchAnalysis.recommendations && branchAnalysis.recommendations.length > 0) {
@@ -3380,6 +3471,90 @@ export class FullStoryPipeline {
 	        },
 	        nodeSet: ['content-generation', 'agent-output', `episode-${brief.episode.number}`],
 	      }).catch(() => {});
+	      await Promise.all([
+	        ...sceneContents.map((scene) => this.writeArtifactMemory({
+	          artifactKind: 'scene-content' as const,
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          sceneId: scene.sceneId,
+	          lifecycle: 'scene-authoring',
+	          agentRole: 'SceneWriter',
+	          characterIds: scene.charactersInvolved || [],
+	          payload: scene,
+	          projection: {
+	            title: `${brief.story.title} ${scene.sceneName || scene.sceneId}`,
+	            summary: `Scene content ${scene.sceneId} with ${scene.beats?.length || 0} beat(s).`,
+	            metrics: { beatCount: scene.beats?.length || 0 },
+	          },
+	        })),
+	        ...choiceSets.map((choiceSet) => this.writeArtifactMemory({
+	          artifactKind: 'choice-set' as const,
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          sceneId: choiceSet.sceneId,
+	          lifecycle: 'choice-authoring',
+	          agentRole: 'ChoiceAuthor',
+	          payload: choiceSet,
+	          projection: {
+	            title: `${brief.story.title} choice set ${choiceSet.beatId}`,
+	            summary: `Choice set for beat ${choiceSet.beatId} with ${choiceSet.choices?.length || 0} choice(s).`,
+	            metrics: { choiceCount: choiceSet.choices?.length || 0 },
+	          },
+	        })),
+	        ...Array.from(encounters.entries()).map(([sceneId, encounter]) => this.writeArtifactMemory({
+	          artifactKind: 'encounter-structure' as const,
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          sceneId,
+	          lifecycle: 'encounter-authoring',
+	          agentRole: 'EncounterArchitect',
+	          payload: encounter,
+	          projection: {
+	            title: `${brief.story.title} encounter ${sceneId}`,
+	            summary: `Encounter structure for scene ${sceneId}.`,
+	            metrics: {},
+	          },
+	        })),
+	        this.seasonThreadLedger.threads.length > 0 ? this.writeArtifactMemory({
+	          artifactKind: 'thread-ledger',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'thread-planning',
+	          agentRole: 'ThreadPlanner',
+	          payload: this.seasonThreadLedger,
+	          projection: {
+	            title: `${brief.story.title} thread ledger`,
+	            summary: `Season thread ledger with ${this.seasonThreadLedger.threads.length} thread(s).`,
+	            metrics: { threadCount: this.seasonThreadLedger.threads.length },
+	          },
+	        }) : Promise.resolve(),
+	        this.episodeTwistPlans.has(brief.episode.number) ? this.writeArtifactMemory({
+	          artifactKind: 'twist-plan',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'twist-planning',
+	          agentRole: 'TwistArchitect',
+	          payload: this.episodeTwistPlans.get(brief.episode.number),
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} twist plan`,
+	            summary: `Twist plan adopted for episode ${brief.episode.number}.`,
+	            metrics: {},
+	          },
+	        }) : Promise.resolve(),
+	        this.episodeArcTargets.has(brief.episode.number) ? this.writeArtifactMemory({
+	          artifactKind: 'arc-targets',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'character-arc-planning',
+	          agentRole: 'CharacterArcTracker',
+	          payload: this.episodeArcTargets.get(brief.episode.number),
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} arc targets`,
+	            summary: `Character arc targets adopted for episode ${brief.episode.number}.`,
+	            metrics: {},
+	          },
+	        }) : Promise.resolve(),
+	      ]);
 
 	      // === PHASE 4.5: QUICK VALIDATION ===
       // Extracted to phases/QuickValidationPhase.ts (pure move): the fast
@@ -3391,7 +3566,7 @@ export class FullStoryPipeline {
 	        'IntegratedBestPracticesValidator',
 	        'quick-validation',
 	        brief,
-	        { artifactIds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
 	      );
 	      const quickValidation = await this.quickValidationPhase().run(
 	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
@@ -3405,6 +3580,23 @@ export class FullStoryPipeline {
 	        quickValidation.memoryEvidence = [
 	          this.validatorEvidenceService().summarize(quickMemoryEvidence, 'advisory-memory'),
 	        ];
+	        await this.writeArtifactMemory({
+	          artifactKind: 'quick-validation-report',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'quick-validation',
+	          validator: 'IntegratedBestPracticesValidator',
+	          payload: quickValidation,
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} quick validation`,
+	            summary: `Quick validation ${quickValidation.canProceed ? 'passed' : 'failed'} with ${quickValidation.blockingIssues.length} blocking issue(s) and ${quickValidation.warningCount} warning(s).`,
+	            metrics: {
+	              canProceed: quickValidation.canProceed,
+	              blockingIssueCount: quickValidation.blockingIssues.length,
+	              warningCount: quickValidation.warningCount,
+	            },
+	          },
+	        });
 	        this.writeValidatorMemory({
 	          validator: 'IntegratedBestPracticesValidator',
 	          lifecycle: 'quick-validation',
@@ -3434,7 +3626,7 @@ export class FullStoryPipeline {
 	        'IntegratedBestPracticesValidator',
 	        'full-qa',
 	        brief,
-	        { artifactIds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
 	      );
 	      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
 	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
@@ -3448,6 +3640,25 @@ export class FullStoryPipeline {
 	        bestPracticesReport.memoryEvidence = [
 	          this.validatorEvidenceService().summarize(qaMemoryEvidence, 'advisory-memory'),
 	        ];
+	        await this.writeArtifactMemory({
+	          artifactKind: 'qa-report',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'full-qa',
+	          validator: 'IntegratedBestPracticesValidator',
+	          payload: bestPracticesReport,
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} QA report`,
+	            summary: `QA report score ${bestPracticesReport.overallScore}; ${bestPracticesReport.blockingIssues.length} blocking issue(s), ${bestPracticesReport.warnings.length} warning(s), ${bestPracticesReport.suggestions.length} suggestion(s).`,
+	            metrics: {
+	              overallPassed: bestPracticesReport.overallPassed,
+	              overallScore: bestPracticesReport.overallScore,
+	              blockingIssueCount: bestPracticesReport.blockingIssues.length,
+	              warningCount: bestPracticesReport.warnings.length,
+	              suggestionCount: bestPracticesReport.suggestions.length,
+	            },
+	          },
+	        });
 	        this.writeValidatorMemory({
 	          validator: 'IntegratedBestPracticesValidator',
 	          lifecycle: 'full-qa',
@@ -3559,7 +3770,7 @@ export class FullStoryPipeline {
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
           await this.getScopedAgentMemoryContext('ImageAgentTeam', 'image-generation', brief, {
-            artifactIds: ['style-bible', 'character-bible', 'scene-content', 'image-diagnostics'],
+            artifactKinds: ['style-bible', 'character-bible', 'scene-content', 'image-diagnostics'],
             characterIds: characterBible.characters.map((character) => character.id),
           });
           if (this.useStoryboardV2ImagePipeline()) {
@@ -3667,13 +3878,35 @@ export class FullStoryPipeline {
             lifecycle: 'image-generation',
             storyId: brief.story.title,
             episodeNumber: brief.episode?.number,
-            artifactIds: ['image-diagnostics'],
+            artifactKinds: ['image-diagnostics'],
             outcome: 'completed',
             summary: `Image generation completed with ${imageResults?.beatImages?.size || 0} beat image(s), ${imageResults?.sceneImages?.size || 0} scene image(s), and ${encounterImageDiagnostics.length} encounter diagnostic record(s).`,
             payload: {
               beatImageCount: imageResults?.beatImages?.size || 0,
               sceneImageCount: imageResults?.sceneImages?.size || 0,
               encounterDiagnosticCount: encounterImageDiagnostics.length,
+            },
+          });
+          await this.writeArtifactMemory({
+            artifactKind: 'image-diagnostics',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            lifecycle: 'image-generation',
+            agentRole: 'ImageAgentTeam',
+            payload: {
+              beatImageCount: imageResults?.beatImages?.size || 0,
+              sceneImageCount: imageResults?.sceneImages?.size || 0,
+              encounterDiagnosticCount: encounterImageDiagnostics.length,
+              encounterImageDiagnostics,
+            },
+            projection: {
+              title: `${brief.story.title} episode ${brief.episode.number} image diagnostics`,
+              summary: `Image diagnostics with ${imageResults?.beatImages?.size || 0} beat image(s), ${imageResults?.sceneImages?.size || 0} scene image(s), and ${encounterImageDiagnostics.length} encounter diagnostic record(s).`,
+              metrics: {
+                beatImageCount: imageResults?.beatImages?.size || 0,
+                sceneImageCount: imageResults?.sceneImages?.size || 0,
+                encounterDiagnosticCount: encounterImageDiagnostics.length,
+              },
             },
           });
           this.markPhaseComplete('images');
@@ -3730,7 +3963,7 @@ export class FullStoryPipeline {
         this.requirePhases('video_generation', ['images']);
         this.emit({ type: 'phase_start', phase: 'video_generation', message: 'Phase 5.7: Generating video animations from still images...' });
         await this.getScopedAgentMemoryContext('VideoDirectorAgent', 'video-generation', brief, {
-          artifactIds: ['scene-content', 'image-results', 'video-diagnostics'],
+          artifactKinds: ['scene-content', 'image-results', 'video-diagnostics'],
         });
         try {
           const videosDir = (outputDirectory || './generated-content') + 'videos/';
@@ -3748,10 +3981,26 @@ export class FullStoryPipeline {
             lifecycle: 'video-generation',
             storyId: brief.story.title,
             episodeNumber: brief.episode?.number,
-            artifactIds: ['video-diagnostics'],
+            artifactKinds: ['video-diagnostics'],
             outcome: 'completed',
             summary: `Video generation completed with ${videoResults?.size || 0} clip(s).`,
             payload: { videoCount: videoResults?.size || 0, diagnostics: videoDiagnostics },
+          });
+          await this.writeArtifactMemory({
+            artifactKind: 'video-diagnostics',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            lifecycle: 'video-generation',
+            agentRole: 'VideoDirectorAgent',
+            payload: { videoCount: videoResults?.size || 0, diagnostics: videoDiagnostics },
+            projection: {
+              title: `${brief.story.title} episode ${brief.episode.number} video diagnostics`,
+              summary: `Video diagnostics with ${videoResults?.size || 0} generated clip(s) and ${videoDiagnostics.length} diagnostic record(s).`,
+              metrics: {
+                videoCount: videoResults?.size || 0,
+                diagnosticCount: videoDiagnostics.length,
+              },
+            },
           });
 
           this.emit({
@@ -3801,6 +4050,21 @@ export class FullStoryPipeline {
           addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
+      await this.writeArtifactMemory({
+        artifactKind: 'story-json',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'assembly',
+        payload: story,
+        projection: {
+          title: `${story.title || brief.story.title} story JSON`,
+          summary: `Assembled story JSON with ${story.episodes?.length || 0} episode(s).`,
+          metrics: {
+            episodeCount: story.episodes?.length || 0,
+            npcCount: story.npcs?.length || 0,
+          },
+        },
+      });
 
       finalStoryContractReport = await this.enforceFinalStoryContract({
         story,
@@ -3888,7 +4152,7 @@ export class FullStoryPipeline {
       // gate condition, events, diagnostics, and the 08-final-story rewrite
       // all live there now.
       await this.getScopedAgentMemoryContext('AudioGenerationService', 'audio-generation', brief, {
-        artifactIds: ['story-json', 'character-bible', 'audio-diagnostics'],
+        artifactKinds: ['story-json', 'character-bible', 'audio-diagnostics'],
         characterIds: characterBible.characters.map((character) => character.id),
       });
       await new AudioPhase({
@@ -3911,10 +4175,23 @@ export class FullStoryPipeline {
         lifecycle: 'audio-generation',
         storyId: brief.story.title,
         episodeNumber: brief.episode?.number,
-        artifactIds: ['audio-diagnostics'],
+        artifactKinds: ['audio-diagnostics'],
         outcome: 'completed',
         summary: `Audio phase completed with ${audioDiagnostics.length} diagnostic record(s).`,
         payload: { diagnosticCount: audioDiagnostics.length, diagnostics: audioDiagnostics },
+      });
+      await this.writeArtifactMemory({
+        artifactKind: 'audio-diagnostics',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode?.number,
+        lifecycle: 'audio-generation',
+        agentRole: 'AudioGenerationService',
+        payload: { diagnosticCount: audioDiagnostics.length, diagnostics: audioDiagnostics },
+        projection: {
+          title: `${brief.story.title} episode ${brief.episode.number} audio diagnostics`,
+          summary: `Audio diagnostics with ${audioDiagnostics.length} diagnostic record(s).`,
+          metrics: { diagnosticCount: audioDiagnostics.length },
+        },
       });
 
       // Browser QA extracted to phases/BrowserQAPhase.ts (pure move). The
@@ -4103,7 +4380,7 @@ export class FullStoryPipeline {
   // unchanged while the body lives in the typed phase module.
   private async runWorldBuilding(brief: FullCreativeBrief): Promise<WorldBible> {
     const memoryContext = await this.getScopedAgentMemoryContext('WorldBuilder', 'world-building', brief, {
-      artifactIds: ['source-analysis', 'season-plan'],
+      artifactKinds: ['source-analysis', 'season-plan'],
     });
     return new WorldBuildingPhase(this.worldBuilder).run(
       {
@@ -4133,7 +4410,7 @@ export class FullStoryPipeline {
     worldBible: WorldBible
   ): Promise<CharacterBible> {
     const memoryContext = await this.getScopedAgentMemoryContext('CharacterDesigner', 'character-design', brief, {
-      artifactIds: ['source-analysis', 'world-bible'],
+      artifactKinds: ['source-analysis', 'world-bible'],
       characterIds: [brief.protagonist.id, ...brief.npcs.map((npc) => npc.id)],
     });
     const deps = { characterDesigner: this.characterDesigner } satisfies Partial<CharacterDesignPhaseDeps> as unknown as CharacterDesignPhaseDeps;
@@ -4157,7 +4434,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible
   ): Promise<EpisodeBlueprint> {
     const memoryContext = await this.getScopedAgentMemoryContext('StoryArchitect', 'episode-architecture', brief, {
-      artifactIds: ['source-analysis', 'season-plan', 'world-bible', 'character-bible'],
+      artifactKinds: ['source-analysis', 'season-plan', 'world-bible', 'character-bible'],
       characterIds: characterBible.characters.map((character) => character.id),
     });
     const deps = {
@@ -4204,7 +4481,7 @@ export class FullStoryPipeline {
     blueprint: EpisodeBlueprint
   ): Promise<BranchAnalysis | null> {
     await this.getScopedAgentMemoryContext('BranchManager', 'branch-analysis', brief, {
-      artifactIds: ['episode-blueprint'],
+      artifactKinds: ['episode-blueprint'],
     });
     const deps = { branchManager: this.branchManager } satisfies Partial<BranchAnalysisPhaseDeps> as unknown as BranchAnalysisPhaseDeps;
     Object.defineProperties(deps, {
@@ -4774,7 +5051,7 @@ export class FullStoryPipeline {
       lifecycle: 'source-analysis',
       storyId: title,
       treatmentId: title,
-      artifactIds: ['source-analysis'],
+      artifactKinds: ['source-analysis'],
     });
     const result = await withTimeoutAbort((signal) => this.sourceMaterialAnalyzer.execute({
       sourceText: sourceText || '',
@@ -4809,6 +5086,23 @@ export class FullStoryPipeline {
 
     // Create suggested options for user
     const suggestedOptions = createEpisodeOptions(analysis);
+    await this.writeArtifactMemory({
+      artifactKind: 'source-analysis',
+      storyId: title || analysis.sourceTitle || 'untitled-source',
+      lifecycle: 'source-analysis',
+      agentRole: 'SourceMaterialAnalyzer',
+      sourceFingerprint: analysis.sourceTitle,
+      payload: analysis,
+      projection: {
+        title: `${analysis.sourceTitle || title || 'Source'} analysis`,
+        summary: `Source analysis for ${analysis.totalEstimatedEpisodes} episode(s), ${analysis.episodeBreakdown?.length || 0} outline(s), confidence ${analysis.confidenceScore}.`,
+        metrics: {
+          totalEstimatedEpisodes: analysis.totalEstimatedEpisodes,
+          episodeOutlineCount: analysis.episodeBreakdown?.length || 0,
+          confidenceScore: analysis.confidenceScore,
+        },
+      },
+    });
 
     return {
       analysis,
@@ -4881,7 +5175,7 @@ export class FullStoryPipeline {
         'runPlanTimeFidelityChecks',
         'plan-fidelity',
         baseBrief,
-        { artifactIds: ['source-analysis', 'season-plan'], evidenceMode: 'advisory-memory' },
+        { artifactKinds: ['source-analysis', 'season-plan'], evidenceMode: 'advisory-memory' },
       );
       const planFidelity = runPlanTimeFidelityChecks({
         seasonPlan: baseBrief.seasonPlan,
@@ -9307,17 +9601,17 @@ export class FullStoryPipeline {
           visualMoment: bridgeText,
           primaryAction: bridgeText,
           emotionalRead: 'the chosen decision visibly turns into motion',
-          relationshipDynamic: 'the protagonist carries the consequence forward before the next scene begins',
+          relationshipDynamic: 'the decision changes posture, pace, or distance before the moment moves on',
           mustShowDetail: targetScene?.location
             ? `a concrete transition toward ${targetScene.location}`
             : 'a concrete transition from decision into action',
           intensityTier: 'supporting',
           sequenceIntent: {
-            objective: 'Carry the player choice into the next story state without a location or relationship jump.',
+            objective: 'Let the decision become visible movement without a jump in place or relationship.',
             activity: 'decision, movement, and arrival',
-            obstacle: 'the story must earn the next scene before it begins',
+            obstacle: 'the decision needs a visible breath before the moment moves on',
             startState: choice.feedbackCue?.echoSummary || choice.text,
-            endState: targetScene ? `The route is ready to enter ${readerTargetName}.` : 'The next scene is earned.',
+            endState: targetScene ? `The decision has enough momentum to carry the moment onward.` : 'The decision has enough momentum to carry forward.',
             beatRole: 'handoff',
             mechanicThread: choice.consequenceDomain || choice.choiceIntent,
           },
@@ -9746,8 +10040,51 @@ export class FullStoryPipeline {
     return this._validatorEvidenceService;
   }
 
+  private artifactMemoryService(): ArtifactMemoryService {
+    if (!this._artifactMemoryService) {
+      this._artifactMemoryService = new ArtifactMemoryService(this.pipelineMemory());
+    }
+    return this._artifactMemoryService;
+  }
+
+  private factMemoryService(): FactMemoryService {
+    if (!this._factMemoryService) {
+      this._factMemoryService = new FactMemoryService(this.pipelineMemory());
+    }
+    return this._factMemoryService;
+  }
+
+  private artifactContextResolver(): ArtifactContextResolver {
+    if (!this._artifactContextResolver) {
+      this._artifactContextResolver = new ArtifactContextResolver({
+        memory: this.pipelineMemory(),
+        artifactMemory: this.artifactMemoryService(),
+      });
+    }
+    return this._artifactContextResolver;
+  }
+
   private async getAgentMemoryContext(request: AgentMemoryRequest): Promise<string | null> {
-    return this.agentMemoryContextBuilder().renderedPromptBlock(request);
+    const [memoryBlock, artifactPack] = await Promise.all([
+      this.agentMemoryContextBuilder().renderedPromptBlock(request),
+      this.artifactContextResolver().resolveForAgent({
+        agentRole: request.agentRole,
+        lifecycle: request.lifecycle,
+        storyId: request.storyId,
+        episodeNumber: request.episodeNumber,
+        sceneId: request.sceneId,
+        characterIds: request.characterIds,
+        artifactKinds: request.artifactKinds,
+        artifactIds: request.artifactIds,
+        factKinds: request.factKinds,
+        factIds: request.factIds,
+        sourceFingerprint: request.sourceFingerprint || request.treatmentId,
+        recallMode: request.recallMode || 'artifact-projection',
+        topK: request.topK,
+        maxPromptChars: request.maxPromptChars,
+      }),
+    ]);
+    return [memoryBlock, artifactPack.renderedPromptBlock].filter(Boolean).join('\n\n') || null;
   }
 
   private async getScopedAgentMemoryContext(
@@ -9784,6 +10121,16 @@ export class FullStoryPipeline {
       episodeNumber,
       sourceFingerprint,
       ...extra,
+    });
+  }
+
+  private async writeArtifactMemory<T>(input: WritePipelineArtifactInput<T>): Promise<void> {
+    await this.artifactMemoryService().writeArtifact(input).then((envelope) =>
+      this.factMemoryService().writeFactsForArtifact(envelope),
+    ).catch((err) => {
+      if (this.config.debug) {
+        console.warn(`[Pipeline] Artifact memory write failed for ${input.artifactKind}:`, err);
+      }
     });
   }
 

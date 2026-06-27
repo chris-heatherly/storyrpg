@@ -21,6 +21,7 @@ import { buildForbiddenReveals } from '../../utils/forbiddenReveals';
 import { BEST_OF_N_DEFAULTS, INCREMENTAL_VALIDATION_DEFAULTS } from '../../../constants/validation';
 import { GrowthCurveEntry, buildGrowthTemplates } from '../../../engine/growthConsequenceBuilder';
 import { ThreadLedger } from '../../../types/narrativeThread';
+import { isPlanningRegisterText } from '../../constants/planningRegisterText';
 import { AgentResponse } from '../../agents/BaseAgent';
 import { BranchAnalysis, ReconvergencePoint } from '../../agents/BranchManager';
 import { CharacterBible } from '../../agents/CharacterDesigner';
@@ -63,6 +64,7 @@ import { buildSceneTimelineHandoff } from '../../utils/sceneTimeline';
 import { StoryVerb } from '../../utils/storyVerbs';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../../utils/withTimeout';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
+import type { PipelineMemoryArtifactKind } from '../artifactMemoryTypes';
 import {
   CharacterVoiceProfile,
   FinalStoryContractValidator,
@@ -158,7 +160,7 @@ export interface ContentGenerationPhaseDeps {
     lifecycle: string;
     storyId?: string;
     episodeNumber?: number;
-    artifactIds?: string[];
+    artifactKinds?: PipelineMemoryArtifactKind[];
     outcome?: string;
     summary?: string;
     payload?: unknown;
@@ -292,7 +294,7 @@ export class ContentGenerationPhase {
     lifecycle: string,
     brief: FullCreativeBrief,
     sceneBlueprint?: SceneBlueprint,
-    artifactIds: string[] = [],
+    artifactKinds: PipelineMemoryArtifactKind[] = [],
   ): Promise<string | undefined> {
     if (!this.deps.getAgentMemoryContext) return this.deps.cachedPipelineMemory || undefined;
     const block = await this.deps.getAgentMemoryContext({
@@ -303,7 +305,7 @@ export class ContentGenerationPhase {
       treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
       sceneId: sceneBlueprint?.id,
       characterIds: sceneBlueprint?.npcsPresent,
-      artifactIds,
+      artifactKinds,
     });
     return block || this.deps.cachedPipelineMemory || undefined;
   }
@@ -487,7 +489,7 @@ export class ContentGenerationPhase {
             lifecycle: 'thread-planning',
             storyId: brief.story.title,
             episodeNumber: ttEpisode,
-            artifactIds: ['thread-ledger'],
+            artifactKinds: ['thread-ledger'],
             outcome: 'adopted',
             summary: 'Thread ledger adopted for episode scene authoring.',
             payload: threadLedger,
@@ -497,7 +499,7 @@ export class ContentGenerationPhase {
             lifecycle: 'twist-planning',
             storyId: brief.story.title,
             episodeNumber: ttEpisode,
-            artifactIds: ['twist-plan'],
+            artifactKinds: ['twist-plan'],
             outcome: 'adopted',
             summary: 'Twist plan adopted for episode scene authoring.',
             payload: twistPlan,
@@ -546,7 +548,7 @@ export class ContentGenerationPhase {
             lifecycle: 'character-arc-planning',
             storyId: brief.story.title,
             episodeNumber: atEpisode,
-            artifactIds: ['character-arc-targets'],
+            artifactKinds: ['character-arc-targets'],
             outcome: 'adopted',
             summary: 'Character arc targets adopted for episode scene authoring.',
             payload: arcTargets,
@@ -3183,6 +3185,7 @@ export class ContentGenerationPhase {
       ?.mustDepict
       ?.trim();
     if (!coldOpen) return;
+    if (isPlanningRegisterText(coldOpen)) return;
 
     const alreadyAligned = (text?: string): boolean =>
       Boolean(text && text.includes(coldOpen));

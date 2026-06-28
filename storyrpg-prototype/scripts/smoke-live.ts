@@ -47,13 +47,13 @@ const RESIDUE_WARN = 5; // a few terminal/cross-slice residual flags are expecte
 
 function findRunDir(arg: string): string | undefined {
   const direct = path.resolve(process.cwd(), arg);
-  if (fs.existsSync(path.join(direct, 'story.json')) || fs.existsSync(path.join(direct, '08-final-story.json'))) {
+  if (fs.existsSync(path.join(direct, 'story.json'))) {
     return direct;
   }
   const root = path.resolve(process.cwd(), 'generated-stories');
   if (!fs.existsSync(root)) return undefined;
   const hit = fs.readdirSync(root).sort().reverse().find((n) => n.includes(arg)
-    && (fs.existsSync(path.join(root, n, 'story.json')) || fs.existsSync(path.join(root, n, '08-final-story.json'))));
+    && fs.existsSync(path.join(root, n, 'story.json')));
   return hit ? path.join(root, hit) : undefined;
 }
 

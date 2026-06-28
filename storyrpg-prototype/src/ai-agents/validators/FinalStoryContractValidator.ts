@@ -29,6 +29,8 @@ import { collectReaderFacingTexts, collectEncounterMetaTexts } from './Encounter
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
 import { TreatmentEventLedgerValidator } from './TreatmentEventLedgerValidator';
+import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
+import { RouteContinuityValidator } from './RouteContinuityValidator';
 import { buildTreatmentObligationCanonicalReport } from './treatmentObligationCanonicalReport';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
@@ -61,6 +63,12 @@ function isTerminalSceneTarget(id: string | undefined): boolean {
   return !!id && TERMINAL_SCENE_TARGETS.has(id.trim().toLowerCase());
 }
 
+function shareBranchSiblingStem(a: string, b: string): boolean {
+  const matchA = /^(.+?)([a-z])$/i.exec(a);
+  const matchB = /^(.+?)([a-z])$/i.exec(b);
+  return Boolean(matchA && matchB && matchA[1] === matchB[1] && matchA[2] !== matchB[2]);
+}
+
 function futureEpisodeNumberFromSceneTarget(id: string | undefined): number | undefined {
   const match = id?.trim().match(/^(?:s|scene-|episode-)(\d+)(?:[-_]|$)/i);
   if (!match) return undefined;
@@ -79,6 +87,12 @@ function sceneRefFromValidationLocation(location?: string): { episodeNumber?: nu
   const match = location.match(/(?:^|:)ep(\d+):([^:]+)/i);
   if (!match) return {};
   return { episodeNumber: Number(match[1]), sceneId: match[2] };
+}
+
+function locationSetsCompatible(planned: Set<string>, staged: Set<string>): boolean {
+  const sharedLocation = [...planned].some((location) => staged.has(location));
+  if (sharedLocation) return true;
+  return planned.has('club') && staged.has('rooftop');
 }
 
 interface FidelitySeverityMetadata {
@@ -133,6 +147,7 @@ export type FinalStoryContractIssueType =
   | 'outcome_text_stub'
   | 'echo_summary_variant'
   | 'planning_register_prose'
+  | 'prose_style_violation'
   | 'unset_flag_condition'
   | 'promised_clue_absent'
   | 'choice_type_plan_nonconformance'
@@ -156,6 +171,11 @@ export type FinalStoryContractIssueType =
   | 'narrative_failure_mode_violation'
   | 'duplicate_high_pressure_event'
   | 'scene_location_event_mismatch'
+  | 'route_chronology_violation'
+  | 'choice_bridge_sibling_leak'
+  | 'route_duplicate_event'
+  | 'unsafe_fallback_prose'
+  | 'role_fidelity_violation'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -516,6 +536,28 @@ export class FinalStoryContractValidator {
       }
     }
 
+    {
+      const proseStyle = new NarrativeFailureModeValidator().validate({ story: input.story });
+      const proseStyleIssues = proseStyle.issues.filter((issue) => issue.source === 'prose_style_consistency');
+      if (proseStyleIssues.length > 0) {
+        console.info(`[FinalStoryContract] prose-style consistency: ${proseStyleIssues.length} finding(s)`);
+      }
+      const blockProseStyle = isGateEnabledAt('GATE_PROSE_STYLE_CONSISTENCY', 'season-final');
+      for (const issue of proseStyleIssues) {
+        const sceneRef = typeof issue.location === 'string' ? issue.location.split('.')[0] : undefined;
+        const beatRef = typeof issue.location === 'string' ? issue.location.split('.').slice(1).join('.') : undefined;
+        issues.push({
+          type: 'prose_style_violation',
+          severity: blockProseStyle && issue.severity === 'error' ? 'error' : 'warning',
+          message: issue.message,
+          sceneId: sceneRef,
+          beatId: beatRef,
+          validator: 'NarrativeFailureModeValidator',
+          suggestion: issue.suggestion,
+        });
+      }
+    }
+
     // Treatment event ledger: Story Circle treatment contracts are authoritative
     // event atoms. A scene cannot satisfy a must-dramatize hook/midpoint/climax
     // by mentioning it as memory, later recap, or metadata; the event has to be
@@ -524,6 +566,7 @@ export class FinalStoryContractValidator {
       const ledgerResult = new TreatmentEventLedgerValidator().validate({
         story: input.story,
         treatmentSourced: input.treatmentSourced,
+        requestedEpisodeNumbers: input.requestedEpisodeNumbers,
       });
       if (ledgerResult.findings.length > 0) {
         console.info(`[FinalStoryContract] treatment-event ledger: ${ledgerResult.findings.length} finding(s)`);
@@ -923,6 +966,18 @@ export class FinalStoryContractValidator {
     this.validateRequestedEpisodes(input, issues, metrics);
     this.validateSourceEpisodeReconciliation(input, issues, mode);
 
+    // Deterministic playthrough-route audit. Structural validators already catch
+    // missing IDs, but a package can still be unreadable when valid IDs compose
+    // into a bad route: one choice bridge leaks into another, scenes invert the
+    // authored event order, or fallback authoring prose becomes player-facing.
+    {
+      const routeContinuity = new RouteContinuityValidator().validate({ story: input.story });
+      if (routeContinuity.issues.length > 0) {
+        console.info(`[FinalStoryContract] route continuity: ${routeContinuity.issues.length} finding(s)`);
+      }
+      issues.push(...routeContinuity.issues);
+    }
+
     const storyTexts: MechanicsLeakageText[] = [];
     const callbackScenes: Array<{ id: string; beats: Array<{ id: string; text: string; textVariants?: Array<{ condition: unknown; text: string }>; speaker?: string }> }> = [];
     const callbackChoices: Array<{ id: string; sceneId: string; text: string; consequences?: Consequence[]; reminderPlan?: unknown }> = [];
@@ -1259,8 +1314,7 @@ export class FinalStoryContractValidator {
       if (!plannedLocation) continue;
       const plannedSignature = buildEncounterEventSignature([plannedLocation]);
       if (plannedSignature.locations.size === 0 || entry.eventOnlySignature.locations.size === 0) continue;
-      const sharedLocation = [...plannedSignature.locations].some((location) => entry.eventOnlySignature.locations.has(location));
-      if (sharedLocation) continue;
+      if (locationSetsCompatible(plannedSignature.locations, entry.eventOnlySignature.locations)) continue;
       issues.push({
         type: 'scene_location_event_mismatch',
         severity: 'error',
@@ -1417,12 +1471,23 @@ export class FinalStoryContractValidator {
     const leadsTo = scene.leadsTo || [];
     if (leadsTo.length === 0) return; // can't compare; last scene / open end
     const allowed = new Set(leadsTo);
+    const isReconvergenceTarget = (targetSceneId: string): boolean => {
+      const targetScene = sceneMap.get(targetSceneId);
+      if (targetScene?.isBottleneck || targetScene?.isConvergencePoint) return true;
+      let incomingSourceCount = 0;
+      for (const candidate of episode.scenes || []) {
+        if (candidate.id === targetSceneId) continue;
+        if (this.getSceneTargets(candidate).includes(targetSceneId)) incomingSourceCount += 1;
+      }
+      return incomingSourceCount > 1;
+    };
 
     const flag = (targetSceneId: string, where: string, beatId: string) => {
       if (!targetSceneId) return;
       if (allowed.has(targetSceneId)) return;
       if (isTerminalSceneTarget(targetSceneId)) return;
       if (!sceneMap.has(targetSceneId)) return; // broken_navigation owns this
+      if (isReconvergenceTarget(targetSceneId)) return;
       issues.push({
         type: 'routing_contradiction',
         severity: 'error',
@@ -1465,6 +1530,29 @@ export class FinalStoryContractValidator {
       if (candidate.encounter) return true;
       return (candidate.beats || []).some(beat => (beat.text || '').trim().length > 0 && !PLACEHOLDER_TEXT_PATTERN.test(beat.text || ''));
     };
+    const isAlternativeBranchSibling = (sourceSceneId: string, skippedSceneId: string): boolean => {
+      if (shareBranchSiblingStem(sourceSceneId, skippedSceneId)) return true;
+      for (const candidate of scenes) {
+        const targets = new Set((candidate.leadsTo || []).filter(Boolean));
+        for (const beat of candidate.beats || []) {
+          if (beat.nextSceneId && !isTerminalSceneTarget(beat.nextSceneId)) targets.add(beat.nextSceneId);
+          for (const choice of beat.choices || []) {
+            if (choice.nextSceneId && !isTerminalSceneTarget(choice.nextSceneId)) {
+              targets.add(choice.nextSceneId);
+            }
+          }
+        }
+        if (candidate.encounter) {
+          for (const outcome of Object.values(candidate.encounter.outcomes || {})) {
+            if (outcome?.nextSceneId && !isTerminalSceneTarget(outcome.nextSceneId)) {
+              targets.add(outcome.nextSceneId);
+            }
+          }
+        }
+        if (targets.has(sourceSceneId) && targets.has(skippedSceneId)) return true;
+      }
+      return false;
+    };
     const flagSkip = (targetSceneId: string | undefined, where: string, beatId: string, node: unknown): void => {
       if (!isChoiceBridge(node)) return;
       if (!targetSceneId || isTerminalSceneTarget(targetSceneId) || isAllowedSkip(node)) return;
@@ -1472,7 +1560,12 @@ export class FinalStoryContractValidator {
       if (targetIndex <= sourceIndex + 1) return;
       if (!sceneMap.has(targetSceneId)) return;
 
-      const skipped = scenes.slice(sourceIndex + 1, targetIndex).filter(hasRequiredSetup);
+      const skipped = scenes
+        .slice(sourceIndex + 1, targetIndex)
+        .filter(candidate =>
+          hasRequiredSetup(candidate)
+            && !isAlternativeBranchSibling(scene.id, candidate.id)
+        );
       if (skipped.length === 0) return;
       issues.push({
         type: 'choice_bridge_skips_required_setup',

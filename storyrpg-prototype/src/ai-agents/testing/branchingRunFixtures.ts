@@ -638,6 +638,33 @@ function expressionChoiceSetFixture(): Record<string, unknown> {
   };
 }
 
+function ensureThreeChoiceSurface(base: Record<string, unknown>): void {
+  const choices = base.choices as Array<Record<string, unknown>> | undefined;
+  if (!choices || choices.length >= 3) return;
+  const routedTarget =
+    choices.find((choice) => typeof choice.nextSceneId === 'string')?.nextSceneId ?? undefined;
+  choices.push({
+    id: `choice-${choices.length + 1}`,
+    text: 'Name the cost before you move',
+    choiceType: base.choiceType ?? 'expression',
+    ...(typeof routedTarget === 'string' ? { nextSceneId: routedTarget } : {}),
+    consequences: [],
+    setsFlags: typeof routedTarget === 'string' ? ['found_passage'] : undefined,
+    stakes: {
+      want: 'A clean choice made with open eyes',
+      cost: 'The moment narrows while you measure it',
+      identity: 'The archivist who names a price before paying it',
+    },
+    tintFlag: 'tint:measured',
+    reactionText: 'You let the silence hold long enough to show what the choice costs.',
+    outcomeTexts: {
+      success: 'The named cost steadies you, and the next step lands with intent.',
+      partial: 'Naming the cost clarifies the choice without making it easier.',
+      failure: 'The cost grows teeth once spoken, and the room hears it too.',
+    },
+  });
+}
+
 /**
  * Choice Author prompts identify the scene by NAME (`- **Scene**: ...`) and
  * dictate the beatId/choiceType in the required JSON structure — echo all
@@ -649,15 +676,31 @@ function branchingChoiceSetFixtureFor(request: LlmTransportRequest): string {
   const requestedType = text.match(/"choiceType":\s*"(\w+)"/)?.[1];
   const requestedBeatId = text.match(/"beatId":\s*"([^"]+)"/)?.[1];
 
-  const base = text.includes('**Scene**: The Steward')
+  const base = text.includes('scene-2a') || text.includes('The Steward')
     ? expressionChoiceSetFixture()
     : branchChoiceSetFixture();
 
+  ensureThreeChoiceSurface(base);
   if (requestedBeatId) base.beatId = requestedBeatId;
   if (requestedType) {
     base.choiceType = requestedType;
     for (const choice of base.choices as Array<Record<string, unknown>>) {
       choice.choiceType = requestedType;
+      if (requestedType === 'expression') {
+        delete choice.statCheck;
+        delete choice.residueHints;
+        if (!choice.setsFlags) choice.setsFlags = [`expressed_${choice.id}`];
+      } else {
+        if (!choice.statCheck) {
+          choice.statCheck = { difficulty: 'moderate', skillWeights: { empathy: 1, perception: 1 } };
+        }
+        if (!choice.residueHints) {
+          choice.residueHints = [{
+            kind: 'relationship_behavior',
+            description: 'Let the next scene show how this choice changes the room between Mara and Edric.',
+          }];
+        }
+      }
       if (requestedType !== 'dilemma') delete choice.moralContract;
     }
   }
@@ -854,7 +897,7 @@ function phase2Choice(
 }
 
 function encounterPhase2Fixture(choiceId: string): string {
-  return JSON.stringify({
+  const fixture = {
     choiceId,
     afterSuccess: {
       setupText:
@@ -946,7 +989,27 @@ function encounterPhase2Fixture(choiceId: string): string {
         ),
       ],
     },
-  });
+  };
+  for (const [key, text] of [
+    ['afterSuccess', 'Read the hinge scars before crossing'],
+    ['afterComplicated', 'Use the old nailheads as a map'],
+    ['afterFailure', 'Risk the servants\' forgotten crawlspace'],
+  ] as const) {
+    const section = fixture[key];
+    section.choices.push(phase2Choice(
+      `${choiceId}-${key === 'afterSuccess' ? 's' : key === 'afterComplicated' ? 'p' : 'f'}-c3`,
+      text,
+      'clever',
+      'perception',
+      {
+        success: 'The house leaves a practical history in its scars, and you follow it where the boards still remember weight.',
+        complicated: 'The marks guide you forward, but reading them takes long enough for the lantern to find the stair.',
+        failure: 'You trust the wrong scar and the floor tells everyone exactly where you are.',
+      },
+      { success: 'victory', complicated: 'partialVictory', failure: 'defeat' },
+    ));
+  }
+  return JSON.stringify(fixture);
 }
 
 function encounterPhase3Fixture(): string {
@@ -969,105 +1032,59 @@ function encounterPhase3Fixture(): string {
   });
 }
 
-function encounterPhase4Fixture(): string {
-  return JSON.stringify({
-    victory: {
-      id: 'scene-2b-sv',
-      name: 'The Door Unwatched',
-      triggerOutcome: 'victory',
-      tone: 'quiet triumph',
-      narrativeFunction: 'Show the win landing in-scene and what it changes going forward',
-      beats: [
-        {
-          id: 'scene-2b-sv-1',
-          text: 'You ease the garden door shut behind you and the house exhales on the other side, none the wiser. Whatever the gallery overlooks, you are the only one who knows you saw it.',
-          isTerminal: true,
-        },
-      ],
-      startingBeatId: 'scene-2b-sv-1',
-      consequences: [],
-      nextSceneId: 'scene-3',
-    },
-    partialVictory: {
-      id: 'scene-2b-sp',
-      name: 'Through, and Marked',
-      triggerOutcome: 'partialVictory',
-      tone: 'costly relief',
-      narrativeFunction: 'The crossing succeeds but its price follows her out.',
+function encounterPhase4Fixture(outcome: string): string {
+  if (outcome === 'partialVictory') {
+    return JSON.stringify({
       cost: {
-        visibleComplication: 'A torn palm and a limp she cannot hide in the morning',
-        immediateEffect: 'The garden crossing is slow and loud where it most needs to be quick',
+        domain: 'mixed',
+        severity: 'moderate',
+        whoPays: 'protagonist',
+        immediateEffect: 'The garden crossing is slow and loud where it most needs to be quick.',
+        visibleComplication: 'Your palm is torn and your ankle will not take weight cleanly.',
       },
       beats: [
         {
-          id: 'scene-2b-sp-1',
-          text: 'The garden door closes behind you, but the gallery kept a toll: your palm throbs around the splinter and your ankle argues every step.',
-          visualContract: { visibleCost: 'Blood on her palm, weight held off one ankle' },
-          isTerminal: false,
-          nextBeatId: 'scene-2b-sp-2',
+          text: 'The garden door closes behind you, but the gallery keeps a toll: your palm throbs around the splinter and your ankle argues every step.',
         },
         {
-          id: 'scene-2b-sp-2',
-          text: 'By morning the household will read tonight in your hands whether you confess it or not. You are through. You are not unmarked.',
-          isTerminal: true,
+          text: 'By morning the household will read tonight in your hands whether you confess it or not. You are through, and you are not unmarked.',
         },
       ],
-      startingBeatId: 'scene-2b-sp-1',
-      consequences: [],
-      nextSceneId: 'scene-3',
-    },
-    defeat: {
-      id: 'scene-2b-sd',
-      name: 'The Lantern Finds You',
-      triggerOutcome: 'defeat',
-      tone: 'somber',
-      narrativeFunction: 'Caught in the forbidden wing — the start of a harder road, not a dead end.',
+    });
+  }
+  if (outcome === 'defeat') {
+    return JSON.stringify({
       beats: [
         {
-          id: 'scene-2b-sd-1',
           text: 'The lantern crests the stairs and stops, and Edric\'s face above it is worse than anger: it is arithmetic.',
-          isTerminal: false,
-          nextBeatId: 'scene-2b-sd-2',
         },
         {
-          id: 'scene-2b-sd-2',
-          text: 'He does not call the house down. He looks at where you stand, in the one wing your contract forbids, and waits for you to understand what he could do with this.',
-          isTerminal: false,
-          nextBeatId: 'scene-2b-sd-3',
+          text: 'He does not call the house down. He waits until you understand how useful your trespass has made you.',
         },
         {
-          id: 'scene-2b-sd-3',
-          text: 'You square the corners of your own composure the way you square a stack of paper. Whatever he decides, you decide now that the east wing was worth it — and that you will finish what you came for.',
-          isTerminal: true,
+          text: 'You square your composure like a stack of paper and decide the east wing was worth the price.',
         },
       ],
-      startingBeatId: 'scene-2b-sd-1',
-      consequences: [],
-      nextSceneId: 'scene-3',
-    },
-    escape: {
-      id: 'scene-2b-se',
-      name: 'Out by a Breath',
-      triggerOutcome: 'escape',
-      tone: 'relieved',
-      narrativeFunction: 'Tension release: out of the gallery with nothing to spare.',
+    });
+  }
+  if (outcome === 'escape') {
+    return JSON.stringify({
       beats: [
         {
-          id: 'scene-2b-se-1',
-          text: 'You pull the garden door to as the light reaches the top stair, and stand in the night with your heart hammering the seconds.',
-          isTerminal: false,
-          nextBeatId: 'scene-2b-se-2',
+          text: 'You pull the garden door to as the light reaches the top stair and stand in the night with your heart counting seconds.',
         },
         {
-          id: 'scene-2b-se-2',
-          text: 'No footsteps follow. The gallery keeps what it saw, and you keep your commission — tonight, that has to be enough.',
-          isTerminal: true,
+          text: 'No footsteps follow. The gallery keeps what it saw, and you keep your commission tonight.',
         },
       ],
-      startingBeatId: 'scene-2b-se-1',
-      consequences: [],
-      nextSceneId: 'scene-3',
-    },
+    });
+  }
+  return JSON.stringify({
+    beats: [
+      {
+        text: 'You ease the garden door shut behind you and the house exhales on the other side, none the wiser.',
+      },
+    ],
   });
 }
 
@@ -1084,7 +1101,10 @@ function encounterArchitectFixtureFor(request: LlmTransportRequest): string {
     return encounterPhase2Fixture(choiceId);
   }
   if (text.includes('Generate ENRICHMENT')) return encounterPhase3Fixture();
-  if (text.includes('Generate encounter STORYLETS')) return encounterPhase4Fixture();
+  if (text.includes('Generate encounter STORYLETS') || text.includes('## STORYLETS')) {
+    const outcome = text.match(/encounter_phase_4_([A-Za-z]+)_draft/)?.[1] ?? 'victory';
+    return encounterPhase4Fixture(outcome);
+  }
   // Lean-path fallback (only reached if the phased flow throws).
   return encounterLeanStructureFixture();
 }

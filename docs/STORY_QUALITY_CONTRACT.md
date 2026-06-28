@@ -138,11 +138,11 @@ than invisible in the filesystem. See `docs/PROJECT_AUDIT_2026-05-28.md` (B3).
 | Deprecated / Legacy Item | Replacement | Compatibility Policy | Status |
 |---|---|---|---|
 | `ParallelStoryPipeline` | `FullStoryPipeline` | No write or runtime path | Removed |
-| `EpisodePipeline` generation path | `FullStoryPipeline` | Not exported from pipeline barrel; legacy file remains quarantined for deletion/migration cleanup | Quarantined |
-| `ImageGenerator` as type container | `images/imageTypes.ts` + `ImageAgentTeam` | Legacy re-export remains for external compatibility; active image generation is service/team driven | Compatibility |
+| `EpisodePipeline` generation path | `FullStoryPipeline` | No write or runtime path | Removed |
+| `ImageGenerator` as type container | `images/imageTypes.ts` + `ImageAgentTeam` | Active image generation is service/team driven | Removed |
 | Image prompt `compare` mode | `llm` default + deterministic fallback | Old env value normalizes to `llm`; production compare diagnostics removed | Removed |
 | Legacy flat `encounter.beats` | `encounter.phases[].beats` | Read-only fallback/migration for old stories | Planned |
-| `08-final-story.json` as primary story file | `story.json` + `manifest.json` | `08-final-story.json` is still written as a legacy mirror; catalog reads manifest → story.json → legacy fallback | Compatibility |
+| `08-final-story.json` as primary story file | `story.json` + `manifest.json` | Migration input only; new runtime writes and catalog reads use modern package files | Migration only |
 | `useapi` provider slug | `midapi` | Treat as historical; current provider selection uses `midapi` | Removed from current docs |
 | Image-team coordinator scaffolds | Real storyboard-v2 / visual QA path | Keep only if wired into `ImageAgentTeam`/visual checks; otherwise candidate cleanup | Review |
 

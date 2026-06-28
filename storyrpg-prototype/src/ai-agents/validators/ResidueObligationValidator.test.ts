@@ -75,7 +75,7 @@ describe('ResidueObligationValidator', () => {
   it('does not count metadata-only residue linkage as paid evidence', () => {
     const ep = episode();
     ep.scenes[0].beats[1].textVariants = [{
-      condition: { type: 'flag', flag: 'prioritized_blog_post' },
+      condition: { type: 'flag', flag: 'prioritized_blog_post', value: true },
       text: 'residue:blog_priority callbackHookId prioritized_blog_post',
       residueObligationId: 'residue:blog_priority',
     }];

@@ -51,7 +51,7 @@ describe('buildContinuityBlogPublishRepairHandler', () => {
     expect(scene.beats[1].text).toContain("save a private draft titled 'Mr. Midnight");
     expect(scene.beats[1].text).not.toMatch(/\bhit\s+['"]?publish|is live/i);
     expect(scene.beats[2].text).toContain('draft is still waiting');
-    expect(scene.choices?.[0].nextSceneId).toBe('s1-9');
+    expect((scene as any).choices?.[0].nextSceneId).toBe('s1-9');
   });
 
   it('uses structured scene and beat ids when continuity wording omits the beat', async () => {
@@ -129,7 +129,7 @@ describe('buildContinuityBlogPublishRepairHandler', () => {
         text: "Title: Dating After Dusk. Post: 'Mr. Midnight.' Your cursor hovers over the 'Publish' button.",
       }],
       choices: [],
-    });
+    } as any);
 
     const touched = repairBlogPublishContinuity(s);
     const beats = s.episodes[0].scenes[0].beats!;
@@ -159,7 +159,7 @@ describe('buildContinuityBlogPublishRepairHandler', () => {
         },
       ],
       choices: [],
-    });
+    } as any);
 
     const touched = repairBlogPublishContinuity(s);
     const draftSceneBeats = s.episodes[0].scenes[0].beats!;
@@ -186,7 +186,7 @@ describe('buildContinuityBlogPublishRepairHandler', () => {
         text: "Beneath the title—'Mr. Midnight'—the cursor pulses over the word 'Publish'.",
       }],
       choices: [],
-    });
+    } as any);
 
     const touched = repairBlogPublishContinuity(s);
     const beats = s.episodes[0].scenes[0].beats!;

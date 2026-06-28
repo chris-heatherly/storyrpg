@@ -34,7 +34,7 @@ function scene(overrides: Partial<Scene> & { id: string }): Scene {
   } as Scene;
 }
 
-function story(scenes: Scene[]): Story {
+function story(scenes: Scene[], episodeNumber = 1): Story {
   return {
     id: 'story',
     title: 'Story',
@@ -44,16 +44,18 @@ function story(scenes: Scene[]): Story {
     initialState: { attributes: {} as never, skills: {} as never, tags: [], inventory: [] },
     npcs: [],
     episodes: [
-      { id: 'ep-1', number: 1, title: 'Ep 1', synopsis: '', coverImage: '', scenes, startingSceneId: scenes[0]?.id ?? '' },
+      { id: `ep-${episodeNumber}`, number: episodeNumber, title: `Ep ${episodeNumber}`, synopsis: '', coverImage: '', scenes, startingSceneId: scenes[0]?.id ?? '' },
     ],
   } as unknown as Story;
 }
 
-function plan(contract = turnContract()): SeasonScenePlan {
+function plan(contractOrEpisodeNumber: SceneTurnContract | number = turnContract()): SeasonScenePlan {
+  const episodeNumber = typeof contractOrEpisodeNumber === 'number' ? contractOrEpisodeNumber : 1;
+  const contract = typeof contractOrEpisodeNumber === 'number' ? turnContract() : contractOrEpisodeNumber;
   return {
     scenes: [{
       id: 's1-1',
-      episodeNumber: 1,
+      episodeNumber,
       order: 0,
       kind: 'standard',
       title: 'Club door',
@@ -73,7 +75,7 @@ function plan(contract = turnContract()): SeasonScenePlan {
 function storyCircleContract(overrides: Partial<StoryCircleBeatRealizationContract> = {}): StoryCircleBeatRealizationContract {
   return {
     id: 'Story Circle-midpoint-mirror',
-    beat: 'midpoint',
+    beat: 'find',
     sourceText: 'Kylie sees herself alone in Victor mirror; Stela confesses two truths; the genre changes; the blog skips a day.',
     targetEpisodeNumber: 1,
     requiredRealization: ['season_plan', 'scene_turn', 'mechanic_pressure', 'final_prose'],
@@ -382,7 +384,137 @@ describe('SceneTurnRealizationValidator', () => {
     });
 
     expect(result.valid).toBe(false);
-    expect(result.issues.some((issue) => issue.message.includes('Story Circle midpoint'))).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('Story Circle find'))).toBe(true);
+    expect(result.issues.find((issue) => issue.message.includes('Story Circle find'))?.severity).toBe('error');
+  });
+
+  it('keeps structural episode Story Circle misses as warnings while the realization gate is off', () => {
+    const structural = storyCircleContract({
+      id: 'episode-circle-ep1-find-ledger',
+      blockingLevel: 'structural',
+      beat: 'find',
+      sourceText: 'Kylie finds the invitation ledger in the mirrored office.',
+      eventAtoms: ['Kylie finds the invitation ledger'],
+    });
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            centralTurn: 'Kylie realizes Victor is dangerous.',
+            turnEvent: 'Kylie realizes Victor is dangerous.',
+          }),
+          storyCircleBeatContracts: [structural],
+          beats: [
+            beat('b1', 'Kylie arrives at the apartment still thinking about Victor.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Kylie realizes Victor is dangerous.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+            beat('b3', 'Afterward, she locks the door and decides to call Stela.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(),
+        scenes: [{ ...plan().scenes[0], storyCircleBeatContracts: [structural] }],
+      },
+      treatmentSourced: true,
+    });
+
+    const issue = result.issues.find((candidate) => candidate.message.includes('Story Circle find'));
+    expect(result.valid).toBe(true);
+    expect(issue?.severity).toBe('warning');
+  });
+
+  it('promotes structural episode Story Circle misses to errors when the realization gate is on', () => {
+    const structural = storyCircleContract({
+      id: 'episode-circle-ep1-find-ledger',
+      blockingLevel: 'structural',
+      beat: 'find',
+      sourceText: 'Kylie finds the invitation ledger in the mirrored office.',
+      eventAtoms: ['Kylie finds the invitation ledger'],
+    });
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            centralTurn: 'Kylie realizes Victor is dangerous.',
+            turnEvent: 'Kylie realizes Victor is dangerous.',
+          }),
+          storyCircleBeatContracts: [structural],
+          beats: [
+            beat('b1', 'Kylie arrives at the apartment still thinking about Victor.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Kylie realizes Victor is dangerous.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+            beat('b3', 'Afterward, she locks the door and decides to call Stela.', {
+              sequenceIntent: { beatRole: 'aftermath' },
+            }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(),
+        scenes: [{ ...plan().scenes[0], storyCircleBeatContracts: [structural] }],
+      },
+      treatmentSourced: true,
+      enforceStructuralStoryCircle: true,
+    });
+
+    const issue = result.issues.find((candidate) => candidate.message.includes('Story Circle find'));
+    expect(result.valid).toBe(false);
+    expect(issue?.severity).toBe('error');
+  });
+
+  it('requires return/change Story Circle beats to carry aftermath or handoff evidence when promoted', () => {
+    const structural = storyCircleContract({
+      id: 'episode-circle-ep1-change-published',
+      blockingLevel: 'structural',
+      beat: 'change',
+      sourceText: 'Kylie chooses not to publish and becomes a participant instead of an observer.',
+      eventAtoms: ['Kylie chooses not to publish'],
+    });
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            source: 'choice',
+            centralTurn: 'Kylie chooses not to publish.',
+            turnEvent: 'Kylie chooses not to publish.',
+          }),
+          storyCircleBeatContracts: [structural],
+          beats: [
+            beat('b1', 'Before the sunrise post, Kylie hovers over the publish button.', {
+              sequenceIntent: { beatRole: 'setup' },
+            }),
+            beat('b2', 'Kylie chooses not to publish and becomes a participant instead of an observer.', {
+              sequenceIntent: { beatRole: 'turn' },
+            }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(turnContract({ source: 'choice', centralTurn: 'Kylie chooses not to publish.' })),
+        scenes: [{
+          ...plan().scenes[0],
+          turnContract: turnContract({ source: 'choice', centralTurn: 'Kylie chooses not to publish.' }),
+          storyCircleBeatContracts: [structural],
+        }],
+      },
+      enforceStructuralStoryCircle: true,
+    });
+
+    const issue = result.issues.find((candidate) => candidate.message.includes('Story Circle change') && candidate.message.includes('after-state aftermath/handoff'));
+    expect(result.valid).toBe(false);
+    expect(issue?.severity).toBe('error');
   });
 
   it('fails when a scene carries an arc pressure contract but drops the authored event', () => {

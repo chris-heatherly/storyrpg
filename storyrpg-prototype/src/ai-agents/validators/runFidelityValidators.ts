@@ -622,6 +622,7 @@ function collectFidelityFindings(
   input: RunFidelityValidatorsInput,
   isEnabled: (flag: TreatmentFidelityGateFlag) => boolean,
   treatmentSourced: boolean,
+  options: { enforceStructuralStoryCircle?: boolean } = {},
 ): FidelityFinding[] {
   const scopedInput = scopedFidelityInput(input);
   const { story, seasonPlan, sourceAnalysis } = scopedInput;
@@ -727,7 +728,12 @@ function collectFidelityFindings(
   // validator identifies structural risk.
   if (isGateEnabled('GATE_SCENE_TURN_REALIZATION')) {
     guard(() => {
-      const result = new SceneTurnRealizationValidator().validate({ story, scenePlan, treatmentSourced });
+      const result = new SceneTurnRealizationValidator().validate({
+        story,
+        scenePlan,
+        treatmentSourced,
+        enforceStructuralStoryCircle: Boolean(options.enforceStructuralStoryCircle),
+      });
       return toFindings('SceneTurnRealizationValidator', result.issues);
     });
   }
@@ -746,7 +752,15 @@ function collectFidelityFindings(
   // leave visible residue, and be spent as earned story permission.
   if (!incrementalEpisodeSeal && isGateEnabled('GATE_NARRATIVE_MECHANIC_PRESSURE')) {
     guard(() => {
-      const result = new NarrativeMechanicPressureValidator().validate({ story, scenePlan, treatmentSourced });
+      const result = new NarrativeMechanicPressureValidator().validate({
+        story,
+        scenePlan,
+        treatmentSourced,
+        requestedEpisodeNumbers: input.scope?.requestedEpisodeNumbers,
+        generatedEpisodeNumbers: input.scope?.generatedEpisodeNumbers,
+        generatedThroughEpisode: input.scope?.generatedThroughEpisode,
+        partialGeneratedSlice: input.scope?.mode !== undefined && input.scope.mode !== 'full-season',
+      });
       return toFindings('NarrativeMechanicPressureValidator', result.issues);
     });
   }
@@ -849,7 +863,9 @@ function collectFidelityFindings(
 export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFidelityValidatorsResult {
   const treatmentSourced = isTreatmentSourced(input.sourceAnalysis, input.seasonPlan);
   const findings = applyPlanPrimaryRegressionNet(
-    collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced),
+    collectFidelityFindings(input, isFidelityGateEnabled, treatmentSourced, {
+      enforceStructuralStoryCircle: isGateEnabled('GATE_EPISODE_STORY_CIRCLE_REALIZATION'),
+    }),
     input,
   );
   const executionRecords = createValidatorExecutionRecordsFromGroupedIssues(findings, {
@@ -867,7 +883,9 @@ export function runFidelityValidators(input: RunFidelityValidatorsInput): RunFid
  * data. Never feeds blocking findings — callers record the counts to the shadow ledger.
  */
 export function runFidelityValidatorsShadow(input: RunFidelityValidatorsInput): FidelityFinding[] {
-  return collectFidelityFindings(input, () => true, true);
+  return collectFidelityFindings(input, () => true, true, {
+    enforceStructuralStoryCircle: true,
+  });
 }
 
 // ========================================

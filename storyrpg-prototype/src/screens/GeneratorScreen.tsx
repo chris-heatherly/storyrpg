@@ -2788,9 +2788,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     `Strategy: ${videoSettings.strategy}${!runGenerateImages ? ' • images required for story runs' : ''}`,
   ];
   const narrationSummaryLines = [
-    `${narrationSettings.enabled ? 'Optional narration enabled' : 'Optional narration disabled'} • ElevenLabs ${elevenLabsApiKey.trim() ? 'ready' : 'missing'}`,
+    `${narrationSettings.enabled ? 'Optional narration enabled' : 'Optional narration disabled'} • ${(narrationSettings.provider || 'elevenlabs').toUpperCase()} ${(narrationSettings.provider || 'elevenlabs') === 'gemini' ? (geminiApiKey.trim() ? 'ready' : 'missing') : (elevenLabsApiKey.trim() ? 'ready' : 'missing')}`,
     `${narrationSettings.preGenerateAudio ? 'Pre-generate on' : 'Pre-generate off'} • ${narrationSettings.autoPlay ? 'Auto-play on' : 'Auto-play off'}`,
-    `Highlight: ${narrationSettings.highlightMode.toUpperCase()}`,
+    `Highlight: ${narrationSettings.highlightMode.toUpperCase()} • Tags ${narrationSettings.performanceTagsEnabled ? 'on' : 'off'} • Casting ${narrationSettings.voiceCastingEnabled === false ? 'off' : 'on'}`,
   ];
 
 	  const renderImageSetupControls = () => (
@@ -4041,15 +4041,40 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                 onToggleEnabled={(value) => updateNarrationSetting('enabled', value)}
               >
                 <View style={styles.configItem}>
-                  <Text style={styles.configGroupIntro}>AI VOICE NARRATION POWERED BY ELEVENLABS</Text>
-                  {!elevenLabsApiKey.trim() && (
+                  <Text style={styles.configGroupIntro}>AI VOICE NARRATION</Text>
+                  <View style={{ paddingVertical: 12 }}>
+                    <Text style={styles.configLabel}>VOICE PROVIDER</Text>
+                    <Text style={styles.configHint}>Gemini reuses the same Gemini key as story/image generation.</Text>
+                    <View style={styles.segmentedControl}>
+                      <TouchableOpacity style={[styles.segment, (narrationSettings.provider || 'elevenlabs') === 'elevenlabs' && styles.segmentActive]} onPress={() => updateNarrationSetting('provider', 'elevenlabs')}>
+                        <Text style={[styles.segmentText, (narrationSettings.provider || 'elevenlabs') === 'elevenlabs' && styles.segmentTextActive]}>ELEVENLABS</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.segment, narrationSettings.provider === 'gemini' && styles.segmentActive]} onPress={() => updateNarrationSetting('provider', 'gemini')}>
+                        <Text style={[styles.segmentText, narrationSettings.provider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  {(narrationSettings.provider || 'elevenlabs') === 'elevenlabs' && !elevenLabsApiKey.trim() && (
                     <View style={styles.warningCallout}>
                       <Text style={styles.warningCalloutText}>Add an ElevenLabs key in the Story panel to generate narration.</Text>
+                    </View>
+                  )}
+                  {narrationSettings.provider === 'gemini' && !geminiApiKey.trim() && (
+                    <View style={styles.warningCallout}>
+                      <Text style={styles.warningCalloutText}>Add a Gemini key in the Story panel to generate Gemini narration.</Text>
                     </View>
                   )}
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('preGenerateAudio', !narrationSettings.preGenerateAudio)}>
                     <View><Text style={styles.configLabel}>PRE-GENERATE AUDIO</Text><Text style={styles.toggleActionHint}>Generate narration during story creation.</Text></View>
                     <View style={[styles.booleanToggle, narrationSettings.preGenerateAudio && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, narrationSettings.preGenerateAudio && styles.booleanToggleKnobActive]} /></View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('voiceCastingEnabled', narrationSettings.voiceCastingEnabled === false)}>
+                    <View><Text style={styles.configLabel}>AUTO VOICE CASTING</Text><Text style={styles.toggleActionHint}>Match narrator and character voices to cast personality.</Text></View>
+                    <View style={[styles.booleanToggle, narrationSettings.voiceCastingEnabled !== false && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, narrationSettings.voiceCastingEnabled !== false && styles.booleanToggleKnobActive]} /></View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('performanceTagsEnabled', !narrationSettings.performanceTagsEnabled)}>
+                    <View><Text style={styles.configLabel}>PERFORMANCE TAGS</Text><Text style={styles.toggleActionHint}>Add internal dramatic delivery tags to TTS prompts only.</Text></View>
+                    <View style={[styles.booleanToggle, narrationSettings.performanceTagsEnabled && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, narrationSettings.performanceTagsEnabled && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('autoPlay', !narrationSettings.autoPlay)}>
                     <View><Text style={styles.configLabel}>AUTO-PLAY</Text><Text style={styles.toggleActionHint}>Play narration automatically on each beat.</Text></View>

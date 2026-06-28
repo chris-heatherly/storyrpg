@@ -5,21 +5,21 @@ import { buildTransitionBridgeRepairHandler, repairDetectedTransitionBridgeConti
 
 function beat(overrides: Partial<Beat> & { id: string }): Beat {
   return {
-    id: overrides.id,
     text: overrides.text ?? '',
     ...overrides,
+    id: overrides.id,
   } as Beat;
 }
 
 function scene(overrides: Partial<Scene> & { id: string }): Scene {
   return {
-    id: overrides.id,
     name: overrides.name ?? overrides.id,
     beats: overrides.beats ?? [],
     startingBeatId: overrides.startingBeatId ?? overrides.beats?.[0]?.id ?? '',
     leadsTo: overrides.leadsTo,
     timeline: overrides.timeline,
     encounter: overrides.encounter,
+    id: overrides.id,
   } as Scene;
 }
 
@@ -146,6 +146,7 @@ describe('buildTransitionBridgeRepairHandler', () => {
           locations: ["Kylie's Lipscani Apartment"],
           setsUp: [],
           paysOff: [],
+          npcsInvolved: [],
         },
         {
           id: 'enc-3',
@@ -158,11 +159,12 @@ describe('buildTransitionBridgeRepairHandler', () => {
           locations: ['Vâlcescu Club'],
           setsUp: [],
           paysOff: [],
+          npcsInvolved: [],
         },
       ],
       byEpisode: { 3: ['s3-2', 'enc-3'] },
       setupPayoffEdges: [],
-    };
+    } as any;
     expect(new SceneTransitionContinuityValidator().validate({ story: inputStory, scenePlan }).valid).toBe(false);
 
     const touched = repairDetectedTransitionBridgeContinuity(inputStory, scenePlan);

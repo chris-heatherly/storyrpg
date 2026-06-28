@@ -35,9 +35,8 @@
  * introduced on one branch counts as introduced for its siblings — this
  * under-reports (never over-reports) the branch-aware defect.
  *
- * Pure, deterministic, generator-internal. Registration is DEFAULT-OFF behind
- * `GATE_CHARACTER_INTRODUCTION`, dispatched from {@link runFidelityValidators};
- * advisory until one live `=1` run confirms the false-positive profile.
+ * Pure, deterministic, generator-internal. Registration is DEFAULT-ON behind
+ * `GATE_CHARACTER_INTRODUCTION`, dispatched from {@link runFidelityValidators}.
  */
 
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
@@ -129,6 +128,14 @@ function proseNames(entry: RosterEntry, normalizedProse: string): boolean {
   return false;
 }
 
+const FIRST_APPEARANCE_OFFPAGE_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:hours?|days?|nights?|weeks?)\s+(?:with|around)\b[^.!?]{0,220}\b(?:easy\s+gesture|refills?\s+your\s+(?:wine|glass)|watches?\s+over\s+the\s+rim|kindness|belong|belonging|inside\s+joke|the\s+club)\b/i;
+const FIRST_APPEARANCE_SETTLED_GROUP_RE = /\b(?:dusk\s+club|club|crew|circle|group)\b[^.!?]{0,160}\b(?:belong|belonging|inside\s+joke|usual|already|friend|friends|one\s+of\s+us)\b/i;
+
+function impliesOffPageFamiliarityOnFirstAppearance(rawProse: string, newNamesInScene: number): boolean {
+  if (FIRST_APPEARANCE_OFFPAGE_FAMILIARITY_RE.test(rawProse)) return true;
+  return newNamesInScene >= 2 && FIRST_APPEARANCE_SETTLED_GROUP_RE.test(rawProse);
+}
+
 /** Whether a scene's cast (`charactersInvolved` mixes ids and display names) carries this NPC. */
 function castIncludes(entry: RosterEntry, scene: Scene): boolean {
   for (const ref of scene.charactersInvolved || []) {
@@ -158,11 +165,12 @@ export class CharacterIntroductionValidator extends BaseValidator {
     }
 
     // Reading-order walk: episodes by number, scenes in array order.
-    const orderedScenes: Array<{ episodeNumber: number; scene: Scene; prose: string }> = [];
+    const orderedScenes: Array<{ episodeNumber: number; scene: Scene; rawProse: string; prose: string }> = [];
     const episodes = [...(input.story.episodes || [])].sort((a, b) => a.number - b.number);
     for (const episode of episodes) {
       for (const scene of episode.scenes || []) {
-        orderedScenes.push({ episodeNumber: episode.number, scene, prose: normalize(sceneProse(scene)) });
+        const rawProse = sceneProse(scene);
+        orderedScenes.push({ episodeNumber: episode.number, scene, rawProse, prose: normalize(rawProse) });
       }
     }
 
@@ -201,6 +209,22 @@ export class CharacterIntroductionValidator extends BaseValidator {
             `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
             `Have the prose of "${at.scene.id}" actually present ${npc.name}: name them and let the protagonist register who they are.`,
           ));
+        }
+        const firstOnPageIdx = firstProseIdx >= 0 ? Math.min(firstProseIdx, firstCastIdx) : firstCastIdx;
+        if (firstOnPageIdx === firstCastIdx && namedInCastScene) {
+          const newNamesInScene = roster.filter((entry) => {
+            const namedHere = proseNames(entry, at.prose) || castIncludes(entry, at.scene);
+            if (!namedHere) return false;
+            const earlier = orderedScenes.slice(0, firstCastIdx).some((prior) => proseNames(entry, prior.prose) || castIncludes(entry, prior.scene));
+            return !earlier;
+          }).length;
+          if (impliesOffPageFamiliarityOnFirstAppearance(at.rawProse, newNamesInScene)) {
+            issues.push(this.error(
+              `"${npc.name}" first appears in scene "${at.scene.id}" (episode ${at.episodeNumber}) inside prose that implies off-page familiarity or settled group belonging before the reader has met them.`,
+              `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}:offpage-familiarity`,
+              `Introduce ${npc.name} with first-contact behavior before using time-jump familiarity, group shorthand, or belonging language.`,
+            ));
+          }
         }
       }
 

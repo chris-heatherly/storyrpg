@@ -12,11 +12,28 @@
  */
 
 import type { FullCreativeBrief } from './FullStoryPipeline';
-import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import type { SourceMaterialAnalysis, TreatmentEpisodeGuidance } from '../../types/sourceAnalysis';
 import type { PipelineEvent } from './events';
 import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 
 type Emit = (event: Omit<PipelineEvent, 'timestamp'>) => void;
+
+function treatmentEpisodeSummary(guidance: TreatmentEpisodeGuidance | undefined): string | undefined {
+  return guidance?.synopsis
+    || guidance?.episodePromise
+    || guidance?.dramaticQuestion
+    || guidance?.encounterCentralConflict
+    || guidance?.entryGoal;
+}
+
+function treatmentEpisodeResolution(guidance: TreatmentEpisodeGuidance | undefined): string | undefined {
+  return guidance?.resolutionAftermath
+    || guidance?.endingPressure
+    || guidance?.endStateChange
+    || guidance?.authoredCliffhanger
+    || guidance?.consequenceResidue
+    || guidance?.exitShift;
+}
 
 function normalizeEntityRef(value: string | undefined): string {
   return String(value || '')
@@ -282,6 +299,8 @@ export function refreshAnalysisFromTreatmentDocument(
   const episodeBreakdown = treatmentEpisodeNumbers.map((episodeNumber) => {
     const existing = existingByNumber.get(episodeNumber);
     const guidance = treatment.episodes[episodeNumber];
+    const summary = treatmentEpisodeSummary(guidance);
+    const resolution = treatmentEpisodeResolution(guidance);
     const structuralRole = guidance.normalizedStructuralRoles?.length
       ? guidance.normalizedStructuralRoles
       : existing?.structuralRole;
@@ -290,9 +309,9 @@ export function refreshAnalysisFromTreatmentDocument(
       ...(existing || {
         episodeNumber,
         title: guidance.authoredTitle || `Episode ${episodeNumber}`,
-        synopsis: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment episode ${episodeNumber}`,
+        synopsis: summary || `Treatment episode ${episodeNumber}`,
         sourceChapters: [`Treatment episode ${episodeNumber}`],
-        sourceSummary: guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || '',
+        sourceSummary: summary || '',
         plotPoints: [],
         mainCharacters: [protagonistName],
         supportingCharacters: [],
@@ -300,15 +319,15 @@ export function refreshAnalysisFromTreatmentDocument(
         estimatedSceneCount: 1,
         estimatedChoiceCount: 1,
         narrativeFunction: {
-          setup: guidance.entryGoal || guidance.openingImage || 'Treatment setup',
-          conflict: guidance.obstacle || guidance.forcedChoice || 'Treatment conflict',
-          resolution: guidance.exitShift || guidance.endingPressure || guidance.authoredCliffhanger || 'Treatment turn',
+          setup: guidance.entryGoal || guidance.openingImage || summary || 'Treatment setup',
+          conflict: guidance.obstacle || guidance.forcedChoice || guidance.encounterCentralConflict || guidance.episodePromise || guidance.dramaticQuestion || 'Treatment conflict',
+          resolution: resolution || 'Treatment turn',
         },
       }),
       episodeNumber,
       title: guidance.authoredTitle || existing?.title || `Episode ${episodeNumber}`,
-      synopsis: existing?.synopsis || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || `Treatment episode ${episodeNumber}`,
-      sourceSummary: existing?.sourceSummary || guidance.episodePromise || guidance.dramaticQuestion || guidance.entryGoal || '',
+      synopsis: summary || existing?.synopsis || `Treatment episode ${episodeNumber}`,
+      sourceSummary: summary || existing?.sourceSummary || '',
       estimatedSceneCount: existing?.estimatedSceneCount || 1,
       estimatedChoiceCount: existing?.estimatedChoiceCount || 1,
       structuralRole,
@@ -379,10 +398,12 @@ export function refreshBriefSeasonPlanFromAnalysis(
     const previousEpisode = outline.episodeNumber > 1 ? [outline.episodeNumber - 1] : [];
     const nextEpisode = outline.episodeNumber < outlines.length ? [outline.episodeNumber + 1] : [];
     const guidance = outline.treatmentGuidance;
+    const summary = treatmentEpisodeSummary(guidance);
+    const resolution = treatmentEpisodeResolution(guidance);
     const narrativeFunction = outline.narrativeFunction || {
-      setup: guidance?.entryGoal || guidance?.openingImage || 'Treatment setup',
-      conflict: guidance?.obstacle || guidance?.forcedChoice || 'Treatment conflict',
-      resolution: guidance?.exitShift || guidance?.endingPressure || guidance?.authoredCliffhanger || 'Treatment turn',
+      setup: guidance?.entryGoal || guidance?.openingImage || summary || 'Treatment setup',
+      conflict: guidance?.obstacle || guidance?.forcedChoice || guidance?.encounterCentralConflict || guidance?.episodePromise || guidance?.dramaticQuestion || 'Treatment conflict',
+      resolution: resolution || 'Treatment turn',
     };
 
     return {
@@ -390,11 +411,11 @@ export function refreshBriefSeasonPlanFromAnalysis(
       ...outline,
       episodeNumber: outline.episodeNumber,
       title: guidance?.authoredTitle || outline.title || existing?.title || `Episode ${outline.episodeNumber}`,
-      synopsis: outline.synopsis || guidance?.episodePromise || guidance?.dramaticQuestion || existing?.synopsis || '',
+      synopsis: summary || outline.synopsis || existing?.synopsis || '',
       sourceChapters: outline.sourceChapters?.length
         ? outline.sourceChapters
         : (existing?.sourceChapters?.length ? existing.sourceChapters : [`Treatment episode ${outline.episodeNumber}`]),
-      sourceSummary: outline.sourceSummary || guidance?.episodePromise || guidance?.dramaticQuestion || existing?.sourceSummary || '',
+      sourceSummary: summary || outline.sourceSummary || existing?.sourceSummary || '',
       plotPoints: outline.plotPoints || existing?.plotPoints || [],
       mainCharacters: outline.mainCharacters?.length
         ? outline.mainCharacters

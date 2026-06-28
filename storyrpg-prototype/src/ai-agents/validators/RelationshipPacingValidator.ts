@@ -29,6 +29,7 @@ const PROVISIONAL_RE = /\b(joke|jokes|teas\w*|dare|invites?|invitation|maybe|alm
 const SETTLED_GROUP_RE = /\b(?:dusk club|club|crew|circle|group)\s+(?:is|are|becomes?|became)\s+(?:now\s+)?(?:three|complete|family|official|real|theirs?)\b|\b(?:one of us|inside the circle|inner circle|permanent member)\b/i;
 const NEGATED_WINDOW_RE = /\b(?:not|not yet|no|never|almost|maybe|trying to become|could become|might become)\s+(?:a\s+)?$/i;
 const VISIBLE_RELATIONSHIP_EVIDENCE_RE = /\b(rescue|saved|sacrifice|secret|confess|risked|protected|protects?|shielded|shields?|blocked|blocks?|covered|covers?|warned|warns?|bled|wounded)\b/i;
+const COMPRESSED_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:hours?|days?|nights?|weeks?)\b[^.!?]{0,220}\b(?:comfortable\s+habit\s+of\s+years|known\s+(?:her|him|them|each\s+other)\s+for\s+years|known\s+(?:her|him|them|each\s+other)\s+forever|feels?\s+like\s+(?:years|home|family)|old\s+friend|every\s+easy\s+gesture|refills?\s+your\s+(?:wine|glass)|watches?\s+over\s+the\s+rim|what\s+you\s+do\s+with\s+kindness|let\s+yourself\s+belong|belonging)\b/i;
 
 function plannedById(scenePlan?: SeasonScenePlan): Map<string, PlannedScene> {
   const out = new Map<string, PlannedScene>();
@@ -130,6 +131,11 @@ function highStageClaimedInText(text: string, contract: RelationshipPacingContra
     if (re.test(text)) return true;
   }
   return false;
+}
+
+function compressedFamiliarityClaim(text: string, contract: RelationshipPacingContract): boolean {
+  if (STAGE_RANK[contract.targetStage] >= STAGE_RANK.friend) return false;
+  return COMPRESSED_FAMILIARITY_RE.test(text);
 }
 
 function relationshipConsequences(scene: Scene): Consequence[] {
@@ -263,6 +269,15 @@ export class RelationshipPacingValidator extends BaseValidator {
             location: loc,
             message: `Scene "${ref.scene.id}" uses unearned relationship label(s): ${blocked.join(', ')}.`,
             suggestion: `Rewrite as ${contract.allowedLabels.join(', ') || contract.targetStage} unless prior scenes and relationship consequences have earned the stronger label.`,
+          });
+        }
+
+        if (compressedFamiliarityClaim(text, contract)) {
+          issues.push({
+            severity: treatmentBlocking ? 'error' : 'warning',
+            location: loc,
+            message: `Scene "${ref.scene.id}" compresses a new relationship into old-friend familiarity before the pacing contract earns it.`,
+            suggestion: 'Keep the chemistry immediate, but express it as a test, invitation, guarded warmth, or fragile beginning rather than years of comfort.',
           });
         }
 

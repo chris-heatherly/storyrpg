@@ -11,7 +11,7 @@ const HOOK = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is
 function contract(overrides: Partial<StoryCircleBeatRealizationContract> = {}): StoryCircleBeatRealizationContract {
   return {
     id: 'Story Circle-hook-kylie-bucharest-blog-park-rescue',
-    beat: 'hook',
+    beat: 'you',
     sourceText: HOOK,
     targetEpisodeNumber: 1,
     requiredRealization: ['season_plan', 'scene_turn', 'final_prose'],
@@ -84,7 +84,7 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(result.findings[0].message).toContain(HOOK);
   });
 
-  it('promotes stale warning-level contracts in treatment-sourced final validation', () => {
+  it('does not promote warning-level structural guidance into treatment-ledger blockers', () => {
     const result = validator.validate({
       story: story([
         scene({
@@ -96,8 +96,55 @@ describe('TreatmentEventLedgerValidator', () => {
       treatmentSourced: true,
     });
 
-    expect(result.valid).toBe(false);
-    expect(result.findings[0].severity).toBe('error');
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('does not treat episode-circle structural contracts as treatment event ledger obligations', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [beat('b1', 'Victor intervenes in Cișmigiu Park and walks you home through the fog.')],
+          storyCircleBeatContracts: [contract({
+            id: 'episode-circle-ep1-take-future-radu-confession',
+            beat: 'take',
+            sourceText: "Make the episode's find cost something visible: The real price is paid when Kylie's perceptive nature forces Radu's confession.",
+            eventAtoms: ["Kylie's perceptive nature forces Radu's confession"],
+            targetEpisodeNumber: 1,
+            blockingLevel: 'structural',
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('skips treatment contracts outside the requested episode slice', () => {
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [beat('b1', 'Victor intervenes in Cișmigiu Park and walks you home through the fog.')],
+          storyCircleBeatContracts: [contract({
+            id: 'story-circle-ep6-radu-confession',
+            beat: 'take',
+            sourceText: "Kylie's perceptive nature forces Radu's confession.",
+            eventAtoms: ["Kylie's perceptive nature forces Radu's confession"],
+            targetEpisodeNumber: 6,
+            targetSceneIds: ['s1-1'],
+          })],
+        }),
+      ]),
+      treatmentSourced: true,
+      requestedEpisodeNumbers: [1],
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
   });
 
   it('tolerates object-shaped textVariants while reading prose', () => {

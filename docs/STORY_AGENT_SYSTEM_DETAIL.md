@@ -149,7 +149,6 @@ Always respond with valid JSON that matches the requested schema.
 | **Color Script Agent** | `image-team/ColorScriptAgent.ts` | Episode color arc and thumbnails |
 | **Video Director** | `image-team/VideoDirectorAgent.ts` | Video direction for Veo pipeline |
 | **LoRA Training Agent** | `image-team/LoraTrainingAgent.ts` | Orchestrates auto-train-LoRA eligibility, dataset assembly, dispatch, and cache lookups (Stable-Diffusion-only) |
-| **Image Generator** | `ImageGenerator.ts` | Legacy compatibility export for image prompt types; active image work is coordinated by `ImageAgentTeam` + `ImageGenerationService` |
 
 #### Image QA Validators
 
@@ -200,7 +199,7 @@ interface AgentConfig {
 
 ### 3.1 FullStoryPipeline
 
-The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) is the authoritative story-generation path. `EpisodePipeline.ts` remains in the tree as legacy/quarantined code but is not exported from `src/ai-agents/pipeline/index.ts`; new work should not call it. `ParallelStoryPipeline` has been removed.
+The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) is the authoritative story-generation path. `EpisodePipeline.ts` and `ParallelStoryPipeline` have been removed; new work should use `FullStoryPipeline` and its extracted phase modules.
 
 ```
 1. Source Material Analysis (if adapting IP)
@@ -223,7 +222,7 @@ The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) is the a
    i. Image Generation → storyboard-v2, scene art, character refs, encounter images
    j. Video Generation (optional) → scene video via Veo
      ↓
-6. Final Story Assembly + Output Writing (`story.json`, `manifest.json`, `08-final-story.json`)
+6. Final Story Assembly + Output Writing (`story.json`, `manifest.json`)
 ```
 
 `SavingPhase` is extracted and wired. `WorldBuildingPhase` is scaffolded under

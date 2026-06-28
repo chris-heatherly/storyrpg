@@ -29,6 +29,7 @@ import type {
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from './scenePlan';
+import type { StoryCircleStructure } from './sourceAnalysis';
 
 export interface Scene {
   id: string;
@@ -170,6 +171,7 @@ export interface Episode {
 
   scenes: Scene[];
   startingSceneId: string;
+  episodeCircle?: Partial<StoryCircleStructure>;
 
   unlockConditions?: ConditionExpression;
 

@@ -47,7 +47,6 @@ export function createDefaultImageProviderRegistry(): ImageProviderRegistry {
       new GeminiAdapter(),
       new AtlasCloudAdapter(),
       new MidApiAdapter('midapi'),
-      new MidApiAdapter('useapi'),
       new StableDiffusionProviderAdapter(),
       new DallEAdapter(),
       placeholder,

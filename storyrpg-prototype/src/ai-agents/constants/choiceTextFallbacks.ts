@@ -29,7 +29,7 @@ export const FALLBACK_OUTCOME_TEXT_POOLS: Record<'success' | 'partial' | 'failur
 
 export const FALLBACK_REMINDER_STUBS: readonly string[] = [
   'The moment lands immediately.',
-  'The next scene should remember this choice.',
+  'The decision leaves visible residue.',
 ];
 
 const ALL_FALLBACK_OUTCOME_TEXTS = new Set(

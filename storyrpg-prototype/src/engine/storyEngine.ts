@@ -15,6 +15,7 @@ import {
 import { evaluateCondition } from './conditionEvaluator';
 import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, buildUseBasedGrowthConsequences, computeOverlap } from './resolutionEngine';
 import { processText, processTemplate } from './templateProcessor';
+import { sanitizeReaderProse } from './readerProseSanitizer';
 import { mediaRefAsString } from '../assets/assetRef';
 import {
   getSkillKeyFromChoice,
@@ -162,6 +163,29 @@ function processSkillInsights(
     .map(({ insight }) => processTemplate(insight.text, player, story));
 }
 
+function readerSafeBeatFallback(beat: Beat | EncounterBeat): string {
+  const candidates = isEncounterBeat(beat)
+    ? [
+        beat.setupText,
+        beat.name,
+      ]
+    : [
+        beat.primaryAction,
+        beat.visualMoment,
+        beat.emotionalRead,
+        beat.mustShowDetail,
+      ];
+
+  for (const candidate of candidates) {
+    const sanitized = sanitizeReaderProse(String(candidate || '')).replace(/\s+/g, ' ').trim();
+    if (sanitized) {
+      return /[.!?]$/.test(sanitized) ? sanitized : `${sanitized}.`;
+    }
+  }
+
+  return 'The moment tightens. You take the next breath and move before fear can close around you.';
+}
+
 /**
  * Process a beat for display.
  * Handles both regular Beat and EncounterBeat types.
@@ -229,8 +253,8 @@ export function processBeat(
 
   // FINAL FALLBACK: If text is STILL empty after all processing, use a descriptive placeholder
   if (!text || text.trim().length === 0) {
-    console.warn(`[StoryEngine] Beat ${beat.id} resulted in empty text. Using emergency fallback.`);
-    text = `You continue through the ${story.genre.toLowerCase()} journey, facing new challenges and making important decisions.`;
+    console.warn(`[StoryEngine] Beat ${beat.id} resulted in empty text. Using reader-safe fallback.`);
+    text = readerSafeBeatFallback(beat);
   }
 
   // Process speaker name if present (regular Beat only)

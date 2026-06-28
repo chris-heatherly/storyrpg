@@ -595,8 +595,8 @@ function choiceSetFixtureFor(request: LlmTransportRequest): string {
   const requestedType = text.match(/"choiceType":\s*"(\w+)"/)?.[1] ?? 'expression';
   const requestedBeatId = text.match(/"beatId":\s*"([^"]+)"/)?.[1] ?? 'beat-3';
   let sceneId = 'scene-1';
-  if (text.includes('**Scene**: The Steward')) sceneId = 'scene-2';
-  else if (text.includes('**Scene**: The East Garden')) sceneId = 'scene-3';
+  if (text.includes('scene-2') || text.includes('The Steward')) sceneId = 'scene-2';
+  else if (text.includes('scene-3') || text.includes('The East Garden')) sceneId = 'scene-3';
 
   const base = sceneId === 'scene-2' ? JSON.parse(expressionChoiceSetFixture()) : JSON.parse(relationshipChoiceSetFixture());
   if (sceneId === 'scene-3') {
@@ -623,14 +623,52 @@ function choiceSetFixtureFor(request: LlmTransportRequest): string {
       },
     ];
   }
+  ensureThreeChoiceSurface(base);
   base.sceneId = sceneId;
   base.beatId = requestedBeatId;
   base.choiceType = requestedType;
   for (const choice of base.choices) {
     choice.choiceType = requestedType;
+    if (requestedType === 'expression') {
+      delete choice.statCheck;
+      delete choice.residueHints;
+      if (!choice.setsFlags) choice.setsFlags = [`expressed_${choice.id}`];
+    } else {
+      if (!choice.statCheck) {
+        choice.statCheck = { difficulty: 'moderate', skillWeights: { empathy: 1, perception: 1 } };
+      }
+      if (!choice.residueHints) {
+        choice.residueHints = [{
+          kind: 'relationship_behavior',
+          description: 'Let the next scene show how this choice changes the room between Mara and Edric.',
+        }];
+      }
+    }
     if (requestedType !== 'dilemma') delete choice.moralContract;
   }
   return JSON.stringify(base);
+}
+
+function ensureThreeChoiceSurface(base: { choices: Array<Record<string, unknown>>; choiceType?: string }): void {
+  if (base.choices.length >= 3) return;
+  base.choices.push({
+    id: `choice-${base.choices.length + 1}`,
+    text: 'Name the cost before you move',
+    choiceType: base.choiceType ?? 'expression',
+    consequences: [],
+    stakes: {
+      want: 'A clean choice made with open eyes',
+      cost: 'The moment narrows while you measure it',
+      identity: 'The archivist who names a price before paying it',
+    },
+    tintFlag: 'tint:measured',
+    reactionText: 'You let the silence hold long enough to show what the choice costs.',
+    outcomeTexts: {
+      success: 'The named cost steadies you, and the next step lands with intent.',
+      partial: 'Naming the cost clarifies the choice without making it easier.',
+      failure: 'The cost grows teeth once spoken, and the room hears it too.',
+    },
+  });
 }
 
 function expressionChoiceSetFixture(): string {

@@ -28,7 +28,7 @@ describe('FullStoryPipeline targeted image backfill', () => {
     await fs.writeFile(file, JSON.stringify(value, null, 2));
   }
 
-  it('renders only requested beats, writes reports, and patches modern and legacy story files', async () => {
+  it('renders only requested beats, writes reports, and patches the story package', async () => {
     const { FullStoryPipeline } = await import('./FullStoryPipeline');
     const outputDir = `${await fs.mkdtemp(path.join(os.tmpdir(), 'storyrpg-spot-'))}/`;
     tempDirs.push(outputDir);
@@ -77,7 +77,6 @@ describe('FullStoryPipeline targeted image backfill', () => {
       characters: [{ id: 'char-kylie', name: 'Kylie', physicalDescription: 'blonde glasses' }],
     });
     await writeJson(path.join(outputDir, 'story.json'), { story, generator: { artStyle: 'test style' } });
-    await writeJson(path.join(outputDir, '08-final-story.json'), story);
 
     let imageOutputDir = '';
     const generated: any[] = [];
@@ -121,16 +120,14 @@ describe('FullStoryPipeline targeted image backfill', () => {
     expect(generated[0].prompt.prompt).not.toContain('wrong current generator style');
 
     const modern = JSON.parse(await fs.readFile(path.join(outputDir, 'story.json'), 'utf8'));
-    const legacy = JSON.parse(await fs.readFile(path.join(outputDir, '08-final-story.json'), 'utf8'));
     expect(modern.story.episodes[0].scenes[0].beats[0].image).toContain('beat-episode-1-scene-1-beat-1');
-    expect(legacy.episodes[0].scenes[0].beats[0].image).toContain('beat-episode-1-scene-1-beat-1');
-    expect(legacy.episodes[0].scenes[0].beats[1].image).toBe('');
+    expect(modern.story.episodes[0].scenes[0].beats[1].image).toBe('');
 
     const missing = JSON.parse(await fs.readFile(path.join(outputDir, 'missing-image-slots.json'), 'utf8'));
     expect(missing.slots).toEqual([
       expect.objectContaining({ episodeNumber: 1, sceneId: 'scene-1', beatId: 'beat-1', status: 'patched' }),
     ]);
     const report = JSON.parse(await fs.readFile(path.join(outputDir, 'spot-image-backfill-report.json'), 'utf8'));
-    expect(report.targets[0]).toMatchObject({ status: 'patched', patchedModernStory: true, patchedLegacyStory: true });
+    expect(report.targets[0]).toMatchObject({ status: 'patched', patchedStoryPackage: true });
   });
 });

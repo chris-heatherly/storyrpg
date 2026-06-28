@@ -133,8 +133,8 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Season planning (SeasonPlannerAgent.finalizePlan) ---
   // Story Circle spine GATE (tier 1, blocking): SeasonPlanner.execute throws when the
   // eight-beat Story Circle spine is incomplete, out of canonical order, or non-contiguous.
-  // Tier 2 — each episode blueprint must fill all eight episodeCircle beats — is an
-  // inline validateBlueprint throw in StoryArchitect.
+  // Tier 2 — each episode blueprint must fill all eight episodeCircle beats and bind
+  // them to scenes — is EpisodeStoryCircleValidator inside StoryArchitect.
   { validator: 'StoryCircleCoverageValidator', stage: 'season', tier: 'blocking', dispatchedFrom: 'SeasonPlannerAgent (execute)' },
   { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_ARC_PRESSURE', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'CharacterArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
@@ -147,6 +147,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'ThemePressureValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
   { validator: 'SceneTurnContractValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
   { validator: 'EpisodePressureArchitectureValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
+  { validator: 'EpisodeStoryCircleValidator', stage: 'architecture', tier: 'blocking', remediation: 'plan-time', dispatchedFrom: 'StoryArchitect.validateBlueprint' },
 
   // --- Phase gates (PhaseValidator) ---
   { validator: 'PhaseValidator', stage: 'phase', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },
@@ -282,6 +283,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // and show before-state -> turn event -> aftermath/handoff instead of checking off
   // outline moments as isolated mentions.
   { validator: 'SceneTurnRealizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SCENE_TURN_REALIZATION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  { validator: 'SceneTurnRealizationValidator (episode Story Circle structural class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_EPISODE_STORY_CIRCLE_REALIZATION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Relationship pacing: generated prose may show instant chemistry, but earned
   // labels like friend/trusted ally/inner circle must match scene history and
   // relationship mechanics.
@@ -373,12 +375,15 @@ export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
 
   { validator: 'DramaticStructureValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
   { validator: 'EpisodePressureArchitectureValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
+  { validator: 'EpisodeStoryCircleValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
   { validator: 'RequiredBeatRealizationValidator', artifactKinds: ['episode-blueprint'], role: 'artifact-only' },
   { validator: 'EncounterAnchorContentValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
   { validator: 'TreatmentFidelityValidator', artifactKinds: ['episode-blueprint'], role: 'primary' },
 
   { validator: 'SceneGraphBranchValidator', artifactKinds: ['scene-plan'], role: 'primary' },
   { validator: 'SceneTurnContractValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+  { validator: 'EpisodeStoryCircleValidator', artifactKinds: ['scene-plan'], role: 'primary' },
+  { validator: 'SceneTurnRealizationValidator (episode Story Circle structural class)', artifactKinds: ['scene-plan'], role: 'regression-net' },
   { validator: 'SceneSpineValidator', artifactKinds: ['scene-plan'], role: 'artifact-only' },
   { validator: 'SceneTransitionContinuityValidator', artifactKinds: ['scene-plan'], role: 'primary' },
   { validator: 'ArcPressureArchitectureValidator', artifactKinds: ['scene-plan'], role: 'primary' },
@@ -413,11 +418,13 @@ export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
   { validator: 'ArcDeltaValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'SetupPayoffValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'TreatmentFidelityValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'SceneTurnRealizationValidator (episode Story Circle structural class)', artifactKinds: ['runtime-episode'], role: 'regression-net' },
   { validator: 'storyPathAnalyzer', artifactKinds: ['runtime-episode'], role: 'artifact-only' },
 
   { validator: 'decodeStory', artifactKinds: ['story-package'], role: 'artifact-only' },
   { validator: 'storyAssetWalker', artifactKinds: ['story-package'], role: 'artifact-only' },
   { validator: 'FinalStoryContractValidator', artifactKinds: ['story-package'], role: 'primary' },
+  { validator: 'SceneTurnRealizationValidator (episode Story Circle structural class)', artifactKinds: ['story-package'], role: 'regression-net' },
   { validator: 'validate-assets', artifactKinds: ['story-package'], role: 'artifact-only' },
   { validator: 'check-reader-boundary', artifactKinds: ['story-package'], role: 'artifact-only' },
 ];

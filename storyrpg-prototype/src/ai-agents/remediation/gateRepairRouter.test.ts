@@ -268,6 +268,19 @@ describe('GateRepairRouter', () => {
     expect(route.unsafeForProsePatch).toBe(false);
   });
 
+  it('routes localized authored Story Circle misses to same-scene retry', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'SceneTurnRealizationValidator',
+      'Scene "s1-1" carries Story Circle you structurally but does not dramatize its authored beat event on-page: "gathers the Dusk Club over too-dark negronis".',
+      's1-1',
+      1,
+    ));
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
+  });
+
   it('routes localized encounter arc-pressure misses to same-scene retry', () => {
     const router = new GateRepairRouter();
     const route = router.routeIssue(issue(
@@ -279,6 +292,19 @@ describe('GateRepairRouter', () => {
 
     expect(route.kind).toBe('same_scene_retry');
     expect(route.unsafeForProsePatch).toBe(false);
+  });
+
+  it('defers partial-slice narrative mechanic pressure instead of routing to scene prose repair', () => {
+    const router = new GateRepairRouter({ generatedThroughEpisode: 1 });
+    const route = router.routeIssue(issue(
+      'NarrativeMechanicPressureValidator',
+      'Treatment-authored relationship pressure "Relationship with Mika Drăgan is moving only as far as acquaintance." is planted in the terminal generated episode of a partial slice; later payoff/callback/gate validation is deferred until the target episode exists.',
+      'treatment-enc-1-1',
+      1,
+    ));
+
+    expect(route.kind).toBe('partial_scope_defer');
+    expect(route.unsafeForProsePatch).toBe(true);
   });
 });
 

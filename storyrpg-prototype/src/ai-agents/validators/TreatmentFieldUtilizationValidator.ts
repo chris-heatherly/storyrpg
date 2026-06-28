@@ -911,10 +911,15 @@ function shouldDeferPartialSliceFinalRealization(
   sourceText: string,
   options: { broadTokenThreshold?: number } = {},
 ): boolean {
-  if (!spansUngeneratedEpisode(input, targetEpisodeNumbers)) return false;
+  if (!isPartialGeneratedSlice(input)) return false;
+  const explicitlySpansUngenerated = spansUngeneratedEpisode(input, targetEpisodeNumbers);
   const tokenCount = treatmentFieldTokens(sourceText).length;
   const generatedSceneTarget = hasGeneratedSceneTarget(input, targetSceneIds);
   const broadTokenThreshold = options.broadTokenThreshold ?? 6;
+  const seasonSpanningLanguage =
+    /\b(?:revealed only in stages|revealed in stages|underneath,? revealed|thriving supernatural society|older than|season|across|threaded|every episode|later|payoff|finale)\b/i.test(sourceText);
+
+  if (!explicitlySpansUngenerated && !seasonSpanningLanguage) return false;
 
   // Multi-episode contracts often name the whole season rule/arc/audit in a
   // single source string, while the partial run can only prove the generated

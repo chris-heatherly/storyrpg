@@ -65,6 +65,41 @@ describe('RelationshipPacingValidator', () => {
     expect(result.issues.some((issue) => issue.severity === 'error' && issue.message.includes('unearned relationship label'))).toBe(true);
   });
 
+  it('fails when first-week chemistry is narrated as years of comfort', () => {
+    const result = validator.validate({
+      story: story([
+        scene(
+          's1-1',
+          'It has only been three days with these women, but Stela refilling your wine feels like the comfortable habit of years.',
+          [contract({ npcId: 'stela', targetStage: 'acquaintance', allowedLabels: ['guarded warmth', 'testing trust'] })],
+        ),
+      ], [{ id: 'stela', name: 'Stela' }]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('old-friend familiarity'))).toBe(true);
+  });
+
+  it('fails when a first-scene time jump treats new acquaintances as an already easy group', () => {
+    const result = validator.validate({
+      story: story([
+        scene(
+          's1-1',
+          'It has only been three days with Mika and Stela, so every easy gesture still feels slightly staged: Stela refills your wine and Mika watches over the rim of her glass.',
+          [
+            contract({ npcId: 'mika', targetStage: 'acquaintance', allowedLabels: ['guarded warmth', 'testing trust'] }),
+            contract({ id: 's1-1-rel-stela', npcId: 'stela', targetStage: 'acquaintance', allowedLabels: ['guarded warmth', 'testing trust'] }),
+          ],
+        ),
+      ], [{ id: 'mika', name: 'Mika' }, { id: 'stela', name: 'Stela' }]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('old-friend familiarity'))).toBe(true);
+  });
+
   it('does not fail on blocked labels that appear only in hidden beat metadata', () => {
     const result = validator.validate({
       story: story([

@@ -215,6 +215,22 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('promotes route-continuity findings to final-contract blockers', async () => {
+    const story = validStory();
+    story.episodes[0].scenes[0].beats[1].text =
+      "Kylie Marinescu's composed surface slips through a small evasive movement as her hands and attention lock onto the window.";
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.passed).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'unsafe_fallback_prose',
+        validator: 'RouteContinuityValidator',
+      }),
+    ]));
+  });
+
   it('blocks vampire or strigoi characters being scheduled for daytime meals', async () => {
     const story = validStory({
       npcs: [
@@ -588,12 +604,12 @@ describe('FinalStoryContractValidator', () => {
       beats: [{
         id: `${id}-b1`,
         text: `Content for ${id} that is clearly not a placeholder beat.`,
-        choices: [{
-          id: `${id}-continue`,
-          text: 'Continue...',
+        choices: Array.from({ length: 3 }, (_, index) => ({
+          id: `${id}-continue-${index + 1}`,
+          text: `Continue option ${index + 1}`,
           choiceType: 'expression',
-          nextSceneId: choiceTarget ?? leadsTo[0],
-        }],
+          nextSceneId: index === 0 ? choiceTarget ?? leadsTo[0] : leadsTo[0],
+        })),
       }],
     } as any);
     const story = validStory({
@@ -624,7 +640,12 @@ describe('FinalStoryContractValidator', () => {
       beats: [{
         id: `${id}-b1`,
         text: `Content for ${id} that is clearly not a placeholder beat.`,
-        choices: [{ id: `${id}-continue`, text: 'Continue...', choiceType: 'expression', nextSceneId: choiceTarget ?? leadsTo[0] }],
+        choices: Array.from({ length: 3 }, (_, index) => ({
+          id: `${id}-continue-${index + 1}`,
+          text: `Continue option ${index + 1}`,
+          choiceType: 'expression',
+          nextSceneId: choiceTarget ?? leadsTo[0],
+        })),
       }],
     } as any);
     const story = validStory({
@@ -652,8 +673,17 @@ describe('FinalStoryContractValidator', () => {
         id: `${id}-b1`,
         text: `Substantive setup for ${id}.`,
         choices: choiceTarget
-          ? [{ id: `${id}-skip`, text: 'Skip the uncomfortable setup', choiceType: 'expression', nextSceneId: choiceTarget, isChoiceBridge: true }]
-          : [{ id: `${id}-continue`, text: 'Continue...', choiceType: 'expression', nextSceneId: leadsTo[0] }],
+          ? [
+              { id: `${id}-skip`, text: 'Skip the uncomfortable setup', choiceType: 'expression', nextSceneId: choiceTarget, isChoiceBridge: true },
+              { id: `${id}-continue-1`, text: 'Continue through the setup', choiceType: 'expression', nextSceneId: leadsTo[0] },
+              { id: `${id}-continue-2`, text: 'Stay with the setup', choiceType: 'expression', nextSceneId: leadsTo[0] },
+            ]
+          : Array.from({ length: 3 }, (_, index) => ({
+              id: `${id}-continue-${index + 1}`,
+              text: `Continue option ${index + 1}`,
+              choiceType: 'expression',
+              nextSceneId: leadsTo[0],
+            })),
       }],
     } as any);
     const story = validStory({
@@ -752,6 +782,26 @@ describe('FinalStoryContractValidator', () => {
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-4' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1', beatId: 'beat-5' }),
       expect.objectContaining({ validator: 'PlanningRegisterLeakValidator', sceneId: 'scene-1' }),
+    ]));
+  });
+
+  it('blocks repeated toast/click prose and live-action tense drift', async () => {
+    const story = validStory();
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.beats[0].text = 'Mika raises her glass. "To the Dusk Club."';
+    scene.beats[1].text = 'Stela raises her glass. "To the Dusk Club."';
+    scene.beats.push({
+      id: 'beat-3',
+      text: "Your glass clicked against theirs. Just as you took a sip, you felt it. He didn't blink.",
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+    const styleIssues = report.blockingIssues.filter((issue) => issue.type === 'prose_style_violation');
+
+    expect(report.passed).toBe(false);
+    expect(styleIssues.length).toBeGreaterThanOrEqual(2);
+    expect(styleIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validator: 'NarrativeFailureModeValidator' }),
     ]));
   });
 
@@ -874,7 +924,10 @@ describe('FinalStoryContractValidator', () => {
     const base = validEncounter();
     const hollowEncounter = {
       ...base,
-      phases: (base.phases as any[]).map((p) => ({ ...p, beats: (p.beats ?? []).map((b: any) => ({ ...b, setupText: '' })) })),
+      phases: (base.phases as any[]).map((p) => ({
+        ...p,
+        beats: (p.beats ?? []).map((b: any) => ({ ...b, setupText: '', choices: [] })),
+      })),
       outcomes: {},
     };
     const story = validStory({
@@ -1706,6 +1759,32 @@ describe('FinalStoryContractValidator repeated high-pressure event gate', () => 
 
     expect(report.blockingIssues).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'scene_location_event_mismatch', sceneId: 's1-7' }),
+    ]));
+  });
+
+  it('allows rooftop terrace pressure inside the planned club location', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-rooftop',
+        scenes: [{
+          id: 's1-rooftop',
+          name: 'Rooftop bar at sunset',
+          startingBeatId: 's1-rooftop-b1',
+          leadsTo: [],
+          timeline: { location: 'Vâlcescu Club', timeOfDay: 'sunset' },
+          beats: [{
+            id: 's1-rooftop-b1',
+            text: 'On the rooftop terrace, Mika goes flat, unreadable, as a guard near the service entrance watches your table and turns the night into a cage.',
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'scene_location_event_mismatch', sceneId: 's1-rooftop' }),
     ]));
   });
 

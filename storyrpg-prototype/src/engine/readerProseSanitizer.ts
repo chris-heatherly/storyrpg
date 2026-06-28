@@ -15,6 +15,23 @@ const UNSAFE_READER_PROSE_PATTERNS: RegExp[] = [
   /\byour leverage changes\b/i,
   /\byour resources change\b/i,
   /\bthe choice changed the shape of the story\b/i,
+  /\bthe selected (?:route|choice) changes the next scene\b/i,
+  /\b(?:later narration remembers which|which) path the player chose\b/i,
+  /\bthe world gives up a little more of its pattern\b/i,
+  /\bordinary\s+world\s+is\s+[^.!?\n]{1,180}/i,
+  /(?:^|[.!?]\s+)(?:her|his|their|your)\s+grandmother['’]s\s+address\s*[.!?](?:\s|$)/i,
+  /\bprotects\s+herself\s+(?:the\s+way\s+she\s+always\s+has|by\s+observing|through\s+observing)\b/i,
+  /\bOpening\s+promise\s*:/i,
+  /\breinvention-as-performance\b/i,
+  /\bnext[-\s]+scene\s+pressure\b/i,
+  /\bprovide\s+aftermath\s+or\s+a\s+grounded\s+transition\s+into\s+the\s+next\s+scene\b/i,
+  /\b(?:viral|public)\s+attention\s+pressure\s+the\s+next\s+scene\b/i,
+  /\bHand\s+the\s+changed\s+state\s+into\s+the\s+next\s+scene\b/i,
+  /(?:^|[.!?]\s+)\s*development\s+scene\s+\d+\s*\.?\s*(?:$|[.!?])/i,
+  /(?:^|[.!?]\s+)\s*PEAK\s*:/i,
+  /\bwhat\s+name\s+do\s+you\s+give\s+him\b[^.!?\n]*(?:canonical|the\s+stranger|the\s+velvet|the\s+suit)/i,
+  /\bscream\s*,\s*run\s*,\s*freeze\b[^.!?\n]*\bwhat\s+name\s+do\s+you\s+give\s+him\b/i,
+  /\bmidnight\s*\(canonical\)[^.!?\n]*(?:the\s+stranger|the\s+velvet|the\s+suit)/i,
   /\byou made a choice\b/i,
   /^\s*you chose\b/i,
   /\bpeople remember what the protagonist risked\b/i,
@@ -23,7 +40,21 @@ const UNSAFE_READER_PROSE_PATTERNS: RegExp[] = [
   /\bAftermath that resettles stakes;\s*serves\b/i,
   /\bserves\s+the\s+(?:hook|plotTurn1|pinch1|midpoint|pinch2|climax|resolution)\s+beat\b/i,
   /\bForward pressure\s*:/i,
+  /\bcomposed surface slips through a small evasive movement\b/i,
+  /\bsmall evasive movement\b/i,
+  /\bposture,\s*glance,\s*and\s*distance make the unspoken tension visible\b/i,
+  /\bhands and attention lock onto\b[^.!?\n]*\bmaking the subtext visible\b/i,
+  /\bmaking the subtext visible\b/i,
+  /\bvisibly changing the balance of the moment\b/i,
+  /\b(?:smile|averted eyes|busy hands)\b[^.!?\n]*\bbetray what the words avoid\b/i,
+  /\bthe character reacts through a visible gesture,\s*object cue,\s*or shift in distance\b/i,
 ];
+
+const AUDIO_DIRECTIVE_RE = /\s*(?:\[(?:whispering|hushed|urgent|tense|tender|playful|commanding|bitter|grief-held|breathless|triumphant|ominous|measured|pause|beat|sigh|laughs?|crying|softly|loudly|angrily|sadly)[^\]]*\]|<\s*\/?\s*(?:voice|prosody|speak|break|emphasis)\b[^>]*>)/gi;
+
+function stripAudioDirectives(text: string): string {
+  return text.replace(AUDIO_DIRECTIVE_RE, ' ').replace(/\s{2,}/g, ' ').trim();
+}
 
 function isUnsafeReaderProse(text: string): boolean {
   return UNSAFE_READER_PROSE_PATTERNS.some((pattern) => pattern.test(text));
@@ -35,9 +66,10 @@ function isUnsafeReaderProse(text: string): boolean {
  * an older package or saved text variant still contains one.
  */
 export function sanitizeReaderProse(text: string): string {
-  if (!text || !isUnsafeReaderProse(text)) return text;
+  const audioSafeText = stripAudioDirectives(text || '');
+  if (!audioSafeText || !isUnsafeReaderProse(audioSafeText)) return audioSafeText;
 
-  const paragraphs = text
+  const paragraphs = audioSafeText
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean)
@@ -47,7 +79,7 @@ export function sanitizeReaderProse(text: string): string {
     return paragraphs.join('\n\n');
   }
 
-  const sentences = (text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [])
+  const sentences = (audioSafeText.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [])
     .map((sentence) => sentence.trim())
     .filter(Boolean)
     .filter((sentence) => /[A-Za-z0-9]/.test(sentence))

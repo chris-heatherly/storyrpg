@@ -81,6 +81,53 @@ describe('SourceMaterialAnalyzer schema abstraction helpers', () => {
 describe('SourceMaterialAnalyzer treatment extraction', () => {
   const treatment = readFileSync(join(__dirname, '../fixtures/bite-me-treatment.md'), 'utf8');
   const refreshedTreatment = readFileSync(join(__dirname, '../fixtures/refreshed-treatment.md'), 'utf8');
+  const mvpTreatment = `
+# Bite Me
+
+*Converted to the Story Treatment MVP format for the StoryRPG 8-beat Story Circle.*
+
+## Season Promise and Dramatic Engine
+*Pressure that makes inaction impossible:* Victor stages the first rescue so Kylie cannot treat Bucharest as just a rebound vacation.
+
+## World + Location Brief
+- **World premise:** Bucharest's old glamour has a supernatural economy under it.
+
+### Key Locations
+- **Valcescu Club rooftop** — Purpose: Kylie's glamorous entry point and the Dusk Club's social arena. Mood: velvet, smoke, and performance.
+- **Cismigiu Park** — Purpose: the staged rescue site. Mood: romantic danger turning predatory.
+
+## Story Circle Season Spine
+- **You (Ep1):** Kylie's ordinary world is reinvention-as-performance. She arrives in Bucharest with two suitcases and her grandmother's address, gathers the Dusk Club over too-dark negronis, and protects herself the way she always has — by observing, ordering second, and writing the piece later. Opening promise: a heartbroken woman gets a glamorous new life and her own byline. The staged rescue and viral Mr. Midnight post close the beat by making her a name.
+- **Need (Ep2):** Kylie needs to admit that attention is not the same as safety.
+
+## Episode Outline
+### Episode 1: Soft Landing, Hard Teeth
+- **Story Circle role:** You
+- **Episode promise:** Kylie's first fabulous night in Bucharest becomes dangerous enough to feel like destiny.
+- **Episode turns:**
+  - Kylie arrives with two suitcases and her grandmother's address.
+  - The Dusk Club teaches her the rules of watching before wanting.
+  - Mr. Midnight rescues her in Cismigiu Park.
+- **Encounter anchor:** Cismigiu Park staged rescue.
+- **Encounter Story Circle target:** search
+- **Encounter target rationale:** The encounter tests how Kylie adapts to predatory glamour before she understands the rules.
+- **How the encounter manifests the central conflict:** Kylie wants the storybook rescue to be romantic, but survival requires suspicion.
+- **Encounter buildup:** Rooftop glamour makes the walk home feel earned instead of random.
+- **Aftermath / consequence:** The Mr. Midnight post goes viral and turns Kylie into a visible target.
+- **Major choice pressure:** Accept Mika's safer route home or chase the more cinematic story.
+- **Cliffhanger question:** Who arranged the rescue?
+
+## Alternate Endings
+### Ending 1 — The Consort
+- **Summary:** Kylie chooses Victor's world.
+- **Target conditions:** Victor-aligned.
+### Ending 2 — The Mountain Wife
+- **Summary:** Kylie chooses Mika's truth.
+- **Target conditions:** Mika-aligned.
+### Ending 3 — The Witness
+- **Summary:** Kylie publishes the real story.
+- **Target conditions:** witness-aligned.
+`;
 
   it('extracts treatment episode guidance and exactly three endings', () => {
     const extracted = extractTreatmentFromMarkdown(treatment);
@@ -147,6 +194,32 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
         expect.stringContaining('The Open Door'),
         expect.stringContaining('The Burned Harbor'),
       ]),
+    );
+  });
+
+  it('extracts Story Treatment MVP fields without downgrading them to legacy treatment shape', () => {
+    const extracted = extractTreatmentFromMarkdown(mvpTreatment);
+
+    expect(extracted.isTreatment).toBe(true);
+    expect(extracted.metadata.formatVersion).toBe('story-treatment-mvp');
+    expect(extracted.seasonGuidance?.inactionPressure).toContain('Victor stages the first rescue');
+    expect(extracted.seasonGuidance?.storyCircleBeatEpisodeAnchors?.you).toBe(1);
+    expect(extracted.seasonGuidance?.worldLocationGuidance?.keyLocations?.map((location) => location.name)).toEqual(
+      expect.arrayContaining(['Valcescu Club rooftop', 'Cismigiu Park']),
+    );
+    expect(extracted.episodes[1]?.rawStructuralRole).toBe('You');
+    expect(extracted.episodes[1]?.episodeTurns).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('two suitcases'),
+        expect.stringContaining('Dusk Club'),
+        expect.stringContaining('Mr. Midnight'),
+      ]),
+    );
+    expect(extracted.episodes[1]?.encounterStoryCircleTarget).toBe('search');
+    expect(extracted.episodes[1]?.encounterStoryCircleTargetRationale).toContain('adapts to predatory glamour');
+    expect(extracted.episodes[1]?.encounterCentralConflict).toContain('storybook rescue');
+    expect(extracted.episodes[1]?.majorChoicePressures).toEqual(
+      expect.arrayContaining([expect.stringContaining("Mika's safer route")]),
     );
   });
 

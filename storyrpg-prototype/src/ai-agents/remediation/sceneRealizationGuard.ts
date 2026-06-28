@@ -218,8 +218,21 @@ function hasConcreteActionRequirement(missing: MissingMoment): boolean {
 }
 
 function hasUnsafeDeterministicInsertionCue(moment: string): boolean {
+  const timelineText = moment
+    .replace(/\bDating After Dusk\b/g, '')
+    .replace(/\bDusk Club\b/g, '')
+    .replace(/\bafter (?:a |the )?public breakup\b/ig, '')
+    .replace(/\bafter (?:a |the )?(?:humiliating|cancelled|canceled) (?:engagement|breakup)\b/ig, '');
   return /\b(?:night|morning|dawn|dusk|sunset|midnight|weekend|later|earlier|before|after|next|previous|second|third|fourth|return(?:s|ed)?|again|handoff|transition|[0-9]+\s*(?:am|pm|a\.m\.|p\.m\.))\b/i
-    .test(moment);
+    .test(timelineText);
+}
+
+function isSameSceneViralAftermathMoment(moment: string): boolean {
+  const normalized = normalizedWords(moment).join(' ');
+  return /\bviral\b/.test(normalized)
+    && /\bmr midnight\b/.test(normalized)
+    && /\bpost\b/.test(normalized)
+    && /\b(?:makes?|making) (?:her|you) a name\b/.test(normalized);
 }
 
 const TEMPORAL_NUMBER_WORDS: Record<string, number> = {
@@ -296,6 +309,7 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
       options.onSkip?.(m, 'terse action summary needs prose rewrite, not deterministic label insertion');
       return false;
     }
+    if (isSameSceneViralAftermathMoment(m.moment)) return true;
     if (options.allowTimelineCuedInsertion) return true;
     if (!hasUnsafeDeterministicInsertionCue(m.moment)) return true;
     options.onSkip?.(m, 'moment has timeline or cross-scene cues');

@@ -788,6 +788,49 @@ describe('planned scene obligation binder', () => {
     expect(result.scenes.flatMap((item) => item.requiredBeats ?? []).some((beat) => beat.id === turnoutBeat.id)).toBe(false);
   });
 
+  it('splits Story Circle turnout phrasing away from the rescue scene', () => {
+    const turnoutBeat = {
+      id: 's1-1-story-circle-you',
+      sourceTurn: 'She forms the Dusk Club, starts Dating After Dusk, and turns a terrifying rescue by Mr Midnight into the first viral proof that she can author a new life',
+      mustDepict: 'She forms the Dusk Club, starts Dating After Dusk, and turns a terrifying rescue by Mr Midnight into the first viral proof that she can author a new life',
+      tier: 'authored' as const,
+    };
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-1',
+        order: 1,
+        title: 'Dusk Club negronis',
+        dramaticPurpose: 'Kylie gathers the Dusk Club over too-dark negronis.',
+        locations: ['Vâlcescu Club'],
+      }),
+      scene({
+        id: 's1-3',
+        order: 2,
+        title: 'Cișmigiu attack at 1am',
+        dramaticPurpose: 'Walking home through Cismigiu, she is attacked and rescued by Victor.',
+        locations: ['Cișmigiu Gardens'],
+        requiredBeats: [turnoutBeat],
+      }),
+      scene({
+        id: 's1-blog-aftermath',
+        order: 3,
+        title: 'The post goes viral',
+        dramaticPurpose: 'The Mr. Midnight post goes viral and proves Dating After Dusk can author a new life.',
+        locations: ["Kylie's Lipscani Apartment"],
+        narrativeRole: 'payoff',
+      }),
+    ], { episodeNumber: 1 });
+
+    expect(result.scenes.find((item) => item.id === 's1-1')?.requiredBeats?.map((beat) => beat.id)).toContain(`${turnoutBeat.id}-turnout-1`);
+    expect(result.report.decisions.some((decision) =>
+      decision.contractId === `${turnoutBeat.id}-turnout-2` &&
+      decision.action === 'ledgered' &&
+      decision.fromSceneId === 's1-3'
+    )).toBe(true);
+    expect(result.scenes.find((item) => item.id === 's1-blog-aftermath')?.requiredBeats?.map((beat) => beat.id)).toContain(`${turnoutBeat.id}-turnout-3`);
+    expect(result.scenes.flatMap((item) => item.requiredBeats ?? []).some((beat) => beat.id === turnoutBeat.id)).toBe(false);
+  });
+
   it('relieves unsafe rooftop overload by moving Valcescu, blog metric, and abstract season pressure obligations', () => {
     const valcescuChoice = contract(
       'valcescu-choice',

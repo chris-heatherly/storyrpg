@@ -248,6 +248,69 @@ describe('insertMissingMomentBeats', () => {
     expect(skipped[0]).toContain('timeline or cross-scene cues');
   });
 
+  it('allows deterministic recovery for same-scene viral Mr Midnight aftermath beats', () => {
+    const beats = [
+      { id: 'b1', text: 'The laptop counter jumps while Mika calls about everyone sharing the Mr Midnight thing.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'Stela warns that the attention has teeth.' },
+    ];
+    const missing = [{
+      moment: 'the viral *Mr Midnight* post changes the aftermath by making her a name',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['viral', 'post', 'name'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-blog-aftermath', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(skipped).toEqual([]);
+    expect(beats.some((beat) => beat.text?.includes('the viral *Mr Midnight* post changes the aftermath by making her a name'))).toBe(true);
+  });
+
+  it('allows deterministic recovery for arrival beats with public-breakup backstory', () => {
+    const beats = [
+      { id: 'b1', text: 'The taxi turns into Lipscani with the city still wet from rain.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The apartment key waits in her palm.' },
+    ];
+    const missing = [{
+      moment: "Kylie Marinescu arrives in Bucharest as a charming, wounded observer with two suitcases, her grandmother's address, and the intent to rebuild after a public breakup",
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['kylie', 'marinescu', 'arrives', 'bucharest', 'charming'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-arrival-cold-open', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(skipped).toEqual([]);
+    expect(beats.some((beat) => beat.text?.includes('Kylie Marinescu arrives in Bucharest'))).toBe(true);
+  });
+
+  it('does not treat Bite Me proper nouns as unsafe timeline cues', () => {
+    const beats = [
+      { id: 'b1', text: 'The rescue leaves her hands shaking above the keyboard.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The publish button waits.' },
+    ];
+    const missing = [{
+      moment: 'Dating After Dusk turns the Dusk Club rescue into proof Kylie can author a new life',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['dating', 'dusk', 'club'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-blog-aftermath', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(skipped).toEqual([]);
+    expect(beats.some((beat) => beat.text?.includes('Dating After Dusk turns the Dusk Club rescue'))).toBe(true);
+  });
+
   it('skips terse action summaries instead of pasting planning labels into prose', () => {
     const beats = [
       { id: 'b1', text: 'Victor steadies you as the streetlights blur.', nextBeatId: 'b2' },

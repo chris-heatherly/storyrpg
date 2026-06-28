@@ -575,6 +575,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - Do not use film/camera direction terms in player-facing prose. Visual metadata may still use the required shotType and visualContinuity fields.
 - Vivid means vivid story intent, not ornate prose or generic cinematic styling.
 - For player-facing prose: use concrete, concise action and dialogue that makes the story turn legible.
+- Write live player-facing story action in present tense. Use past tense only for explicit memories, backstory, recaps, or earlier events. Do not let current action drift into "you felt / you took / was watching / didn't blink" narration.
 - For visual metadata and image-facing fields: provide specific story intent, visible action, relationship dynamics, required details, and subtext cues. Do not add art-direction language that fights the active ArtStyleProfile, negative prompt, provider settings, or style-bible anchors.
 - Visual metadata should describe what must be understood, not impose a conflicting style. Avoid generic style words like cinematic, hyperreal, vivid colors, dramatic lighting, painterly, anime, flat, gritty, glossy, symmetrical, or high contrast unless they come from the active style contract.
 
@@ -586,6 +587,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - Keep dialogue spare, natural, character-specific, pressure-aware, and subtextual. Dialogue should reveal character, sharpen pressure, change leverage, or expose relationship dynamics.
 - Vary sentence rhythm with scene pressure. Use shorter, sharper lines under danger, urgency, fear, or conflict. Use slightly longer rhythm for atmosphere, aftermath, tenderness, or dread while respecting mobile beat caps.
 - Vary sentence OPENERS. The reader is "you", so second person is correct — but do not stack subject-first "You …"/"Your …" declaratives. Never let two consecutive sentences begin with "You". Open instead with the object, a dependent clause, a sensory detail, an NPC's name or action, dialogue, or the environment as subject; let "you" fall mid-sentence. Avoid the flat "You X. You Y. You Z." cadence.
+- Avoid repeated ritual choreography. If a toast, glass-click, door-crossing, stare, hand touch, or reveal beat has already happened, do not restage it with the same line or action unless the repetition is an intentional callback with a new meaning.
 - Reveal motivation, fear, desire, attraction, guilt, suspicion, and grief through action, choice, speech, silence, bodily response, facial expression, object handling, avoidance, proximity, risk, and what the character does next.
 - Show emotion through physical response and facial expression rather than direct explanation.
 - Use environmental elements to enhance mood. The setting should pressure, contrast, reveal, or complicate the scene.
@@ -1198,6 +1200,7 @@ Return exactly one complete SceneContent JSON object with:
     // scene that needs a decision, the whole scene can collapse into "choice beat + payoff beat"
     // and skip the setup that branch scenes need for pacing, QA, and image coverage.
     this.ensureMinimumChoiceSceneBeats(content, input);
+    this.ensureMinimumSceneBeats(content, input);
 
     // Every scene needs an emotional peak. The LLM occasionally returns no
     // dominant-tier beat (the intensity_distribution diagnostic flags these as
@@ -1533,6 +1536,35 @@ Return exactly one complete SceneContent JSON object with:
     );
   }
 
+  private ensureMinimumSceneBeats(content: SceneContent, input?: SceneWriterInput): void {
+    if (!input || input.sceneBlueprint.choicePoint) return;
+    if (!Array.isArray(content.beats) || content.beats.length !== 1 || input.targetBeatCount < 3) return;
+    if (!input.protagonistInfo?.name || !input.sceneBlueprint?.name) return;
+
+    const minimumBeats = Math.min(3, Math.max(2, input.targetBeatCount));
+    const originalBeat = content.beats[0];
+    const followUpTexts = this.buildSyntheticLeadInTexts(input, minimumBeats - 1, [originalBeat.text]);
+    const rebuiltBeats: GeneratedBeat[] = [{
+      ...originalBeat,
+      id: 'beat-1',
+      nextBeatId: 'beat-2',
+      isChoicePoint: false,
+    }];
+
+    for (let i = 1; i < minimumBeats; i++) {
+      const id = `beat-${i + 1}`;
+      const nextBeatId = i === minimumBeats - 1 ? undefined : `beat-${i + 2}`;
+      rebuiltBeats.push(this.createSyntheticLeadInBeat(followUpTexts[i - 1], id, nextBeatId || '', false));
+      rebuiltBeats[rebuiltBeats.length - 1].nextBeatId = nextBeatId;
+    }
+
+    content.beats = rebuiltBeats;
+    content.startingBeatId = 'beat-1';
+    content.continuityNotes.push(
+      `Auto-expanded underspecified scene from 1 to ${minimumBeats} beats.`
+    );
+  }
+
   /**
    * Guarantee at least one `dominant`-tier beat per scene. The LLM is asked for
    * 1-2 dominant beats but sometimes returns none, leaving the scene without an
@@ -1626,7 +1658,7 @@ Return exactly one complete SceneContent JSON object with:
       isChoicePoint: false,
       shotType: isEstablishing ? 'establishing' : 'character',
       visualMoment: text,
-      primaryAction: isEstablishing ? '' : 'the scene pressure sharpens into a visible turning point',
+      primaryAction: isEstablishing ? '' : 'the character shifts around the nearest object or threshold',
       emotionalRead: isEstablishing ? '' : 'faces and posture show the moment tightening around the coming decision',
       relationshipDynamic: isEstablishing ? '' : 'the characters are drawn into a tense, decision-shaped triangle of attention',
       mustShowDetail: 'a concrete environmental or body-language clue that makes this setup beat visually distinct',
@@ -2425,10 +2457,10 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
   private deriveVisibleTurn(text: string, action: string, subject: string): string {
     const lowered = text.toLowerCase();
     if (/(lie|lying|deflect|deny|glitch|imagining|casual|normal)/.test(lowered)) {
-      return `${subject}'s composed surface slips through a small evasive movement.`;
+      return `${subject} lets one guarded reaction break through before recovering.`;
     }
     if (/(report|explain|warn|tell|says?|asks?|voice|speaks?)/.test(lowered)) {
-      return `${subject} turns the exchange by making the hidden pressure physically visible.`;
+      return `${subject} changes the room by putting the hidden pressure into words.`;
     }
     if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) {
       return `${subject} notices the decisive clue and ${subject}'s posture changes around it.`;
@@ -2437,18 +2469,21 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       return `${subject} uses the phone as evidence, shifting the room's attention to the screen.`;
     }
     if (/(charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|bag|napkin)/.test(lowered)) {
-      return `${subject} changes the beat by moving or revealing the key object.`;
+      return `${subject} moves or reveals the key object so everyone has to notice it.`;
     }
     const escapedSubject = subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return `${subject} ${action.replace(new RegExp(`^${escapedSubject}\\s+`, 'i'), '')}, visibly changing the balance of the moment.`;
+    const strippedAction = action.replace(new RegExp(`^${escapedSubject}\\s+`, 'i'), '').replace(/[,.]\s*$/g, '').trim();
+    return strippedAction
+      ? `${subject} ${strippedAction}, and the room answers with a changed silence.`
+      : `${subject} holds still long enough for the silence to change shape.`;
   }
 
   private deriveVisualSubtextCue(text: string, action: string, subject: string): string {
     const lowered = text.toLowerCase();
     const prop = text.match(/\b(phone|text|screen|photo|charm|ring|key|letter|map|knife|gun|cup|coffee|flower|pansy|shopping bag|napkin|counter|door|chair|window)\b/i)?.[0];
-    if (prop) return `${subject}'s hands and attention lock onto the ${prop}, making the subtext visible.`;
+    if (prop) return `${subject} keeps a hand near the ${prop}, using the object as cover for what cannot be said.`;
     if (/(lie|deflect|deny|casual|normal|smile)/.test(lowered)) {
-      return `${subject}'s smile, averted eyes, and busy hands betray what the words avoid.`;
+      return `${subject}'s smile holds a second too long before the mask settles again.`;
     }
     if (/(fear|panic|worry|guilt|shame|hurt)/.test(lowered)) {
       return `${subject}'s weight shifts back while ${subject}'s hands tighten, exposing the feeling under the words.`;
@@ -2456,7 +2491,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     if (/(approach|enter|leave|walk|step|back away|retreat)/.test(lowered)) {
       return `The changing distance around ${subject} shows who is gaining or losing control.`;
     }
-    return `${subject}'s hands, gaze, and distance from the other characters reveal the beat beneath the words.`;
+    return `${subject} holds position a beat too long, giving the room time to read the silence.`;
   }
 
   private strengthenStaticVisualContract(beat: GeneratedBeat, subject: string): void {
@@ -2594,7 +2629,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     if (/(observe|watch|study|notice|realize|understand)/.test(lowered)) return `${subject} shifts position to study the clue everyone else is avoiding`;
     if (/(guilt|shame|fear|hurt|worry)/.test(lowered)) return `${subject} pulls back as the feeling becomes visible in their hands and shoulders`;
     const cue = intent.visualSubtextCue || 'a visible body-language cue';
-    return `${subject} changes the room's leverage through ${cue}`;
+    return `${subject} reacts through ${cue}`;
   }
 
   private deriveCharacterObjective(text: string, subject: string): string {
@@ -2685,7 +2720,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     if (match) {
       return `${subject} ${match[0]}`;
     }
-    return `${subject} changes the room's leverage through a visible gesture, object cue, or shift in distance`;
+    return `${subject} shifts around the nearest object or threshold`;
   }
 
   private deriveEmotionalRead(text: string, speakerMood?: string): string {

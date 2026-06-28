@@ -87,6 +87,11 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // Reversible via =0.
   GATE_DRAMATIC_STRUCTURE: true,
   GATE_SCENE_TURN_CONTRACT: true,
+  // Episode-level Story Circle prose realization. Blueprint completeness is
+  // still enforced by STORY_CIRCLE_BLOCKING; this default-off flag only promotes
+  // structural episodeCircle misses in final prose from warning/shadow evidence
+  // to blocking repair findings after enough telemetry is clean.
+  GATE_EPISODE_STORY_CIRCLE_REALIZATION: false,
 
   // LLM scene-prose repair handler INSIDE the final-contract repair loop
   // (2026-06-11 failure-cycle audit: 20 runs generated every episode and then
@@ -228,6 +233,9 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // not fiction. High precision and repairable by localized scene-prose rewrite, so
   // keep it blocking by default; reversible via =0.
   GATE_PLANNING_REGISTER_PROSE: true,
+  // High-confidence reader-prose style defects: repeated toast/click motifs and
+  // live-action past-tense drift without memory/backstory markers.
+  GATE_PROSE_STYLE_CONSISTENCY: true,
   // WS1.4 (bite-me-g17): deterministic encounter skill-rebalance. perception carried 52–55% of
   // choice slots in all three g17 encounters (a single-skill meta). Reassign the excess dominant-
   // skill slots to the least-used skill ALREADY present in the encounter until no skill exceeds
@@ -359,12 +367,10 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // SceneWriter directives, notYetIntroducedNames ban-list, plan-introduction key
   // beats); CharacterIntroductionValidator is the prose-level backstop
   // (PropIntroductionValidator only sees structured ids, never prose).
-  // PROMOTED ON 2026-06-11 (group-A batch), then RETURNED TO SHADOW the same day
-  // (failure-cycle audit, repair-first policy): no repair handler, no autofix, no judge —
-  // a cold name-drop would abort an entire generated season at the final contract.
-  // Findings still surface as warnings. Re-promote once introduction-weaving joins the
-  // scene-prose repair handler.
-  GATE_CHARACTER_INTRODUCTION: false,
+  // PROMOTED ON 2026-06-27 after the scene-prose repair route gained
+  // CharacterIntroductionValidator coverage and Bite Me exposed a first-scene
+  // off-page-familiarity regression (new cast written as an already familiar group).
+  GATE_CHARACTER_INTRODUCTION: true,
   // G10: per-episode plan-conformance gates (replace the slice-vs-season-target category
   // error). Choice-type / skill BALANCE is validated at the season-plan level; per
   // generated episode we only check it realized what the plan assigned to IT.

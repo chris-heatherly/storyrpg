@@ -2919,10 +2919,16 @@ RULES:
         `demoted into a two-step finish (source-side one-click-win guard).`
       );
     }
+    for (const flat of rootWinFix.flatRouted) {
+      console.info(
+        `[EncounterArchitect] ${structure.sceneId}: root terminal ${flat.outcome} on choice ${flat.choiceId} ` +
+        `routed to finish beat ${flat.finishBeatId} (source-side flat one-click-win guard).`
+      );
+    }
     for (const skip of rootWinFix.skipped) {
       console.warn(
         `[EncounterArchitect] ${structure.sceneId}: root terminal ${skip.outcome} on choice ${skip.choiceId} ` +
-        `left in place (flat-routed draft, embedded situation would be unplayable) — will be caught downstream.`
+        `left in place (no playable deterministic repair was available) — will be caught downstream.`
       );
     }
     if (rootWinFix.skipped.length > 0) {

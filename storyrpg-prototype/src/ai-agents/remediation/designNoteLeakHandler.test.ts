@@ -115,14 +115,14 @@ describe('buildDesignNoteLeakStripHandler', () => {
     expect(repairedBeat.textVariants[0].text).toBe('A real alternate beat with grounded action.');
   });
 
-  it('is a no-op when no variant matches a feedback cue (clean run → golden parity)', () => {
+  it('is a no-op when no variant matches a feedback cue (clean run → golden parity)', async () => {
     const story = {
       episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{
         id: 'b1', text: 'Base.', textVariants: [{ text: 'A real alternate.' }],
         choices: [{ id: 'c1', text: 'Go', feedbackCue: { echoSummary: CUE } }],
       }] }] }],
     } as unknown as Story;
-    const result = handler({ story, blockingIssues: [] });
+    const result = await handler({ story, blockingIssues: [] });
     expect(result.changed).toBe(false);
   });
 });

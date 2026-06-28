@@ -52,6 +52,7 @@ import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 import { authorFacingMechanicPressureText } from '../utils/treatmentFieldContracts';
+import { isUnsafeCallbackProse } from '../constants/metaProse';
 
 /**
  * Bucket C soft-gate decision for the LLM-judged stakes score.
@@ -961,9 +962,12 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
   private cleanReaderReminderText(text: string | undefined): string | undefined {
     const normalized = text?.replace(/\s+/g, ' ').trim();
     if (!normalized || isFallbackReminderStub(normalized)) return undefined;
+    if (isUnsafeCallbackProse(normalized)) return undefined;
     if (/^this route should keep carrying the decision forward\.?$/i.test(normalized)) return undefined;
     if (/^the route choice lands immediately\.?$/i.test(normalized)) return undefined;
     if (/^the next episode should follow the selected route\.?$/i.test(normalized)) return undefined;
+    if (/^the selected (?:route|choice) changes the next scene\.?$/i.test(normalized)) return undefined;
+    if (/^later narration remembers which path the player chose\.?$/i.test(normalized)) return undefined;
     if (/^you chose\b/i.test(normalized)) return undefined;
     if (/\bpeople remember what the protagonist risked\b/i.test(normalized)) return undefined;
     if (/\bthe protagonist\b/i.test(normalized)) return undefined;

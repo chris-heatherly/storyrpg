@@ -205,7 +205,7 @@ describe('repairLostSceneGraphBranches', () => {
 
     expect(repaired).toBe(1);
     expect(choiceSets[0].choices[1].nextSceneId).toBe('s1-2');
-    expect(choiceSets[0].choices[1].repairedRequiredSetupSkip).toBe(true);
+    expect((choiceSets[0].choices[1] as any).repairedRequiredSetupSkip).toBe(true);
     expect(blueprint.scenes![0].leadsTo).toEqual(['s1-2']);
   });
 
@@ -241,7 +241,7 @@ describe('repairLostSceneGraphBranches', () => {
     expect(blueprint.scenes![3].choicePoint?.branches).toBe(false);
     expect(repairedChoices).toBe(1);
     expect(choiceSets[0].choices.map((choice) => choice.nextSceneId)).toEqual(['enc-1-1', 'enc-1-1']);
-    expect(choiceSets[0].choices[1].repairedRequiredSetupSkip).toBe(true);
+    expect((choiceSets[0].choices[1] as any).repairedRequiredSetupSkip).toBe(true);
   });
 
   it('collapses sibling targets that skip a concrete transition choice scene', () => {
@@ -282,7 +282,7 @@ describe('repairLostSceneGraphBranches', () => {
     expect(blueprint.scenes![0].choicePoint?.branches).toBe(false);
     expect(repairedChoices).toBe(1);
     expect(choiceSets[0].choices.map((choice) => choice.nextSceneId)).toEqual(['s1-4', 's1-4']);
-    expect(choiceSets[0].choices[1].repairedRequiredSetupSkip).toBe(true);
+    expect((choiceSets[0].choices[1] as any).repairedRequiredSetupSkip).toBe(true);
   });
 
   it('does not wire backward/self/missing targets (needs ≥2 distinct forward targets)', () => {
@@ -337,6 +337,6 @@ describe('repairLostSceneGraphBranches', () => {
 
     expect(repaired).toBe(1);
     expect(choiceSets[0].choices[0].nextSceneId).toBe('episode-end');
-    expect(choiceSets[0].choices[0].repairedInvalidBranchTarget).toBe(true);
+    expect((choiceSets[0].choices[0] as any).repairedInvalidBranchTarget).toBe(true);
   });
 });

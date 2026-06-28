@@ -27,6 +27,7 @@ import { buildPlayerFacingProseRepairHandler } from './playerFacingProseRepairHa
 import { buildRelationshipPacingLabelRepairHandler } from './relationshipPacingLabelRepairHandler';
 import { buildTransitionBridgeRepairHandler } from './transitionBridgeRepairHandler';
 import { buildContinuityBlogPublishRepairHandler } from './continuityBlogPublishRepairHandler';
+import { buildTenseDriftRepairHandler } from './tenseDriftRepairHandler';
 
 /** Minimal shape this loop needs from a contract report (FinalStoryContractReport-compatible). */
 export interface ContractRepairReport {
@@ -261,6 +262,10 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // This preserves the gate and the relationship turn while avoiding repeated
     // SceneCritic rewrites that leave the same label residue behind.
     buildRelationshipPacingLabelRepairHandler(),
+    // Prose-style tense drift introduced by late rewrites: when the validator
+    // names one exact beat, convert common live-action past-tense constructions
+    // back into present tense before spending another SceneCritic pass.
+    buildTenseDriftRepairHandler(),
     // Transition continuity bridge miss: when the validator names the exact
     // choice-bridge beat and planned location jump, add a short in-fiction
     // travel/arrival sentence to that bridge beat before spending LLM repair.

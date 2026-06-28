@@ -141,6 +141,17 @@ describe('Assembly.reportOrphanedChoiceSets', () => {
 });
 
 describe('Assembly timeline persistence', () => {
+  const episodeCircle = {
+    you: 'Kylie arrives in Bucharest trying to reinvent herself.',
+    need: 'Kylie needs to know what her viral rescue has made visible.',
+    go: 'The Mr. Midnight post pushes her across the threshold.',
+    search: 'Kylie tests the glamorous Dusk Club world.',
+    find: 'Kylie finds attention, access, and a dangerous pattern.',
+    take: 'The attention costs her privacy and safety.',
+    return: 'Kylie returns home carrying the public wound.',
+    change: 'Kylie can no longer treat the story as just a byline.',
+  };
+
   it('persists planned timeline metadata in assembleEpisode', () => {
     const assembly = makeFullAssembly();
     const episode = assembly.assembleEpisode(
@@ -150,6 +161,7 @@ describe('Assembly timeline persistence', () => {
       {
         startingSceneId: 's1',
         bottleneckScenes: [],
+        episodeCircle,
         scenes: [{
           id: 's1',
           name: 'Club Door',
@@ -218,6 +230,49 @@ describe('Assembly timeline persistence', () => {
     expect(episode.scenes[0].turnContract?.centralTurn).toBe('Mika hands Kylie the side-door key card.');
     expect(episode.scenes[0].relationshipPacing?.[0].targetStage).toBe('spark');
     expect(episode.scenes[0].mechanicPressure?.[0].storyPressure).toContain('access leverage');
+    expect(episode.episodeCircle).toEqual(episodeCircle);
+  });
+
+  it('persists blueprint episodeCircle in assembleStory', () => {
+    const assembly = makeFullAssembly();
+    const story = assembly.assembleStory(
+      {
+        story: { title: 'Bite Me', genre: 'romantic horror', synopsis: '', themes: [] },
+        episode: { number: 1, title: 'Dating After Dusk', synopsis: '' },
+        protagonist: { id: 'kylie' },
+      } as any,
+      {} as any,
+      { characters: [] } as any,
+      {
+        startingSceneId: 's1',
+        bottleneckScenes: [],
+        episodeCircle,
+        scenes: [{
+          id: 's1',
+          name: 'Club Door',
+          description: '',
+          location: 'Vâlcescu Club',
+          timeOfDay: 'night',
+          timeJumpFromPrevious: 'later that night',
+          leadsTo: [],
+          npcsPresent: [],
+          purpose: 'setup',
+          mood: 'tense',
+          keyBeats: [],
+        }],
+      } as any,
+      [{
+        sceneId: 's1',
+        sceneName: 'Club Door',
+        startingBeatId: 'b1',
+        beats: [{ id: 'b1', text: 'You wait by the side entrance.' }],
+        charactersInvolved: [],
+      }] as any,
+      [],
+      new Map(),
+    );
+
+    expect(story.episodes[0].episodeCircle).toEqual(episodeCircle);
   });
 });
 

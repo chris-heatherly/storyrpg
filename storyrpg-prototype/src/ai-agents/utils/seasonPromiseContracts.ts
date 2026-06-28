@@ -16,6 +16,7 @@ import {
 const KIND_PREFIX: Record<SeasonPromiseRealizationKind, string> = {
   genre_progression: 'genre-progression',
   tone_progression: 'tone-progression',
+  high_concept_pitch: 'high-concept-pitch',
   logline_engine: 'logline-engine',
   core_fantasy: 'core-fantasy',
   audience_promise: 'audience-promise',
@@ -35,6 +36,7 @@ const KIND_PREFIX: Record<SeasonPromiseRealizationKind, string> = {
 const KIND_REALIZATION: Record<SeasonPromiseRealizationKind, SeasonPromiseRealizationTarget[]> = {
   genre_progression: ['metadata', 'episode_plan', 'scene_turn', 'encounter', 'final_prose'],
   tone_progression: ['metadata', 'episode_plan', 'scene_turn', 'final_prose'],
+  high_concept_pitch: ['metadata', 'episode_plan', 'scene_turn', 'choice', 'encounter', 'episode_ending', 'final_prose'],
   logline_engine: ['episode_plan', 'scene_turn', 'choice', 'mechanic_pressure', 'final_prose'],
   core_fantasy: ['episode_plan', 'scene_turn', 'choice', 'final_prose'],
   audience_promise: ['episode_plan', 'scene_turn', 'encounter', 'episode_ending', 'final_prose'],
@@ -83,6 +85,7 @@ function targetEpisodesFor(kind: SeasonPromiseRealizationKind, text: string, tot
       return PROGRESSION_RE.test(text) ? bands : early;
     case 'audience_promise':
       return bands;
+    case 'high_concept_pitch':
     case 'core_fantasy':
     case 'premise_promise':
     case 'logline_engine':
@@ -183,6 +186,7 @@ export function buildSeasonPromiseContracts(input: {
   const level: SeasonPromiseRealizationContract['blockingLevel'] = input.treatmentSourced ? 'treatment' : 'warning';
   push(out, 'genre_progression', guidance?.genre, input.totalEpisodes, level);
   push(out, 'tone_progression', guidance?.tone, input.totalEpisodes, level);
+  push(out, 'high_concept_pitch', guidance?.highConceptPitch, input.totalEpisodes, level);
   push(out, 'logline_engine', guidance?.logline, input.totalEpisodes, level);
   push(out, 'core_fantasy', guidance?.coreFantasy, input.totalEpisodes, level);
   push(out, 'audience_promise', guidance?.audiencePromise, input.totalEpisodes, level);
@@ -203,6 +207,7 @@ export function buildSeasonPromiseContracts(input: {
     const fallbacks = architectureFallbacks(input.architecture);
     for (const kind of [
       'logline_engine',
+      'high_concept_pitch',
       'core_fantasy',
       'audience_promise',
       'premise_promise',
@@ -264,7 +269,7 @@ function scoreScene(contract: SeasonPromiseRealizationContract, scene: PlannedSc
   if (contract.contractKind === 'player_promise' && scene.hasChoice) score += 0.35;
   if (contract.contractKind === 'typical_episode_engine' && (scene.kind === 'encounter' || scene.hasChoice)) score += 0.25;
   if ((contract.contractKind === 'genre_progression' || contract.contractKind === 'tone_progression') && scene.kind === 'encounter') score += 0.2;
-  if ((contract.contractKind === 'core_fantasy' || contract.contractKind === 'premise_promise' || contract.contractKind === 'logline_engine') && scene.order <= 1) score += 0.25;
+  if ((contract.contractKind === 'high_concept_pitch' || contract.contractKind === 'core_fantasy' || contract.contractKind === 'premise_promise' || contract.contractKind === 'logline_engine') && scene.order <= 1) score += 0.25;
   if (
     (contract.contractKind === 'audience_promise'
       || contract.contractKind === 'emotional_promise'
@@ -305,6 +310,7 @@ function bestSceneFor(contract: SeasonPromiseRealizationContract, scenes: Planne
     case 'tone_progression':
       return encounter ?? sorted.find((scene) => scene.narrativeRole !== 'release') ?? sorted[0];
     case 'logline_engine':
+    case 'high_concept_pitch':
     case 'core_fantasy':
     case 'premise_promise':
       return sorted.find((scene) => scene.order === 0) ?? sorted[0];
@@ -320,7 +326,7 @@ function domainFor(contract: SeasonPromiseRealizationContract): MechanicPressure
   if (contract.contractKind === 'player_promise') return 'route';
   if (contract.contractKind === 'future_open_thread') return 'information';
   if (contract.contractKind === 'season_resolution_obligation') return 'flag';
-  if (contract.contractKind === 'logline_engine' || contract.contractKind === 'premise_promise' || contract.contractKind === 'typical_episode_engine') return 'flag';
+  if (contract.contractKind === 'high_concept_pitch' || contract.contractKind === 'logline_engine' || contract.contractKind === 'premise_promise' || contract.contractKind === 'typical_episode_engine') return 'flag';
   if (contract.contractKind === 'core_fantasy') return 'reputation';
   return 'identity';
 }
@@ -380,6 +386,7 @@ export function seasonPromiseMatchThreshold(contract: SeasonPromiseRealizationCo
     || contract.contractKind === 'inaction_pressure'
     || contract.contractKind === 'season_dramatic_question'
     || contract.contractKind === 'central_pressure'
+    || contract.contractKind === 'high_concept_pitch'
     || contract.contractKind === 'player_promise'
     || contract.contractKind === 'typical_episode_engine'
     || contract.contractKind === 'season_resolution_obligation'

@@ -19,6 +19,7 @@ import { EncounterStructure } from '../agents/EncounterArchitect';
 import type { EncounterTelemetry } from '../agents/EncounterArchitect';
 import type { SceneValidationResult } from '../validators/IncrementalValidators';
 import type { FinalStoryContractReport } from '../validators/FinalStoryContractValidator';
+import type { QualityCouncilReport } from '../quality-council/types';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
 import { appendQualityLedger } from './qualityLedger';
@@ -399,6 +400,10 @@ export interface AudioGenerationDiagnostic {
   stage: 'gate' | 'voice_cast' | 'batch_generation' | 'binding';
   status: 'completed' | 'failed' | 'skipped';
   message: string;
+  provider?: 'elevenlabs' | 'gemini' | string;
+  model?: string;
+  voiceId?: string;
+  performanceTagsEnabled?: boolean;
   beatId?: string;
   sceneId?: string;
   speaker?: string;
@@ -490,6 +495,7 @@ export interface PipelineOutputs {
   branchShadowDiffs?: Array<{ episodeId: string; diff: BranchShadowDiff }>;
   bestPracticesReport?: ComprehensiveValidationReport;
   finalStoryContractReport?: FinalStoryContractReport;
+  qualityCouncilReport?: QualityCouncilReport;
   finalStory?: Story;
   // Visual planning assets
   visualPlanning?: VisualPlanningOutputs;
@@ -546,6 +552,9 @@ export interface OutputManifest {
     validationPassed?: boolean;
     finalStoryContractPassed?: boolean;
     finalStoryContractBlockingIssues?: number;
+    qualityCouncilEnabled?: boolean;
+    qualityCouncilFindings?: number;
+    qualityCouncilFusionUsed?: boolean;
     // Visual planning stats
     hasColorScript?: boolean;
     characterReferencesCount?: number;
@@ -602,132 +611,11 @@ export async function ensureDirectory(path: string): Promise<void> {
   }
 }
 
-function getFileExtensionForMimeType(mimeType: string): string {
-  if (mimeType.includes('png')) return 'png';
-  if (mimeType.includes('webp')) return 'webp';
-  if (mimeType.includes('gif')) return 'gif';
-  return 'jpg';
-}
-
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
-  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(dataUrl);
-  if (!match) return null;
-  return {
-    mimeType: match[1],
-    base64: match[2],
-  };
-}
-
-async function writeBinaryFile(path: string, base64Data: string): Promise<void> {
-  if (isWebRuntime()) {
-    const response = await fetch(PROXY_CONFIG.writeFile, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        filePath: path,
-        content: base64Data,
-        isBase64: true,
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to write binary file: ${response.status}`);
-    }
-    return;
-  }
-
-  await ExpoFileSystem.writeAsStringAsync(path, base64Data, {
-    encoding: ExpoFileSystem.EncodingType.Base64,
-  });
-}
-
-async function persistInlineStoryMedia(storyPath: string, story: Story): Promise<Story> {
-  const storyDir = storyPath.replace(/08-final-story\.json$/, '');
-  const mediaDir = `${storyDir}embedded-media/`;
-  let mediaIndex = 0;
-
-  const persistImage = async (value: string | undefined, label: string): Promise<string | undefined> => {
-    if (!value || !value.startsWith('data:image')) return value;
-    const parsed = parseDataUrl(value);
-    if (!parsed) return '';
-
-    const ext = getFileExtensionForMimeType(parsed.mimeType);
-    const fileName = `${label}-${mediaIndex++}.${ext}`;
-    const filePath = `${mediaDir}${fileName}`;
-    await writeBinaryFile(filePath, parsed.base64);
-    return filePath;
-  };
-
-  const cleanedStory = JSON.parse(JSON.stringify(story)) as Story;
-  cleanedStory.coverImage = (await persistImage(cleanedStory.coverImage, 'story-cover')) || '';
-
-  for (const episode of cleanedStory.episodes || []) {
-    episode.coverImage = (await persistImage(episode.coverImage, `episode-${episode.id}-cover`)) || '';
-    for (const scene of episode.scenes || []) {
-      const episodeSceneKey = `episode-${episode.number ?? episode.id}-${scene.id}`;
-      scene.backgroundImage = await persistImage(scene.backgroundImage, `scene-${episodeSceneKey}-bg`);
-      for (const beat of scene.beats || []) {
-        beat.image = await persistImage(beat.image, `beat-${episodeSceneKey}-${beat.id}`);
-      }
-    }
-  }
-
-  return cleanedStory;
-}
-
 /**
  * Write a JSON file
  */
 async function writeJsonFile(path: string, data: unknown): Promise<number> {
-  // If this is the final story, we want to strip out the massive imageData base64 strings
-  // but keep the imageUrls for the UI to load from the proxy server.
-  let cleanData = data;
-  if (path.endsWith('08-final-story.json') && typeof data === 'object' && data !== null) {
-    try {
-      const story = await persistInlineStoryMedia(path, data as Story);
-      
-      // Strip from episodes -> scenes -> beats -> images
-      if (story.episodes) {
-        for (const ep of story.episodes) {
-          if (ep.coverImage) {
-            // @ts-ignore - GeneratedImage structure
-            if (typeof ep.coverImage === 'object') delete (ep.coverImage as any).imageData;
-          }
-          if (ep.scenes) {
-            for (const scene of ep.scenes) {
-              if (scene.backgroundImage) {
-                // @ts-ignore
-                if (typeof scene.backgroundImage === 'object') delete (scene.backgroundImage as any).imageData;
-              }
-              if (scene.beats) {
-                for (const beat of scene.beats) {
-                  if (beat.image) {
-                    // @ts-ignore
-                    if (typeof beat.image === 'object') delete (beat.image as any).imageData;
-                  }
-                  if (beat.encounterSequence && Array.isArray(beat.encounterSequence)) {
-                    for (const img of beat.encounterSequence) {
-                      if (typeof img === 'object') delete (img as any).imageData;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      // Strip from cover image
-      if (story.coverImage && typeof story.coverImage === 'object') {
-        delete (story.coverImage as any).imageData;
-      }
-      
-      cleanData = story;
-    } catch (e) {
-      console.warn('[OutputWriter] Failed to clean final story data:', e);
-    }
-  }
+  const cleanData = data;
 
   const content = JSON.stringify(cleanData, null, 2);
 
@@ -824,9 +712,6 @@ function withGeneratedOutputScope(story: Story, brief: FullCreativeBrief): Story
  * it. The manifest records the sha256 of story.json so the catalog
  * can detect partial writes and the migration tool can verify
  * integrity.
- *
- * We also keep a legacy `08-final-story.json` mirror on disk until
- * every consumer has migrated to read `story.json`.
  */
 export async function writeFinalStoryPackage(
   outputDir: string,
@@ -835,7 +720,6 @@ export async function writeFinalStoryPackage(
 ): Promise<{ storyJsonPath: string; manifestPath: string; storySize: number }> {
   const storyJsonPath = outputDir + 'story.json';
   const manifestPath = outputDir + 'manifest.json';
-  const legacyPath = outputDir + '08-final-story.json';
   const storyForPackage = withPersistedStoryVisualMetadata(story, options?.generator);
   const generator = storyForPackage.generatedOutputScope
     ? { ...(options?.generator ?? {}), generatedOutputScope: storyForPackage.generatedOutputScope }
@@ -856,24 +740,17 @@ export async function writeFinalStoryPackage(
     const result = atomicWriteNodeSync(storyJsonPath, storyJson);
     sha256 = result.sha256;
     bytes = result.bytes;
-    atomicWriteNodeSync(legacyPath, JSON.stringify(storyForPackage, null, 2));
   } else if (isWebRuntime()) {
     await fetch(PROXY_CONFIG.writeFile, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filePath: storyJsonPath, content: storyJson }),
     });
-    await fetch(PROXY_CONFIG.writeFile, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath: legacyPath, content: JSON.stringify(storyForPackage, null, 2) }),
-    });
     // For web we cannot compute sha256 cheaply here; manifest sha will be empty
     // but the catalog tolerates missing manifest and falls back to the plain
     // file read.
   } else {
     await ExpoFileSystem.writeAsStringAsync(storyJsonPath, storyJson, { encoding: 'utf8' });
-    await ExpoFileSystem.writeAsStringAsync(legacyPath, JSON.stringify(storyForPackage, null, 2), { encoding: 'utf8' });
   }
 
   const manifest = {
@@ -1011,7 +888,15 @@ function findChoiceInStory(story: Story, choiceId: string): any | undefined {
 }
 
 export function deriveRunQualityScore(
-  outputs: Pick<PipelineOutputs, 'brief' | 'finalStory' | 'qaReport' | 'bestPracticesReport' | 'finalStoryContractReport' | 'incrementalValidationResults'>,
+  outputs: {
+    brief?: Record<string, any>;
+    finalStory?: Story | null;
+    qaReport?: QAReport | null;
+    bestPracticesReport?: any;
+    finalStoryContractReport?: FinalStoryContractReport | null;
+    qualityCouncilReport?: QualityCouncilReport | null;
+    incrementalValidationResults?: any;
+  },
   options: StoryCircleQualityScoreOptions = {},
 ): {
   score: number;
@@ -1076,8 +961,8 @@ export async function savePartialStory(
 
 /**
  * Persist the exact final-contract failure report plus the last assembled/repaired
- * candidate. These are diagnostic artifacts only; they never write story.json,
- * manifest.json, or 08-final-story.json, so failed runs stay out of the catalog.
+ * candidate. These are diagnostic artifacts only; they never write story.json
+ * or manifest.json, so failed runs stay out of the catalog.
  */
 export async function saveFinalStoryContractFailure(
   outputDir: string,
@@ -1693,19 +1578,42 @@ export async function savePipelineOutputs(
     files.push({ name: 'Final Story Contract', path: contractPath, type: 'final-story-contract', size: contractSize });
   }
 
+  if (outputs.qualityCouncilReport) {
+    const councilPath = outputDir + '07d-quality-council-report.json';
+    const councilSize = await writeJsonFile(councilPath, outputs.qualityCouncilReport);
+    files.push({ name: 'Quality Council Report', path: councilPath, type: 'quality-council', size: councilSize });
+
+    const choiceReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.checkpoint === 'choice');
+    if (choiceReports.length > 0) {
+      const choicePath = outputDir + '07e-quality-council-choice-reports.json';
+      const choiceSize = await writeJsonFile(choicePath, choiceReports);
+      files.push({ name: 'Quality Council Choice Reports', path: choicePath, type: 'quality-council-choice', size: choiceSize });
+    }
+
+    const routeReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.checkpoint === 'route-playtest');
+    if (routeReports.length > 0) {
+      const routePath = outputDir + '07f-quality-council-route-playtest.json';
+      const routeSize = await writeJsonFile(routePath, routeReports);
+      files.push({ name: 'Quality Council Route Playtest', path: routePath, type: 'quality-council-route-playtest', size: routeSize });
+    }
+
+    const fusionReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.fusionUsed);
+    if (fusionReports.length > 0) {
+      const fusionPath = outputDir + '07g-quality-council-fusion-audit.json';
+      const fusionSize = await writeJsonFile(fusionPath, fusionReports);
+      files.push({ name: 'Quality Council Fusion Audit', path: fusionPath, type: 'quality-council-fusion', size: fusionSize });
+    }
+  }
+
   // 9. Save Final Story — atomic write + manifest.json + v3 story.json
-  // The legacy 08-final-story.json stays on disk (produced by
-  // writeFinalStoryPackage) until every reader has migrated.
   if (outputs.finalStory) {
     outputs.finalStory = withGeneratedOutputScope(outputs.finalStory, outputs.brief);
     const { storyJsonPath, manifestPath: mPath, storySize } =
       await writeFinalStoryPackage(outputDir, outputs.finalStory, {
         generator: outputs.generator || { pipeline: 'FullStoryPipeline' },
       });
-    const legacyStoryPath = outputDir + '08-final-story.json';
     files.push({ name: 'Final Story (v3 package)', path: storyJsonPath, type: 'story', size: storySize });
     files.push({ name: 'Story Manifest', path: mPath, type: 'manifest', size: 0 });
-    files.push({ name: 'Final Story (legacy)', path: legacyStoryPath, type: 'story', size: storySize });
     if (outputs.finalStoryContractReport?.passed === true) {
       await supersedeFailureArtifactsOnSuccessfulPackage(outputDir);
     }
@@ -2255,6 +2163,12 @@ export async function savePipelineOutputs(
       validationPassed: outputs.bestPracticesReport?.overallPassed,
       finalStoryContractPassed: outputs.finalStoryContractReport?.passed,
       finalStoryContractBlockingIssues: outputs.finalStoryContractReport?.blockingIssues.length,
+      ...(outputs.qualityCouncilReport ? {
+        qualityCouncilEnabled: true,
+        qualityCouncilFindings: outputs.qualityCouncilReport.summary.highConfidenceFindings.length
+          + outputs.qualityCouncilReport.summary.advisoryFindings.length,
+        qualityCouncilFusionUsed: outputs.qualityCouncilReport.summary.fusionUsed,
+      } : {}),
       // Visual planning stats
       hasColorScript: !!outputs.visualPlanning?.colorScript,
       characterReferencesCount: outputs.visualPlanning?.characterReferences?.length || 0,
@@ -2434,12 +2348,16 @@ export async function renameStory(storyId: string, oldOutputDir: string, newTitl
     manifest.storyTitle = newTitle;
     await ExpoFileSystem.writeAsStringAsync(manifestPath, JSON.stringify(manifest, null, 2));
 
-    // 2. Load final story to update it
-    const storyPath = oldOutputDir + '08-final-story.json';
+    // 2. Load final story package to update it
+    const storyPath = oldOutputDir + 'story.json';
     const storyContent = await ExpoFileSystem.readAsStringAsync(storyPath);
-    const story = JSON.parse(storyContent) as Story;
-    story.title = newTitle;
-    await ExpoFileSystem.writeAsStringAsync(storyPath, JSON.stringify(story, null, 2));
+    const storyPackage = JSON.parse(storyContent) as { story?: Story; title?: string };
+    if (storyPackage.story) {
+      storyPackage.story.title = newTitle;
+    } else {
+      storyPackage.title = newTitle;
+    }
+    await ExpoFileSystem.writeAsStringAsync(storyPath, JSON.stringify(storyPackage, null, 2));
 
     // 3. Rename directory
     const baseDir = getOutputBaseDir();

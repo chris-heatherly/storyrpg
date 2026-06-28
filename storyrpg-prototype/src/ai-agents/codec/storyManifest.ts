@@ -27,8 +27,19 @@ export interface StoryManifest {
 }
 
 function requireNode<T>(name: string): T {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(name) as T;
+  const getBuiltinModule = (typeof process !== 'undefined'
+    ? (process as unknown as { getBuiltinModule?: (mod: string) => unknown }).getBuiltinModule
+    : undefined);
+  if (typeof getBuiltinModule === 'function') {
+    const builtin = getBuiltinModule(name);
+    if (builtin) return builtin as T;
+  }
+
+  const req = (Function('return typeof require !== "undefined" ? require : null'))() as
+    | ((mod: string) => unknown)
+    | null;
+  if (!req) throw new Error(`storyManifest: Node module not available: ${name}`);
+  return req(name) as T;
 }
 
 function nodeModules() {

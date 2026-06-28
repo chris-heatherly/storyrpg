@@ -274,6 +274,7 @@ export class Assembly {
       coverImage: episodeCover,
       scenes,
       startingSceneId: blueprint.startingSceneId,
+      episodeCircle: blueprint.episodeCircle,
     };
 
     const storyCover = episodeCover;
@@ -593,6 +594,7 @@ export class Assembly {
       synopsis: brief.episode.synopsis,
       scenes,
       startingSceneId: blueprint.startingSceneId,
+      episodeCircle: blueprint.episodeCircle,
       unlockConditions: seasonEpisode?.unlockConditions,
       coverImage: episodeCover
     };

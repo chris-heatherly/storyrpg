@@ -7,6 +7,13 @@
 
 import type { Story } from '../../types';
 import { mediaRefAsString } from '../../assets/assetRef';
+import { encodeStory, STORY_SCHEMA_VERSION } from '../codec/storyCodec';
+import {
+  buildManifest,
+  readManifest,
+  sha256OfFileSync,
+  writeManifest,
+} from '../codec/storyManifest';
 
 let nodeFs: any;
 let nodePath: any;
@@ -303,11 +310,37 @@ export async function remediateImageIssues(
 }
 
 /**
- * Re-save the final story JSON after remediation.
+ * Re-save the final story package after remediation.
  */
 export function resaveFinalStory(story: Story, outputDir: string): void {
   if (!nodeFs || !nodePath) return;
-  const storyPath = nodePath.join(outputDir, '08-final-story.json');
-  nodeFs.writeFileSync(storyPath, JSON.stringify(story, null, 2), 'utf-8');
-  console.log(`[QARemediation] Re-saved final story to ${storyPath}`);
+  const storyPath = nodePath.join(outputDir, 'story.json');
+  const encoded = encodeStory(story, {
+    targetVersion: STORY_SCHEMA_VERSION,
+    generator: { pipeline: 'BrowserQAPhase' },
+  });
+  nodeFs.writeFileSync(storyPath, JSON.stringify(encoded, null, 2), 'utf-8');
+  const { sha256, bytes } = sha256OfFileSync(storyPath);
+  const existing = readManifest(outputDir);
+  const manifest = existing
+    ? {
+        ...existing,
+        storySchemaVersion: STORY_SCHEMA_VERSION,
+        primaryStoryFile: 'story.json',
+        updatedAt: new Date().toISOString(),
+        files: {
+          ...existing.files,
+          'story.json': { sha256, bytes },
+        },
+      }
+    : buildManifest({
+        storyId: story.id,
+        storySchemaVersion: STORY_SCHEMA_VERSION,
+        primaryStoryFile: 'story.json',
+        primaryStoryHash: sha256,
+        primaryStoryBytes: bytes,
+        generator: { pipeline: 'BrowserQAPhase' },
+      });
+  writeManifest(outputDir, manifest);
+  console.log(`[QARemediation] Re-saved final story package to ${storyPath}`);
 }

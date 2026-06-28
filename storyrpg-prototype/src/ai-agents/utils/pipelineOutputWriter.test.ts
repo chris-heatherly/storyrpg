@@ -57,6 +57,54 @@ describe('deriveRunQualityScore', () => {
       ]));
   });
 
+  it('caps below 70 when every enabled Quality Council checkpoint errors before producing findings', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory(),
+      finalStoryContractReport: passingFinalStoryContract(),
+      qualityCouncilReport: {
+        enabled: true,
+        mode: 'repair-routing',
+        checkpoints: ['plan', 'choice', 'route-playtest', 'final'].map((checkpoint) => ({
+          checkpoint,
+          status: 'error',
+          summary: 'OpenRouter request failed.',
+          findings: [],
+          error: '401 Missing Authentication header',
+          callsUsed: 1,
+        })),
+        summary: {
+          recommendedRepairRoutes: [],
+          highConfidenceFindings: [],
+          advisoryFindings: [],
+          fusionUsed: false,
+          callsUsed: 4,
+        },
+      } as any,
+    });
+
+    expect(result.score).toBeLessThanOrEqual(69);
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('quality_council_all_checkpoints_failed');
+  });
+
+  it('caps below 50 when route continuity blockers remain in the final contract', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory(),
+      finalStoryContractReport: {
+        ...passingFinalStoryContract(),
+        passed: false,
+        blockingIssues: [{
+          type: 'route_chronology_violation',
+          severity: 'error',
+          message: 'Reader route stages walkHome before rooftopMeet.',
+          validator: 'RouteContinuityValidator',
+        }],
+      } as any,
+    });
+
+    expect(result.score).toBeLessThanOrEqual(49);
+    expect(result.basis.caps.map((cap) => cap.id)).toContain('route_continuity_hard_fail');
+  });
+
   it('loads category and concept weight overrides from the tweakable markdown file', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-quality-weights-'));
     tempDirs.push(tempDir);
@@ -134,6 +182,143 @@ describe('deriveRunQualityScore', () => {
     expect(result.score).toBeLessThan(70);
     expect(result.basis.storyCircle.ordered).toBe(false);
     expect(result.basis.caps.map((cap) => cap.id)).toContain('story_circle_beats_out_of_order');
+  });
+
+  it('does not prove a generated Story Circle contract from unrelated later-scene prose', () => {
+    const story = makeStory();
+    const episode = story.episodes[0] as any;
+    episode.scenes = [
+      {
+        id: 'scene-search-carrier',
+        name: 'Search Carrier',
+        startingBeatId: 'beat-search-carrier',
+        turnType: 'preparation',
+        storyCircleBeatContracts: [{
+          id: 'search-future-contract',
+          beat: 'search',
+          sourceText: 'Mara searches the future castle for the forbidden ledger.',
+          targetEpisodeNumber: 1,
+          targetSceneIds: ['scene-search-carrier'],
+          blockingLevel: 'structural',
+        }],
+        beats: [{ id: 'beat-search-carrier', text: 'Mara pockets a key and waits at the old threshold.', choices: [] }],
+      },
+      {
+        id: 'scene-go',
+        name: 'Go',
+        startingBeatId: 'beat-go',
+        turnType: 'threshold_crossing',
+        storyCircleBeatContracts: [{
+          id: 'go-contract',
+          beat: 'go',
+          sourceText: STORY_CIRCLE_FIXTURE.go,
+          targetEpisodeNumber: 1,
+          targetSceneIds: ['scene-go'],
+          blockingLevel: 'structural',
+        }],
+        beats: [{
+          id: 'beat-go',
+          text: `${STORY_CIRCLE_FIXTURE.go} Mara searches the future castle for the forbidden ledger.`,
+          choices: [],
+        }],
+      },
+    ];
+
+    const result = deriveRunQualityScore({
+      finalStory: story,
+      brief: {
+        seasonPlan: {
+          storyCircle: {
+            search: 'Mara searches the future castle for the forbidden ledger.',
+          },
+        },
+      },
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.basis.storyCircle.beats.search.status).toBe('metadata-only');
+    expect(result.basis.storyCircle.ordered).toBe(true);
+    expect(result.basis.caps.map((cap) => cap.id)).not.toContain('story_circle_beats_out_of_order');
+  });
+
+  it('does not prove long Story Circle scaffold expectations from a small token overlap', () => {
+    const story = makeStory();
+    const episode = story.episodes[0] as any;
+    episode.scenes = [{
+      id: 's1-arrival-cold-open',
+      name: 'Kylie arrives in Bucharest',
+      startingBeatId: 'beat-arrival',
+      turnType: 'setup',
+      storyCircleBeatContracts: [{
+        id: 'future-search',
+        beat: 'search',
+        sourceText: 'Test adaptation under pressure through failed plans, new rules, allies, tools, and identity-revealing choices: The slow-burn mountain weekend in Bucharest and Victor first explicit demand to discuss the blog.',
+        targetEpisodeNumber: 1,
+        targetSceneIds: ['s1-arrival-cold-open'],
+        blockingLevel: 'structural',
+      }],
+      beats: [{
+        id: 'beat-arrival',
+        text: 'Kylie arrives in Bucharest with two suitcases and her grandmother address.',
+        choices: [],
+      }],
+    }];
+
+    const result = deriveRunQualityScore({
+      finalStory: story,
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.basis.storyCircle.beats.search.status).toBe('metadata-only');
+    expect(result.basis.storyCircle.beats.search.evidence).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('final prose matches')]),
+    );
+  });
+
+  it('scopes partial-season Story Circle scoring to generated episodes instead of future season beats', () => {
+    const story = makeStoryCircleStory();
+    story.generatedOutputScope = {
+      sourceEpisodeCount: 8,
+      requestedEpisodeCount: 1,
+      generatedEpisodeRange: { startEpisode: 1, endEpisode: 1 },
+      isPartialSeason: true,
+      treatmentCompleteness: 'partial-slice',
+    };
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.storyCircleBeatContracts = [
+      ...(scene.storyCircleBeatContracts ?? []),
+      {
+        id: 'future-search',
+        beat: 'search',
+        sourceText: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
+        targetEpisodeNumber: 4,
+        targetSceneIds: [scene.id],
+        blockingLevel: 'treatment',
+      },
+    ];
+
+    const result = deriveRunQualityScore({
+      finalStory: story,
+      brief: {
+        seasonPlan: {
+          storyCircle: {
+            search: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
+            change: 'On the Hunter Moon, Kylie chooses the Mountain Wife route.',
+          },
+          storyCircleBeatContracts: [{
+            beat: 'search',
+            sourceText: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
+            targetEpisodeNumber: 4,
+          }],
+        },
+      },
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.score).toBeGreaterThan(90);
+    expect(JSON.stringify(result.basis.storyCircle)).not.toMatch(/Casa Lupului|slow-burn mountain|Hunter Moon|Mountain Wife/);
+    expect(result.basis.storyCircle.beats.search.status).toBe('realized');
+    expect(result.basis.caps.map((cap) => cap.id)).not.toContain('episode_circle_metadata_only');
   });
 
   it('caps leakage below 70 and repeated leakage below 50', () => {
@@ -525,7 +710,7 @@ describe('pipelineOutputWriter', () => {
 
     await expect(readFile(result.storyJsonPath, 'utf8')).resolves.toContain('story-writer-test');
     await expect(readFile(result.manifestPath, 'utf8')).resolves.toContain('story.json');
-    await expect(readFile(`${outputDir}08-final-story.json`, 'utf8')).resolves.toContain('Story Writer Test');
+    await expect(readFile(`${outputDir}08-final-story.json`, 'utf8')).rejects.toThrow();
     expect(requestedModules).toEqual(expect.arrayContaining(['fs', 'path', 'crypto']));
   });
 
@@ -546,10 +731,6 @@ describe('pipelineOutputWriter', () => {
     const pkg = JSON.parse(await readFile(result.storyJsonPath, 'utf8'));
     expect(pkg.story.artStyleProfile).toMatchObject({ rawStyle: 'bright comic art' });
     expect(pkg.story.styleAnchors.character.imagePath).toBe('generated-stories/story/style-bible/character.png');
-
-    const legacy = JSON.parse(await readFile(`${outputDir}08-final-story.json`, 'utf8'));
-    expect(legacy.artStyleProfile).toMatchObject({ rawStyle: 'bright comic art' });
-    expect(legacy.styleAnchors.character.imagePath).toBe('generated-stories/story/style-bible/character.png');
   });
 
   it('creates recovered prompt artifacts for bound story images that lack exact prompt files', async () => {

@@ -9,8 +9,10 @@ import {
   STORY_CIRCLE_BEATS,
   StoryCircleBeat,
   StoryCircleRoleAssignment,
+  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { SeasonPlan } from '../../types/seasonPlan';
+import { legacyRoleToStoryCircleBeats } from '../utils/storyCircleDistribution';
 import {
   BaseValidator,
   ValidationIssue,
@@ -33,16 +35,41 @@ export interface StoryCircleAnchorConformanceInput {
   episodes: StoryCircleAnchorEpisode[];
 }
 
+function legacyStructuralRoleToStoryCircleRole(
+  structuralRole: unknown,
+): StoryCircleRoleAssignment[] {
+  const roles = Array.isArray(structuralRole)
+    ? structuralRole
+    : typeof structuralRole === 'string'
+      ? [structuralRole]
+      : [];
+  const mapped: StoryCircleRoleAssignment[] = [];
+  for (const role of roles) {
+    if (typeof role !== 'string') continue;
+    for (const beat of legacyRoleToStoryCircleBeats(role as StructuralRole)) {
+      if (!mapped.some((existing) => existing.beat === beat)) {
+        mapped.push({ beat, roleKind: 'primary', source: 'migration' });
+      }
+    }
+  }
+  return mapped;
+}
+
 export function seasonPlanToStoryCircleAnchorConformanceInput(
   plan: SeasonPlan,
   storyCircleBeatEpisodeAnchors: Partial<Record<StoryCircleBeat, number>> | undefined,
 ): StoryCircleAnchorConformanceInput {
   return {
     storyCircleBeatEpisodeAnchors,
-    episodes: plan.episodes.map((ep) => ({
-      episodeNumber: ep.episodeNumber,
-      storyCircleRole: ep.storyCircleRole,
-    })),
+    episodes: plan.episodes.map((ep) => {
+      const storyCircleRole = ep.storyCircleRole?.length
+        ? ep.storyCircleRole
+        : legacyStructuralRoleToStoryCircleRole((ep as { structuralRole?: unknown }).structuralRole);
+      return {
+        episodeNumber: ep.episodeNumber,
+        storyCircleRole,
+      };
+    }),
   };
 }
 

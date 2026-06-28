@@ -438,6 +438,34 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
     expect(result.choices[0].feedbackCue?.checkClass).toBe('dramatic');
   });
 
+  it('drops route-scene reminder stubs instead of mirroring them into feedback cues', () => {
+    const choiceSet = makeChoiceSet({
+      choices: [
+        {
+          id: 'c1',
+          text: 'Take the side entrance',
+          choiceType: 'strategic',
+          consequences: [],
+          reminderPlan: {
+            immediate: 'The selected route changes the next scene.',
+            shortTerm: 'Later narration remembers which path the player chose.',
+          },
+          feedbackCue: {
+            echoSummary: 'The selected route changes the next scene.',
+            progressSummary: 'Later narration remembers which path the player chose.',
+          },
+        },
+      ],
+    });
+
+    const result = (author as any).normalizeChoiceSet(choiceSet, input);
+
+    expect(result.choices[0].reminderPlan).toBeUndefined();
+    expect(result.choices[0].feedbackCue?.echoSummary).toBeUndefined();
+    expect(result.choices[0].feedbackCue?.progressSummary).toBeUndefined();
+    expect(result.choices[0].feedbackCue?.checkClass).toBe('dramatic');
+  });
+
   it('preserves authored story-specific reminder prose for reader feedback', () => {
     const choiceSet = makeChoiceSet({
       choices: [

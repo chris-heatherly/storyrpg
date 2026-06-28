@@ -12,6 +12,10 @@ export interface NarrativeMechanicPressureInput {
   story: Story;
   scenePlan?: SeasonScenePlan;
   treatmentSourced?: boolean;
+  requestedEpisodeNumbers?: number[];
+  generatedEpisodeNumbers?: number[];
+  generatedThroughEpisode?: number;
+  partialGeneratedSlice?: boolean;
 }
 
 interface SceneRef {
@@ -327,6 +331,21 @@ function hasContractForConsequence(consequence: Consequence, contracts: Mechanic
   return contracts.some((contract) => contract.domain === domain && (keyForContract(contract) === key || keyForContract(contract).endsWith(':*')));
 }
 
+function activeGeneratedEpisodeNumbers(input: NarrativeMechanicPressureInput): number[] {
+  const explicit = input.generatedEpisodeNumbers?.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)) ?? [];
+  if (explicit.length > 0) return [...new Set(explicit)].sort((a, b) => a - b);
+  const requested = input.requestedEpisodeNumbers?.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)) ?? [];
+  if (requested.length > 0) return [...new Set(requested)].sort((a, b) => a - b);
+  return [...new Set((input.story.episodes ?? []).map((episode) => episode.number).filter((value): value is number => typeof value === 'number'))].sort((a, b) => a - b);
+}
+
+function isTerminalGeneratedEpisode(input: NarrativeMechanicPressureInput, episodeNumber: number): boolean {
+  if (!input.partialGeneratedSlice) return false;
+  const generated = activeGeneratedEpisodeNumbers(input);
+  const generatedThrough = input.generatedThroughEpisode ?? generated.at(-1);
+  return typeof generatedThrough === 'number' && episodeNumber >= generatedThrough;
+}
+
 export class NarrativeMechanicPressureValidator extends BaseValidator {
   constructor() {
     super('NarrativeMechanicPressureValidator');
@@ -429,11 +448,16 @@ export class NarrativeMechanicPressureValidator extends BaseValidator {
           && !spentContracts.has(key)
           && !RESIDUE_RE.test(text)
         ) {
+          const terminalPartialSlice = isTerminalGeneratedEpisode(input, ref.episodeNumber);
           issues.push({
-            severity: 'error',
+            severity: terminalPartialSlice ? 'warning' : 'error',
             location: `${loc}:${contract.id}`,
-            message: `Treatment-authored ${contract.domain} pressure "${contract.storyPressure}" is planted but has no visible payoff, callback, gate, or residue in the final story slice.`,
-            suggestion: 'Add a later callback/variant/choice/route payoff, or show residue strongly enough that the mechanic is not dead state.',
+            message: terminalPartialSlice
+              ? `Treatment-authored ${contract.domain} pressure "${contract.storyPressure}" is planted in the terminal generated episode of a partial slice; later payoff/callback/gate validation is deferred until the target episode exists.`
+              : `Treatment-authored ${contract.domain} pressure "${contract.storyPressure}" is planted but has no visible payoff, callback, gate, or residue in the final story slice.`,
+            suggestion: terminalPartialSlice
+              ? 'Keep this pressure in the callback/residue ledger for future generated episodes; do not require a same-slice payoff during partial generation.'
+              : 'Add a later callback/variant/choice/route payoff, or show residue strongly enough that the mechanic is not dead state.',
           });
         }
       }

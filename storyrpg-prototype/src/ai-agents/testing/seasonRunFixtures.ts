@@ -960,6 +960,29 @@ function ep2ExpressionChoiceSet(): Record<string, unknown> {
   };
 }
 
+function ensureThreeChoiceSurface(base: Record<string, unknown>): void {
+  const choices = base.choices as Array<Record<string, unknown>> | undefined;
+  if (!choices || choices.length >= 3) return;
+  choices.push({
+    id: `choice-${choices.length + 1}`,
+    text: 'Name the cost before you move',
+    choiceType: base.choiceType ?? 'expression',
+    consequences: [],
+    stakes: {
+      want: 'A clean choice made with open eyes',
+      cost: 'The moment narrows while you measure it',
+      identity: 'The archivist who names a price before paying it',
+    },
+    tintFlag: 'tint:measured',
+    reactionText: 'You let the silence hold long enough to show what the choice costs.',
+    outcomeTexts: {
+      success: 'The named cost steadies you, and the next step lands with intent.',
+      partial: 'Naming the cost clarifies the choice without making it easier.',
+      failure: 'The cost grows teeth once spoken, and the room hears it too.',
+    },
+  });
+}
+
 /**
  * Choice Author prompts identify the scene by NAME (`- **Scene**: ...`) and
  * dictate the beatId/choiceType in the required JSON structure — echo all
@@ -971,16 +994,32 @@ function seasonChoiceSetFixtureFor(request: LlmTransportRequest): string {
   const requestedBeatId = text.match(/"beatId":\s*"([^"]+)"/)?.[1];
 
   let base: Record<string, unknown>;
-  if (text.includes('**Scene**: The Salt Cellar')) base = ep2RelationshipChoiceSet();
-  else if (text.includes('**Scene**: The Lawyer')) base = ep2ExpressionChoiceSet();
-  else if (text.includes('**Scene**: The Steward')) base = ep1ExpressionChoiceSet();
+  if (text.includes('scene-4') || text.includes('The Salt Cellar')) base = ep2RelationshipChoiceSet();
+  else if (text.includes('scene-5') || text.includes('The Lawyer')) base = ep2ExpressionChoiceSet();
+  else if (text.includes('scene-2') || text.includes('The Steward')) base = ep1ExpressionChoiceSet();
   else base = ep1RelationshipChoiceSet();
 
+  ensureThreeChoiceSurface(base);
   if (requestedBeatId) base.beatId = requestedBeatId;
   if (requestedType) {
     base.choiceType = requestedType;
     for (const choice of base.choices as Array<Record<string, unknown>>) {
       choice.choiceType = requestedType;
+      if (requestedType === 'expression') {
+        delete choice.statCheck;
+        delete choice.residueHints;
+        if (!choice.setsFlags) choice.setsFlags = [`expressed_${choice.id}`];
+      } else {
+        if (!choice.statCheck) {
+          choice.statCheck = { difficulty: 'moderate', skillWeights: { empathy: 1, perception: 1 } };
+        }
+        if (!choice.residueHints) {
+          choice.residueHints = [{
+            kind: 'relationship_behavior',
+            description: 'Let the next scene show how this choice changes the room between Mara and Edric.',
+          }];
+        }
+      }
       if (requestedType !== 'dilemma') delete choice.moralContract;
     }
   }

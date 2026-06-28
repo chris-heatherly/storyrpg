@@ -14,7 +14,6 @@ const {
 
 function createStoryCatalog(storiesDir, port) {
   const storyJsonCache = new Map();
-  const LEGACY_STORY_FILENAME = '08-final-story.json';
   const MODERN_STORY_FILENAME = 'story.json';
   const CATALOG_OBJECT = 'catalog.json';
 
@@ -36,11 +35,8 @@ function createStoryCatalog(storiesDir, port) {
       const primary = path.join(dirAbs, manifest.primaryStoryFile);
       if (fs.existsSync(primary)) return { filename: manifest.primaryStoryFile, abs: primary, manifest };
     }
-    // Fallback order: modern → legacy. Anything else = no story here.
-    for (const name of [MODERN_STORY_FILENAME, LEGACY_STORY_FILENAME]) {
-      const abs = path.join(dirAbs, name);
-      if (fs.existsSync(abs)) return { filename: name, abs, manifest: null };
-    }
+    const abs = path.join(dirAbs, MODERN_STORY_FILENAME);
+    if (fs.existsSync(abs)) return { filename: MODERN_STORY_FILENAME, abs, manifest: null };
     return null;
   }
 
@@ -437,7 +433,7 @@ function createStoryCatalog(storiesDir, port) {
           outputDir: entry.outputDir,
         },
         dirName,
-        storyFile: entry.storyPath || `generated-stories/${dirName}/${LEGACY_STORY_FILENAME}`,
+        storyFile: entry.storyPath || `generated-stories/${dirName}/${MODERN_STORY_FILENAME}`,
         mtimeMs: entry.updatedAt ? new Date(entry.updatedAt).getTime() : Date.now(),
       });
     }
@@ -544,13 +540,21 @@ function createStoryCatalog(storiesDir, port) {
     return createStoryCatalogEntryFromGcsRecord(record, req);
   }
 
+  function gcsStoryObjectPath(record, prefix) {
+    const storyFile = String(record.storyFile || `generated-stories/${record.dirName}/${MODERN_STORY_FILENAME}`).replace(/^\/+/, '');
+    const relative = storyFile.endsWith(`/${MODERN_STORY_FILENAME}`) && storyFile.startsWith('generated-stories/')
+      ? storyFile.slice('generated-stories/'.length)
+      : `${record.dirName}/${MODERN_STORY_FILENAME}`;
+    return `${prefix}/${relative}`.replace(/\/+/g, '/');
+  }
+
   async function createFullStoryResponse(record, req) {
     if (getStoryStorageMode() === 'gcs') {
       const bucketName = getGcsBucketName();
       const prefix = getGcsStoriesPrefix();
       if (!bucketName) throw new Error('GCS_BUCKET_NAME is required when STORY_STORAGE_MODE=gcs');
 
-      const objectPath = `${prefix}/${record.dirName}/${LEGACY_STORY_FILENAME}`.replace(/\/+/g, '/');
+      const objectPath = gcsStoryObjectPath(record, prefix);
       const storage = new Storage();
       const bucket = storage.bucket(bucketName);
       const file = bucket.file(objectPath);

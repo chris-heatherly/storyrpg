@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { Storage } from '@google-cloud/storage';
+import { decodeStory } from '../src/ai-agents/codec/storyCodec';
 
 type UploadMode = 'latest' | 'all';
 
@@ -19,7 +20,7 @@ type CatalogEntry = {
   /** Proxy-style path (we can later redirect/proxy to GCS). */
   outputDir: string; // "generated-stories/<runDir>/"
   /** Proxy-style path to the story JSON */
-  storyPath: string; // "generated-stories/<runDir>/08-final-story.json"
+  storyPath: string; // "generated-stories/<runDir>/story.json"
   /** Optional proxy-style cover image path */
   coverImage?: string;
   updatedAt?: string;
@@ -100,10 +101,10 @@ function listRunDirs(storiesDir: string): Array<{ dirName: string; mtimeMs: numb
 }
 
 function readStoryJson(storiesDir: string, runDir: string): any | null {
-  const storyFile = path.join(storiesDir, runDir, '08-final-story.json');
+  const storyFile = path.join(storiesDir, runDir, 'story.json');
   if (!fs.existsSync(storyFile)) return null;
   try {
-    return JSON.parse(fs.readFileSync(storyFile, 'utf8'));
+    return decodeStory(JSON.parse(fs.readFileSync(storyFile, 'utf8'))).story;
   } catch {
     return null;
   }
@@ -122,7 +123,7 @@ function buildCatalogEntry(runDir: string, story: any, updatedAt: string): Catal
     author: story.author || undefined,
     episodeCount: Array.isArray(story.episodes) ? story.episodes.length : undefined,
     outputDir: `generated-stories/${runDir}/`,
-    storyPath: `generated-stories/${runDir}/08-final-story.json`,
+    storyPath: `generated-stories/${runDir}/story.json`,
     coverImage,
     updatedAt,
   };
@@ -204,7 +205,7 @@ async function main() {
     const localRunDir = path.join(storiesDir, dirName);
     const story = readStoryJson(storiesDir, dirName);
     if (!story) {
-      console.warn(`[upload-stories-to-gcs] Skipping ${dirName} (missing or invalid 08-final-story.json)`);
+      console.warn(`[upload-stories-to-gcs] Skipping ${dirName} (missing or invalid story.json; run scripts/migrate-stories.ts for legacy-only directories)`);
       continue;
     }
 
@@ -242,4 +243,3 @@ main().catch((err) => {
   console.error('[upload-stories-to-gcs] Failed:', err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
-

@@ -36,7 +36,7 @@ we touch the hard dependency-heavy phases):
    (see `FullStoryPipeline.promptSnapshot.test.ts` + `__goldens__/`).
 3. [x] `AudioPhase` — **wired** (2026-06-09): the `preGenerateAudio` block
    (voice casting, batch generation, beat binding, diagnostics + manifest,
-   the 08-final-story rewrite) plus `bindGeneratedAudioToStory`. Smoke tests
+   the story package rewrite) plus `bindGeneratedAudioToStory`. Smoke tests
    cover happy path, skip gate, and non-blocking failure.
 4. [x] `BrowserQAPhase` — **wired** (2026-06-09): the Playwright multi-path
    QA loop with image remediation, story reassembly (the phase returns the
@@ -68,6 +68,10 @@ we touch the hard dependency-heavy phases):
    Non-blocking failure semantics preserved exactly.
 7. [~] `ImagePhase` — split per the plan: master images → scene images →
    encounter images.
+   Runtime invariant: in the multi-episode workflow these image phases are
+   entered only after the requested episodes have completed story authoring,
+   per-episode QA, and episode failure gates. Image and optional media agents
+   decorate authored story artifacts; they do not interleave with story agents.
    - [x] `MasterImagePhase` — **wired** (2026-06-09): character reference
      sheets (eligibility incl. D1 supporting promotion, D5/D8 identity
      drift audit/invalidation, anchor-character-first parallelism, vision

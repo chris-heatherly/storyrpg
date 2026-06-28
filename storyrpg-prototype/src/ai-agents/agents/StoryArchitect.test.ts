@@ -1251,6 +1251,8 @@ describe('StoryArchitect scene-graph branch repair', () => {
     // next-two ['s2','s3']) so the arms diverge before reconverging.
     expect(branches[0].leadsTo).toEqual(['s2', 's4']);
     expect(branches[0].leadsTo).not.toEqual(['s2', 's3']);
+    expect(branches[0].choicePoint.reminderPlan).toBeUndefined();
+    expect(branches[0].choicePoint.expectedResidue.join(' ')).not.toMatch(/selected route|path the player|route chosen/i);
   });
 
   it('reconverges the far arm at a downstream bottleneck scene when one exists', () => {
@@ -2375,6 +2377,145 @@ describe('StoryArchitect Story Circle episodeCircle verification (tier 2)', () =
     const bp = blueprint({ change: '' });
     expect(() => (architect as any).validateBlueprint(bp, makeInput())).not.toThrow(/StoryCircleGate/);
   });
+
+  it('builds fallback episodeCircle text from episode-local arc before season-wide Story Circle text', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: true, requireSceneGraphBranching: false });
+    const circle = (architect as any).buildEpisodeCircle(makeInput({
+      episodeTitle: 'Dating After Dusk',
+      episodeSynopsis: 'Kylie arrives in Bucharest and the Mr. Midnight post goes viral.',
+      seasonStoryCircle: {
+        you: 'Season-wide ordinary world.',
+        need: 'Season-wide lack.',
+        go: 'Kylie accepts the Equinox weekend at Casa Stelarum.',
+        search: 'Kylie experiments at Casa Lupului in a later episode.',
+        find: 'The mirror reveal changes the genre in a later episode.',
+        take: 'Radu confession cost in a later episode.',
+        return: 'Mika betrayal pressure in a later episode.',
+        change: 'Hunter Moon final post in the finale.',
+      },
+    }), {
+      hook: 'Kylie arrives with two suitcases and her grandmother address.',
+      plotTurn1: 'The staged rescue makes Mr. Midnight public.',
+      pinch1: 'The blog comments turn organized and predatory.',
+      midpoint: 'Kylie realizes attention is a trap as much as a prize.',
+      pinch2: 'Accepting visibility costs privacy.',
+      climax: 'She writes the post anyway.',
+      resolution: 'The viral post makes her a name.',
+    });
+
+    expect(circle.go).toContain('staged rescue');
+    expect(circle.search).toContain('blog comments');
+    expect(circle.search).not.toContain('Casa Lupului');
+    expect(circle.change).toContain('viral post');
+    expect(circle.change).not.toContain('Hunter Moon');
+  });
+
+  it('does not use future-season MVP treatment beats as Episode 1 local episodeCircle fallbacks', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: true, requireSceneGraphBranching: false });
+    const circle = (architect as any).buildEpisodeCircle(makeInput({
+      episodeNumber: 1,
+      episodeTitle: 'Dating After Dusk',
+      episodeSynopsis: 'Kylie arrives in Bucharest, survives the Cișmigiu attack, and turns Mr. Midnight into a viral post.',
+    }), {
+      hook: 'Kylie arrives with two suitcases and her grandmother address.',
+      plotTurn1: 'The staged rescue makes Mr. Midnight public.',
+      pinch1: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
+      midpoint: "The mirror behind Victor reveals Kylie's lover is a monster.",
+      pinch2: "Radu's confession and Carmen hospitalized make the blog war go hot.",
+      climax: 'On the Hunter Moon, Kylie chooses the Mountain Wife route.',
+      resolution: 'The final post at Casa Stelarum resolves the season.',
+    });
+
+    const serialized = JSON.stringify(circle);
+    expect(circle.search).toContain('survives the Cișmigiu attack');
+    expect(circle.find).toContain('Mr. Midnight');
+    expect(serialized).not.toMatch(/Casa Lupului|slow-burn mountain|mirror behind Victor|Radu's confession|Hunter Moon|Casa Stelarum|Mountain Wife/);
+  });
+
+  it('re-homes inherited treatment Story Circle contracts to the blueprint scene with matching cues', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: true, requireSceneGraphBranching: false });
+    const blueprint = {
+      episodeId: 'ep1',
+      number: 1,
+      title: 'Dating After Dusk',
+      synopsis: '',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      scenes: [
+        {
+          id: 's1-1',
+          name: 'Victor walks Kylie home',
+          description: 'Victor walks Kylie through Cișmigiu after the attack.',
+          narrativeRole: 'setup',
+          keyBeats: ['The rescue leaves her shaken.'],
+          storyCircleBeatContracts: [
+            { id: 'dusk', beat: 'you', sourceText: 'gathers the Dusk Club over too-dark negronis', targetSceneIds: ['s1-1'] },
+            { id: 'viral', beat: 'you', sourceText: 'the viral Mr Midnight post changes the aftermath by making her a name', targetSceneIds: ['s1-1'] },
+          ],
+        },
+        {
+          id: 's1-blog-aftermath',
+          name: 'The post becomes public pressure',
+          description: 'The Mr. Midnight blog post goes viral and the readership count climbs.',
+          narrativeRole: 'payoff',
+          keyBeats: ['The blog post makes Kylie visible.'],
+        },
+        {
+          id: 's1-rooftop-setup',
+          name: 'Rooftop bar at sunset',
+          description: 'Mika gathers the Dusk Club over too-dark negronis on the Vâlcescu Club rooftop.',
+          narrativeRole: 'development',
+          keyBeats: ['Dusk Club toast with Mika and Stela.'],
+        },
+      ],
+      startingSceneId: 's1-1',
+      bottleneckScenes: [],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).rebindInheritedStoryCircleContracts(blueprint);
+
+    expect(blueprint.scenes[0].storyCircleBeatContracts ?? []).toHaveLength(0);
+    expect(blueprint.scenes[1].storyCircleBeatContracts?.map((contract: any) => contract.id)).toContain('viral');
+    expect(blueprint.scenes[2].storyCircleBeatContracts?.map((contract: any) => contract.id)).toContain('dusk');
+  });
+
+  it('drops inherited Story Circle contracts whose target episode is not this blueprint episode', () => {
+    const architect = new StoryArchitect(config, { storyCircleBlocking: true, requireSceneGraphBranching: false });
+    const blueprint = {
+      episodeId: 'ep1',
+      number: 1,
+      title: 'Dating After Dusk',
+      synopsis: '',
+      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      scenes: [{
+        id: 's1-rooftop-setup',
+        name: 'Rooftop bar at sunset',
+        description: 'Mika gathers the Dusk Club over too-dark negronis.',
+        storyCircleBeatContracts: [{
+          id: 'future-search',
+          beat: 'search',
+          sourceText: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
+          targetEpisodeNumber: 4,
+          targetSceneIds: ['s1-rooftop-setup'],
+        }],
+      }],
+      startingSceneId: 's1-rooftop-setup',
+      bottleneckScenes: [],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).rebindInheritedStoryCircleContracts(blueprint);
+
+    expect(blueprint.scenes[0].storyCircleBeatContracts).toEqual([]);
+  });
 });
 
 // -----------------------------------------------------------------------
@@ -2738,6 +2879,65 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(release.dramaticStructure.changedState).toContain('changed leverage');
     expect(release.sequenceIntent.turningPoint).toBe(release.turnContract.centralTurn);
     expect(release.residue.length).toBeGreaterThan(0);
+  });
+
+  it('does not use planned-scene placeholder names in default choice pressure', () => {
+    const architect = new StoryArchitect(config);
+    const concreteTurn = "At the club door, Mika clocks Kylie's fake confidence and makes her earn the second round.";
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          {
+            ...plannedStandard('s1-5', 0, 'development'),
+            title: 'Development scene 5',
+            dramaticPurpose: 'Development scene 5.',
+            turnContract: {
+              centralTurn: concreteTurn,
+              turnEvent: concreteTurn,
+              pressurePeak: concreteTurn,
+            },
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    const choicePoint = blueprint.scenes[0].choicePoint;
+    const choiceText = JSON.stringify(choicePoint);
+
+    expect(choiceText).toContain(concreteTurn);
+    expect(choiceText).not.toMatch(/Decide how to handle|Development scene 5/i);
+  });
+
+  it('does not promote treatment choice menus into scene-turn prose', () => {
+    const architect = new StoryArchitect(config);
+    const menuText = 'In the park when the shadow appears: scream, run, freeze, or fight — and next morning, what name do you give him: Mr. Midnight (canonical), The Stranger, The Velvet, or The Suit.';
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        plannedScenes: [
+          {
+            ...plannedStandard('s1-5', 0, 'development'),
+            title: 'Cișmigiu Gardens at 1am',
+            dramaticPurpose: menuText,
+            signatureMoment: menuText,
+            requiredBeats: [{ id: 'park-menu', tier: 'authored', sourceTurn: menuText, mustDepict: menuText }],
+            turnContract: {
+              centralTurn: menuText,
+              turnEvent: menuText,
+              pressurePeak: menuText,
+            },
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    const serialized = JSON.stringify(blueprint.scenes[0]);
+
+    expect(serialized).not.toMatch(/what name do you give him|canonical|scream, run, freeze/i);
+    expect(blueprint.scenes[0].choicePoint.description).toContain('Cișmigiu Gardens at 1am');
   });
 
   it('repairs stale planned-scene locations from explicit required beat settings', () => {

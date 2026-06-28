@@ -145,6 +145,16 @@ describe('choice change feedback', () => {
 
     expect(buildChoiceConsequenceSentence([
       {
+        type: 'skill',
+        label: 'Survival',
+        direction: 'up',
+        magnitude: 'minor',
+        narrativeHint: 'You feel more practiced in survival.',
+      },
+    ])).toBe('You catch the warning signs a little sooner.');
+
+    expect(buildChoiceConsequenceSentence([
+      {
         type: 'attribute',
         label: 'Resolve',
         direction: 'up',

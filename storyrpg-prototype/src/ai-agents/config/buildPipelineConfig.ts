@@ -6,9 +6,11 @@ import {
   StableDiffusionSettings,
   OpenAISettings,
   DEFAULT_OPENAI_SETTINGS,
+  DEFAULT_GEMINI_TTS_MODEL,
   ImageProvider,
   LoraTrainingSettings,
   resolveLoraTrainingSettings,
+  resolveQualityCouncilConfig,
   StyleReferenceStrength,
 } from '../config';
 import { resolveImageQaConfig, resolveArtStylePresetProfile } from './imageQaConfig';
@@ -176,6 +178,21 @@ export function buildPipelineConfig(
     extras?.artStyleProfileOverride ??
     resolveArtStylePresetProfile(env) ??
     (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
+  const qualityCouncil = resolveQualityCouncilConfig(env, {
+    enabled: input.generationSettings.qualityCouncilEnabled,
+    mode: input.generationSettings.qualityCouncilMode,
+    runPlanCouncil: input.generationSettings.qualityCouncilRunPlan,
+    runChoiceCouncil: input.generationSettings.qualityCouncilRunChoice,
+    runRoutePlaytestCouncil: input.generationSettings.qualityCouncilRunRoutePlaytest,
+    runFinalCouncil: input.generationSettings.qualityCouncilRunFinal,
+    fusion: {
+      enabled: input.generationSettings.qualityCouncilFusionEnabled,
+      model: input.taskAssignments?.councilFusion?.model || 'openrouter/fusion',
+      onlyWhen: input.generationSettings.qualityCouncilFusionOnlyWhen,
+    },
+    maxCouncilCallsPerRun: input.generationSettings.qualityCouncilMaxCalls,
+    maxCandidateChoiceSets: input.generationSettings.qualityCouncilMaxChoiceCandidates,
+  });
 
   // Resolve the provider/model for a given pipeline task. Prefers the per-task
   // assignment when supplied, otherwise falls back to the legacy single-model
@@ -193,7 +210,7 @@ export function buildPipelineConfig(
     opts: { maxTokens: number; temperature: number },
   ) => {
     const { provider, model } = resolveTask(task);
-    return {
+    const agentConfig = {
       provider,
       model: getScopedLlmModel(provider, model),
       apiKey: getScopedLlmApiKey(provider, input),
@@ -202,7 +219,30 @@ export function buildPipelineConfig(
       openaiReasoningEffort: input.openaiSettings?.reasoningEffort || DEFAULT_OPENAI_SETTINGS.reasoningEffort,
       openaiForceJsonResponse: input.openaiSettings?.forceJsonResponse ?? DEFAULT_OPENAI_SETTINGS.forceJsonResponse,
     };
+    if (provider === 'openrouter' && task === 'councilFusion') {
+      return {
+        ...agentConfig,
+        model: qualityCouncil.fusion?.model || getScopedLlmModel(provider, model),
+        openRouter: {
+          route: 'fusion' as const,
+          provider: {
+            allowFallbacks: true,
+            requireParameters: true,
+          },
+        },
+      };
+    }
+    return agentConfig;
   };
+  const councilAgentConfigs = qualityCouncil.enabled
+    ? {
+        qualityCouncilPlan: buildAgentConfig('councilPlan', { maxTokens: 4096, temperature: 0.25 }),
+        qualityCouncilChoice: buildAgentConfig('councilChoice', { maxTokens: 4096, temperature: 0.25 }),
+        qualityCouncilPlaytest: buildAgentConfig('councilPlaytest', { maxTokens: 4096, temperature: 0.25 }),
+        qualityCouncilFinal: buildAgentConfig('councilFinal', { maxTokens: 4096, temperature: 0.2 }),
+        qualityCouncilFusion: buildAgentConfig('councilFusion', { maxTokens: 8192, temperature: 0.2 }),
+      }
+    : {};
 
   return {
     agents: {
@@ -227,6 +267,7 @@ export function buildPipelineConfig(
       branchManager: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.7 }),
       imagePlanner: buildAgentConfig('image', { maxTokens: 8192, temperature: 0.7 }),
       videoDirector: buildAgentConfig('video', { maxTokens: 8192, temperature: 0.7 }),
+      ...councilAgentConfigs,
     },
     validation: {
       enabled: input.generationMode !== 'disabled',
@@ -263,7 +304,6 @@ export function buildPipelineConfig(
       openaiImageModel: input.openaiSettings?.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
       openaiModeration: 'low',
       provider: normalizedImageProvider,
-      pipelineMode: 'storyboard-v2',
       storyboardV2: {
         maxPanelsPerSheet: input.generationSettings.storyboardMaxPanelsPerSheet || 6,
       },
@@ -336,10 +376,15 @@ export function buildPipelineConfig(
     },
     narration: {
       enabled: input.narrationSettings.enabled,
+      provider: input.narrationSettings.provider || 'elevenlabs',
       elevenLabsApiKey: input.elevenLabsApiKey.trim() || undefined,
+      geminiApiKey: input.geminiApiKey.trim() || undefined,
+      geminiModel: input.narrationSettings.geminiModel || DEFAULT_GEMINI_TTS_MODEL,
       autoPlay: input.narrationSettings.autoPlay,
       preGenerateAudio: input.narrationSettings.preGenerateAudio,
       voiceId: input.narrationSettings.voiceId || undefined,
+      voiceCastingEnabled: input.narrationSettings.voiceCastingEnabled !== false,
+      performanceTagsEnabled: !!input.narrationSettings.performanceTagsEnabled,
       highlightMode: input.narrationSettings.highlightMode,
     },
     videoGen: {
@@ -351,6 +396,7 @@ export function buildPipelineConfig(
       strategy: input.videoSettings.strategy as VideoSettingsConfig['strategy'],
       apiKey: input.geminiApiKey.trim() || undefined,
     },
+    qualityCouncil,
   };
 }
 

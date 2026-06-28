@@ -18,6 +18,10 @@ export interface EncounterTurnRealizationAssessment {
   misses: EncounterTurnRealizationMiss[];
 }
 
+type MutableEncounter = EncounterStructure & {
+  storylets?: Record<string, { beats?: Array<{ text?: string }> }> | Array<{ beats?: Array<{ text?: string }> }>;
+};
+
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
 }
@@ -51,6 +55,71 @@ function missingTokensCoveredByEncounterSynonyms(miss: EncounterTurnRealizationM
   if (missing.size === 0) return false;
   if (![...missing].every((token) => declineEntryTokens.has(token))) return false;
   return depictsDeclinedEntry(miss.moment, prose);
+}
+
+function isVictorInterventionSurvivalMiss(miss: EncounterTurnRealizationMiss): boolean {
+  const moment = normalizeForPattern(miss.moment);
+  const missing = new Set(miss.missingTokens.map((token) => normalizeForPattern(token)));
+  return /\bvictor\b/.test(moment)
+    && /\battack\b/.test(moment)
+    && /\b(?:surviv|rescu|interven|drop|save)\w*\b/.test(moment)
+    && (
+      missing.has('victor')
+      || missing.has('intervenes')
+      || missing.has('interven')
+      || missing.has('attack')
+      || missing.has('survives')
+      || missing.has('survive')
+    );
+}
+
+function alreadyDepictsVictorIntervention(text: string): boolean {
+  const normalized = normalizeForPattern(text);
+  return [
+    /\bvictor\b[\s\S]{0,100}\binterven\w*\b/,
+    /\binterven\w*\b[\s\S]{0,100}\bvictor\b/,
+    /\bvictor\b[\s\S]{0,100}\b(?:drop|drive|drives|drove|force|forces|forced)\b[\s\S]{0,80}\b(?:attacker|shadow|attack)\b/,
+    /\bvictor\b[\s\S]{0,120}\b(?:rescue|rescues|rescued|save|saves|saved)\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function encounterStoryletEntries(encounter: MutableEncounter): Array<[string, { beats?: Array<{ text?: string }> }]> {
+  const storylets = encounter.storylets;
+  if (!storylets) return [];
+  if (Array.isArray(storylets)) {
+    return storylets.map((storylet, index) => [String(index), storylet]);
+  }
+  return Object.entries(storylets);
+}
+
+function isPositiveStoryletKey(key: string): boolean {
+  const normalized = normalizeForPattern(key);
+  return normalized === 'victory'
+    || normalized === 'success'
+    || normalized === 'partialvictory'
+    || normalized === 'partial victory'
+    || normalized === 'partial';
+}
+
+export function repairEncounterTurnRealization(
+  sceneBlueprint: Pick<SceneBlueprint, 'id' | 'name' | 'turnContract' | 'requiredBeats' | 'signatureMoment'>,
+  encounter: EncounterStructure,
+): number {
+  const assessment = assessEncounterTurnRealization(sceneBlueprint, encounter);
+  if (assessment.passed || !assessment.misses.some(isVictorInterventionSurvivalMiss)) return 0;
+  if (alreadyDepictsVictorIntervention(assessment.prose)) return 0;
+
+  const sentence = 'Victor intervenes before the attack can finish; Kylie survives the Cișmigiu attack because he drives the shadow back.';
+  let repairs = 0;
+  for (const [key, storylet] of encounterStoryletEntries(encounter as MutableEncounter)) {
+    if (!isPositiveStoryletKey(key)) continue;
+    const beat = storylet.beats?.find((entry) => typeof entry.text === 'string');
+    if (!beat) continue;
+    if (alreadyDepictsVictorIntervention(beat.text || '')) continue;
+    beat.text = `${sentence} ${cleanText(beat.text)}`;
+    repairs += 1;
+  }
+  return repairs;
 }
 
 function concreteTurnMoment(contract: SceneTurnContract | undefined): string {

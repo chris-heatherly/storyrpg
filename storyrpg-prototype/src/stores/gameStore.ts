@@ -720,7 +720,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 return dir === 'up' ? 'Your body answers a little faster.' : 'Your body remembers the cost.';
               }
               if (source.includes('survival') || source.includes('medicine')) {
-                return dir === 'up' ? 'The world gives up a little more of its pattern.' : 'The world feels harder to read.';
+                return dir === 'up' ? 'You catch the warning signs a little sooner.' : 'The warning signs come too late.';
               }
               return dir === 'up' ? 'The lesson settles in before the moment passes.' : 'The mistake stays with you.';
             })();

@@ -95,6 +95,19 @@ describe('resolveTaskAssignments', () => {
   it('recognizes valid pipeline task ids', () => {
     expect(isPipelineTask('architect')).toBe(true);
     expect(isPipelineTask('qa')).toBe(true);
+    expect(isPipelineTask('councilPlan')).toBe(true);
+    expect(isPipelineTask('councilFusion')).toBe(true);
     expect(isPipelineTask('nope')).toBe(false);
+  });
+
+  it('resolves council task overrides independently from authoring tasks', () => {
+    const resolved = resolveTaskAssignments('gemini', {
+      councilChoice: { provider: 'openrouter', model: 'qwen/qwen3.6-flash' },
+      councilFusion: { provider: 'openrouter', model: 'openrouter/fusion' },
+    });
+    expect(resolved.councilChoice.provider).toBe('openrouter');
+    expect(resolved.councilChoice.model).toBe('qwen/qwen3.6-flash');
+    expect(resolved.councilFusion.model).toBe('openrouter/fusion');
+    expect(resolved.scene.provider).toBe('gemini');
   });
 });

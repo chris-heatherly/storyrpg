@@ -21,7 +21,18 @@ import {
   GeneratorLlmProvider,
 } from './generatorLlmOptions';
 
-export type PipelineTask = 'architect' | 'scene' | 'choice' | 'qa' | 'image' | 'video';
+export type PipelineTask =
+  | 'architect'
+  | 'scene'
+  | 'choice'
+  | 'qa'
+  | 'image'
+  | 'video'
+  | 'councilPlan'
+  | 'councilChoice'
+  | 'councilPlaytest'
+  | 'councilFinal'
+  | 'councilFusion';
 
 export interface PipelineTaskMeta {
   id: PipelineTask;
@@ -70,6 +81,36 @@ export const PIPELINE_TASKS: readonly PipelineTaskMeta[] = [
     description: 'Plans video prompts (experimental). Separate from the video-generation backend.',
     crossProvider: true,
   },
+  {
+    id: 'councilPlan',
+    label: 'Council: Plan',
+    description: 'Optional Quality Council review of season structure, Story Circle spine, promises, and arc pressure.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilChoice',
+    label: 'Council: Choices',
+    description: 'Optional Quality Council review of choice agency, stakes, consequence memory, and fiction-first wording.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilPlaytest',
+    label: 'Council: Route Playtest',
+    description: 'Optional route-simulation critic for cosmetic branching, residue loss, and impossible state.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilFinal',
+    label: 'Council: Final Audit',
+    description: 'Optional regression-oriented final audit over story, validators, and quality evidence.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilFusion',
+    label: 'Council: Fusion',
+    description: 'Optional OpenRouter Fusion deep-review panel for high-cost-of-being-wrong audits.',
+    crossProvider: true,
+  },
 ] as const;
 
 /** Narrative tasks are locked to the family provider. */
@@ -110,6 +151,11 @@ export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPrese
       qa: anthropic('claude-haiku-4-5'),
       image: anthropic('claude-haiku-4-5'),
       video: anthropic('claude-haiku-4-5'),
+      councilPlan: anthropic('claude-haiku-4-5'),
+      councilChoice: anthropic('claude-haiku-4-5'),
+      councilPlaytest: anthropic('claude-haiku-4-5'),
+      councilFinal: anthropic('claude-haiku-4-5'),
+      councilFusion: openrouter('openrouter/fusion'),
     },
   },
   openai: {
@@ -123,6 +169,11 @@ export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPrese
       qa: openai('gpt-4o-mini'),
       image: openai('gpt-4o-mini'),
       video: openai('gpt-4o-mini'),
+      councilPlan: openai('gpt-4o-mini'),
+      councilChoice: openai('gpt-4o-mini'),
+      councilPlaytest: openai('gpt-4o-mini'),
+      councilFinal: openai('gpt-4o-mini'),
+      councilFusion: openrouter('openrouter/fusion'),
     },
   },
   gemini: {
@@ -136,6 +187,11 @@ export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPrese
       qa: gemini('gemini-2.5-flash'),
       image: gemini('gemini-2.5-flash'),
       video: gemini('gemini-2.5-flash'),
+      councilPlan: gemini('gemini-2.5-flash'),
+      councilChoice: gemini('gemini-2.5-flash'),
+      councilPlaytest: gemini('gemini-2.5-flash'),
+      councilFinal: gemini('gemini-2.5-flash'),
+      councilFusion: openrouter('openrouter/fusion'),
     },
   },
   // Cross-vendor "best-of" via OpenRouter — deliberately avoids the
@@ -153,6 +209,11 @@ export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPrese
       qa: openrouter('qwen/qwen3.6-flash'),
       image: openrouter('deepseek/deepseek-v4-flash'),
       video: openrouter('deepseek/deepseek-v4-flash'),
+      councilPlan: openrouter('qwen/qwen3.6-flash'),
+      councilChoice: openrouter('qwen/qwen3.6-flash'),
+      councilPlaytest: openrouter('qwen/qwen3.6-flash'),
+      councilFinal: openrouter('qwen/qwen3.6-flash'),
+      councilFusion: openrouter('openrouter/fusion'),
     },
   },
 };
@@ -172,7 +233,12 @@ export function isPipelineTask(value: unknown): value is PipelineTask {
     value === 'choice' ||
     value === 'qa' ||
     value === 'image' ||
-    value === 'video'
+    value === 'video' ||
+    value === 'councilPlan' ||
+    value === 'councilChoice' ||
+    value === 'councilPlaytest' ||
+    value === 'councilFinal' ||
+    value === 'councilFusion'
   );
 }
 

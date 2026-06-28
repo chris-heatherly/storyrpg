@@ -47,6 +47,12 @@ export type {
   FinalStoryContractIssueType,
   FinalStoryContractReport,
 } from './FinalStoryContractValidator';
+export { RouteContinuityValidator } from './RouteContinuityValidator';
+export type {
+  RouteContinuityIssue,
+  RouteContinuityIssueType,
+  RouteContinuityResult,
+} from './RouteContinuityValidator';
 export { buildTreatmentObligationCanonicalReport } from './treatmentObligationCanonicalReport';
 export type { BuildTreatmentObligationCanonicalReportInput } from './treatmentObligationCanonicalReport';
 
@@ -82,6 +88,8 @@ export {
   seasonPlanToStoryCircleAnchorConformanceInput,
 } from './StoryCircleAnchorConformanceValidator';
 export type { StoryCircleAnchorConformanceInput } from './StoryCircleAnchorConformanceValidator';
+export { EpisodeStoryCircleValidator } from './EpisodeStoryCircleValidator';
+export type { EpisodeStoryCircleInput, EpisodeStoryCircleScene } from './EpisodeStoryCircleValidator';
 export { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
 export type { TreatmentFieldUtilizationInput } from './TreatmentFieldUtilizationValidator';
 export { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';

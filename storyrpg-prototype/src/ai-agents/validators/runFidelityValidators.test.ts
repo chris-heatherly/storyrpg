@@ -93,7 +93,7 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.fidelityFindings.length).toBeGreaterThan(0);
     const f = result.fidelityFindings[0];
     expect(f.validator).toBe('StoryCircleAnchorConformanceValidator');
-    expect(f.severity).toBe('warning');
+    expect(f.severity).toBe('error');
     expect(f.findingClass).toBe('authored_contract');
     expect(f.sourceKind).toBe('treatment');
     expect(f.hasConcreteObligation).toBe(true);
@@ -405,7 +405,12 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
       },
     });
 
-    expect(slice.fidelityFindings.some((finding) => finding.validator === 'NarrativeMechanicPressureValidator')).toBe(true);
+    expect(slice.fidelityFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        validator: 'NarrativeMechanicPressureValidator',
+        severity: 'warning',
+      }),
+    ]));
   });
 
   it('does not run broad character-treatment realization during an episode-incremental seal', () => {

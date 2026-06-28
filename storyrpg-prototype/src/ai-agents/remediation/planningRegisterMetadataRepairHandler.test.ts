@@ -72,12 +72,12 @@ function storyWithLeaks(): Story {
 }
 
 describe('buildPlanningRegisterMetadataRepairHandler', () => {
-  it('rewrites planning-register beat and scene metadata without touching choices', () => {
+  it('rewrites planning-register beat and scene metadata without touching choices', async () => {
     const story = storyWithLeaks();
     const choiceBefore = JSON.stringify(story.episodes[0].scenes[0].beats[0].choices);
     const handler = buildPlanningRegisterMetadataRepairHandler();
 
-    const result = handler({
+    const result = await handler({
       story,
       blockingIssues: [{
         type: 'planning_register_prose',
@@ -88,7 +88,7 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
 
     expect(result.changed).toBe(true);
     expect(JSON.stringify(story.episodes[0].scenes[0].beats[0].choices)).toBe(choiceBefore);
-    expect(story.episodes[0].scenes[0].description).toBe('Kylie lands in Bucharest fleeing heartbreak.');
+    expect((story.episodes[0].scenes[0] as any).description).toBe('Kylie lands in Bucharest fleeing heartbreak.');
     expect(story.episodes[0].scenes[0].beats[0].text).toBe(
       'Kylie lands in Bucharest, forms the Dusk Club, is attacked in the park, rescued by Victor, meets Radu, and notices Mika watching too much.',
     );
@@ -110,12 +110,12 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
   });
 
-  it('rewrites hook/promise/stakes treatment cards as concrete prose obligations', () => {
+  it('rewrites hook/promise/stakes treatment cards as concrete prose obligations', async () => {
     const story = storyWithLeaks();
     const beat = story.episodes[0].scenes[0].beats[0] as any;
     beat.text = 'Hook — Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window; promise — reinvention, glamour, a city that owes her a better story; stakes — a FaceTime to her niece Sadie ("are there vampires in Romania?").';
 
-    const result = buildPlanningRegisterMetadataRepairHandler()({
+    const result = await buildPlanningRegisterMetadataRepairHandler()({
       story,
       blockingIssues: [{
         type: 'planning_register_prose',
@@ -133,12 +133,12 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
   });
 
-  it('strips cold-open wrapper metadata and keeps the planned scene text', () => {
+  it('strips cold-open wrapper metadata and keeps the planned scene text', async () => {
     const story = storyWithLeaks();
     const scene = story.episodes[0].scenes[0] as any;
     scene.description = 'Cold-open prelude: Kylie unpacks in a Belle Époque walk-up; a FaceTime to Sadie asks about vampires.\n\nThen continue into the planned scene: Mika adopts Kylie at the door of Vâlcescu Club on night two.';
 
-    const result = buildPlanningRegisterMetadataRepairHandler()({
+    const result = await buildPlanningRegisterMetadataRepairHandler()({
       story,
       blockingIssues: [{
         type: 'planning_register_prose',
@@ -153,12 +153,12 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
   });
 
-  it('no-ops when the final contract is not blocked by planning-register prose', () => {
+  it('no-ops when the final contract is not blocked by planning-register prose', async () => {
     const story = storyWithLeaks();
     const before = JSON.stringify(story);
     const handler = buildPlanningRegisterMetadataRepairHandler();
 
-    const result = handler({
+    const result = await handler({
       story,
       blockingIssues: [{ validator: 'RequiredBeatRealizationValidator', sceneId: 'scene-1' }],
     });

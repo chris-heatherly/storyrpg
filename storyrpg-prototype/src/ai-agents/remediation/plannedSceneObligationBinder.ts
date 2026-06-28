@@ -380,6 +380,9 @@ function isLedgerOnlyBeat(beat: RequiredBeat): boolean {
     && !ACTION_VERB_RE.test(text)
   ) return true;
   if (beat.tier !== 'seed') return false;
+  if (/\b(?:keeps? (?:his|her|their)?\s*face out of every frame|casts? no reflection|no reflection|unphotographable|cannot be photographed)\b/i.test(text)) {
+    return false;
+  }
   return LEDGER_ONLY_RE.test(text)
     || BROAD_FUTURE_LEDGER_RE.test(text)
     || /\b(?:choice residue|did or didn|whether|depending on|contracted to|confirmed at|revealed at|paid off in|future|later|episode\s+\d+|staged the ep-1 attack|strigoi|pricolici|hunter|cannot control)\b/i.test(text)
@@ -439,10 +442,17 @@ function splitBroadEpisodeTurnoutBeat(beat: RequiredBeat): string[] {
   const text = (beat.mustDepict || beat.sourceTurn || '').trim();
   const normalized = normalize(text);
   if (
-    !normalized.startsWith('what changes')
+    !(
+      normalized.startsWith('what changes')
+      || (
+        normalized.includes('dusk club')
+        && normalized.includes('dating after dusk')
+        && normalized.includes('mr midnight')
+      )
+    )
     || !normalized.includes('dusk club')
     || !normalized.includes('rescue')
-    || !normalized.includes('viral')
+    || !(normalized.includes('viral') || normalized.includes('author a new life'))
   ) {
     return [text].filter(Boolean);
   }
@@ -450,12 +460,14 @@ function splitBroadEpisodeTurnoutBeat(beat: RequiredBeat): string[] {
   return [
     'The Dusk Club forms.',
     'The staged rescue happens.',
-    'The Mr. Midnight post goes viral at 80K.',
+    normalized.includes('author a new life')
+      ? 'The Mr. Midnight post becomes the first viral Dating After Dusk proof that Kylie can author a new life.'
+      : 'The Mr. Midnight post goes viral at 80K.',
   ];
 }
 
 function targetForBroadTurnoutPart(part: string, scenes: PlannedScene[], sourceScene: PlannedScene, beatId: string): PlannedScene | undefined {
-  if (hasCue(part, 'parkAttack')) return sourceScene;
+  if (hasCue(part, 'parkAttack')) return undefined;
   if (hasCue(part, 'blogAftermath')) {
     return findOrCreateBlogAftermathScene(scenes, sourceScene.episodeNumber, sourceScene);
   }
@@ -471,7 +483,7 @@ function targetForBroadTurnoutPart(part: string, scenes: PlannedScene[], sourceS
   return fallbackNonArrivalScene(scenes, sourceScene);
 }
 
-const ACTION_VERB_RE = /\b(?:adopts?|asks?|attacks?|buzzes?|calls?|closes?|confronts?|declines?|delivers?|drops?|finds?|gives?|hands?|interrupts?|kisses?|launches?|leaves?|names?|offers?|opens?|pins?|presses?|refuses?|rescues?|scrolls?|sees?|swaps?|takes?|turns?|vanishes?|walks?|warns?|writes?)\b/i;
+const ACTION_VERB_RE = /\b(?:accepts?|adopts?|asks?|assaults?|attacks?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|finds?|follows?|gives?|hands?|interrupts?|kisses?|launches?|leaps?|leaves?|names?|offers?|opens?|pins?|presses?|refuses?|rescues?|scrolls?|sees?|swaps?|takes?|turns?|vanishes?|walks?|warns?|writes?)\b/i;
 
 function protectQuotedCommas(text: string): string {
   return text.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (match) => match.replace(/,/g, '__COMMA__'));
@@ -1111,7 +1123,7 @@ function dedupeEncounterRequiredBeatsAgainstFields(scenes: PlannedScene[], decis
     if (scene.kind !== 'encounter' && !scene.encounter) continue;
     const kept: RequiredBeat[] = [];
     for (const beat of scene.requiredBeats ?? []) {
-      if (beat.tier === 'seed' || beat.tier === 'connective') {
+      if (beat.tier === 'authored' || beat.tier === 'seed' || beat.tier === 'connective') {
         kept.push(beat);
         continue;
       }
@@ -1565,7 +1577,7 @@ function splitBlogMetricScenes(scenes: PlannedScene[], decisions: PlannedSceneBi
         turnEvent: 'The readership number climbs high enough to turn private testimony into public pressure.',
         beforeState: 'The post is a private act of voice.',
         afterState: 'The post is loose in the city, creating attention, leverage, and danger.',
-        handoff: 'Let the viral attention pressure the next scene rather than restaging the writing moment.',
+        handoff: 'Let the viral attention become public pressure without restaging the writing moment.',
       } : undefined,
       requiredBeats: [],
       authoredTreatmentFields: [],
@@ -1653,7 +1665,7 @@ function findOrCreateBlogAftermathScene(
       beforeState: 'Kylie has turned the night into private testimony.',
       turnEvent: 'The readership number climbs until the post becomes a public signal.',
       afterState: 'Her story now has attention, leverage, and danger attached to it.',
-      handoff: 'Let the public attention pressure the next scene without restaging the writing moment.',
+      handoff: 'Let the public attention become pressure without restaging the writing moment.',
     },
   });
 }

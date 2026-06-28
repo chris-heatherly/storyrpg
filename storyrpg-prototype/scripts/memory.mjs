@@ -131,7 +131,7 @@ async function indexRun(args) {
     '05-qa-report.json',
     '06-best-practices-report.json',
     '07-final-story-contract.json',
-    '08-final-story.json',
+    'story.json',
     '99-pipeline-errors.json',
     'manifest.json',
   ];

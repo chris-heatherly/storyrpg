@@ -166,7 +166,10 @@ export class SceneGraphBranchValidator {
             if (isBridgeRoute && !skipAllowed) {
               const skipped = episode.scenes
                 .slice(currentIndex + 1, targetIndex)
-                .filter(sceneRequiresSequentialSetup);
+                .filter((skippedScene) =>
+                  sceneRequiresSequentialSetup(skippedScene)
+                    && !isAlternativeBranchSibling(episode.scenes, blueprint, scene.id, skippedScene.id)
+                );
               if (skipped.length > 0) {
                 issues.push({
                   type: 'path_missing_required_setup',
@@ -372,6 +375,49 @@ function sceneRequiresSequentialSetup(scene: Scene): boolean {
         || b.visualCast,
     );
   });
+}
+
+function isAlternativeBranchSibling(
+  scenes: Scene[],
+  blueprint: EpisodeBlueprint | undefined,
+  sourceSceneId: string,
+  skippedSceneId: string,
+): boolean {
+  if (shareBranchSiblingStem(sourceSceneId, skippedSceneId)) return true;
+  for (const scene of scenes) {
+    const targets = collectOutgoingSceneTargets(scene);
+    if (targets.has(sourceSceneId) && targets.has(skippedSceneId)) return true;
+  }
+  for (const scene of blueprint?.scenes || []) {
+    const targets = new Set((scene.leadsTo || []).filter(Boolean));
+    if (targets.has(sourceSceneId) && targets.has(skippedSceneId)) return true;
+  }
+  return false;
+}
+
+function shareBranchSiblingStem(a: string, b: string): boolean {
+  const matchA = /^(.+?)([a-z])$/i.exec(a);
+  const matchB = /^(.+?)([a-z])$/i.exec(b);
+  return Boolean(matchA && matchB && matchA[1] === matchB[1] && matchA[2] !== matchB[2]);
+}
+
+function collectOutgoingSceneTargets(scene: Scene): Set<string> {
+  const targets = new Set((scene.leadsTo || []).filter(Boolean));
+  for (const beat of scene.beats || []) {
+    if (beat.nextSceneId && !isTerminalSceneTarget(beat.nextSceneId)) targets.add(beat.nextSceneId);
+    for (const choice of beat.choices || []) {
+      const target = choice.nextSceneId || resolveChoicePayoffSceneTarget(scene, choice.nextBeatId);
+      if (target && !isTerminalSceneTarget(target)) targets.add(target);
+    }
+  }
+  if (scene.encounter) {
+    for (const outcome of Object.values(scene.encounter.outcomes || {})) {
+      if (outcome?.nextSceneId && !isTerminalSceneTarget(outcome.nextSceneId)) {
+        targets.add(outcome.nextSceneId);
+      }
+    }
+  }
+  return targets;
 }
 
 /** A single choice acknowledges the branch path if it carries any residue signal. */

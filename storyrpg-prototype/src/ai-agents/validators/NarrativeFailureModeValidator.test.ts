@@ -52,6 +52,48 @@ describe('NarrativeFailureModeValidator', () => {
     expect(result.issues.some((issue) => issue.code === 'telegraphed_twist')).toBe(false);
   });
 
+  it('flags repeated toast/click choreography as a prose-style failure', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['Mika raises her glass. "To the Dusk Club."']),
+        scene('s2', ['Stela touches the quartz at her throat. "To the Dusk Club."']),
+        scene('s3', ['Your glass clicked against theirs, the sound thin in the open air.']),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'repetitive_toast_motif')).toBe(true);
+  });
+
+  it('flags live-action past tense without a past-event marker', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ["Your glass clicked against theirs. Just as you took a sip, you felt it. He didn't blink."]),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'tense_drift')).toBe(true);
+  });
+
+  it('allows past tense for explicit memory or backstory', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['Years ago, you felt the same cold pressure outside your grandmother’s door.']),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'tense_drift')).toBe(false);
+  });
+
+  it('does not flag present-tense narration because quoted dialogue mentions what you saw', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', ['He takes your hand. His skin is cool. He lifts it to his lips. "What you saw tonight is best forgotten," he says.']),
+      ],
+    });
+
+    expect(result.issues.some((issue) => issue.code === 'tense_drift')).toBe(false);
+  });
+
   it('maps information-ledger mystery overflow to mystery box collapse', () => {
     const result = new NarrativeFailureModeValidator().validate({
       baseIssues: [{

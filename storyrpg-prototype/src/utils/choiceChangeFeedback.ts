@@ -72,8 +72,8 @@ function skillRecognitionLine(item: AppliedConsequence): string | undefined {
   }
   if (source.includes('survival') || source.includes('medicine')) {
     return item.direction === 'down'
-      ? 'The world feels harder to read.'
-      : 'The world gives up a little more of its pattern.';
+      ? 'The warning signs come too late.'
+      : 'You catch the warning signs a little sooner.';
   }
   return item.direction === 'down'
     ? 'The mistake stays with you.'

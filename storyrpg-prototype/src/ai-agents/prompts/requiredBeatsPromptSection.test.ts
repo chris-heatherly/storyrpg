@@ -36,7 +36,7 @@ describe('buildRequiredBeatsSection', () => {
     // Beat 1 appears before beat 2 in the rendered text.
     expect(out.indexOf('Darian assaults')).toBeLessThan(out.indexOf('Lysandra names him'));
     // Tier framing present.
-    expect(out).toContain('must occur, in order');
+    expect(out).toContain('depict each, in order');
     expect(out).toContain('you may freely author this connective tissue');
   });
 

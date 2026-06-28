@@ -762,6 +762,11 @@ describe('buildPipelineConfig', () => {
         qa: { provider: 'anthropic', model: 'claude-haiku-4-5' },
         image: { provider: 'gemini', model: 'gemini-2.5-flash' },
         video: { provider: 'openai', model: 'gpt-4o-mini' },
+        councilPlan: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        councilChoice: { provider: 'anthropic', model: 'claude-haiku-4-5' },
+        councilPlaytest: { provider: 'anthropic', model: 'claude-haiku-4-5' },
+        councilFinal: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        councilFusion: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
       },
       apiKey: 'anthropic-key',
       openaiApiKey: 'openai-key',
@@ -826,5 +831,89 @@ describe('buildPipelineConfig', () => {
 
     expect(config.agents.qaRunner?.provider).toBe('anthropic');
     expect(config.agents.qaRunner?.model).toBe('claude-opus-4-8');
+  });
+
+  it('keeps Quality Council disabled by default', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'gemini',
+      llmModel: 'gemini-2.5-pro',
+      imageLlmProvider: 'gemini',
+      imageLlmModel: '',
+      videoLlmProvider: 'gemini',
+      videoLlmModel: '',
+      apiKey: '',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: '',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      panelMode: 'single',
+      artStyle: '',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings,
+      generationMode: 'advisory',
+      narrationSettings: { enabled: false } as any,
+      videoSettings: { enabled: false } as any,
+    });
+
+    expect(config.qualityCouncil?.enabled).toBe(false);
+    expect(config.agents.qualityCouncilPlan).toBeUndefined();
+    expect(config.agents.qualityCouncilFusion).toBeUndefined();
+  });
+
+  it('builds council agent configs only when the toggle is enabled', () => {
+    const config = buildPipelineConfig({
+      llmProvider: 'gemini',
+      llmModel: 'gemini-2.5-pro',
+      taskAssignments: {
+        architect: { provider: 'gemini', model: 'gemini-2.5-pro' },
+        scene: { provider: 'gemini', model: 'gemini-2.5-pro' },
+        choice: { provider: 'gemini', model: 'gemini-2.5-pro' },
+        qa: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        image: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        video: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        councilPlan: { provider: 'openrouter', model: 'qwen/qwen3.6-flash' },
+        councilChoice: { provider: 'openrouter', model: 'qwen/qwen3.6-flash' },
+        councilPlaytest: { provider: 'openrouter', model: 'qwen/qwen3.6-flash' },
+        councilFinal: { provider: 'openrouter', model: 'qwen/qwen3.6-flash' },
+        councilFusion: { provider: 'openrouter', model: 'openrouter/fusion' },
+      },
+      imageLlmProvider: 'gemini',
+      imageLlmModel: '',
+      videoLlmProvider: 'gemini',
+      videoLlmModel: '',
+      apiKey: '',
+      openRouterApiKey: 'or-key',
+      geminiApiKey: 'gemini-key',
+      elevenLabsApiKey: '',
+      atlasCloudApiKey: '',
+      atlasCloudModel: '',
+      midapiToken: '',
+      imageProvider: 'nano-banana',
+      imageStrategy: 'all-beats',
+      panelMode: 'single',
+      artStyle: '',
+      geminiSettings: {} as any,
+      midjourneySettings: {} as any,
+      generationSettings: {
+        ...generationSettings,
+        qualityCouncilEnabled: true,
+        qualityCouncilMode: 'repair-routing',
+        qualityCouncilFusionEnabled: true,
+      },
+      generationMode: 'advisory',
+      narrationSettings: { enabled: false } as any,
+      videoSettings: { enabled: false } as any,
+    });
+
+    expect(config.qualityCouncil?.enabled).toBe(true);
+    expect(config.qualityCouncil?.mode).toBe('repair-routing');
+    expect(config.agents.qualityCouncilPlan?.provider).toBe('openrouter');
+    expect(config.agents.qualityCouncilPlan?.apiKey).toBe('or-key');
+    expect(config.agents.qualityCouncilFusion?.model).toBe('openrouter/fusion');
+    expect(config.agents.qualityCouncilFusion?.openRouter?.route).toBe('fusion');
   });
 });

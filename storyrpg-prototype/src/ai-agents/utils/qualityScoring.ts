@@ -6,6 +6,7 @@ import type {
   FinalStoryContractIssue,
   FinalStoryContractReport,
 } from '../validators/FinalStoryContractValidator';
+import type { QualityCouncilReport } from '../quality-council/types';
 
 export type QualityDomainId =
   | 'story_circle_spine'
@@ -120,6 +121,7 @@ export interface StoryCircleQualityScoreInputs {
   qaReport?: QAReport | null;
   bestPracticesReport?: ComprehensiveValidationReport | null;
   finalStoryContractReport?: FinalStoryContractReport | null;
+  qualityCouncilReport?: QualityCouncilReport | null;
   incrementalValidationResults?: unknown[] | null;
 }
 
@@ -142,6 +144,17 @@ interface StoryCircleEvidenceSummary {
   ordered: boolean;
   orderedViolation?: string;
   hasStoryCircleEvidence: boolean;
+}
+
+interface StoryCircleEvidenceScope {
+  partialSeason: boolean;
+  generatedEpisodeNumbers?: Set<number>;
+}
+
+interface FinalProseSegment {
+  text: string;
+  episodeIndex: number;
+  sceneIndex: number;
 }
 
 interface StaticStorySignals {
@@ -188,7 +201,7 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
     weight: 20,
     defaultConceptId: 'complete_loop',
     concepts: [
-      { id: 'complete_loop', label: 'Complete you -> need -> go -> search -> find -> take -> return -> change loop', weight: 16, keywords: ['complete loop', 'primary story circle beat', 'missing primary'] },
+      { id: 'complete_loop', label: 'Complete you -> need -> go -> search -> find -> take -> return -> change loop', weight: 16, keywords: ['complete loop', 'primary story circle beat', 'missing primary', 'episode local loop', 'episodecircle', 'episode circle'] },
       { id: 'beat_order_causal_progression', label: 'Beat order and causal progression', weight: 14, keywords: ['order', 'causal', 'chronology', 'out of order'] },
       { id: 'you_known_world_pressure', label: 'you: known-world pressure', weight: 9, keywords: ['you', 'known-world', 'baseline'] },
       { id: 'need_active_want_lack', label: 'need: active want/lack', weight: 10, keywords: ['need', 'want', 'lack'] },
@@ -196,8 +209,8 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
       { id: 'search_adaptation_pressure', label: 'search: adaptation under pressure', weight: 11, keywords: ['search', 'adaptation'] },
       { id: 'find_apparent_victory', label: 'find: wanted thing / answer / apparent victory', weight: 10, keywords: ['find', 'answer', 'apparent victory'] },
       { id: 'take_real_price', label: 'take: real price / loss / sacrifice', weight: 12, keywords: ['take', 'price', 'loss', 'sacrifice'] },
-      { id: 'return_prize_wound', label: 'return: prize and wound carried back', weight: 8, keywords: ['return', 'prize', 'wound'] },
-      { id: 'change_transformation_equilibrium', label: 'change: transformation / new equilibrium', weight: 10, keywords: ['change', 'transformation', 'equilibrium'] },
+      { id: 'return_prize_wound', label: 'return: prize and wound carried back', weight: 8, keywords: ['return', 'prize', 'wound', 'handoff', 'aftermath'] },
+      { id: 'change_transformation_equilibrium', label: 'change: transformation / new equilibrium', weight: 10, keywords: ['change', 'transformation', 'equilibrium', 'metadata-only', 'not dramatized'] },
     ],
   },
   {
@@ -383,10 +396,11 @@ export function deriveStoryCircleQualityScore(
   const storyCircle = buildStoryCircleEvidence(inputs.finalStory, inputs.brief);
   const staticSignals = collectStaticStorySignals(inputs.finalStory);
   const sidecarFindings = readQualitySidecarFindings(options.outputDir);
+  const collectedFindings = collectReportFindings(inputs, sidecarFindings);
 
   addStoryCircleFindings(domains, storyCircle);
   addStaticSignalFindings(domains, staticSignals);
-  collectReportFindings(inputs, sidecarFindings).forEach((finding) => {
+  collectedFindings.forEach((finding) => {
     const mappedDomain = mapFindingToDomain(finding);
     const qualityFinding = toQualityFinding(finding, mappedDomain);
     if (mappedDomain) {
@@ -415,7 +429,7 @@ export function deriveStoryCircleQualityScore(
     finalStoryContractScore,
   };
 
-  applyCaps(caps, storyCircle, staticSignals, inputs);
+  applyCaps(caps, storyCircle, staticSignals, inputs, collectedFindings);
   const evidenceCoverage = computeEvidenceCoverage(inputs, storyCircle, staticSignals, profile);
   if (evidenceCoverage < 75) {
     caps.push({
@@ -732,14 +746,24 @@ function addStaticSignalFindings(
   signals.leakage.forEach((finding) => addFinding(domains.gameplay_mechanics_as_fiction, finding));
 
   signals.invalidEncounterTargets.forEach((target) => {
+    const message = `Central encounter Story Circle target "${target}" does not match go/search/find/take.`;
     addFinding(domains.encounters, {
       id: makeFindingId('encounter-story-circle-target', target, 'error'),
       severity: 'error',
       source: 'encounter-story-circle-target',
       validator: 'QualityScoreV3',
-      message: `Central encounter Story Circle target "${target}" does not match go/search/find/take.`,
+      message,
       mappedDomain: 'encounters',
       conceptId: 'encounter_story_circle_target',
+    });
+    addFinding(domains.story_circle_spine, {
+      id: makeFindingId('story-circle-encounter-target', target, 'error'),
+      severity: 'error',
+      source: 'encounter-story-circle-target',
+      validator: 'QualityScoreV3',
+      message,
+      mappedDomain: 'story_circle_spine',
+      conceptId: 'search_adaptation_pressure',
     });
   });
 }
@@ -834,6 +858,32 @@ function collectReportFindings(
     });
   });
 
+  inputs.qualityCouncilReport?.checkpoints?.forEach((checkpoint) => {
+    if (checkpoint.status === 'error') {
+      findings.push({
+        severity: 'critical',
+        source: 'quality-council',
+        validator: `QualityCouncil:${checkpoint.checkpoint}:error`,
+        message: checkpoint.error || checkpoint.summary || `${checkpoint.checkpoint} Quality Council checkpoint failed before producing findings.`,
+      });
+    }
+
+    (checkpoint.findings || []).forEach((finding) => {
+      findings.push({
+        severity: finding.severity === 'error' ? 'warning' : finding.severity === 'warning' ? 'warning' : 'suggestion',
+        source: 'quality-council',
+        validator: finding.validatorMapping || `QualityCouncil:${finding.category}`,
+        message: `${finding.category}: ${finding.evidence.join(' ')}`,
+        location: [
+          finding.target?.episodeId,
+          finding.target?.sceneId,
+          finding.target?.beatId,
+          finding.target?.choiceId,
+        ].filter(Boolean).join('/') || undefined,
+      });
+    });
+  });
+
   sidecarFindings.forEach((finding) => findings.push(finding));
   return findings;
 }
@@ -854,7 +904,19 @@ function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefine
   const haystack = `${finding.validator ?? ''} ${finding.source} ${finding.message}`.toLowerCase();
 
   if (
+    haystack.includes('storycircle') ||
+    haystack.includes('story circle') ||
+    haystack.includes('episodecircle') ||
+    haystack.includes('story_circle') ||
     haystack.includes('encounterstorycircletarget') ||
+    haystack.includes('encounter story circle target') ||
+    haystack.includes('threshold crossing') ||
+    haystack.includes('return-with-difference')
+  ) {
+    return 'story_circle_spine';
+  }
+
+  if (
     haystack.includes('encounter anchor') ||
     haystack.includes('encounteranchor') ||
     haystack.includes('encounter') ||
@@ -866,22 +928,20 @@ function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefine
   }
 
   if (
-    haystack.includes('storycircle') ||
-    haystack.includes('story circle') ||
-    haystack.includes('episodecircle') ||
-    haystack.includes('story_circle') ||
-    haystack.includes('threshold crossing') ||
-    haystack.includes('return-with-difference')
-  ) {
-    return 'story_circle_spine';
-  }
-
-  if (
     haystack.includes('sceneturn') ||
     haystack.includes('scene turn') ||
     haystack.includes('requiredbeat') ||
     haystack.includes('beat realization') ||
     haystack.includes('scene coherence') ||
+    haystack.includes('routecontinuity') ||
+    haystack.includes('route continuity') ||
+    haystack.includes('route_chronology') ||
+    haystack.includes('choice_bridge_sibling') ||
+    haystack.includes('bridge sibling') ||
+    haystack.includes('route_duplicate') ||
+    haystack.includes('unsafe_fallback_prose') ||
+    haystack.includes('fallback prose') ||
+    haystack.includes('role_fidelity') ||
     haystack.includes('chronology') ||
     haystack.includes('wrong scene') ||
     haystack.includes('beat placement') ||
@@ -1090,11 +1150,22 @@ function weightedScore(domains: QualityDomainScore[]): number {
   return totalWeight > 0 ? weighted / totalWeight : 0;
 }
 
+function isEpisodeStoryCircleFinding(finding: SidecarFinding): boolean {
+  const haystack = `${finding.validator ?? ''} ${finding.source} ${finding.message}`.toLowerCase();
+  return haystack.includes('episodestorycirclevalidator')
+    || haystack.includes('episode story circle')
+    || haystack.includes('episodecircle')
+    || haystack.includes('episode circle')
+    || haystack.includes('episode local loop')
+    || haystack.includes('metadata-only');
+}
+
 function applyCaps(
   caps: QualityCap[],
   storyCircle: StoryCircleEvidenceSummary,
   signals: StaticStorySignals,
   inputs: StoryCircleQualityScoreInputs,
+  collectedFindings: SidecarFinding[],
 ): void {
   if (storyCircle.missingBeats.length > 0) {
     caps.push({
@@ -1143,12 +1214,22 @@ function applyCaps(
     });
   }
 
+  const episodeStoryCircleFindings = collectedFindings.filter(isEpisodeStoryCircleFinding);
+  if (episodeStoryCircleFindings.length > 0) {
+    caps.push({
+      id: 'episode_story_circle_local_loop_unproven',
+      maxScore: 89,
+      reason: `${episodeStoryCircleFindings.length} episode-level Story Circle local-loop finding(s) remain in validator evidence.`,
+      domainId: 'story_circle_spine',
+    });
+  }
+
   if (signals.invalidEncounterTargets.length > 0) {
     caps.push({
       id: 'encounter_story_circle_target_mismatch',
       maxScore: 79,
       reason: 'Central encounter target does not match go/search/find/take.',
-      domainId: 'encounters',
+      domainId: 'story_circle_spine',
     });
   }
 
@@ -1169,6 +1250,34 @@ function applyCaps(
       id: 'critical_beat_wrong_scene_or_chronology',
       maxScore: 69,
       reason: 'A critical beat appears in the wrong scene or chronology.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+
+  const routeBlockingIssues = inputs.finalStoryContractReport?.blockingIssues?.filter((issue) =>
+    issue.validator === 'RouteContinuityValidator',
+  ) ?? [];
+  const routeHardBlockers = routeBlockingIssues.filter((issue) =>
+    /route_chronology_violation|choice_bridge_sibling_leak|route_duplicate_event|role_fidelity_violation/i
+      .test(`${issue.type} ${issue.message}`),
+  );
+  const unsafeFallbackBlockers = routeBlockingIssues.filter((issue) =>
+    /unsafe_fallback_prose|fallback/i.test(`${issue.type} ${issue.message}`),
+  );
+  if (routeHardBlockers.length > 0) {
+    caps.push({
+      id: 'route_continuity_hard_fail',
+      maxScore: 49,
+      reason: `${routeHardBlockers.length} route continuity blocker(s) remain in the playable story path.`,
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+
+  if (unsafeFallbackBlockers.length > 0) {
+    caps.push({
+      id: 'unsafe_fallback_prose_survived',
+      maxScore: 39,
+      reason: `${unsafeFallbackBlockers.length} unsafe fallback/planning prose blocker(s) survived into story content.`,
       domainId: 'scene_coherence_prose_continuity',
     });
   }
@@ -1200,6 +1309,24 @@ function applyCaps(
       maxScore: 79,
       reason: 'Branching is cosmetic or residue-free.',
       domainId: 'branching_consequence_memory',
+    });
+  }
+
+  const councilCheckpoints = inputs.qualityCouncilReport?.enabled
+    ? (inputs.qualityCouncilReport.checkpoints || []).filter((checkpoint) => checkpoint.status !== 'skipped')
+    : [];
+  const councilErrors = councilCheckpoints.filter((checkpoint) => checkpoint.status === 'error');
+  if (councilErrors.length > 0 && councilErrors.length === councilCheckpoints.length) {
+    caps.push({
+      id: 'quality_council_all_checkpoints_failed',
+      maxScore: 69,
+      reason: 'Quality Council was enabled, but every runnable checkpoint failed before producing review findings.',
+    });
+  } else if (councilErrors.length > 0) {
+    caps.push({
+      id: 'quality_council_checkpoint_failed',
+      maxScore: 79,
+      reason: `${councilErrors.length} enabled Quality Council checkpoint(s) failed before producing review findings.`,
     });
   }
 
@@ -1297,30 +1424,48 @@ function buildStoryCircleEvidence(story?: Story | null, brief?: Record<string, a
   const beats = {} as Record<StoryCircleBeat, StoryCircleBeatEvidence>;
   const expectedByBeat = new Map<StoryCircleBeat, string[]>();
   const metadataByBeat = new Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>();
-  const prose = collectFinalProse(story).join('\n').toLowerCase();
+  const scope = storyCircleEvidenceScope(story);
+  const proseSegments = collectFinalProseSegments(story);
+  const prose = proseSegments.map((segment) => segment.text).join('\n').toLowerCase();
 
   STORY_CIRCLE_BEATS.forEach((beat) => {
     expectedByBeat.set(beat, []);
     metadataByBeat.set(beat, []);
   });
 
-  collectExpectedStoryCircleText(expectedByBeat, brief);
-  collectFinalStoryCircleMetadata(metadataByBeat, expectedByBeat, story);
+  collectExpectedStoryCircleText(expectedByBeat, brief, scope);
+  collectFinalStoryCircleMetadata(metadataByBeat, expectedByBeat, story, scope);
 
   STORY_CIRCLE_BEATS.forEach((beat) => {
     const expected = uniqueStrings(expectedByBeat.get(beat) ?? []);
     const metadata = metadataByBeat.get(beat) ?? [];
-    const proseMatches = expected
-      .filter((text) => textProvesExpectation(prose, text))
-      .map((text) => `final prose matches "${trimForEvidence(text)}"`);
+    const localizedMatches = metadata.flatMap((item) => {
+      const localizedProse = proseForEvidenceItem(proseSegments, item);
+      if (!localizedProse || !textProvesExpectation(localizedProse, item.text)) {
+        return [];
+      }
+      return [{
+        text: `final prose matches "${trimForEvidence(item.text)}"`,
+        episodeIndex: item.episodeIndex,
+        sceneIndex: item.sceneIndex,
+      }];
+    });
+    const proseMatches: Array<{ text: string; episodeIndex?: number; sceneIndex?: number }> = localizedMatches.length > 0
+      ? localizedMatches
+      : metadata.length === 0
+        ? expected
+          .filter((text) => textProvesExpectation(prose, text))
+          .map((text) => ({ text: `final prose matches "${trimForEvidence(text)}"` }))
+        : [];
 
     if (proseMatches.length > 0) {
-      const first = metadata[0];
+      const first = proseMatches.find((match) => match.episodeIndex !== undefined || match.sceneIndex !== undefined)
+        ?? metadata[0];
       beats[beat] = {
         beat,
         status: 'realized',
         expected,
-        evidence: proseMatches,
+        evidence: proseMatches.map((match) => match.text),
         firstEpisodeIndex: first?.episodeIndex,
         firstSceneIndex: first?.sceneIndex,
       };
@@ -1362,37 +1507,67 @@ function buildStoryCircleEvidence(story?: Story | null, brief?: Record<string, a
   };
 }
 
+function storyCircleEvidenceScope(story?: Story | null): StoryCircleEvidenceScope {
+  const generatedOutputScope = (story as any)?.generatedOutputScope;
+  const episodes = Array.isArray((story as any)?.episodes) ? (story as any).episodes : [];
+  const generatedEpisodeNumbers = new Set<number>();
+  episodes.forEach((episode: any, index: number) => {
+    const number = typeof episode?.number === 'number' ? episode.number : index + 1;
+    generatedEpisodeNumbers.add(number);
+  });
+  const range = generatedOutputScope?.generatedEpisodeRange;
+  if (range && typeof range.startEpisode === 'number' && typeof range.endEpisode === 'number') {
+    for (let n = range.startEpisode; n <= range.endEpisode; n += 1) generatedEpisodeNumbers.add(n);
+  }
+  return {
+    partialSeason: Boolean(generatedOutputScope?.isPartialSeason),
+    generatedEpisodeNumbers: generatedEpisodeNumbers.size > 0 ? generatedEpisodeNumbers : undefined,
+  };
+}
+
+function scopeIncludesEpisode(scope: StoryCircleEvidenceScope, episodeNumber: unknown): boolean {
+  if (!scope.partialSeason || !scope.generatedEpisodeNumbers || scope.generatedEpisodeNumbers.size === 0) return true;
+  return typeof episodeNumber === 'number' && scope.generatedEpisodeNumbers.has(episodeNumber);
+}
+
 function collectExpectedStoryCircleText(
   expectedByBeat: Map<StoryCircleBeat, string[]>,
   brief?: Record<string, any>,
+  scope: StoryCircleEvidenceScope = { partialSeason: false },
 ): void {
   if (!brief) {
     return;
   }
 
-  addStoryCircleStructure(expectedByBeat, brief.seasonPlan?.storyCircle);
-  addStoryCircleStructure(expectedByBeat, brief.multiEpisode?.sourceAnalysis?.storyCircle);
+  if (!scope.partialSeason) {
+    addStoryCircleStructure(expectedByBeat, brief.seasonPlan?.storyCircle);
+    addStoryCircleStructure(expectedByBeat, brief.multiEpisode?.sourceAnalysis?.storyCircle);
+  }
 
   const seasonContracts = brief.seasonPlan?.storyCircleBeatContracts;
   if (Array.isArray(seasonContracts)) {
-    seasonContracts.forEach((contract: any) => addContractExpectedText(expectedByBeat, contract));
+    seasonContracts
+      .filter((contract: any) => scopeIncludesEpisode(scope, contract?.targetEpisodeNumber))
+      .forEach((contract: any) => addContractExpectedText(expectedByBeat, contract));
   }
 
   const sourceContracts = brief.multiEpisode?.sourceAnalysis?.storyCircleBeatContracts;
   if (Array.isArray(sourceContracts)) {
-    sourceContracts.forEach((contract: any) => addContractExpectedText(expectedByBeat, contract));
+    sourceContracts
+      .filter((contract: any) => scopeIncludesEpisode(scope, contract?.targetEpisodeNumber))
+      .forEach((contract: any) => addContractExpectedText(expectedByBeat, contract));
   }
 
   const episodes = brief.seasonPlan?.episodes;
   if (Array.isArray(episodes)) {
-    episodes.forEach((episode: any) => {
+    episodes.filter((episode: any) => scopeIncludesEpisode(scope, episode?.episodeNumber ?? episode?.number)).forEach((episode: any) => {
       addStoryCircleRoleText(expectedByBeat, episode?.storyCircleRole, episode?.summary);
     });
   }
 
   const breakdown = brief.multiEpisode?.sourceAnalysis?.episodeBreakdown;
   if (Array.isArray(breakdown)) {
-    breakdown.forEach((episode: any) => {
+    breakdown.filter((episode: any) => scopeIncludesEpisode(scope, episode?.episodeNumber ?? episode?.number)).forEach((episode: any) => {
       addStoryCircleRoleText(expectedByBeat, episode?.storyCircleRole, episode?.summary);
     });
   }
@@ -1402,6 +1577,7 @@ function collectFinalStoryCircleMetadata(
   metadataByBeat: Map<StoryCircleBeat, Array<{ text: string; episodeIndex?: number; sceneIndex?: number }>>,
   expectedByBeat: Map<StoryCircleBeat, string[]>,
   story?: Story | null,
+  scope: StoryCircleEvidenceScope = { partialSeason: false },
 ): void {
   const episodes = Array.isArray((story as any)?.episodes) ? (story as any).episodes : [];
   episodes.forEach((episode: any, episodeIndex: number) => {
@@ -1415,6 +1591,9 @@ function collectFinalStoryCircleMetadata(
         contracts.forEach((contract: any) => {
           const beat = normalizeStoryCircleBeat(contract?.beat ?? contract?.storyCircleBeat ?? contract?.targetBeat);
           if (!beat) {
+            return;
+          }
+          if (!scopeIncludesEpisode(scope, contract?.targetEpisodeNumber ?? episode?.number ?? episodeIndex + 1)) {
             return;
           }
           const text = contract?.sourceText ?? contract?.target ?? contract?.requirement ?? contract?.description ?? contract?.summary;
@@ -1548,7 +1727,7 @@ function checkStoryCircleOrder(beats: Record<StoryCircleBeat, StoryCircleBeatEvi
   let previousBeat: StoryCircleBeat | undefined;
   for (const beat of STORY_CIRCLE_BEATS) {
     const evidence = beats[beat];
-    if (evidence.status === 'missing' || evidence.firstEpisodeIndex === undefined) {
+    if (evidence.status !== 'realized' || evidence.firstEpisodeIndex === undefined) {
       continue;
     }
     const order = evidence.firstEpisodeIndex * 1000 + (evidence.firstSceneIndex ?? 0);
@@ -1569,7 +1748,7 @@ function textProvesExpectation(prose: string, expectation: string): boolean {
   if (tokens.length === 0) {
     return false;
   }
-  const requiredMatches = tokens.length <= 3 ? tokens.length : Math.min(4, Math.ceil(tokens.length * 0.35));
+  const requiredMatches = tokens.length <= 3 ? tokens.length : Math.min(tokens.length, Math.max(4, Math.ceil(tokens.length * 0.35)));
   const matches = tokens.filter((token) => prose.includes(token)).length;
   return matches >= requiredMatches;
 }
@@ -1673,41 +1852,56 @@ function collectStaticStorySignals(story?: Story | null): StaticStorySignals {
 }
 
 function collectFinalProse(story?: Story | null): string[] {
-  const prose: string[] = [];
+  return collectFinalProseSegments(story).map((segment) => segment.text);
+}
+
+function collectFinalProseSegments(story?: Story | null): FinalProseSegment[] {
+  const prose: FinalProseSegment[] = [];
   const episodes = Array.isArray((story as any)?.episodes) ? (story as any).episodes : [];
-  episodes.forEach((episode: any) => {
+  episodes.forEach((episode: any, episodeIndex: number) => {
     const scenes = Array.isArray(episode?.scenes) ? episode.scenes : [];
-    scenes.forEach((scene: any) => {
+    scenes.forEach((scene: any, sceneIndex: number) => {
       if (typeof scene?.title === 'string') {
-        prose.push(scene.title);
+        prose.push({ text: scene.title, episodeIndex, sceneIndex });
       }
       const beats = Array.isArray(scene?.beats) ? scene.beats : [];
       beats.forEach((beat: any) => {
         if (typeof beat?.text === 'string') {
-          prose.push(beat.text);
+          prose.push({ text: beat.text, episodeIndex, sceneIndex });
         }
         const beatChoices = Array.isArray(beat?.choices) ? beat.choices : [];
         beatChoices.forEach((choice: any) => {
           if (typeof choice?.text === 'string') {
-            prose.push(choice.text);
+            prose.push({ text: choice.text, episodeIndex, sceneIndex });
           }
           if (typeof choice?.outcomeText === 'string') {
-            prose.push(choice.outcomeText);
+            prose.push({ text: choice.outcomeText, episodeIndex, sceneIndex });
           }
         });
       });
       const choices = Array.isArray(scene?.choices) ? scene.choices : [];
       choices.forEach((choice: any) => {
         if (typeof choice?.text === 'string') {
-          prose.push(choice.text);
+          prose.push({ text: choice.text, episodeIndex, sceneIndex });
         }
         if (typeof choice?.outcomeText === 'string') {
-          prose.push(choice.outcomeText);
+          prose.push({ text: choice.outcomeText, episodeIndex, sceneIndex });
         }
       });
     });
   });
   return prose;
+}
+
+function proseForEvidenceItem(
+  segments: FinalProseSegment[],
+  item: { episodeIndex?: number; sceneIndex?: number },
+): string {
+  const scoped = segments.filter((segment) =>
+    (item.episodeIndex === undefined || segment.episodeIndex === item.episodeIndex)
+    && (item.sceneIndex === undefined || segment.sceneIndex === item.sceneIndex),
+  );
+  return scoped.map((segment) => segment.text).join('\n').toLowerCase();
 }
 
 function detectLeakage(prose: string): QualityFinding[] {

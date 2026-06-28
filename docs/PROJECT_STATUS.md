@@ -10,9 +10,9 @@ StoryRPG is currently a local-first Expo/React Native application with two web a
 - **Reader** is the public player-facing app. It owns the story library, episode selection, playback, reader settings, persisted player state, media URL resolution, and analytics events for play.
 - **Generator** is the internal/local creation app. It owns source ingestion, story generation settings, provider credentials, generation job monitoring, style setup, image/video/audio continuation runs, visualizer access, and pipeline controls.
 
-The system still supports the older monolithic `App.tsx` route shell, but the current bundler target split is driven by `STORYRPG_APP_TARGET` and the app entries under `storyrpg-prototype/apps/`.
+The older monolithic `App.tsx` route shell has been removed. The current bundler target split is driven by `STORYRPG_APP_TARGET` and the app entries under `storyrpg-prototype/apps/`.
 
-The generation path is still centered on `FullStoryPipeline`. Parallelism now lives inside that pipeline and its helpers rather than in a separate `ParallelStoryPipeline`. `EpisodePipeline` exists as quarantined legacy code and is not the active path for new work.
+The generation path is still centered on `FullStoryPipeline`. Parallelism now lives inside that pipeline and its helpers rather than in a separate `ParallelStoryPipeline`. `EpisodePipeline` and `ParallelStoryPipeline` have both been removed.
 
 ## Current Runtime Targets
 
@@ -132,9 +132,8 @@ The primary generated package is:
 
 - `story.json` — versioned story package encoded by `story-codec`
 - `manifest.json` — package metadata and primary story file pointer
-- `08-final-story.json` — legacy mirror for older scripts and fallback readers
 
-The proxy catalog reads `manifest.json` first, then falls back to `story.json`, then to `08-final-story.json`. The client validates modern packages with `decodeStory` and still tolerates raw `Story` payloads for compatibility where the proxy returns a flattened story body.
+The proxy catalog reads `manifest.json` first, then falls back to `story.json`. Legacy-only directories must be migrated before runtime load. The client validates modern packages with `decodeStory`.
 
 Media is now resolved through `src/assets/assetResolver.ts` and `src/services/storyLibrary.ts` rather than by ad hoc URL string rewrites. The resolver accepts both:
 
@@ -406,12 +405,12 @@ The code still contains some legacy `EXPO_PUBLIC_*` provider-key fallbacks for l
 
 ## Known Compatibility Boundaries
 
-- `ImageGenerator.ts` remains as a compatibility export; active image data types live under `src/ai-agents/images/`.
-- `EpisodePipeline.ts` remains in the tree but is not an active orchestrator.
-- `08-final-story.json` is still written and read for legacy generated stories.
+- `ImageGenerator.ts` has been removed; active image data types live under `src/ai-agents/images/`.
+- `EpisodePipeline.ts` and `ParallelStoryPipeline` have been removed; `FullStoryPipeline` is the active orchestrator.
+- `08-final-story.json` is migration input only. New runs write `story.json` and `manifest.json`.
 - The old `useapi` provider string is normalized to `midapi`.
 - Some large legacy files still use `@ts-nocheck`, especially in generation, image orchestration, reader runtime state, and older story fixtures.
-- `App.tsx` still exists as a monolithic shell, but the target-specific app entries are the current deployment path.
+- The target-specific app entries are the current deployment path; the old monolithic `App.tsx` shell has been removed.
 - Stable Diffusion has only the A1111/Forge backend concretely implemented.
 - LoRA trainer enums include future backends, but `kohya` is the active sidecar implementation.
 

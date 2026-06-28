@@ -121,26 +121,6 @@ const DEFAULT_CAPABILITIES: Record<ImageProvider, ProviderCapabilities> = {
     rpmCeiling: 20,
     supportsLoraTraining: false,
   },
-  // `useapi` is a legacy alias for `midapi` — both route to the same Midjourney
-  // backend via useapi.net. Historically kept as a duplicated row; now that
-  // `normalizeProvider()` aliases useapi → midapi at construction, the alias
-  // is preserved here only for structural consumers that key off the union.
-  // `getProviderCapabilities()` redirects useapi → midapi below so the two
-  // can never drift apart.
-  useapi: {
-    id: 'useapi',
-    maxRefs: 2,
-    acceptsInlineRefs: false,
-    acceptsUrlRefs: true,
-    supportsBatch: false,
-    supportsSeed: true,
-    supportsNegativePrompt: true,
-    usesMidjourneyRefTokens: true,
-    minRequestIntervalMs: 3000,
-    concurrency: 2,
-    rpmCeiling: 20,
-    supportsLoraTraining: false,
-  },
   'dall-e': {
     id: 'dall-e',
     maxRefs: 16,
@@ -194,9 +174,9 @@ let runtimeOverrides: Partial<Record<ImageProvider, Partial<ProviderCapabilities
  * instead of letting two entries drift out of sync.
  */
 function canonicalProviderId(provider: ImageProvider | string | undefined): ImageProvider {
-  const p = (provider as ImageProvider) || 'placeholder';
+  const p = String(provider || 'placeholder');
   if (p === 'useapi') return 'midapi';
-  return p;
+  return p as ImageProvider;
 }
 
 /**
@@ -218,7 +198,7 @@ export function getProviderCapabilities(provider: ImageProvider | string | undef
  * Passing `undefined` clears the override for that provider.
  */
 export function overrideProviderCapabilities(
-  provider: ImageProvider,
+  provider: ImageProvider | string,
   override: Partial<ProviderCapabilities> | undefined
 ): void {
   const key = canonicalProviderId(provider);

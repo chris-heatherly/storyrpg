@@ -554,9 +554,8 @@ npm run generate:template -- --input /path/to/your/template.txt
 ```
 
 Generated stories appear in the `generated-stories/` directory. Modern runs
-write `story.json`, `manifest.json`, and the legacy `08-final-story.json`
-mirror. They show up in the Reader catalog on refresh when the proxy is
-running.
+write `story.json` and `manifest.json`. They show up in the Reader catalog on
+refresh when the proxy is running.
 
 ---
 
@@ -1024,7 +1023,6 @@ storyrpg-prototype/               ← The application root
 │   │   │   ├── StoryArchitect.ts ← Overall story planning
 │   │   │   ├── SceneWriter.ts    ← Scene content generation
 │   │   │   ├── ChoiceAuthor.ts   ← Choice generation
-│   │   │   ├── ImageGenerator.ts ← Legacy compatibility export for image prompt types
 │   │   │   └── image-team/       ← Advanced visual generation
 │   │   ├── pipeline/             ← Generation orchestration
 │   │   ├── services/             ← External API integrations

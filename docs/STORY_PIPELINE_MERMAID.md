@@ -1,8 +1,8 @@
 # StoryRPG Pipeline Mermaid Chart
 
-**Last Updated:** May 25, 2026
+**Last Updated:** June 27, 2026
 
-This diagram shows the end-to-end StoryRPG generation pipeline, from the Generator UI through the proxy worker, multi-agent story generation, media generation, QA, output writing, and playback.
+This diagram shows the end-to-end StoryRPG generation pipeline, from the Generator UI through the proxy worker, multi-agent story generation, story validation, post-story media generation, output writing, and playback.
 
 ```mermaid
 flowchart TD
@@ -134,7 +134,7 @@ flowchart TD
     Q12 --> Q13
     Q13 -->|critical repair feedback| E1
 
-    subgraph Media["Media generation"]
+    subgraph Media["Post-story media generation"]
         M1[ImageAgentTeam]
         M2[Style bible anchors]
         M3[Character reference sheets]
@@ -153,7 +153,7 @@ flowchart TD
         M16[NarrationService / ElevenLabs]
     end
 
-    Q13 --> M1
+    Q13 -->|story agents complete| M1
     S1 --> M2
     S3 --> M3
     M1 --> M2

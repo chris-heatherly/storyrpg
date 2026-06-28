@@ -82,7 +82,7 @@ describe('choiceMemoryDebt', () => {
           id: 'b2',
           text: 'The hallway narrows.',
           textVariants: [{
-            condition: { type: 'flag', flag: 'accepted_mikas_protection' },
+            condition: { type: 'flag', flag: 'accepted_mikas_protection', value: true },
             text: 'residue:mika_protection callbackHookId flag',
             residueObligationId: 'residue:mika_protection',
           }],
@@ -101,7 +101,7 @@ describe('choiceMemoryDebt', () => {
           id: 'b2',
           text: 'The hallway narrows.',
           textVariants: [{
-            condition: { type: 'flag', flag: 'accepted_mikas_protection' },
+            condition: { type: 'flag', flag: 'accepted_mikas_protection', value: true },
             text: 'The hallway narrows around you. Mika keeps half a step closer after your answer.',
             residueObligationId: 'residue:mika_protection',
           }],

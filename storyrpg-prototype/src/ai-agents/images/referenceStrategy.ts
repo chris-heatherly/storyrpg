@@ -33,7 +33,7 @@
  *     testing: one clean front view as the identity anchor, optionally
  *     a tight face crop. Generate nothing else.
  *
- *   midapi / useapi (Midjourney)
+ *   midapi (Midjourney via useapi.net)
  *     Midjourney accepts exactly two reference slots (`--cref` identity
  *     and `--sref` style). The composite turnaround is the canonical
  *     `--cref` format. No individual views, no expression sheets.
@@ -156,15 +156,6 @@ const STRATEGIES: Record<ImageProvider, ReferenceStrategy> = {
     sceneRefs: 'composite-anchor',
     maxSceneRefs: 2,
   },
-  useapi: {
-    generateViews: ['front', 'three-quarter', 'profile'],
-    generateComposite: true,
-    generateExpressions: false,
-    generateBodyVocabulary: false,
-    generateSilhouette: false,
-    sceneRefs: 'composite-anchor',
-    maxSceneRefs: 2,
-  },
   'dall-e': {
     // gpt-image-2: a single clean front view is the highest-signal ref.
     // Composite copies as a collage, three-quarter / profile add little,
@@ -208,9 +199,9 @@ const STRATEGIES: Record<ImageProvider, ReferenceStrategy> = {
  * so both tables answer for the same canonical slug.
  */
 function canonicalProviderId(provider: ImageProvider | string | undefined): ImageProvider {
-  const p = (provider as ImageProvider) || 'placeholder';
+  const p = String(provider || 'placeholder');
   if (p === 'useapi') return 'midapi';
-  return p;
+  return p as ImageProvider;
 }
 
 /**

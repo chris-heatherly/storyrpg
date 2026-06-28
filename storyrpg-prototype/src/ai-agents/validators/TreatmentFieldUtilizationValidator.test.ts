@@ -613,6 +613,36 @@ describe('TreatmentFieldUtilizationValidator', () => {
     expect(result.issues.filter((issue) => issue.message.includes('World/location treatment field'))).toEqual([]);
   });
 
+  it('defers staged world-premise revelation during partial final validation', () => {
+    const contract = {
+      ...worldContracts().find((candidate) => candidate.contractKind === 'supernatural_rule')!,
+      targetEpisodeNumbers: [1],
+      targetSceneIds: ['s1-1'],
+      sourceText: "Modern Bucharest, present day. Underneath, revealed only in stages, a thriving supernatural society older than the country's current name.",
+    };
+    const plan = {
+      ...plannedSeasonPlan({}),
+      totalEpisodes: 8,
+      worldTreatmentContracts: [contract],
+      scenePlan: {
+        scenes: [{ id: 's1-1', episodeNumber: 1, title: 'The Gate', order: 1, worldTreatmentContracts: [contract] }],
+        byEpisode: { 1: ['s1-1'] },
+        setupPayoffEdges: [],
+        worldTreatmentContracts: [contract],
+      },
+    } as unknown as SeasonPlan;
+
+    const result = new TreatmentFieldUtilizationValidator().validate({
+      sourceAnalysis: { ...analysis({}), worldTreatmentContracts: [contract], totalEstimatedEpisodes: 8 } as SourceMaterialAnalysis,
+      seasonPlan: plan,
+      story: finalStoryForScene('s1-1', 'Bucharest glitters around Mara, but the oldest rules stay just out of reach.'),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+
+    expect(result.issues.filter((issue) => issue.message.includes('World/location treatment field'))).toEqual([]);
+  });
+
   it('extracts stakes architecture guidance and builds contracts for every stake lane', () => {
     const treatment = extractTreatmentFromMarkdown(stakesTreatmentMarkdown());
     const guidance = treatment.seasonGuidance?.stakesArchitectureGuidance;

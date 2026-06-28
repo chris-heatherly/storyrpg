@@ -703,6 +703,13 @@ export interface SceneProseRepairOptions {
    * still preserve already-realized planned treatment moments.
    */
   plannedMomentSources?: ReadonlyMap<string, SceneContractSource> | Record<string, SceneContractSource | undefined>;
+  /**
+   * When true, do not commit an LLM rewrite unless the handler's local realization
+   * check predicts the current blocking checklist will clear. This is used by the
+   * final-contract loop to avoid repeated spend on partial rewrites of the same
+   * authored moment; other callers may keep degraded partial-repair behavior.
+   */
+  requirePredictedClear?: boolean;
 }
 
 function plannedMomentSourceFor(
@@ -797,6 +804,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
       const preservationNotes = preservedMomentLabels.length > 0
         ? `\n\nLOCKED EXISTING MOMENTS: this scene already depicts these required moments. Preserve them on-page while making the repair; do not paraphrase them away or delete their concrete nouns/dialogue.\n- ${preservedMomentLabels.join('\n- ')}`
         : '';
+      const sceneBeforeRepair = cloneRepairableScene(scene);
       try {
         // Up to two critic passes per scene per round: the first works from a
         // checklist of the moment's still-missing content words; if the merged
@@ -883,6 +891,13 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           );
         }
         if (sceneMerged > 0) {
+          if (opts.requirePredictedClear && !predictedClear) {
+            restoreRepairableScene(scene, sceneBeforeRepair);
+            opts.emit?.(
+              `Scene-prose contract repair: restored ${sceneId} because the rewrite still did not satisfy the authored checklist after bounded retry.`,
+            );
+            continue;
+          }
           totalMerged += sceneMerged;
           repairedScenes.push(sceneId);
           if (predictedClear) clearedScenes.push(sceneId);

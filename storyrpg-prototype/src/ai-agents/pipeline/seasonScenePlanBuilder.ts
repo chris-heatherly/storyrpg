@@ -353,7 +353,7 @@ function inferPlannerTurnContract(scene: PlannedScene): SceneTurnContract {
     return makeTurnContract(scene, 'encounter', central, {
       beforeState: `Before the encounter turns, the player understands the stakes: ${scene.stakes || scene.dramaticPurpose}.`,
       afterState: scene.encounter?.aftermathConsequence || 'The encounter outcome leaves visible fallout, cost, or changed leverage.',
-      handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or next-scene pressure.',
+      handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or sharpened pressure.',
     });
   }
   if (scene.hasChoice) {
@@ -376,7 +376,7 @@ function applyAuthoredTurnContract(scene: PlannedScene, beat: RequiredBeat): voi
     beforeState: `Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.`,
     turnEvent: beat.mustDepict,
     afterState: `After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.`,
-    handoff: `Do not leave immediately after "${beat.mustDepict}"; provide aftermath or a grounded transition into the next scene.`,
+    handoff: `After "${beat.mustDepict}", keep the aftermath on-page until a visible consequence carries the moment forward.`,
   });
 }
 

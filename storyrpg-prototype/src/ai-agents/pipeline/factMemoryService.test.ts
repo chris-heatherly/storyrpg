@@ -39,7 +39,7 @@ describe('FactMemoryService', () => {
     ]));
     expect(writeFactSnapshot).toHaveBeenCalled();
     expect((memory.cognifyDatasets as any)).toHaveBeenCalledWith(['storyrpg-run-bite-me'], { background: true });
-    expect(writeFactSnapshot.mock.calls[0][0]).toMatchObject({
+    expect((writeFactSnapshot.mock.calls[0] as unknown[])[0]).toMatchObject({
       storyId: 'Bite Me',
       runId: 'bite-me',
       episodeNumber: 2,

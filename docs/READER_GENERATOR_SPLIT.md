@@ -23,8 +23,8 @@ The target is selected by `STORYRPG_APP_TARGET`.
 `metro.config.js` resolves `@storyrpg/app-entry` to one of those files.
 `app.config.js` sets Expo name/slug from the same target.
 
-`App.tsx` remains in the repo as a legacy/monolithic shell. Do not treat it as
-the public deployment boundary.
+The old monolithic `App.tsx` shell has been removed. The target-specific app
+entries are the only app shells.
 
 ## Reader Responsibilities
 

@@ -137,6 +137,57 @@ describe('storyEngine.processBeat encounter gating', () => {
     expect(processed.skillInsights).toEqual(['The scrape marks beneath the desk point toward the window.']);
   });
 
+  it('uses fiction-first fallback when unsafe planning text is stripped', () => {
+    const player = createPlayer();
+    const story: Story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      synopsis: 'Test',
+      genre: 'Paranormal romance',
+      coverImage: '',
+      initialState: { attributes: player.attributes, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [],
+    };
+    const beat = {
+      id: 's1-5__beat-5',
+      text: 'PEAK: In the park when the shadow appears: scream, run, freeze, or fight — And next morning, what name do you give him: Mr. Midnight (canonical), The Stranger, The Velvet, or The Suit.',
+      primaryAction: 'Kylie claws at the wet bark and fights for breath.',
+      choices: [],
+    };
+
+    const processed = processBeat(beat as any, player, story);
+
+    expect(processed.text).toBe('Kylie claws at the wet bark and fights for breath.');
+    expect(processed.text).not.toMatch(/PEAK|canonical|what name do you give him|journey|challenges|decisions/i);
+  });
+
+  it('does not render visual-contract fallback prose as player-facing beat text', () => {
+    const player = createPlayer();
+    const story: Story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      synopsis: 'Test',
+      genre: 'Paranormal romance',
+      coverImage: '',
+      initialState: { attributes: player.attributes, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [],
+    };
+    const beat = {
+      id: 's1-arrival-cold-open__beat-1',
+      text: "Kylie Marinescu's composed surface slips through a small evasive movement as her hands and attention lock onto the window.",
+      visualMoment: "Kylie Marinescu's composed surface slips through a small evasive movement.",
+      primaryAction: 'the character reacts through a visible gesture, object cue, or shift in distance',
+      choices: [],
+    };
+
+    const processed = processBeat(beat as any, player, story);
+
+    expect(processed.text).toBe('The moment tightens. You take the next breath and move before fear can close around you.');
+    expect(processed.text).not.toMatch(/composed surface|small evasive movement|subtext visible|visible gesture/i);
+  });
+
   it('shows relationship-gated encounter choices as locked when configured to showWhenLocked', () => {
     const player = createPlayer();
     player.relationships.mara = {

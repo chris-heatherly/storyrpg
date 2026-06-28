@@ -335,7 +335,7 @@ function rawTurnContract(sceneId: string, rs: RawScene, source: SceneTurnContrac
     beforeState: str(rs.beforeState) || `Before the turn, the scene is still governed by: ${str(rs.dramaticPurpose) || str(rs.stakes) || str(rs.title) || centralTurn}.`,
     turnEvent: str(rs.turnEvent) || centralTurn,
     afterState: str(rs.afterState) || 'The scene ends in a changed state.',
-    handoff: str(rs.handoff) || 'Hand the changed state into the next scene.',
+    handoff: str(rs.handoff) || 'Hand the changed state into visible pressure.',
   };
 }
 
@@ -417,7 +417,7 @@ function ensureAuthoredTurnSceneCapacity(ep: SeasonEpisode, scenes: PlannedScene
         beforeState: 'Establish where the player is, who is present, and what pressure makes the authored turn happen.',
         turnEvent: turn,
         afterState: 'Show the immediate emotional, social, practical, or informational consequence of the authored turn.',
-        handoff: 'Provide aftermath or a grounded transition into the next scene.',
+        handoff: 'Provide aftermath or a grounded consequence that carries the moment forward.',
       },
     };
     if (insertAt >= 0) scenes.splice(insertAt, 0, added);
@@ -706,7 +706,7 @@ function normalizeEpisodeScenes(
         beforeState: `Before the encounter turns, the player understands the stakes: ${enc.stakes || enc.description}.`,
         turnEvent: enc.centralConflict || enc.description || enc.stakes || `Encounter ${enc.id}`,
         afterState: enc.aftermathConsequence || 'The encounter outcome leaves visible fallout, cost, or changed leverage.',
-        handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or next-scene pressure.',
+        handoff: 'Resolve the encounter into a clear consequence, aftermath beat, or sharpened pressure.',
       },
       encounter: sceneEncounter,
       hasChoice: budget.hasChoice,

@@ -223,6 +223,11 @@ function sanitizeReaderLine(text?: string | null): string | undefined {
   return sanitized || undefined;
 }
 
+function displayReaderText(text?: string | null): string {
+  return sanitizeReaderLine(text)
+    || 'The moment tightens. You take the next breath and move before fear can close around you.';
+}
+
 export const StoryReader: React.FC<StoryReaderProps> = ({
   onEpisodeComplete,
   onStoryComplete,
@@ -1919,7 +1924,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         <View style={styles.textPanel}>
           <NarrativeText
             text={[
-              processedBeat.text,
+              displayReaderText(processedBeat.text),
               ...(processedBeat.skillInsights ?? []),
             ].filter(Boolean).join('\n\n')}
             speaker={processedBeat.speaker}

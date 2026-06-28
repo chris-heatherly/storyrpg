@@ -65,8 +65,6 @@ export const FALLBACK_MODEL_OPTIONS: Record<GeneratorLlmProvider, ModelOption[]>
     { value: 'qwen/qwen3.7-max', label: 'Qwen 3.7 Max', description: 'Agent-centric, strong coding/structure.' },
     { value: 'qwen/qwen3.6-flash', label: 'Qwen 3.6 Flash', description: 'Cheapest/fastest — best for QA grading.' },
     { value: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash', description: 'Efficient MoE — cheap prompting/grading.' },
+    { value: 'openrouter/fusion', label: 'OpenRouter Fusion', description: 'Hosted multi-model synthesis router for deep audits.' },
   ],
 };
-
-/** @deprecated Use FALLBACK_MODEL_OPTIONS or dynamic models from useAvailableModels */
-export const PROVIDER_MODEL_OPTIONS = FALLBACK_MODEL_OPTIONS;

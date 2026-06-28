@@ -86,6 +86,83 @@ export interface AgentConfig {
   openaiReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   /** OpenAI-only: force JSON response format for structured agent outputs. */
   openaiForceJsonResponse?: boolean;
+  /** OpenRouter-only routing metadata. Ignored by non-OpenRouter transports. */
+  openRouter?: {
+    models?: string[];
+    provider?: {
+      order?: string[];
+      allowFallbacks?: boolean;
+      requireParameters?: boolean;
+      dataCollection?: 'allow' | 'deny';
+      sort?: 'price' | 'throughput' | 'latency';
+    };
+    transforms?: string[];
+    route?: 'fallback' | 'fusion' | 'default';
+  };
+}
+
+export type QualityCouncilMode = 'advisory' | 'repair-routing' | 'strict';
+export type QualityCouncilFusionTrigger = 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
+
+export interface QualityCouncilConfig {
+  enabled: boolean;
+  mode: QualityCouncilMode;
+  runPlanCouncil: boolean;
+  runChoiceCouncil: boolean;
+  runRoutePlaytestCouncil: boolean;
+  runFinalCouncil: boolean;
+  fusion?: {
+    enabled: boolean;
+    model: string;
+    onlyWhen: QualityCouncilFusionTrigger;
+  };
+  maxCouncilCallsPerRun: number;
+  maxCandidateChoiceSets: number;
+  minQualityScoreForFinalSkip?: number;
+}
+
+function parseQualityCouncilMode(value: unknown): QualityCouncilMode {
+  return value === 'repair-routing' || value === 'strict' ? value : 'advisory';
+}
+
+function parseFusionTrigger(value: unknown): QualityCouncilFusionTrigger {
+  return value === 'manual' || value === 'borderline-quality' || value === 'validator-disagreement' || value === 'always-final'
+    ? value
+    : 'borderline-quality';
+}
+
+function parseBool(value: unknown, defaultValue: boolean): boolean {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return value === true || value === '1' || value === 'true';
+}
+
+function parsePositiveInt(value: unknown, defaultValue: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+export function resolveQualityCouncilConfig(
+  env: Record<string, string | undefined>,
+  overrides?: Partial<QualityCouncilConfig>,
+): QualityCouncilConfig {
+  const enabled = overrides?.enabled ?? parseBool(env.STORYRPG_QUALITY_COUNCIL ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL, false);
+  const fusionEnabled = overrides?.fusion?.enabled ?? parseBool(env.STORYRPG_QUALITY_COUNCIL_FUSION ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION, false);
+  return {
+    enabled,
+    mode: parseQualityCouncilMode(overrides?.mode ?? env.STORYRPG_QUALITY_COUNCIL_MODE ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MODE),
+    runPlanCouncil: overrides?.runPlanCouncil ?? true,
+    runChoiceCouncil: overrides?.runChoiceCouncil ?? true,
+    runRoutePlaytestCouncil: overrides?.runRoutePlaytestCouncil ?? true,
+    runFinalCouncil: overrides?.runFinalCouncil ?? true,
+    fusion: {
+      enabled: fusionEnabled,
+      model: overrides?.fusion?.model || env.STORYRPG_QUALITY_COUNCIL_FUSION_MODEL || env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION_MODEL || 'openrouter/fusion',
+      onlyWhen: parseFusionTrigger(overrides?.fusion?.onlyWhen ?? env.STORYRPG_QUALITY_COUNCIL_FUSION_ONLY_WHEN ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION_ONLY_WHEN),
+    },
+    maxCouncilCallsPerRun: overrides?.maxCouncilCallsPerRun ?? parsePositiveInt(env.STORYRPG_QUALITY_COUNCIL_MAX_CALLS ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MAX_CALLS, 24),
+    maxCandidateChoiceSets: overrides?.maxCandidateChoiceSets ?? parsePositiveInt(env.STORYRPG_QUALITY_COUNCIL_MAX_CHOICE_CANDIDATES ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MAX_CHOICE_CANDIDATES, 3),
+    minQualityScoreForFinalSkip: overrides?.minQualityScoreForFinalSkip,
+  };
 }
 
 // Generation settings from UI
@@ -299,13 +376,22 @@ export const DEFAULT_VIDEO_SETTINGS: Required<VideoSettingsConfig> = {
   apiKey: '',
 };
 
+export type NarrationProvider = 'elevenlabs' | 'gemini';
+
+export const DEFAULT_GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+
 // Narration/Audio settings from UI
 export interface NarrationSettingsConfig {
   enabled?: boolean;
+  provider?: NarrationProvider;
   elevenLabsApiKey?: string;
+  geminiApiKey?: string;
+  geminiModel?: string;
   autoPlay?: boolean;
   preGenerateAudio?: boolean;
   voiceId?: string;
+  voiceCastingEnabled?: boolean;
+  performanceTagsEnabled?: boolean;
   highlightMode?: 'none' | 'word' | 'sentence';
 }
 
@@ -319,7 +405,7 @@ export interface ImageReferenceSettings {
 }
 
 export type ImageResolution = '512px' | '1K' | '2K' | '4K';
-export type ImageProvider = 'nano-banana' | 'atlas-cloud' | 'midapi' | 'useapi' | 'dall-e' | 'stable-diffusion' | 'placeholder';
+export type ImageProvider = 'nano-banana' | 'atlas-cloud' | 'midapi' | 'dall-e' | 'stable-diffusion' | 'placeholder';
 
 // Gemini (Nano Banana) specific tuning parameters
 export interface GeminiSettings extends ImageReferenceSettings {
@@ -343,12 +429,6 @@ export interface GeminiSettings extends ImageReferenceSettings {
   referenceResolution?: ImageResolution;
   /** Resolution for cover art and master location images (default: '2K') */
   coverResolution?: ImageResolution;
-  /**
-   * @deprecated Character reference generation is provider-strategy driven.
-   * Front-only providers generate one clean front view + derived face crop;
-   * Midjourney may generate a composite; legacy persisted values are ignored.
-   */
-  useIndividualCharacterViews?: boolean;
   /**
    * When true (default), the composite model sheet is attached as a
    * low-weight style anchor to Gemini/Atlas scene generations instead of
@@ -379,7 +459,6 @@ export const DEFAULT_GEMINI_SETTINGS: Required<GeminiSettings> = {
   sceneResolution: '1K',
   referenceResolution: '2K',
   coverResolution: '2K',
-  useIndividualCharacterViews: true,
   compositeAsStyleAnchor: true,
   thinkingLevel: 'minimal',
   referenceThinkingLevel: 'high',
@@ -747,6 +826,11 @@ export interface PipelineConfig {
      * the content. See docs/PROJECT_AUDIT_2026-05-28.md.
      */
     qaRunner?: AgentConfig;
+    qualityCouncilPlan?: AgentConfig;
+    qualityCouncilChoice?: AgentConfig;
+    qualityCouncilPlaytest?: AgentConfig;
+    qualityCouncilFinal?: AgentConfig;
+    qualityCouncilFusion?: AgentConfig;
     /**
      * Branch-annotation config. Since BranchManager only annotates a
      * deterministic skeleton now, it defaults to the cheaper QA-tier model
@@ -773,12 +857,6 @@ export interface PipelineConfig {
     openaiModeration?: 'auto' | 'low';
     model?: string;
     provider?: ImageProvider;
-    /**
-     * Selects the image orchestration path. `storyboard-v2` is the default
-     * GPT Image storyboard pipeline for this branch; `legacy` preserves the
-     * older ImageAgentTeam/provider-heavy path for explicit fallback.
-     */
-    pipelineMode?: 'storyboard-v2' | 'legacy';
     storyboardV2?: {
       maxPanelsPerSheet?: number;
       cropInsetRatio?: number;
@@ -912,6 +990,7 @@ export interface PipelineConfig {
      */
     maxScenesPerEpisode?: number;
   };
+  qualityCouncil?: QualityCouncilConfig;
 }
 
 export interface MemoryConfig {
@@ -1009,6 +1088,45 @@ export function loadConfig(): PipelineConfig {
   // Parse validation mode from environment
   const validationMode = (env.EXPO_PUBLIC_VALIDATION_MODE || env.VALIDATION_MODE) as 'strict' | 'advisory' | 'disabled' | undefined;
   const failurePolicy = ((env.EXPO_PUBLIC_FAILURE_POLICY || env.FAILURE_POLICY) as 'fail_fast' | 'recover' | undefined) || 'fail_fast';
+  const qualityCouncil = resolveQualityCouncilConfig(env);
+  const buildCouncilConfig = (
+    envProvider: string,
+    envModel: string,
+    fallbackModel: string,
+    maxTokens = 4096,
+    temperature = 0.25,
+  ): AgentConfig => {
+    const provider = ((env[envProvider] as AgentConfig['provider']) || env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER || defaultConfig.provider) as AgentConfig['provider'];
+    return {
+      ...defaultConfig,
+      provider,
+      model: env[envModel] || fallbackModel,
+      apiKey: resolveProviderApiKey(provider),
+      maxTokens,
+      temperature,
+      openRouter: provider === 'openrouter'
+        ? { provider: { allowFallbacks: true, requireParameters: true } }
+        : undefined,
+    };
+  };
+  const councilAgents = qualityCouncil.enabled
+    ? {
+        qualityCouncilPlan: buildCouncilConfig('QUALITY_COUNCIL_PLAN_PROVIDER', 'QUALITY_COUNCIL_PLAN_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
+        qualityCouncilChoice: buildCouncilConfig('QUALITY_COUNCIL_CHOICE_PROVIDER', 'QUALITY_COUNCIL_CHOICE_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
+        qualityCouncilPlaytest: buildCouncilConfig('QUALITY_COUNCIL_PLAYTEST_PROVIDER', 'QUALITY_COUNCIL_PLAYTEST_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
+        qualityCouncilFinal: buildCouncilConfig('QUALITY_COUNCIL_FINAL_PROVIDER', 'QUALITY_COUNCIL_FINAL_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model, 4096, 0.2),
+        qualityCouncilFusion: {
+          ...buildCouncilConfig('QUALITY_COUNCIL_FUSION_PROVIDER', 'QUALITY_COUNCIL_FUSION_MODEL', qualityCouncil.fusion?.model || 'openrouter/fusion', 8192, 0.2),
+          provider: 'openrouter' as const,
+          model: qualityCouncil.fusion?.model || 'openrouter/fusion',
+          apiKey: resolveProviderApiKey('openrouter'),
+          openRouter: {
+            route: 'fusion' as const,
+            provider: { allowFallbacks: true, requireParameters: true },
+          },
+        },
+      }
+    : {};
 
   return {
     agents: {
@@ -1086,6 +1204,7 @@ export function loadConfig(): PipelineConfig {
         maxTokens: 8192,
         temperature: 0.7,
       },
+      ...councilAgents,
     },
     validation: {
       ...defaultValidationConfig,
@@ -1095,6 +1214,7 @@ export function loadConfig(): PipelineConfig {
     debug: env.EXPO_PUBLIC_DEBUG === 'true' || env.DEBUG === 'true',
     outputDir: env.EXPO_PUBLIC_OUTPUT_DIR || env.OUTPUT_DIR || './generated-content',
     artStyle: env.EXPO_PUBLIC_ART_STYLE || env.ART_STYLE,
+    qualityCouncil,
     imageGen: {
       enabled: env.EXPO_PUBLIC_IMAGE_GENERATION_ENABLED !== 'false' && env.IMAGE_GENERATION_ENABLED !== 'false',
       apiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
@@ -1104,9 +1224,6 @@ export function loadConfig(): PipelineConfig {
       openaiModeration: openaiSettingsFromEnv.imageModeration,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
       provider: env.EXPO_PUBLIC_IMAGE_PROVIDER || env.IMAGE_PROVIDER || 'nano-banana',
-      pipelineMode: (env.EXPO_PUBLIC_IMAGE_PIPELINE_MODE || env.IMAGE_PIPELINE_MODE) === 'legacy'
-        ? 'legacy'
-        : 'storyboard-v2',
       storyboardV2: {
         maxPanelsPerSheet: Number.parseInt(env.IMAGE_STORYBOARD_V2_MAX_PANELS_PER_SHEET || '6', 10) || 6,
         cropInsetRatio: Number.parseFloat(env.IMAGE_STORYBOARD_V2_CROP_INSET_RATIO || '0.04') || 0.04,

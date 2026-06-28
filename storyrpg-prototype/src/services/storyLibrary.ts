@@ -58,9 +58,8 @@ export function resolveMedia(ref: unknown, story?: Story | Partial<Story>): stri
  * with a runtime-resolvable URL string. Used by the UI right before
  * handing a Story to the engine / reader.
  *
- * Replaces the old `normalizeStoryMediaUrls` helper but routes every
- * rewrite through the single resolver, so the transformation rules
- * live in one place.
+ * Routes every media rewrite through the single resolver, so the
+ * transformation rules live in one place.
  */
 export function resolveStoryMedia(story: Story): Story {
   const ctx = runtimeResolveCtx(story);
@@ -311,11 +310,3 @@ export async function fetchStoryByCatalogEntry(
   }
   return null;
 }
-
-/**
- * Back-compat alias. Kept exported so older imports keep working
- * while the codebase migrates to `resolveStoryMedia`.
- *
- * @deprecated use resolveStoryMedia
- */
-export const normalizeStoryMediaUrls = resolveStoryMedia;

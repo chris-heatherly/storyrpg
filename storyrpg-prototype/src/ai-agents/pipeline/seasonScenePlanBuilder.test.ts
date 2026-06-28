@@ -92,7 +92,11 @@ describe('buildSeasonScenePlan', () => {
           id: 'treatment-enc-3-1',
           description: 'The kiss in the hedge maze at midnight.',
           type: 'social',
-          difficulty: 'medium',
+          difficulty: 'moderate',
+          npcsInvolved: ['victor'],
+          stakes: 'Kylie risks confusing glamour for safety.',
+          relevantSkills: ['empathy'],
+          isBranchPoint: false,
         },
       ],
     });

@@ -1303,6 +1303,7 @@ Do not use markdown code blocks around the JSON.
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     const model = this.config.model || 'x-ai/grok-4.3';
+    const openRouter = this.config.openRouter;
     const body: Record<string, unknown> = {
       model,
       messages: messages.map((m) => {
@@ -1327,6 +1328,24 @@ Do not use markdown code blocks around the JSON.
       max_tokens: jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens,
       temperature: this.config.temperature,
     };
+    if (openRouter?.models && openRouter.models.length > 0) {
+      body.models = openRouter.models;
+    }
+    if (openRouter?.provider) {
+      body.provider = {
+        ...(openRouter.provider.order ? { order: openRouter.provider.order } : {}),
+        ...(typeof openRouter.provider.allowFallbacks === 'boolean' ? { allow_fallbacks: openRouter.provider.allowFallbacks } : {}),
+        ...(typeof openRouter.provider.requireParameters === 'boolean' ? { require_parameters: openRouter.provider.requireParameters } : {}),
+        ...(openRouter.provider.dataCollection ? { data_collection: openRouter.provider.dataCollection } : {}),
+        ...(openRouter.provider.sort ? { sort: openRouter.provider.sort } : {}),
+      };
+    }
+    if (openRouter?.transforms && openRouter.transforms.length > 0) {
+      body.transforms = openRouter.transforms;
+    }
+    if (openRouter?.route === 'fusion' && !body.models) {
+      body.model = model || 'openrouter/fusion';
+    }
     if (jsonSchema) {
       body.response_format = {
         type: 'json_schema',

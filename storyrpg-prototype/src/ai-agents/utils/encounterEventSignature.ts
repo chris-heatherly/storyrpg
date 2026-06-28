@@ -27,7 +27,7 @@ const STOPWORDS = new Set([
 
 const LOCATION_ALIASES: Array<[string, RegExp]> = [
   ['cismigiu', /\b(?:cismigiu|cișmigiu|cismigiu\s+gardens?|gardens?|park)\b/i],
-  ['apartment', /\b(?:apartment|flat|walk-up|deadbolt|welcome\s+mat|lipscani\s+apartment)\b/i],
+  ['apartment', /\b(?:apartment|walk-up|deadbolt|welcome\s+mat|lipscani\s+apartment)\b/i],
   ['club', /\b(?:valcescu|vâlcescu|booth|velvet\s+rope|front\s+line|side\s+entrance|the\s+club)\b/i],
   ['rooftop', /\b(?:rooftop|roof|terrace)\b/i],
   ['bookshop', /\b(?:bookshop|bookstore|book\s+shop|lumina|books)\b/i],

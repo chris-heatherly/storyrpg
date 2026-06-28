@@ -250,16 +250,15 @@ function readJson<T>(file: string): T | undefined {
   }
 }
 
-/** story.json wraps the Story under `.story`; 08-final-story.json is the raw Story. */
+/** story.json wraps the Story under `.story`. */
 function loadStory(runDir: string): { story: Story; source: string } | undefined {
-  for (const candidate of ['story.json', '08-final-story.json']) {
-    const file = path.join(runDir, candidate);
-    if (!fs.existsSync(file)) continue;
-    const raw = readJson<Record<string, unknown>>(file);
-    if (!raw) continue;
-    const story = (Array.isArray(raw.episodes) ? raw : raw.story) as Story | undefined;
-    if (story && Array.isArray(story.episodes)) return { story, source: candidate };
-  }
+  const candidate = 'story.json';
+  const file = path.join(runDir, candidate);
+  if (!fs.existsSync(file)) return undefined;
+  const raw = readJson<Record<string, unknown>>(file);
+  if (!raw) return undefined;
+  const story = (Array.isArray(raw.episodes) ? raw : raw.story) as Story | undefined;
+  if (story && Array.isArray(story.episodes)) return { story, source: candidate };
   return undefined;
 }
 
@@ -333,7 +332,7 @@ function findRunDirs(corpus: string, filter?: string): string[] {
     if (filter && !name.includes(filter)) continue;
     const dir = path.join(root, name);
     if (!fs.statSync(dir).isDirectory()) continue;
-    if (fs.existsSync(path.join(dir, 'story.json')) || fs.existsSync(path.join(dir, '08-final-story.json'))) {
+    if (fs.existsSync(path.join(dir, 'story.json'))) {
       out.push(dir);
     }
   }
@@ -407,7 +406,7 @@ function main(): void {
   const gates = selectGates(args.gates);
   const runDirs = findRunDirs(args.corpus, args.runsFilter);
   if (runDirs.length === 0) {
-    console.error(`No run dirs with story.json / 08-final-story.json under ${args.corpus}`
+    console.error(`No run dirs with story.json under ${args.corpus}`
       + (args.runsFilter ? ` matching "${args.runsFilter}"` : ''));
     process.exit(1);
   }

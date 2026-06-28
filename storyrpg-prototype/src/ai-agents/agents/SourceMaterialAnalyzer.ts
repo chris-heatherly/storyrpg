@@ -115,27 +115,44 @@ function normalizeStoryCircleRoleAssignments(value: unknown): StoryCircleRoleAss
   return roles;
 }
 
+function treatmentStoryCircleRoles(raw: string | undefined): StoryCircleRoleAssignment[] {
+  if (!raw) return [];
+  const lower = raw.toLowerCase();
+  const roleKind: StoryCircleRoleAssignment['roleKind'] = /\bexpansion\b/.test(lower) ? 'expansion' : 'primary';
+  return STORY_CIRCLE_BEATS
+    .filter((beat) => new RegExp(`\\b${beat}\\b`, 'i').test(raw))
+    .map((beat) => ({
+      beat,
+      roleKind,
+      source: 'treatment',
+    }));
+}
+
 function buildTreatmentInputNotice(sourceText: string): string {
   const treatment = extractTreatmentFromMarkdown(sourceText || '');
   if (!treatment.isTreatment) return '';
   const episodeCount = Object.keys(treatment.episodes).length;
   const endingCount = treatment.endings.length;
   const parsedSections = treatment.seasonGuidance?.rawSectionSummary?.join(', ') || 'episode guidance';
+  const isLite = treatment.metadata.formatVersion === 'story-treatment-lite'
+    || treatment.seasonGuidance?.treatmentMode === 'lite';
   return `
 ## StoryRPG Treatment Input Detected
 
-The supplied document is a user-authored StoryRPG treatment, not generic prose source material. Treat its episode outline, structural roles, encounter guidance, branch guidance, and endings as authored planning constraints.
+The supplied document is a user-authored StoryRPG treatment, not generic prose source material. Treat its episode outline, structural roles, and endings as authored planning constraints.
 
 - Preserve the treatment's episode count/order/titles unless an explicit user instruction overrides them.
-- Preserve episode turns as planning intent for scenes/keyBeats; do not create a new runtime episode-turn schema.
-- Preserve season-level treatment sections when present: season promise, character architecture, stakes architecture, information ledger, arc plan, branch/consequence chains, fail-forward, endings, and failure-mode audit.
-- Preserve encounter anchors and make each encounter manifest the episode's central conflict through play.
-- Preserve aftermath/consequence, ending pressure, and finale resolution/aftermath guidance.
-- Preserve authored branches and exactly authored endings when present.
+- Preserve lite treatment facts as canonical seed material when the format is story-treatment-lite.
+- For lite treatments, derive missing episode turns, encounter anchors, choice pressures, branches, consequence seeds, ending drivers, and detailed arc pressure from the authored premise, Story Circle spine, story arcs, protagonist/NPC/world facts, episode descriptions, and alternate endings.
+- Derived lite details must not contradict authored lite facts; keep the derived material aligned to the original Story Circle anchors, polarity tensions, and story arcs.
+- Preserve detailed episode turns as planning intent when present; do not require them from lite treatments and do not create a new runtime episode-turn schema.
+- Preserve season-level treatment sections when present: season promise, character architecture, stakes architecture, information ledger, story arcs/arc plan, branch/consequence chains, fail-forward, endings, and failure-mode audit.
+- Preserve encounter anchors, aftermath/consequence, ending pressure, branch guidance, and finale resolution/aftermath guidance when present; derive them from lite fields when omitted.
+- Preserve exactly authored endings when present.
 - Infer missing characters, locations, anchors, and style only where the treatment leaves gaps.
 - Use the canonical StoryRPG scene range: 3-6 scenes per episode.
 
-Detected treatment metadata: ${treatment.metadata.formatVersion}, ${treatment.metadata.confidence} confidence, ${episodeCount} parsed unit(s), ${endingCount} ending(s), parsed sections: ${parsedSections}.
+Detected treatment metadata: ${treatment.metadata.formatVersion}${isLite ? ' canonical seed' : ''}, ${treatment.metadata.confidence} confidence, ${episodeCount} parsed unit(s), ${endingCount} ending(s), parsed sections: ${parsedSections}.
 `;
 }
 
@@ -278,7 +295,8 @@ interface StoryStructureAnalysis {
 function summarizeTreatmentSeasonGuidance(guidance?: TreatmentSeasonGuidance): string {
   if (!guidance) return '';
   const sections = guidance.rawSectionSummary?.join(', ') || 'season treatment sections';
-  return `Treatment season guidance detected: ${sections}`;
+  const mode = guidance.treatmentMode === 'lite' ? 'lite treatment seed' : 'treatment';
+  return `Treatment season guidance detected (${mode}): ${sections}`;
 }
 
 /**
@@ -1221,11 +1239,36 @@ Return ONLY valid JSON.
       ? treatmentEpisodeNumbers.map((episodeNumber) => {
           const existing = breakdownByEpisode.get(episodeNumber);
           const guidance = treatment.episodes[episodeNumber];
+          const treatmentSynopsis = guidance.synopsis
+            || guidance.episodePromise
+            || guidance.dramaticQuestion
+            || guidance.encounterCentralConflict;
+          const treatmentPlotPoints = [
+            ...(guidance.episodeTurns || []),
+            ...(guidance.encounterAnchors || []),
+            ...(guidance.consequenceSeeds || []),
+            guidance.endingPressure,
+            guidance.endStateChange,
+          ].filter(Boolean) as string[];
           if (existing) {
+            const treatmentStoryCircleRole = treatmentStoryCircleRoles(guidance.rawStructuralRole);
             return {
               ...existing,
               title: guidance.authoredTitle || existing.title,
-              storyCircleRole: normalizeStoryCircleRoleAssignments(existing.storyCircleRole),
+              synopsis: treatmentSynopsis || existing.synopsis,
+              plotPoints: Array.from(new Set([
+                ...(existing.plotPoints || []),
+                ...treatmentPlotPoints,
+              ])),
+              narrativeArc: {
+                ...existing.narrativeArc,
+                setup: existing.narrativeArc?.setup || treatmentSynopsis || guidance.episodePromise || 'Treatment setup',
+                conflict: existing.narrativeArc?.conflict || guidance.encounterCentralConflict || guidance.episodePromise || guidance.dramaticQuestion || 'Treatment conflict',
+                resolution: existing.narrativeArc?.resolution || guidance.resolutionAftermath || guidance.endingPressure || guidance.endStateChange || guidance.authoredCliffhanger || 'Treatment resolution',
+              },
+              storyCircleRole: treatmentStoryCircleRole.length > 0
+                ? treatmentStoryCircleRole
+                : normalizeStoryCircleRoleAssignments(existing.storyCircleRole),
               structuralRole: guidance.normalizedStructuralRoles?.length
                 ? guidance.normalizedStructuralRoles
                 : existing.structuralRole,
@@ -1234,20 +1277,17 @@ Return ONLY valid JSON.
           return {
             episodeNumber,
             title: guidance.authoredTitle || `Episode ${episodeNumber}`,
-            synopsis: guidance.episodePromise || guidance.encounterCentralConflict || `Treatment episode ${episodeNumber}`,
+            synopsis: treatmentSynopsis || `Treatment episode ${episodeNumber}`,
             sourceChapters: `Treatment episode ${episodeNumber}`,
-            plotPoints: [
-              ...(guidance.episodeTurns || []),
-              ...(guidance.encounterAnchors || []),
-            ].filter(Boolean),
+            plotPoints: treatmentPlotPoints,
             mainCharacters: [structure.protagonist.name],
             locations: [],
             narrativeArc: {
-              setup: guidance.encounterBuildup || guidance.episodePromise || 'Treatment setup',
-              conflict: guidance.encounterCentralConflict || guidance.encounterAnchors?.[0] || 'Treatment conflict',
-              resolution: guidance.resolutionAftermath || guidance.endingPressure || guidance.authoredCliffhanger || 'Treatment resolution',
+              setup: guidance.encounterBuildup || treatmentSynopsis || guidance.episodePromise || 'Treatment setup',
+              conflict: guidance.encounterCentralConflict || guidance.encounterAnchors?.[0] || guidance.episodePromise || guidance.dramaticQuestion || 'Treatment conflict',
+              resolution: guidance.resolutionAftermath || guidance.endingPressure || guidance.endStateChange || guidance.authoredCliffhanger || 'Treatment resolution',
             },
-            storyCircleRole: undefined,
+            storyCircleRole: treatmentStoryCircleRoles(guidance.rawStructuralRole),
             structuralRole: guidance.normalizedStructuralRoles?.length ? guidance.normalizedStructuralRoles : undefined,
           };
         })

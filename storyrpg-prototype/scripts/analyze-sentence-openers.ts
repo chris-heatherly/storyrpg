@@ -8,7 +8,7 @@ import { analyzeStory, MONOTONY_RUN_THRESHOLD } from '../src/ai-agents/utils/sen
  * directory). Reports the second-person-opener ratio and the worst monotonous
  * passages so prose-cadence regressions are gradeable run-over-run.
  *
- *   npm run analyze:openers -- --story generated-stories/<run>/08-final-story.json
+ *   npm run analyze:openers -- --story generated-stories/<run>/story.json
  *   npm run analyze:openers -- --dir generated-stories            # all runs, summary table
  *   npm run analyze:openers -- --story <path> --json              # machine-readable
  */
@@ -33,7 +33,8 @@ function parseArgs(argv: string[]): Args {
 }
 
 function loadStory(p: string): Story {
-  return JSON.parse(fs.readFileSync(path.resolve(process.cwd(), p), 'utf8')) as Story;
+  const raw = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), p), 'utf8')) as Story | { story?: Story };
+  return 'story' in raw && raw.story ? raw.story : raw as Story;
 }
 
 function pct(n: number): string {
@@ -65,7 +66,7 @@ function findRuns(dir: string): string[] {
   const root = path.resolve(process.cwd(), dir);
   const out: string[] = [];
   for (const name of fs.readdirSync(root)) {
-    const final = path.join(root, name, '08-final-story.json');
+    const final = path.join(root, name, 'story.json');
     if (fs.existsSync(final)) out.push(path.relative(process.cwd(), final));
   }
   return out.sort();
@@ -94,7 +95,7 @@ function main(): void {
   } else if (args.storyPath) {
     reportOne(args.storyPath, args);
   } else {
-    console.error('Usage: npm run analyze:openers -- --story <path-to-08-final-story.json> [--json] [--top N]');
+    console.error('Usage: npm run analyze:openers -- --story <path-to-story.json> [--json] [--top N]');
     console.error('   or: npm run analyze:openers -- --dir generated-stories [--json]');
     process.exit(1);
   }

@@ -1092,7 +1092,7 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     return this.consistencyScorer.execute({ targetImage, referenceImages, characterName, characterDescription });
   }
 
-  // Helper methods to match the original ImageGenerator interface where needed for transition
+  // Transitional helpers used by older image-team call sites.
   
   async generateSceneImagePrompt(request: SceneImageRequest): Promise<AgentResponse<ImagePrompt>> {
     return this.illustratorAgent.execute({

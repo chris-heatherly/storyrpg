@@ -57,6 +57,20 @@ function minimalStory(): Story {
                     consequences: [{ type: 'setFlag', flag: 'opened_carefully', value: true }],
                     reminderPlan: { immediate: 'The hinge stays quiet.', shortTerm: 'The quiet approach changes the next room.' },
                   },
+                  {
+                    id: 'choice-2',
+                    text: 'Listen through the keyhole first',
+                    nextBeatId: 'beat-2',
+                    consequences: [{ type: 'setFlag', flag: 'listened_first', value: true }],
+                    reminderPlan: { immediate: 'A breath answers from the other side.', shortTerm: 'The overheard pause shadows the next room.' },
+                  },
+                  {
+                    id: 'choice-3',
+                    text: 'Call for whoever waits beyond it',
+                    nextBeatId: 'beat-2',
+                    consequences: [{ type: 'setFlag', flag: 'called_out', value: true }],
+                    reminderPlan: { immediate: 'Your voice finds the frame before your hand does.', shortTerm: 'The announced entrance changes the next room.' },
+                  },
                 ],
               },
               {

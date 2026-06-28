@@ -2,7 +2,7 @@
  * Pipeline Client Facade
  *
  * Narrow, client-safe entry point for launching / interacting with the
- * story generation pipeline from the Expo UI layer (App.tsx, screens,
+ * story generation pipeline from the Expo UI layer (generator screens,
  * hooks). The client does NOT import the pipeline classes at module load
  * time — it lazy-loads the heavy orchestrator on first use so the web
  * bundle does not pay the cost of pulling the entire 13k-line
@@ -43,7 +43,7 @@ export interface PipelineHandle {
   generate(brief: FullCreativeBrief): Promise<FullPipelineResult>;
   /**
    * Escape hatch: exposes the underlying pipeline instance. Used by the
-   * legacy video-only flow in `App.tsx` that reaches into `videoService`
+   * video-only flow that reaches into `videoService`
    * and calls `runVideoOnly`. New code should avoid this and extend the
    * facade with properly-typed methods instead.
    */

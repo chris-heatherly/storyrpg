@@ -39,7 +39,6 @@ const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
 const { createRuntimeLayout } = require('./proxy/runtimePaths');
 const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
-const { resolveGeneratedStoryAssetFallback } = require('./proxy/generatedStoryAssetFallback');
 const { registerAuthRoutes } = require('./proxy/authRoutes');
 const { createCorsOptions, createExposureGuard } = require('./proxy/proxyGuards');
 
@@ -99,13 +98,7 @@ app.use('/generated-stories', (req, res, next) => {
   const filePathWithinDir = req.path;
   let fullPath = path.join(STORIES_DIR, filePathWithinDir);
 
-  if (!fs.existsSync(fullPath)) {
-    const fallbackPath = resolveGeneratedStoryAssetFallback(STORIES_DIR, filePathWithinDir);
-    if (!fallbackPath) {
-      return res.status(404).send('File not found');
-    }
-    fullPath = fallbackPath;
-  }
+  if (!fs.existsSync(fullPath)) return res.status(404).send('File not found');
 
   let contentType = 'application/octet-stream';
   if (fullPath.endsWith('.png')) contentType = 'image/png';

@@ -47,13 +47,13 @@ describe('BranchManager (deterministic skeleton + annotation)', () => {
       ],
       recommendations: ['tighten s2'],
     });
-    const spy = vi.spyOn(BranchManager.prototype as never as { callLLM: unknown }, 'callLLM').mockResolvedValue(annotation);
+    const spy = vi.spyOn(BranchManager.prototype as any, 'callLLM').mockResolvedValue(annotation);
 
     const res = await new BranchManager(config).execute(makeInput());
 
     expect(spy).toHaveBeenCalledOnce();
     // Annotation call is schema-strict: a jsonSchema is threaded to callLLM.
-    const opts = spy.mock.calls[0][2] as { jsonSchema?: { name: string; schema: unknown } } | undefined;
+    const opts = (spy.mock.calls[0] as unknown[])[2] as { jsonSchema?: { name: string; schema: unknown } } | undefined;
     expect(opts?.jsonSchema?.name).toBe('branch_annotations');
     expect(opts?.jsonSchema?.schema).toBeTypeOf('object');
     expect(res.success).toBe(true);
@@ -74,7 +74,7 @@ describe('BranchManager (deterministic skeleton + annotation)', () => {
   });
 
   it('returns success with the deterministic skeleton when the annotation call fails (e.g. 429)', async () => {
-    vi.spyOn(BranchManager.prototype as never as { callLLM: unknown }, 'callLLM').mockRejectedValue(new Error('429 insufficient_quota'));
+    vi.spyOn(BranchManager.prototype as any, 'callLLM').mockRejectedValue(new Error('429 insufficient_quota'));
 
     const res = await new BranchManager(config).execute(makeInput());
 
@@ -85,7 +85,7 @@ describe('BranchManager (deterministic skeleton + annotation)', () => {
   });
 
   it('returns success when the annotation JSON is malformed (parse failure is non-critical)', async () => {
-    vi.spyOn(BranchManager.prototype as never as { callLLM: unknown }, 'callLLM').mockResolvedValue('not json at all {');
+    vi.spyOn(BranchManager.prototype as any, 'callLLM').mockResolvedValue('not json at all {');
 
     const res = await new BranchManager(config).execute(makeInput());
 
@@ -97,7 +97,7 @@ describe('BranchManager (deterministic skeleton + annotation)', () => {
     const annotation = JSON.stringify({
       pathAnnotations: [{ id: 'path-999', name: 'Hallucinated' }],
     });
-    vi.spyOn(BranchManager.prototype as never as { callLLM: unknown }, 'callLLM').mockResolvedValue(annotation);
+    vi.spyOn(BranchManager.prototype as any, 'callLLM').mockResolvedValue(annotation);
 
     const res = await new BranchManager(config).execute(makeInput());
 
@@ -107,7 +107,7 @@ describe('BranchManager (deterministic skeleton + annotation)', () => {
   });
 
   it('skips the LLM call entirely for a linear episode', async () => {
-    const spy = vi.spyOn(BranchManager.prototype as never as { callLLM: unknown }, 'callLLM').mockResolvedValue('{}');
+    const spy = vi.spyOn(BranchManager.prototype as any, 'callLLM').mockResolvedValue('{}');
     const linear = makeInput();
     linear.scenes = [
       { id: 's1', name: 'a', purpose: 'transition', leadsTo: ['s2'] },

@@ -42,7 +42,6 @@ describe('ImageProviderRegistry', () => {
     expect(registry.get('nano-banana').id).toBe('nano-banana');
     expect(registry.get('atlas-cloud').id).toBe('atlas-cloud');
     expect(registry.get('midapi').id).toBe('midapi');
-    expect(registry.get('useapi').id).toBe('useapi');
     expect(registry.get('stable-diffusion').id).toBe('stable-diffusion');
     expect(registry.get('dall-e').id).toBe('dall-e');
   });
@@ -61,7 +60,6 @@ describe('ImageProviderRegistry', () => {
         'nano-banana',
         'atlas-cloud',
         'midapi',
-        'useapi',
         'stable-diffusion',
         'dall-e',
         'placeholder',
@@ -96,11 +94,10 @@ describe('adapters', () => {
     expect(bridge.generateWithAtlasCloud).toHaveBeenCalledTimes(1);
   });
 
-  it('MidApiAdapter routes to useapi backend for both midapi and useapi ids', async () => {
+  it('MidApiAdapter routes the canonical midapi id to the useapi backend', async () => {
     const bridge = makeBridge();
     await new MidApiAdapter('midapi').generate(baseRequest, bridge);
-    await new MidApiAdapter('useapi').generate(baseRequest, bridge);
-    expect(bridge.generateWithUseapi).toHaveBeenCalledTimes(2);
+    expect(bridge.generateWithUseapi).toHaveBeenCalledTimes(1);
   });
 
   it('StableDiffusionProviderAdapter routes to SD backend', async () => {

@@ -112,6 +112,18 @@ export interface GenerationSettings {
 
   // Failure handling
   failFastMode: boolean;
+
+  // Optional Quality Council (generator-only, default off)
+  qualityCouncilEnabled: boolean;
+  qualityCouncilMode: 'advisory' | 'repair-routing' | 'strict';
+  qualityCouncilRunPlan: boolean;
+  qualityCouncilRunChoice: boolean;
+  qualityCouncilRunRoutePlaytest: boolean;
+  qualityCouncilRunFinal: boolean;
+  qualityCouncilFusionEnabled: boolean;
+  qualityCouncilFusionOnlyWhen: 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
+  qualityCouncilMaxCalls: number;
+  qualityCouncilMaxChoiceCandidates: number;
   
   // === CHOICE DESIGN SETTINGS ===
   // Choice type distribution targets (percentages, should sum to 100)
@@ -192,6 +204,18 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
 
   // Failure handling
   failFastMode: true,
+
+  // Quality Council
+  qualityCouncilEnabled: false,
+  qualityCouncilMode: 'advisory',
+  qualityCouncilRunPlan: true,
+  qualityCouncilRunChoice: true,
+  qualityCouncilRunRoutePlaytest: true,
+  qualityCouncilRunFinal: true,
+  qualityCouncilFusionEnabled: false,
+  qualityCouncilFusionOnlyWhen: 'borderline-quality',
+  qualityCouncilMaxCalls: 24,
+  qualityCouncilMaxChoiceCandidates: 3,
   
   // === CHOICE DESIGN SETTINGS ===
   // Choice type distribution targets (percentages, should sum to 100)
@@ -491,6 +515,47 @@ const CHOICE_AND_ENCOUNTER_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for episodes with 8+ scenes.', min: 0, max: 5 },
 ];
 
+const QUALITY_COUNCIL_FIELDS: SettingFieldConfig[] = [
+  {
+    type: 'toggle',
+    key: 'qualityCouncilEnabled',
+    label: 'Quality Council',
+    description: 'Run optional specialist review agents. Off preserves normal generation.',
+  },
+  {
+    type: 'select',
+    key: 'qualityCouncilMode',
+    label: 'Council Mode',
+    description: 'Advisory writes reports; repair routing recommends existing repairs; strict may only block through existing validator mappings.',
+    options: [
+      { value: 'advisory', label: 'Advisory' },
+      { value: 'repair-routing', label: 'Repair Routing' },
+      { value: 'strict', label: 'Strict' },
+    ],
+    condition: (settings) => settings.qualityCouncilEnabled,
+  },
+  { type: 'toggle', key: 'qualityCouncilRunPlan', label: 'Plan Review', description: 'Review season plan, Story Circle spine, promises, and arc pressure.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilRunChoice', label: 'Choice Review', description: 'Review choice agency, stakes, consequence memory, and fiction-first wording.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilRunRoutePlaytest', label: 'Route Playtest', description: 'Simulate branch routes for cosmetic branching and lost residue.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilRunFinal', label: 'Final Audit', description: 'Run a final regression-oriented council pass after deterministic validators.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilFusionEnabled', label: 'OpenRouter Fusion Audit', description: 'Use OpenRouter Fusion as an optional deep review panel at final audit.', condition: (settings) => settings.qualityCouncilEnabled },
+  {
+    type: 'select',
+    key: 'qualityCouncilFusionOnlyWhen',
+    label: 'Fusion Trigger',
+    description: 'Controls when the expensive Fusion panel runs.',
+    options: [
+      { value: 'borderline-quality', label: 'Borderline' },
+      { value: 'validator-disagreement', label: 'Disagreement' },
+      { value: 'always-final', label: 'Always Final' },
+      { value: 'manual', label: 'Manual' },
+    ],
+    condition: (settings) => settings.qualityCouncilEnabled && settings.qualityCouncilFusionEnabled,
+  },
+  { type: 'number', key: 'qualityCouncilMaxCalls', label: 'Max Council Calls', description: 'Hard cap on Quality Council LLM calls per run.', min: 1, max: 96, condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'number', key: 'qualityCouncilMaxChoiceCandidates', label: 'Choice Candidate Cap', description: 'Maximum choice sets sent to the choice council per checkpoint.', min: 1, max: 8, condition: (settings) => settings.qualityCouncilEnabled },
+];
+
 // NOTE: Character asset toggles (generateCharacterRefs, generateExpressionSheets,
 // generateBodyVocabulary) are owned by the IMAGES bucket in GeneratorScreen, and
 // preGenerateAudio is owned by the NARRATION bucket. They were previously
@@ -554,6 +619,13 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         </View>
       );
     },
+  },
+  {
+    id: 'quality-council',
+    title: 'QUALITY COUNCIL',
+    icon: <Shield size={16} color={TERMINAL.colors.primary} />,
+    description: 'Optional generator-only expert review layer. Disabled runs keep the normal pipeline.',
+    fields: QUALITY_COUNCIL_FIELDS,
   },
 ];
 

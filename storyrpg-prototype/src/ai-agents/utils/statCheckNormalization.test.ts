@@ -51,7 +51,7 @@ describe('statCheckNormalization', () => {
           }],
         }],
       }],
-    } as never;
+    } as any;
 
     expect(normalizeStoryStatChecks(story)).toBe(1);
     expect(story.episodes[0].scenes[0].beats[0].choices[0].statCheck).toEqual({

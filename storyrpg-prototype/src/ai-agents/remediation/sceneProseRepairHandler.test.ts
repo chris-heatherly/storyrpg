@@ -147,6 +147,37 @@ describe('buildSceneProseRepairHandler', () => {
     expect(result.record).toMatchObject({ rule: 'final_contract_scene_prose', scope: 'scene', succeeded: true });
   });
 
+  it('restores a rewrite and reports no progress when the authored moment still will not clear', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{ id: 'b1', text: 'They keep studying the map in guarded silence.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    const story = makeStory();
+    const original = (story as any).episodes[1].scenes[0].beats[0].text;
+    const emitted: string[] = [];
+    const handlerWithEmit = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      emit: (message) => emitted.push(message),
+      allowRequiredBeatFallback: () => false,
+      requirePredictedClear: true,
+    });
+
+    const result = await handlerWithEmit({ story, blockingIssues: [requiredBeatIssue('s2-1')] });
+
+    expect(result.changed).toBe(false);
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toBe(original);
+    expect(emitted.join('\n')).toContain('restored s2-1');
+  });
+
   it('repairs an ENCOUNTER scene: rewrites encounter phase/storylet prose and merges it back', async () => {
     const critic = {
       execute: vi.fn().mockResolvedValue({

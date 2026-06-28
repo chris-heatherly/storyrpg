@@ -44,6 +44,10 @@ interface OutcomeLike {
 
 interface BeatLike {
   id?: string;
+  phase?: string;
+  name?: string;
+  description?: string;
+  setupText?: string;
   choices?: ChoiceLike[];
 }
 
@@ -187,7 +191,9 @@ export function shrinkClockToAttainable(enc: Encounter, analysis?: EncounterDept
 export interface DeepenResult {
   /** Root wins demoted into a two-layer finish (the depth contract now holds). */
   lifted: Array<{ beatId: string; choiceId: string; outcome: string }>;
-  /** Root wins left alone because the encounter isn't tree-routed (flat nextBeatId flow). */
+  /** Flat root wins routed through an appended top-level finish beat. */
+  flatRouted: Array<{ beatId: string; choiceId: string; outcome: string; finishBeatId: string }>;
+  /** Root wins left alone because no playable repair shape was available. */
   skipped: Array<{ beatId: string; choiceId: string; outcome: string }>;
 }
 
@@ -214,8 +220,69 @@ const SEAL_PROSE = {
   },
 } as const;
 
+const SEAL_APPROACHES = [
+  { approach: 'aggressive', label: 'Force the finish', skill: 'resolve' },
+  { approach: 'cautious', label: 'Hold the line', skill: 'composure' },
+  { approach: 'clever', label: 'Turn the opening', skill: 'perception' },
+] as const;
+
 function flagSlug(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function uniqueBeatId(phase: PhaseLike, base: string): string {
+  const existing = new Set((phase.beats || []).map((beat) => beat.id).filter(Boolean));
+  if (!existing.has(base)) return base;
+  let i = 2;
+  while (existing.has(`${base}-${i}`)) i += 1;
+  return `${base}-${i}`;
+}
+
+function buildSealChoice(
+  encSlug: string,
+  choice: ChoiceLike,
+  outcome: OutcomeLike,
+  won: string,
+  choiceId: string,
+  approach: typeof SEAL_APPROACHES[number],
+): ChoiceLike {
+  const prose = SEAL_PROSE[won as keyof typeof SEAL_PROSE];
+  const downgraded = 'partialVictory';
+  const sealConsequences = (tag: string): unknown[] =>
+    Array.isArray(outcome.consequences) && outcome.consequences.length > 0
+      ? [...outcome.consequences]
+      : [{ type: 'setFlag', flag: `${encSlug}_${flagSlug(choiceId)}_${flagSlug(approach.approach)}_${tag}`, value: true }];
+
+  return {
+    id: `${choiceId}-${approach.approach}-seal`,
+    text: approach.label || prose.choiceText,
+    approach: approach.approach,
+    primarySkill: choice.primarySkill || approach.skill,
+    outcomes: {
+      success: {
+        tier: 'success', narrativeText: prose.success, goalTicks: 1, threatTicks: 0,
+        isTerminal: true, encounterOutcome: won, consequences: sealConsequences('won'),
+      },
+      complicated: {
+        tier: 'complicated', narrativeText: prose.complicated, goalTicks: 1, threatTicks: 0,
+        isTerminal: true, encounterOutcome: downgraded, consequences: sealConsequences('held'),
+      },
+      failure: {
+        tier: 'failure', narrativeText: prose.failure, goalTicks: 0, threatTicks: 1,
+        isTerminal: true, encounterOutcome: downgraded, consequences: sealConsequences('held'),
+      },
+    },
+  };
+}
+
+function buildSealChoices(
+  encSlug: string,
+  choice: ChoiceLike,
+  outcome: OutcomeLike,
+  won: string,
+  choiceId: string,
+): ChoiceLike[] {
+  return SEAL_APPROACHES.map((approach) => buildSealChoice(encSlug, choice, outcome, won, choiceId, approach));
 }
 
 /**
@@ -239,7 +306,7 @@ function flagSlug(raw: string): string {
  * lift the win sits at depth 2, so a re-run finds nothing to demote.
  */
 export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
-  const result: DeepenResult = { lifted: [], skipped: [] };
+  const result: DeepenResult = { lifted: [], flatRouted: [], skipped: [] };
   const encAny = enc as unknown as { id?: string; sceneId?: string; phases?: PhaseLike[]; startingBeatId?: string };
   const encSlug = flagSlug(String(encAny.id ?? encAny.sceneId ?? 'encounter'));
 
@@ -253,7 +320,8 @@ export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
 
   for (const phase of encAny.phases || []) {
     const baseDepth = beatBaseDepths(phase, encAny);
-    for (const beat of phase.beats || []) {
+    const originalBeats = [...(phase.beats || [])];
+    for (const beat of originalBeats) {
       if ((baseDepth.get(beat.id ?? '') ?? 1) !== 1) continue;
       for (const choice of beat.choices || []) {
         for (const outcome of Object.values(choice.outcomes || {})) {
@@ -263,43 +331,36 @@ export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
 
           const record = { beatId: beat.id ?? '(unnamed)', choiceId: choice.id ?? '(unnamed)', outcome: won };
           if (!treeRouted) {
-            result.skipped.push(record);
+            if (!phase.beats) {
+              result.skipped.push(record);
+              continue;
+            }
+            const prose = SEAL_PROSE[won as keyof typeof SEAL_PROSE];
+            const choiceId = choice.id ?? 'choice';
+            const finishBeatId = uniqueBeatId(phase, `${beat.id ?? 'beat'}-${choiceId}-${flagSlug(won)}-finish`);
+            phase.beats.push({
+              id: finishBeatId,
+              phase: 'resolution',
+              name: won === 'victory' ? 'Finish the opening' : 'Hold the opening',
+              description: prose.setupText,
+              setupText: prose.setupText,
+              choices: buildSealChoices(encSlug, choice, outcome, won, choiceId),
+            });
+            outcome.isTerminal = false;
+            delete outcome.encounterOutcome;
+            outcome.nextBeatId = finishBeatId;
+            result.flatRouted.push({ ...record, finishBeatId });
             continue;
           }
 
           const prose = SEAL_PROSE[won as keyof typeof SEAL_PROSE];
-          // A botched finish downgrades a clean victory to partialVictory; a
-          // partialVictory is already the floor for a win and stays one.
-          const downgraded = 'partialVictory';
-          const sealConsequences = (tag: string): unknown[] =>
-            Array.isArray(outcome.consequences) && outcome.consequences.length > 0
-              ? [...outcome.consequences]
-              : [{ type: 'setFlag', flag: `${encSlug}_${flagSlug(String(choice.id ?? 'choice'))}_${tag}`, value: true }];
+          const choiceId = choice.id ?? 'choice';
 
           outcome.isTerminal = false;
           delete outcome.encounterOutcome;
           outcome.nextSituation = {
             setupText: prose.setupText,
-            choices: [{
-              id: `${choice.id ?? 'choice'}-seal`,
-              text: prose.choiceText,
-              approach: choice.approach,
-              primarySkill: choice.primarySkill,
-              outcomes: {
-                success: {
-                  tier: 'success', narrativeText: prose.success, goalTicks: 1, threatTicks: 0,
-                  isTerminal: true, encounterOutcome: won, consequences: sealConsequences('won'),
-                },
-                complicated: {
-                  tier: 'complicated', narrativeText: prose.complicated, goalTicks: 1, threatTicks: 0,
-                  isTerminal: true, encounterOutcome: downgraded, consequences: sealConsequences('held'),
-                },
-                failure: {
-                  tier: 'failure', narrativeText: prose.failure, goalTicks: 0, threatTicks: 1,
-                  isTerminal: true, encounterOutcome: downgraded, consequences: sealConsequences('held'),
-                },
-              },
-            }],
+            choices: buildSealChoices(encSlug, choice, outcome, won, choiceId),
           };
           result.lifted.push(record);
         }

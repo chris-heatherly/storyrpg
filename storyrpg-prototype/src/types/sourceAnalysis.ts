@@ -364,6 +364,7 @@ export interface StoryEndingTarget {
 }
 
 export interface TreatmentEpisodeGuidance {
+  sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
   authoredTitle?: string;
   rawStructuralRole?: string;
   normalizedStructuralRoles?: StructuralRole[];
@@ -378,6 +379,8 @@ export interface TreatmentEpisodeGuidance {
   toneRegister?: string;
   encounterAnchors?: string[];
   encounterCentralConflict?: string;
+  encounterStoryCircleTarget?: EncounterStoryCircleTarget;
+  encounterStoryCircleTargetRationale?: string;
   encounterBuildup?: string;
   encounterAftermath?: string;
   stakesLayers?: string[];
@@ -417,9 +420,12 @@ export interface TreatmentEpisodeGuidance {
 }
 
 export interface TreatmentSeasonGuidance {
+  treatmentMode?: 'full' | 'lite';
+  sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
   seasonPromiseAndDramaticEngine?: string;
   genre?: string;
   tone?: string;
+  highConceptPitch?: string;
   logline?: string;
   coreFantasy?: string;
   audiencePromise?: string;
@@ -491,6 +497,7 @@ export interface TreatmentSeasonGuidance {
       title: string;
       sourceText: string;
       episodeRange?: { start: number; end: number };
+      storyCircleSpanText?: string;
       arcDramaticQuestion?: string;
       relationToSeasonQuestion?: string;
       lieFacet?: string;
@@ -498,6 +505,10 @@ export interface TreatmentSeasonGuidance {
       lateArcCrisis?: string;
       finaleAnswer?: string;
       handoffPressure?: string;
+      pressureMovement?: string;
+      protagonistPolarity?: string;
+      keyNpcLocationPressure?: string;
+      sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
       episodeTurnouts?: Array<{
         episodeNumber: number;
         sourceText: string;
@@ -812,7 +823,7 @@ export interface SourceMaterialAnalysis {
   treatmentMetadata?: {
     detected: boolean;
     confidence: 'low' | 'medium' | 'high';
-    formatVersion: 'legacy' | 'storyrpg-treatment-v2';
+    formatVersion: 'legacy' | 'storyrpg-treatment-v2' | 'story-treatment-mvp' | 'story-treatment-lite';
     warnings: string[];
   };
   totalWordCount?: number;

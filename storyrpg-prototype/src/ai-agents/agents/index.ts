@@ -93,10 +93,6 @@ export {
   type QAReport,
 } from './QAAgents';
 
-// Image Generation Agent Team
-export {
-  ImageGenerator,
-} from './ImageGenerator';
 export type {
   BeatImageRequest,
   CoverImageRequest,

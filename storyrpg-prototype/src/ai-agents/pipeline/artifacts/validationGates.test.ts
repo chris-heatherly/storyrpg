@@ -50,6 +50,7 @@ describe('artifact validation gate registry', () => {
       'episode-blueprint': [
         'DramaticStructureValidator',
         'EpisodePressureArchitectureValidator',
+        'EpisodeStoryCircleValidator',
         'RequiredBeatRealizationValidator',
         'EncounterAnchorContentValidator',
         'TreatmentFidelityValidator',
@@ -57,6 +58,8 @@ describe('artifact validation gate registry', () => {
       'scene-plan': [
         'SceneGraphBranchValidator',
         'SceneTurnContractValidator',
+        'EpisodeStoryCircleValidator',
+        'SceneTurnRealizationValidator (episode Story Circle structural class)',
         'SceneSpineValidator',
         'SceneTransitionContinuityValidator',
         'ArcPressureArchitectureValidator',
@@ -95,12 +98,14 @@ describe('artifact validation gate registry', () => {
         'ArcDeltaValidator',
         'SetupPayoffValidator',
         'TreatmentFidelityValidator',
+        'SceneTurnRealizationValidator (episode Story Circle structural class)',
         'storyPathAnalyzer',
       ],
       'story-package': [
         'decodeStory',
         'storyAssetWalker',
         'FinalStoryContractValidator',
+        'SceneTurnRealizationValidator (episode Story Circle structural class)',
         'validate-assets',
         'check-reader-boundary',
       ],

@@ -16,9 +16,8 @@ The UI talks to `PipelineClient`, the Express proxy starts a worker through
 `proxy/workerLifecycle.js`, and the worker streams structured pipeline events
 back into the generation job stores.
 
-`src/ai-agents/pipeline/EpisodePipeline.ts` still exists only as legacy code.
-It is not exported from `src/ai-agents/pipeline/index.ts` and should not be
-used for new work. `ParallelStoryPipeline` has been removed.
+`EpisodePipeline.ts` and `ParallelStoryPipeline` are no longer present. New
+work should use `FullStoryPipeline` and its extracted phase modules.
 
 The app now has two target-specific web entries:
 
@@ -47,11 +46,14 @@ boundary is enforced by `npm run check:reader-boundary`.
    LLM QA, branch/divergence checks, scene graph checks, setup/payoff checks,
    twist checks, arc-delta checks, mechanical storytelling checks, sequence
    continuity audits, and treatment-fidelity checks.
-8. Media: storyboard-v2 beat imagery, `ImageAgentTeam`, encounter imagery,
+8. Post-story media: after story authoring, per-episode QA, and episode
+   failure gates complete, the pipeline runs master reference visuals,
+   storyboard-v2 beat imagery, `ImageAgentTeam`, encounter imagery,
    provider-aware reference packs, structured art-style profiles,
    preapproved style anchors, optional Stable-Diffusion LoRA training,
    optional video generation, and optional ElevenLabs narration.
-9. Finalization: runtime `Story` assembly, `SavingPhase`,
+9. Finalization: runtime `Story` assembly from the story-first episodes plus
+   post-story media assets, `SavingPhase`,
    `pipelineOutputWriter`, story codec packaging, asset HTTP validation,
    optional Playwright multi-path QA, and image remediation/re-save when
    possible.
@@ -68,13 +70,11 @@ Generated story directories now write a modern package:
 - `story.json` — primary versioned story package.
 - `manifest.json` — declares `primaryStoryFile` and records the story package
   checksum when available.
-- `08-final-story.json` — legacy mirror kept for older scripts and fallback
-  readers.
 
-The proxy catalog reads `manifest.json` first, then falls back to `story.json`,
-then to `08-final-story.json`. The client fetch path trusts `story.json` on
-disk through `/stories/:id` after worker completion rather than relying on the
-transient worker result blob.
+The proxy catalog reads `manifest.json` first, then falls back to `story.json`.
+Legacy-only directories must be migrated before runtime load. The client fetch
+path trusts `story.json` on disk through `/stories/:id` after worker completion
+rather than relying on the transient worker result blob.
 
 Media references are resolved through `src/assets/assetResolver.ts` and
 `src/services/storyLibrary.ts`. Modern packages may carry content-addressed
@@ -86,18 +86,18 @@ checkpoints, job state, LoRA artifacts, source uploads, and diagnostics.
 
 ## Active Compatibility Boundaries
 
-- `ImageGenerator.ts` remains as a compatibility export for older imports;
-  active type definitions live in `src/ai-agents/images/imageTypes.ts`.
-- Legacy generated stories are still supported through codec migrations and
-  catalog fallback reads.
+- `ImageGenerator.ts` has been removed. Active image definitions live in
+  `src/ai-agents/images/imageTypes.ts`, and active work flows through
+  storyboard-v2, `ImageAgentTeam`, and `ImageGenerationService`.
+- Legacy generated stories are still supported through codec migrations and the
+  migration script, not catalog fallback reads.
 - The old `useapi` provider name should be treated as historical. Current
   provider selection uses `midapi`.
 - Image-team coordinator and visual-check scaffolds are present, but the live
   path is the storyboard-v2 / `ImageAgentTeam` / `ImageGenerationService`
   flow, with `VisualQualityJudge` and modular `visualChecks` used where wired.
-- `App.tsx` remains in the tree as a monolithic shell, but the target-specific
-  `apps/reader` and `apps/generator` entries are the current bundle/deployment
-  path.
+- The old monolithic `App.tsx` shell has been removed; `apps/reader` and
+  `apps/generator` are the bundle/deployment entries.
 - Stable Diffusion supports the A1111/Forge backend today. Other backend enum
   names are future adapter placeholders.
 - LoRA training is Stable-Diffusion-only and concretely wired through the

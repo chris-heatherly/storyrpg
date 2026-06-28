@@ -323,7 +323,7 @@ describe('emitSceneInfoReveals (Step 3)', () => {
   });
 
   it('does not duplicate beat-level information markers', () => {
-    const beats = [{ id: 'b1', text: 'A fair-play hint lands here.', onShow: [{ type: 'setFlag', flag: infoSetupFlag('INFO-C'), value: true }] }];
+    const beats = [{ id: 'b1', text: 'A fair-play hint lands here.', onShow: [{ type: 'setFlag' as const, flag: infoSetupFlag('INFO-C'), value: true }] }];
     const added = emitSceneInfoMarkersOnBeats({ id: 's1', setsUpInfoIds: ['INFO-C'] }, beats);
     expect(added).toBe(0);
     expect(beats[0].onShow).toHaveLength(1);

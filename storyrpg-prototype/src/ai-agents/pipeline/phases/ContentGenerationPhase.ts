@@ -96,7 +96,7 @@ import {
 import { PipelineError } from '../errors';
 import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
 import { collectEncounterParticipantRefs, filterProtagonistEncounterRefs } from '../encounterParticipants';
-import { assessEncounterTurnRealization, formatEncounterTurnRealizationFeedback } from '../encounterTurnRealizationGuard';
+import { assessEncounterTurnRealization, formatEncounterTurnRealizationFeedback, repairEncounterTurnRealization } from '../encounterTurnRealizationGuard';
 import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPlan';
 import { buildOutcomeTextVariants } from '../outcomeVariants';
 import { buildSceneSettingContext } from '../planningHelpers';
@@ -247,6 +247,7 @@ export interface ContentGenerationPhaseDeps {
     blueprint: EpisodeBlueprint
   ) => 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
   isEpisodeFinalScene: (scene: SceneBlueprint, blueprint: EpisodeBlueprint) => boolean;
+  canLoadResumeUnit?: (episodeNumber: number | undefined, unitId: string) => boolean;
   loadResumeUnit: <T>(
     outputDirectory: string | undefined,
     unitId: string,
@@ -827,7 +828,9 @@ export class ContentGenerationPhase {
         );
       }
 
-      if (outputDirectory && episodeNumber) {
+      const canHydrateResume = outputDirectory && episodeNumber
+        && (this.deps.canLoadResumeUnit?.(episodeNumber, sceneUnitId) ?? true);
+      if (canHydrateResume) {
         const resumedScene = this.deps.loadResumeUnit<SceneContent>(outputDirectory, sceneUnitId, sceneCheckpointPath);
         const resumedChoice = sceneBlueprint.choicePoint
           ? this.deps.loadResumeUnit<ChoiceSet>(outputDirectory, choiceUnitId, choiceCheckpointPath)
@@ -835,6 +838,16 @@ export class ContentGenerationPhase {
         const resumedEncounter = sceneBlueprint.isEncounter && sceneBlueprint.encounterType
           ? this.deps.loadResumeUnit<EncounterStructure>(outputDirectory, encounterUnitId, encounterCheckpointPath)
           : undefined;
+        if (resumedEncounter) {
+          const repaired = repairEncounterTurnRealization(sceneBlueprint, resumedEncounter);
+          if (repaired > 0) {
+            context.emit({
+              type: 'debug',
+              phase: 'encounters',
+              message: `Repaired ${repaired} authored encounter turn surface(s) in resumed checkpoint for ${sceneBlueprint.id}.`,
+            });
+          }
+        }
         const resumedEncounterTurn = resumedEncounter
           ? assessEncounterTurnRealization(sceneBlueprint, resumedEncounter)
           : undefined;
@@ -2760,6 +2773,14 @@ export class ContentGenerationPhase {
               if (isEncounterNarrativelyHollow(attemptResult.data)) {
                 lastEncounterFailure = 'EncounterArchitect returned a hollow encounter: no beat contains player-facing narrative setup, description, escalation, or choice outcome prose.';
               } else {
+                const repaired = repairEncounterTurnRealization(sceneBlueprint, attemptResult.data);
+                if (repaired > 0) {
+                  context.emit({
+                    type: 'debug',
+                    phase: 'encounters',
+                    message: `Repaired ${repaired} authored encounter turn surface(s) for ${sceneBlueprint.id}.`,
+                  });
+                }
                 const turnRealization = assessEncounterTurnRealization(sceneBlueprint, attemptResult.data);
                 if (!turnRealization.passed) {
                   lastEncounterFailure = `EncounterArchitect under-realized authored encounter turn(s):\n${formatEncounterTurnRealizationFeedback(turnRealization)}\nAuthor the missing moment in setupText, outcome narrativeText, nested nextSituation setupText, or storylet beat prose before returning JSON.`;
@@ -2987,6 +3008,14 @@ export class ContentGenerationPhase {
                     const regenValidation = this.deps.incrementalValidator!.validators.encounter.validateEncounter(regenEncounterResult.data);
                     const regenCollisions = this.deps.getPhase4DefaultCollisions(regenEncounterResult.metadata);
                     const regenTemplateHits = scanEncounterTemplateProse(regenEncounterResult.data);
+                    const repaired = repairEncounterTurnRealization(sceneBlueprint, regenEncounterResult.data);
+                    if (repaired > 0) {
+                      context.emit({
+                        type: 'debug',
+                        phase: 'encounters',
+                        message: `Repaired ${repaired} authored encounter turn surface(s) during regeneration for ${sceneBlueprint.id}.`,
+                      });
+                    }
                     const regenTurnRealization = assessEncounterTurnRealization(sceneBlueprint, regenEncounterResult.data);
 
                     if (!regenTurnRealization.passed) {

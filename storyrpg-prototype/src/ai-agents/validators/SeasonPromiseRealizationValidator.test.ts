@@ -10,6 +10,7 @@ import { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationVal
 const guidance: TreatmentSeasonGuidance = {
   genre: 'Paranormal rom-com that graduates into dark vampire romance by midseason.',
   tone: 'Champagne fizz on top, blood at the bottom; early episodes are bright before the back half darkens.',
+  highConceptPitch: 'Sex and the City meets Twilight: dating can be a horror show where the men are actual monsters.',
   logline: 'A food writer in Bucharest starts a dating blog and discovers the man, friends, and city are monsters.',
   coreFantasy: 'New city nightlife, friend group, one more round at dusk, and a blog readership growing by the week.',
   audiencePromise: 'The first episodes feel like vacation; midseason darkens; the finale reveals who was lying.',
@@ -184,6 +185,7 @@ describe('SeasonPromiseRealizationValidator', () => {
     expect(contracts.map((contract) => contract.contractKind)).toEqual(expect.arrayContaining([
       'genre_progression',
       'tone_progression',
+      'high_concept_pitch',
       'logline_engine',
       'core_fantasy',
       'audience_promise',
@@ -200,6 +202,10 @@ describe('SeasonPromiseRealizationValidator', () => {
       'future_open_thread',
     ]));
     expect(contracts.every((contract) => contract.blockingLevel === 'treatment')).toBe(true);
+    expect(contracts.find((contract) => contract.contractKind === 'high_concept_pitch')).toMatchObject({
+      sourceText: guidance.highConceptPitch,
+      requiredRealization: expect.arrayContaining(['episode_plan', 'scene_turn', 'choice', 'encounter', 'final_prose']),
+    });
   });
 
   it('extracts Season Promise And Dramatic Engine bullets into structured guidance', () => {

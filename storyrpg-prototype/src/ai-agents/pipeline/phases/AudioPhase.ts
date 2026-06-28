@@ -8,7 +8,7 @@
  * Faithful port of the `config.narration.preGenerateAudio` block from
  * FullStoryPipeline.generate() (pure move): same gate condition, same events,
  * same diagnostics entries (including the skip paths), same non-blocking
- * failure handling, same 08-final-story.json rewrite through the proxy.
+ * failure handling, same story.json package rewrite through the proxy.
  */
 
 import { Story } from '../../../types';
@@ -18,8 +18,8 @@ import {
   AudioGenerationDiagnostic,
   saveAudioDiagnosticsLog,
   updateOutputManifest,
+  writeFinalStoryPackage,
 } from '../../utils/pipelineOutputWriter';
-import { PROXY_CONFIG } from '../../../config/endpoints';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -66,20 +66,35 @@ export class AudioPhase {
       this.deps;
     const narration = context.config.narration;
 
+    const provider = narration?.provider || 'elevenlabs';
+    const hasAudioKey = provider === 'gemini'
+      ? !!(narration?.geminiApiKey || context.config.imageGen?.geminiApiKey || context.config.imageGen?.apiKey)
+      : !!narration?.elevenLabsApiKey;
+
     // Pre-generate audio if enabled (check both enabled flag and preGenerateAudio)
     await this.deps.checkCancellation();
-    if (narration?.enabled !== false && narration?.preGenerateAudio && narration?.elevenLabsApiKey) {
+    if (narration?.enabled !== false && narration?.preGenerateAudio && hasAudioKey) {
       requirePhases('audio_generation', ['content_generation']);
-      context.emit({ type: 'phase_start', phase: 'audio_generation', message: 'Pre-generating narration audio...' });
+      context.emit({ type: 'phase_start', phase: 'audio_generation', message: `Pre-generating ${provider} narration audio...` });
       try {
         // Auto-cast voices for characters
-        if (characterBible) {
+        if (characterBible && narration?.voiceCastingEnabled !== false) {
           await audioService.autoCastVoices(characterBible);
           audioDiagnostics.push({
             timestamp: new Date().toISOString(),
             stage: 'voice_cast',
             status: 'completed',
-            message: `Auto-cast voices for ${characterBible.characters.length} characters`,
+            message: `Auto-cast ${provider} voices for ${characterBible.characters.length} characters`,
+            provider,
+            model: provider === 'gemini' ? narration?.geminiModel : undefined,
+          });
+        } else if (characterBible) {
+          audioDiagnostics.push({
+            timestamp: new Date().toISOString(),
+            stage: 'voice_cast',
+            status: 'skipped',
+            message: 'Voice casting disabled by narration settings',
+            provider,
           });
         }
 
@@ -106,6 +121,9 @@ export class AudioPhase {
             stage: 'batch_generation',
             status: audioResult.success ? 'completed' : 'failed',
             message: `Audio batch finished: ${audioResult.generated} generated, ${audioResult.cached} cached, ${audioResult.failed} failed`,
+            provider,
+            model: provider === 'gemini' ? narration?.geminiModel : undefined,
+            performanceTagsEnabled: !!narration?.performanceTagsEnabled,
             generated: audioResult.generated,
             cached: audioResult.cached,
             failed: audioResult.failed,
@@ -126,6 +144,8 @@ export class AudioPhase {
                 message: result.cached ? 'Bound cached audio to beat' : 'Bound generated audio to beat',
                 beatId: result.beatId,
                 audioUrl: result.audioUrl,
+                provider: result.provider || provider,
+                voiceId: result.voiceId,
               });
             }
           }
@@ -151,14 +171,8 @@ export class AudioPhase {
           });
           if (outputDirectory) {
             await saveDiagnosticsAndManifest(outputDirectory, audioDiagnostics);
-            await fetch(PROXY_CONFIG.writeFile, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                filePath: `${outputDirectory}08-final-story.json`,
-                content: JSON.stringify(story, null, 2),
-                isBase64: false,
-              }),
+            await writeFinalStoryPackage(outputDirectory, story, {
+              generator: { pipeline: 'AudioPhase' },
             });
           }
         } else {
@@ -193,7 +207,8 @@ export class AudioPhase {
         timestamp: new Date().toISOString(),
         stage: 'gate',
         status: 'skipped',
-        message: `Audio generation skipped: enabled=${narration?.enabled !== false}, preGenerateAudio=${!!narration?.preGenerateAudio}, hasApiKey=${!!narration?.elevenLabsApiKey}`,
+        message: `Audio generation skipped: enabled=${narration?.enabled !== false}, preGenerateAudio=${!!narration?.preGenerateAudio}, provider=${provider}, hasApiKey=${hasAudioKey}`,
+        provider,
       });
       if (outputDirectory) {
         await saveDiagnosticsAndManifest(outputDirectory, audioDiagnostics);

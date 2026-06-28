@@ -258,6 +258,7 @@ export type AuthoredTreatmentFieldRealization =
 export type SeasonPromiseRealizationKind =
   | 'genre_progression'
   | 'tone_progression'
+  | 'high_concept_pitch'
   | 'logline_engine'
   | 'core_fantasy'
   | 'audience_promise'

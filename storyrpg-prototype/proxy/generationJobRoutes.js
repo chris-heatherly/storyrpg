@@ -316,7 +316,6 @@ function scrubEncounterMedia(encounter) {
   for (const phase of phases) {
     for (const beat of phase?.beats || []) scrubBeatMedia(beat);
   }
-  for (const beat of encounter.beats || []) scrubBeatMedia(beat);
   const storylets = encounter.storylets && typeof encounter.storylets === 'object' ? encounter.storylets : {};
   for (const storylet of Object.values(storylets)) {
     for (const beat of storylet?.beats || []) scrubBeatMedia(beat);
@@ -382,7 +381,7 @@ function rewriteStoryPackage(filePath, scrubber) {
 
 function updatePrimaryManifestHash(outputDirAbs) {
   const manifest = manifestModule.readManifest(outputDirAbs);
-  const primaryStoryFile = manifest?.primaryStoryFile || (fs.existsSync(path.join(outputDirAbs, 'story.json')) ? 'story.json' : '08-final-story.json');
+  const primaryStoryFile = manifest?.primaryStoryFile || 'story.json';
   const primaryPath = path.join(outputDirAbs, primaryStoryFile);
   if (!fs.existsSync(primaryPath)) return;
   const { sha256, bytes } = manifestModule.sha256OfFileSync(primaryPath);
@@ -394,13 +393,12 @@ function updatePrimaryManifestHash(outputDirAbs) {
 
 function rewriteStoryPackages(outputDirAbs, scrubber) {
   const rewritten = [];
-  for (const filename of ['story.json', '08-final-story.json']) {
-    const storyPath = path.join(outputDirAbs, filename);
-    try {
-      if (rewriteStoryPackage(storyPath, scrubber)) rewritten.push(filename);
-    } catch (err) {
-      console.warn(`[Proxy] Failed to scrub image fields from ${storyPath}:`, err.message || err);
-    }
+  const filename = 'story.json';
+  const storyPath = path.join(outputDirAbs, filename);
+  try {
+    if (rewriteStoryPackage(storyPath, scrubber)) rewritten.push(filename);
+  } catch (err) {
+    console.warn(`[Proxy] Failed to scrub image fields from ${storyPath}:`, err.message || err);
   }
 
   try {

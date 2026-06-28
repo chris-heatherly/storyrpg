@@ -137,8 +137,10 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     expect(c4.outcomes.success.encounterOutcome).toBeUndefined();
     // The follow-up covers all three tiers (a missing tier dead-ends the reader)
     // and every terminal carries consequences.
-    const seal = c4.outcomes.success.nextSituation.choices[0];
-    expect(seal.id).toBe('c4-seal');
+    const sealChoices = c4.outcomes.success.nextSituation.choices;
+    expect(sealChoices.map((seal: any) => seal.approach)).toEqual(['aggressive', 'cautious', 'clever']);
+    const seal = sealChoices[0];
+    expect(seal.id).toBe('c4-aggressive-seal');
     expect(seal.primarySkill).toBe('perception');
     for (const tier of ['success', 'complicated', 'failure']) {
       expect(seal.outcomes[tier].isTerminal).toBe(true);
@@ -160,9 +162,10 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     expect(analyzeEncounterDepth(e).oneClickWins).toHaveLength(0);
   });
 
-  it('skips flat nextBeatId-routed encounters instead of injecting an unplayable situation', () => {
+  it('routes flat nextBeatId encounters through appended finish beats instead of injecting unplayable embedded situations', () => {
     // No nextSituation anywhere on the first choice → the reader plays this in
-    // flat mode, where an embedded situation is never walked.
+    // flat mode, where an embedded situation is never walked. The repair must
+    // therefore add a top-level beat and route to it by nextBeatId.
     const e = {
       id: 'e1', type: 'social', name: '', description: '',
       goalClock: { id: 'g', name: '', description: '', segments: 4, filled: 0, type: 'goal' },
@@ -182,9 +185,24 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     } as unknown as Encounter;
     const result = deepenRootTerminalWins(e);
     expect(result.lifted).toHaveLength(0);
-    expect(result.skipped).toEqual([{ beatId: 'beat-1', choiceId: 'b1-win', outcome: 'victory' }]);
-    // Structure untouched — still blocks, by design.
-    expect(analyzeEncounterDepth(e).oneClickWins).toHaveLength(1);
+    expect(result.skipped).toHaveLength(0);
+    expect(result.flatRouted).toEqual([{
+      beatId: 'beat-1',
+      choiceId: 'b1-win',
+      outcome: 'victory',
+      finishBeatId: 'beat-1-b1-win-victory-finish',
+    }]);
+    expect(analyzeEncounterDepth(e).oneClickWins).toHaveLength(0);
+
+    const rootOutcome = ((e.phases[0].beats[0] as any).choices[1].outcomes.success);
+    expect(rootOutcome.isTerminal).toBe(false);
+    expect(rootOutcome.encounterOutcome).toBeUndefined();
+    expect(rootOutcome.nextBeatId).toBe('beat-1-b1-win-victory-finish');
+    const finish = (e.phases[0].beats as any[]).find((beat) => beat.id === 'beat-1-b1-win-victory-finish');
+    expect(finish.setupText).toContain('opening is real');
+    expect(finish.choices.map((seal: any) => seal.approach)).toEqual(['aggressive', 'cautious', 'clever']);
+    expect(finish.choices[0].outcomes.success.encounterOutcome).toBe('victory');
+    expect(finish.choices[0].outcomes.failure.encounterOutcome).toBe('partialVictory');
   });
 
   it('reuses authored consequences on the finish terminals when the root win had them', () => {
@@ -257,8 +275,10 @@ describe('deepenStructureRootWins (G13 source-side guard, EncounterArchitect dra
     expect(c4.outcomes.success.isTerminal).toBe(false);
     expect(c4.outcomes.success.encounterOutcome).toBeUndefined();
     expect(c4.outcomes.success.narrativeText).toBe('Two voices, one rhythm.');
-    const seal = c4.outcomes.success.nextSituation.choices[0];
-    expect(seal.id).toBe('c4-seal');
+    const sealChoices = c4.outcomes.success.nextSituation.choices;
+    expect(sealChoices.map((seal: any) => seal.approach)).toEqual(['aggressive', 'cautious', 'clever']);
+    const seal = sealChoices[0];
+    expect(seal.id).toBe('c4-aggressive-seal');
     expect(seal.primarySkill).toBe('perception');
     for (const tier of ['success', 'complicated', 'failure'] as const) {
       expect(seal.outcomes[tier].isTerminal).toBe(true);
@@ -277,6 +297,61 @@ describe('deepenStructureRootWins (G13 source-side guard, EncounterArchitect dra
     deepenStructureRootWins(draft);
     const second = deepenStructureRootWins(draft);
     expect(second.lifted).toHaveLength(0);
+  });
+
+  it('repairs many flat root-terminal wins in the EncounterArchitect draft shape', () => {
+    const draft = {
+      id: 'bite-me-cismigiu',
+      sceneId: 'treatment-enc-1-1',
+      startingBeatId: 'b1',
+      beats: Array.from({ length: 3 }, (_, beatIndex) => ({
+        id: `b${beatIndex + 1}`,
+        choices: Array.from({ length: 3 }, (_, choiceIndex) => ({
+          id: `b${beatIndex + 1}-c${choiceIndex + 1}`,
+          primarySkill: choiceIndex === 0 ? 'survival' : choiceIndex === 1 ? 'perception' : 'presence',
+          outcomes: {
+            success: {
+              tier: 'success',
+              goalTicks: 1,
+              threatTicks: 0,
+              narrativeText: 'Victor creates an opening.',
+              isTerminal: true,
+              encounterOutcome: 'victory',
+            },
+            complicated: {
+              tier: 'complicated',
+              goalTicks: 1,
+              threatTicks: 1,
+              narrativeText: 'The opening costs you.',
+              isTerminal: true,
+              encounterOutcome: 'partialVictory',
+            },
+            failure: {
+              tier: 'failure',
+              goalTicks: 0,
+              threatTicks: 1,
+              narrativeText: 'The shadow presses in.',
+              isTerminal: true,
+              encounterOutcome: 'defeat',
+            },
+          },
+        })),
+      })),
+    };
+
+    const result = deepenStructureRootWins(draft);
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.flatRouted).toHaveLength(18);
+    expect(draft.beats).toHaveLength(21);
+    expect(analyzeEncounterDepth({
+      id: draft.id,
+      startingBeatId: draft.startingBeatId,
+      goalClock: { id: 'g', name: '', description: '', segments: 6, filled: 0, type: 'goal' },
+      threatClock: { id: 't', name: '', description: '', segments: 4, filled: 0, type: 'threat' },
+      stakes: { victory: '', defeat: '' },
+      phases: [{ beats: draft.beats, startingBeatId: draft.startingBeatId }],
+    } as unknown as Encounter).oneClickWins).toHaveLength(0);
   });
 });
 

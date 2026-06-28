@@ -11,10 +11,8 @@
  *   - 'proxy'   Server-side (proxy + worker). Produces absolute
  *               http URLs or filesystem paths depending on caller.
  *
- * The resolver is the *only* place that rewrites media URLs — the
- * old `normalizeStoryMediaUrls` / `normalizeAssetUrlForRequest` /
- * `normalizeNestedMedia` helpers go away once every consumer routes
- * through here.
+ * The resolver is the app-side place that rewrites media URLs; proxy-side
+ * normalization remains responsible for server responses.
  */
 
 import { isAssetRef, type AssetRef, type MediaRefInput } from './assetRef';

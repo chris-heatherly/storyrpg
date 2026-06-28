@@ -89,6 +89,30 @@ describe('CharacterIntroductionValidator', () => {
     expect(warnings.some((w) => w.message.includes('metadata only'))).toBe(true);
   });
 
+  it('flags first appearances that imply an off-page friend group before introduction', () => {
+    const story = makeStory(
+      [
+        { id: 'char-mika', name: 'Mika Drăgan' },
+        { id: 'char-stela', name: 'Stela Pavel' },
+      ],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-1',
+            charactersInvolved: ['char-mika', 'char-stela'],
+            beats: [beat('It has only been three days with Mika and Stela, so every easy gesture still feels slightly staged: Stela refills your wine and Mika watches over the rim of her glass.')],
+          }),
+        ],
+      }],
+    );
+
+    const result = validator.validate({ story });
+    const errors = result.issues.filter((issue) => issue.severity === 'error');
+    expect(errors.some((issue) => issue.message.includes('off-page familiarity'))).toBe(true);
+    expect(result.valid).toBe(false);
+  });
+
   it('matches accented names via the unique first token', () => {
     const story = makeStory(
       [{ id: 'char-ileana', name: 'Ileana Vâlcescu' }],

@@ -165,7 +165,7 @@ describe('Phase 1 Gemini budget retry', () => {
     const architect = new EncounterArchitect(config) as any;
     const prompts: string[] = [];
     const schemaNames: string[] = [];
-    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any, _retries: number, options: any) => {
+    vi.spyOn(architect, 'callLLM').mockImplementation(async (messages: any, _retries?: any, options?: any) => {
       const prompt: string = messages?.[0]?.content ?? '';
       prompts.push(prompt);
       schemaNames.push(options?.jsonSchema?.name);

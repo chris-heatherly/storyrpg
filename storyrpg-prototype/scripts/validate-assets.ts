@@ -10,9 +10,8 @@
  *   3. Every `AssetRef` in the package's `assets/` index resolves to a
  *      real file on disk whose sha256 matches the key.
  *
- * Falls back to the legacy HTTP-based asset walker (Tier 1 QA) when no
- * manifest is present — useful for in-the-wild v1 stories that have
- * not yet been migrated.
+ * Legacy-only directories must be migrated before asset validation. The
+ * validator no longer walks `08-final-story.json` as a runtime fallback.
  *
  * Usage:
  *   npm run validate:assets -- <story-dir-or-json>
@@ -31,10 +30,6 @@ import {
   sha256OfFileSync,
 } from '../src/ai-agents/codec/storyManifest';
 import { pathForSha256 } from '../src/assets/assetResolver';
-import {
-  walkStoryAssetsFromFile,
-  formatAssetWalkReport,
-} from '../src/ai-agents/validators/storyAssetWalker';
 
 type Finding =
   | { severity: 'ok'; message: string }
@@ -120,20 +115,10 @@ async function validateStoryDir(storyDir: string): Promise<{ findings: Finding[]
     }
 
     findings.push({
-      severity: 'warn',
-      message: 'manifest.json missing — falling back to legacy HTTP asset walk',
+      severity: 'error',
+      message: `manifest.json missing and no story.json package found in ${storyDir}; run scripts/migrate-stories.ts before validating assets`,
     });
-    const primary = path.join(storyDir, 'story.json');
-    const legacy = path.join(storyDir, '08-final-story.json');
-    const target = fs.existsSync(primary) ? primary : legacy;
-    if (!fs.existsSync(target)) {
-      findings.push({ severity: 'error', message: `no story.json or ${path.basename(legacy)} in ${storyDir}` });
-      return { findings, hadError: true };
-    }
-    const httpReport = await walkStoryAssetsFromFile(target);
-    findings.push({ severity: 'ok', message: formatAssetWalkReport(httpReport) });
-    if (httpReport.missing + httpReport.broken + httpReport.unreachable > 0) hadError = true;
-    return { findings, hadError };
+    return { findings, hadError: true };
   }
 
   // 1. Manifest integrity

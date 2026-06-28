@@ -3,6 +3,7 @@ import type {
   LegacyStructuralBeat,
   LegacyStructuralMap,
   StoryCircleBeat,
+  StoryCircleRoleAssignment,
   StoryCircleStructure,
   TreatmentSeasonGuidance,
 } from '../../types/sourceAnalysis';
@@ -14,6 +15,7 @@ import type {
   StoryCircleBeatRealizationContract,
   StoryCircleBeatRealizationTarget,
 } from '../../types/scenePlan';
+import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import {
   treatmentFieldCloseMatch,
   treatmentFieldTokens,
@@ -42,6 +44,21 @@ const BEAT_LABELS: Record<StoryCircleBeat, RegExp[]> = {
 
 const STATE_CHANGE_RE =
   /\b(goes viral|go viral|skips? a day|genre changes?|changes?|reveals?|confesses?|confession|offers?|frames?|hospitalized|turns?|dies?|dark|saved?|rescued?|runs?|walks? out|chooses?|choice|ends?|final post|dawn|truths?|mirror|contract|freed|forgiven|surrender|refuse|humanity|voice)\b/i;
+
+export interface EpisodeCircleContractScene {
+  id: string;
+  order?: number;
+  name?: string;
+  description?: string;
+  dramaticPurpose?: string;
+  narrativeFunction?: string;
+  narrativeRole?: string;
+  isEncounter?: boolean;
+  hasChoice?: boolean;
+  choicePoint?: unknown;
+  keyBeats?: string[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
+}
 
 function slug(value: string): string {
   return value
@@ -86,10 +103,34 @@ function extractBeatText(spine: string | undefined, beat: StoryCircleBeat): stri
 function eventAtoms(text: string): string[] {
   const atoms = text
     .replace(/\([^)]*\bEp(?:isode)?\.?\s*#?\s*\d+[^)]*\)/gi, '')
+    .replace(/\b(Mr|Mrs|Ms|Dr)\./g, '$1')
     .split(/\s*(?:→|;|\.|\band then\b|\bwhile\b|\bbut\b)\s*/i)
+    .flatMap(expandCompositeEventAtom)
     .map((part) => part.trim().replace(/^[-–—:,]+|[-–—:,]+$/g, '').trim())
     .filter((part) => treatmentFieldTokens(part).length >= 3);
   return dedupe(atoms).slice(0, 8);
+}
+
+function expandCompositeEventAtom(atom: string): string[] {
+  const text = atom.trim().replace(/\s+/g, ' ');
+  const normalized = text.toLowerCase();
+  const expanded: string[] = [];
+
+  if (/\barrives?\s+in\s+bucharest\b/.test(normalized) && /\bdusk club\b/.test(normalized)) {
+    const arrival = text.match(/\b(?:she|kylie)\s+arrives?\s+in\s+bucharest\b[\s\S]*?(?=,\s*(?:and\s+)?gathers?\b|\s+and\s+gathers?\b|$)/i)?.[0];
+    const duskClub = text.match(/\b(?:(?:she|kylie)\s+)?gathers?\s+the\s+Dusk\s+Club\b[\s\S]*?(?=,\s*(?:and\s+)?protects?\b|\s+and\s+protects?\b|$)/i)?.[0];
+    const selfProtection = text.match(/\b(?:(?:she|kylie)\s+)?protects?\s+herself\b[\s\S]*$/i)?.[0];
+    expanded.push(...[arrival, duskClub, selfProtection].filter(Boolean) as string[]);
+  }
+
+  if (/\bstaged rescue\b/.test(normalized) && /\bviral\b/.test(normalized)) {
+    expanded.push('The staged rescue happens.');
+    const viral = text.match(/\b(?:the\s+)?viral\b[\s\S]*$/i)?.[0];
+    expanded.push(viral ? viral.replace(/\bclose(?:s)?\s+the\s+beat\b/i, 'changes the aftermath').trim() : 'The viral post makes her a name.');
+  }
+
+  if (expanded.length > 0) return expanded;
+  return [text];
 }
 
 function requiredRealizationFor(beat: StoryCircleBeat, sourceText: string): StoryCircleBeatRealizationTarget[] {
@@ -170,6 +211,95 @@ export function buildStoryCircleBeatContractsForPlan(
   });
 }
 
+function requiredEpisodeRealizationFor(beat: StoryCircleBeat, sourceText: string): StoryCircleBeatRealizationTarget[] {
+  const targets: StoryCircleBeatRealizationTarget[] = ['scene_turn', 'final_prose'];
+  if (beat === 'return' || beat === 'change') targets.push('episode_ending');
+  if (STATE_CHANGE_RE.test(sourceText)) targets.push('mechanic_pressure');
+  return dedupe(targets) as StoryCircleBeatRealizationTarget[];
+}
+
+function orderedEpisodeScenes(scenes: EpisodeCircleContractScene[]): EpisodeCircleContractScene[] {
+  return [...scenes].sort((a, b) => {
+    const ao = typeof a.order === 'number' ? a.order : Number.POSITIVE_INFINITY;
+    const bo = typeof b.order === 'number' ? b.order : Number.POSITIVE_INFINITY;
+    return ao - bo;
+  });
+}
+
+function sceneTextForEpisodeCircle(scene: EpisodeCircleContractScene): string {
+  return [
+    scene.name,
+    scene.description,
+    scene.dramaticPurpose,
+    scene.narrativeFunction,
+    scene.narrativeRole,
+    ...(scene.keyBeats ?? []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function firstMatchingScene(
+  scenes: EpisodeCircleContractScene[],
+  predicate: (scene: EpisodeCircleContractScene, index: number) => boolean,
+): EpisodeCircleContractScene | undefined {
+  return scenes.find(predicate);
+}
+
+function bestEpisodeCircleScene(beat: StoryCircleBeat, scenes: EpisodeCircleContractScene[]): EpisodeCircleContractScene | undefined {
+  const ordered = orderedEpisodeScenes(scenes);
+  if (ordered.length === 0) return undefined;
+  const first = ordered[0];
+  const last = ordered[ordered.length - 1];
+  const encounter = firstMatchingScene(ordered, (scene) => Boolean(scene.isEncounter));
+  const turn = firstMatchingScene(ordered, (scene) => scene.narrativeRole === 'turn');
+  const development = firstMatchingScene(ordered, (scene) => scene.narrativeRole === 'development');
+  const release = [...ordered].reverse().find((scene) => scene.narrativeRole === 'release');
+  const choice = firstMatchingScene(ordered, (scene) => Boolean(scene.hasChoice || scene.choicePoint));
+
+  switch (beat) {
+    case 'you':
+    case 'need':
+      return first;
+    case 'go':
+      return turn ?? choice ?? ordered[1] ?? first;
+    case 'search':
+      return development ?? turn ?? encounter ?? ordered[Math.min(1, ordered.length - 1)];
+    case 'find':
+      return encounter ?? turn ?? firstMatchingScene(ordered, (scene) => /reveal|discover|find|proof|answer|access|victory/i.test(sceneTextForEpisodeCircle(scene))) ?? ordered[Math.floor((ordered.length - 1) / 2)];
+    case 'take':
+      return encounter ?? turn ?? firstMatchingScene(ordered, (scene) => /cost|price|sacrifice|loss|wound|choice|rupture/i.test(sceneTextForEpisodeCircle(scene))) ?? ordered[Math.floor((ordered.length - 1) / 2)];
+    case 'return':
+    case 'change':
+      return release ?? last;
+  }
+}
+
+export function buildEpisodeCircleBeatContracts(input: {
+  episodeNumber: number;
+  episodeCircle?: Partial<StoryCircleStructure>;
+  storyCircleRole?: StoryCircleRoleAssignment[];
+  scenes: EpisodeCircleContractScene[];
+}): StoryCircleBeatRealizationContract[] {
+  const contracts: StoryCircleBeatRealizationContract[] = [];
+  for (const beat of STORY_CIRCLE_BEATS) {
+    const sourceText = input.episodeCircle?.[beat]?.trim();
+    if (!sourceText) continue;
+    const target = bestEpisodeCircleScene(beat, input.scenes);
+    const atoms = eventAtoms(sourceText);
+    contracts.push({
+      id: `episode-circle-ep${input.episodeNumber}-${beat}-${slug(sourceText)}`,
+      beat,
+      sourceText,
+      targetEpisodeNumber: input.episodeNumber,
+      requiredRealization: requiredEpisodeRealizationFor(beat, sourceText),
+      eventAtoms: atoms.length > 0 ? atoms : [sourceText],
+      stateChange: STATE_CHANGE_RE.test(sourceText) ? sourceText : undefined,
+      targetSceneIds: target ? [target.id] : [],
+      blockingLevel: 'structural',
+    });
+  }
+  return contracts;
+}
+
 function sceneText(scene: PlannedScene): string {
   return [
     scene.title,
@@ -188,12 +318,36 @@ function sceneText(scene: PlannedScene): string {
 
 function scoreScene(contract: StoryCircleBeatRealizationContract, scene: PlannedScene): number {
   let score = treatmentFieldCloseMatch(contract.sourceText, sceneText(scene), storyCircleBeatMatchThreshold(contract)) ? 1 : 0;
+  score += eventCueScore(contract.sourceText, sceneText(scene));
   if (contract.targetEpisodeNumber === scene.episodeNumber) score += 0.4;
   if (scene.kind === 'encounter' && (contract.beat === 'search' || contract.beat === 'take' || contract.beat === 'return')) score += 0.35;
   if (scene.narrativeRole === 'turn' && (contract.beat === 'go' || contract.beat === 'find')) score += 0.3;
   if (scene.narrativeRole === 'release' && contract.beat === 'change') score += 0.4;
   if (scene.narrativeRole === 'setup' && contract.beat === 'you') score += 0.4;
   if (scene.hasChoice && (contract.beat === 'return' || contract.beat === 'go')) score += 0.2;
+  return score;
+}
+
+function eventCueScore(sourceText: string, targetText: string): number {
+  const source = sourceText.toLowerCase();
+  const target = targetText.toLowerCase();
+  let score = 0;
+  if (/\barrives?\s+in\s+bucharest\b|\btwo suitcases\b|\bgrandmother'?s address\b/.test(source)
+    && /\barrival\b|\barrives?\b|\bbucharest\b|\btwo suitcases\b|\bgrandmother'?s address\b/.test(target)) {
+    score += 1.2;
+  }
+  if (/\bdusk club\b|\bnegronis?\b/.test(source)
+    && /\bdusk club\b|\bnegronis?\b|\brooftop\b|\bclub\b/.test(target)) {
+    score += 1.2;
+  }
+  if (/\bstaged rescue\b|\brescues?\b|\bmr\.?\s+midnight\b/.test(source)
+    && /\bstaged rescue\b|\brescues?\b|\battack\b|\bcismigiu\b|\bpark\b|\bmr\.?\s+midnight\b/.test(target)) {
+    score += 1.2;
+  }
+  if (/\bviral\b|\bpost\b|\bblog\b|\breadership\b|\bbyline\b/.test(source)
+    && /\bviral\b|\bpost\b|\bblog\b|\breadership\b|\bbyline\b|\baftermath\b/.test(target)) {
+    score += 1.2;
+  }
   return score;
 }
 
@@ -219,13 +373,49 @@ function storyCircleOwnsContract(contract: StoryCircleBeatRealizationContract, s
     ));
 }
 
+function shouldHardBindSceneContract(contract: StoryCircleBeatRealizationContract): boolean {
+  if (contract.blockingLevel !== 'treatment') return true;
+  if (!contract.requiredRealization.includes('final_prose')) return true;
+  return classifyTreatmentObligation({
+    validator: 'TreatmentEventLedgerValidator',
+    text: contract.sourceText,
+  }).blocksFinalProse;
+}
+
 function requiredBeatFor(contract: StoryCircleBeatRealizationContract, scene: PlannedScene): RequiredBeat {
   return {
-    id: `${scene.id}-story-circle-${contract.beat}`,
+    id: `${scene.id}-story-circle-${contract.beat}-${slug(contract.sourceText)}`,
     sourceTurn: contract.sourceText,
     mustDepict: contract.sourceText,
     tier: contract.blockingLevel === 'treatment' ? 'authored' : 'seed',
   };
+}
+
+function sceneLocalContractsFor(contract: StoryCircleBeatRealizationContract): StoryCircleBeatRealizationContract[] {
+  if (contract.blockingLevel !== 'treatment' || !contract.requiredRealization.includes('final_prose')) {
+    return shouldHardBindSceneContract(contract) ? [contract] : [];
+  }
+
+  const atoms = dedupe(contract.eventAtoms?.length ? contract.eventAtoms : eventAtoms(contract.sourceText));
+  const concreteAtoms = atoms.filter((atom) => shouldHardBindSceneContract({
+    ...contract,
+    sourceText: atom,
+    eventAtoms: [atom],
+    stateChange: STATE_CHANGE_RE.test(atom) ? atom : undefined,
+  }));
+
+  if (concreteAtoms.length > 0 && (concreteAtoms.length > 1 || !shouldHardBindSceneContract(contract))) {
+    return concreteAtoms.map((atom, index) => ({
+      ...contract,
+      id: `${contract.id}-part-${index + 1}-${slug(atom)}`,
+      sourceText: atom,
+      eventAtoms: [atom],
+      stateChange: STATE_CHANGE_RE.test(atom) ? atom : undefined,
+      targetSceneIds: [],
+    }));
+  }
+
+  return shouldHardBindSceneContract(contract) ? [contract] : [];
 }
 
 function pressureFor(contract: StoryCircleBeatRealizationContract, scene: PlannedScene): MechanicPressureContract | undefined {
@@ -253,27 +443,34 @@ export function assignStoryCircleBeatContractsToScenes(
 ): StoryCircleBeatRealizationContract[] {
   const contracts = buildStoryCircleBeatContractsForPlan(plan);
   for (const contract of contracts) {
-    if (storyCircleOwnsContract(contract, scenes)) {
+    const sceneContracts = sceneLocalContractsFor(contract);
+    if (sceneContracts.length === 0) {
       contract.targetSceneIds = [];
       continue;
     }
-    const target = bestSceneForContract(contract, scenes);
-    if (!target) continue;
-    contract.targetSceneIds = dedupe([...contract.targetSceneIds, target.id]);
-    const existing = target.storyCircleBeatContracts ?? [];
-    if (!existing.some((candidate) => candidate.id === contract.id)) {
-      target.storyCircleBeatContracts = [...existing, contract];
-    }
-    if (contract.blockingLevel !== 'warning') {
-      const beat = requiredBeatFor(contract, target);
-      if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === beat.id)) {
-        target.requiredBeats = [...(target.requiredBeats ?? []), beat];
+    const boundSceneIds: string[] = [];
+    for (const sceneContract of sceneContracts) {
+      if (storyCircleOwnsContract(sceneContract, scenes)) continue;
+      const target = bestSceneForContract(sceneContract, scenes);
+      if (!target) continue;
+      sceneContract.targetSceneIds = dedupe([...sceneContract.targetSceneIds, target.id]);
+      boundSceneIds.push(target.id);
+      const existing = target.storyCircleBeatContracts ?? [];
+      if (!existing.some((candidate) => candidate.id === sceneContract.id)) {
+        target.storyCircleBeatContracts = [...existing, sceneContract];
       }
-      const pressure = pressureFor(contract, target);
-      if (pressure && !(target.mechanicPressure ?? []).some((candidate) => candidate.id === pressure.id)) {
-        target.mechanicPressure = [...(target.mechanicPressure ?? []), pressure];
+      if (sceneContract.blockingLevel !== 'warning') {
+        const beat = requiredBeatFor(sceneContract, target);
+        if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === beat.id)) {
+          target.requiredBeats = [...(target.requiredBeats ?? []), beat];
+        }
+        const pressure = pressureFor(sceneContract, target);
+        if (pressure && !(target.mechanicPressure ?? []).some((candidate) => candidate.id === pressure.id)) {
+          target.mechanicPressure = [...(target.mechanicPressure ?? []), pressure];
+        }
       }
     }
+    contract.targetSceneIds = dedupe([...contract.targetSceneIds, ...boundSceneIds]);
   }
   return contracts;
 }

@@ -38,7 +38,6 @@ function cloneWithoutGeneratedImages<T>(value: T): T {
 async function patchStoryFiles(urlsByBeat: Map<string, string>, sceneBackground?: string) {
   const files = [
     path.join(STORY_DIR, 'story.json'),
-    path.join(STORY_DIR, '08-final-story.json'),
     path.join(STORY_DIR, 'checkpoints/final-story-before-save.json'),
   ];
 

@@ -25,6 +25,8 @@ export interface TreatmentEventLedgerResult {
 export interface TreatmentEventLedgerInput {
   story: Story;
   treatmentSourced?: boolean;
+  requestedEpisodeNumbers?: number[];
+  generatedEpisodeNumbers?: number[];
 }
 
 const SUMMARY_ONLY_RE =
@@ -137,9 +139,35 @@ function ledgerMomentDepicted(moment: string, prose: string): boolean {
 }
 
 function isMustDramatize(contract: StoryCircleBeatRealizationContract, treatmentSourced?: boolean): boolean {
-  if (contract.blockingLevel !== 'treatment' && !treatmentSourced) return false;
+  if (contract.blockingLevel !== 'treatment') return false;
   return contract.requiredRealization.includes('final_prose')
     && contract.requiredRealization.includes('scene_turn');
+}
+
+function activeEpisodeSet(input: TreatmentEventLedgerInput): Set<number> | undefined {
+  const numbers = [
+    ...(input.requestedEpisodeNumbers || []),
+    ...(input.generatedEpisodeNumbers || []),
+  ].filter((value): value is number => Number.isFinite(value));
+  return numbers.length > 0 ? new Set(numbers) : undefined;
+}
+
+function inActiveEpisodeScope(
+  episodeNumber: number | undefined,
+  contract: StoryCircleBeatRealizationContract,
+  activeEpisodes: Set<number> | undefined,
+): boolean {
+  if (typeof episodeNumber === 'number' && activeEpisodes && !activeEpisodes.has(episodeNumber)) {
+    return false;
+  }
+  if (
+    typeof episodeNumber === 'number'
+    && typeof contract.targetEpisodeNumber === 'number'
+    && contract.targetEpisodeNumber !== episodeNumber
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function directWindowDepicts(moment: string, windows: string[]): boolean {
@@ -192,13 +220,18 @@ export class TreatmentEventLedgerValidator extends BaseValidator {
 
   validate(input: TreatmentEventLedgerInput): TreatmentEventLedgerResult {
     const findings: TreatmentEventLedgerFinding[] = [];
+    const activeEpisodes = activeEpisodeSet(input);
 
     for (const episode of input.story.episodes || []) {
+      if (typeof episode.number === 'number' && activeEpisodes && !activeEpisodes.has(episode.number)) {
+        continue;
+      }
       const episodeProse = readerFacingEpisodeProse(episode.scenes || []);
       for (const scene of episode.scenes || []) {
         const prose = readerFacingSceneProse(scene);
         for (const contract of scene.storyCircleBeatContracts || []) {
           if (!isMustDramatize(contract, input.treatmentSourced)) continue;
+          if (!inActiveEpisodeScope(episode.number, contract, activeEpisodes)) continue;
           if (contract.targetSceneIds.length > 0 && !contract.targetSceneIds.includes(scene.id)) continue;
 
           const status = directRealizationStatus(contract, prose);

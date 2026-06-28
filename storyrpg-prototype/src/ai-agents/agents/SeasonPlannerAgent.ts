@@ -603,6 +603,7 @@ The source document is a StoryRPG treatment. Preserve these authored sections as
 - Parsed sections: ${analysis.treatmentSeasonGuidance.rawSectionSummary?.join(', ') || 'season guidance'}
 ${analysis.treatmentSeasonGuidance.genre ? `\n### Authored Genre\n${analysis.treatmentSeasonGuidance.genre}` : ''}
 ${analysis.treatmentSeasonGuidance.tone ? `\n### Authored Tone\n${analysis.treatmentSeasonGuidance.tone}` : ''}
+${analysis.treatmentSeasonGuidance.highConceptPitch ? `\n### Authored High Concept Pitch\n${analysis.treatmentSeasonGuidance.highConceptPitch}` : ''}
 ${analysis.treatmentSeasonGuidance.logline ? `\n### Authored Logline Engine\n${analysis.treatmentSeasonGuidance.logline}` : ''}
 ${analysis.treatmentSeasonGuidance.coreFantasy ? `\n### Authored Core Fantasy\n${analysis.treatmentSeasonGuidance.coreFantasy}` : ''}
 ${analysis.treatmentSeasonGuidance.audiencePromise ? `\n### Authored Audience Promise\n${analysis.treatmentSeasonGuidance.audiencePromise}` : ''}
@@ -1234,7 +1235,7 @@ CRITICAL RULES:
             : guidance.forcedChoice
               ? `${anchor} Forced choice: ${guidance.forcedChoice}`
               : anchor;
-          const storyCircleTarget = normalizeEncounterStoryCircleTarget(
+          const storyCircleTarget = guidance.encounterStoryCircleTarget ?? normalizeEncounterStoryCircleTarget(
             undefined,
             ep.storyCircleRole,
             [
@@ -1256,7 +1257,8 @@ CRITICAL RULES:
             stakes: guidance.stakesLayers?.join(' | ') || guidance.encounterCentralConflict || guidance.episodePromise || ep.narrativeFunction.conflict,
             centralConflict: guidance.encounterCentralConflict || guidance.dramaticQuestion || guidance.obstacle,
             storyCircleTarget,
-            storyCircleTargetRationale: buildEncounterStoryCircleTargetRationale(storyCircleTarget, ep.storyCircleRole, description),
+            storyCircleTargetRationale: guidance.encounterStoryCircleTargetRationale
+              || buildEncounterStoryCircleTargetRationale(storyCircleTarget, ep.storyCircleRole, description),
             storyCircleTargetEvidence: {
               episodeStoryCircleRole: ep.storyCircleRole?.map((role) => role.beat),
               episodeQuestion: guidance.dramaticQuestion || ep.narrativeFunction.conflict,
@@ -1839,68 +1841,74 @@ CRITICAL RULES:
     });
     arcs = this.repairArcStoryCircleCoverage(arcs, analysis, episodes, storyCircleRoleByEpisode);
 
-    const seasonPromiseArchitecture = this.normalizeSeasonPromiseArchitecture(
-      planData.seasonPromiseArchitecture,
-      analysis,
-      routedEpisodes,
-    );
-    const seasonPromiseContracts = buildSeasonPromiseContracts({
-      guidance: analysis.treatmentSeasonGuidance,
-      architecture: seasonPromiseArchitecture,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || Boolean(analysis.treatmentSeasonGuidance),
-    });
+	    const seasonPromiseArchitecture = this.normalizeSeasonPromiseArchitecture(
+	      planData.seasonPromiseArchitecture,
+	      analysis,
+	      routedEpisodes,
+	    );
+	    const sourceTotalEpisodes = Math.max(
+	      analysis.totalEstimatedEpisodes || 0,
+	      episodes.length || 0,
+	      routedEpisodes.length || 0,
+	      1,
+	    );
+	    const seasonPromiseContracts = buildSeasonPromiseContracts({
+	      guidance: analysis.treatmentSeasonGuidance,
+	      architecture: seasonPromiseArchitecture,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || Boolean(analysis.treatmentSeasonGuidance),
+	    });
     const characterTreatmentContracts = analysis.characterTreatmentContracts ?? [];
     const worldTreatmentContracts = analysis.worldTreatmentContracts ?? [];
-    const stakesArchitectureContracts = analysis.stakesArchitectureContracts ?? buildStakesArchitectureContracts({
-      guidance: analysis.treatmentSeasonGuidance,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || Boolean(analysis.treatmentSeasonGuidance?.stakesArchitecture),
-    });
+	    const stakesArchitectureContracts = analysis.stakesArchitectureContracts ?? buildStakesArchitectureContracts({
+	      guidance: analysis.treatmentSeasonGuidance,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || Boolean(analysis.treatmentSeasonGuidance?.stakesArchitecture),
+	    });
     const storyCircleBeatContracts = analysis.storyCircleBeatContracts ?? buildStoryCircleBeatContracts({
-      guidance: analysis.treatmentSeasonGuidance,
-      storyCircle: analysis.storyCircle,
-      legacyStructure: analysis.legacyStructure,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || Boolean(analysis.treatmentSeasonGuidance?.seasonSpine),
-    });
+	      guidance: analysis.treatmentSeasonGuidance,
+	      storyCircle: analysis.storyCircle,
+	      legacyStructure: analysis.legacyStructure,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || Boolean(analysis.treatmentSeasonGuidance?.seasonSpine),
+	    });
     const arcPressureContracts = analysis.arcPressureContracts ?? buildArcPressureContracts({
-      guidance: analysis.treatmentSeasonGuidance,
-      arcs,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || Boolean(analysis.treatmentSeasonGuidance?.arcGuidance?.arcs?.length),
+	      guidance: analysis.treatmentSeasonGuidance,
+	      arcs,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || Boolean(analysis.treatmentSeasonGuidance?.arcGuidance?.arcs?.length),
+	    });
+	    const branchConsequenceContracts = analysis.branchConsequenceContracts ?? buildBranchConsequenceContracts({
+	      branches: analysis.treatmentBranches,
+	      endings: analysis.resolvedEndings,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || Boolean(analysis.treatmentBranches?.length),
+	    });
+	    const endingRealizationContracts = analysis.endingRealizationContracts ?? buildEndingRealizationContracts({
+	      endings: analysis.resolvedEndings,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || (analysis.resolvedEndings || []).some((ending) => ending.sourceConfidence === 'explicit'),
+	      branchContracts: branchConsequenceContracts,
     });
-    const branchConsequenceContracts = analysis.branchConsequenceContracts ?? buildBranchConsequenceContracts({
-      branches: analysis.treatmentBranches,
-      endings: analysis.resolvedEndings,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || Boolean(analysis.treatmentBranches?.length),
-    });
-    const endingRealizationContracts = analysis.endingRealizationContracts ?? buildEndingRealizationContracts({
-      endings: analysis.resolvedEndings,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || (analysis.resolvedEndings || []).some((ending) => ending.sourceConfidence === 'explicit'),
-      branchContracts: branchConsequenceContracts,
-    });
-    const failureModeAuditContracts = analysis.failureModeAuditContracts ?? buildFailureModeAuditContracts({
-      guidance: analysis.treatmentSeasonGuidance,
-      totalEpisodes: routedEpisodes.length,
-      treatmentSourced: analysis.sourceFormat === 'story_treatment'
-        || analysis.treatmentMetadata?.detected
-        || Boolean(analysis.treatmentSeasonGuidance?.failureModeAuditGuidance),
-      linkedContracts: [
+	    const failureModeAuditContracts = analysis.failureModeAuditContracts ?? buildFailureModeAuditContracts({
+	      guidance: analysis.treatmentSeasonGuidance,
+	      totalEpisodes: sourceTotalEpisodes,
+	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
+	        || analysis.treatmentMetadata?.detected
+	        || Boolean(analysis.treatmentSeasonGuidance?.failureModeAuditGuidance),
+	      linkedContracts: [
         characterTreatmentContracts,
         worldTreatmentContracts,
         stakesArchitectureContracts,
@@ -1918,18 +1926,18 @@ CRITICAL RULES:
     );
 
     // E1 slice 4: normalize the planner's season-level choice moments.
-    const choiceMoments = this.normalizeChoiceMoments(
-      (planData as any).choiceMoments,
-      routedEpisodes.length,
-    );
+	    const choiceMoments = this.normalizeChoiceMoments(
+	      (planData as any).choiceMoments,
+	      sourceTotalEpisodes,
+	    );
     const residuePlan = this.normalizeResiduePlan({
       raw: (planData as any).residuePlan,
       choiceMoments,
-      seasonFlags,
-      consequenceChains,
-      crossEpisodeBranches,
-      totalEpisodes: routedEpisodes.length,
-    });
+	      seasonFlags,
+	      consequenceChains,
+	      crossEpisodeBranches,
+	      totalEpisodes: sourceTotalEpisodes,
+	    });
     if (residuePlan?.length) {
       for (const episode of routedEpisodes) {
         const incoming = residuePlan
@@ -1971,9 +1979,9 @@ CRITICAL RULES:
       updatedAt: now,
       analysisVersion: analysis.analysisTimestamp?.toISOString() || now.toISOString(),
       seasonTitle: planData.seasonTitle || `${analysis.sourceTitle}: Season 1`,
-      seasonSynopsis: planData.seasonSynopsis || `An interactive adaptation spanning ${routedEpisodes.length} episodes.`,
-      totalEpisodes: routedEpisodes.length,
-      estimatedTotalDuration: `${routedEpisodes.length * 3}-${routedEpisodes.length * 8} minutes`,
+	      seasonSynopsis: planData.seasonSynopsis || `An interactive adaptation spanning ${sourceTotalEpisodes} episodes.`,
+	      totalEpisodes: sourceTotalEpisodes,
+	      estimatedTotalDuration: `${sourceTotalEpisodes * 3}-${sourceTotalEpisodes * 8} minutes`,
       genre: analysis.genre,
       tone: analysis.tone,
       themes: analysis.themes,

@@ -1,7 +1,7 @@
 /**
  * Upload generated stories to Vercel Blob Storage.
  *
- * For each story directory containing 08-final-story.json:
+ * For each story directory containing story.json:
  *   1. Extracts all base64 data-URL images from the story JSON
  *   2. Uploads each image as a separate blob on the CDN
  *   3. Rewrites image fields in the story to use CDN URLs
@@ -20,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { put, list } from '@vercel/blob';
+import { decodeStory } from '../src/ai-agents/codec/storyCodec';
 
 const STORIES_DIR = path.resolve(__dirname, '..', 'generated-stories');
 const BLOB_PREFIX = 'stories';
@@ -233,7 +234,7 @@ async function uploadStory(
   const raw = fs.readFileSync(storyFilePath, 'utf8');
   let story: any;
   try {
-    story = JSON.parse(raw);
+    story = decodeStory(JSON.parse(raw)).story;
   } catch {
     console.error(`  [SKIP] Invalid JSON: ${storyFilePath}`);
     return null;
@@ -301,7 +302,7 @@ async function main() {
 
   const storyDirs: { dirName: string; filePath: string }[] = [];
   for (const dir of dirs) {
-    const fp = path.join(STORIES_DIR, dir, '08-final-story.json');
+    const fp = path.join(STORIES_DIR, dir, 'story.json');
     if (fs.existsSync(fp)) {
       storyDirs.push({ dirName: dir, filePath: fp });
     }
@@ -310,11 +311,11 @@ async function main() {
   if (requestedDirs.size > 0) {
     const found = new Set(storyDirs.map(s => s.dirName));
     for (const requested of requestedDirs) {
-      if (!found.has(requested)) console.warn(`[WARN] Requested story dir not found or missing 08-final-story.json: ${requested}`);
+      if (!found.has(requested)) console.warn(`[WARN] Requested story dir not found or missing story.json: ${requested}`);
     }
   }
 
-  console.log(`Found ${storyDirs.length} stories with 08-final-story.json\n`);
+  console.log(`Found ${storyDirs.length} stories with story.json\n`);
   if (storyDirs.length === 0) { console.log('Nothing to upload.'); return; }
 
   console.log('Indexing existing blobs...');

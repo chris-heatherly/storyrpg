@@ -38,6 +38,7 @@ import {
   normalizeCheckpointsForSnapshot,
 } from '../testing/promptCapture';
 import { buildBranchingRunFixtureMap } from '../testing/branchingRunFixtures';
+import { disableArchitectCraftGatesForSnapshot } from '../testing/architectGateTestEnv';
 import type { FullCreativeBrief } from './FullStoryPipeline';
 
 function buildBrief(): FullCreativeBrief {
@@ -112,13 +113,14 @@ async function buildPipeline() {
   config.imageGen = { ...(config.imageGen ?? {}), enabled: false };
   config.narration = { ...(config.narration ?? {}), enabled: false, preGenerateAudio: false };
   config.videoGen = undefined;
+  config.sceneCritic = { ...(config.sceneCritic ?? {}), enabled: false };
   config.memory = {
     pipelineOptimization: false,
     characterKnowledge: false,
     ...(config.memory ?? {}),
     enabled: false,
   };
-  config.validation = { ...(config.validation ?? {}), enabled: true, mode: 'advisory' };
+  config.validation = { ...(config.validation ?? {}), enabled: true, mode: 'advisory', playwrightQA: false };
   config.generation = {
     ...(config.generation ?? {}),
     assetGenerationMode: 'story-only',
@@ -155,6 +157,7 @@ describe('FullStoryPipeline prompt snapshot (branching + encounter characterizat
     const scratch = mkdtempSync(join(tmpdir(), 'storyrpg-branching-snapshot-'));
     process.chdir(scratch);
 
+    const restoreArchitectCraftGates = disableArchitectCraftGatesForSnapshot();
     const session = startPromptCapture(createScriptedResponder(buildBranchingRunFixtureMap()));
     let result;
     try {
@@ -162,6 +165,7 @@ describe('FullStoryPipeline prompt snapshot (branching + encounter characterizat
       result = await pipeline.generate(buildBrief());
     } finally {
       session.stop();
+      restoreArchitectCraftGates();
       process.chdir(previousCwd);
       rmSync(scratch, { recursive: true, force: true });
     }

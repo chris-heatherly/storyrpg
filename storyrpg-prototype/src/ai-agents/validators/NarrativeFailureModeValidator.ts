@@ -19,7 +19,9 @@ export type NarrativeFailureModeCode =
   | 'inverted_thematic_rhyme'
   | 'convenient_coincidence'
   | 'telegraphed_twist'
-  | 'cheating_twist';
+  | 'cheating_twist'
+  | 'repetitive_toast_motif'
+  | 'tense_drift';
 
 export interface NarrativeFailureModeIssue extends ValidationIssue {
   code: NarrativeFailureModeCode;
@@ -38,6 +40,8 @@ export interface NarrativeFailureModeMetrics {
   mappedIssueCount: number;
   convenientCoincidenceSignals: number;
   telegraphedTwistSignals: number;
+  repetitiveMotifSignals: number;
+  tenseDriftSignals: number;
   authoredContractIssues: number;
 }
 
@@ -148,6 +152,13 @@ export class NarrativeFailureModeValidator extends BaseValidator {
     const telegraphSignals = this.detectTelegraphedTwist(input.sceneContents ?? []);
     issues.push(...telegraphSignals);
 
+    const proseStyleSceneContents = input.sceneContents ?? sceneContentsFromStory(input.story);
+    const repetitiveMotifSignals = this.detectRepetitiveMotif(proseStyleSceneContents);
+    issues.push(...repetitiveMotifSignals);
+
+    const tenseDriftSignals = this.detectTenseDrift(proseStyleSceneContents);
+    issues.push(...tenseDriftSignals);
+
     const contractIssues = this.validateAuthoredContracts(input);
     issues.push(...contractIssues);
 
@@ -163,6 +174,8 @@ export class NarrativeFailureModeValidator extends BaseValidator {
         mappedIssueCount: mapped.length,
         convenientCoincidenceSignals: coincidenceSignals.length,
         telegraphedTwistSignals: telegraphSignals.length,
+        repetitiveMotifSignals: repetitiveMotifSignals.length,
+        tenseDriftSignals: tenseDriftSignals.length,
         authoredContractIssues: contractIssues.length,
       },
     };
@@ -237,6 +250,53 @@ export class NarrativeFailureModeValidator extends BaseValidator {
     return [];
   }
 
+  private detectRepetitiveMotif(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
+    const hits: Array<{ location: string; text: string }> = [];
+    for (const scene of sceneContents) {
+      for (const beat of scene.beats ?? []) {
+        const text = typeof beat.text === 'string' ? beat.text : '';
+        if (/\bTo the Dusk Club\b/i.test(text) || /\byour glass clicked against theirs\b/i.test(text)) {
+          hits.push({ location: `${scene.sceneId}.${beat.id}`, text });
+        }
+      }
+    }
+
+    const toastCount = hits.filter((hit) => /\bTo the Dusk Club\b/i.test(hit.text)).length;
+    const glassClickCount = hits.filter((hit) => /\byour glass clicked against theirs\b/i.test(hit.text)).length;
+    if (toastCount <= 1 && glassClickCount === 0) return [];
+
+    return [{
+      code: 'repetitive_toast_motif',
+      severity: 'error',
+      message: `[Repetitive toast motif] Reader-facing prose repeats the Dusk Club toast/click choreography ${toastCount + glassClickCount} time(s), flattening separate beats into the same action.`,
+      location: hits.map((hit) => hit.location).join(', '),
+      suggestion: 'Keep one founding toast at most; revise later beats into distinct present-tense action, changed looks, interruptions, or social pressure.',
+      source: 'prose_style_consistency',
+    }];
+  }
+
+  private detectTenseDrift(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
+    const issues: NarrativeFailureModeIssue[] = [];
+    for (const scene of sceneContents) {
+      for (const beat of scene.beats ?? []) {
+        const text = typeof beat.text === 'string' ? beat.text : '';
+        if (!text || hasPastEventMarker(text)) continue;
+        const narrationOnly = stripQuotedDialogue(text);
+        const matches = narrationOnly.match(PAST_TENSE_LIVE_ACTION) ?? [];
+        if (matches.length < 3) continue;
+        issues.push({
+          code: 'tense_drift',
+          severity: 'error',
+          message: `[Tense drift] Beat "${beat.id}" appears to narrate live action in past tense: "${excerpt(text)}"`,
+          location: `${scene.sceneId}.${beat.id}`,
+          suggestion: 'Rewrite live reader-facing action in present tense. Use past tense only for explicit memories, backstory, recaps, or earlier events.',
+          source: 'prose_style_consistency',
+        });
+      }
+    }
+    return issues;
+  }
+
   private formatCode(code: NarrativeFailureModeCode): string {
     return code.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ');
   }
@@ -293,6 +353,44 @@ function collectSceneText(scene: SceneContent): string {
   }
 
   return parts.join('\n');
+}
+
+function sceneContentsFromStory(story: Story | undefined): SceneContent[] {
+  if (!story) return [];
+  const contents: SceneContent[] = [];
+  for (const episode of story.episodes ?? []) {
+    for (const scene of episode.scenes ?? []) {
+      contents.push({
+        sceneId: scene.id,
+        sceneName: scene.name,
+        beats: (scene.beats ?? []).map((beat) => ({ id: beat.id, text: beat.text })),
+        startingBeatId: scene.startingBeatId,
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      });
+    }
+  }
+  return contents;
+}
+
+const PAST_TENSE_LIVE_ACTION =
+  /\b(?:you|your|the|a|an|he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen)\s+(?:was|were|had|did|didn't|felt|took|saw|heard|watched|looked|stepped|turned|reached|held|laughed|asked|said|met|found|made|walked|ran|wrote|gave|opened|closed|kept|thought|knew|wanted|needed|clicked|shattered|followed|stopped|bled)\b/gi;
+
+const PAST_EVENT_MARKER =
+  /\b(?:remember|remembers|remembered|memory|back then|before you arrived|earlier|last night|yesterday|years? ago|once|used to|had been|had already|when you were|as a child|in 19\d{2}|in 20\d{2})\b/i;
+
+function hasPastEventMarker(text: string): boolean {
+  return PAST_EVENT_MARKER.test(text);
+}
+
+function stripQuotedDialogue(text: string): string {
+  return text.replace(/"[^"]*"/g, ' ');
+}
+
+function excerpt(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 180);
 }
 
 function contractStoryText(input: NarrativeFailureModeInput, contract: FailureModeAuditContract): string {

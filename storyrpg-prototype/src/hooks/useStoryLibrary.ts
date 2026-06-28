@@ -7,7 +7,7 @@ import {
   fetchDeletedStoryIds,
   fetchStoryByCatalogEntry,
   fetchStoryCatalog,
-  normalizeStoryMediaUrls,
+  resolveStoryMedia,
 } from '../services/storyLibrary';
 
 type CachedStoryRecord = {
@@ -83,7 +83,7 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const builtInCacheEntries = builtInStories
         .filter((story) => !currentDeletedIds.has(story.id))
         .map((story) => {
-          const normalizedStory = normalizeStoryMediaUrls(story);
+          const normalizedStory = resolveStoryMedia(story);
           return [
             story.id,
             {
@@ -106,7 +106,7 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const fallbackStories = builtInStories.map((story) => createStoryCatalogEntry(story));
       storyCacheRef.current = new Map(
         builtInStories.map((story) => {
-          const normalizedStory = normalizeStoryMediaUrls(story);
+          const normalizedStory = resolveStoryMedia(story);
           return [
             story.id,
             {
@@ -149,7 +149,7 @@ export function useStoryLibrary(builtInStories: Story[]) {
   }, [builtInStories, stories]);
 
   const upsertStory = useCallback((story: Story) => {
-    const normalizedStory = normalizeStoryMediaUrls(story);
+    const normalizedStory = resolveStoryMedia(story);
     storyCacheRef.current.set(normalizedStory.id, {
       story: normalizedStory,
       sourceKey: getStorySourceKey(normalizedStory),

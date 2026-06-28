@@ -78,6 +78,16 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     suggestion: 'Remove embedded treatment-card labels and keep only the concrete story moment.',
   },
   {
+    pattern: /(?:^|[.!?]\s+)(?:her|his|their|your)\s+grandmother['’]s\s+address\s*[.!?](?:\s|$)/i,
+    label: 'orphan treatment-card fragment',
+    suggestion: 'Fold the address into concrete arrival action; never ship treatment-card sentence fragments as prose.',
+  },
+  {
+    pattern: /\bA\s+FaceTime\s+gag\s+that\s+quietly\s+seeds\s+everything\b|\bFirst\s+strong\s+image\s*:|\bseason['’]s\s+thesis\s+in\s+disguise\b/i,
+    label: 'treatment-card thesis prose',
+    suggestion: 'Convert treatment-card thesis notes into concrete scene action, image, and dialogue.',
+  },
+  {
     pattern: /\bCold-open\s+prelude\s*:|\bThen\s+continue\s+into\s+the\s+planned\s+scene\s*:|\bOpen\s+with\s+this\s+cold-open\s+moment\b|\bOpen\s+on\s+the\s+required\s+cold-open\s+prelude\b/i,
     label: 'cold-open planning wrapper',
     suggestion: 'Remove cold-open/planned-scene instructions and keep only in-world action.',
@@ -91,6 +101,26 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     pattern: /\bThe\s+response\s+changes\s+access,\s*trust,\s*information,\s*or\s*danger\s+around\b/i,
     label: 'choice response mechanics summary',
     suggestion: 'Replace abstract access/trust/information/danger summaries with concrete in-world aftermath.',
+  },
+  {
+    pattern: /\bThe\s+selected\s+(?:route|choice)\s+changes\s+the\s+next\s+scene\b|\b(?:later\s+narration\s+remembers\s+which|which)\s+path\s+the\s+player\s+chose\b/i,
+    label: 'choice-route planning fallback',
+    suggestion: 'Replace route/scene/path reminders with a concrete in-fiction consequence of the choice.',
+  },
+  {
+    pattern: /\bThe\s+world\s+gives\s+up\s+a\s+little\s+more\s+of\s+its\s+pattern\b/i,
+    label: 'generic survival-skill feedback',
+    suggestion: 'Replace abstract world-pattern feedback with concrete perception, warning, or recovery prose.',
+  },
+  {
+    pattern: /(?:^|[.!?]\s+)\s*development\s+scene\s+\d+\s*\.?\s*(?:$|[.!?])/i,
+    label: 'development-scene planning stub',
+    suggestion: 'Replace development-scene placeholders with concrete in-world action.',
+  },
+  {
+    pattern: /(?:^|[.!?]\s+)\s*PEAK\s*:/i,
+    label: 'structural peak label',
+    suggestion: 'Remove structural PEAK labels and write the moment as direct scene prose.',
   },
 ];
 
@@ -140,6 +170,16 @@ export const STRUCTURAL_SCAFFOLDING_PATTERNS: Array<{ pattern: RegExp; label: st
     label: 'callback scaffolding',
     suggestion: 'Show the earlier decision changing the scene in-fiction; never ship generic callback scaffolding.',
   },
+  {
+    pattern: /\bthe\s+scene\s+pressure\s+sharpens\s+into\s+a\s+visible\s+turning\s+point\b/i,
+    label: 'scene-pressure fallback scaffolding',
+    suggestion: 'Replace generic scene-pressure fallback text with a concrete visible action.',
+  },
+  {
+    pattern: /\bchanges\s+the\s+room['’]s\s+leverage\s+through\b|\breveal\s+the\s+beat\s+beneath\s+the\s+words\b/i,
+    label: 'beat/leverage fallback scaffolding',
+    suggestion: 'Replace beat/leverage fallback text with concrete in-world body language or object movement.',
+  },
 ];
 
 /**
@@ -165,6 +205,15 @@ export const META_CALLBACK_REJECT_PATTERNS: RegExp[] = [
   /\bwhich option the player chose\b/i,
   /\bthe player chose\b/i,
   /\bthe\s+next\s+beat\s+visibly\s+responds\b/i,
+  /\bordinary\s+world\s+is\s+[^.!?\n]{1,180}/i,
+  /(?:^|[.!?]\s+)(?:her|his|their|your)\s+grandmother['’]s\s+address\s*[.!?](?:\s|$)/i,
+  /\bprotects\s+herself\s+(?:the\s+way\s+she\s+always\s+has|by\s+observing|through\s+observing)\b/i,
+  /\bOpening\s+promise\s*:/i,
+  /\breinvention-as-performance\b/i,
+  /\bnext[-\s]+scene\s+pressure\b/i,
+  /\bprovide\s+aftermath\s+or\s+a\s+grounded\s+transition\s+into\s+the\s+next\s+scene\b/i,
+  /\b(?:viral|public)\s+attention\s+pressure\s+the\s+next\s+scene\b/i,
+  /\bHand\s+the\s+changed\s+state\s+into\s+the\s+next\s+scene\b/i,
   /\bauthored\s+choice\b/i,
   /\bshow\s+immediate\s+residue\s+from\b/i,
   /\bauthored\s+(?:path|residue)\b/i,

@@ -19,7 +19,7 @@ describe('repairPlayerReferenceProse', () => {
 });
 
 describe('buildPlayerFacingProseRepairHandler', () => {
-  it('repairs choice reaction and outcome text when final contract flags a player reference', () => {
+  it('repairs choice reaction and outcome text when final contract flags a player reference', async () => {
     const story = {
       episodes: [{
         scenes: [{
@@ -41,7 +41,7 @@ describe('buildPlayerFacingProseRepairHandler', () => {
     } as unknown as Story;
     const handler = buildPlayerFacingProseRepairHandler();
 
-    const result = handler({
+    const result = await handler({
       story,
       blockingIssues: [{
         type: 'qa_blocker_present',
@@ -56,9 +56,9 @@ describe('buildPlayerFacingProseRepairHandler', () => {
     expect(choice.outcomeTexts.partial).toBe("The other person's identity remains hidden.");
   });
 
-  it('does nothing without a matching final-contract blocker', () => {
+  it('does nothing without a matching final-contract blocker', async () => {
     const story = { episodes: [{ scenes: [{ beats: [{ text: 'The player is listed in metadata only.' }] }] }] } as unknown as Story;
-    const result = buildPlayerFacingProseRepairHandler()({ story, blockingIssues: [] });
+    const result = await buildPlayerFacingProseRepairHandler()({ story, blockingIssues: [] });
 
     expect(result.changed).toBe(false);
   });

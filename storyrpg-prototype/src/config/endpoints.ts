@@ -35,6 +35,7 @@ export const PROXY_CONFIG = {
   get midapi() { return `${this.getProxyUrl()}/midapi`; },
   get stableDiffusionApi() { return `${this.getProxyUrl()}/sd-api`; },
   get elevenLabs() { return `${this.getProxyUrl()}/elevenlabs`; },
+  get audio() { return `${this.getProxyUrl()}/audio`; },
   get generationJobs() { return `${this.getProxyUrl()}/generation-jobs`; },
   get workerJobs() { return `${this.getProxyUrl()}/worker-jobs`; },
   get artifactHealth() { return `${this.getProxyUrl()}/artifacts/health`; },
@@ -87,6 +88,12 @@ export const EXTERNAL_APIS = {
     get tts() { return `${PROXY_CONFIG.elevenLabs}/tts`; },
     get voices() { return `${PROXY_CONFIG.elevenLabs}/voices`; },
     get batchGenerate() { return `${PROXY_CONFIG.elevenLabs}/batch-generate`; },
+  },
+
+  audio: {
+    get tts() { return `${PROXY_CONFIG.audio}/tts`; },
+    get voices() { return `${PROXY_CONFIG.audio}/voices`; },
+    get batchGenerate() { return `${PROXY_CONFIG.audio}/batch-generate`; },
   },
   
   // Atlas Cloud API (via proxy)

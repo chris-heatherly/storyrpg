@@ -16,7 +16,7 @@ export interface PlanningRegisterLeakResult {
   fieldsScanned: number;
 }
 
-const SCANNABLE_KEY = /(text|prose|description|prompt|caption|moment|summary|cue|note|cost|stakes|setup|escalation|outcome|success|failure|partial|complicated|victory|defeat|visual|metadata|contract|geography|purpose|question|function)/i;
+const SCANNABLE_KEY = /(text|prose|description|prompt|caption|moment|summary|cue|note|cost|stakes|setup|escalation|outcome|success|failure|partial|complicated|victory|defeat|visual|metadata|contract|geography|purpose|question|function|objective|obstacle|turn|event|pressurePeak|storyPressure|stateChange|causalLink|material|relational|startState|endState|immediate|shortTerm|longTerm|later)/i;
 const SKIPPED_KEY = /(id|flag|next|starting|imageData|base64|url|path|uri|sha|hash)$/i;
 
 function excerpt(text: string, pattern: RegExp): string {
@@ -85,11 +85,14 @@ export class PlanningRegisterLeakValidator {
       for (const [sceneIndex, scene] of (episode.scenes || []).entries()) {
         const sceneCtx = { ...episodeCtx, sceneId: scene.id };
         const sceneRecord = scene as unknown as Record<string, unknown>;
+        scanText(sceneRecord.name, `episodes[${episodeIndex}].scenes[${sceneIndex}].name`, sceneCtx);
+        scanText(sceneRecord.title, `episodes[${episodeIndex}].scenes[${sceneIndex}].title`, sceneCtx);
         scanText(sceneRecord.description, `episodes[${episodeIndex}].scenes[${sceneIndex}].description`, sceneCtx);
         scanText(sceneRecord.geography, `episodes[${episodeIndex}].scenes[${sceneIndex}].geography`, sceneCtx);
         scanText(sceneRecord.dramaticPurpose, `episodes[${episodeIndex}].scenes[${sceneIndex}].dramaticPurpose`, sceneCtx);
         scanText(sceneRecord.dramaticQuestion, `episodes[${episodeIndex}].scenes[${sceneIndex}].dramaticQuestion`, sceneCtx);
         scanText(sceneRecord.narrativeFunction, `episodes[${episodeIndex}].scenes[${sceneIndex}].narrativeFunction`, sceneCtx);
+        scanObject(sceneRecord.turnContract, `episodes[${episodeIndex}].scenes[${sceneIndex}].turnContract`, sceneCtx);
         scanObject((scene as unknown as Record<string, unknown>).visualMetadata, `episodes[${episodeIndex}].scenes[${sceneIndex}].visualMetadata`, sceneCtx);
         scanObject((scene as unknown as Record<string, unknown>).visualContract, `episodes[${episodeIndex}].scenes[${sceneIndex}].visualContract`, sceneCtx);
         scanObject(scene.encounter, `episodes[${episodeIndex}].scenes[${sceneIndex}].encounter`, sceneCtx, true);
@@ -104,6 +107,8 @@ export class PlanningRegisterLeakValidator {
           scanText(beat.emotionalRead, `${beatPath}.emotionalRead`, beatCtx);
           scanText(beat.relationshipDynamic, `${beatPath}.relationshipDynamic`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).textVariants, `${beatPath}.textVariants`, beatCtx);
+          scanObject((beat as unknown as Record<string, unknown>).routeContext, `${beatPath}.routeContext`, beatCtx);
+          scanObject((beat as unknown as Record<string, unknown>).sequenceIntent, `${beatPath}.sequenceIntent`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).visualMetadata, `${beatPath}.visualMetadata`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).visualContract, `${beatPath}.visualContract`, beatCtx);
           scanObject((beat as unknown as Record<string, unknown>).choices, `${beatPath}.choices`, beatCtx);

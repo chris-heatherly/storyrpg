@@ -102,7 +102,7 @@ function makeStory(): Story {
 }
 
 describe('buildRelationshipPacingLabelRepairHandler', () => {
-  it('downgrades unearned relationship labels in visible scene prose without touching navigation', () => {
+  it('downgrades unearned relationship labels in visible scene prose without touching navigation', async () => {
     const story = makeStory();
     const targetBeat = story.episodes[0].scenes[1].beats[0];
     const beforeChoice = JSON.stringify(targetBeat.choices?.[0]);
@@ -111,7 +111,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(initial.valid).toBe(false);
 
     const handler = buildRelationshipPacingLabelRepairHandler();
-    const result = handler({
+    const result = await handler({
       story,
       blockingIssues: initial.issues.map((issue) => ({
         validator: 'RelationshipPacingValidator',
@@ -135,14 +135,14 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
-  it('downgrades settled Dusk Club membership into a provisional joke', () => {
+  it('downgrades settled Dusk Club membership into a provisional joke', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1];
     scene.beats[0].text = 'Stela presses rose quartz into your palm, and the Dusk Club is now three.';
     const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
     expect(initial.issues.some((issue) => issue.message.includes('settled group membership'))).toBe(true);
 
-    const result = buildRelationshipPacingLabelRepairHandler()({
+    const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: initial.issues.map((issue) => ({
         validator: 'RelationshipPacingValidator',
@@ -159,9 +159,9 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
-  it('downgrades unearned relationship labels in scene headers', () => {
+  it('downgrades unearned relationship labels in scene headers', async () => {
     const story = makeStory();
-    const scene = story.episodes[0].scenes[1];
+    const scene = story.episodes[0].scenes[1] as any;
     scene.name = 'Friend debrief';
     scene.title = 'Friend debrief';
     scene.beats[0].text = 'Mika and Stela compare the night like a dare, not a settled bond.';
@@ -171,7 +171,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(initial.valid).toBe(false);
     expect(initial.issues.some((issue) => issue.message.includes('high relationship stage'))).toBe(true);
 
-    const result = buildRelationshipPacingLabelRepairHandler()({
+    const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: initial.issues.map((issue) => ({
         validator: 'RelationshipPacingValidator',
@@ -189,10 +189,10 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
-  it('no-ops when relationship pacing is not blocking', () => {
+  it('no-ops when relationship pacing is not blocking', async () => {
     const story = makeStory();
     const before = JSON.stringify(story);
-    const result = buildRelationshipPacingLabelRepairHandler()({
+    const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: [{ validator: 'PlanningRegisterLeakValidator', sceneId: 's1-5' }],
     });

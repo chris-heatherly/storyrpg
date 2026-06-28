@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { Story } from '../../types';
+import { decodeStory } from '../codec/storyCodec';
 import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
 import { SkillCoverageValidator } from '../validators/SkillCoverageValidator';
 
@@ -65,9 +66,9 @@ describe('rebalanceSeasonSkillCoverage', () => {
   });
 
   it('clears the real Bite Me G10 imbalance (4/8, perception 45%)', () => {
-    const p = join(__dirname, '../../../generated-stories/bite-me-g10_2026-06-09T04-07-00/08-final-story.json');
+    const p = join(__dirname, '../../../generated-stories/bite-me-g10_2026-06-09T04-07-00/story.json');
     if (!existsSync(p)) return; // run artifact may be pruned; skip rather than fail CI
-    const story = JSON.parse(readFileSync(p, 'utf8')) as Story;
+    const story = decodeStory(JSON.parse(readFileSync(p, 'utf8'))).story;
     const r = rebalanceSeasonSkillCoverage(story);
     expect(r.after.coveredSkills).toBeGreaterThanOrEqual(6);
     expect(r.after.dominantShare).toBeLessThanOrEqual(0.3);

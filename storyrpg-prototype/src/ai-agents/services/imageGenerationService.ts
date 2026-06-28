@@ -687,7 +687,7 @@ export class ImageGenerationService {
 
   private static readonly DEFAULT_ART_STYLE = 'dramatic cinematic story art';
 
-  private normalizeProvider(provider?: ImageProvider): ImageProvider {
+  private normalizeProvider(provider?: ImageProvider | 'useapi'): ImageProvider {
     if (provider === 'useapi') return 'midapi';
     return provider || 'placeholder';
   }

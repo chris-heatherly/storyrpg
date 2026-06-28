@@ -7,6 +7,7 @@ import {
   DEFAULT_MIDJOURNEY_SETTINGS,
   DEFAULT_STABLE_DIFFUSION_SETTINGS,
   DEFAULT_VIDEO_SETTINGS,
+  DEFAULT_GEMINI_TTS_MODEL,
   GeminiSettings,
   LoraTrainingSettings,
   MidjourneySettings,
@@ -29,7 +30,6 @@ import {
 import {
   DEFAULT_MODEL_FAMILY,
   MODEL_FAMILY_PRESETS,
-  NARRATIVE_TASKS,
   PipelineTask,
   TaskModelAssignment,
   TaskModelOverrides,
@@ -39,9 +39,13 @@ import {
 
 export interface GeneratorNarrationSettings {
   enabled: boolean;
+  provider?: 'elevenlabs' | 'gemini';
   autoPlay: boolean;
   preGenerateAudio: boolean;
   voiceId: string;
+  geminiModel?: string;
+  voiceCastingEnabled?: boolean;
+  performanceTagsEnabled?: boolean;
   highlightMode: 'none' | 'word' | 'sentence';
 }
 
@@ -91,8 +95,8 @@ function isGeneratorLlmProvider(value: string | null | undefined): value is Gene
 }
 
 /**
- * Narrative-only override map. Image/video assignments live in their own
- * dedicated image/video state, so we keep only architect/scene/choice/qa here.
+ * Per-task override map. Image/video assignments live in their own dedicated
+ * image/video state, so we keep every text/council task except image/video here.
  * An override may carry its own provider (to route a heavy task to a different,
  * more reliable provider than the family); when it omits one we default to the
  * supplied family so legacy model-only overrides keep working.
@@ -104,7 +108,7 @@ function sanitizeNarrativeOverrides(
   if (!raw || typeof raw !== 'object') return {};
   const out: TaskModelOverrides = {};
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!isPipelineTask(key) || !NARRATIVE_TASKS.includes(key)) continue;
+    if (!isPipelineTask(key) || key === 'image' || key === 'video') continue;
     const model = (value as { model?: unknown })?.model;
     const rawProvider = (value as { provider?: unknown })?.provider;
     const provider = isGeneratorLlmProvider(rawProvider as string) ? rawProvider as GeneratorLlmProvider : family;
@@ -138,9 +142,13 @@ function resolveModelForProvider(provider: GeneratorLlmProvider, model: string |
 function getDefaultNarrationSettings(): GeneratorNarrationSettings {
   return {
     enabled: false,
+    provider: 'elevenlabs',
     autoPlay: false,
     preGenerateAudio: false,
     voiceId: '',
+    geminiModel: DEFAULT_GEMINI_TTS_MODEL,
+    voiceCastingEnabled: true,
+    performanceTagsEnabled: false,
     highlightMode: 'word',
   };
 }
@@ -330,7 +338,7 @@ export function useGeneratorSettings() {
       try {
         const storedLlmProvider = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmProvider);
         const resolvedProvider: GeneratorLlmProvider =
-          storedLlmProvider === 'anthropic' || storedLlmProvider === 'openai' || storedLlmProvider === 'gemini'
+          isGeneratorLlmProvider(storedLlmProvider)
             ? storedLlmProvider
             : DEFAULT_LLM_PROVIDER;
 
@@ -987,10 +995,7 @@ export function useGeneratorSettings() {
   // family); image/video reflect their dedicated cross-provider state.
   const narrativeAssignments = resolveTaskAssignments(modelFamily, taskModelOverrides);
   const effectiveTaskAssignments: Record<PipelineTask, TaskModelAssignment> = {
-    architect: narrativeAssignments.architect,
-    scene: narrativeAssignments.scene,
-    choice: narrativeAssignments.choice,
-    qa: narrativeAssignments.qa,
+    ...narrativeAssignments,
     image: { provider: imageLlmProvider, model: imageLlmModel },
     video: { provider: videoLlmProvider, model: videoLlmModel },
   };

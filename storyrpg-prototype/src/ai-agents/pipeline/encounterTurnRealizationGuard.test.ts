@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EncounterStructure } from '../agents/EncounterArchitect';
 import type { SceneBlueprint } from '../agents/StoryArchitect';
-import { assessEncounterTurnRealization } from './encounterTurnRealizationGuard';
+import { assessEncounterTurnRealization, repairEncounterTurnRealization } from './encounterTurnRealizationGuard';
 
 const CISMIGIU_TURN =
   'Walking home through Cișmigiu at 1am, Kylie is pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks her home, kisses her hand at the threshold, declines to come in, and vanishes.';
@@ -149,5 +149,29 @@ describe('assessEncounterTurnRealization', () => {
     expect(result.passed).toBe(false);
     expect(result.misses.map((miss) => miss.label)).not.toContain('scene turn');
     expect(result.misses.map((miss) => miss.label)).toContain('required beat bite-me-cismigiu');
+  });
+
+  it('repairs a missing Victor intervention into positive encounter storylets', () => {
+    const rescueBlueprint = blueprint({
+      turnContract: {
+        turnId: 'turn-cismigiu',
+        source: 'encounter',
+        centralTurn: 'Kylie survives the Cișmigiu attack because Victor intervenes.',
+        beforeState: 'Kylie is attacked in the park.',
+        turnEvent: 'Kylie survives the Cișmigiu attack because Victor intervenes.',
+        afterState: 'Victor has saved her.',
+        handoff: 'Get Kylie home with residue.',
+      },
+      requiredBeats: [],
+    });
+    const underRealized = encounter();
+
+    expect(assessEncounterTurnRealization(rescueBlueprint, underRealized).passed).toBe(false);
+
+    const repaired = repairEncounterTurnRealization(rescueBlueprint, underRealized);
+
+    expect(repaired).toBeGreaterThan(0);
+    expect(underRealized.storylets?.victory?.beats?.[0]?.text).toContain('Victor intervenes before the attack can finish');
+    expect(assessEncounterTurnRealization(rescueBlueprint, underRealized).passed).toBe(true);
   });
 });

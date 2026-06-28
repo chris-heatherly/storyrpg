@@ -75,7 +75,9 @@ describe('validatorRegistry (B4 dispatch map)', () => {
   it('the architecture-stage craft validators are advisory (B1 tiering)', () => {
     const arch = VALIDATOR_REGISTRY.filter((e) => e.stage === 'architecture');
     expect(arch.length).toBeGreaterThanOrEqual(5);
-    expect(arch.every((e) => e.tier === 'advisory')).toBe(true);
+    const craft = arch.filter((e) => e.validator !== 'EpisodeStoryCircleValidator');
+    expect(craft.every((e) => e.tier === 'advisory')).toBe(true);
+    expect(arch.find((e) => e.validator === 'EpisodeStoryCircleValidator')?.tier).toBe('blocking');
   });
 
   it('the final story contract is the blocking gate', () => {
@@ -151,6 +153,7 @@ describe('validatorRegistry (B4 dispatch map)', () => {
       'ArcDeltaValidator',
       'SetupPayoffValidator',
       'TreatmentFidelityValidator',
+      'SceneTurnRealizationValidator (episode Story Circle structural class)',
       'storyPathAnalyzer',
     ]);
   });

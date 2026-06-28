@@ -22,13 +22,13 @@ describe('ArtifactMemoryService', () => {
     expect(envelope.artifactId).toContain('scene-content:ep-2:scene-scene-4');
     expect(envelope.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(writeArtifactSnapshot).toHaveBeenCalledTimes(1);
-    expect(writeArtifactSnapshot.mock.calls[0][0]).toMatchObject({
+    expect((writeArtifactSnapshot.mock.calls[0] as unknown[])[0]).toMatchObject({
       storyId: 'Bite Me',
       episodeNumber: 2,
       sceneId: 'scene-4',
       artifactIds: [envelope.artifactId, 'scene-content'],
     });
-    expect(writeArtifactSnapshot.mock.calls[0][0].nodeSet).toEqual(expect.arrayContaining([
+    expect(((writeArtifactSnapshot.mock.calls[0] as unknown[])[0] as any).nodeSet).toEqual(expect.arrayContaining([
       'artifact:scene-content',
       'episode:2',
       'scene:scene-4',

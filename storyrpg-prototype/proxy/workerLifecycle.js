@@ -123,10 +123,14 @@ function buildWorkerConfigSnapshot(config) {
     } : undefined,
     narration: config.narration ? {
       enabled: !!config.narration.enabled,
+      provider: config.narration.provider || 'elevenlabs',
       preGenerateAudio: !!config.narration.preGenerateAudio,
       autoPlay: !!config.narration.autoPlay,
       highlightMode: config.narration.highlightMode,
       elevenLabsConfigured: !isMissingApiKey(config.narration.elevenLabsApiKey),
+      geminiTtsConfigured: !isMissingApiKey(config.narration.geminiApiKey),
+      performanceTagsEnabled: !!config.narration.performanceTagsEnabled,
+      voiceCastingEnabled: config.narration.voiceCastingEnabled !== false,
       voiceIdConfigured: typeof config.narration.voiceId === 'string' && config.narration.voiceId.trim().length > 0,
     } : undefined,
     agents: agents && Object.keys(agents).length > 0 ? agents : undefined,
@@ -1671,6 +1675,17 @@ function createWorkerLifecycle({
       }
       if (isMissingApiKey(cfg.imageGen.atlasCloudApiKey)) {
         cfg.imageGen.atlasCloudApiKey = envAtlasKey;
+      }
+    }
+    if (cfg.narration && typeof cfg.narration === 'object') {
+      if (!cfg.narration.provider) {
+        cfg.narration.provider = 'elevenlabs';
+      }
+      if (cfg.narration.provider === 'gemini' && isMissingApiKey(cfg.narration.geminiApiKey)) {
+        cfg.narration.geminiApiKey = envGeminiKey || cfg.imageGen?.geminiApiKey || cfg.imageGen?.apiKey || '';
+      }
+      if (cfg.narration.provider === 'elevenlabs' && isMissingApiKey(cfg.narration.elevenLabsApiKey)) {
+        cfg.narration.elevenLabsApiKey = process.env.ELEVENLABS_API_KEY || '';
       }
     }
 

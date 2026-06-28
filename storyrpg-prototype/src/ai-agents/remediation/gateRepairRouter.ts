@@ -479,7 +479,10 @@ export function isTreatmentDensityExpandable(report: TreatmentDensityReport): bo
   const totalOverage = report.threshold.totalUnits >= 900
     ? 0
     : Math.max(0, report.totalUnits - report.threshold.totalUnits);
-  if (hardOverage === 0 && totalOverage === 0) return true;
+  if (hardOverage === 0 && totalOverage === 0) {
+    if (report.threshold.profile === 'opening' && report.explicitTimeJumpCount >= 2) return false;
+    return report.explicitTimeJumpCount < 3;
+  }
   if (report.explicitTimeJumpCount >= 2) return false;
   if (hardOverage === 0 && totalOverage <= 1.5) return true;
   if (report.threshold.profile === 'encounter') return false;
@@ -643,6 +646,17 @@ export class GateRepairRouter {
       }
       if (
         validator === 'SceneTurnRealizationValidator'
+        && issue.sceneId
+        && /\bcarries Story Circle\b/i.test(issueText)
+        && (
+          /\bauthored beat event on-page\b/i.test(issueText)
+          || /\bstage the authored Story Circle beat\b/i.test(issueText)
+        )
+      ) {
+        return directive('same_scene_retry', issue, 'Authored Story Circle beat is localized to the flagged scene.');
+      }
+      if (
+        validator === 'SceneTurnRealizationValidator'
         && /\b(?:episode\s+\d+\s+turnout|episode turnout|arc_episode_turnout|cliffhanger|episode ending)\b/i.test(issueText)
       ) {
         return directive('same_scene_retry', issue, 'Episode-turnout scene turn is localized to the ending scene.');
@@ -651,6 +665,12 @@ export class GateRepairRouter {
     }
 
     if (SAME_SCENE_STYLE_VALIDATORS.has(validator)) {
+      if (
+        validator === 'NarrativeMechanicPressureValidator'
+        && /\b(?:terminal generated episode|partial slice|later payoff|future generated episodes?|deferred until the target episode exists)\b/i.test(issueText)
+      ) {
+        return directive('partial_scope_defer', issue, 'Narrative mechanic pressure payoff is outside the generated episode slice.');
+      }
       if (unsafeDensity && HARD_VALIDATOR_NAMES.has(validator)) {
         return directive('blueprint_rebalance', issue, `Validator is localized but scene density is unsafe: ${density?.overloadReasons.join('; ')}`);
       }

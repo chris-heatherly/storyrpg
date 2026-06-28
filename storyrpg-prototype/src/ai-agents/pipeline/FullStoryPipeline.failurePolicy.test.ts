@@ -24,7 +24,12 @@ async function makePipeline(failurePolicy: 'fail_fast' | 'recover') {
   config.imageGen = { ...(config.imageGen ?? {}), enabled: false };
   config.videoGen = { ...(config.videoGen ?? {}), enabled: false };
   config.narration = { ...(config.narration ?? {}), enabled: false, preGenerateAudio: false };
-  config.memory = { ...(config.memory ?? {}), enabled: false };
+  config.memory = {
+    ...(config.memory ?? {}),
+    enabled: false,
+    pipelineOptimization: false,
+    characterKnowledge: false,
+  };
   config.validation = { ...(config.validation ?? {}), enabled: false, mode: 'advisory' };
   config.generation = {
     ...(config.generation ?? {}),

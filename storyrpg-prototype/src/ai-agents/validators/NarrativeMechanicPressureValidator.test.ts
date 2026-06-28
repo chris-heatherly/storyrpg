@@ -212,4 +212,36 @@ describe('NarrativeMechanicPressureValidator', () => {
 
     expect(result.valid).toBe(true);
   });
+
+  it('warns instead of blocking future payoff checks in the terminal episode of a partial generated slice', () => {
+    const result = validator.validate({
+      story: story([
+        scene('treatment-enc-1-1', 'The encounter plants a dangerous invitation in the room.', [
+          pressure({
+            id: 'enc-1-pressure-future',
+            source: 'treatment',
+            domain: 'relationship',
+            mechanicRef: { npcId: 'mika', relationshipDimension: 'trust' },
+            storyPressure: 'Relationship with Mika Drăgan is moving only as far as acquaintance.',
+            evidenceRequired: ['show Mika testing Kylie before trust can grow'],
+            visibleResidue: ['later invitation, callback, gate, or relationship pressure'],
+            allowedPayoffs: ['future callback'],
+          }),
+        ]),
+      ]),
+      treatmentSourced: true,
+      requestedEpisodeNumbers: [1],
+      generatedEpisodeNumbers: [1],
+      generatedThroughEpisode: 1,
+      partialGeneratedSlice: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        message: expect.stringContaining('terminal generated episode of a partial slice'),
+      }),
+    ]));
+  });
 });

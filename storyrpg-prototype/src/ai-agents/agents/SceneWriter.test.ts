@@ -77,6 +77,42 @@ describe('SceneWriter structural guards', () => {
     expect(issues.some((issue: string) => issue.includes('MALFORMED TEXT VARIANT'))).toBe(true);
   });
 
+  it('deterministically expands single-beat non-choice scenes before hard validation', () => {
+    const writer = createWriter();
+    const input = {
+      sceneBlueprint: {
+        id: 's1-6',
+        name: 'Aftermath',
+        description: 'Kylie returns to the apartment and feels the night turning into public pressure.',
+        narrativeFunction: 'Release the rooftop pressure into the next episode handoff.',
+        keyBeats: ['The apartment is quiet after the rooftop.', 'The blog attention changes what she can ignore.'],
+      },
+      targetBeatCount: 3,
+      protagonistInfo: { name: 'Kylie' },
+    };
+    const content = (writer as any).normalizeContent({
+      sceneId: 's1-6',
+      sceneName: 'Aftermath',
+      startingBeatId: 'beat-1',
+      beats: [{
+        id: 'beat-1',
+        text: 'You close the apartment door and realize the night has followed you home.',
+        isChoicePoint: false,
+      }],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    }, input);
+    const issues = (writer as any).collectIssues(content, input);
+
+    expect(content.beats).toHaveLength(3);
+    expect(content.beats[0].nextBeatId).toBe('beat-2');
+    expect(content.beats[1].nextBeatId).toBe('beat-3');
+    expect(content.beats[2].nextBeatId).toBeUndefined();
+    expect(issues.some((issue: string) => issue.startsWith('SINGLE BEAT'))).toBe(false);
+  });
+
   it('reports empty text variant conditions as malformed boilerplate', () => {
     const writer = createWriter();
     const issues = (writer as any).collectIssues(
@@ -707,7 +743,7 @@ describe('SceneWriter structural guards', () => {
       calls = 0;
       revisionPrompt = '';
 
-      protected async callLLM(messages: Array<{ content: string }>): Promise<string> {
+      protected async callLLM(messages: any): Promise<string> {
         this.calls += 1;
         if (this.calls === 1) {
           return JSON.stringify({

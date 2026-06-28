@@ -10,8 +10,7 @@
  *     storyId: string,
  *     createdAt: string,          // ISO 8601
  *     updatedAt: string,
- *     files: {                     // all authoritative artefacts in the dir
- *       "08-final-story.json":    { sha256, bytes },
+ *     files: {                     // all authoritative artifacts in the dir
  *       "story.json":             { sha256, bytes },
  *       "checkpoints.jsonl":      { sha256, bytes, mode: "append" },
  *     },
@@ -112,8 +111,7 @@ function buildManifest({ storyId, storySchemaVersion, primaryStoryFile, primaryS
 /**
  * Resolve the primary story file inside a generated-stories subdir.
  * Honours an on-disk manifest if present, otherwise falls back to
- * `story.json` and then the legacy `08-final-story.json`. Returns
- * `null` when neither is found so callers can fail gracefully.
+ * `story.json`. Legacy-only directories must be migrated before runtime load.
  */
 function resolveStoryFile(storyDir) {
   const manifest = readManifest(storyDir);
@@ -123,8 +121,6 @@ function resolveStoryFile(storyDir) {
   }
   const modern = path.join(storyDir, 'story.json');
   if (fs.existsSync(modern)) return { filename: 'story.json', abs: modern, manifest: null };
-  const legacy = path.join(storyDir, '08-final-story.json');
-  if (fs.existsSync(legacy)) return { filename: '08-final-story.json', abs: legacy, manifest: null };
   return null;
 }
 

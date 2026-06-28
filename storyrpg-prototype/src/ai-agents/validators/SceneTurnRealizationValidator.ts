@@ -19,6 +19,7 @@ export interface SceneTurnRealizationInput {
   story: Story;
   scenePlan?: SeasonScenePlan;
   treatmentSourced?: boolean;
+  enforceStructuralStoryCircle?: boolean;
 }
 
 interface PlannedSceneRef {
@@ -157,6 +158,15 @@ function isEncounterScene(scene: Scene, planned?: PlannedScene): boolean {
   return Boolean(scene.encounter) || planned?.kind === 'encounter' || contractFor(scene, planned)?.source === 'encounter';
 }
 
+function storyCircleSeverity(
+  contract: StoryCircleBeatRealizationContract,
+  enforceStructuralStoryCircle?: boolean,
+): 'error' | 'warning' {
+  if (contract.blockingLevel === 'treatment') return 'error';
+  if (contract.blockingLevel === 'structural' && enforceStructuralStoryCircle) return 'error';
+  return 'warning';
+}
+
 export class SceneTurnRealizationValidator extends BaseValidator {
   constructor() {
     super('SceneTurnRealizationValidator');
@@ -173,7 +183,7 @@ export class SceneTurnRealizationValidator extends BaseValidator {
           const prose = sceneProse(scene);
           if (!prose.trim()) {
             issues.push(this.createIssue(
-              beatContract.blockingLevel === 'treatment' ? 'error' : 'warning',
+              storyCircleSeverity(beatContract, input.enforceStructuralStoryCircle),
               `Scene "${scene.id}" has a Story Circle ${beatContract.beat} realization contract but no reader-facing prose to realize it: "${beatContract.sourceText}".`,
               `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
               'Generate reader-facing scene prose that stages the authored Story Circle beat event and resulting state change.',
@@ -214,7 +224,7 @@ export class SceneTurnRealizationValidator extends BaseValidator {
           ) || momentDepicted('RequiredBeatRealizationValidator', beatContract.sourceText, prose);
           if (!eventDepicted) {
             issues.push(this.createIssue(
-              beatContract.blockingLevel === 'treatment' ? 'error' : 'warning',
+              storyCircleSeverity(beatContract, input.enforceStructuralStoryCircle),
               `Encounter scene "${scene.id}" carries Story Circle ${beatContract.beat} but does not stage its authored event: "${beatContract.sourceText}".`,
               `sceneTurn:ep${episodeNumber}:${scene.id}:${beatContract.id}`,
               'Repair the encounter setup, phase action, choice, or outcome so the authored Story Circle beat is visible on-page.',
@@ -300,7 +310,7 @@ export class SceneTurnRealizationValidator extends BaseValidator {
         const eventDepicted = beatTurnIndex >= 0
           || beatContract.eventAtoms.some((atom) => momentDepicted('RequiredBeatRealizationValidator', atom, prose))
           || momentDepicted('RequiredBeatRealizationValidator', beatContract.sourceText, prose);
-        const beatSeverity: 'error' | 'warning' = beatContract.blockingLevel === 'treatment' ? 'error' : 'warning';
+        const beatSeverity = storyCircleSeverity(beatContract, input.enforceStructuralStoryCircle);
         if (!eventDepicted) {
           issues.push(this.createIssue(
             beatSeverity,

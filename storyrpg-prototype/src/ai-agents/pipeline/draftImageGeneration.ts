@@ -835,8 +835,7 @@ export class DraftImageGeneration {
           promptPath,
           referencesUsed: references.map(ref => ref.characterName || ref.characterId || ref.role),
           warnings,
-          patchedModernStory: true,
-          patchedLegacyStory: true,
+          patchedStoryPackage: true,
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -850,8 +849,7 @@ export class DraftImageGeneration {
           referencesUsed: references.map(ref => ref.characterName || ref.characterId || ref.role),
           warnings,
           error: msg,
-          patchedModernStory: false,
-          patchedLegacyStory: false,
+          patchedStoryPackage: false,
         });
       }
     }

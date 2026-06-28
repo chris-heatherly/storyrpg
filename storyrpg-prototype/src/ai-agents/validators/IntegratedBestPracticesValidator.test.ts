@@ -197,7 +197,7 @@ describe('IntegratedBestPracticesValidator (aggregator)', () => {
       text: `Callback-heavy choice ${i}`,
       choiceType: 'relationship',
       sceneId: 'scene-1',
-      consequences: [{ type: 'setFlag', flag: `callback_${i}`, value: true, budgetCategory: 'callback' }],
+      consequences: [{ type: 'setFlag' as const, flag: `callback_${i}`, value: true, budgetCategory: 'callback' }],
     }));
     const validator = new IntegratedBestPracticesValidator(agentConfig);
     const report = await validator.runFullValidation(baseInput({ choices }));

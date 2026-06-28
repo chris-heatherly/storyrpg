@@ -51,8 +51,8 @@ The app now has two target-specific web entries in one package:
 - **Reader** (`apps/reader/ReaderApp.tsx`) is the public playback target.
 - **Generator** (`apps/generator/GeneratorApp.tsx`) is the internal creation/operator target.
 
-`App.tsx` remains as a legacy monolithic shell, but `STORYRPG_APP_TARGET`
-selects the target used by Metro and Expo config.
+The old monolithic `App.tsx` shell has been removed. `STORYRPG_APP_TARGET`
+selects the Reader or Generator target used by Metro and Expo config.
 
 The architecture is designed around three core requirements:
 
@@ -202,8 +202,7 @@ Current layout notes:
 - `storyrpg-prototype/apps/reader/ReaderApp.tsx` and
   `storyrpg-prototype/apps/generator/GeneratorApp.tsx` are the current web
   target entries.
-- `App.tsx` is retained as a legacy monolithic shell and compatibility
-  reference.
+- The old monolithic `App.tsx` shell has been removed.
 - `src/story-codec/` is the reader/runtime package codec. `src/ai-agents/codec/`
   contains pipeline-side codec/event helpers.
 - `src/types/index.ts` is now a barrel over topic-oriented type modules rather
@@ -236,7 +235,6 @@ StoryRPG_New/
 │   └── reference/                      # Original reference materials
 │
 └── storyrpg-prototype/                 # Main application directory
-    ├── App.tsx                         # Legacy monolithic app shell
     ├── apps/
     │   ├── reader/ReaderApp.tsx        # Public Reader target entry
     │   └── generator/GeneratorApp.tsx  # Internal Generator target entry
@@ -309,12 +307,10 @@ StoryRPG_New/
     │   │   │   ├── CharacterArcTracker.ts # Per-episode identity/relationship milestone targets
     │   │   │   ├── SeasonPlannerAgent.ts # Season planning (3-act / 7-point structural spine)
     │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis (anchors, seven-point, episode breakdown)
-    │   │   │   ├── ImageGenerator.ts   # Legacy compatibility export for image prompt types
     │   │   │   └── image-team/         # Image generation agents (see below)
     │   │   │
     │   │   ├── pipeline/               # Pipeline orchestrators
     │   │   │   ├── FullStoryPipeline.ts # Main pipeline coordinator
-    │   │   │   ├── EpisodePipeline.ts  # Legacy / quarantined; not exported as an active path
     │   │   │   ├── PipelineClient.ts   # Typed client the UI uses to drive the pipeline over the proxy
     │   │   │   ├── checkpointing.ts    # Extracted checkpoint writer/loader
     │   │   │   ├── events.ts           # Typed pipeline progress events
@@ -499,7 +495,6 @@ StoryRPG_New/
     │   └── {story-slug}_{timestamp}/   # Per-story output directory
     │       ├── story.json              # Primary versioned story package
     │       ├── manifest.json           # Primary-file pointer and package checksum
-    │       ├── 08-final-story.json     # Legacy story mirror for fallback readers/scripts
     │       ├── images/                 # Generated images
     │       ├── audio/                  # Generated audio files
     │       │   ├── {beatId}.mp3
@@ -580,7 +575,7 @@ On app start, the story catalog is assembled from three sources:
 
 1. **Built-in stories:** Four pre-authored stories bundled in the app code (`src/data/stories/`). On web platform, these are installed as physical files on the proxy server if not already present.
 
-2. **Generated stories:** The client calls `GET /list-stories` on the proxy server to discover stories in the `generated-stories/` directory. The catalog reads `manifest.json` first, then falls back to `story.json`, then `08-final-story.json` for legacy directories.
+2. **Generated stories:** The client calls `GET /list-stories` on the proxy server to discover stories in the `generated-stories/` directory. The catalog reads `manifest.json` first, then falls back to `story.json`; legacy-only directories must be migrated before runtime load.
 
 3. **AsyncStorage cache:** A fallback for cases where the proxy is unavailable. Previously loaded stories are cached in AsyncStorage.
 
@@ -874,7 +869,7 @@ The proxy is organized into modular route handlers:
 
 ### Pipeline Overview
 
-The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The active pipeline is `FullStoryPipeline.ts`, executed in worker processes through `proxy/workerLifecycle.js`. `EpisodePipeline.ts` is legacy/quarantined and `ParallelStoryPipeline` has been removed.
+The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The active pipeline is `FullStoryPipeline.ts`, executed in worker processes through `proxy/workerLifecycle.js`. `EpisodePipeline.ts` and `ParallelStoryPipeline` have been removed.
 
 ### Agent Hierarchy
 
@@ -1054,7 +1049,7 @@ The validation system operates at multiple levels and — for the final playthro
 
 ### Two-Tier Final QA
 
-After the pipeline assembles the runtime story, it writes `story.json` as the primary versioned package, `manifest.json` as the catalog contract, and `08-final-story.json` as a legacy mirror. Two deterministic QA passes then run against the real artifacts:
+After the pipeline assembles the runtime story, it writes `story.json` as the primary versioned package and `manifest.json` as the catalog contract. Two deterministic QA passes then run against the real artifacts:
 
 **Tier 1 — Asset HTTP verification**
 - `walkStoryAssets()` recursively visits every image slot (story/episode/scene covers, beat images and panels, encounter phase/beat/outcome/situation images, storylet beats, NPC portraits) and issues a `HEAD` request (falling back to ranged `GET`).
@@ -1385,7 +1380,6 @@ Unresolved templates are handled gracefully:
 |---|---|---|
 | Story package | `generated-stories/{run}/story.json` | Primary versioned story package |
 | Story manifest | `generated-stories/{run}/manifest.json` | Primary-file pointer and checksum |
-| Legacy story mirror | `generated-stories/{run}/08-final-story.json` | Backward compatibility |
 | Images | `generated-stories/{story}/images/` | Generated artwork |
 | Audio | `generated-stories/{story}/audio/` | Narration files |
 | Content-addressed assets | `generated-stories/{story}/assets/` | AssetRef-backed media |

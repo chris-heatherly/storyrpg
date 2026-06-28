@@ -1,9 +1,8 @@
 /**
  * MidAPI / Midjourney (useapi.net) adapter.
  *
- * Thin seam over `ImageGenerationService.generateWithUseapi`. Both the
- * `midapi` and legacy `useapi` provider slugs route here. Full decomposition
- * is tracked as TODO(tech-debt-phase-6-finish).
+ * Thin seam over `ImageGenerationService.generateWithUseapi`. StoryRPG's
+ * canonical provider id is `midapi`; the underlying API still uses useapi.net.
  */
 import type { GeneratedImage } from '../../images/imageTypes';
 import type {
@@ -15,7 +14,7 @@ import type {
 export class MidApiAdapter implements ImageProviderAdapter {
   readonly id: string;
 
-  constructor(id: 'midapi' | 'useapi' = 'midapi') {
+  constructor(id: 'midapi' = 'midapi') {
     this.id = id;
   }
 

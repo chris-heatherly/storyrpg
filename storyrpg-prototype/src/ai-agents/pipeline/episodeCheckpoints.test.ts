@@ -190,11 +190,19 @@ describe('episodeCheckpoints', () => {
     const store = makeStore();
     const episode = makeEpisode(2, 1);
 
-    await writeEpisodeCompletion({
+    const watermark = await writeEpisodeCompletion({
       episode,
       episodeNumber: 2,
       title: 'Two',
       save: store.save,
+      lock: {
+        runtimeContractPassed: true,
+        canonSealed: true,
+        incrementalContractArtifact: 'episode-2-incremental-contract.json',
+        seasonCanonArtifact: 'season-canon.json',
+        seasonLedgerArtifact: 'season-ledger.json',
+        episodeStateSnapshotArtifact: 'episode-state-snapshot.json',
+      },
       shadowArtifacts: {
         storyId: 'story',
         runId: 'run',
@@ -202,6 +210,15 @@ describe('episodeCheckpoints', () => {
       },
     });
 
+    expect(watermark.lock).toMatchObject({
+      runtimeContractPassed: true,
+      canonSealed: true,
+      incrementalContractArtifact: 'episode-2-incremental-contract.json',
+      seasonCanonArtifact: 'season-canon.json',
+    });
+    expect(watermark.artifacts?.runtimeEpisode?.path).toBe('artifacts/episodes/002/runtime-episode.rev1.json');
+    expect(watermark.artifacts?.validationReport?.path).toBe('artifacts/episodes/002/validation-report.rev1.json');
+    expect(watermark.artifacts?.contextOut?.path).toBe('artifacts/episodes/002/context-out.rev1.json');
     expect(loadCompletedEpisode(2, store.load)?.episode.number).toBe(2);
     const artifactStore = new ArtifactRevisionStore({ save: store.save, load: store.load });
     expect(artifactStore.loadCurrentRef('context-in', 2)?.path).toBe('artifacts/episodes/002/context-in.rev1.json');
@@ -239,6 +256,7 @@ describe('episodeCheckpoints', () => {
     const contextIn = artifactStore.loadCurrent('context-in', 2);
     const previousContextOutRef = artifactStore.loadCurrentRef('context-out', 1);
     expect(contextIn?.upstream).toContainEqual(previousContextOutRef);
+    expect(loadCompletedEpisode(2, store.load)?.watermark.artifacts?.upstream).toContainEqual(previousContextOutRef);
     expect((contextIn?.payload as { canonFacts?: string[] } | undefined)?.canonFacts).toContain('scene:s1-1:Scene 1');
 
     const previousContextOut = artifactStore.loadCurrent('context-out', 1);

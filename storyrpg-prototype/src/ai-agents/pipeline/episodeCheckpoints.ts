@@ -34,10 +34,29 @@ export interface EpisodeCompletionWatermark {
   completedAt: string;
   sceneCount: number;
   assembledArtifact: string;
+  lock?: EpisodeCompletionLockEvidence;
+  artifacts?: EpisodeCompletionArtifactRefs;
 }
 
 export type ArtifactSaver = (name: string, data: unknown) => Promise<void>;
 export type ArtifactLoader = <T>(name: string) => T | null;
+
+export interface EpisodeCompletionLockEvidence {
+  runtimeContractPassed?: boolean;
+  canonSealed?: boolean;
+  incrementalContractArtifact?: string;
+  seasonCanonArtifact?: string;
+  seasonLedgerArtifact?: string;
+  episodeStateSnapshotArtifact?: string;
+}
+
+export interface EpisodeCompletionArtifactRefs {
+  contextIn?: ArtifactRef;
+  runtimeEpisode?: ArtifactRef;
+  validationReport?: ArtifactRef;
+  contextOut?: ArtifactRef;
+  upstream?: ArtifactRef[];
+}
 
 export interface EpisodeShadowArtifactOptions {
   storyId: string;
@@ -67,10 +86,20 @@ export async function writeEpisodeCompletion(options: {
   title: string;
   save: ArtifactSaver;
   shadowArtifacts?: EpisodeShadowArtifactOptions;
+  lock?: EpisodeCompletionLockEvidence;
 }): Promise<EpisodeCompletionWatermark> {
   const { episode, episodeNumber, title, save, shadowArtifacts } = options;
   const assembledArtifact = episodeAssembledArtifact(episodeNumber);
   await save(assembledArtifact, episode);
+  const shadowRefs = shadowArtifacts
+    ? await writeEpisodeShadowArtifacts({
+      episode,
+      episodeNumber,
+      title,
+      save,
+      ...shadowArtifacts,
+    })
+    : undefined;
   const watermark: EpisodeCompletionWatermark = {
     version: 1,
     episodeNumber,
@@ -78,18 +107,10 @@ export async function writeEpisodeCompletion(options: {
     completedAt: new Date().toISOString(),
     sceneCount: Array.isArray(episode.scenes) ? episode.scenes.length : 0,
     assembledArtifact,
+    ...(options.lock ? { lock: options.lock } : {}),
+    ...(shadowRefs ? { artifacts: shadowRefs } : {}),
   };
   await save(episodeCompleteArtifact(episodeNumber), watermark);
-
-  if (shadowArtifacts) {
-    await writeEpisodeShadowArtifacts({
-      episode,
-      episodeNumber,
-      title,
-      save,
-      ...shadowArtifacts,
-    });
-  }
 
   return watermark;
 }
@@ -99,7 +120,7 @@ async function writeEpisodeShadowArtifacts(options: {
   episodeNumber: number;
   title: string;
   save: ArtifactSaver;
-} & EpisodeShadowArtifactOptions): Promise<void> {
+} & EpisodeShadowArtifactOptions): Promise<EpisodeCompletionArtifactRefs | undefined> {
   try {
     const store = new ArtifactRevisionStore({
       save: options.save,
@@ -160,7 +181,7 @@ async function writeEpisodeShadowArtifacts(options: {
       validation: options.validation ?? defaultValidationSummary('validation-report'),
     });
 
-    await store.saveRevision({
+    const contextOut = await store.saveRevision({
       kind: 'context-out',
       storyId: options.storyId,
       runId: options.runId,
@@ -175,6 +196,13 @@ async function writeEpisodeShadowArtifacts(options: {
       provenance: { phase: `episode_${options.episodeNumber}`, agent: 'EpisodeContextBuilder' },
       validation: defaultValidationSummary('context-out'),
     });
+    return {
+      contextIn: contextInRef,
+      runtimeEpisode: runtimeRef,
+      validationReport: store.refFor(validationReport),
+      contextOut: store.refFor(contextOut),
+      upstream,
+    };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     if (options.onError) {
@@ -182,6 +210,7 @@ async function writeEpisodeShadowArtifacts(options: {
     } else {
       console.warn(`[EpisodeArtifacts] Shadow artifact write failed for episode ${options.episodeNumber}: ${err.message}`);
     }
+    return undefined;
   }
 }
 

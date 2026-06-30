@@ -101,6 +101,29 @@ describe('validateBlueprintRouteCueOrder', () => {
     }]);
   });
 
+  it('allows a public aftermath helper to summarize prior rescue as viral proof', () => {
+    const bp = blueprint([
+      scene('scene-threat', 'An attacker steps from the park shadows before a stranger rescues the narrator.', ['scene-writing']),
+      scene('scene-writing', 'At 4 a.m., the narrator chooses a codename and publishes the anonymous post.', ['scene-aftermath']),
+      {
+        ...scene('scene-aftermath', 'By evening, the anonymous post has viral views and comments.'),
+        planningOrigin: {
+          kind: 'binder_split',
+          splitKind: 'viral_aftermath',
+          parentSceneId: 'scene-writing',
+          reason: 'Split public metrics away from source scene.',
+        },
+        requiredBeats: [{
+          id: 'viral-proof',
+          tier: 'authored',
+          mustDepict: 'The narrator turns a terrifying rescue into the first viral proof that they can author a new life.',
+        }],
+      },
+    ]);
+
+    expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
   it('flags a public aftermath route that precedes its late-night writing prerequisite', () => {
     const bp = blueprint([
       scene('scene-social', 'A rooftop bar meeting makes the social triangle visible.', ['scene-aftermath']),

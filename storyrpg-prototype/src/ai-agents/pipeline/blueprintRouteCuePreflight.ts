@@ -33,6 +33,7 @@ const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|com
 const PUBLIC_AFTERMARKERS = /\b(?:readership|reads?|viral|views|comments|dashboard|profile|public pressure|public signal|attention spike|audience growth)\b/i;
 const BLOG_DRAFT_MARKERS = /\b(?:[234]\s*a\.?\s*m\.?|[234]\s*am|late night|unable to sleep|writes?|writing|draft|blank page|publish button|publishes|published|codename)\b/i;
 const THREAT_PREREQUISITE_MARKERS = /\b(?:attack|attacked|attacker|ambush|terror|rescue|rescued|rescuer|saved|saves|threat|knife|scream|rough hands|grabbed|pinned)\b/i;
+const LIVE_THREAT_ACTION_MARKERS = /\b(?:attack|attacked|attacker|ambush|knife|scream|rough hands|grab(?:s|bed)?|pinned|corners?|lunges?|chases?|fight back|don'?t scream)\b/i;
 
 function sceneCueText(scene: SceneBlueprint): string {
   return [
@@ -77,9 +78,14 @@ function isPublicAftermathScene(scene: SceneBlueprint): boolean {
 function prerequisiteOwnershipCues(value: string | undefined): RouteCue[] {
   const text = value ?? '';
   const cues = detectStoryEventCues(text);
+  const isPublicAftermathSummary = !BLOG_DRAFT_MARKERS.test(text)
+    && (PUBLIC_AFTERMARKERS.test(text) || cues.has('blogAftermath'));
   const out = new Set<RouteCue>();
   if (BLOG_DRAFT_MARKERS.test(text) || cues.has('lateNightWriting')) out.add('lateNightWriting');
-  if (THREAT_PREREQUISITE_MARKERS.test(text) || cues.has('threatEncounter')) out.add('threatEncounter');
+  if (
+    cues.has('threatEncounter')
+    || (THREAT_PREREQUISITE_MARKERS.test(text) && (!isPublicAftermathSummary || LIVE_THREAT_ACTION_MARKERS.test(text)))
+  ) out.add('threatEncounter');
   if (cues.has('roadBreakdown')) out.add('threatEncounter');
   return Array.from(out);
 }

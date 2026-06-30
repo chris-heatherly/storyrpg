@@ -133,7 +133,12 @@ import {
 } from './seasonChoicePlan';
 import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
-import { findResumedEpisodeInvalidationReasons, loadResumedEpisodeDiagnostics, partitionResumableEpisodes } from './episodeCheckpoints';
+import {
+  findResumedEpisodeInvalidationReasons,
+  loadResumedEpisodeDiagnostics,
+  partitionResumableEpisodes,
+  type EpisodeCompletionLockEvidence,
+} from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
@@ -5598,7 +5603,16 @@ export class FullStoryPipeline {
         .filter((item): item is { episodeNumber: number; idx: number; outline: EpisodeOutline } => Boolean(item.outline));
 
       const dependencyMode = this.config.generation?.episodeDependencyMode || 'sequential';
-      const parallelEnabled = this.config.generation?.episodeParallelismEnabled === true && dependencyMode === 'independent';
+      let parallelEnabled = this.config.generation?.episodeParallelismEnabled === true && dependencyMode === 'independent';
+      if (parallelEnabled && this.seasonCanonOn) {
+        parallelEnabled = false;
+        this.emit({
+          type: 'warning',
+          phase: 'episode_parallelism',
+          message:
+            'Episode parallelism disabled for this run because Season Canon is enabled. Canonical episodes must lock in dependency order so downstream prompts read sealed upstream facts.',
+        });
+      }
       const maxParallelEpisodes = Math.max(1, this.config.generation?.maxParallelEpisodes ?? CONCURRENCY_DEFAULTS.maxParallelEpisodes);
       let completedEpisodeCount = 0;
       const totalEpisodeProgressItems = Math.max(1, episodeSpecs.length);
@@ -5716,6 +5730,11 @@ export class FullStoryPipeline {
                   episode: generatedEpisode.episode,
                   episodeNumber: spec.episodeNumber,
                   title: spec.outline.title,
+                  lock: {
+                    runtimeContractPassed: true,
+                    incrementalContractArtifact: `episode-${spec.episodeNumber}-incremental-contract.json`,
+                    canonSealed: false,
+                  },
                 });
               }
             }
@@ -5816,72 +5835,16 @@ export class FullStoryPipeline {
           episodeResults.push(generated.result);
           if (generated.qaReport) episodeQAReports.push(generated.qaReport);
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
-          // Season Canon (P4): seal the validated episode into durable canon + ledger
-          // and carry state forward. Gate issues advisory unless seasonCanonBlocking.
-          if (this.seasonCanonOn && generated.episode) {
-            // Phase G: pin each promise's explicit payoffEpisode from the season spine
-            // (derived from seasonFlags) so the promise-due gate has real targets.
-            // E1: also pin the later-payoff choice moments (a "pays off later" choice IS a
-            // promise with an explicit payoffEpisode) so the same gate enforces them.
-            const spineEntries = [
-              ...deriveSpinePlantMap(baseBrief.seasonPlan).entries,
-              ...spineEntriesFromChoicePlan(this.seasonChoicePlan),
-            ];
-            const spineResult = applySpinePlantMap(this.callbackLedger, { entries: spineEntries });
-            if (spineResult.unmatched.length > 0) {
-              this.emit({ type: 'debug', phase: `season_canon_ep_${i}`, message: `Spine plant map: ${spineResult.applied} applied, ${spineResult.unmatched.length} not yet planted.` });
-            }
-            // B2: extract prose knowledge + claims so the canon holds who-knows-what
-            // (not just flags+capability) and the canon-consistency gate runs over real
-            // claims (it was a no-op). Deterministic seed from the QA character-knowledge
-            // bundle + the flags this episode gates on.
-            const episodeKnowledge = extractEpisodeKnowledge({
+          const canonLockEvidence = generated.episode
+            ? await this.sealGeneratedEpisodeForCanon({
               episodeNumber: i,
-              protagonistId: 'protagonist', // matches the flag-knowledge sealed by extractCanonDeltasFromEpisode
-              characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
-              referencedFlags: collectReferencedFlags(generated.episode as any),
-              sceneText: episodeProseCorpus(generated.episode as any), // WS7: readership counts → monotonic canon facts
-            });
-            const seasonLengthForArc = analysis.totalEstimatedEpisodes || this.totalEpisodes;
-            const arcAndRelationship = this.extractArcAndRelationshipDeltas(
+              episode: generated.episode,
+              baseBrief,
+              analysis,
               characterBible,
-              i,
-              seasonLengthForArc,
-            );
-            const seal = await sealAndPersistEpisode({
-              episode: generated.episode as any,
-              episodeNumber: i,
-              seasonLength: seasonLengthForArc,
-              ledger: this.callbackLedger,
-              canon: this.seasonCanon,
-              priorSnapshot: this.priorEpisodeSnapshot,
-              claims: episodeKnowledge.claims,
-              // Seal capability facts (who-can-do-what) + extracted knowledge/worldFacts
-              // so downstream prompts inherit a richer canon (Season Canon, Phase B/B2).
-              // Plus per-episode character arc state + relationship dimensions so the
-              // canon's characters[]/relationships[] are populated (were always empty).
-              extraDeltas: {
-                worldFacts: [
-                  ...characterCapabilityWorldFacts(characterBible.characters),
-                  ...(episodeKnowledge.deltas.worldFacts ?? []),
-                ],
-                knowledge: episodeKnowledge.deltas.knowledge,
-                arcStates: arcAndRelationship.arcStates,
-                relationships: arcAndRelationship.relationships,
-              },
-              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
-            });
-            this.priorEpisodeSnapshot = seal.snapshot;
-            for (const issue of seal.evaluation.issues) {
-              this.emit({ type: 'warning', phase: `season_canon_ep_${i}`, message: `[advisory] ${issue.message}` });
-            }
-            // Phase G.4: when blocking is enabled, an unmet promise/canon ERROR at its
-            // due episode hard-fails the run (default off until a regen validates).
-            const blockingIssues = seal.evaluation.issues.filter((x) => x.severity === 'error');
-            if (this.seasonCanonBlockingOn && blockingIssues.length > 0) {
-              throw new Error(`Season Canon gate failed for episode ${i}: ${blockingIssues.map((x) => x.message).join('; ')}`);
-            }
-          }
+              outputDirectory,
+            })
+            : undefined;
           // WS1a: watermark only after content + canon seal both succeeded, so
           // a resume never rehydrates an episode that failed its season gate.
           // (In run-graph mode the artifact store writes the same watermark
@@ -5903,6 +5866,11 @@ export class FullStoryPipeline {
                 episode: generated.episode,
                 episodeNumber: i,
                 title: spec.outline.title,
+                lock: {
+                  ...(canonLockEvidence ?? {}),
+                  runtimeContractPassed: true,
+                  incrementalContractArtifact: `episode-${i}-incremental-contract.json`,
+                },
               });
             }
           }
@@ -6473,6 +6441,100 @@ export class FullStoryPipeline {
         duration: Date.now() - startTime,
       };
     }
+  }
+
+  /**
+   * Seal a freshly-authored episode into Season Canon and return the durable
+   * sidecars that make the completion watermark auditable. This is the canon
+   * half of episode locking; the runtime-contract half lives in
+   * validateEpisodeIncrementally and the caller writes the watermark only after
+   * both steps complete.
+   */
+  private async sealGeneratedEpisodeForCanon(params: {
+    episodeNumber: number;
+    episode: Episode;
+    baseBrief: FullCreativeBrief;
+    analysis: SourceMaterialAnalysis;
+    characterBible: CharacterBible;
+    outputDirectory: string;
+  }): Promise<EpisodeCompletionLockEvidence | undefined> {
+    const { episodeNumber: i, episode, baseBrief, analysis, characterBible, outputDirectory } = params;
+    if (!this.seasonCanonOn) {
+      return { canonSealed: false };
+    }
+
+    // Phase G: pin each promise's explicit payoffEpisode from the season spine
+    // (derived from seasonFlags) so the promise-due gate has real targets.
+    // E1: also pin the later-payoff choice moments (a "pays off later" choice IS a
+    // promise with an explicit payoffEpisode) so the same gate enforces them.
+    const spineEntries = [
+      ...deriveSpinePlantMap(baseBrief.seasonPlan).entries,
+      ...spineEntriesFromChoicePlan(this.seasonChoicePlan),
+    ];
+    const spineResult = applySpinePlantMap(this.callbackLedger, { entries: spineEntries });
+    if (spineResult.unmatched.length > 0) {
+      this.emit({
+        type: 'debug',
+        phase: `season_canon_ep_${i}`,
+        message: `Spine plant map: ${spineResult.applied} applied, ${spineResult.unmatched.length} not yet planted.`,
+      });
+    }
+
+    // B2: extract prose knowledge + claims so the canon holds who-knows-what
+    // (not just flags+capability) and the canon-consistency gate runs over real
+    // claims. Deterministic seed from the QA character-knowledge bundle + the
+    // flags this episode gates on.
+    const episodeKnowledge = extractEpisodeKnowledge({
+      episodeNumber: i,
+      protagonistId: 'protagonist',
+      characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
+      referencedFlags: collectReferencedFlags(episode as any),
+      sceneText: episodeProseCorpus(episode as any),
+    });
+    const seasonLengthForArc = analysis.totalEstimatedEpisodes || this.totalEpisodes;
+    const arcAndRelationship = this.extractArcAndRelationshipDeltas(
+      characterBible,
+      i,
+      seasonLengthForArc,
+    );
+    const seal = await sealAndPersistEpisode({
+      episode: episode as any,
+      episodeNumber: i,
+      seasonLength: seasonLengthForArc,
+      ledger: this.callbackLedger,
+      canon: this.seasonCanon,
+      priorSnapshot: this.priorEpisodeSnapshot,
+      claims: episodeKnowledge.claims,
+      // Seal capability facts (who-can-do-what) + extracted knowledge/worldFacts
+      // so downstream prompts inherit a richer canon. Plus per-episode character
+      // arc state + relationship dimensions so the canon tracks the actual
+      // episode endpoint instead of only the original plan.
+      extraDeltas: {
+        worldFacts: [
+          ...characterCapabilityWorldFacts(characterBible.characters),
+          ...(episodeKnowledge.deltas.worldFacts ?? []),
+        ],
+        knowledge: episodeKnowledge.deltas.knowledge,
+        arcStates: arcAndRelationship.arcStates,
+        relationships: arcAndRelationship.relationships,
+      },
+      save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+    });
+    this.priorEpisodeSnapshot = seal.snapshot;
+    for (const issue of seal.evaluation.issues) {
+      this.emit({ type: 'warning', phase: `season_canon_ep_${i}`, message: `[advisory] ${issue.message}` });
+    }
+    const blockingIssues = seal.evaluation.issues.filter((x) => x.severity === 'error');
+    if (this.seasonCanonBlockingOn && blockingIssues.length > 0) {
+      throw new Error(`Season Canon gate failed for episode ${i}: ${blockingIssues.map((x) => x.message).join('; ')}`);
+    }
+
+    return {
+      canonSealed: true,
+      seasonCanonArtifact: 'season-canon.json',
+      seasonLedgerArtifact: 'season-ledger.json',
+      episodeStateSnapshotArtifact: 'episode-state-snapshot.json',
+    };
   }
 
   /**

@@ -59,8 +59,24 @@ describe('RunArtifactPhase', () => {
       scenes: [{ id: 's1', name: 'Opening', beats: [{ id: 'b1', text: 'Start' }] }],
     } as unknown as Episode;
 
-    await runtime.writeEpisodeCompletion({ episode, episodeNumber: 1, title: 'One' });
+    const watermark = await runtime.writeEpisodeCompletion({
+      episode,
+      episodeNumber: 1,
+      title: 'One',
+      lock: {
+        runtimeContractPassed: true,
+        canonSealed: true,
+        incrementalContractArtifact: 'episode-1-incremental-contract.json',
+        seasonCanonArtifact: 'season-canon.json',
+      },
+    });
 
+    expect(watermark.lock).toMatchObject({
+      runtimeContractPassed: true,
+      canonSealed: true,
+      incrementalContractArtifact: 'episode-1-incremental-contract.json',
+      seasonCanonArtifact: 'season-canon.json',
+    });
     expect(store.files.has('generated-stories/run/checkpoints/episode-1-complete.json')).toBe(true);
     expect(store.files.has('generated-stories/run/artifacts/episodes/001/runtime-episode.rev1.json')).toBe(true);
     expect(store.files.has('generated-stories/run/artifacts/episodes/001/context-out.rev1.json')).toBe(true);

@@ -5,6 +5,7 @@ import {
   type ArtifactLoader,
   type ArtifactSaver,
   type EpisodeCompletionWatermark,
+  type EpisodeCompletionLockEvidence,
   type EpisodeShadowArtifactOptions,
   writeEpisodeCompletion,
 } from '../episodeCheckpoints';
@@ -32,6 +33,7 @@ export interface RunArtifactRuntime {
     episode: Episode;
     episodeNumber: number;
     title: string;
+    lock?: EpisodeCompletionLockEvidence;
   }) => Promise<EpisodeCompletionWatermark>;
 }
 

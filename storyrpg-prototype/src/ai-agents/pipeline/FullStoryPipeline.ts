@@ -614,6 +614,7 @@ type AuthoredEpisodeArtifacts = {
   episode: Episode;
   episodeBrief: FullCreativeBrief;
   blueprint: EpisodeBlueprint;
+  branchAnalysis?: BranchAnalysis | null;
   sceneContents: SceneContent[];
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
@@ -5728,6 +5729,16 @@ export class FullStoryPipeline {
               previousSummary: baseBrief.episode.previousSummary,
             });
             if (generatedEpisode.episode) {
+              const episodePlanningRefs = await this.persistEpisodePlanningArtifacts({
+                artifactRuntime,
+                episodeNumber: spec.episodeNumber,
+                blueprint: generatedEpisode.blueprint,
+                branchAnalysis: generatedEpisode.branchAnalysis,
+                sceneContents: generatedEpisode.sceneContents,
+                choiceSets: generatedEpisode.choiceSets,
+                encounters: generatedEpisode.encounters,
+              });
+              artifactRuntime.setEpisodeUpstreamRefs(spec.episodeNumber, episodePlanningRefs);
               await this.lockGeneratedEpisode({
                 episodeNumber: spec.episodeNumber,
                 title: spec.outline.title,
@@ -5774,6 +5785,7 @@ export class FullStoryPipeline {
               episode: result.episode,
               episodeBrief: result.episodeBrief,
               blueprint: result.blueprint,
+              branchAnalysis: result.branchAnalysis,
               sceneContents: result.sceneContents,
               choiceSets: result.choiceSets,
               encounters: result.encounters,
@@ -5832,6 +5844,7 @@ export class FullStoryPipeline {
               episode: generated.episode,
               episodeBrief: generated.episodeBrief,
               blueprint: generated.blueprint,
+              branchAnalysis: generated.branchAnalysis,
               sceneContents: generated.sceneContents,
               choiceSets: generated.choiceSets,
               encounters: generated.encounters,
@@ -5845,6 +5858,16 @@ export class FullStoryPipeline {
           // (In run-graph mode the artifact store writes the same watermark
           // when the step's output persists — same files, same ordering.)
           if (generated.episode) {
+            const episodePlanningRefs = await this.persistEpisodePlanningArtifacts({
+              artifactRuntime,
+              episodeNumber: i,
+              blueprint: generated.blueprint,
+              branchAnalysis: generated.branchAnalysis,
+              sceneContents: generated.sceneContents,
+              choiceSets: generated.choiceSets,
+              encounters: generated.encounters,
+            });
+            artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
             await this.lockGeneratedEpisode({
               episodeNumber: i,
               title: spec.outline.title,
@@ -6478,6 +6501,116 @@ export class FullStoryPipeline {
       message: `Saved revisioned planning artifacts for ${savedKinds.join(', ')}.`,
     });
     return planningRefs;
+  }
+
+  private async persistEpisodePlanningArtifacts(params: {
+    artifactRuntime: RunArtifactRuntime;
+    episodeNumber: number;
+    blueprint?: EpisodeBlueprint;
+    branchAnalysis?: BranchAnalysis | null;
+    sceneContents?: SceneContent[];
+    choiceSets?: ChoiceSet[];
+    encounters?: Map<string, EncounterStructure>;
+  }): Promise<ArtifactRef[]> {
+    const {
+      artifactRuntime,
+      episodeNumber,
+      blueprint,
+      branchAnalysis,
+      sceneContents,
+      choiceSets,
+      encounters,
+    } = params;
+    const globalUpstream = artifactRuntime.getGlobalUpstreamRefs();
+    const refs: ArtifactRef[] = [];
+
+    let episodeBlueprintRef: ArtifactRef | undefined;
+    if (blueprint) {
+      const episodeBlueprintArtifact = await artifactRuntime.saveArtifact({
+        kind: 'episode-blueprint',
+        episodeNumber,
+        payload: blueprint,
+        status: 'valid',
+        upstream: globalUpstream,
+        provenance: { phase: `episode_${episodeNumber}_architecture`, agent: 'StoryArchitect' },
+      });
+      episodeBlueprintRef = artifactRuntime.refFor(episodeBlueprintArtifact);
+      refs.push(episodeBlueprintRef);
+    }
+
+    let branchPlanRef: ArtifactRef | undefined;
+    if (branchAnalysis) {
+      const branchPlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'branch-plan',
+        episodeNumber,
+        payload: branchAnalysis,
+        status: 'valid',
+        upstream: episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream,
+        provenance: { phase: `episode_${episodeNumber}_branch_analysis`, agent: 'BranchManager' },
+      });
+      branchPlanRef = artifactRuntime.refFor(branchPlanArtifact);
+      refs.push(branchPlanRef);
+    }
+
+    let scenePlanRef: ArtifactRef | undefined;
+    if (blueprint || sceneContents) {
+      const scenePlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'scene-plan',
+        episodeNumber,
+        payload: {
+          episodeNumber,
+          blueprintScenes: blueprint?.scenes ?? [],
+          authoredScenes: sceneContents ?? [],
+        },
+        status: 'valid',
+        upstream: [
+          ...(episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream),
+          ...(branchPlanRef ? [branchPlanRef] : []),
+        ],
+        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'SceneWriter' },
+      });
+      scenePlanRef = artifactRuntime.refFor(scenePlanArtifact);
+      refs.push(scenePlanRef);
+    }
+
+    if (choiceSets) {
+      const choicePlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'choice-consequence-plan',
+        episodeNumber,
+        payload: { episodeNumber, choiceSets },
+        status: 'valid',
+        upstream: [
+          ...(scenePlanRef ? [scenePlanRef] : episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream),
+          ...(branchPlanRef ? [branchPlanRef] : []),
+        ],
+        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'ChoiceAuthor' },
+      });
+      refs.push(artifactRuntime.refFor(choicePlanArtifact));
+    }
+
+    if (encounters) {
+      const encounterPlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'encounter-plan',
+        episodeNumber,
+        payload: {
+          episodeNumber,
+          encounters: Array.from(encounters.entries()).map(([id, encounter]) => ({ id, encounter })),
+        },
+        status: 'valid',
+        upstream: scenePlanRef ? [scenePlanRef] : episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream,
+        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'EncounterArchitect' },
+      });
+      refs.push(artifactRuntime.refFor(encounterPlanArtifact));
+    }
+
+    if (refs.length > 0) {
+      this.emit({
+        type: 'debug',
+        phase: `episode_${episodeNumber}_artifacts`,
+        message: `Saved ${refs.length} revisioned episode planning artifact(s).`,
+      });
+    }
+    return refs;
   }
 
   /**
@@ -7420,6 +7553,7 @@ export class FullStoryPipeline {
         episode,
         episodeBrief,
         blueprint,
+        branchAnalysis,
         sceneContents,
         choiceSets,
         encounters,

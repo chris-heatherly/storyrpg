@@ -40,6 +40,8 @@ export interface RunArtifactRuntime {
   }) => Promise<PipelineArtifact<T>>;
   refFor: <T>(artifact: PipelineArtifact<T>) => ArtifactRef;
   setGlobalUpstreamRefs: (refs: ArtifactRef[]) => void;
+  getGlobalUpstreamRefs: () => ArtifactRef[];
+  setEpisodeUpstreamRefs: (episodeNumber: number, refs: ArtifactRef[]) => void;
   shadowArtifactsFor: (episodeNumber: number) => EpisodeShadowArtifactOptions;
   writeEpisodeCompletion: (options: {
     episode: Episode;
@@ -72,6 +74,7 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
     const load: ArtifactLoader = <T,>(name: string) => this.deps.load<T>(outputDirectory, name);
     const artifactStore = new ArtifactRevisionStore({ save, load });
     let globalUpstreamRefs: ArtifactRef[] = [];
+    const episodeUpstreamRefs = new Map<number, ArtifactRef[]>();
 
     const runtime: RunArtifactRuntime = {
       outputDirectory,
@@ -88,11 +91,18 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
       setGlobalUpstreamRefs: (refs) => {
         globalUpstreamRefs = [...refs];
       },
+      getGlobalUpstreamRefs: () => [...globalUpstreamRefs],
+      setEpisodeUpstreamRefs: (episodeNumber, refs) => {
+        episodeUpstreamRefs.set(episodeNumber, [...refs]);
+      },
       shadowArtifactsFor: (episodeNumber) => ({
         storyId,
         runId,
         load,
-        upstream: globalUpstreamRefs,
+        upstream: [
+          ...globalUpstreamRefs,
+          ...(episodeUpstreamRefs.get(episodeNumber) ?? []),
+        ],
         onError: (error) => context.emit({
           type: 'warning',
           phase: `episode_${episodeNumber}_artifacts`,

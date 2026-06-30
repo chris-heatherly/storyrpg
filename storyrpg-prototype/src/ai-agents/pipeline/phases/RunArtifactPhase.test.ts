@@ -142,7 +142,16 @@ describe('RunArtifactPhase', () => {
       upstream: [runtime.refFor(sourceAnalysis)],
       provenance: { phase: 'season_planning', agent: 'SeasonPlannerAgent' },
     });
+    const episodeBlueprint = await runtime.saveArtifact({
+      kind: 'episode-blueprint',
+      episodeNumber: 1,
+      payload: { scenes: [{ id: 's1' }] },
+      status: 'valid',
+      upstream: [runtime.refFor(sourceAnalysis), runtime.refFor(seasonPlan)],
+      provenance: { phase: 'episode_1_architecture', agent: 'StoryArchitect' },
+    });
     runtime.setGlobalUpstreamRefs([runtime.refFor(sourceAnalysis), runtime.refFor(seasonPlan)]);
+    runtime.setEpisodeUpstreamRefs(1, [runtime.refFor(episodeBlueprint)]);
 
     await runtime.writeEpisodeCompletion({
       episode: {
@@ -157,7 +166,7 @@ describe('RunArtifactPhase', () => {
     const contextIn = store.files.get('generated-stories/run/artifacts/episodes/001/context-in.rev1.json') as {
       upstream?: Array<{ kind: string; revision: number }>;
     };
-    expect(contextIn.upstream?.map((ref) => ref.kind)).toEqual(['source-analysis', 'season-plan']);
+    expect(contextIn.upstream?.map((ref) => ref.kind)).toEqual(['source-analysis', 'season-plan', 'episode-blueprint']);
   });
 
   it('derives a stable run id from absolute and relative paths', () => {

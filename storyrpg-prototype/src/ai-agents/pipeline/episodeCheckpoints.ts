@@ -44,6 +44,8 @@ export type ArtifactLoader = <T>(name: string) => T | null;
 
 export interface EpisodeCompletionLockEvidence {
   runtimeContractPassed?: boolean;
+  sceneLocksPassed?: boolean;
+  sceneLockArtifact?: string;
   canonSealed?: boolean;
   incrementalContractArtifact?: string;
   seasonCanonArtifact?: string;
@@ -233,6 +235,24 @@ export function loadCompletedEpisode(
   const watermark = load<EpisodeCompletionWatermark>(episodeCompleteArtifact(episodeNumber));
   if (!watermark || watermark.version !== 1 || watermark.episodeNumber !== episodeNumber) return null;
   if (watermark.lock?.runtimeContractPassed === false) return null;
+  if (watermark.lock?.sceneLocksPassed === false) return null;
+  if (watermark.lock?.sceneLockArtifact) {
+    const sceneLockReport = load<{
+      passed?: boolean;
+      validation?: {
+        passed?: boolean;
+        issues?: Array<{ severity?: string }>;
+      };
+    }>(watermark.lock.sceneLockArtifact);
+    if (
+      !sceneLockReport
+      || sceneLockReport.passed === false
+      || sceneLockReport.validation?.passed === false
+      || (sceneLockReport.validation?.issues ?? []).some((issue) => issue.severity === 'error')
+    ) {
+      return null;
+    }
+  }
   if (watermark.lock?.seasonCanonArtifact && watermark.lock.canonSealed !== true) return null;
   const incrementalContract = load<{
     passed?: boolean;

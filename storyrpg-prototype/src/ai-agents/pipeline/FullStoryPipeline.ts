@@ -158,6 +158,11 @@ import { createRunState, type PipelineRunState } from './runState';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
 import { runPlanTimeFidelityChecks, runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
+import {
+  buildEpisodeSceneLockReport,
+  mergeArtifactValidationSummaries,
+  sceneLockArtifactName,
+} from './sceneLocks';
 import type { ValidationPhaseBaseline } from '../validators/validationPhaseBaseline';
 import { FinalStoryContractValidator } from '../validators/FinalStoryContractValidator';
 import {
@@ -6647,6 +6652,7 @@ export class FullStoryPipeline {
       artifactRuntime,
       writeWatermark,
     } = params;
+    let runtimeLockEvidence: EpisodeCompletionLockEvidence = {};
     return lockGeneratedEpisodeArtifact({
       episodeNumber,
       title,
@@ -6654,7 +6660,28 @@ export class FullStoryPipeline {
       hasEpisodeBrief: Boolean(episodeBrief),
       writeWatermark,
       validateRuntimeContract: async () => {
-        return this.validateEpisodeIncrementally({
+        const sceneLockReport = buildEpisodeSceneLockReport({
+          episodeNumber,
+          episode,
+          validationResults: this.allSceneValidationResults.length > 0
+            ? this.allSceneValidationResults
+            : this.sceneValidationResults,
+        });
+        const sceneLockArtifact = sceneLockArtifactName(episodeNumber);
+        await artifactRuntime.save(sceneLockArtifact, sceneLockReport);
+        runtimeLockEvidence = {
+          sceneLocksPassed: sceneLockReport.passed,
+          sceneLockArtifact,
+        };
+        if (!sceneLockReport.passed) {
+          const detail = sceneLockReport.validation.issues
+            .slice(0, 5)
+            .map((issue) => issue.message)
+            .join('; ');
+          throw new Error(`Episode ${episodeNumber} cannot be locked: scene validation locks failed. ${detail}`);
+        }
+
+        const episodeValidation = await this.validateEpisodeIncrementally({
           episodeNumber,
           episode,
           episodeBrief: episodeBrief!,
@@ -6663,14 +6690,21 @@ export class FullStoryPipeline {
           bestPracticesReport,
           outputDirectory,
         });
+        return mergeArtifactValidationSummaries(`runtime_contract_ep_${episodeNumber}`, [
+          sceneLockReport.validation,
+          episodeValidation,
+        ]);
       },
-      sealCanon: () => this.sealGeneratedEpisodeForCanon({
-        episodeNumber,
-        episode,
-        baseBrief,
-        analysis,
-        characterBible,
-        outputDirectory,
+      sealCanon: async () => ({
+        ...runtimeLockEvidence,
+        ...(await this.sealGeneratedEpisodeForCanon({
+          episodeNumber,
+          episode,
+          baseBrief,
+          analysis,
+          characterBible,
+          outputDirectory,
+        }) ?? {}),
       }),
       writeCompletion: (lock, validation) => artifactRuntime.writeEpisodeCompletion({
         episode,

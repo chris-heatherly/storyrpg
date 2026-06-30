@@ -118,6 +118,42 @@ describe('episodeCheckpoints', () => {
     expect(loadCompletedEpisode(2, canonUnsealed.load)).toBeNull();
   });
 
+  it('rejects completion watermarks with failed scene lock evidence', async () => {
+    const inlineFailed = makeStore();
+    await writeEpisodeCompletion({
+      episode: makeEpisode(1),
+      episodeNumber: 1,
+      title: 'One',
+      save: inlineFailed.save,
+      lock: {
+        runtimeContractPassed: true,
+        sceneLocksPassed: false,
+      },
+    });
+    expect(loadCompletedEpisode(1, inlineFailed.load)).toBeNull();
+
+    const sidecarFailed = makeStore();
+    await sidecarFailed.save('episode-2-scene-locks.json', {
+      passed: false,
+      validation: {
+        passed: false,
+        issues: [{ severity: 'error', message: 'missing lock' }],
+      },
+    });
+    await writeEpisodeCompletion({
+      episode: makeEpisode(2),
+      episodeNumber: 2,
+      title: 'Two',
+      save: sidecarFailed.save,
+      lock: {
+        runtimeContractPassed: true,
+        sceneLocksPassed: true,
+        sceneLockArtifact: 'episode-2-scene-locks.json',
+      },
+    });
+    expect(loadCompletedEpisode(2, sidecarFailed.load)).toBeNull();
+  });
+
   it('partitionResumableEpisodes splits specs and preserves order within each side', async () => {
     const store = makeStore();
     await writeEpisodeCompletion({ episode: makeEpisode(2), episodeNumber: 2, title: 'Two', save: store.save });

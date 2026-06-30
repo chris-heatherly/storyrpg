@@ -320,5 +320,6 @@ describe('episodeCheckpoints', () => {
     const staleReport = evaluateArtifactStatus(artifactStore.loadCurrentRef('context-in', 2)!, artifactStore);
     expect(staleReport.status).toBe('stale');
     expect(staleReport.reasons.join(' ')).toContain('context-out:1');
+    expect(loadCompletedEpisode(2, store.load)).toBeNull();
   });
 });

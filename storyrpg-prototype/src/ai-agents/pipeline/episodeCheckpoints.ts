@@ -18,6 +18,7 @@ import type { Episode } from '../../types';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import {
   ArtifactRevisionStore,
+  evaluateArtifactStatus,
   type ArtifactRef,
   type ArtifactValidationSummary,
   type EpisodeContextIn,
@@ -248,11 +249,31 @@ export function loadCompletedEpisode(
   ) {
     return null;
   }
+  if (watermark.artifacts && !completionArtifactsAreClean(watermark.artifacts, load)) {
+    return null;
+  }
   const episode = load<Episode>(watermark.assembledArtifact);
   if (!episode || typeof episode !== 'object') return null;
   if (typeof episode.number === 'number' && episode.number !== episodeNumber) return null;
   if (!Array.isArray(episode.scenes) || episode.scenes.length === 0) return null;
   return { episode, watermark };
+}
+
+function completionArtifactsAreClean(
+  artifacts: EpisodeCompletionArtifactRefs,
+  load: ArtifactLoader,
+): boolean {
+  const store = new ArtifactRevisionStore({
+    load,
+    save: async () => undefined,
+  });
+  const refs = [
+    artifacts.contextIn,
+    artifacts.runtimeEpisode,
+    artifacts.validationReport,
+    artifacts.contextOut,
+  ].filter((ref): ref is ArtifactRef => Boolean(ref));
+  return refs.every((ref) => evaluateArtifactStatus(ref, store).status === 'clean');
 }
 
 /** Which of the requested episodes already completed in this run directory. */

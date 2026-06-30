@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { atomicWriteJsonSync } = require('./atomicIo');
 
 const FLUSH_INTERVAL_MS = 500;
 
@@ -41,7 +42,7 @@ function createCachedStore(filePath, label) {
   function flushNow() {
     if (!dirty || cache === null) return;
     try {
-      fs.writeFileSync(filePath, JSON.stringify(cache, null, 2), 'utf8');
+      atomicWriteJsonSync(filePath, cache, { pretty: true });
       dirty = false;
     } catch (e) {
       console.error(`[Proxy] Failed to flush ${label}:`, e.message);

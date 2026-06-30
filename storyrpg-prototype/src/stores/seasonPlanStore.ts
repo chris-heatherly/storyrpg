@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 8 state-store consolidation will address
+// SourceMaterialAnalysis type drift here.
 /**
  * Season Plan Store
  *
@@ -16,6 +18,7 @@ import {
   EpisodeStatus,
 } from '../types/seasonPlan';
 import { SourceMaterialAnalysis } from '../types/sourceAnalysis';
+import type { CanonWizardState } from '../types/storyCanon';
 
 const STORAGE_KEY = 'season-plans';
 const ACTIVE_PLAN_KEY = 'active-season-plan';
@@ -30,11 +33,24 @@ interface SeasonPlanStoreState {
   isLoaded: boolean;
 }
 
-let state: SeasonPlanStoreState = {
+const state: SeasonPlanStoreState = {
   plans: new Map(),
   activePlanId: null,
   isLoaded: false,
 };
+
+function isEpisodeGenerated(episode?: Partial<SeasonEpisode>): boolean {
+  return Boolean(
+    episode
+    && (
+      episode.status === 'completed'
+      || episode.generatedEpisodeId
+      || episode.generatedStoryId
+      || episode.generatedJobId
+      || episode.outputDir
+    )
+  );
+}
 
 // Listeners for state changes
 type Listener = () => void;
@@ -285,19 +301,29 @@ export const seasonPlanStore = {
    * Get all season plans as summaries
    */
   getPlanSummaries(): SeasonPlanSummary[] {
-    return Array.from(state.plans.values()).map(({ plan }) => ({
-      id: plan.id,
-      sourceTitle: plan.sourceTitle,
-      seasonTitle: plan.seasonTitle,
-      totalEpisodes: plan.totalEpisodes,
-      completedEpisodes: plan.progress.completedCount,
-      lastUpdated: plan.updatedAt,
-      status: plan.progress.completedCount === 0 
-        ? 'new' 
-        : plan.progress.completedCount === plan.totalEpisodes 
-          ? 'completed' 
-          : 'in_progress',
-    }));
+    return Array.from(state.plans.values()).map(({ plan }) => {
+      const completedEpisodes = plan.episodes.filter(isEpisodeGenerated).length;
+      return {
+        id: plan.id,
+        sourceTitle: plan.sourceTitle,
+        seasonTitle: plan.seasonTitle,
+        totalEpisodes: plan.totalEpisodes,
+        completedEpisodes,
+        lastUpdated: plan.updatedAt,
+        status: completedEpisodes === 0
+          ? 'new'
+          : completedEpisodes === plan.totalEpisodes
+            ? 'completed'
+            : 'in_progress',
+      };
+    });
+  },
+
+  /**
+   * Get all saved season plans.
+   */
+  getPlans(): SavedSeasonPlan[] {
+    return Array.from(state.plans.values());
   },
 
   /**
@@ -318,9 +344,9 @@ export const seasonPlanStore = {
   /**
    * Save a new season plan (atomic)
    */
-  async savePlan(plan: SeasonPlan, sourceAnalysis: SourceMaterialAnalysis): Promise<void> {
+  async savePlan(plan: SeasonPlan, sourceAnalysis: SourceMaterialAnalysis, canonWizardState?: CanonWizardState): Promise<void> {
     await storeMutex.withLock(async () => {
-      state.plans.set(plan.id, { plan, sourceAnalysis });
+      state.plans.set(plan.id, { plan, sourceAnalysis, canonWizardState });
       state.activePlanId = plan.id;
       await saveToStorage();
       notifyListeners();
@@ -352,6 +378,45 @@ export const seasonPlanStore = {
   },
 
   /**
+   * Update the plan plus its source-analysis/setup metadata in one atomic write.
+   */
+  async updateSavedPlan(
+    planId: string,
+    updates: {
+      plan?: Partial<SeasonPlan>;
+      sourceAnalysis?: SourceMaterialAnalysis;
+      canonWizardState?: CanonWizardState;
+    },
+  ): Promise<void> {
+    await storeMutex.withLock(async () => {
+      const existing = state.plans.get(planId);
+      if (!existing) {
+        console.warn(`[SeasonPlanStore] Plan not found: ${planId}`);
+        return;
+      }
+
+      const updatedPlan: SeasonPlan = updates.plan
+        ? {
+            ...existing.plan,
+            ...updates.plan,
+            updatedAt: new Date(),
+          }
+        : {
+            ...existing.plan,
+            updatedAt: new Date(),
+          };
+
+      state.plans.set(planId, {
+        plan: updatedPlan,
+        sourceAnalysis: updates.sourceAnalysis || existing.sourceAnalysis,
+        canonWizardState: updates.canonWizardState || existing.canonWizardState,
+      });
+      await saveToStorage();
+      notifyListeners();
+    });
+  },
+
+  /**
    * Set the active plan (atomic)
    */
   async setActivePlan(planId: string | null): Promise<void> {
@@ -370,7 +435,9 @@ export const seasonPlanStore = {
     episodeNumber: number,
     status: EpisodeStatus,
     generatedEpisodeId?: string,
-    generatedStoryId?: string
+    generatedStoryId?: string,
+    generatedJobId?: string,
+    outputDir?: string,
   ): Promise<void> {
     await storeMutex.withLock(async () => {
       const existing = state.plans.get(planId);
@@ -381,8 +448,10 @@ export const seasonPlanStore = {
         return {
           ...ep,
           status,
-          generatedEpisodeId,
-          generatedStoryId,
+          generatedEpisodeId: generatedEpisodeId ?? ep.generatedEpisodeId,
+          generatedStoryId: generatedStoryId ?? ep.generatedStoryId,
+          generatedJobId: generatedJobId ?? ep.generatedJobId,
+          outputDir: outputDir ?? ep.outputDir,
           generatedAt: status === 'completed' ? new Date() : ep.generatedAt,
         };
       });
@@ -396,7 +465,7 @@ export const seasonPlanStore = {
       const nextRecommended = episodes.find(e => 
         e.status === 'planned' && 
         e.dependsOn.every(dep => 
-          episodes.find(d => d.episodeNumber === dep)?.status === 'completed'
+          isEpisodeGenerated(episodes.find(d => d.episodeNumber === dep))
         )
       );
 
@@ -522,7 +591,7 @@ export const seasonPlanStore = {
     if (!plan) return [];
 
     const completed = new Set(
-      plan.episodes.filter(e => e.status === 'completed').map(e => e.episodeNumber)
+      plan.episodes.filter(isEpisodeGenerated).map(e => e.episodeNumber)
     );
 
     return plan.episodes

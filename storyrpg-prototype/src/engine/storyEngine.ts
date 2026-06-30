@@ -9,10 +9,18 @@ import {
   Consequence,
   EncounterBeat,
   EncounterChoice,
+  SkillInsight,
+  StatCheckModifier,
 } from '../types';
 import { evaluateCondition } from './conditionEvaluator';
-import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, applyUseBasedGrowth } from './resolutionEngine';
+import { resolveStatCheck, ResolutionTracker, normalizeStatCheck, buildUseBasedGrowthConsequences, computeOverlap } from './resolutionEngine';
 import { processText, processTemplate } from './templateProcessor';
+import { sanitizeReaderProse } from './readerProseSanitizer';
+import { mediaRefAsString } from '../assets/assetRef';
+import {
+  getSkillKeyFromChoice,
+  resolveChoiceSkillDisplay,
+} from '../utils/choiceSkillDisplay';
 
 // Session-scoped fairness tracker for resolution streaks
 const _resolutionTracker = new ResolutionTracker();
@@ -51,6 +59,7 @@ export function isEncounterBeat(beat: Beat | EncounterBeat): beat is EncounterBe
 export interface ProcessedBeat {
   id: string;
   text: string;
+  skillInsights?: string[];
   speaker?: string;
   speakerMood?: string;
   image?: string;
@@ -79,7 +88,10 @@ export interface ProcessedChoice {
     attribute?: string;
     skill?: string;
   };
+  primarySkillKey?: string;
   primarySkillLabel?: string;
+  effectiveSkillValue?: number;
+  skillBonusValue?: number;
   hasAdvantage?: boolean;
   advantageText?: string;
   echoSummary?: string;
@@ -101,11 +113,6 @@ export interface ChoiceResult {
   nextBeatId?: string;
 }
 
-function formatSkillLabel(raw?: string): string | undefined {
-  if (!raw) return undefined;
-  return raw.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
-}
-
 function buildLockedReason(choice: Choice, player: PlayerState, story: Story): string {
   if (choice.lockedText) {
     return processTemplate(choice.lockedText, player, story);
@@ -117,6 +124,66 @@ function buildLockedReason(choice: Choice, player: PlayerState, story: Story): s
   }
 
   return 'This option is not available.';
+}
+
+function evaluateStatCheckModifiers(
+  modifiers: StatCheckModifier[] | undefined,
+  player: PlayerState
+): { total: number; active: StatCheckModifier[] } {
+  const active: StatCheckModifier[] = [];
+  let total = 0;
+
+  for (const modifier of modifiers ?? []) {
+    if (!modifier.condition || !evaluateCondition(modifier.condition, player)) continue;
+    const delta = Number(modifier.delta);
+    if (!Number.isFinite(delta)) continue;
+    active.push(modifier);
+    total += Math.max(-25, Math.min(25, delta));
+  }
+
+  return { total, active };
+}
+
+function processSkillInsights(
+  insights: SkillInsight[] | undefined,
+  player: PlayerState,
+  story: Story
+): string[] {
+  if (!insights?.length) return [];
+
+  return insights
+    .map((insight, index) => ({ insight, index }))
+    .filter(({ insight }) => {
+      if (!insight.text?.trim()) return false;
+      if (insight.condition && !evaluateCondition(insight.condition, player)) return false;
+      return computeOverlap(player, insight.skillWeights ?? {}) >= insight.threshold;
+    })
+    .sort((a, b) => (b.insight.priority ?? 0) - (a.insight.priority ?? 0) || a.index - b.index)
+    .slice(0, 2)
+    .map(({ insight }) => processTemplate(insight.text, player, story));
+}
+
+function readerSafeBeatFallback(beat: Beat | EncounterBeat): string {
+  const candidates = isEncounterBeat(beat)
+    ? [
+        beat.setupText,
+        beat.name,
+      ]
+    : [
+        beat.primaryAction,
+        beat.visualMoment,
+        beat.emotionalRead,
+        beat.mustShowDetail,
+      ];
+
+  for (const candidate of candidates) {
+    const sanitized = sanitizeReaderProse(String(candidate || '')).replace(/\s+/g, ' ').trim();
+    if (sanitized) {
+      return /[.!?]$/.test(sanitized) ? sanitized : `${sanitized}.`;
+    }
+  }
+
+  return 'The moment tightens. You take the next breath and move before fear can close around you.';
 }
 
 /**
@@ -186,14 +253,17 @@ export function processBeat(
 
   // FINAL FALLBACK: If text is STILL empty after all processing, use a descriptive placeholder
   if (!text || text.trim().length === 0) {
-    console.warn(`[StoryEngine] Beat ${beat.id} resulted in empty text. Using emergency fallback.`);
-    text = `You continue through the ${story.genre.toLowerCase()} journey, facing new challenges and making important decisions.`;
+    console.warn(`[StoryEngine] Beat ${beat.id} resulted in empty text. Using reader-safe fallback.`);
+    text = readerSafeBeatFallback(beat);
   }
 
   // Process speaker name if present (regular Beat only)
   const speaker = !isEncounter && (beat as Beat).speaker
     ? processTemplate((beat as Beat).speaker!, player, story)
     : undefined;
+  const skillInsights = !isEncounter
+    ? processSkillInsights((beat as Beat).skillInsights, player, story)
+    : [];
 
   // Filter and process choices
   // EncounterBeat has EncounterChoice[], Beat has Choice[]
@@ -213,16 +283,17 @@ export function processBeat(
   debugLog(`[StoryEngine]   - hasChoices: ${hasChoices}, autoAdvance: ${autoAdvance}`);
 
   // Get image - EncounterBeat uses situationImage, Beat uses image
-  const image = isEncounter ? beat.situationImage : (beat as Beat).image;
-  const video = !isEncounter ? (beat as Beat).video : undefined;
+  const image = mediaRefAsString(isEncounter ? beat.situationImage : (beat as Beat).image);
+  const video = mediaRefAsString(!isEncounter ? (beat as Beat).video : undefined);
 
   return {
     id: beat.id,
     text,
+    skillInsights,
     speaker,
     speakerMood: !isEncounter ? (beat as Beat).speakerMood : undefined,
-    image,
-    video,
+    image: image || undefined,
+    video: video || undefined,
     choices,
     hasChoices,
     autoAdvance,
@@ -252,6 +323,11 @@ function processEncounterChoices(
       continue;
     }
 
+    const skillDisplay = resolveChoiceSkillDisplay({
+      skillKey: choice.primarySkill,
+      player,
+    });
+
     processed.push({
       id: choice.id,
       text: processTemplate(choice.text, player, story),
@@ -263,7 +339,10 @@ function processEncounterChoices(
       statCheckInfo: choice.primarySkill
         ? { skill: choice.primarySkill }
         : undefined,
-      primarySkillLabel: formatSkillLabel(choice.primarySkill),
+      primarySkillKey: skillDisplay.skillKey,
+      primarySkillLabel: skillDisplay.skillLabel,
+      effectiveSkillValue: skillDisplay.effectiveSkillValue,
+      skillBonusValue: skillDisplay.skillBonusValue,
       hasAdvantage: !!(choice.statBonus && choice.statBonus.flavorText),
       advantageText: choice.statBonus?.flavorText,
       echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
@@ -295,6 +374,15 @@ function processChoices(
       continue;
     }
 
+    const skillDisplay = resolveChoiceSkillDisplay({
+      skillKey: getSkillKeyFromChoice(choice),
+      player,
+    });
+    const activeModifiers = evaluateStatCheckModifiers(choice.statCheck?.modifiers, player).active
+      .filter((modifier) => modifier.hint?.trim())
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    const advantageText = activeModifiers[0]?.hint;
+
     processed.push({
       id: choice.id,
       text: processTemplate(choice.text, player, story),
@@ -306,10 +394,15 @@ function processChoices(
       statCheckInfo: choice.statCheck
         ? {
             attribute: choice.statCheck.attribute,
-            skill: choice.statCheck.skill,
+            skill: choice.statCheck.skill ?? skillDisplay.skillKey,
           }
         : undefined,
-      primarySkillLabel: formatSkillLabel(choice.statCheck?.skill || choice.statCheck?.attribute),
+      primarySkillKey: skillDisplay.skillKey,
+      primarySkillLabel: skillDisplay.skillLabel,
+      effectiveSkillValue: skillDisplay.effectiveSkillValue,
+      skillBonusValue: skillDisplay.skillBonusValue,
+      hasAdvantage: !!advantageText,
+      advantageText,
       echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
       progressSummary: choice.feedbackCue?.progressSummary ?? choice.reminderPlan?.shortTerm,
       checkClass: choice.feedbackCue?.checkClass ?? (choice.statCheck?.retryableAfterChange ? 'retryable' : undefined),
@@ -335,17 +428,31 @@ export function executeChoice(
   }
 
   let resolution: ResolutionResult | undefined;
-  let consequences = [...(choice.consequences ?? [])];
+  const consequences = [...(choice.consequences ?? [])];
+  for (const evidence of choice.relationshipValueEvidence ?? []) {
+    consequences.push({
+      type: 'relationshipEvidence',
+      npcId: evidence.npcId,
+      axis: evidence.axis,
+      evidenceTags: evidence.evidenceTags,
+      reason: evidence.reason,
+      intendedSurface: evidence.intendedSurface,
+    });
+  }
 
   // Perform stat check if required
   if (choice.statCheck) {
-    resolution = resolveStatCheck(player, choice.statCheck, _resolutionTracker);
+    const modifierResult = evaluateStatCheckModifiers(choice.statCheck.modifiers, player);
+    resolution = resolveStatCheck(player, choice.statCheck, _resolutionTracker, {
+      modifierTotal: modifierResult.total,
+    });
 
     const tier = resolution.tier;
 
-    // Use-based skill growth: bump skills proportional to challenge weights
+    // Use-based skill growth is emitted as normal consequences so playback can
+    // surface the change in fiction-first feedback.
     const normalized = normalizeStatCheck(choice.statCheck);
-    applyUseBasedGrowth(player, normalized.skillWeights, tier);
+    consequences.push(...buildUseBasedGrowthConsequences(normalized.skillWeights, tier));
 
     // Inject outcome-tier flags so the payoff beat's textVariants can select
     // the right outcome text at render time. Flags are mutually exclusive.
@@ -445,6 +552,42 @@ export function getNextEpisode(
   return story.episodes[currentIndex + 1];
 }
 
+export function isEpisodeOnActiveRoute(
+  episode: Episode,
+  player: PlayerState
+): boolean {
+  return isEpisodeUnlocked(episode, player);
+}
+
+/**
+ * Return the episodes visible/playable for the player's current route.
+ */
+export function getPlayableEpisodes(
+  story: Story,
+  player: PlayerState
+): Episode[] {
+  return story.episodes.filter(episode => isEpisodeOnActiveRoute(episode, player));
+}
+
+/**
+ * Get the next episode in active playback order.
+ */
+export function getNextPlayableEpisode(
+  story: Story,
+  currentEpisodeId: string,
+  player: PlayerState
+): Episode | undefined {
+  const playableEpisodes = getPlayableEpisodes(story, player);
+  const currentIndex = playableEpisodes.findIndex((e) => e.id === currentEpisodeId);
+  if (currentIndex === -1 || currentIndex >= playableEpisodes.length - 1) {
+    return undefined;
+  }
+
+  return playableEpisodes
+    .slice(currentIndex + 1)
+    .find(episode => isEpisodeUnlocked(episode, player));
+}
+
 /**
  * Check if an episode is unlocked for the player.
  */
@@ -505,8 +648,30 @@ function getFallbackScene(
 }
 
 /**
+ * Sentinel scene targets that mean "the story/episode ends here" rather than
+ * "navigate to a scene with this id". Generation (StructuralValidator.autoFix /
+ * FinalStoryContractValidator) routes a final scene's terminal beat to one of
+ * these — most commonly `episode-end`. The reader must recognize them and
+ * FINISH the episode instead of trying to load a non-existent scene (which
+ * silently dead-ends). Kept here in the engine so the reader (and anything else)
+ * shares one definition. Case-insensitive; also matches `episode-<n>` handoffs.
+ */
+const TERMINAL_SCENE_TARGETS = new Set([
+  'episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending',
+]);
+
+export function isTerminalSceneTarget(sceneId?: string | null): boolean {
+  if (!sceneId) return false;
+  const id = sceneId.trim().toLowerCase();
+  if (TERMINAL_SCENE_TARGETS.has(id)) return true;
+  // `episode-end` and any `episode-<n>` handoff are terminal for the currently
+  // loaded (single) episode — mirrors the existing storylet/encounter checks.
+  return id.startsWith('episode-');
+}
+
+/**
  * Get the next scene via conditional auto-routing.
- * 
+ *
  * This is NOT player-driven branching. Player-driven branching happens via
  * Choice.nextSceneId (on any non-expression choice), which bypasses this function.
  * This function handles the default "what's next" when no explicit routing exists.

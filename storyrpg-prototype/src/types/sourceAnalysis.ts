@@ -5,6 +5,244 @@
  * into episode-sized chunks for interactive fiction generation.
  */
 
+import type {
+  ArcPressureTreatmentContract,
+  BranchConsequenceRealizationContract,
+  CharacterTreatmentRealizationContract,
+  EndingRealizationContract,
+  FailureModeAuditCode,
+  FailureModeAuditContract,
+  StoryCircleBeatRealizationContract,
+  StakesArchitectureContract,
+  WorldTreatmentRealizationContract,
+} from './scenePlan';
+import type { CliffhangerType } from './story';
+import type { CanonLockManifest, LockedStoryCanon } from './storyCanon';
+import type { ThemeImageSystemMotif } from './relationshipValue';
+
+// ========================================
+// STORY CIRCLE STORY STRUCTURE
+// ========================================
+
+/**
+ * The four narrative anchors that define every story at the season / top level.
+ *
+ * - {@link StoryAnchors.stakes}     - the person, people, place, thing, or concept
+ *                                     the Protagonist cares about most
+ * - {@link StoryAnchors.goal}       - what the Protagonist feels compelled to achieve
+ * - {@link StoryAnchors.incitingIncident} - the event that sets the story in motion
+ * - {@link StoryAnchors.climax}     - the turning-point confrontation where the
+ *                                     Protagonist faces their greatest challenge
+ *
+ * These are the shared reference points every narrative-quality agent aligns to.
+ * When source material does not already supply them, SourceMaterialAnalyzer
+ * infers them. Path B's StorySchema authoring tool writes them directly.
+ */
+export interface StoryAnchors {
+  stakes: string;
+  goal: string;
+  incitingIncident: string;
+  climax: string;
+}
+
+/**
+ * Deprecated season-level structural contract from the pre-Story-Circle model.
+ *
+ * Each string names the beat at the season level. Individual episodes carry
+ * one or more of these beats as their structural role (see
+ * {@link EpisodeOutline.structuralRole}). The `climax` field here SHOULD
+ * match the {@link StoryAnchors.climax} anchor either exactly or as a
+ * recognizable rephrasing. Story Circle validators are authoritative for new
+ * generation; this remains for old artifacts and migration.
+ */
+export interface LegacyStructuralMap {
+  hook: string;
+  plotTurn1: string;
+  pinch1: string;
+  midpoint: string;
+  pinch2: string;
+  climax: string;
+  resolution: string;
+}
+
+/**
+ * The season-level / episode-level Story Circle structural contract.
+ *
+ * The pipeline treats this as the primary structure. Legacy structural fields
+ * remain below as compatibility aliases for old artifacts and checkpoints.
+ */
+export interface StoryCircleStructure {
+  you: string;
+  need: string;
+  go: string;
+  search: string;
+  find: string;
+  take: string;
+  return: string;
+  change: string;
+}
+
+export type StoryCircleBeat = keyof StoryCircleStructure;
+
+export const STORY_CIRCLE_BEATS: ReadonlyArray<StoryCircleBeat> = [
+  'you',
+  'need',
+  'go',
+  'search',
+  'find',
+  'take',
+  'return',
+  'change',
+] as const;
+
+export interface StoryCircleRoleAssignment {
+  beat: StoryCircleBeat;
+  /**
+   * `primary` lands the beat itself. `expansion` is an additional contiguous
+   * unit that deepens the named beat when there are more than eight episodes
+   * or scenes.
+   */
+  roleKind: 'primary' | 'expansion';
+  /** Episode/scene index carrying the primary beat this expands, if applicable. */
+  expansionOfUnit?: number;
+  /** Why this assignment exists. Useful when old Story Circle artifacts migrate. */
+  source?: 'distribution' | 'treatment' | 'llm' | 'migration';
+}
+
+export type EncounterStoryCircleTarget = Extract<StoryCircleBeat, 'go' | 'search' | 'find' | 'take'>;
+
+export interface EncounterStoryCircleTargetEvidence {
+  /** Episode-level Story Circle role(s) used to choose the encounter target. */
+  episodeStoryCircleRole?: StoryCircleBeat[];
+  /** The episode question or pressure this encounter is meant to test. */
+  episodeQuestion?: string;
+  /** How this encounter leaves the protagonist different by the episode end. */
+  protagonistChange?: string;
+  /** Whether this encounter/cliffhanger hands pressure to the next cycle. */
+  cliffhangerHandoff?: 'next_need' | 'next_go' | 'none';
+}
+
+/**
+ * The names of the legacy structural beats in {@link LegacyStructuralMap}. Used
+ * to key the authored historical beat→episode anchor map
+ * ({@link TreatmentSeasonGuidance.beatEpisodeAnchors}).
+ */
+export type LegacyStructuralBeat = keyof LegacyStructuralMap;
+
+/**
+ * Optional reusable-story abstraction metadata inferred from a known story or
+ * source prompt. This is analysis/planning data only: it helps agents learn
+ * transferable structure without introducing a second runtime story format.
+ */
+export interface StorySchemaVariable {
+  name: string;
+  description: string;
+  examples?: string[];
+}
+
+export interface StorySchemaAbstraction {
+  archetype: string;
+  adaptationMode: 'source_faithful' | 'inspired_by' | 'original';
+  schemaVariables: StorySchemaVariable[];
+  generalizationGuidance: string[];
+  reusablePatternSummary: string;
+}
+
+export interface ThemeArgumentContract {
+  themeQuestion: string;
+  controllingIdea: {
+    value: string;
+    cause: string;
+    sentence: string;
+  };
+  counterIdea: {
+    value: string;
+    cause: string;
+    sentence: string;
+  };
+  valueLadder: {
+    positive: string;
+    contrary: string;
+    contradiction: string;
+    negationOfNegation: string;
+  };
+  archetypalCore: string;
+  uniqueSurface: string;
+  climaxResonantEvent: string;
+  retroactiveReframe: string;
+  aestheticEmotionTarget: string;
+  imageSystem?: ThemeImageSystemMotif[];
+}
+
+export interface WritingStyleGuide {
+  source: 'explicit_prompt' | 'inferred_from_material';
+  summary: string;
+  narrativeVoice: string;
+  sentenceRhythm: string;
+  diction: string;
+  dialogueStyle: string;
+  povAndDistance: string;
+  imageryAndSensoryFocus: string;
+  pacing: string;
+  doList: string[];
+  avoidList: string[];
+  evidence?: string[];
+}
+
+export interface DirectLanguageFragment {
+  text: string;
+  context: string;
+  speaker?: string;
+  episode?: number;
+}
+
+export interface DirectLanguageFragmentGroups {
+  dialogue: string[];
+  prose: string[];
+  terminology: string[];
+}
+
+export interface CharacterFashionStyle {
+  styleSummary: string;
+  styleTags: string[];
+  signatureGarments: string[];
+  materials: string[];
+  colorPalette: string[];
+  accessories: string[];
+  sourceEvidence?: string[];
+}
+
+/**
+ * Which beat of the legacy-structure structure a given episode carries.
+ *
+ * `rising` and `falling` are non-beat buffer slots used when an episode sits
+ * BETWEEN two named beats and purely escalates / de-escalates tension.
+ */
+export type StructuralRole =
+  | 'hook'
+  | 'plotTurn1'
+  | 'pinch1'
+  | 'midpoint'
+  | 'pinch2'
+  | 'climax'
+  | 'resolution'
+  | 'rising'
+  | 'falling';
+
+/**
+ * The seven "real" beats (excluding rising / falling buffers). Exported so
+ * validators can iterate the required set.
+ */
+export const LEGACY_STRUCTURAL_BEATS: ReadonlyArray<Exclude<StructuralRole, 'rising' | 'falling'>> = [
+  'hook',
+  'plotTurn1',
+  'pinch1',
+  'midpoint',
+  'pinch2',
+  'climax',
+  'resolution',
+] as const;
+
 // ========================================
 // STORY STRUCTURE TYPES
 // ========================================
@@ -46,6 +284,52 @@ export interface CharacterArc {
   }>;
 }
 
+export type CharacterArcMode = 'positive' | 'tragic' | 'ambiguous';
+
+export interface ProtagonistCharacterArchitecture {
+  /**
+   * Agent-facing false/protective belief. This should never be shown to the
+   * player as a label; scenes express it through behavior and choices.
+   */
+  lie: string;
+  /**
+   * The formative pressure that made the Lie useful. May be trauma, success,
+   * social conditioning, deprivation, betrayal, vow, humiliation, fear, or
+   * survival adaptation; it does not have to be a trauma-wound template.
+   */
+  originPressure: string;
+  /** What the protagonist must recognize, or refuse in a tragic arc. */
+  truth: string;
+  /** Conscious goal. */
+  want: string;
+  /** Dramatic necessity underneath the conscious goal. */
+  need: string;
+  arcMode: CharacterArcMode;
+  climaxChoice: {
+    choiceQuestion: string;
+    integrateTruthOption: string;
+    recommitLieOption: string;
+    activeChoiceMechanism: string;
+  };
+}
+
+export interface SupportingCharacterMicroArc {
+  characterId: string;
+  characterName: string;
+  microLie: string;
+  originPressure?: string;
+  truthOrCounterPressure: string;
+  screenTimeTier: 'major' | 'supporting' | 'minor';
+  pressureRole: 'mirror' | 'foil' | 'temptation' | 'warning' | 'ally' | 'antagonist';
+  protagonistVisibleSignals: string[];
+  plannedResolution?: string;
+}
+
+export interface CharacterArchitecture {
+  protagonist: ProtagonistCharacterArchitecture;
+  supportingCharacters: SupportingCharacterMicroArc[];
+}
+
 export type EndingMode = 'single' | 'multiple';
 
 export type EndingSourceConfidence = 'explicit' | 'inferred' | 'generated';
@@ -74,7 +358,258 @@ export interface StoryEndingTarget {
   themePayoff: string;
   stateDrivers: EndingStateDriver[];
   targetConditions: string[];
+  repeatedChoicePattern?: string;
+  finalVoiceoverLine?: string;
+  sourceText?: string;
   sourceConfidence: EndingSourceConfidence;
+}
+
+export interface TreatmentEpisodeGuidance {
+  sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
+  authoredTitle?: string;
+  rawStructuralRole?: string;
+  normalizedStructuralRoles?: StructuralRole[];
+  structuralNote?: string;
+  dramaticQuestion?: string;
+  episodePromise?: string;
+  coldOpenFunction?: string;
+  openingImage?: string;
+  episodeTurns?: string[];
+  synopsis?: string;
+  openingSituation?: string;
+  toneRegister?: string;
+  encounterAnchors?: string[];
+  encounterCentralConflict?: string;
+  encounterStoryCircleTarget?: EncounterStoryCircleTarget;
+  encounterStoryCircleTargetRationale?: string;
+  encounterBuildup?: string;
+  encounterAftermath?: string;
+  stakesLayers?: string[];
+  themePressure?: string;
+  liePressure?: string;
+  aPressure?: string;
+  bPressure?: string;
+  cSeed?: string;
+  scenePlanningTargets?: string[];
+  entryGoal?: string;
+  obstacle?: string;
+  forcedChoice?: string;
+  exitShift?: string;
+  powerShift?: string;
+  subtextGap?: string;
+  connectsBy?: string;
+  informationMovement?: string;
+  majorChoicePressures?: string[];
+  alternativePaths?: string[];
+  consequenceSeeds?: string[];
+  consequenceResidue?: string;
+  visualAnchor?: string;
+  endingTurnout?: string;
+  endingPressure?: string;
+  authoredCliffhanger?: string;
+  resolvedEpisodeTension?: string;
+  cliffhangerHook?: string;
+  cliffhangerQuestion?: string;
+  nextEpisodePressure?: string;
+  cliffhangerSetup?: string;
+  cliffhangerType?: CliffhangerType;
+  emotionalCharge?: string;
+  nextEpisodeCausality?: string;
+  endStateChange?: string;
+  resolutionAftermath?: string;
+  capabilityGrowthGuidance?: string[];
+}
+
+export interface TreatmentSeasonGuidance {
+  treatmentMode?: 'full' | 'lite';
+  sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
+  seasonPromiseAndDramaticEngine?: string;
+  genre?: string;
+  tone?: string;
+  highConceptPitch?: string;
+  logline?: string;
+  coreFantasy?: string;
+  audiencePromise?: string;
+  premisePromise?: string;
+  themeQuestion?: string;
+  inactionPressure?: string;
+  seasonDramaticQuestion?: string;
+  centralPressure?: string;
+  playerPromise?: string;
+  emotionalPromise?: string;
+  freshVariationPlan?: string;
+  typicalEpisodeDeliverables?: string;
+  seasonMustResolve?: string;
+  futureOpenThreads?: string;
+  protagonistGuidance?: ProtagonistTreatmentGuidance;
+  worldLocationGuidance?: WorldLocationTreatmentGuidance;
+  characterArchitecture?: string;
+  stakesArchitecture?: string;
+  stakesArchitectureGuidance?: {
+    rawSection: string;
+    primaryMaterialStakes?: string[];
+    primaryRelationalStakes?: string[];
+    primaryIdentityStakes?: string[];
+    primaryExistentialStakes?: string[];
+    escalationLadder?: string[];
+    personalBeforeLarger?: string;
+    emotionalLegibilityAnchors?: string[];
+  };
+  informationLedger?: string;
+  informationLedgerGuidance?: {
+    rawSection: string;
+    entries: Array<{
+      id: string;
+      label: string;
+      sourceText: string;
+      description?: string;
+      audienceKnowledgeState?: string;
+      tensionMode?: string;
+      knownByNames?: string[];
+      withheldFromNames?: string[];
+      introducedEpisode?: number;
+      setupTouchEpisodes?: number[];
+      plannedRevealEpisode?: number;
+      plannedPayoffEpisode?: number;
+      opensQuestionIds?: string[];
+      closesQuestionIds?: string[];
+      payoffPlan?: string;
+    }>;
+  };
+  seasonSpine?: string;
+  /**
+   * Section-7 per-beat episode anchors parsed from the season-spine free text
+   * (e.g. `Plot turn 1 (Ep3)` → `{ plotTurn1: 3 }`). Authored beat→episode
+   * mapping of record; reconciled against the per-episode `structuralRole`
+   * bullets downstream (SourceMaterialAnalyzer / SeasonPlannerAgent).
+   */
+  beatEpisodeAnchors?: Partial<Record<LegacyStructuralBeat, number>>;
+  /**
+   * Story Circle beat→episode anchors parsed from authored season-spine text.
+   * New generation should prefer this over `beatEpisodeAnchors`; the legacy map
+   * remains as a migration alias for older treatments and checkpoints.
+   */
+  storyCircleBeatEpisodeAnchors?: Partial<Record<StoryCircleBeat, number>>;
+  arcPlan?: string;
+  arcGuidance?: {
+    rawSection: string;
+    arcs: Array<{
+      arcIndex: number;
+      title: string;
+      sourceText: string;
+      episodeRange?: { start: number; end: number };
+      storyCircleSpanText?: string;
+      arcDramaticQuestion?: string;
+      relationToSeasonQuestion?: string;
+      lieFacet?: string;
+      midpointRecontextualization?: string;
+      lateArcCrisis?: string;
+      finaleAnswer?: string;
+      handoffPressure?: string;
+      pressureMovement?: string;
+      protagonistPolarity?: string;
+      keyNpcLocationPressure?: string;
+      sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
+      episodeTurnouts?: Array<{
+        episodeNumber: number;
+        sourceText: string;
+        description: string;
+        turnType?: string;
+      }>;
+    }>;
+  };
+  scenePlanningNotes?: string;
+  scenePlanningGuidance?: {
+    rawSection: string;
+    scenes: Array<{
+      sceneTitle: string;
+      episodeNumber?: number;
+      sourceText: string;
+      entryGoal?: string;
+      obstacle?: string;
+      forcedChoice?: string;
+      exitShift?: string;
+      powerShift?: string;
+      subtextGap?: string;
+      stakesLayers?: string[];
+      connectsBy?: string;
+    }>;
+  };
+  branchAndConsequenceChains?: string;
+  failForward?: string;
+  endings?: string;
+  failureModeAudit?: string;
+  failureModeAuditGuidance?: {
+    rawSection: string;
+    rows: Array<{
+      label: string;
+      code: FailureModeAuditCode;
+      status: 'avoided' | 'watch_item' | 'unknown';
+      sourceText: string;
+      episodeMentions: number[];
+      mitigationText?: string;
+    }>;
+  };
+  rawSectionSummary?: string[];
+}
+
+export interface ProtagonistTreatmentGuidance {
+  rawSection?: string;
+  nameAndPronouns?: string;
+  roleInWorld?: string;
+  want?: string;
+  need?: string;
+  lie?: string;
+  wound?: string;
+  truth?: string;
+  arcMode?: string;
+  startingIdentity?: string;
+  possibleEndStates?: string[];
+  climaxChoice?: string;
+  pressurePoints?: string[];
+  visualIdentity?: string;
+}
+
+export interface WorldLocationTreatmentGuidance {
+  rawSection?: string;
+  worldPremise?: string;
+  timePeriod?: string;
+  supernaturalRules?: string[];
+  powerStructures?: string[];
+  dramaticRules?: string[];
+  costsAndTaboos?: string[];
+  keyLocations?: WorldLocationTreatmentLocationGuidance[];
+}
+
+export interface WorldLocationTreatmentLocationGuidance {
+  name: string;
+  sourceText: string;
+  purpose?: string;
+  mood?: string;
+  history?: string;
+  choicePressure?: string;
+}
+
+export interface TreatmentBranchGuidance {
+  id: string;
+  name: string;
+  summary: string;
+  sourceText?: string;
+  originEpisode?: number;
+  createdBy?: string;
+  laterEpisodeChange?: string;
+  reconvergenceEpisode?: number;
+  reconvergenceResidue?: string;
+  stateChanges?: string[];
+  pathVariants?: Array<{
+    id: string;
+    label: string;
+    conditionText: string;
+    resultText: string;
+    stateChanges: string[];
+    targetEndingIds?: string[];
+  }>;
+  canonicalPathId?: string;
 }
 
 // ========================================
@@ -115,6 +650,21 @@ export interface PlannedEncounter {
   npcsInvolved: string[];
   // What's at stake narratively
   stakes: string;
+  // Authored treatment pressure this encounter should manifest through play
+  centralConflict?: string;
+  /**
+   * Which Story Circle pressure point this playable encounter is targeting.
+   * Encounters do not target `you`, `need`, `return`, or `change` directly;
+   * those beats frame the episode while the encounter itself realizes a
+   * pressure event in `go`, `search`, `find`, or `take`.
+   */
+  storyCircleTarget?: EncounterStoryCircleTarget;
+  /** Why this encounter belongs to that Story Circle target. */
+  storyCircleTargetRationale?: string;
+  /** Season-planning evidence used to select the target. */
+  storyCircleTargetEvidence?: EncounterStoryCircleTargetEvidence;
+  // What the episode should show after this encounter resolves
+  aftermathConsequence?: string;
   // Skills/approaches that should be relevant
   relevantSkills: string[];
   // What earlier scenes must establish so the encounter lands
@@ -210,7 +760,32 @@ export interface EpisodeOutline {
   // Estimated scope
   estimatedSceneCount: number;
   estimatedChoiceCount: number;
-  // Narrative arc within episode
+
+  /**
+   * Which beat(s) of the season's {@link LegacyStructuralMap} this episode
+   * carries. A single episode may fuse multiple beats (e.g. `['hook','plotTurn1']`
+   * in a short 3-episode season) or sit BETWEEN beats as a `rising` / `falling`
+   * buffer in a long season.
+   *
+   * Populated by SeasonPlannerAgent as a deprecated compatibility alias.
+   * Story Circle roles are authoritative for new generation, but old artifacts
+   * still use this to drive migration into storyCircleRole.
+   */
+  structuralRole?: StructuralRole[];
+
+  /**
+   * Story Circle beat assignment for this episode. This is the primary
+   * structural field for new generation. `structuralRole` remains as a
+   * deprecated Story Circle compatibility alias while old artifacts migrate.
+   */
+  storyCircleRole?: StoryCircleRoleAssignment[];
+
+  /**
+   * @deprecated in favor of {@link structuralRole} + season-level legacyStructure.
+   * Retained so existing SourceMaterialAnalyzer output still typechecks; new
+   * code should read `structuralRole` and consult the season's `legacyStructure`
+   * for the beat text.
+   */
   narrativeFunction: {
     setup: string;
     conflict: string;
@@ -232,12 +807,26 @@ export interface EpisodeOutline {
   setsFlags?: Array<{ flag: string; description: string }>;
   // Flags/state from previous episodes that this episode checks
   checksFlags?: Array<{ flag: string; ifTrue: string; ifFalse: string }>;
+
+  /**
+   * Authored treatment details extracted from StoryRPG treatment documents.
+   * This is planning metadata only; downstream agents use it as high-signal
+   * guidance while preserving the canonical Story/Episode/Scene/Choice schema.
+   */
+  treatmentGuidance?: TreatmentEpisodeGuidance;
 }
 
 export interface SourceMaterialAnalysis {
   // Metadata
   sourceTitle: string;
   sourceAuthor?: string;
+  sourceFormat?: 'source_material' | 'story_treatment' | 'prompt';
+  treatmentMetadata?: {
+    detected: boolean;
+    confidence: 'low' | 'medium' | 'high';
+    formatVersion: 'legacy' | 'storyrpg-treatment-v2' | 'story-treatment-mvp' | 'story-treatment-lite';
+    warnings: string[];
+  };
   totalWordCount?: number;
   totalChapters?: number;
 
@@ -254,6 +843,50 @@ export interface SourceMaterialAnalysis {
   // Overall story arcs
   storyArcs: StoryArc[];
 
+  /**
+   * Four narrative anchors that ground every downstream agent
+   * (protagonist Stakes, Goal, Inciting Incident, Climax).
+   * Inferred by SourceMaterialAnalyzer when the caller does not supply them.
+   */
+  anchors: StoryAnchors;
+
+  /**
+   * Deprecated season-level structural beat map. Inferred by
+   * SourceMaterialAnalyzer as a compatibility alias for old checkpoints.
+   *
+   * @deprecated Story Circle is the primary structure.
+   */
+  legacyStructure: LegacyStructuralMap;
+
+  /**
+   * Primary season-level Story Circle beat map. Each episode carries one or
+   * more of these beats via {@link EpisodeOutline.storyCircleRole}. Validators
+   * enforce coverage, order, contiguity, and realization.
+   */
+  storyCircle?: StoryCircleStructure;
+
+  /**
+   * Optional reusable-story abstraction. Downstream agents may consult this
+   * for archetype and transferable structure, but runtime output remains the
+   * StoryRPG Story/Episode/Scene/Beat/Choice schema.
+   */
+  schemaAbstraction?: StorySchemaAbstraction;
+
+  /**
+   * Generator-only theme argument contract. Consolidates McKee-style resonance
+   * under StoryRPG's existing theme/pressure/climax architecture. Runtime output
+   * still flows through Story/Episode/Scene/Beat/Choice; these labels must never
+   * be rendered to the player.
+   */
+  themeArgument?: ThemeArgumentContract;
+
+  /**
+   * Prose contract for generated beats. If the user explicitly requested a
+   * writing style in the prompt, that instruction is authoritative; otherwise
+   * SourceMaterialAnalyzer infers this guide from the supplied material.
+   */
+  writingStyleGuide?: WritingStyleGuide;
+
   // Ending analysis
   detectedEndingMode?: EndingMode;
   resolvedEndingMode?: EndingMode;
@@ -266,12 +899,26 @@ export interface SourceMaterialAnalysis {
   episodeBreakdown: EpisodeOutline[];
   totalEstimatedEpisodes: number;
 
+  /**
+   * Authored season-level branch chains extracted from a treatment document.
+   */
+  treatmentBranches?: TreatmentBranchGuidance[];
+
+  /**
+   * Authored season-level treatment sections extracted from StoryRPG
+   * treatment documents. These are planning constraints for SourceMaterial,
+   * SeasonPlanner, and StoryArchitect prompts; runtime story data still flows
+   * through the canonical episode/scene/beat/choice schema.
+   */
+  treatmentSeasonGuidance?: TreatmentSeasonGuidance;
+
   // Character analysis
   protagonist: {
     id: string;
     name: string;
     description: string;
     arc: string;
+    fashionStyle?: CharacterFashionStyle;
   };
   majorCharacters: Array<{
     id: string;
@@ -280,7 +927,23 @@ export interface SourceMaterialAnalysis {
     description: string;
     importance: 'core' | 'supporting' | 'background';
     firstAppearance: number; // Episode number
+    fashionStyle?: CharacterFashionStyle;
   }>;
+
+  /**
+   * Agent-facing character architecture for Lie / origin pressure / Truth /
+   * Want vs Need. Planning metadata only; never rendered as player-facing
+   * mechanics or labels.
+   */
+  characterArchitecture?: CharacterArchitecture;
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+  endingRealizationContracts?: EndingRealizationContract[];
+  failureModeAuditContracts?: FailureModeAuditContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
 
   // Key locations identified
   keyLocations: Array<{
@@ -296,13 +959,16 @@ export interface SourceMaterialAnalysis {
   confidenceScore: number; // 0-100, how confident the analysis is
   warnings: string[]; // Any issues or ambiguities found
 
+  /**
+   * Source-stage locked story canon. New generation must establish this before
+   * season planning. Optional only so older saved artifacts/checkpoints continue
+   * to deserialize through compatibility paths.
+   */
+  sourceCanon?: LockedStoryCanon;
+  canonLockManifest?: CanonLockManifest;
+
   // Direct language fragments from source (for authentic voice)
-  directLanguageFragments?: Array<{
-    text: string;
-    context: string;
-    speaker?: string;
-    episode?: number;
-  }>;
+  directLanguageFragments?: DirectLanguageFragment[] | DirectLanguageFragmentGroups;
 
   // Adaptation guidance
   adaptationGuidance?: {
@@ -311,6 +977,12 @@ export interface SourceMaterialAnalysis {
     narrativeVoice: string;
     elementsToPreserve: string[];
     elementsToAdapt: string[];
+    /**
+     * Legacy fields emitted by older SourceMaterialAnalyzer prompts. Kept so
+     * old checkpoints and partially generated jobs remain readable.
+     */
+    keyThemesToPreserve?: string[];
+    iconicMoments?: string[];
   };
 }
 

@@ -8,6 +8,8 @@ module.exports = function (api) {
         {
           root: ['./'],
           alias: {
+            'fs/promises': './src/fs-promises-polyfill.js',
+            'node:fs/promises': './src/fs-promises-polyfill.js',
             'fs': './src/fs-polyfill.js',
             'node:fs': './src/fs-polyfill.js',
             'path': './src/path-polyfill.js',

@@ -1,11 +1,20 @@
 export interface ProviderCallMetric {
   agentName: string;
-  provider: 'anthropic' | 'openai' | 'gemini';
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   success: boolean;
   durationMs: number;
   queueWaitMs: number;
   attempt: number;
   error?: string;
+  /**
+   * Token usage reported by the provider, when available. Populated by the
+   * BaseAgent observer path for anthropic + gemini; undefined for openai or
+   * when the provider did not return usage data (e.g. on error).
+   */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }
 
 export interface PhaseMetric {
@@ -13,10 +22,67 @@ export interface PhaseMetric {
   durationMs: number;
 }
 
+/**
+ * Per-agent slice of the run-level LLM ledger. Aggregates every LLM call made
+ * by an agent (including retries — each retry attempt is counted separately
+ * so the ledger reflects actual provider billing, not logical calls).
+ */
+export interface LlmLedgerAgentRow {
+  agentName: string;
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
+  calls: number;
+  successes: number;
+  failures: number;
+  /** Sum of per-call durationMs. With concurrency this can exceed wall time. */
+  totalDurationMs: number;
+  avgDurationMs: number;
+  totalQueueWaitMs: number;
+  avgQueueWaitMs: number;
+  /** Sum of input tokens across calls where usage was reported. */
+  totalInputTokens: number;
+  /** Sum of output tokens across calls where usage was reported. */
+  totalOutputTokens: number;
+  /** Number of calls that actually reported usage; calls - usageReported = gaps. */
+  usageReported: number;
+  /**
+   * Responses whose JSON parse recovered from truncation by DROPPING content
+   * (landmine L4 — silent loss). Shadow data for the retry-on-truncation
+   * decision (WS5): a non-zero count here means this agent shipped incomplete
+   * output that looked like a successful parse.
+   */
+  truncatedResponses: number;
+}
+
+/**
+ * Run-level LLM ledger — consumed by `savePipelineOutputs` to write
+ * `09-llm-ledger.json`. Designed to be self-contained: everything needed to
+ * rank future rebalance work by cost without re-reading other artifacts.
+ */
+export interface LlmLedger {
+  totals: {
+    calls: number;
+    successes: number;
+    failures: number;
+    totalDurationMs: number;
+    avgDurationMs: number;
+    totalQueueWaitMs: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    /** Calls where the provider reported usage; the rest are gaps. */
+    usageReported: number;
+    /** Total lossy truncation recoveries across all agents (landmine L4). */
+    truncatedResponses: number;
+  };
+  byAgent: LlmLedgerAgentRow[];
+  phases: PhaseMetric[];
+}
+
 export class PipelineTelemetry {
   private readonly phaseStarts = new Map<string, number>();
   private readonly phaseMetrics: PhaseMetric[] = [];
   private readonly providerCallMetrics: ProviderCallMetric[] = [];
+  /** Lossy truncation recoveries, keyed `agentName::provider` (see WS5 shadow counter). */
+  private readonly truncationCounts = new Map<string, number>();
 
   startPhase(phase: string): void {
     this.phaseStarts.set(phase, Date.now());
@@ -36,8 +102,23 @@ export class PipelineTelemetry {
     this.providerCallMetrics.push(metric);
   }
 
+  /** Record one lossy truncation recovery for an agent (BaseAgent observer). */
+  observeTruncation(agentName: string, provider: ProviderCallMetric['provider']): void {
+    const key = `${agentName}::${provider}`;
+    this.truncationCounts.set(key, (this.truncationCounts.get(key) ?? 0) + 1);
+  }
+
   getPhaseMetrics(): PhaseMetric[] {
     return [...this.phaseMetrics];
+  }
+
+  /**
+   * Raw per-call metrics. Avoid unless the consumer truly needs per-call
+   * detail — most callers should use `getLlmLedger()` which aggregates to a
+   * manageable artifact size.
+   */
+  getProviderCallMetrics(): ProviderCallMetric[] {
+    return [...this.providerCallMetrics];
   }
 
   getProviderSummary(): {
@@ -73,5 +154,126 @@ export class PipelineTelemetry {
       avgQueueWaitMs,
     };
   }
+
+  /**
+   * Build a run-level LLM ledger from all observed provider calls and phase
+   * metrics. Returns `null` when no LLM calls were observed so callers can
+   * skip writing an empty artifact. I4 instrumentation — token totals depend
+   * on each provider reporting usage; counts of calls without usage are
+   * surfaced via `usageReported` so gaps are visible.
+   */
+  getLlmLedger(): LlmLedger | null {
+    if (this.providerCallMetrics.length === 0) return null;
+
+    type AgentKey = string;
+    const byAgent = new Map<AgentKey, LlmLedgerAgentRow>();
+
+    for (const m of this.providerCallMetrics) {
+      const key = `${m.agentName}::${m.provider}`;
+      let row = byAgent.get(key);
+      if (!row) {
+        row = {
+          agentName: m.agentName,
+          provider: m.provider,
+          calls: 0,
+          successes: 0,
+          failures: 0,
+          totalDurationMs: 0,
+          avgDurationMs: 0,
+          totalQueueWaitMs: 0,
+          avgQueueWaitMs: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          usageReported: 0,
+          truncatedResponses: 0,
+        };
+        byAgent.set(key, row);
+      }
+      row.calls += 1;
+      if (m.success) row.successes += 1;
+      else row.failures += 1;
+      row.totalDurationMs += m.durationMs;
+      row.totalQueueWaitMs += m.queueWaitMs;
+      if (m.usage) {
+        row.totalInputTokens += m.usage.inputTokens;
+        row.totalOutputTokens += m.usage.outputTokens;
+        row.usageReported += 1;
+      }
+    }
+
+    for (const row of byAgent.values()) {
+      row.avgDurationMs = Math.round(row.totalDurationMs / row.calls);
+      row.avgQueueWaitMs = Math.round(row.totalQueueWaitMs / row.calls);
+      row.truncatedResponses = this.truncationCounts.get(`${row.agentName}::${row.provider}`) ?? 0;
+    }
+
+    const totals = {
+      calls: this.providerCallMetrics.length,
+      successes: this.providerCallMetrics.filter((m) => m.success).length,
+      failures: 0,
+      totalDurationMs: this.providerCallMetrics.reduce((s, m) => s + m.durationMs, 0),
+      avgDurationMs: 0,
+      totalQueueWaitMs: this.providerCallMetrics.reduce((s, m) => s + m.queueWaitMs, 0),
+      totalInputTokens: this.providerCallMetrics.reduce(
+        (s, m) => s + (m.usage?.inputTokens ?? 0),
+        0,
+      ),
+      totalOutputTokens: this.providerCallMetrics.reduce(
+        (s, m) => s + (m.usage?.outputTokens ?? 0),
+        0,
+      ),
+      usageReported: this.providerCallMetrics.filter((m) => m.usage).length,
+      truncatedResponses: [...this.truncationCounts.values()].reduce((s, n) => s + n, 0),
+    };
+    totals.failures = totals.calls - totals.successes;
+    totals.avgDurationMs = Math.round(totals.totalDurationMs / totals.calls);
+
+    const rows = Array.from(byAgent.values()).sort((a, b) => b.totalDurationMs - a.totalDurationMs);
+
+    return {
+      totals,
+      byAgent: rows,
+      phases: [...this.phaseMetrics],
+    };
+  }
 }
 
+/**
+ * Build the BaseAgent LLM-call observer that records every provider call into a
+ * telemetry instance for the run-level LLM ledger (`09-llm-ledger.json`).
+ *
+ * Extracted so the wiring is unit-testable: the entire `usage` field MUST be
+ * forwarded into `observeProviderCall`, otherwise the ledger's token totals /
+ * `usageReported` stay 0 even when the provider reports usage. (A prior inline
+ * version dropped `usage` here, blinding cost/token tracking — see the
+ * pipelineTelemetry regression test.)
+ *
+ * @param telemetry  the run telemetry collector to record into, OR a getter
+ *                   returning the current one. The pipeline reassigns its
+ *                   telemetry between runs while the observer is registered only
+ *                   once, so it passes a getter to always hit the live instance.
+ * @param onUsage    optional callback fed the per-call total token count
+ *                   (input + output), used to enforce a per-story token ceiling.
+ */
+export function buildLlmCallObserver(
+  telemetry: PipelineTelemetry | (() => PipelineTelemetry),
+  onUsage?: (totalTokens: number) => void,
+): (observation: ProviderCallMetric) => void {
+  const resolve = typeof telemetry === 'function' ? telemetry : () => telemetry;
+  return (observation) => {
+    resolve().observeProviderCall({
+      agentName: observation.agentName,
+      provider: observation.provider,
+      success: observation.success,
+      durationMs: observation.durationMs,
+      queueWaitMs: observation.queueWaitMs,
+      attempt: observation.attempt,
+      error: observation.error,
+      // Forward provider-reported token usage so the ledger can total tokens.
+      usage: observation.usage,
+    });
+    if (observation.usage && onUsage) {
+      onUsage((observation.usage.inputTokens || 0) + (observation.usage.outputTokens || 0));
+    }
+  };
+}

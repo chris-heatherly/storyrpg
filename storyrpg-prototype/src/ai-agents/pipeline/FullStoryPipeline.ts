@@ -12,10 +12,14 @@
  * Includes human checkpoints for review at key stages.
  */
 
-import { PipelineConfig, loadConfig, defaultValidationConfig, type MemoryConfig } from '../config';
-import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
+import { PipelineConfig, loadConfig, defaultValidationConfig, clampTargetBeatCount, MAX_BEATS_PER_SCENE, type MemoryConfig, type PreapprovedAnchor } from '../config';
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
+import { isUnsafeCallbackProse } from '../constants/metaProse';
+import { isPlaceholderStake } from '../constants/placeholderStakes';
+import { isPlanningRegisterText } from '../constants/planningRegisterText';
+
+
 import { 
   SCENE_DEFAULTS, 
   TIMING_DEFAULTS, 
@@ -23,26 +27,29 @@ import {
   DEFAULT_SKILLS,
   CONCURRENCY_DEFAULTS,
 } from '../../constants/pipeline';
-import { 
-  QA_DEFAULTS,
-  TEXT_LIMITS,
-  INCREMENTAL_VALIDATION_DEFAULTS,
-  BEST_OF_N_DEFAULTS,
-} from '../../constants/validation';
+import { TEXT_LIMITS } from '../../constants/validation';
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
-import { StoryArchitect, StoryArchitectInput, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
+import { StoryArchitect, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
-import { QARunner, QAReport, QARunnerOptions } from '../agents/QAAgents';
+import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
+import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
+
 // Types CrossEpisodeBranch, ConsequenceChain, PlannedEncounter used transitively via SeasonPlan
-import { BranchManager, BranchAnalysis, BranchPath, ReconvergencePoint } from '../agents/BranchManager';
+import { BranchManager, BranchAnalysis, BranchPath } from '../agents/BranchManager';
+import { SceneCritic } from '../agents/SceneCritic';
+import { PronounDisambiguator } from '../agents/PronounDisambiguator';
+import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory, applyPronounDisambiguations } from '../utils/protagonistPronounResolver';
+import { OutcomeVariantAuthor } from '../agents/OutcomeVariantAuthor';
+import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, firstProseBeatId, applyOutcomeVariants, normalizeEncounterOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { 
   EncounterArchitect, 
   EncounterArchitectInput, 
   EncounterStructure,
+  EncounterTelemetry,
   GeneratedStorylet
 } from '../agents/EncounterArchitect';
 import { StateChange } from '../types/llm-output';
@@ -59,7 +66,8 @@ import {
   ColorScript,
   ColorScriptRequest,
   StoryBeatInput,
-  VisualPlan
+  VisualPlan,
+  computeCharacterIdentityFingerprint,
 } from '../agents/image-team/ImageAgentTeam';
 import type {
   CharacterVisualReference,
@@ -69,39 +77,177 @@ import type {
   EncounterImageRunDiagnostic,
 } from '../utils/pipelineOutputWriter';
 import { EncounterImageAgent } from '../agents/image-team/EncounterImageAgent';
-import { ImagePrompt } from '../agents/ImageGenerator';
-import { ImageGenerationService, ReferenceImage, type EncounterImageDiagnostic } from '../services/imageGenerationService';
-import type { GeneratedImage } from '../agents/ImageGenerator';
+import { ImagePrompt } from '../images/imageTypes';
+import {
+  ImageGenerationService,
+  ReferenceImage,
+  type EncounterImageDiagnostic,
+  type CanonicalAppearance,
+  type CharacterAppearanceDescription,
+} from '../services/imageGenerationService';
+import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { selectStyleAdaptation, resolveSceneSettingContext, type SceneSettingContext } from '../utils/styleAdaptation';
+import { normalizeChoiceSetStatChecks } from '../utils/statCheckNormalization';
+import { buildFashionStyleSummary } from '../images/characterFashionStyle';
+import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
+import { applyPromptContract, sanitizeStyleContaminationText } from '../images/imagePromptContracts';
+import {
+  attachStoryboardPlanToVisualPlan,
+  buildSceneVisualStoryboardPlan,
+  chunkStoryboardBeats,
+  normalizeImagePlanningMode,
+  validateVisualStoryboardPacket,
+  visualPlanSlotsFromBeats,
+  visualPlanSlotsFromEncounterManifest,
+  visualPlanSlotsFromStoryletManifest,
+  type ImagePlanningMode,
+  type SceneVisualStoryboardPlan,
+  type StoryboardReferenceSummary,
+  type VisualStoryboardPacket,
+} from '../images/visualStoryboardPlanning';
 import { 
   Story, Episode, Scene, Beat, Choice, NPCTier, RelationshipDimension, Consequence,
-  Encounter, EncounterOutcome, EncounterType, EncounterClock, EncounterPhase, EncounterBeat as TypeEncounterBeat,
+  Encounter, EncounterOutcome, EncounterType, EncounterClock, EncounterPhase,
   EncounterChoice as TypeEncounterChoice, EncounterChoiceOutcome as TypeEncounterChoiceOutcome,
   EnvironmentalElement, NPCEncounterState, EscalationTrigger, InformationVisibility, 
-  PixarStakes, GeneratedStorylet as TypeGeneratedStorylet, CinematicImageDescription, EncounterVisualContract
+  PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
-import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './EpisodePipeline';
+import type { ChoiceImpactFactor } from '../../types/choice';
+import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './events';
+import {
+  type GenerationPlan,
+  applyEventToPlan,
+  computeOverallProgress,
+  initPlan,
+  setSceneBeats,
+  markEpisode,
+  snapshotPlan,
+} from './generationPlan';
+
+import {
+  episodeTypeCounts,
+  spineEntriesFromChoicePlan,
+  type SeasonChoicePlan,
+} from './seasonChoicePlan';
+import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
+import { type SeasonSkillPlan } from './seasonSkillPlan';
+import {
+  findResumedEpisodeInvalidationReasons,
+  loadResumedEpisodeDiagnostics,
+  partitionResumableEpisodes,
+  type EpisodeCompletionLockEvidence,
+} from './episodeCheckpoints';
+import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
+import { resolveEpisodeParallelism } from './episodeScheduling';
+import { lockGeneratedEpisodeArtifact } from './episodeLocking';
+import type { ArtifactRef, ArtifactValidationSummary } from './artifacts';
+import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
+import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
+
+import { reconcileBriefStoryMetadata } from './briefStoryMetadata';
+import {
+  filterAnalysisForEpisodeRange,
+  refreshAnalysisFromTreatmentDocument,
+  refreshBriefSeasonPlanFromAnalysis,
+} from './treatmentRefresh';
+import { SeasonCanon } from './seasonCanon';
+import { renderSourceCanonPrompt } from '../utils/sourceCanonPrompt';
+import { createRunState, type PipelineRunState } from './runState';
+import { sealAndPersistEpisode } from './seasonSealOrchestration';
+import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
+import { runPlanTimeFidelityChecks, runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
+import {
+  buildEpisodeSceneLockReport,
+  mergeArtifactValidationSummaries,
+  sceneLockArtifactName,
+} from './sceneLocks';
+import type { ValidationPhaseBaseline } from '../validators/validationPhaseBaseline';
+import { FinalStoryContractValidator } from '../validators/FinalStoryContractValidator';
+import {
+  buildChoiceAuthorNpcs,
+  buildCompactWorldContext,
+  buildEncounterPriorStateContext,
+  deriveStoryVerbsForBrief,
+  inferBranchType,
+} from './contextAssembly';
+import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
+import { extractEpisodeKnowledge, collectReferencedFlags, episodeProseCorpus } from './knowledgeExtraction';
+
+import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
+
+import { ThreadPlanner } from '../agents/ThreadPlanner';
+import { TwistArchitect, type TwistPlan } from '../agents/TwistArchitect';
+import { CharacterArcTracker, type CharacterArcTargets } from '../agents/CharacterArcTracker';
+import { simulateEpisodeArcDeltas } from './characterArcPlanning';
+import type { ThreadLedger } from '../../types/narrativeThread';
+import { buildSceneTimelineLabels } from './sceneNumbering';
+import { characterCapabilityWorldFacts } from './characterCanonFacts';
+import type { EpisodeStateSnapshot } from './episodeStateSnapshot';
+import { SavingPhase } from './phases/SavingPhase';
+import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
+import { AudioPhase } from './phases/AudioPhase';
+import { BrowserQAPhase } from './phases/BrowserQAPhase';
+import { RunArtifactPhase, type RunArtifactRuntime } from './phases/RunArtifactPhase';
+import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
+import { MasterImagePhase } from './phases/MasterImagePhase';
+import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePhase';
+import { EncounterImagePhase } from './phases/EncounterImagePhase';
+import { CoverArtPhase } from './phases/CoverArtPhase';
+import { ImageSupport } from './imageSupport';
+import {
+  PipelineMemory,
+  renderPipelineMemoryPacket,
+  type AgentMemoryRequest,
+  type AgentMemoryRole,
+  type PipelineMemoryPacket,
+  type ValidatorEvidenceBundle,
+} from './pipelineMemory';
+import { AgentMemoryContextBuilder } from './agentMemoryContextBuilder';
+import { ValidatorEvidenceService } from './validatorEvidenceService';
+import { ArtifactMemoryService } from './artifactMemoryService';
+import { ArtifactContextResolver } from './artifactContextResolver';
+import { FactMemoryService } from './factMemoryService';
+import type { PipelineMemoryArtifactKind, PipelineMemoryFactKind, WritePipelineArtifactInput } from './artifactMemoryTypes';
+import { RunLedger } from './runLedger';
+import { DraftImageEntry } from './draftImageEntry';
+import { DraftImageGeneration, type DraftImageGenerationDeps } from './draftImageGeneration';
+import { SceneGraphValidation, type SceneGraphValidationDeps } from './sceneGraphValidation';
+import { SceneCriticContinuity, type SceneCriticContinuityDeps } from './sceneCriticContinuity';
+import { FinalContract, type FinalContractDeps } from './finalContract';
+import { Assembly } from './assembly';
+import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
+import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
+import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phases/ContentGenerationPhase';
+import { AssemblyPhase } from './phases/AssemblyPhase';
+import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
+import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
+import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
+import { NPCDepthValidationPhase } from './phases/NPCDepthValidationPhase';
+import { QualityCouncilRunner } from '../quality-council/QualityCouncilRunner';
 import {
   createOutputDirectory,
+  ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
+  saveFinalStoryContractFailure,
+  savePartialStory,
+  appendFailedRunLedger,
   saveEarlyDiagnostic,
   saveAudioDiagnosticsLog,
   saveEncounterImageDiagnosticsLog,
   saveVideoDiagnosticsLog,
-  saveEncounterResumeState,
-  loadEncounterResumeStateSync,
+  loadEarlyDiagnosticSync,
   saveBeatResumeState,
-  loadBeatResumeStateSync,
+  writeFinalStoryPackage,
+  BeatResumeStateV1,
   updateOutputManifest,
   OutputManifest,
 } from '../utils/pipelineOutputWriter';
 import {
   buildEncounterSlotManifest,
   collectMissingSlotsFromManifest,
-  ENCOUNTER_TREE_MAX_DEPTH,
   encounterSetupIdentifier,
   encounterSetupFallbackIdentifier,
   encounterOutcomeIdentifier,
@@ -124,15 +270,30 @@ import {
 } from '../encounters/storyletSlotManifest';
 import { EncounterProviderPolicy } from '../encounters/encounterProviderPolicy';
 import { AssetRegistry } from '../images/assetRegistry';
+import { CallbackLedger } from './callbackLedger';
+import {
+  getUnresolvedCallbacksForPrompt as getUnresolvedCallbacksForPromptImpl,
+  harvestEpisodeCallbacks as harvestEpisodeCallbacksImpl,
+  injectFallbackCallbacks as injectFallbackCallbacksImpl,
+  type UnresolvedCallbackForPrompt,
+  type HarvestEpisodeCallbacksParams,
+  type InjectFallbackCallbacksParams,
+} from './callbackOrchestration';
+import { implementEpisodeResidueObligations } from './residueObligations';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
-import { validateRegistryCoverage } from '../images/coverageValidator';
+import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
+import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
+import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
 import { buildReferencePack } from '../images/referencePackBuilder';
+import {
+  anchorIdentifier,
+} from '../images/anchorPrompts';
+import { buildVerbatimProfile, composeCanonicalStyleString } from '../images/artStyleProfile';
+import { getReferenceStrategy } from '../images/referenceStrategy';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
-import type { ImageSlot, ImageSlotFamily } from '../images/slotTypes';
-import { buildBeatImagePrompt, overrideShotFromPlan } from '../images/beatPromptBuilder';
+import type { ImageSlot, ImageSlotFamily, SlotReferencePack } from '../images/slotTypes';
 import { planShotSequence, type ShotPlan, type PanelMode } from '../images/shotSequencePlanner';
 import {
-  runTier1Checks,
   checkStructuralDiversity,
   buildTier2VisionPrompt,
   parseTier2Response,
@@ -144,18 +305,42 @@ import {
 } from '../images/visualValidation';
 import {
   IntegratedBestPracticesValidator,
+  CliffhangerValidator,
   NPCDepthValidator,
   IncrementalValidationRunner,
   SceneValidationResult,
   IncrementalValidationConfig,
-  CharacterVoiceProfile,
-  aggregateValidationResults,
   PhaseValidator,
+  StructuralValidator,
+  ChoiceDistributionValidator,
+  SceneGraphBranchValidator,
+  DuplicateEstablishingBeatValidator,
+  TreatmentSeedOnPageValidator,
+  EndingReachabilityValidator,
+  type FinalStoryContractReport,
+  TreatmentFidelityValidator,
+  type SceneGraphBranchValidationResult,
+  runNarrativeDiagnostics,
+  type NarrativeDiagnosticsReport,
+  ChoiceDensityValidator,
+  PropIntroductionValidator,
+  ArcPressureArchitectureValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
+import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
+import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
+import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
+import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
+
+import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
+import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
+import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
+import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
+import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
+  ValidationIssue,
   ValidationError,
 } from '../../types/validation';
 import {
@@ -168,96 +353,43 @@ import {
 } from '../../types/sourceAnalysis';
 import {
   registerJob,
-  updateJob,
   isJobCancelled,
+  updateJob,
   completeJob,
   failJob,
   generateJobId,
   JobCancelledError,
 } from '../utils/jobTracker';
-import { BaseAgent, isLlmQuotaError, LlmCallObservation, type AgentResponse } from '../agents/BaseAgent';
-import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
+import { BaseAgent, isLlmQuotaError } from '../agents/BaseAgent';
+import { withTimeout, withTimeoutAbort, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
-import { buildSceneDependencyGraph, buildTopologicalWaves } from '../utils/dependencyGraph';
-import { PipelineTelemetry } from '../utils/pipelineTelemetry';
+
+import { PipelineTelemetry, buildLlmCallObserver } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
-import { collectMissingEncounterImageKeys, getEncounterBeats } from '../utils/encounterImageCoverage';
+import { getEncounterBeats } from '../utils/encounterImageCoverage';
+import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
 import { PROXY_CONFIG } from '../../config/endpoints';
 import {
-  buildSceneSettingContext,
-  buildSeasonPlanDirectives,
   createCharacterBriefFromAnalysis,
   createEpisodeOptions,
   createWorldBriefFromAnalysis,
   getLocationInfoForScene,
 } from './planningHelpers';
+import { mergeSeasonEpisodes } from './seasonStoryMerge';
+import {
+  buildReaderFacingFallbackChoiceOptions,
+  normalizeConsequences,
+  routeFallbackChoicesAcrossTargets,
+} from './choiceAssembly';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
-export type { PipelineEvent } from './EpisodePipeline';
+export type { PipelineEvent } from './events';
 
-/**
- * Normalize a Consequence object to fix common LLM field-name deviations.
- * E.g. { type: 'changeScore', target: 'x', change: 5 } -> score: 'x'
- */
-function normalizeConsequence(c: Consequence): Consequence {
-  const raw = c as Record<string, unknown>;
-  if ((c.type === 'changeScore' || c.type === 'setScore') && !('score' in c) && typeof raw.target === 'string') {
-    return { ...(c as Record<string, unknown>), score: raw.target as string } as Consequence;
-  }
-  if (c.type === 'setFlag' && !('flag' in c) && typeof raw.name === 'string') {
-    return { ...(c as Record<string, unknown>), flag: raw.name as string } as Consequence;
-  }
-  return c;
-}
-
-function normalizeConsequences(consequences: Consequence[] | undefined): Consequence[] | undefined {
-  if (!consequences || !Array.isArray(consequences)) return consequences;
-  return consequences.map(normalizeConsequence);
-}
-
-/**
- * Custom error class for pipeline errors with enhanced context
- */
-export class PipelineError extends Error {
-  public readonly phase: string;
-  public readonly agent?: string;
-  public readonly context?: Record<string, unknown>;
-  public readonly originalError?: Error;
-
-  constructor(
-    message: string,
-    phase: string,
-    options?: {
-      agent?: string;
-      context?: Record<string, unknown>;
-      originalError?: Error;
-    }
-  ) {
-    super(message);
-    this.name = 'PipelineError';
-    this.phase = phase;
-    this.agent = options?.agent;
-    this.context = options?.context;
-    this.originalError = options?.originalError;
-    
-    // Capture stack trace
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, PipelineError);
-    }
-  }
-
-  toJSON() {
-    return {
-      name: this.name,
-      message: this.message,
-      phase: this.phase,
-      agent: this.agent,
-      context: this.context,
-      stack: this.stack,
-    };
-  }
-}
+// PipelineError moved to ./errors (pure move) so pipeline/phases/* can use it
+// without importing this monolith. Re-exported here for existing consumers.
+import { PipelineError } from './errors';
+export { PipelineError };
 
 // Full creative brief for complete story generation
 export interface FullCreativeBrief {
@@ -292,15 +424,17 @@ export interface FullCreativeBrief {
     pronouns: 'he/him' | 'she/her' | 'they/them';
     description: string;
     role: string;
+    fashionStyle?: CharacterFashionStyle;
   };
 
   npcs: Array<{
     id: string;
     name: string;
-    role: 'antagonist' | 'ally' | 'neutral' | 'wildcard';
+    role: 'antagonist' | 'ally' | 'mentor' | 'love_interest' | 'rival' | 'neutral' | 'wildcard';
     description: string;
     importance: 'major' | 'supporting' | 'minor';
     relationshipToProtagonist?: string;
+    fashionStyle?: CharacterFashionStyle;
   }>;
 
   // Episode to generate (for single-episode mode)
@@ -387,7 +521,7 @@ export interface CheckpointData {
   phase: string;
   data: unknown;
   timestamp: Date;
-  requiresApproval: boolean;
+  requiresApproval?: boolean;
 }
 
 export interface FullPipelineResult {
@@ -462,22 +596,87 @@ export interface FullPipelineResult {
     dependencyScheduler?: {
       hasCycle: boolean;
       waveCount: number;
-      usedParallelScheduling: boolean;
       fallbackToSerial: boolean;
     };
   };
 }
+
+type EpisodeImageResults = {
+  beatImages: Map<string, string>;
+  sceneImages: Map<string, string>;
+};
+
+type EpisodeEncounterImageResults = {
+  encounterImages: Map<string, {
+    setupImages: Map<string, string>;
+    outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }>;
+  }>;
+  storyletImages: Map<string, Map<string, Map<string, string>>>;
+  storyletFailures?: string[];
+};
+
+type AuthoredEpisodeArtifacts = {
+  episode: Episode;
+  episodeBrief: FullCreativeBrief;
+  blueprint: EpisodeBlueprint;
+  branchAnalysis?: BranchAnalysis | null;
+  sceneContents: SceneContent[];
+  choiceSets: ChoiceSet[];
+  encounters: Map<string, EncounterStructure>;
+};
+
+type EpisodeGenerationResult = {
+  episodeNumber: number;
+  title: string;
+  success: boolean;
+  error?: string;
+};
+
+type GeneratedEpisodeFromOutlineResult = Partial<AuthoredEpisodeArtifacts> & {
+  result: EpisodeGenerationResult;
+  qaReport?: QAReport;
+  bestPracticesReport?: ComprehensiveValidationReport;
+};
+
+type EpisodeMediaResult = {
+  episode: Episode;
+  storyletFailures?: string[];
+  encounterImageDiagnostics?: EncounterImageRunDiagnostic[];
+};
 
 export class FullStoryPipeline {
   private config: PipelineConfig;
   private worldBuilder: WorldBuilder;
   private characterDesigner: CharacterDesigner;
   private storyArchitect: StoryArchitect;
+  // Advisory (non-fatal) validation warnings accumulated across episodes when
+  // the architect ships a blueprint despite craft/fidelity issues (B1). Fed
+  /**
+   * R1 refactor: segmented run state (season narrative / episode scratch /
+   * run accumulators) — see pipeline/runState.ts. The legacy field names
+   * below remain as thin delegating accessors so existing references (and the
+   * clusters' Object.defineProperties live-read getters) work unchanged while
+   * call sites migrate to explicit state.
+   */
+  private readonly runState: PipelineRunState = createRunState();
+
+  // into the run's quality record so the issues stay visible.
+  private get architectAdvisoryWarnings(): string[] { return this.runState.run.architectAdvisoryWarnings; }
+  private set architectAdvisoryWarnings(v: string[]) { this.runState.run.architectAdvisoryWarnings = v; }
+  // C4: running total of LLM tokens (input + output) across the whole run, used
+  // to enforce config.generation.tokenBudgetPerStory in checkCancellation.
+  private _totalTokensUsed = 0;
+  // F4: last-known run output dir, so the terminal catch (which is outside the
+  // try scope that declares outputDirectory) can still write the error log +
+  // a 'failed' quality-ledger row on abort.
+  private _currentOutputDirectory?: string;
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
   private sourceMaterialAnalyzer: SourceMaterialAnalyzer;
   private branchManager: BranchManager;
+  private sceneCritic?: SceneCritic;
+  private qualityCouncil?: QualityCouncilRunner;
   private encounterArchitect: EncounterArchitect;
   private encounterImageAgent: EncounterImageAgent;
   private imageAgentTeam: ImageAgentTeam;
@@ -490,10 +689,46 @@ export class FullStoryPipeline {
   private integratedValidator: IntegratedBestPracticesValidator;
   private npcDepthValidator: NPCDepthValidator;
   private phaseValidator: PhaseValidator;
+  private distributionValidator: ChoiceDistributionValidator = new ChoiceDistributionValidator();
+  private sceneGraphBranchValidator: SceneGraphBranchValidator = new SceneGraphBranchValidator();
+  private duplicateEstablishingBeatValidator: DuplicateEstablishingBeatValidator = new DuplicateEstablishingBeatValidator();
+  private treatmentSeedOnPageValidator: TreatmentSeedOnPageValidator = new TreatmentSeedOnPageValidator();
+  private endingReachabilityValidator: EndingReachabilityValidator = new EndingReachabilityValidator();
   
   // Incremental validation (per-scene during content generation)
   private incrementalValidator: IncrementalValidationRunner | null = null;
-  private sceneValidationResults: SceneValidationResult[] = [];
+  private get sceneValidationResults(): SceneValidationResult[] { return this.runState.episode.sceneValidationResults; }
+  private set sceneValidationResults(v: SceneValidationResult[]) { this.runState.episode.sceneValidationResults = v; }
+  private get allSceneValidationResults(): SceneValidationResult[] { return this.runState.run.allSceneValidationResults; }
+  private set allSceneValidationResults(v: SceneValidationResult[]) { this.runState.run.allSceneValidationResults = v; }
+
+  // Per-encounter telemetry (I2). `encounterTelemetry` is reset per episode; season-
+  // final consumers read `allEncounterTelemetry`. See encounterTelemetryCollect.ts.
+  private get encounterTelemetry(): EncounterTelemetry[] { return this.runState.episode.encounterTelemetry; }
+  private set encounterTelemetry(v: EncounterTelemetry[]) { this.runState.episode.encounterTelemetry = v; }
+  private get allEncounterTelemetry(): EncounterTelemetry[] { return this.runState.run.allEncounterTelemetry; }
+  private set allEncounterTelemetry(v: EncounterTelemetry[]) { this.runState.run.allEncounterTelemetry = v; }
+
+  // S3: per-run remediation budget — a hard cap on total corrective re-work
+  // (scene/encounter/choice regeneration). Created per run/episode with a HIGH
+  // ceiling (config.remediationBudgetTotal, default 1000) so default behavior is
+  // unchanged; when exhausted, seams degrade gracefully instead of blocking.
+  private remediationBudget: RemediationBudget | null = null;
+  // Per-run remediation counters, summarized into the quality ledger row.
+
+  // Shadow-mode diffs between the LLM `BranchManager` and the deterministic
+  // `analyzeBranchTopology` pass. Populated only when
+  // `config.generation.branchShadowModeEnabled` is true; persisted as a
+  // sidecar via pipelineOutputWriter so D4 (BranchManager gating) can be
+  // decided from data rather than intuition (I5 instrumentation).
+  private get branchShadowDiffs(): Array<{
+    episodeId: string;
+    diff: import('../utils/branchShadowDiff').BranchShadowDiff;
+  }> { return this.runState.run.branchShadowDiffs; }
+  private set branchShadowDiffs(v: Array<{
+    episodeId: string;
+    diff: import('../utils/branchShadowDiff').BranchShadowDiff;
+  }>) { this.runState.run.branchShadowDiffs = v; }
 
   private events: PipelineEvent[] = [];
   private checkpoints: CheckpointData[] = [];
@@ -505,7 +740,30 @@ export class FullStoryPipeline {
   private _cancelled = false;
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
-  private cachedPipelineMemory: string | null = null;
+  private cachedPipelineMemory: PipelineMemoryPacket | null = null;
+  private _agentMemoryContextBuilder?: AgentMemoryContextBuilder;
+  private _validatorEvidenceService?: ValidatorEvidenceService;
+  private _artifactMemoryService?: ArtifactMemoryService;
+  private _artifactContextResolver?: ArtifactContextResolver;
+  private _factMemoryService?: FactMemoryService;
+  private planTimeFidelityFindings: FidelityFinding[] = [];
+  private planTimeFidelityBaseline?: ValidationPhaseBaseline;
+
+  /**
+   * Paths (relative or absolute) to the three style-bible anchor images,
+   * whether preapproved by the UI or generated in `generateEpisodeStyleBible`.
+   * Persisted onto `Story.styleAnchors` so single-image regenerations and
+   * session resumes can re-prime `setSeasonStyleReference` without
+   * rebuilding the style bible from scratch.
+   */
+  private _styleAnchorPaths: {
+    character?: string;
+    arcStrip?: string;
+    environment?: string;
+  } = {};
+  private _uploadedStyleReferenceImages: ReferenceImage[] = [];
+  private _generatedStyleReferencesAllowed = true;
+  private _activeImageResumeOutputDirectory?: string;
 
   // Visual planning outputs collection
   private collectedVisualPlanning: {
@@ -527,16 +785,124 @@ export class FullStoryPipeline {
   private telemetry: PipelineTelemetry = new PipelineTelemetry();
   private pipelineStartedAtMs: number = 0;
   private lastTelemetryOverallProgress: number = 0;
+  /**
+   * Structure-driven progress plan (episodes -> scenes -> beats). Built up as
+   * the pipeline discovers structure and used to drive the headline % and the
+   * generator's progress tree. Null until seeded at the start of a run; stays
+   * null for analysis-only runs (no episode generation).
+   */
+  private generationPlan: GenerationPlan | null = null;
   private imageWorkerQueue: LocalWorkerQueue;
   private audioWorkerQueue: LocalWorkerQueue;
   private videoWorkerQueue: LocalWorkerQueue;
+  /**
+   * A10: Promise for a pre-warmed color script. Seeded before
+   * `runMasterImageGeneration` so the color-script LLM call overlaps with
+   * master image generation. `runEpisodeImageGeneration` consumes the
+   * promise when it exists instead of kicking off a fresh call.
+   */
+  private _preWarmedColorScriptPromise: Promise<ColorScript | undefined> | null = null;
+  /**
+   * A3 (narrow): Results of the optional parallel scene-opening-beat
+   * prefetch phase, keyed by the canonical beat identifier. Populated by
+   * `prefetchSceneOpeningBeats` when
+   * `EXPO_PUBLIC_IMAGE_PARALLEL_SCENE_STARTS` is enabled; consumed by the
+   * main scene loop in `runEpisodeImageGeneration` at beat 0 of each
+   * scene. Entries point at resolved `GeneratedImage` objects (the
+   * prefetch phase awaits Promise.allSettled before the main loop runs,
+   * so no live Promises are stored here).
+   */
+  private _openingBeatPrefetch: Map<string, GeneratedImage> = new Map();
   private locationMasterShots = new Map<string, { data: string; mimeType: string }>();
   private assetRegistry: AssetRegistry = new AssetRegistry();
+  // Callback ledger for Witcher-style delayed consequences (Plan 1). Seeded by
+  // choices' `memorableMoment` fields and consumed as prompt context for
+  // later episodes. Persisted to `09-callback-ledger.json`.
+  private get callbackLedger(): CallbackLedger { return this.runState.season.callbackLedger; }
+  private set callbackLedger(v: CallbackLedger) { this.runState.season.callbackLedger = v; }
+  // Thread/Twist planning (default-off, STORYRPG_THREAD_TWIST_PLANNING): run-level
+  // NarrativeThread ledger accumulated across episodes (mirrors callbackLedger) +
+  // each episode's TwistPlan, consumed by SceneWriter inputs and narrative
+  // diagnostics. Stays empty when the flag is off, so consumers see undefined.
+  private get seasonThreadLedger(): ThreadLedger { return this.runState.season.threadLedger; }
+  private set seasonThreadLedger(v: ThreadLedger) { this.runState.season.threadLedger = v; }
+  private get episodeTwistPlans(): Map<number, TwistPlan> { return this.runState.season.episodeTwistPlans; }
+  private set episodeTwistPlans(v: Map<number, TwistPlan>) { this.runState.season.episodeTwistPlans = v; }
+  private get episodeArcTargets(): Map<number, CharacterArcTargets> { return this.runState.season.episodeArcTargets; }
+  private set episodeArcTargets(v: Map<number, CharacterArcTargets>) { this.runState.season.episodeArcTargets = v; }
+  // Lazily constructed so a flag-off run never instantiates the agents.
+  private _threadPlanner?: ThreadPlanner;
+  private _twistArchitect?: TwistArchitect;
+  private getThreadPlanner(): ThreadPlanner {
+    if (!this._threadPlanner) this._threadPlanner = new ThreadPlanner(this.config.agents.storyArchitect);
+    return this._threadPlanner;
+  }
+  private getTwistArchitect(): TwistArchitect {
+    if (!this._twistArchitect) this._twistArchitect = new TwistArchitect(this.config.agents.storyArchitect);
+    return this._twistArchitect;
+  }
+  private _characterArcTracker?: CharacterArcTracker;
+  private getCharacterArcTracker(): CharacterArcTracker {
+    if (!this._characterArcTracker) this._characterArcTracker = new CharacterArcTracker(this.config.agents.storyArchitect);
+    return this._characterArcTracker;
+  }
+  // Season Canon (P4): durable frozen facts + the snapshot carried forward across
+  // sequentially-generated episodes.
+  private get seasonCanon(): SeasonCanon { return this.runState.season.canon; }
+  private set seasonCanon(v: SeasonCanon) { this.runState.season.canon = v; }
+  private sourceCanonPromptBlock?: string;
+  private get priorEpisodeSnapshot(): EpisodeStateSnapshot | undefined { return this.runState.season.priorEpisodeSnapshot; }
+  private set priorEpisodeSnapshot(v: EpisodeStateSnapshot | undefined) { this.runState.season.priorEpisodeSnapshot = v; }
+  /**
+   * E1: the season-level choice-type plan, allocated ONCE across the season's moments
+   * (35/30/20/15 is a SEASON budget, not per-episode). Built in runEpisodeArchitecture
+   * from the season plan; each episode draws its type slice via episodeTypeCounts.
+   */
+  private get seasonChoicePlan(): SeasonChoicePlan | undefined { return this.runState.season.choicePlan; }
+  private set seasonChoicePlan(v: SeasonChoicePlan | undefined) { this.runState.season.choicePlan = v; }
+  private get plannedChoiceTypesByScene(): Record<string, string> | undefined { return this.runState.season.choiceTypesByScene; }
+  private set plannedChoiceTypesByScene(v: Record<string, string> | undefined) { this.runState.season.choiceTypesByScene = v; }
+  private get seasonSkillPlan(): SeasonSkillPlan | undefined { return this.runState.season.skillPlan; }
+  private set seasonSkillPlan(v: SeasonSkillPlan | undefined) { this.runState.season.skillPlan = v; }
+  /**
+   * Season Canon is ON by default (opt-out, not opt-in): it activates unless the
+   * config EXPLICITLY sets seasonCanonEnabled === false. The flag is built client-
+   * side (GeneratorScreen -> buildPipelineConfig) and may be absent/undefined when an
+   * older generator bundle posts the job; treating undefined as ON makes "on for all
+   * generations" hold regardless of the client bundle. Disable with seasonCanonEnabled:false.
+   */
+  private get seasonCanonOn(): boolean {
+    return this.config.generation?.seasonCanonEnabled !== false;
+  }
+
+  /**
+   * D2: Season Canon gate ENFORCEMENT. On by default (opt-out) now that B1/B2 are
+   * validated against a clean regen (the promise/canon gates ran with real claims and
+   * produced 0 false-positives). When on, a promise-due/dangling/plant-validity/
+   * impossible-knowledge ERROR hard-fails the offending episode (regenerate it) rather
+   * than shipping the incoherence. Disable with seasonCanonBlocking: false.
+   */
+  private get seasonCanonBlockingOn(): boolean {
+    return this.seasonCanonOn && this.config.generation?.seasonCanonBlocking !== false;
+  }
+
+  /**
+   * B1: the sealed canon rendered as the read-only "ESTABLISHED CANON — do not
+   * contradict" block for SceneWriter/ChoiceAuthor prompts (the read-back path).
+   * Returns undefined when canon is off or empty so the prompt section is skipped.
+   */
+  private establishedCanonForPrompt(episodeNumber?: number): string | undefined {
+    if (!this.seasonCanonOn) return undefined;
+    const block = this.seasonCanon.canonForPrompt(episodeNumber);
+    const sourceBlock = this.sourceCanonPromptBlock;
+    const blocks = [sourceBlock, block].filter((candidate) => candidate && candidate.trim());
+    return blocks.length > 0 ? blocks.join('\n\n') : undefined;
+  }
   private completedPhases = new Set<string>();
+  private invalidatedResumeEpisodes = new Set<number>();
   private dependencySchedulerStats = {
     hasCycle: false,
     waveCount: 0,
-    usedParallelScheduling: false,
     fallbackToSerial: false,
   };
 
@@ -547,18 +913,39 @@ export class FullStoryPipeline {
       maxPerProviderInFlight: this.config.generation?.llmMaxPerProviderInFlight ?? CONCURRENCY_DEFAULTS.maxPerProviderLlmInFlight,
       backoffJitterRatio: this.config.generation?.llmBackoffJitterRatio ?? CONCURRENCY_DEFAULTS.llmBackoffJitterRatio,
     });
-    BaseAgent.setLlmCallObserver((observation: LlmCallObservation) => {
-      this.telemetry.observeProviderCall({
-        agentName: observation.agentName,
-        provider: observation.provider,
-        success: observation.success,
-        durationMs: observation.durationMs,
-        queueWaitMs: observation.queueWaitMs,
-        attempt: observation.attempt,
-        error: observation.error,
+    // The observer forwards every provider call — INCLUDING its `usage` field —
+    // into telemetry so the LLM ledger (09-llm-ledger.json) can total tokens.
+    // C4: the onUsage callback accumulates total tokens so checkCancellation can
+    // enforce a per-story ceiling and abort runaway retry fan-out. See
+    // buildLlmCallObserver for why dropping `usage` here blinds cost tracking.
+    BaseAgent.setLlmCallObserver(
+      buildLlmCallObserver(
+        // Getter, not a snapshot: telemetry is reassigned between runs while the
+        // observer is registered only once here.
+        () => this.telemetry,
+        (totalTokens) => {
+          this._totalTokensUsed += totalTokens;
+        },
+      ),
+    );
+    // WS5 truncation shadow counter: every lossy truncation recovery (landmine
+    // L4 — content silently dropped from a "successful" parse) is ledgered per
+    // agent in 09-llm-ledger.json and surfaced as a run warning. This shadow
+    // data decides whether retry-on-truncation is worth building.
+    BaseAgent.setTruncationObserver((t) => {
+      this.telemetry.observeTruncation(t.agentName, t.provider);
+      this.emit({
+        type: 'warning',
+        phase: 'llm_truncation',
+        message: `${t.agentName} response was truncated and rejected — retry/regeneration required (L4).`,
       });
     });
-    const imageWorkerConcurrency = this.config.generation?.imageWorkerModeEnabled
+    // A5: default image worker mode ON. The per-provider throttle in
+    // ImageGenerationService now enforces its own rate limits per provider,
+    // so running beat image work concurrently is safe and much faster.
+    // A caller can still opt out by explicitly setting `imageWorkerModeEnabled: false`.
+    const imageWorkerModeEnabled = this.config.generation?.imageWorkerModeEnabled !== false;
+    const imageWorkerConcurrency = imageWorkerModeEnabled
       ? Math.max(1, Math.min(4, this.config.generation?.maxParallelScenes ?? CONCURRENCY_DEFAULTS.maxParallelScenes))
       : 1;
     this.imageWorkerQueue = new LocalWorkerQueue(imageWorkerConcurrency);
@@ -578,16 +965,36 @@ export class FullStoryPipeline {
       this.config.validation.rules = defaultValidationConfig.rules;
     }
 
-    // Initialize all agents
-    this.worldBuilder = new WorldBuilder(this.config.agents.storyArchitect);
-    this.characterDesigner = new CharacterDesigner(this.config.agents.storyArchitect);
-    this.storyArchitect = new StoryArchitect(this.config.agents.storyArchitect, this.config.generation);
+    // Initialize all agents.
+    // The planning agents emit large structured JSON (world bible, character
+    // bible, the full episode blueprint, branch analysis). The default maxTokens
+    // is too small for complex/climax episodes and truncates the response
+    // mid-JSON (observed: episode-3 blueprint, "Unterminated string in JSON at
+    // position 31479"). Force ample headroom regardless of config source (F8).
+    const planningConfig = {
+      ...this.config.agents.storyArchitect,
+      maxTokens: Math.max(this.config.agents.storyArchitect.maxTokens ?? 0, 32000),
+    };
+    this.worldBuilder = new WorldBuilder(planningConfig);
+    this.characterDesigner = new CharacterDesigner(planningConfig);
+    this.storyArchitect = new StoryArchitect(planningConfig, this.config.generation);
     this.sceneWriter = new SceneWriter(this.config.agents.sceneWriter, this.config.generation);
     this.choiceAuthor = new ChoiceAuthor(this.config.agents.choiceAuthor, this.config.generation);
-    this.qaRunner = new QARunner(this.config.agents.storyArchitect);
-    const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
+    // C2/C3: QA grader uses its own config when provided (cheaper / decorrelated
+    // from the author model); falls back to storyArchitect config otherwise.
+    this.qaRunner = new QARunner(this.config.agents.qaRunner || this.config.agents.storyArchitect);
+    // maxTokens 32000 (was 16384): the structure-analysis JSON for rich multi-episode treatments was hitting the 16384 cap mid-string (truncated → unparseable).
+    const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 32000 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
-    this.branchManager = new BranchManager(this.config.agents.storyArchitect);
+    // BranchManager only annotates a deterministic skeleton now, so it rides the
+    // cheaper branch/QA-tier model when configured; falls back to planningConfig.
+    this.branchManager = new BranchManager(this.config.agents.branchManager ?? planningConfig);
+    if (this.config.sceneCritic?.enabled) {
+      this.sceneCritic = new SceneCritic(this.config.agents.sceneWriter);
+    }
+    if (this.config.qualityCouncil?.enabled) {
+      this.resetQualityCouncil();
+    }
     const encounterArchitectConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
     this.encounterArchitect = new EncounterArchitect(encounterArchitectConfig);
     this.encounterImageAgent = new EncounterImageAgent(this.config.agents.storyArchitect, this.config.artStyle);
@@ -597,16 +1004,44 @@ export class FullStoryPipeline {
       this.config.agents.imagePlanner || this.config.agents.storyArchitect,
       this.config.artStyle
     );
+    // Wire identity consistency gate thresholds from config.
+    this.imageAgentTeam.setIdentityGateConfig({
+      identityScoreThreshold: this.config.imageGen?.identityScoreThreshold,
+      maxIdentityRegenerations: this.config.imageGen?.maxIdentityRegenerations,
+      resetIdentityBudget: true,
+    });
     this.imageService = new ImageGenerationService({
       ...(this.config.imageGen || { enabled: false }),
       geminiApiKey: this.config.imageGen?.geminiApiKey || this.config.imageGen?.apiKey,
+      openaiApiKey: this.config.imageGen?.openaiApiKey,
+      openaiImageModel: this.config.imageGen?.openaiImageModel,
       midjourneySettings: this.config.imageGen?.midjourney || this.config.midjourneySettings,
       geminiSettings: this.config.imageGen?.gemini || this.config.geminiSettings,
+      stableDiffusionSettings: this.config.imageGen?.stableDiffusion,
+      styleReferenceStrength: this.config.imageGen?.styleReferenceStrength,
       failurePolicy: this.getFailurePolicy(),
     });
+    // C4: install the structured art-style profile (if any) so prompt
+    // strengthening can operate bidirectionally on style-inappropriate /
+    // style-positive vocabulary rather than applying only cinematic defaults.
+    if (this.config.imageGen?.artStyleProfile) {
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    } else if (this.config.artStyle?.trim()) {
+      this.config.imageGen = this.config.imageGen || {};
+      this.config.imageGen.artStyleProfile = buildVerbatimProfile(this.config.artStyle);
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    }
     
     // Initialize audio generation service
-    this.audioService = new AudioGenerationService(this.config.narration?.elevenLabsApiKey);
+    this.audioService = new AudioGenerationService({
+      provider: this.config.narration?.provider || 'elevenlabs',
+      apiKey: this.config.narration?.elevenLabsApiKey,
+      geminiApiKey: this.config.narration?.geminiApiKey || this.config.imageGen?.geminiApiKey || this.config.imageGen?.apiKey,
+      geminiModel: this.config.narration?.geminiModel,
+      voiceId: this.config.narration?.voiceId,
+      voiceCastingEnabled: this.config.narration?.voiceCastingEnabled,
+      performanceTagsEnabled: this.config.narration?.performanceTagsEnabled,
+    });
 
     // Initialize video generation service and director agent
     const videoConfig = this.config.videoGen || { enabled: false };
@@ -682,6 +1117,482 @@ export class FullStoryPipeline {
   ): void {
     if (!this.isFailFastEnabled()) return;
     throw new PipelineError(message, phase, options);
+  }
+
+  private validateSceneGraphBranching(
+    episode: Episode,
+    blueprint: EpisodeBlueprint,
+    context: {
+      phase: string;
+      outputDirectory?: string;
+      artifactName?: string;
+      choiceSets?: ChoiceSet[];
+      residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
+    }
+  ): Promise<SceneGraphBranchValidationResult> {
+    return this.sceneGraphValidation().validateSceneGraphBranching(episode, blueprint, context);
+  }
+
+  /**
+   * W1 regen route for the protagonist-pronoun gate. Runs the deterministic resolver
+   * to surface the AMBIGUOUS residue (sentences naming the protagonist and a
+   * wrong-gender NPC), hands those sentences to {@link PronounDisambiguator} for a
+   * minimal rewrite, and applies the rewrites back into the story in place. After this
+   * the contract's own resolver re-scan finds only genuinely-unresolvable residue, so
+   * GATE_PROTAGONIST_PRONOUN can block on real defects instead of every shared-pronoun
+   * sentence. No-op (and zero LLM cost) when the gate is off or there is no residue.
+   */
+  private async disambiguateProtagonistPronouns(story: Story, brief: FullCreativeBrief): Promise<void> {
+    if (!isGateEnabled('GATE_PROTAGONIST_PRONOUN')) return;
+    const pronouns = brief.protagonist?.pronouns;
+    const name = brief.protagonist?.name;
+    if (!pronouns || !name) return;
+
+    const names = [name, ...((brief.protagonist as { aliases?: string[] })?.aliases ?? [])].filter(Boolean) as string[];
+    const otherGenderNames = otherGenderNamesFromStory(story, pronouns);
+    // First pass is read-only here: it reports the ambiguous residue (the safe cases
+    // are repaired again, idempotently, by the contract's own resolver run later).
+    const scan = canonicalizeProtagonistPronouns(story, { names, pronouns }, otherGenderNames);
+    const sentences = [...new Set(scan.ambiguous.map((a) => a.sentence.trim()).filter(Boolean))];
+    if (sentences.length === 0) return;
+
+    try {
+      const agent = new PronounDisambiguator(this.config.agents.sceneWriter);
+      const res = await withTimeout(
+        agent.execute({ sentences, protagonistName: name, protagonistPronouns: pronouns, otherGenderNames }),
+        PIPELINE_TIMEOUTS.llmAgent,
+        'PronounDisambiguator',
+      );
+      const rewrites = new Map((res.data?.rewrites ?? []).map((r) => [r.original, r.rewritten]));
+      const applied = rewrites.size > 0 ? applyPronounDisambiguations(story, rewrites) : 0;
+      this.emit({
+        type: 'debug',
+        phase: 'pronoun_disambiguation',
+        message: `Protagonist pronoun disambiguation: ${sentences.length} ambiguous sentence(s), ${rewrites.size} rewritten, ${applied} field replacement(s).`,
+      });
+    } catch (err) {
+      // Degrade: keep the residue; the gate will block on it (never silently passes).
+      this.emit({
+        type: 'warning',
+        phase: 'pronoun_disambiguation',
+        message: `Pronoun disambiguation failed (keeping residue): ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  /**
+   * W4 regen route for the encounter-outcome-variant gate. Seeds the outcome flags,
+   * finds reconvergence scenes whose opening prose ignores the outcome, and authors a
+   * per-outcome opening variant (via {@link OutcomeVariantAuthor}) gated on the
+   * matching `encounter_<id>_<outcome>` flag. After this the contract's own desync
+   * detector finds only reconvergences the author could not cover, so
+   * GATE_ENCOUNTER_OUTCOME_VARIANT blocks on real residue. No-op (zero LLM cost) when
+   * the gate is off or there are no desyncs.
+   */
+  private async authorEncounterOutcomeVariants(story: Story): Promise<void> {
+    if (!isGateEnabled('GATE_ENCOUNTER_OUTCOME_VARIANT')) return;
+    normalizeEncounterOutcomeFlags(story); // G12: unify flag spellings so setters match consumers
+    seedEncounterOutcomeFlags(story); // idempotent: ensure the flags the variants gate on exist
+    const desyncs = findEncounterOutcomeDesyncs(story).slice(0, 8); // bound the regen work
+    if (desyncs.length === 0) return;
+
+    const sceneById = new Map<string, Scene>();
+    for (const ep of story.episodes || []) for (const s of ep.scenes || []) sceneById.set(s.id, s);
+
+    let authored = 0;
+    try {
+      const agent = new OutcomeVariantAuthor(this.config.agents.sceneWriter);
+      for (const desync of desyncs) {
+        const encounterScene = sceneById.get(desync.encounterSceneId);
+        const enc = encounterScene?.encounter;
+        const reconScene = sceneById.get(desync.reconvergenceSceneId);
+        if (!enc?.outcomes || !reconScene) continue;
+        const beatId = firstProseBeatId(reconScene);
+        if (!beatId) continue;
+        const openingBeatText = (reconScene.beats || []).find((b) => b.id === beatId)?.text ?? '';
+        const outcomes = desync.outcomes
+          .map((k) => ({ outcome: k, outcomeText: (enc.outcomes as Record<string, { outcomeText?: string }>)[k]?.outcomeText ?? '' }))
+          .filter((o) => o.outcomeText);
+        if (outcomes.length < 2) continue;
+
+        const res = await withTimeout(
+          agent.execute({
+            reconvergenceSceneId: desync.reconvergenceSceneId,
+            openingBeatText,
+            encounterId: desync.encounterId,
+            encounterName: enc.name ?? desync.encounterId,
+            outcomes,
+          }),
+          PIPELINE_TIMEOUTS.llmAgent,
+          `OutcomeVariantAuthor(${desync.reconvergenceSceneId})`,
+        );
+        const variants = res.data?.variants ?? [];
+        if (variants.length > 0) {
+          authored += applyOutcomeVariants(story, desync.reconvergenceSceneId, beatId, desync.encounterId, variants);
+        }
+      }
+      this.emit({
+        type: 'debug',
+        phase: 'encounter_outcome_variants',
+        message: `Encounter outcome variants: ${desyncs.length} desync(s), ${authored} variant(s) authored.`,
+      });
+    } catch (err) {
+      this.emit({
+        type: 'warning',
+        phase: 'encounter_outcome_variants',
+        message: `Outcome-variant authoring failed (keeping desync): ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  private async enforceFinalStoryContract(input: {
+    story: Story;
+    brief: FullCreativeBrief;
+    requestedEpisodeNumbers?: number[];
+    qaReport?: QAReport;
+    bestPracticesReport?: ComprehensiveValidationReport;
+    phase: string;
+    validationScope?: import('../validators/runFidelityValidators').FidelityValidationScope;
+  }): Promise<FinalStoryContractReport | undefined> {
+    const evidence = await this.recallValidatorEvidence(
+      'FinalStoryContractValidator',
+      input.phase || 'final-contract',
+      input.brief,
+      { artifactKinds: ['story-json', 'qa-report', 'final-contract'], evidenceMode: 'corroborated-evidence' },
+    );
+    const report = await this.finalContract().enforceFinalStoryContract(input);
+    if (report) {
+      report.memoryEvidence = [
+        this.validatorEvidenceService().summarize(evidence, 'corroborated-evidence'),
+      ];
+      await this.writeArtifactMemory({
+        artifactKind: 'final-contract',
+        storyId: input.brief.story.title,
+        episodeNumber: input.brief.episode?.number,
+        lifecycle: input.phase || 'final-contract',
+        validator: 'FinalStoryContractValidator',
+        payload: report,
+        projection: {
+          title: `${input.brief.story.title} final contract`,
+          summary: `Final contract ${report.passed ? 'passed' : 'failed'} with ${report.blockingIssues.length} blocking issue(s) and ${report.warnings.length} warning(s).`,
+          metrics: {
+            passed: report.passed,
+            blockingIssueCount: report.blockingIssues.length,
+            warningCount: report.warnings.length,
+          },
+        },
+      });
+    }
+    return report;
+  }
+
+  private enforceEpisodeIncrementalContractWithTimeout(
+    episodeNumber: number,
+    input: Parameters<FullStoryPipeline['enforceFinalStoryContract']>[0],
+    timeoutMs = PIPELINE_TIMEOUTS.finalContractRepair,
+  ): Promise<FinalStoryContractReport | undefined> {
+    return withTimeout(
+      this.enforceFinalStoryContract(input),
+      timeoutMs,
+      `FinalStoryContractRepair(incremental_contract_ep_${episodeNumber})`,
+      () => {
+        this.emit({
+          type: 'warning',
+          phase: `incremental_contract_ep_${episodeNumber}`,
+          message: `Episode ${episodeNumber} contract repair exceeded ${Math.round(timeoutMs / 60_000)} minute(s); failing the job so it can be resumed safely.`,
+        });
+      },
+    );
+  }
+
+  private createFallbackChoiceSet(
+    sceneBlueprint: SceneBlueprint,
+    choiceBeat: GeneratedBeat
+  ): ChoiceSet {
+    const choicePoint = sceneBlueprint.choicePoint;
+    const optionHints = (choicePoint?.optionHints || [])
+      .map((hint) => String(hint || '').trim())
+      .filter(Boolean);
+    const options = buildReaderFacingFallbackChoiceOptions({
+      optionHints,
+      localContext: [
+        ...(sceneBlueprint.requiredBeats || []).flatMap((beat: { sourceTurn?: string; mustDepict?: string }) => [
+          beat.sourceTurn,
+          beat.mustDepict,
+        ]).filter((text): text is string => typeof text === 'string' && text.trim().length > 0),
+      ],
+      choicePointDescription: choicePoint?.description,
+      choiceBeatText: choiceBeat.text,
+      choiceBeatVisualMoment: choiceBeat.visualMoment,
+      sceneName: sceneBlueprint.name,
+      dramaticQuestion: sceneBlueprint.dramaticQuestion,
+      dramaticPurpose: sceneBlueprint.dramaticPurpose,
+      conflictEngine: sceneBlueprint.conflictEngine,
+    });
+    const rawStakes = choicePoint?.stakes;
+    const stakes = {
+      want: this.safeFallbackReaderText(
+        rawStakes?.want,
+        sceneBlueprint.dramaticQuestion || sceneBlueprint.dramaticPurpose || 'Change what can happen next.',
+        'Change what can happen next.'
+      ),
+      cost: this.safeFallbackReaderText(
+        rawStakes?.cost,
+        sceneBlueprint.conflictEngine || 'The choice gives up one kind of safety to claim another.',
+        'The choice gives up one kind of safety to claim another.'
+      ),
+      identity: this.safeFallbackReaderText(
+        rawStakes?.identity,
+        sceneBlueprint.wantVsNeed || 'The choice reveals what the protagonist is becoming under pressure.',
+        'The choice reveals what the protagonist is becoming under pressure.'
+      ),
+    };
+    const choiceType = choicePoint?.type || 'dilemma';
+    const consequenceTier = 'sceneTint' as const;
+    const impactFactors =
+      choiceType === 'expression' ? [] :
+      choiceType === 'relationship' ? ['relationship', 'identity'] :
+      choiceType === 'strategic' ? ['information', 'process'] :
+      ['identity', 'relationship'];
+    const choiceIntent = choiceType === 'expression' ? 'flavor' : choiceType === 'dilemma' ? 'dilemma' : 'blind';
+    const storyVerb = choiceType === 'relationship' ? 'protect' : choiceType === 'strategic' ? 'observe' : 'commit';
+    const immediateReminder = this.safeFallbackReaderText(
+      choicePoint?.reminderPlan?.immediate || choicePoint?.description,
+      'The decision changes the tone of the scene.'
+    );
+
+    return {
+      beatId: choiceBeat.id,
+      sceneId: sceneBlueprint.id,
+      choiceType,
+      overallStakes: stakes,
+      overallStakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
+      designNotes: 'Deterministic fallback: preserves authored choice pressure when ChoiceAuthor does not produce a usable choice set.',
+      choices: options.map((text, index) => {
+        const tintFlag = this.fallbackTintFlag(choiceType, index);
+        return {
+          id: `${choiceBeat.id}-fallback-choice-${index + 1}`,
+          text: this.ensureSentence(text),
+          choiceType,
+          choiceIntent,
+          impactFactors,
+          consequenceTier,
+          storyVerb,
+          reactionText: this.fallbackReactionText(text),
+          tintFlag,
+          outcomeTexts: this.fallbackOutcomeTexts(text),
+          residueHints: [{
+            kind: 'immediate_prose_echo' as const,
+            description: this.fallbackResidueDescription(text),
+          }],
+          stakes,
+          stakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
+          stakesAnnotation: stakes,
+          consequenceDomain: choicePoint?.consequenceDomain || 'identity',
+          consequences: [{ type: 'setFlag' as const, flag: tintFlag, value: true }],
+          reminderPlan: choicePoint?.reminderPlan || {
+            immediate: immediateReminder,
+            shortTerm: this.stripAgentFacingFidelityText(
+              sceneBlueprint.narrativeFunction || '',
+              'The residue carries into the next scene.'
+            ),
+          },
+          feedbackCue: {
+            echoSummary: `You chose: ${this.ensureSentence(text)}`,
+            progressSummary: this.stripAgentFacingFidelityText(
+              choicePoint?.reminderPlan?.immediate || sceneBlueprint.narrativeFunction || '',
+              'The choice leaves visible residue.'
+            ),
+          },
+          expectedResidue: choicePoint?.expectedResidue,
+        };
+      }),
+    } as ChoiceSet;
+  }
+
+  private safeFallbackReaderText(text: string | undefined, fallback: string, lastResort?: string): string {
+    const cleaned = String(text || '').trim();
+    if (!cleaned || this.isUnsafeReaderFallbackText(cleaned)) {
+      const fallbackText = String(fallback || '').trim();
+      if (fallbackText && !this.isUnsafeReaderFallbackText(fallbackText)) {
+        return this.ensureSentence(fallbackText);
+      }
+      return this.ensureSentence(lastResort || 'The choice leaves visible residue in the scene.');
+    }
+    return this.ensureSentence(cleaned);
+  }
+
+  private isUnsafeReaderFallbackText(text: string | undefined): boolean {
+    const cleaned = String(text || '').trim();
+    if (!cleaned) return true;
+    return isPlanningRegisterText(cleaned)
+      || isPlaceholderStake(cleaned)
+      || cleaned.length > 240
+      || /\bserves\s+the\s+\w+\s+beat\b/i.test(cleaned)
+      || /\bforward\s+pressure\s*:/i.test(cleaned)
+      || /\bcomposed surface slips through a small evasive movement\b/i.test(cleaned)
+      || /\bsmall evasive movement\b/i.test(cleaned)
+      || /\bmaking the subtext visible\b/i.test(cleaned)
+      || /\bposture, glance, and distance make the unspoken tension visible\b/i.test(cleaned)
+      || /\bvisibly changing the balance of the moment\b/i.test(cleaned)
+      || /\bbusy hands betray what the words avoid\b/i.test(cleaned)
+      || /\bvisible gesture, object cue, or shift in distance\b/i.test(cleaned);
+  }
+
+  private fallbackTintFlag(choiceType: string, index: number): string {
+    if (choiceType === 'expression') return index % 2 === 0 ? 'tint:emotion' : 'tint:intuition';
+    if (choiceType === 'relationship') return index % 2 === 0 ? 'tint:teamwork' : 'tint:empathy';
+    if (choiceType === 'strategic') return index % 2 === 0 ? 'tint:pragmatism' : 'tint:intuition';
+    return index % 2 === 0 ? 'tint:sacrifice' : 'tint:caution';
+  }
+
+  private fallbackReactionText(choiceText: string): string {
+    return `${this.ensureSentence(choiceText)} The choice changes the room's next silence.`;
+  }
+
+  private fallbackOutcomeTexts(choiceText: string): { success: string; partial: string; failure: string } {
+    const sentence = this.ensureSentence(choiceText);
+    return {
+      success: `${sentence} The moment yields a clearer emotional footing.`,
+      partial: `${sentence} The moment shifts, but the uncertainty stays close.`,
+      failure: `${sentence} The hesitation leaves a visible complication behind.`,
+    };
+  }
+
+  private fallbackResidueDescription(choiceText: string): string {
+    return `${this.ensureSentence(choiceText)} The scene should echo this as an immediate tonal residue.`;
+  }
+
+  private ensureSentence(text: string): string {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return 'The pressure changes shape.';
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
+  /**
+   * Last-resort fallback for a choiceless BRANCH POINT. Reuses the deterministic
+   * choice-set builder, then routes ≥1 choice to EACH distinct `leadsTo` target so the
+   * planned branch is structurally realized (satisfying GATE_BRANCH_FANOUT) instead of
+   * hard-aborting the episode when ChoiceAuthor fails. Returns undefined for non-branch
+   * scenes (leadsTo < 2 distinct), where a choiceless scene is survivable on its own.
+   */
+  private buildBranchFallbackChoiceSet(
+    sceneBlueprint: SceneBlueprint,
+    choiceBeat: GeneratedBeat | undefined,
+  ): ChoiceSet | undefined {
+    if (!choiceBeat) return undefined;
+    const targets = [...new Set((sceneBlueprint.leadsTo || []).filter(Boolean))];
+    if (targets.length < 2) return undefined; // only branch points need this net
+
+    const base = this.createFallbackChoiceSet(sceneBlueprint, choiceBeat);
+    // Pad to cover every target and route round-robin so each leadsTo target is reached.
+    const choices = routeFallbackChoicesAcrossTargets(base.choices, targets, choiceBeat.id).map((choice) => ({
+      ...choice,
+      choiceIntent: 'branching' as const,
+      consequenceTier: 'structuralBranch' as const,
+      impactFactors: Array.from(new Set<ChoiceImpactFactor>([...(choice.impactFactors || []), 'outcome'])),
+    }));
+    return {
+      ...base,
+      choices,
+      designNotes:
+        `${base.designNotes} Routed across leadsTo targets [${targets.join(', ')}] to preserve the ` +
+        'planned branch after ChoiceAuthor failed for this branch point.',
+    };
+  }
+
+  private stripAgentFacingFidelityText(text: string, fallback: string): string {
+    const cleaned = String(text || '')
+      .split(/\n{2,}|\r?\n/)
+      .map((part) => part.trim())
+      .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
+      .join('\n\n')
+      .trim();
+    if (!cleaned || this.isUnsafeReaderFallbackText(cleaned)) {
+      return this.ensureSentence(fallback || 'The story pressure changes what can happen next.');
+    }
+    return cleaned;
+  }
+
+  private sanitizeSceneContentForReader(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
+    if (!Array.isArray(content.beats)) return;
+    for (const beat of content.beats) {
+      const sceneFallback = sceneBlueprint.description || sceneBlueprint.dramaticQuestion || sceneBlueprint.name || 'The story pressure changes.';
+      beat.text = this.stripAgentFacingFidelityText(
+        beat.text,
+        sceneFallback
+      );
+      beat.visualMoment = this.stripAgentFacingFidelityText(
+        beat.visualMoment || beat.text,
+        beat.text || sceneFallback
+      );
+      beat.primaryAction = this.stripAgentFacingFidelityText(
+        beat.primaryAction || beat.text,
+        beat.text || sceneFallback
+      );
+      beat.emotionalRead = this.stripAgentFacingFidelityText(
+        beat.emotionalRead || '',
+        'The protagonist absorbs the consequence.'
+      );
+      beat.relationshipDynamic = this.stripAgentFacingFidelityText(
+        beat.relationshipDynamic || '',
+        sceneBlueprint.npcsPresent?.length
+          ? 'The relationship pressure changes.'
+          : 'The situation pressure changes.'
+      );
+    }
+  }
+
+  private sanitizeReaderFacingSceneName(name: string | undefined, fallback = 'the next scene'): string {
+    const cleaned = String(name || fallback)
+      .replace(/\s*\((?:[^)]*\b(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b[^)]*)\)\s*/gi, ' ')
+      .replace(/\s*\[(?:[^\]]*\b(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b[^\]]*)\]\s*/gi, ' ')
+      .replace(/\s+-\s*(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b.*$/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return cleaned || fallback;
+  }
+
+  private cleanChoiceBridgeFragment(value: string | undefined): string {
+    return this.sanitizeReaderFacingSceneName(value || '', '')
+      .replace(/\bThe decision carries you\b.*$/i, '')
+      .replace(/\bone concrete step at a time\b\.?/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private ensureBlueprintFidelityText(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
+    const importantBeats = (sceneBlueprint.keyBeats || [])
+      .map((beat) => (beat || '').trim())
+      .filter((beat) => /^(?:pressure|choice pressure|forward pressure):/i.test(beat));
+    if (importantBeats.length === 0) return;
+
+    content.continuityNotes = Array.isArray(content.continuityNotes) ? content.continuityNotes : [];
+    for (const importantBeat of importantBeats) {
+      const note = `Agent-facing fidelity pressure preserved outside reader prose: ${importantBeat}`;
+      if (!content.continuityNotes.includes(note)) {
+        content.continuityNotes.push(note);
+      }
+    }
+
+    if (!content.startingBeatId && content.beats?.[0]) {
+      content.startingBeatId = content.beats[0].id;
+    }
+  }
+
+  private repairSceneGraphBranchingChoices(
+    brief: FullCreativeBrief,
+    worldBible: WorldBible,
+    characterBible: CharacterBible,
+    blueprint: EpisodeBlueprint,
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    encounters: Map<string, EncounterStructure>,
+    context: { phase: string }
+  ): Promise<boolean> {
+    return this.sceneGraphValidation().repairSceneGraphBranchingChoices(
+      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters, context,
+    );
   }
 
   private assertSceneDependencyInvariants(blueprint: EpisodeBlueprint, sceneContents: SceneContent[]): void {
@@ -909,7 +1820,12 @@ export class FullStoryPipeline {
     }
 
     let overallProgress = this.lastTelemetryOverallProgress;
-    if (phaseProgress !== undefined) {
+    if (this.generationPlan) {
+      // Fully unit-weighted: once a structure plan exists it is the authoritative
+      // source for the headline %. The legacy phase ramp below is only used for
+      // analysis-only runs (no plan) and very early single-episode emits.
+      overallProgress = computeOverallProgress(this.generationPlan);
+    } else if (phaseProgress !== undefined) {
       overallProgress = Math.round(phaseStart + ((phaseEnd - phaseStart) * (phaseProgress / 100)));
     } else if (event.type === 'phase_start') {
       overallProgress = phaseStart;
@@ -939,7 +1855,23 @@ export class FullStoryPipeline {
     };
   }
 
+  /**
+   * Emit a snapshot of the current structure plan so the generator UI can render
+   * the episode -> scene -> beat tree. Rides the existing `event.data` channel;
+   * `overallProgress` is recomputed from the plan inside buildProgressTelemetry.
+   */
+  private emitPlanUpdate(message: string): void {
+    if (!this.generationPlan) return;
+    this.emit({
+      type: 'debug',
+      phase: 'content',
+      message,
+      data: { generationPlan: snapshotPlan(this.generationPlan) },
+    });
+  }
+
   private emit(event: Omit<PipelineEvent, 'timestamp'>): void {
+    if (this.generationPlan) applyEventToPlan(this.generationPlan, event);
     const telemetry = event.telemetry || this.buildProgressTelemetry(event);
     const fullEvent: PipelineEvent = { ...event, telemetry, timestamp: new Date() };
     this.events.push(fullEvent);
@@ -951,7 +1883,7 @@ export class FullStoryPipeline {
     }
   }
 
-  private addCheckpoint(phase: string, data: unknown, requiresApproval: boolean): void {
+  private addCheckpoint(phase: string, data: unknown, requiresApproval?: boolean): void {
     const checkpoint: CheckpointData = {
       phase,
       data,
@@ -975,6 +1907,27 @@ export class FullStoryPipeline {
     }
   }
 
+  private recordSceneValidationResult(result: SceneValidationResult): void {
+    const matchesSameScene = (candidate: SceneValidationResult) =>
+      candidate.sceneId === result.sceneId
+      && (candidate.episodeNumber === result.episodeNumber || candidate.episodeNumber === undefined || result.episodeNumber === undefined);
+
+    const localIdx = this.sceneValidationResults.findIndex(matchesSameScene);
+    if (localIdx >= 0) {
+      this.sceneValidationResults[localIdx] = result;
+    } else {
+      this.sceneValidationResults.push(result);
+    }
+
+    for (let idx = this.allSceneValidationResults.length - 1; idx >= 0; idx--) {
+      if (matchesSameScene(this.allSceneValidationResults[idx])) {
+        this.allSceneValidationResults[idx] = result;
+        return;
+      }
+    }
+    this.allSceneValidationResults.push(result);
+  }
+
   private mapCheckpointPhaseToStepId(phase: string): string | null {
     switch (phase) {
       case 'World Bible':
@@ -987,6 +1940,8 @@ export class FullStoryPipeline {
         return 'scene_content';
       case 'Final Story':
         return 'final_story';
+      case 'Output Directory':
+        return 'output_directory';
       default:
         return null;
     }
@@ -996,8 +1951,204 @@ export class FullStoryPipeline {
     resumeCheckpoint: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> } | undefined,
     stepId: string
   ): T | undefined {
+    if (stepId === 'output_directory' && resumeCheckpoint?.outputs?.[stepId]) {
+      return resumeCheckpoint.outputs[stepId] as T;
+    }
     if (resumeCheckpoint?.steps?.[stepId]?.status !== 'completed') return undefined;
     return resumeCheckpoint.outputs?.[stepId] as T | undefined;
+  }
+
+  private episodeCheckpointFile(episodeNumber: number, kind: string, id?: string): string {
+    const safeKind = String(kind || 'artifact').replace(/[^a-z0-9._-]+/gi, '-');
+    const safeId = id ? String(id).replace(/[^a-z0-9._-]+/gi, '-') : undefined;
+    return `checkpoints/episode-${episodeNumber}/${safeId ? `${safeKind}-${safeId}` : safeKind}.json`;
+  }
+
+  private async saveResumeUnit<T>(
+    outputDirectory: string | undefined,
+    unitId: string,
+    artifactPath: string,
+    data: T,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    await saveEarlyDiagnostic(outputDirectory, artifactPath, data);
+    const manifestPath = 'checkpoints/checkpoint-manifest.json';
+    const manifest = loadEarlyDiagnosticSync<{
+      version: 1;
+      generatedAt: string;
+      updatedAt: string;
+      units: Record<string, { status: 'completed'; artifactPath: string; updatedAt: string }>;
+    }>(outputDirectory, manifestPath) || {
+      version: 1 as const,
+      generatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      units: {},
+    };
+    manifest.updatedAt = new Date().toISOString();
+    manifest.units[unitId] = {
+      status: 'completed',
+      artifactPath,
+      updatedAt: manifest.updatedAt,
+    };
+    await saveEarlyDiagnostic(outputDirectory, manifestPath, manifest);
+  }
+
+  private loadResumeUnit<T>(
+    outputDirectory: string | undefined,
+    unitId: string,
+    artifactPath: string,
+  ): T | undefined {
+    if (!outputDirectory) return undefined;
+    const data = loadEarlyDiagnosticSync<T>(outputDirectory, artifactPath);
+    if (data) {
+      this.emit({
+        type: 'debug',
+        phase: 'resume',
+        message: `Resumed ${unitId} from ${artifactPath}`,
+      });
+      return data;
+    }
+    return undefined;
+  }
+
+  private loadContinuationStory(
+    outputDirectory: string | undefined,
+    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> },
+  ): Story | undefined {
+    const checkpointStory = this.getResumeOutput<Story>(resumeCheckpoint, 'final_story_package');
+    if (checkpointStory?.episodes?.length) return checkpointStory;
+
+    const savedStory = this.loadResumeUnit<Story>(
+      outputDirectory,
+      'final_story_package',
+      'checkpoints/final-story-before-save.json',
+    );
+    if (savedStory?.episodes?.length) return savedStory;
+
+    const storyPackage = loadEarlyDiagnosticSync<{ story?: Story } | Story>(outputDirectory as string, 'story.json');
+    if (storyPackage && 'story' in storyPackage && storyPackage.story?.episodes?.length) {
+      return storyPackage.story;
+    }
+    if (storyPackage && 'episodes' in storyPackage && Array.isArray(storyPackage.episodes)) {
+      return storyPackage as Story;
+    }
+    return undefined;
+  }
+
+  private buildStoryGeneratorMetadata(): Record<string, unknown> {
+    const styleAnchors = (this._styleAnchorPaths.character || this._styleAnchorPaths.arcStrip || this._styleAnchorPaths.environment)
+      ? {
+          character: this._styleAnchorPaths.character ? { imagePath: this._styleAnchorPaths.character } : undefined,
+          arcStrip: this._styleAnchorPaths.arcStrip ? { imagePath: this._styleAnchorPaths.arcStrip } : undefined,
+          environment: this._styleAnchorPaths.environment ? { imagePath: this._styleAnchorPaths.environment } : undefined,
+        }
+      : undefined;
+    return {
+      pipeline: 'FullStoryPipeline',
+      artStyle: this.config.artStyle,
+      canonicalArtStyle: this.config.imageGen?.gemini?.canonicalArtStyle || this.config.artStyle,
+      artStyleProfile: this.config.imageGen?.artStyleProfile,
+      styleAnchors,
+      imageProvider: this.config.imageGen?.provider,
+    };
+  }
+
+  private hydrateSeasonImageStyleFromStoryPackage(storyPackage?: { generator?: Record<string, unknown>; story?: Story } | Story | null): void {
+    if (!storyPackage || typeof storyPackage !== 'object') return;
+    const generator = 'generator' in storyPackage && storyPackage.generator && typeof storyPackage.generator === 'object'
+      ? storyPackage.generator
+      : undefined;
+    const story = 'story' in storyPackage && storyPackage.story
+      ? storyPackage.story
+      : ('episodes' in storyPackage ? storyPackage as Story : undefined);
+    this.hydrateSeasonImageStyleFromGenerator(generator, story);
+  }
+
+  private hydrateSeasonImageStyleFromGenerator(generator?: Record<string, unknown>, story?: Story): void {
+    const savedArtStyle = typeof generator?.artStyle === 'string' ? generator.artStyle.trim() : '';
+    const savedCanonicalStyle = typeof generator?.canonicalArtStyle === 'string' ? generator.canonicalArtStyle.trim() : '';
+    const savedProfile = (generator?.artStyleProfile || story?.artStyleProfile) as any;
+    const profileStyle = savedProfile ? composeCanonicalStyleString(savedProfile) : '';
+    const hasSavedStyle = !!(savedArtStyle || savedCanonicalStyle || profileStyle);
+    if (!hasSavedStyle && !generator?.styleAnchors && !story?.styleAnchors) return;
+
+    if (!this.config.imageGen) this.config.imageGen = {};
+    if (!this.config.imageGen.gemini) this.config.imageGen.gemini = {};
+
+    const effectiveStyle = savedArtStyle || savedCanonicalStyle || profileStyle;
+    if (effectiveStyle) {
+      this.config.artStyle = effectiveStyle;
+      this.config.imageGen.gemini.canonicalArtStyle = savedCanonicalStyle || effectiveStyle;
+    }
+    if (savedProfile) {
+      this.config.imageGen.artStyleProfile = savedProfile;
+    }
+
+    const savedAnchors = (generator?.styleAnchors || story?.styleAnchors) as Story['styleAnchors'] | undefined;
+    const preapprovedStyleAnchors = savedAnchors
+      ? {
+          character: savedAnchors.character?.imagePath ? { imagePath: savedAnchors.character.imagePath } : undefined,
+          arcStrip: savedAnchors.arcStrip?.imagePath ? { imagePath: savedAnchors.arcStrip.imagePath } : undefined,
+          environment: savedAnchors.environment?.imagePath ? { imagePath: savedAnchors.environment.imagePath } : undefined,
+        }
+      : undefined;
+    const hasSavedAnchor = !!(
+      preapprovedStyleAnchors?.character ||
+      preapprovedStyleAnchors?.arcStrip ||
+      preapprovedStyleAnchors?.environment
+    );
+
+    if (hasSavedStyle || hasSavedAnchor) {
+      this.config.imageGen.preapprovedStyleAnchors = hasSavedAnchor ? preapprovedStyleAnchors : undefined;
+      this.config.imageGen.uploadedStyleReferences = undefined;
+    }
+    if (preapprovedStyleAnchors?.character?.imagePath) this._styleAnchorPaths.character = preapprovedStyleAnchors.character.imagePath;
+    if (preapprovedStyleAnchors?.arcStrip?.imagePath) this._styleAnchorPaths.arcStrip = preapprovedStyleAnchors.arcStrip.imagePath;
+    if (preapprovedStyleAnchors?.environment?.imagePath) this._styleAnchorPaths.environment = preapprovedStyleAnchors.environment.imagePath;
+
+    if (hasSavedStyle) {
+      this.emit({
+        type: 'info',
+        phase: 'images',
+        message: 'Loaded authoritative season-level image style from saved story package.',
+      });
+    }
+  }
+
+  private applyActiveImageStyleToRuntime(): void {
+    const artStyle = this.config.artStyle;
+    this.encounterImageAgent = new EncounterImageAgent(this.config.agents.storyArchitect, artStyle);
+    this.imageAgentTeam = new ImageAgentTeam(
+      this.config.agents.imagePlanner || this.config.agents.storyArchitect,
+      artStyle
+    );
+    this.imageAgentTeam.setIdentityGateConfig({
+      identityScoreThreshold: this.config.imageGen?.identityScoreThreshold,
+      maxIdentityRegenerations: this.config.imageGen?.maxIdentityRegenerations,
+      resetIdentityBudget: true,
+    });
+    this.videoDirectorAgent = new VideoDirectorAgent(
+      this.config.agents.videoDirector || this.config.agents.storyArchitect,
+      artStyle
+    );
+
+    if (!this.config.imageGen) this.config.imageGen = {};
+    if (!this.config.imageGen.gemini) this.config.imageGen.gemini = {};
+    const canonicalArtStyle = this.config.imageGen.gemini.canonicalArtStyle || artStyle;
+    if (canonicalArtStyle) {
+      this.config.imageGen.gemini.canonicalArtStyle = canonicalArtStyle;
+      this.imageService.updateGeminiSettings({
+        ...this.imageService.getGeminiSettings(),
+        ...(this.config.imageGen.gemini || {}),
+        canonicalArtStyle,
+      });
+    }
+    if (this.config.imageGen.artStyleProfile) {
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    } else if (artStyle?.trim()) {
+      this.config.imageGen.artStyleProfile = buildVerbatimProfile(artStyle);
+      this.imageService.setArtStyleProfile(this.config.imageGen.artStyleProfile);
+    }
   }
 
   private getEpisodeScopedSceneId(brief: FullCreativeBrief, sceneId: string): string {
@@ -1009,8 +2160,694 @@ export class FullStoryPipeline {
     return `${this.getEpisodeScopedSceneId(brief, sceneId)}::${beatId}`;
   }
 
+  private useStoryboardV2ImagePipeline(): boolean {
+    return true;
+  }
+
+  private shouldAttachCompositeCharacterRefs(): boolean {
+    return getReferenceStrategy(this.config.imageGen?.provider).sceneRefs === 'composite-anchor';
+  }
+
+  private async runStoryboardV2ImageGeneration(
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    encounters: Map<string, EncounterStructure>,
+    outputDirectory?: string,
+  ): Promise<{
+    imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> };
+    encounterImageResults: {
+      encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>;
+      storyletImages: Map<string, Map<string, Map<string, string>>>;
+      storyletFailures?: string[];
+    };
+    diagnostics?: StoryboardV2Result['diagnostics'];
+  }> {
+    const storyboard = new StoryboardV2Pipeline({
+      config: this.config,
+      assetRegistry: this.assetRegistry,
+      outputDirectory,
+      emit: (event) => this.emit(event as any),
+      onImageJobEvent: (event) => this.imageService.emitExternalEvent(event),
+    });
+    const result = await storyboard.generateEpisode({
+      brief,
+      sceneContents,
+      choiceSets,
+      characterBible,
+      encounters,
+    });
+    const imageCompleteness = result.diagnostics?.imageCompleteness;
+    const requiredSlotFailures = result.diagnostics?.requiredSlotFailures || [];
+    if (imageCompleteness && !imageCompleteness.complete) {
+      throw new PipelineError(
+        `Storyboard v2 image generation incomplete: ${imageCompleteness.missingRequiredSlotCount} required image slot(s) were not bound.`,
+        'images',
+        {
+          context: {
+            failureKind: 'image_completeness',
+            stepId: 'storyboard_v2_required_slots',
+            resumeFromStepId: 'missing_or_failed_image_slots',
+            outputDirectory,
+            imageCompleteness,
+            requiredSlotFailures,
+          },
+        }
+      );
+    }
+    return {
+      imageResults: {
+        beatImages: result.beatImages,
+        sceneImages: result.sceneImages,
+      },
+      encounterImageResults: result.encounterImageResults,
+      diagnostics: result.diagnostics,
+    };
+  }
+
   private resetAssetRegistry(storyId?: string, persistPath?: string): void {
     this.assetRegistry = new AssetRegistry(storyId, undefined, persistPath);
+  }
+
+  private loadAssetRegistryForImageResume(storyId: string, outputDirectory: string): void {
+    const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
+    const primaryPath = `${normalizedOutputDir}asset-registry.jsonl`;
+    const legacyPath = `${normalizedOutputDir}08-asset-registry.jsonl`;
+    this.assetRegistry = AssetRegistry.fromJSONL(primaryPath, storyId);
+
+    const legacyRegistry = AssetRegistry.fromJSONL(legacyPath, storyId);
+    for (const record of legacyRegistry.values()) {
+      if (record.status !== 'succeeded' || !record.latestUrl) continue;
+      if (this.assetRegistry.getResolvedAsset(record.slot.slotId)) continue;
+      this.assetRegistry.planSlot(record.slot);
+      this.assetRegistry.markSuccess(record.slot.slotId, {
+        prompt: { prompt: `image-resume imported legacy registry record ${record.slot.slotId}` },
+        imageUrl: record.latestUrl,
+        imagePath: record.latestPath || record.latestUrl,
+        provider: record.provider,
+        model: record.model,
+      });
+    }
+  }
+
+  private servedUrlForGeneratedImagePath(imagePath: string): string {
+    const gsIndex = imagePath.indexOf('generated-stories/');
+    if (gsIndex >= 0) return `http://localhost:3001/${imagePath.slice(gsIndex)}`;
+    return imagePath;
+  }
+
+  private async readImageArtifact(imagePath: string): Promise<GeneratedImage | undefined> {
+    if (!imagePath || /\.(txt)$/i.test(imagePath)) return undefined;
+    try {
+      const fs = await import('fs/promises');
+      const buffer = await fs.readFile(imagePath);
+      const lower = imagePath.toLowerCase();
+      const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+        ? 'image/jpeg'
+        : lower.endsWith('.webp')
+          ? 'image/webp'
+          : 'image/png';
+      return {
+        prompt: { prompt: `image-resume hydrated existing file ${imagePath}` },
+        imagePath,
+        imageUrl: this.servedUrlForGeneratedImagePath(imagePath),
+        imageData: buffer.toString('base64'),
+        mimeType,
+        metadata: { hydratedFromDisk: true },
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async findExistingImageArtifact(imagesDir: string, baseIdentifier: string): Promise<GeneratedImage | undefined> {
+    const exact = this.imageService.findExistingGeneratedImage(baseIdentifier);
+    if (exact?.imagePath) {
+      const hydrated = await this.readImageArtifact(exact.imagePath);
+      return {
+        ...(hydrated || { prompt: { prompt: `image-resume reused ${baseIdentifier}` } }),
+        imagePath: exact.imagePath,
+        imageUrl: exact.imageUrl || hydrated?.imageUrl || this.servedUrlForGeneratedImagePath(exact.imagePath),
+      } as GeneratedImage;
+    }
+
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const files = await fs.readdir(imagesDir);
+      const candidates: Array<{ name: string; fullPath: string; mtimeMs: number }> = [];
+      const imageExt = /\.(png|jpg|jpeg|webp)$/i;
+      for (const name of files) {
+        if (!imageExt.test(name)) continue;
+        if (!name.startsWith(`${baseIdentifier}-`)) continue;
+        if (!/-(qa-retry|retry|textfix|repair|recovery|fallback)/i.test(name)) continue;
+        const fullPath = path.join(imagesDir, name);
+        const stat = await fs.stat(fullPath);
+        candidates.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+      }
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return candidates[0] ? this.readImageArtifact(candidates[0].fullPath) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async hydrateReferenceSheetsFromExistingImages(
+    outputDirectory: string,
+    characterBible: CharacterBible,
+  ): Promise<number> {
+    const imagesDir = `${outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`}images/`;
+    let hydrated = 0;
+    for (const char of characterBible.characters || []) {
+      if (this.imageAgentTeam.hasReferenceSheet(char.id)) continue;
+      if (await this.hydrateReferenceSheetFromDisk(char, imagesDir)) hydrated += 1;
+    }
+    return hydrated;
+  }
+
+  private referenceIdentifierBasesForCharacter(char: CharacterProfile): string[] {
+    const candidates = [
+      char.id,
+      idSlugify(char.id),
+      idSlugify(char.name),
+      char.id.replace(/^character[-_]/i, 'char-'),
+      char.id.replace(/^char[-_]/i, 'char-'),
+      `char-${idSlugify(char.name)}`,
+    ];
+    return Array.from(new Set(candidates.filter(Boolean).map((value) => `ref_${value}`)));
+  }
+
+  private async hydrateReferenceSheetFromDisk(char: CharacterProfile, imagesDir?: string): Promise<boolean> {
+    if (this.imageAgentTeam.hasReferenceSheet(char.id)) return true;
+    const resolvedImagesDir = imagesDir
+      || (this._activeImageResumeOutputDirectory
+        ? `${this._activeImageResumeOutputDirectory.endsWith('/') ? this._activeImageResumeOutputDirectory : `${this._activeImageResumeOutputDirectory}/`}images/`
+        : undefined);
+    if (!resolvedImagesDir) return false;
+
+    const views: Array<{ viewType: string; imageData: string; mimeType: string; imageUrl?: string; imagePath?: string }> = [];
+    const bases = this.referenceIdentifierBasesForCharacter(char);
+    for (const viewType of ['face', 'front', 'three-quarter', 'profile', 'composite']) {
+      for (const base of bases) {
+        const image = await this.findExistingImageArtifact(resolvedImagesDir, `${base}_${viewType}`);
+        if (!image?.imageData || !image.mimeType) continue;
+        views.push({
+          viewType,
+          imageData: image.imageData,
+          mimeType: image.mimeType,
+          imageUrl: image.imageUrl,
+          imagePath: image.imagePath,
+        });
+        break;
+      }
+    }
+    if (views.length === 0) return false;
+
+    const identityFingerprint = computeCharacterIdentityFingerprint(char);
+    const didHydrate = this.imageAgentTeam.hydrateReferenceSheetFromExistingImages({
+      characterId: char.id,
+      characterName: char.name,
+      images: views,
+      visualAnchors: [
+        char.physicalDescription,
+        ...(char.distinctiveFeatures || []),
+        char.typicalAttire,
+      ].filter(Boolean) as string[],
+      identityFingerprint,
+    });
+    if (didHydrate) {
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, identityFingerprint);
+      this.emit({
+        type: 'debug',
+        phase: 'reference_sheet',
+        message: `Resume scan hydrated existing reference for ${char.name} (${views.map((view) => view.viewType).join(', ')}); skipping reference regeneration.`,
+      });
+    }
+    return didHydrate;
+  }
+
+  private async hydrateStyleAnchorsFromExistingImages(outputDirectory: string, storyTitle: string): Promise<number> {
+    const imagesDir = `${outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`}images/`;
+    const titleSlug = idSlugify(storyTitle || 'story');
+    let hydrated = 0;
+    const characterAnchor = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'character-anchor'));
+    if (characterAnchor?.imageData && characterAnchor.mimeType) {
+      this._styleAnchorPaths.character = characterAnchor.imagePath;
+      this.imageService.setSeasonStyleReference(characterAnchor.imageData, characterAnchor.mimeType);
+      hydrated += 1;
+    }
+    const arcStrip = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'arc-strip'));
+    if (arcStrip?.imagePath) {
+      this._styleAnchorPaths.arcStrip = arcStrip.imagePath;
+      hydrated += 1;
+    }
+    const environment = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'environment-anchor'));
+    if (environment?.imagePath) {
+      this._styleAnchorPaths.environment = environment.imagePath;
+      hydrated += 1;
+    }
+    return hydrated;
+  }
+
+  private async markSlotFromExistingArtifact(slot: ImageSlot, imagesDir: string): Promise<boolean> {
+    this.assetRegistry.planSlot(slot);
+    if (this.assetRegistry.getResolvedAsset(slot.slotId)?.latestUrl) return true;
+
+    if (slot.continuitySourceSlotId) {
+      const source = this.assetRegistry.getResolvedAsset(slot.continuitySourceSlotId);
+      if (source?.latestUrl) {
+        this.assetRegistry.markSuccess(slot.slotId, {
+          prompt: { prompt: `image-resume linked continuity source ${slot.continuitySourceSlotId}` },
+          imageUrl: source.latestUrl,
+          imagePath: source.latestPath || source.latestUrl,
+          provider: source.provider,
+          model: source.model,
+        });
+        return true;
+      }
+    }
+
+    const artifact = await this.findExistingImageArtifact(imagesDir, slot.baseIdentifier);
+    if (!artifact?.imageUrl) return false;
+    this.assetRegistry.markSuccess(slot.slotId, artifact);
+    return true;
+  }
+
+  private collectPlannedReferenceCharacterIdsForResume(
+    story: Story,
+    characterBible: CharacterBible,
+    encounters: EncounterStructure[],
+  ): string[] {
+    const planned = new Set<string>();
+    const addRaw = (raw: unknown) => {
+      if (typeof raw !== 'string' || !raw.trim()) return;
+      const resolved = this.resolveCharacterId(raw, characterBible);
+      if (resolved) planned.add(resolved);
+    };
+    const addMany = (raw: unknown) => {
+      if (Array.isArray(raw)) {
+        raw.forEach((item) => {
+          if (typeof item === 'string') addRaw(item);
+          else if (item && typeof item === 'object') {
+            const record = item as Record<string, unknown>;
+            addRaw(record.id);
+            addRaw(record.characterId);
+            addRaw(record.npcId);
+            addRaw(record.name);
+          }
+        });
+      } else {
+        addRaw(raw);
+      }
+    };
+    const addVisualCast = (visualCast: unknown) => {
+      if (!visualCast || typeof visualCast !== 'object') return;
+      const record = visualCast as Record<string, unknown>;
+      [
+        'sceneCharacterIds',
+        'activeCharacterIds',
+        'foregroundCharacterIds',
+        'backgroundCharacterIds',
+        'speakerCharacterId',
+        'addressedCharacterIds',
+        'listenerCharacterIds',
+        'observerCharacterIds',
+        'payoffRelevantCharacterIds',
+        'requiredVisibleCharacterIds',
+        'focalCharacterIds',
+      ].forEach((key) => addMany(record[key]));
+    };
+    const scanReferenceKeys = (value: unknown, parentKey = '', depth = 0) => {
+      if (!value || depth > 8) return;
+      if (Array.isArray(value)) {
+        value.forEach((item) => scanReferenceKeys(item, parentKey, depth + 1));
+        return;
+      }
+      if (typeof value !== 'object') return;
+      const record = value as Record<string, unknown>;
+      for (const [key, child] of Object.entries(record)) {
+        const lower = key.toLowerCase();
+        const isCharacterKey =
+          lower.includes('characterid') ||
+          lower.includes('characterids') ||
+          lower.includes('npcid') ||
+          lower.includes('npcids') ||
+          lower === 'speaker' ||
+          lower === 'speakercharacterid' ||
+          lower.includes('participant') ||
+          lower.includes('observer') ||
+          lower.includes('listener') ||
+          lower.includes('addressed') ||
+          lower.includes('payoffrelevant') ||
+          lower.includes('requiredvisible') ||
+          lower.includes('foregroundcharacter') ||
+          lower.includes('backgroundcharacter') ||
+          lower.includes('activecharacter') ||
+          lower.includes('focalcharacter');
+        if (isCharacterKey) addMany(child);
+        if (lower === 'visualcast' || lower === 'coverageplan') addVisualCast(child);
+        scanReferenceKeys(child, lower || parentKey, depth + 1);
+      }
+    };
+
+    for (const char of characterBible.characters || []) {
+      if (char.importance === 'core' || char.importance === 'major' || char.id === characterBible.protagonist?.id) {
+        planned.add(char.id);
+      }
+    }
+
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        const sceneRecord = scene as unknown as Record<string, unknown>;
+        addMany(sceneRecord.charactersInvolved);
+        addMany(sceneRecord.characterIds);
+        addMany(sceneRecord.characters);
+        addMany(sceneRecord.npcIds);
+        addVisualCast(sceneRecord.visualCast);
+        scanReferenceKeys(sceneRecord.encounter, 'encounter');
+        for (const beat of scene.beats || []) {
+          const beatRecord = beat as unknown as Record<string, unknown>;
+          addMany(beatRecord.characters);
+          addMany(beatRecord.characterIds);
+          addMany(beatRecord.npcIds);
+          addRaw(beatRecord.speaker);
+          addRaw(beatRecord.speakerCharacterId);
+          addVisualCast(beatRecord.visualCast);
+          addVisualCast(beatRecord.coveragePlan);
+        }
+        for (const choice of (scene as Scene & { choices?: unknown[] }).choices || []) {
+          scanReferenceKeys(choice, 'choice');
+        }
+      }
+    }
+
+    for (const encounter of encounters || []) {
+      scanReferenceKeys(encounter, 'encounter');
+    }
+
+    return [...planned];
+  }
+
+  private async preflightResumeReferenceSheets(
+    outputDirectory: string,
+    story: Story,
+    characterBible: CharacterBible,
+    encounters: EncounterStructure[],
+    brief: FullCreativeBrief,
+  ): Promise<{
+    plannedReferenceCharacterIds: string[];
+    alreadyAvailableReferenceCharacterIds: string[];
+    hydratedReferenceCharacterIds: string[];
+    generatedReferenceCharacterIds: string[];
+    missingReferenceCharacterIds: string[];
+  }> {
+    const plannedReferenceCharacterIds = this.collectPlannedReferenceCharacterIdsForResume(story, characterBible, encounters);
+    const alreadyAvailableReferenceCharacterIds: string[] = [];
+    const hydratedReferenceCharacterIds: string[] = [];
+    const generatedReferenceCharacterIds: string[] = [];
+    const missingReferenceCharacterIds: string[] = [];
+
+    this.emit({
+      type: 'debug',
+      phase: 'reference_sheet',
+      message: `Resume reference preflight checking ${plannedReferenceCharacterIds.length} planned visible/encounter character(s).`,
+      data: { plannedReferenceCharacterIds },
+    });
+
+    for (const id of plannedReferenceCharacterIds) {
+      await this.checkCancellation();
+      const char = characterBible.characters.find((candidate) => candidate.id === id);
+      if (!char) continue;
+      if (this.imageAgentTeam.hasReferenceSheet(id)) {
+        alreadyAvailableReferenceCharacterIds.push(id);
+        continue;
+      }
+      const hydrated = await this.hydrateReferenceSheetFromDisk(char);
+      if (hydrated || this.imageAgentTeam.hasReferenceSheet(id)) {
+        hydratedReferenceCharacterIds.push(id);
+        continue;
+      }
+
+      this.emit({
+        type: 'warning',
+        phase: 'reference_sheet',
+        message: `Resume reference preflight missing ${char.name}; generating reference before story images continue.`,
+        data: { characterId: id, characterName: char.name },
+      });
+      await this.generateCharacterReferenceSheet(char, brief);
+      const fingerprint = computeCharacterIdentityFingerprint(char);
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
+      if (this.imageAgentTeam.hasReferenceSheet(id)) {
+        generatedReferenceCharacterIds.push(id);
+      } else {
+        missingReferenceCharacterIds.push(id);
+      }
+    }
+
+    await saveEarlyDiagnostic(outputDirectory, 'image-reference-preflight.json', {
+      generatedAt: new Date().toISOString(),
+      plannedReferenceCharacterIds,
+      alreadyAvailableReferenceCharacterIds,
+      hydratedReferenceCharacterIds,
+      generatedReferenceCharacterIds,
+      missingReferenceCharacterIds,
+      plannedReferenceCharacters: plannedReferenceCharacterIds.map((id) => {
+        const char = characterBible.characters.find((candidate) => candidate.id === id);
+        return { id, name: char?.name };
+      }),
+    });
+
+    this.emit({
+      type: 'debug',
+      phase: 'reference_sheet',
+      message: `Resume reference preflight complete: ${alreadyAvailableReferenceCharacterIds.length + hydratedReferenceCharacterIds.length} available, ${generatedReferenceCharacterIds.length} generated, ${missingReferenceCharacterIds.length} missing.`,
+      data: {
+        plannedReferenceCharacterIds,
+        alreadyAvailableReferenceCharacterIds,
+        hydratedReferenceCharacterIds,
+        generatedReferenceCharacterIds,
+        missingReferenceCharacterIds,
+      },
+    });
+
+    return {
+      plannedReferenceCharacterIds,
+      alreadyAvailableReferenceCharacterIds,
+      hydratedReferenceCharacterIds,
+      generatedReferenceCharacterIds,
+      missingReferenceCharacterIds,
+    };
+  }
+
+  private async scanExistingImagesForResume(
+    outputDirectory: string,
+    story: Story,
+    characterBible: CharacterBible,
+    encounters: EncounterStructure[],
+    brief: FullCreativeBrief,
+    options: { targetEpisodeNumber?: number } = {},
+  ): Promise<{
+    totalSlots: number;
+    resolvedSlotsBefore: number;
+    resolvedSlotsAfter: number;
+    hydratedReferenceSheets: number;
+    plannedReferenceCharacterIds: string[];
+    generatedReferenceCharacterIds: string[];
+    missingReferenceCharacterIds: string[];
+    missingSlotIds: string[];
+    completedEncounterBaseIdentifiersByScene: Record<string, string[]>;
+  }> {
+    return this.draftImageEntry().scanExistingImagesForResume(outputDirectory, story, characterBible, encounters, brief, options);
+  }
+
+  private buildImageManifestFromStory(story: Story): ReturnType<DraftImageEntry['buildImageManifestFromStory']> {
+    return this.draftImageEntry().buildImageManifestFromStory(story);
+  }
+
+  private async saveDraftImageManifest(outputDirectory: string | undefined, story: Story): Promise<void> {
+    if (!outputDirectory) return;
+    await saveEarlyDiagnostic(outputDirectory, 'image-manifest.json', this.buildImageManifestFromStory(story));
+  }
+
+  private enforceFinalTreatmentFidelity(params: {
+    story: Story;
+    analysis?: SourceMaterialAnalysis;
+    expectedEpisodeCount?: number;
+    sourceEpisodeCount?: number;
+    isCompleteSeason?: boolean;
+    sourceText?: string;
+  }): void {
+    const result = new TreatmentFidelityValidator().validateFinalStory(params);
+    if (result.valid) return;
+
+    const issues: ValidationIssue[] = result.issues.map((message) => ({
+      category: 'treatment_fidelity',
+      level: 'error',
+      message,
+      location: {},
+      suggestion: 'Preserve the treatment anchor in the generated story, or regenerate the affected episode before saving final output.',
+    }));
+    this.emit({
+      type: 'error',
+      phase: 'treatment_fidelity',
+      message: `Final story treatment fidelity failed with ${issues.length} error(s): ${issues[0]?.message || 'unknown treatment fidelity issue'}`,
+      data: issues,
+    });
+    throw new ValidationError('Final story treatment fidelity failed', issues);
+  }
+
+  private async finalizeImageRunFromRegistry(
+    outputDirectory: string,
+    story: Story,
+    brief: FullCreativeBrief,
+    worldBible: WorldBible,
+    characterBible: CharacterBible,
+    choiceSets: ChoiceSet[],
+    encounters: EncounterStructure[],
+    encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [],
+    terminalReason: 'cancelled' | 'failed' | 'completed' = 'completed',
+    startTime = Date.now(),
+  ): Promise<Story> {
+    const finalStory = this.resolveGeneratedStoryPlayerTemplates(
+      assembleStoryAssetsFromRegistry(story, this.assetRegistry),
+      brief,
+    );
+    finalStory.outputDir = outputDirectory;
+    const imageIntegrity = await this.repairBoundImageReferences(finalStory, outputDirectory);
+    const manifest = this.buildImageManifestFromStory(finalStory);
+    finalStory.imagesStatus = imageIntegrity.unresolved.length > 0
+      ? 'failed'
+      : manifest.imagesStatus;
+    if (terminalReason === 'cancelled' && finalStory.imagesStatus === 'pending') {
+      finalStory.imagesStatus = 'partial';
+    }
+    const visualContractPersistence = this.auditStoryVisualContractPersistence(finalStory);
+
+    await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
+    await saveEarlyDiagnostic(outputDirectory, 'image-integrity-report.json', imageIntegrity);
+    await saveEarlyDiagnostic(outputDirectory, 'visual-contract-persistence-report.json', visualContractPersistence);
+    await this.saveDraftImageManifest(outputDirectory, finalStory);
+
+    await savePipelineOutputs(outputDirectory, {
+      brief,
+      worldBible,
+      characterBible,
+      choiceSets,
+      encounters,
+      finalStory,
+      generator: this.buildStoryGeneratorMetadata(),
+      visualPlanning: this.getCollectedVisualPlanningForSave(),
+      encounterImageDiagnostics,
+      llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+      remediationSummary: this.getRemediationSummary(),
+    }, Date.now() - startTime);
+
+    this.emit({
+      type: terminalReason === 'completed' ? 'debug' : 'warning',
+      phase: 'images',
+      message: `Finalized ${terminalReason} image run from AssetRegistry with imagesStatus=${finalStory.imagesStatus}.`,
+      data: {
+        imagesStatus: finalStory.imagesStatus,
+        registryRecords: this.assetRegistry.values().length,
+        unresolvedImageReferences: imageIntegrity.unresolved.length,
+      },
+    });
+    return finalStory;
+  }
+
+  private async repairBoundImageReferences(story: Story, outputDirectory: string): Promise<{
+    generatedAt: string;
+    checked: number;
+    repaired: Array<{ path: string; from: string; to: string }>;
+    unresolved: Array<{ path: string; value: string; filePath: string }>;
+  }> {
+    return this.draftImageEntry().repairBoundImageReferences(story, outputDirectory);
+  }
+
+  private sceneContentFromStoryScene(scene: Scene): SceneContent {
+    return {
+      sceneId: scene.id,
+      sceneName: scene.name,
+      beats: (scene.beats || []) as unknown as GeneratedBeat[],
+      startingBeatId: scene.startingBeatId || scene.beats?.[0]?.id || '',
+      moodProgression: [],
+      charactersInvolved: scene.charactersInvolved || [],
+      keyMoments: [],
+      continuityNotes: [],
+      sequenceIntent: scene.sequenceIntent,
+      sceneVisualSequencePlan: scene.sceneVisualSequencePlan,
+      branchType: scene.branchType,
+      isBottleneck: scene.isBottleneck,
+      isConvergencePoint: scene.isConvergencePoint,
+    };
+  }
+
+  private auditStoryVisualContractPersistence(story: Story): {
+    passed: boolean;
+    sceneCount: number;
+    scenesWithSequencePlan: number;
+    nonEstablishingBeatCount: number;
+    nonEstablishingBeatsWithCoveragePlan: number;
+    missingScenePlanIds: string[];
+    missingCoverageBeatIds: string[];
+  } {
+    const report = {
+      passed: true,
+      sceneCount: 0,
+      scenesWithSequencePlan: 0,
+      nonEstablishingBeatCount: 0,
+      nonEstablishingBeatsWithCoveragePlan: 0,
+      missingScenePlanIds: [] as string[],
+      missingCoverageBeatIds: [] as string[],
+    };
+
+    for (const episode of story.episodes || []) {
+      for (const scene of episode.scenes || []) {
+        report.sceneCount += 1;
+        if (scene.sceneVisualSequencePlan) {
+          report.scenesWithSequencePlan += 1;
+        } else if ((scene.beats || []).length > 1) {
+          report.missingScenePlanIds.push(scene.id);
+        }
+
+        for (const beat of scene.beats || []) {
+          const isEstablishingBeat = (beat as Beat & { shotType?: string }).shotType === 'establishing'
+            || beat.coveragePlan?.stagingPattern === 'environment';
+          if (isEstablishingBeat) continue;
+          report.nonEstablishingBeatCount += 1;
+          if (beat.coveragePlan) {
+            report.nonEstablishingBeatsWithCoveragePlan += 1;
+          } else {
+            report.missingCoverageBeatIds.push(`${scene.id}::${beat.id}`);
+          }
+        }
+      }
+    }
+
+    report.passed = report.missingScenePlanIds.length === 0 && report.missingCoverageBeatIds.length === 0;
+    return report;
+  }
+
+  async generateImagesForDraft(
+    outputDirectory: string,
+    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> },
+    options: { targetEpisodeNumber?: number } = {},
+  ): Promise<FullPipelineResult> {
+    return this.draftImageGeneration().generateImagesForDraft(outputDirectory, resumeCheckpoint, options);
+  }
+
+  async generateTargetedBeatImagesForDraft(
+    outputDirectory: string,
+    targetSlots: Array<{ episodeNumber: number; sceneId: string; beatId: string }>,
+    options: {
+      skipEncounterImages?: boolean;
+      skipCover?: boolean;
+      skipCharacterRefs?: boolean;
+      skipVisualContractValidation?: boolean;
+    } = {},
+  ): Promise<FullPipelineResult> {
+    return this.draftImageGeneration().generateTargetedBeatImagesForDraft(outputDirectory, targetSlots, options);
   }
 
   private registerStoryImageSlots(
@@ -1068,7 +2905,7 @@ export class FullStoryPipeline {
           ? 'encounter-outcome'
           : 'encounter-situation';
     return {
-      slotId: `${family}:${slot.sceneId}::${slot.beatId}::${slot.choiceMapKey || 'root'}::${slot.tier || 'setup'}`,
+      slotId: `${family}:${slot.scopedSceneId}::${slot.beatId}::${slot.choiceMapKey || 'root'}::${slot.tier || 'setup'}`,
       family,
       imageType: slot.kind === 'setup' ? 'encounter-setup' : 'encounter-outcome',
       sceneId: slot.sceneId,
@@ -1151,7 +2988,7 @@ export class FullStoryPipeline {
       const sceneStoryletImages = encounterImageResults?.storyletImages?.get(sceneId);
       for (const slot of manifest.slots) {
         const registrySlot: ImageSlot = {
-          slotId: `storylet-aftermath:${sceneId}::${slot.outcomeName}::${slot.beatId}`,
+          slotId: `storylet-aftermath:${scopedSceneId}::${slot.outcomeName}::${slot.beatId}`,
           family: 'storylet-aftermath',
           imageType: 'storylet-aftermath',
           sceneId,
@@ -1209,6 +3046,27 @@ export class FullStoryPipeline {
         throw new JobCancelledError(this.jobId);
       }
     }
+    // WS1b: a billing-exhausted provider account fails every later call, so a
+    // latched quota error pauses the run at the next checkpoint regardless of
+    // failure policy — completed episodes survive (watermarks) and the worker
+    // maps this failureKind to a resumable 'paused' job, not a discarded fail.
+    const quotaMessage = BaseAgent.billingQuotaExhausted();
+    if (quotaMessage) {
+      throw new PipelineError(
+        `Provider credit/quota exhausted — pausing run (resume after top-up): ${quotaMessage}`,
+        'provider_quota',
+        { context: { failureKind: 'provider-quota', resumePatchableInputs: ['settings'] } },
+      );
+    }
+    // C4: per-story token ceiling. Abort fast if a runaway retry loop blows the
+    // budget. Disabled unless config.generation.tokenBudgetPerStory is set.
+    const budget = this.config.generation?.tokenBudgetPerStory;
+    if (budget && budget > 0 && this._totalTokensUsed > budget) {
+      throw new Error(
+        `Token budget exceeded: used ${this._totalTokensUsed} tokens > budget ${budget}. ` +
+          `Aborting to prevent runaway cost. Raise generation.tokenBudgetPerStory to allow more.`,
+      );
+    }
   }
 
   /**
@@ -1240,13 +3098,19 @@ export class FullStoryPipeline {
     this.pipelineStartedAtMs = Date.now();
     this.lastTelemetryOverallProgress = 0;
     this.completedPhases = new Set<string>();
+    this.invalidatedResumeEpisodes = new Set<number>();
     this.dependencySchedulerStats = {
       hasCycle: false,
       waveCount: 0,
-      usedParallelScheduling: false,
       fallbackToSerial: false,
     };
+    this.sceneValidationResults = [];
+    this.allSceneValidationResults = [];
+    this.allEncounterTelemetry = [];
+    this.resetQualityCouncil();
+    this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
+    BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     const startTime = Date.now();
 
     // Register this generation job for tracking
@@ -1254,6 +3118,22 @@ export class FullStoryPipeline {
     this.externallyAssignedJobId = null;
     this.totalEpisodes = 1;
     this.currentEpisode = 1;
+    // Seed the structure plan up front so the headline % is driven by real
+    // work units (episodes -> scenes -> beats) from the start. Scenes/beats
+    // fill in once StoryArchitect / SceneWriter run for this episode.
+    this.generationPlan = initPlan({
+      totalEpisodes: 1,
+      episodes: [{
+        number: brief.episode.number,
+        title: brief.episode.title,
+        expectedSceneCount:
+          this.config.generation?.maxScenesPerEpisode ||
+          this.config.generation?.targetSceneCount ||
+          brief.options?.targetSceneCount ||
+          6,
+      }],
+    });
+    this.emitPlanUpdate('Generation plan: 1 episode');
     await registerJob({
       id: this.jobId,
       storyTitle: brief.story.title,
@@ -1265,11 +3145,31 @@ export class FullStoryPipeline {
       currentEpisode: this.currentEpisode,
     });
 
+    // Hoisted above the try so the catch block can reference late-phase
+    // state. Under @ts-nocheck these lived inside the try, so the
+    // JobCancelledError handler hit a ReferenceError before it could
+    // finalize the image registry — a latent bug flushed by typing this file.
+    let worldBible!: WorldBible;
+    let characterBible!: CharacterBible;
+    let story!: Story;
+    let choiceSets!: ChoiceSet[];
+    let encounters!: Map<string, EncounterStructure>;
+    let outputDirectory: string | undefined;
+
     try {
       // Read pipeline optimization memory (prior generation insights)
-      this.cachedPipelineMemory = await this.readPipelineMemory();
+      this.cachedPipelineMemory = await this.recallPipelineMemory();
       if (this.cachedPipelineMemory) {
-        this.emit({ type: 'debug', phase: 'initialization', message: `Loaded pipeline optimization memory (${this.cachedPipelineMemory.length} chars)` });
+        this.emit({
+          type: 'debug',
+          phase: 'initialization',
+          message: `Loaded pipeline memory (${this.cachedPipelineMemory.sourceSnippets.length} snippet(s) from ${this.cachedPipelineMemory.datasetNames.join(', ') || 'configured provider'})`,
+          data: {
+            datasetNames: this.cachedPipelineMemory.datasetNames,
+            queryLog: this.cachedPipelineMemory.queryLog,
+            warnings: this.cachedPipelineMemory.warnings,
+          },
+        });
       }
 
       // === PHASE 1: WORLD BUILDING ===
@@ -1277,7 +3177,7 @@ export class FullStoryPipeline {
       await this.updateJobProgress('world_building', 5);
       this.emit({ type: 'phase_start', phase: 'world', message: 'Phase 1: Building world' });
       const resumedWorldBible = this.getResumeOutput<WorldBible>(resumeCheckpoint, 'world_bible');
-      let worldBible: WorldBible = resumedWorldBible
+      worldBible = resumedWorldBible
         ? resumedWorldBible
         : await this.measurePhase('world_building', () => this.runWorldBuilding(brief));
       this.markPhaseComplete('world_building');
@@ -1325,13 +3225,30 @@ export class FullStoryPipeline {
         brief.episode.startingLocation = worldBible.locations[0].id;
         this.emit({ type: 'debug', phase: 'world', message: `Set starting location to first generated: ${brief.episode.startingLocation}` });
       }
+      await this.writeArtifactMemory({
+        artifactKind: 'world-bible',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'world-building',
+        agentRole: 'WorldBuilder',
+        payload: worldBible,
+        projection: {
+          title: `${brief.story.title} world bible`,
+          summary: `World bible with ${worldBible.locations?.length || 0} location(s), ${worldBible.factions?.length || 0} faction(s), and ${worldBible.worldRules?.length || 0} world rule(s).`,
+          metrics: {
+            locationCount: worldBible.locations?.length || 0,
+            factionCount: worldBible.factions?.length || 0,
+            worldRuleCount: worldBible.worldRules?.length || 0,
+          },
+        },
+      });
 
       // === PHASE 2: CHARACTER DESIGN ===
       await this.checkCancellation();
       this.emit({ type: 'phase_start', phase: 'characters', message: 'Phase 2: Designing characters' });
       this.requirePhases('character_design', ['world_building']);
       const resumedCharacterBible = this.getResumeOutput<CharacterBible>(resumeCheckpoint, 'character_bible');
-      const characterBible: CharacterBible = resumedCharacterBible
+      characterBible = resumedCharacterBible
         ? resumedCharacterBible
         : await this.measurePhase('character_design', () => this.runCharacterDesign(brief, worldBible));
       this.markPhaseComplete('character_design');
@@ -1341,96 +3258,102 @@ export class FullStoryPipeline {
         this.addCheckpoint('Character Bible', characterBible, true);
       }
 
-      // === PHASE 2.5: NPC DEPTH VALIDATION ===
-      if (this.config.validation.enabled && this.config.validation.rules.npcDepth.enabled) {
-        this.emit({ type: 'phase_start', phase: 'npc_validation', message: 'Validating NPC relationship depth' });
-        let npcValidation = await this.npcDepthValidator.validateCast(characterBible.characters);
+      // === PHASE 2.3: CHARACTER BIBLE STRUCTURAL VALIDATION (Phase 2.5 of plan) ===
+      if (this.phaseValidator.isEnabled() && !resumedCharacterBible) {
+        let charValidation = this.phaseValidator.validateCharacterBible(
+          characterBible,
+          brief.protagonist?.id,
+        );
+        let charRetryCount = 0;
+        const charMaxRetries = this.phaseValidator.getMaxRetries();
 
-        if (!npcValidation.passed) {
-          const depthIssues = npcValidation.issues.filter(i => i.level === 'error');
+        while (
+          !charValidation.canProceed &&
+          this.phaseValidator.canRetry('character_design') &&
+          charRetryCount < charMaxRetries
+        ) {
+          charRetryCount++;
+          this.emit({
+            type: 'regeneration_triggered',
+            phase: 'characters',
+            message: `Character bible validation failed (${charValidation.score}/100), retry ${charRetryCount}/${charMaxRetries}: ${charValidation.summary}`,
+            data: charValidation.issues,
+          });
 
-          // === KARPATHY LOOP: Re-run character design with depth feedback ===
-          if (depthIssues.length > 0 && this.config.validation.mode !== 'disabled') {
-            const issueText = depthIssues
-              .map(i => `- ${i.message}${i.suggestion ? ` (fix: ${i.suggestion})` : ''}`)
-              .join('\n');
-
-            this.emit({
-              type: 'regeneration_triggered',
-              phase: 'npc_validation',
-              message: `NPC depth validation failed with ${depthIssues.length} error(s), retrying character design with feedback`,
-            });
-
-            try {
-              const originalBrief = { ...brief };
-              const repairedBrief = {
-                ...originalBrief,
-                userPrompt: `${originalBrief.userPrompt || ''}\n\nCRITICAL NPC DEPTH FIXES REQUIRED:\n${issueText}\n\nEnsure every major NPC has relationship dimensions (trust, affection, respect, fear) initialized. Supporting NPCs need at least 2 dimensions. Core NPCs need all 4.`,
-              };
-
-              const retryCharBible = await this.measurePhase('character_design_retry', () =>
-                this.runCharacterDesign(repairedBrief, worldBible)
-              );
-
-              const retryNpcValidation = await this.npcDepthValidator.validateCast(retryCharBible.characters);
-              const retryDepthErrors = retryNpcValidation.issues.filter(i => i.level === 'error');
-
-              if (retryNpcValidation.passed || retryDepthErrors.length < depthIssues.length) {
-                Object.assign(characterBible, retryCharBible);
-                npcValidation = retryNpcValidation;
-                this.addCheckpoint('Character Bible', characterBible, true);
-                this.emit({
-                  type: 'debug',
-                  phase: 'npc_validation',
-                  message: `NPC depth retry improved: ${depthIssues.length} -> ${retryDepthErrors.length} error(s)`,
-                });
-              } else {
-                this.emit({
-                  type: 'debug',
-                  phase: 'npc_validation',
-                  message: `NPC depth retry did not improve (${retryDepthErrors.length} errors), keeping original`,
-                });
-              }
-            } catch (retryErr) {
-              this.emit({
-                type: 'warning',
-                phase: 'npc_validation',
-                message: `Character design retry for NPC depth failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
-              });
+          try {
+            const retryBible = await this.measurePhase('character_design_retry', () =>
+              this.runCharacterDesign(brief, worldBible),
+            );
+            const retryValidation = this.phaseValidator.validateCharacterBible(
+              retryBible,
+              brief.protagonist?.id,
+            );
+            if (retryValidation.score > charValidation.score) {
+              Object.assign(characterBible, retryBible);
+              charValidation = retryValidation;
+              this.addCheckpoint('Character Bible', characterBible, true);
             }
+          } catch (retryErr) {
+            this.emit({
+              type: 'warning',
+              phase: 'characters',
+              message: `Character design retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            });
+            break;
           }
+        }
 
-          // After repair attempt, check final state
-          const finalDepthIssues = npcValidation.issues.filter(i => i.level === 'error');
-          if (finalDepthIssues.length > 0 && this.config.validation.mode === 'strict') {
-            this.emit({
-              type: 'error',
-              message: `NPC depth requirements not met: ${finalDepthIssues.length} errors`,
-              data: finalDepthIssues,
-            });
-            throw new ValidationError('NPC depth requirements not met', finalDepthIssues);
-          } else if (finalDepthIssues.length > 0) {
-            this.emit({
-              type: 'checkpoint',
-              phase: 'npc_validation',
-              message: `NPC depth validation: ${finalDepthIssues.length} issues remain (advisory mode)`,
-              data: npcValidation,
-            });
-          } else {
-            this.emit({
-              type: 'phase_complete',
-              phase: 'npc_validation',
-              message: 'NPC depth validation passed after repair',
-            });
-          }
+        if (!charValidation.canProceed && this.config.validation.mode === 'strict') {
+          throw new ValidationError(
+            'Character bible validation failed',
+            (charValidation.issues || []).map(i => ({
+              category: 'npc_depth' as const,
+              level: i.severity === 'error' ? 'error' : i.severity === 'warning' ? 'warning' : 'suggestion',
+              message: i.message,
+              location: {},
+              suggestion: i.suggestion,
+            })),
+          );
         } else {
           this.emit({
-            type: 'phase_complete',
-            phase: 'npc_validation',
-            message: 'NPC depth validation passed',
+            type: 'checkpoint',
+            phase: 'characters',
+            message: `Character bible validation: ${charValidation.score}/100 ${charValidation.valid ? '(valid)' : '(advisory issues)'}`,
+            data: charValidation,
           });
         }
       }
+
+      // === PHASE 2.5: NPC DEPTH VALIDATION ===
+      // Extracted to phases/NPCDepthValidationPhase.ts (pure move): the cast
+      // depth gate + the Karpathy character-design retry (adopts via
+      // Object.assign onto the shared characterBible) + strict-mode abort /
+      // advisory checkpoint on the residue.
+      await new NPCDepthValidationPhase({
+        npcDepthValidator: this.npcDepthValidator,
+        rerunCharacterDesign: (repairedBrief, wb) =>
+          this.measurePhase('character_design_retry', () => this.runCharacterDesign(repairedBrief, wb)),
+      }).run(brief, worldBible, characterBible, {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
+      });
+      await this.writeArtifactMemory({
+        artifactKind: 'character-bible',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'character-design',
+        agentRole: 'CharacterDesigner',
+        characterIds: characterBible.characters?.map((character) => character.id) || [],
+        payload: characterBible,
+        projection: {
+          title: `${brief.story.title} character bible`,
+          summary: `Character bible with ${characterBible.characters?.length || 0} character profile(s).`,
+          metrics: {
+            characterCount: characterBible.characters?.length || 0,
+          },
+        },
+      });
 
       // === PHASE 3: EPISODE ARCHITECTURE ===
       await this.checkCancellation();
@@ -1481,6 +3404,30 @@ export class FullStoryPipeline {
           });
         }
       }
+      await this.writeArtifactMemory({
+        artifactKind: 'episode-blueprint',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'episode-architecture',
+        agentRole: 'StoryArchitect',
+        payload: episodeBlueprint,
+        projection: {
+          title: `${brief.story.title} episode ${brief.episode.number} blueprint`,
+          summary: `Episode blueprint with ${episodeBlueprint.scenes?.length || 0} scene(s), ${episodeBlueprint.scenes?.filter((scene) => scene.choicePoint).length || 0} choice point(s), and ${episodeBlueprint.scenes?.filter((scene) => scene.isEncounter).length || 0} encounter scene(s).`,
+          metrics: {
+            sceneCount: episodeBlueprint.scenes?.length || 0,
+            choicePointCount: episodeBlueprint.scenes?.filter((scene) => scene.choicePoint).length || 0,
+            encounterSceneCount: episodeBlueprint.scenes?.filter((scene) => scene.isEncounter).length || 0,
+          },
+        },
+      });
+      await this.qualityCouncil?.runPlan({
+        brief,
+        sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
+        seasonPlan: brief.seasonPlan,
+        episodeBlueprint,
+        notes: 'Single-episode checkpoint after episode architecture and before content generation.',
+      });
 
       // === PHASE 3.5: BRANCH ANALYSIS ===
       this.emit({ type: 'phase_start', phase: 'branch_analysis', message: 'Phase 3.5: Analyzing branch structure' });
@@ -1489,6 +3436,23 @@ export class FullStoryPipeline {
       this.markPhaseComplete('branch_analysis');
       if (branchAnalysis) {
         this.addCheckpoint('Branch Analysis', branchAnalysis, false);
+        await this.writeArtifactMemory({
+          artifactKind: 'branch-analysis',
+          storyId: brief.story.title,
+          episodeNumber: brief.episode.number,
+          lifecycle: 'branch-analysis',
+          agentRole: 'BranchManager',
+          payload: branchAnalysis,
+          projection: {
+            title: `${brief.story.title} episode ${brief.episode.number} branch analysis`,
+            summary: `Branch analysis with ${branchAnalysis.branchPaths?.length || 0} path(s), ${branchAnalysis.reconvergencePoints?.length || 0} reconvergence point(s), and ${branchAnalysis.recommendations?.length || 0} recommendation(s).`,
+            metrics: {
+              branchPathCount: branchAnalysis.branchPaths?.length || 0,
+              reconvergencePointCount: branchAnalysis.reconvergencePoints?.length || 0,
+              recommendationCount: branchAnalysis.recommendations?.length || 0,
+            },
+          },
+        });
         
         // Act on recommendations from branch analysis (recommendations are strings)
         if (branchAnalysis.recommendations && branchAnalysis.recommendations.length > 0) {
@@ -1557,500 +3521,450 @@ export class FullStoryPipeline {
               branchAnalysis || undefined
             )
           );
-      const { sceneContents, choiceSets, encounters } = contentGenerationResult;
+      const { sceneContents } = contentGenerationResult;
+      ({ choiceSets, encounters } = contentGenerationResult);
       this.markPhaseComplete('content_generation');
+      // Mark this single episode complete in the structure plan (covers the
+      // resume path, where setSceneBeats never ran for the cached scenes).
+      if (this.generationPlan) {
+        markEpisode(this.generationPlan, brief.episode.number, 'complete');
+        this.emitPlanUpdate('Episode content complete');
+      }
+      await this.qualityCouncil?.runChoice({
+        brief,
+        seasonPlan: brief.seasonPlan,
+        episodeBlueprint,
+        sceneContents,
+        choiceSets,
+        notes: 'Single-episode checkpoint after ChoiceAuthor and before quick validation.',
+      });
       if (resumedSceneContent) {
         this.emit({ type: 'debug', phase: 'content', message: 'Resumed from durable scene content checkpoint' });
-      } else {
-        this.addCheckpoint(
-          'Scene Content',
-          { sceneContents, choiceSets, encounterCount: encounters.size, encounters: Array.from(encounters.entries()) },
-          true
-        );
-      }
+	      } else {
+	        this.addCheckpoint(
+	          'Scene Content',
+	          { sceneContents, choiceSets, encounterCount: encounters.size, encounters: Array.from(encounters.entries()) },
+	          true
+	        );
+	      }
+	      this.writePipelineMemoryRecord({
+	        kind: 'artifact',
+	        dataset: `${this.config.memory?.runDatasetPrefix || 'storyrpg-run'}-${idSlugify(brief.story.title)}`,
+	        title: `Episode ${brief.episode.number} content generation summary`,
+	        text: [
+	          `Episode: ${brief.episode.number} - ${brief.episode.title}`,
+	          `Scenes authored: ${sceneContents.length}`,
+	          `Choice sets authored: ${choiceSets.length}`,
+	          `Encounters authored: ${encounters.size}`,
+	          this.seasonThreadLedger.threads.length > 0 ? `Thread ledger entries: ${this.seasonThreadLedger.threads.length}` : null,
+	          this.episodeTwistPlans.has(brief.episode.number) ? 'Twist plan: present' : null,
+	          this.episodeArcTargets.has(brief.episode.number) ? 'Character arc targets: present' : null,
+	        ].filter(Boolean).join('\n'),
+	        metadata: {
+	          episodeNumber: brief.episode.number,
+          sceneIds: sceneContents.map((scene) => scene.sceneId),
+	          choiceBeatIds: choiceSets.map((choiceSet) => choiceSet.beatId),
+	          encounterIds: Array.from(encounters.keys()),
+	          threadLedger: this.seasonThreadLedger.threads.length > 0 ? this.seasonThreadLedger : undefined,
+	          twistPlan: this.episodeTwistPlans.get(brief.episode.number),
+	          arcTargets: this.episodeArcTargets.get(brief.episode.number),
+	        },
+	        nodeSet: ['content-generation', 'agent-output', `episode-${brief.episode.number}`],
+	      }).catch(() => {});
+	      await Promise.all([
+	        ...sceneContents.map((scene) => this.writeArtifactMemory({
+	          artifactKind: 'scene-content' as const,
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          sceneId: scene.sceneId,
+	          lifecycle: 'scene-authoring',
+	          agentRole: 'SceneWriter',
+	          characterIds: scene.charactersInvolved || [],
+	          payload: scene,
+	          projection: {
+	            title: `${brief.story.title} ${scene.sceneName || scene.sceneId}`,
+	            summary: `Scene content ${scene.sceneId} with ${scene.beats?.length || 0} beat(s).`,
+	            metrics: { beatCount: scene.beats?.length || 0 },
+	          },
+	        })),
+	        ...choiceSets.map((choiceSet) => this.writeArtifactMemory({
+	          artifactKind: 'choice-set' as const,
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          sceneId: choiceSet.sceneId,
+	          lifecycle: 'choice-authoring',
+	          agentRole: 'ChoiceAuthor',
+	          payload: choiceSet,
+	          projection: {
+	            title: `${brief.story.title} choice set ${choiceSet.beatId}`,
+	            summary: `Choice set for beat ${choiceSet.beatId} with ${choiceSet.choices?.length || 0} choice(s).`,
+	            metrics: { choiceCount: choiceSet.choices?.length || 0 },
+	          },
+	        })),
+	        ...Array.from(encounters.entries()).map(([sceneId, encounter]) => this.writeArtifactMemory({
+	          artifactKind: 'encounter-structure' as const,
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          sceneId,
+	          lifecycle: 'encounter-authoring',
+	          agentRole: 'EncounterArchitect',
+	          payload: encounter,
+	          projection: {
+	            title: `${brief.story.title} encounter ${sceneId}`,
+	            summary: `Encounter structure for scene ${sceneId}.`,
+	            metrics: {},
+	          },
+	        })),
+	        this.seasonThreadLedger.threads.length > 0 ? this.writeArtifactMemory({
+	          artifactKind: 'thread-ledger',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'thread-planning',
+	          agentRole: 'ThreadPlanner',
+	          payload: this.seasonThreadLedger,
+	          projection: {
+	            title: `${brief.story.title} thread ledger`,
+	            summary: `Season thread ledger with ${this.seasonThreadLedger.threads.length} thread(s).`,
+	            metrics: { threadCount: this.seasonThreadLedger.threads.length },
+	          },
+	        }) : Promise.resolve(),
+	        this.episodeTwistPlans.has(brief.episode.number) ? this.writeArtifactMemory({
+	          artifactKind: 'twist-plan',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'twist-planning',
+	          agentRole: 'TwistArchitect',
+	          payload: this.episodeTwistPlans.get(brief.episode.number),
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} twist plan`,
+	            summary: `Twist plan adopted for episode ${brief.episode.number}.`,
+	            metrics: {},
+	          },
+	        }) : Promise.resolve(),
+	        this.episodeArcTargets.has(brief.episode.number) ? this.writeArtifactMemory({
+	          artifactKind: 'arc-targets',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'character-arc-planning',
+	          agentRole: 'CharacterArcTracker',
+	          payload: this.episodeArcTargets.get(brief.episode.number),
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} arc targets`,
+	            summary: `Character arc targets adopted for episode ${brief.episode.number}.`,
+	            metrics: {},
+	          },
+	        }) : Promise.resolve(),
+	      ]);
 
-      // === PHASE 4.5: QUICK VALIDATION ===
-      let quickValidation: QuickValidationResult | undefined;
-      if (this.config.validation.enabled) {
-        this.emit({ type: 'phase_start', phase: 'quick_validation', message: 'Running quick validation' });
-
-        const validationInput = this.prepareValidationInput(
-          sceneContents,
-          choiceSets,
-          characterBible,
-          encounters
-        );
-
-        quickValidation = await this.integratedValidator.runQuickValidation(validationInput);
-
-        if (!quickValidation.canProceed) {
-          // === KARPATHY LOOP: Attempt targeted repair before throwing ===
-          const repairableCategories = new Set(['stakes_triangle', 'five_factor', 'choice_density']);
-          const repairableIssues = quickValidation.blockingIssues.filter(
-            i => repairableCategories.has(i.category)
-          );
-          let repairAttempted = false;
-
-          if (repairableIssues.length > 0) {
-            this.emit({
-              type: 'regeneration_triggered',
-              phase: 'quick_validation',
-              message: `Quick validation failed with ${repairableIssues.length} repairable issue(s), attempting repair`,
-            });
-
-            // --- Repair stakes_triangle and five_factor issues (existing choices) ---
-            const choiceIssues = repairableIssues.filter(
-              i => i.category === 'stakes_triangle' || i.category === 'five_factor'
-            );
-
-            for (const issue of choiceIssues) {
-              const choiceId = issue.location?.choiceId;
-              if (!choiceId) continue;
-
-              const csIdx = choiceSets.findIndex(cs =>
-                cs.choices.some(c => c.id === choiceId)
-              );
-              if (csIdx === -1) continue;
-
-              const cs = choiceSets[csIdx];
-              const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === cs.beatId);
-              if (!beat) continue;
-
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.choicePoint);
-              if (!sceneBlueprint) continue;
-
-              repairAttempted = true;
-              const repairResult = await withTimeout(this.choiceAuthor.execute({
-                sceneBlueprint,
-                beatText: beat.text,
-                beatId: beat.id,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL FIX REQUIRED: ${issue.message}. ${issue.suggestion || ''}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                },
-                npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-                availableFlags: episodeBlueprint.suggestedFlags,
-                availableScores: episodeBlueprint.suggestedScores,
-                availableTags: episodeBlueprint.suggestedTags,
-                possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-                  const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                  return { id, name: scene?.name || id, description: scene?.description || '' };
-                }),
-                optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-              }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
-
-              if (repairResult.success && repairResult.data) {
-                choiceSets[csIdx] = repairResult.data;
-              }
-            }
-
-            // --- Repair choice_density issues (missing choice points) ---
-            const densityIssues = repairableIssues.filter(i => i.category === 'choice_density');
-            if (densityIssues.length > 0) {
-              const scenesWithChoices = new Set(choiceSets.map(cs => {
-                const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === cs.beatId);
-                return beat ? sceneContents.find(sc => sc.beats.includes(beat))?.sceneId : null;
-              }).filter(Boolean));
-
-              const scenesNeedingChoices = episodeBlueprint.scenes
-                .filter(s => s.choicePoint && !scenesWithChoices.has(s.id) && !s.isEncounter)
-                .slice(0, 3);
-
-              for (const targetScene of scenesNeedingChoices) {
-                const sceneContent = sceneContents.find(sc => sc.sceneId === targetScene.id);
-                if (!sceneContent || sceneContent.beats.length === 0) continue;
-
-                const lastBeat = sceneContent.beats[sceneContent.beats.length - 1];
-                this.emit({
-                  type: 'regeneration_triggered',
-                  phase: 'quick_validation',
-                  message: `Generating missing choices for scene ${targetScene.id} (choice density repair)`,
-                });
-
-                repairAttempted = true;
-                const densityRepairResult = await withTimeout(this.choiceAuthor.execute({
-                  sceneBlueprint: targetScene,
-                  beatText: lastBeat.text,
-                  beatId: lastBeat.id,
-                  storyContext: {
-                    title: brief.story.title,
-                    genre: brief.story.genre,
-                    tone: brief.story.tone,
-                    userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL: This scene needs player choices. ${densityIssues.map(i => i.message).join('. ')}`,
-                    worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === targetScene.location)?.fullDescription),
-                  },
-                  protagonistInfo: {
-                    name: brief.protagonist.name,
-                    pronouns: brief.protagonist.pronouns,
-                  },
-                  npcsInScene: this.buildChoiceAuthorNpcs(targetScene.npcsPresent, characterBible),
-                  availableFlags: episodeBlueprint.suggestedFlags,
-                  availableScores: episodeBlueprint.suggestedScores,
-                  availableTags: episodeBlueprint.suggestedTags,
-                  possibleNextScenes: targetScene.leadsTo.map(id => {
-                    const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                    return { id, name: scene?.name || id, description: scene?.description || '' };
-                  }),
-                  optionCount: targetScene.choicePoint?.optionHints?.length || 3,
-                  sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                  memoryContext: this.cachedPipelineMemory || undefined,
-                }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${lastBeat.id} density-repair)`);
-
-                if (densityRepairResult.success && densityRepairResult.data) {
-                  choiceSets.push(densityRepairResult.data);
-                }
-              }
-            }
-
-            if (repairAttempted) {
-              const revalidationInput = this.prepareValidationInput(
-                sceneContents,
-                choiceSets,
-                characterBible,
-                encounters
-              );
-              quickValidation = await this.integratedValidator.runQuickValidation(revalidationInput);
-            }
-          }
-
-          if (!quickValidation.canProceed) {
-            this.emit({
-              type: 'error',
-              phase: 'quick_validation',
-              message: `Quick validation failed${repairAttempted ? ' after repair attempt' : ''}: ${quickValidation.blockingIssues.length} blocking issues`,
-              data: quickValidation.blockingIssues,
-            });
-            throw new ValidationError(
-              'Content validation failed',
-              quickValidation.blockingIssues
-            );
-          }
-        }
-
-        if (quickValidation.canProceed) {
-          this.emit({
-            type: 'phase_complete',
-            phase: 'quick_validation',
-            message: `Quick validation passed (${quickValidation.warningCount} warnings)`,
-          });
-        }
-      }
+	      // === PHASE 4.5: QUICK VALIDATION ===
+      // Extracted to phases/QuickValidationPhase.ts (pure move): the fast
+      // validator gate, incremental POV/voice escalation, targeted repair
+      // (ChoiceAuthor + scoped SceneWriter rewrites), one re-validation, and
+      // the blocking ValidationError. Repairs mutate sceneContents/choiceSets
+      // in place via the shared array refs.
+	      const quickMemoryEvidence = await this.recallValidatorEvidence(
+	        'IntegratedBestPracticesValidator',
+	        'quick-validation',
+	        brief,
+	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	      );
+	      const quickValidation = await this.quickValidationPhase().run(
+	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
+	        {
+	          config: this.config,
+	          emit: this.emit.bind(this),
+	          addCheckpoint: this.addCheckpoint.bind(this),
+	        }
+	      );
+	      if (quickValidation) {
+	        quickValidation.memoryEvidence = [
+	          this.validatorEvidenceService().summarize(quickMemoryEvidence, 'advisory-memory'),
+	        ];
+	        await this.writeArtifactMemory({
+	          artifactKind: 'quick-validation-report',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'quick-validation',
+	          validator: 'IntegratedBestPracticesValidator',
+	          payload: quickValidation,
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} quick validation`,
+	            summary: `Quick validation ${quickValidation.canProceed ? 'passed' : 'failed'} with ${quickValidation.blockingIssues.length} blocking issue(s) and ${quickValidation.warningCount} warning(s).`,
+	            metrics: {
+	              canProceed: quickValidation.canProceed,
+	              blockingIssueCount: quickValidation.blockingIssues.length,
+	              warningCount: quickValidation.warningCount,
+	            },
+	          },
+	        });
+	        this.writeValidatorMemory({
+	          validator: 'IntegratedBestPracticesValidator',
+	          lifecycle: 'quick-validation',
+	          stage: 'quick_validation',
+	          severity: quickValidation.blockingIssues.length > 0 ? 'blocking' : quickValidation.warningCount > 0 ? 'warning' : 'pass',
+	          outcome: quickValidation.canProceed ? 'passed' : 'failed',
+	          storyId: brief.story.title,
+	          repairRoute: 'quick-validation-repair',
+	          findings: {
+	            blockingIssues: quickValidation.blockingIssues.slice(0, 20),
+	            warningCount: quickValidation.warningCount,
+	            executionRecords: quickValidation.executionRecords,
+	            memoryEvidence: quickValidation.memoryEvidence,
+	          },
+	        }).catch(() => {});
+	      }
 
       // === PHASE 5: QUALITY ASSURANCE ===
       await this.checkCancellation();
-      let qaReport: QAReport | undefined;
-      let bestPracticesReport: ComprehensiveValidationReport | undefined;
+      let finalStoryContractReport: FinalStoryContractReport | undefined;
 
-      if (brief.options?.runQA !== false) {
-        this.emit({ type: 'phase_start', phase: 'qa', message: 'Phase 5: Running quality assurance' });
-        this.requirePhases('qa', ['content_generation']);
+      // QA phase extracted to phases/QAPhase.ts (pure move): QARunner + best
+      // practices in parallel, the choice-distribution checkpoint, the
+      // QA-driven targeted repair loop, and the threshold warning. Repairs
+	      // mutate sceneContents/choiceSets in place via the shared array refs.
+	      const qaMemoryEvidence = await this.recallValidatorEvidence(
+	        'IntegratedBestPracticesValidator',
+	        'full-qa',
+	        brief,
+	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	      );
+	      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
+	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
+	        {
+	          config: this.config,
+	          emit: this.emit.bind(this),
+	          addCheckpoint: this.addCheckpoint.bind(this),
+	        }
+	      );
+	      if (bestPracticesReport) {
+	        bestPracticesReport.memoryEvidence = [
+	          this.validatorEvidenceService().summarize(qaMemoryEvidence, 'advisory-memory'),
+	        ];
+	        await this.writeArtifactMemory({
+	          artifactKind: 'qa-report',
+	          storyId: brief.story.title,
+	          episodeNumber: brief.episode.number,
+	          lifecycle: 'full-qa',
+	          validator: 'IntegratedBestPracticesValidator',
+	          payload: bestPracticesReport,
+	          projection: {
+	            title: `${brief.story.title} episode ${brief.episode.number} QA report`,
+	            summary: `QA report score ${bestPracticesReport.overallScore}; ${bestPracticesReport.blockingIssues.length} blocking issue(s), ${bestPracticesReport.warnings.length} warning(s), ${bestPracticesReport.suggestions.length} suggestion(s).`,
+	            metrics: {
+	              overallPassed: bestPracticesReport.overallPassed,
+	              overallScore: bestPracticesReport.overallScore,
+	              blockingIssueCount: bestPracticesReport.blockingIssues.length,
+	              warningCount: bestPracticesReport.warnings.length,
+	              suggestionCount: bestPracticesReport.suggestions.length,
+	            },
+	          },
+	        });
+	        this.writeValidatorMemory({
+	          validator: 'IntegratedBestPracticesValidator',
+	          lifecycle: 'full-qa',
+	          stage: 'qa',
+	          severity: bestPracticesReport.blockingIssues.length > 0 ? 'blocking' : bestPracticesReport.warnings.length > 0 ? 'warning' : 'pass',
+	          outcome: bestPracticesReport.overallPassed ? 'passed' : 'failed',
+	          storyId: brief.story.title,
+	          repairRoute: 'qa-repair',
+	          findings: {
+	            overallScore: bestPracticesReport.overallScore,
+	            blockingIssues: bestPracticesReport.blockingIssues.slice(0, 20),
+	            warnings: bestPracticesReport.warnings.slice(0, 20),
+	            suggestions: bestPracticesReport.suggestions.slice(0, 10),
+	            executionRecords: bestPracticesReport.executionRecords,
+	            memoryEvidence: bestPracticesReport.memoryEvidence,
+	          },
+	        }).catch(() => {});
+	      }
 
-        // Run QA and best practices validation in parallel (including encounters)
-        const validationInput = this.prepareValidationInput(
-          sceneContents,
-          choiceSets,
-          characterBible,
-          encounters
-        );
-
-        const [qaResult, bpResult] = await this.measurePhase('qa', () => Promise.all([
-          this.runQualityAssurance(
-            brief,
-            sceneContents,
-            choiceSets,
-            characterBible,
-            episodeBlueprint
-          ),
-          this.config.validation.enabled
-            ? this.integratedValidator.runFullValidation(validationInput)
-            : Promise.resolve(undefined),
-        ]));
-
-        qaReport = qaResult;
-        bestPracticesReport = bpResult;
-        this.markPhaseComplete('qa');
-
-        this.addCheckpoint('QA Report', qaReport, qaReport.passesQA === false);
-
-        if (bestPracticesReport) {
-          this.addCheckpoint('Best Practices Report', bestPracticesReport, !bestPracticesReport.overallPassed);
-          this.emit({
-            type: 'phase_complete',
-            phase: 'best_practices',
-            message: `Best Practices Score: ${bestPracticesReport.overallScore}/100 - ${bestPracticesReport.overallPassed ? 'PASSED' : 'NEEDS REVIEW'}`,
-            data: {
-              score: bestPracticesReport.overallScore,
-              errors: bestPracticesReport.blockingIssues.length,
-              warnings: bestPracticesReport.warnings.length,
-              suggestions: bestPracticesReport.suggestions.length,
-            },
-          });
-        }
-
-        const threshold = brief.options?.qaThreshold || QA_DEFAULTS.defaultThreshold;
-        const maxQARepairPasses = brief.options?.maxQARepairPasses ?? 2;
-
-        for (let qaRepairPass = 0; qaRepairPass < maxQARepairPasses; qaRepairPass++) {
-          if (qaReport.passesQA || qaReport.criticalIssues.length === 0) break;
-
-          // === KARPATHY LOOP: QA-driven targeted repair ===
-          const previousScore = qaReport.overallScore;
-          this.emit({
-            type: 'phase_start',
-            phase: 'qa_repair',
-            message: `QA repair pass ${qaRepairPass + 1}/${maxQARepairPasses}: score ${qaReport.overallScore}/100, ${qaReport.criticalIssues.length} critical issue(s)`,
-          });
-
-          let repairsMade = 0;
-
-          // Repair scenes with continuity errors
-          if (qaReport.continuity && qaReport.continuity.issues.length > 0) {
-            const errorIssues = qaReport.continuity.issues.filter(i => i.severity === 'error');
-            const affectedSceneIds = new Set(errorIssues.map(i => i.location.sceneId));
-
-            for (const sceneId of affectedSceneIds) {
-              const sceneIssues = errorIssues.filter(i => i.location.sceneId === sceneId);
-              const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneId);
-              if (sceneIdx === -1) continue;
-
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === sceneId);
-              if (!sceneBlueprint || sceneBlueprint.isEncounter) continue;
-
-              const issueText = sceneIssues.map(i => `- ${i.description} (fix: ${i.suggestedFix})`).join('\n');
-              const location = worldBible.locations.find(l => l.id === sceneBlueprint.location);
-              const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-
-              this.emit({
-                type: 'regeneration_triggered',
-                phase: 'qa_repair',
-                message: `Repairing scene ${sceneId}: ${sceneIssues.length} continuity error(s)`,
-              });
-
-              const repairResult = await withTimeout(this.sceneWriter.execute({
-                sceneBlueprint,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL CONTINUITY FIXES REQUIRED:\n${issueText}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                  description: protagonistProfile?.fullBackground || brief.protagonist.description,
-                  physicalDescription: protagonistProfile?.physicalDescription,
-                },
-                npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                  const profile = characterBible.characters.find(c => c.id === npcId);
-                  return {
-                    id: npcId,
-                    name: profile?.name || npcId,
-                    pronouns: profile?.pronouns || 'he/him',
-                    description: profile?.overview || '',
-                    physicalDescription: profile?.physicalDescription,
-                    voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-                    currentMood: profile?.voiceProfile?.whenNervous,
-                  };
-                }),
-                relevantFlags: episodeBlueprint.suggestedFlags,
-                relevantScores: episodeBlueprint.suggestedScores,
-                targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-                  ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-                  : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
-                dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-                incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-              }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} qa-repair-${qaRepairPass + 1})`);
-
-              if (repairResult.success && repairResult.data) {
-                repairResult.data.sceneId = sceneId;
-                repairResult.data.sceneName = repairResult.data.sceneName || sceneBlueprint.name;
-                repairResult.data.locationId = sceneContents[sceneIdx].locationId;
-                repairResult.data.settingContext = sceneContents[sceneIdx].settingContext;
-                repairResult.data.branchType = sceneContents[sceneIdx].branchType;
-                repairResult.data.isBottleneck = sceneContents[sceneIdx].isBottleneck;
-                repairResult.data.isConvergencePoint = sceneContents[sceneIdx].isConvergencePoint;
-                sceneContents[sceneIdx] = repairResult.data;
-                repairsMade++;
-              }
-            }
-          }
-
-          // Repair choices with false choices / weak stakes
-          if (qaReport.stakes && qaReport.stakes.metrics.falseChoiceCount > 0) {
-            const weakChoiceSets = qaReport.stakes.choiceSetAnalysis
-              .filter(cs => cs.stakesScore < 50)
-              .slice(0, 3);
-
-            for (const weakCs of weakChoiceSets) {
-              const csIdx = choiceSets.findIndex(cs => cs.beatId === weakCs.beatId);
-              if (csIdx === -1) continue;
-
-              const sceneBlueprint = episodeBlueprint.scenes.find(s => s.choicePoint);
-              if (!sceneBlueprint) continue;
-
-              const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === weakCs.beatId);
-              if (!beat) continue;
-
-              this.emit({
-                type: 'regeneration_triggered',
-                phase: 'qa_repair',
-                message: `Repairing weak choice set at beat ${weakCs.beatId} (stakes: ${weakCs.stakesScore}/100)`,
-              });
-
-              const repairChoiceResult = await withTimeout(this.choiceAuthor.execute({
-                sceneBlueprint,
-                beatText: beat.text,
-                beatId: beat.id,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - QA found these stakes issues: ${weakCs.analysis}. Improvements needed: ${weakCs.improvements.join('; ')}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                },
-                npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-                availableFlags: episodeBlueprint.suggestedFlags,
-                availableScores: episodeBlueprint.suggestedScores,
-                availableTags: episodeBlueprint.suggestedTags,
-                possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-                  const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                  return { id, name: scene?.name || id, description: scene?.description || '' };
-                }),
-                optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-              }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${weakCs.beatId} qa-repair-${qaRepairPass + 1})`);
-
-              if (repairChoiceResult.success && repairChoiceResult.data) {
-                choiceSets[csIdx] = repairChoiceResult.data;
-                repairsMade++;
-              }
-            }
-          }
-
-          if (repairsMade > 0) {
-            this.emit({
-              type: 'debug',
-              phase: 'qa_repair',
-              message: `Pass ${qaRepairPass + 1}: made ${repairsMade} repair(s), re-running QA`,
-            });
-
-            qaReport = await this.runQualityAssurance(
-              brief, sceneContents, choiceSets, characterBible, episodeBlueprint
-            );
-
-            this.emit({
-              type: 'phase_complete',
-              phase: 'qa_repair',
-              message: `QA repair pass ${qaRepairPass + 1}: ${qaReport.overallScore}/100 (was ${previousScore}/100), ${qaReport.passesQA ? 'PASSES' : 'still below threshold'}`,
-            });
-          } else {
-            this.emit({
-              type: 'phase_complete',
-              phase: 'qa_repair',
-              message: `QA repair pass ${qaRepairPass + 1}: no repairable issues found`,
-            });
-            break;
-          }
-        }
-
-        if (qaReport.overallScore < threshold) {
-          this.emit({
-            type: 'warning',
-            phase: 'qa',
-            message: `QA score ${qaReport.overallScore} below threshold ${threshold} - story may need refinement`,
-          });
-        }
-      }
+      await this.repairWeakCliffhangerBeforeImages(
+        brief,
+        worldBible,
+        characterBible,
+        episodeBlueprint,
+        sceneContents,
+        choiceSets,
+        encounters,
+      );
 
       // === PHASE 5.5: IMAGE GENERATION (single-episode mode) ===
       await this.checkCancellation();
       // Create output directory EARLY so images are saved to the right location
-      let outputDirectory: string | undefined;
+      // (outputDirectory itself is hoisted above the try for the catch block)
       let outputManifest: OutputManifest | undefined;
       let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
       let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
       let encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
       let videoResults: Map<string, string> | undefined;
       let videoDiagnostics: VideoGenerationDiagnostic[] = [];
-      let audioDiagnostics: AudioGenerationDiagnostic[] = [];
+      const audioDiagnostics: AudioGenerationDiagnostic[] = [];
       
       try {
-        outputDirectory = await createOutputDirectory(brief.story.title);
+        const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
+          resumeCheckpoint, 'output_directory'
+        )?.outputDirectory;
+        const artifactRuntime = await new RunArtifactPhase({
+          createOutputDirectory,
+          ensureDirectory,
+          save: saveEarlyDiagnostic,
+          load: loadEarlyDiagnosticSync,
+        }).run(
+          { storyTitle: brief.story.title, resumeOutputDirectory: resumedOutputDir },
+          {
+            config: this.config,
+            emit: this.emit.bind(this),
+            addCheckpoint: this.addCheckpoint.bind(this),
+          },
+        );
+        outputDirectory = artifactRuntime.outputDirectory;
+        const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
+        this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
+        this.applyActiveImageStyleToRuntime();
         this.resetAssetRegistry(idSlugify(brief.story.title));
+        await this.recordArcPressureShadowSafe(brief.seasonPlan, idSlugify(brief.story.title));
         await saveEarlyDiagnostic(outputDirectory, `episode-${brief.episode.number}-blueprint.json`, episodeBlueprint);
 
+        // Phase 6 (Plan Part 9 + Part 10): episode-time charge-materialization gate.
+        // All logic lives in episodeChargeMaterialization (monolith ratchet). Default-off:
+        // no-op unless CONVERGENCE_LEDGER is on; only throws under GATE_CHARGE_MATERIALIZATION.
+        await runEpisodeChargeMaterializationForSeason(
+          brief.seasonPlan,
+          brief.episode.number,
+          choiceSets,
+          (ledger) =>
+            saveEarlyDiagnostic(outputDirectory as string, `episode-${brief.episode.number}-charge-materialization.json`, ledger),
+        );
+
+        await this.repairSceneGraphBranchingChoices(
+          brief,
+          worldBible,
+          characterBible,
+          episodeBlueprint,
+          sceneContents,
+          choiceSets,
+          encounters,
+          { phase: 'branch_repair' }
+        );
+
+        const branchValidationEpisode = this.assembleEpisode(
+          brief,
+          worldBible,
+          characterBible,
+          episodeBlueprint,
+          sceneContents,
+          choiceSets,
+          undefined,
+          encounters,
+          undefined,
+          videoResults
+        );
+        await this.validateSceneGraphBranching(branchValidationEpisode, episodeBlueprint, {
+          phase: 'branch_validation',
+          outputDirectory,
+          artifactName: `episode-${brief.episode.number}-branch-metrics.json`,
+          choiceSets,
+          residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
+        });
         // Set image service output directory to story's images folder
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
-          const imagesDir = outputDirectory + 'images/';
-          this.imageService.setOutputDirectory(imagesDir);
-          this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
-          
-          // Generate master character/location references
-          this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
-          await this.imageWorkerQueue.run(() =>
-            this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
-          );
-          
-          // Generate scene beat images
-          this.emit({ type: 'phase_start', phase: 'images', message: 'Generating scene visuals...' });
-          imageResults = await this.imageWorkerQueue.run(() =>
-            this.measurePhase(
-              'episode_image_generation',
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible)
-            )
-          );
-          
-          // Generate encounter-specific images (beats, outcome choices, and storylet aftermath)
-          if (encounters.size > 0) {
-            try {
-              this.imageService.clearEncounterDiagnostics();
-              await this.runEncounterProviderPreflight(outputDirectory);
-              encounterImageResults = await this.imageWorkerQueue.run(() =>
-                this.measurePhase(
-                  'encounter_image_generation',
-                  () => this.generateEncounterImages(encounters, characterBible, brief, outputDirectory)
-                )
-              );
-              encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
-            } catch (encImgError) {
-              const encImgMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
-              console.error(`[Pipeline] Encounter image generation failed: ${encImgMsg}`);
-              this.emit({ type: 'error', phase: 'encounter_images', message: `Encounter image generation failed: ${encImgMsg}` });
-              encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
-              if (outputDirectory && encounterImageDiagnostics.length > 0) {
-                await saveEncounterImageDiagnosticsLog(outputDirectory, encounterImageDiagnostics);
-              }
-              if (this.isLlmQuotaFailure(encImgError)) throw encImgError;
-              throw new PipelineError(
-                `Encounter image generation failed: ${encImgMsg}`,
-                'encounter_images',
-                {
-                  agent: 'EncounterImageAgent',
-                  context: {
-                    encounterCount: encounters.size,
-                    failureKind: 'image_step',
-                  },
-                  originalError: encImgError instanceof Error ? encImgError : undefined,
+          await this.getScopedAgentMemoryContext('ImageAgentTeam', 'image-generation', brief, {
+            artifactKinds: ['style-bible', 'character-bible', 'scene-content', 'image-diagnostics'],
+            characterIds: characterBible.characters.map((character) => character.id),
+          });
+          if (this.useStoryboardV2ImagePipeline()) {
+            const storyboardResult = await this.imageWorkerQueue.run(() =>
+              this.measurePhase(
+                'storyboard_v2_image_generation',
+                () => this.runStoryboardV2ImageGeneration(sceneContents, choiceSets, brief, characterBible, encounters, outputDirectory),
+              )
+            );
+            imageResults = storyboardResult.imageResults;
+            encounterImageResults = storyboardResult.encounterImageResults;
+          } else {
+            const imagesDir = outputDirectory + 'images/';
+            this.imageService.setOutputDirectory(imagesDir);
+            // Invalidate cached reference sheets if the user has changed art
+            // style since the last run under this output directory. See
+            // ImageGenerationService.reconcileCachedReferenceStyle for why this
+            // matters (otherwise stale refs lock the aesthetic).
+            const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+            if (invalidatedRefs > 0) {
+              this.emit({
+                type: 'debug',
+                phase: 'images',
+                message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
+              });
+            }
+            this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
+            
+            // A10: warm up the color script in parallel with master image
+            // generation. Both are independent (color script is pure text;
+            // master images don't need the script) so overlapping them hides
+            // the color-script latency. `runEpisodeImageGeneration` consumes
+            // the promise below. Failures are swallowed into `undefined` so
+            // the downstream path can still fall back to a fresh call.
+            this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(brief, sceneContents, choiceSets)
+              .catch((err) => {
+                this.emit({
+                  type: 'warning',
+                  phase: 'images',
+                  message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+                });
+                return undefined;
+              });
+
+            // Generate master character/location references
+            this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
+            await this.imageWorkerQueue.run(() =>
+              this.measurePhase('master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, brief))
+            );
+            
+            // Generate scene beat images
+            this.emit({ type: 'phase_start', phase: 'images', message: 'Generating scene visuals...' });
+            imageResults = await this.imageWorkerQueue.run(() =>
+              this.measurePhase(
+                'episode_image_generation',
+                () => this.runEpisodeImageGeneration(sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory)
+              )
+            );
+            
+            // Generate encounter-specific images (beats, outcome choices, and storylet aftermath)
+            if (encounters.size > 0) {
+              try {
+                this.imageService.clearEncounterDiagnostics();
+                await this.runEncounterProviderPreflight(outputDirectory);
+                encounterImageResults = await this.imageWorkerQueue.run(() =>
+                  this.measurePhase(
+                    'encounter_image_generation',
+                    () => this.generateEncounterImages(encounters, characterBible, brief, outputDirectory)
+                  )
+                );
+                encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
+              } catch (encImgError) {
+                const encImgMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
+                console.error(`[Pipeline] Encounter image generation failed: ${encImgMsg}`);
+                this.emit({ type: 'error', phase: 'encounter_images', message: `Encounter image generation failed: ${encImgMsg}` });
+                encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
+                if (outputDirectory && encounterImageDiagnostics.length > 0) {
+                  await saveEncounterImageDiagnosticsLog(outputDirectory, encounterImageDiagnostics);
                 }
-              );
+                if (this.isLlmQuotaFailure(encImgError)) throw encImgError;
+                throw new PipelineError(
+                  `Encounter image generation failed: ${encImgMsg}`,
+                  'encounter_images',
+                  {
+                    agent: 'EncounterImageAgent',
+                    context: {
+                      outputDirectory,
+                      encounterCount: encounters.size,
+                      failureKind: 'image_generation',
+                    },
+                    originalError: encImgError instanceof Error ? encImgError : undefined,
+                  }
+                );
+              }
             }
           }
           
@@ -2058,6 +3972,42 @@ export class FullStoryPipeline {
             type: 'phase_complete', 
             phase: 'images', 
             message: `Generated ${imageResults?.beatImages.size || 0} beat images, ${imageResults?.sceneImages.size || 0} scene images` 
+          });
+          await this.agentMemoryContextBuilder().writeOutcome({
+            role: 'ImageAgentTeam',
+            lifecycle: 'image-generation',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            artifactKinds: ['image-diagnostics'],
+            outcome: 'completed',
+            summary: `Image generation completed with ${imageResults?.beatImages?.size || 0} beat image(s), ${imageResults?.sceneImages?.size || 0} scene image(s), and ${encounterImageDiagnostics.length} encounter diagnostic record(s).`,
+            payload: {
+              beatImageCount: imageResults?.beatImages?.size || 0,
+              sceneImageCount: imageResults?.sceneImages?.size || 0,
+              encounterDiagnosticCount: encounterImageDiagnostics.length,
+            },
+          });
+          await this.writeArtifactMemory({
+            artifactKind: 'image-diagnostics',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            lifecycle: 'image-generation',
+            agentRole: 'ImageAgentTeam',
+            payload: {
+              beatImageCount: imageResults?.beatImages?.size || 0,
+              sceneImageCount: imageResults?.sceneImages?.size || 0,
+              encounterDiagnosticCount: encounterImageDiagnostics.length,
+              encounterImageDiagnostics,
+            },
+            projection: {
+              title: `${brief.story.title} episode ${brief.episode.number} image diagnostics`,
+              summary: `Image diagnostics with ${imageResults?.beatImages?.size || 0} beat image(s), ${imageResults?.sceneImages?.size || 0} scene image(s), and ${encounterImageDiagnostics.length} encounter diagnostic record(s).`,
+              metrics: {
+                beatImageCount: imageResults?.beatImages?.size || 0,
+                sceneImageCount: imageResults?.sceneImages?.size || 0,
+                encounterDiagnosticCount: encounterImageDiagnostics.length,
+              },
+            },
           });
           this.markPhaseComplete('images');
         }
@@ -2078,14 +4028,33 @@ export class FullStoryPipeline {
         if (imgError instanceof PipelineError) {
           throw imgError;
         }
-        // Non-quota image failures remain non-blocking.
         const imgErrorMsg = imgError instanceof Error ? imgError.message : String(imgError);
-        console.warn(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
+        console.error(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
         this.emit({
-          type: 'warning',
+          type: 'error',
           phase: 'images',
-          message: `Image generation failed (non-blocking): ${imgErrorMsg}`,
+          message: `Image generation failed: ${imgErrorMsg}`,
         });
+        if (outputDirectory) {
+          try {
+            await savePipelineErrorLog(outputDirectory, [{
+              timestamp: new Date().toISOString(),
+              phase: 'images',
+              message: imgErrorMsg,
+            }]);
+          } catch { /* best-effort save */ }
+        }
+        throw new PipelineError(
+          `Image generation failed: ${imgErrorMsg}`,
+          'images',
+          {
+            context: {
+              outputDirectory,
+              failureKind: 'image_generation',
+            },
+            originalError: imgError instanceof Error ? imgError : undefined,
+          }
+        );
       }
 
       // === PHASE 5.7: VIDEO GENERATION (optional) ===
@@ -2093,6 +4062,9 @@ export class FullStoryPipeline {
       if (this.config.videoGen?.enabled && imageResults?.beatImages && imageResults.beatImages.size > 0) {
         this.requirePhases('video_generation', ['images']);
         this.emit({ type: 'phase_start', phase: 'video_generation', message: 'Phase 5.7: Generating video animations from still images...' });
+        await this.getScopedAgentMemoryContext('VideoDirectorAgent', 'video-generation', brief, {
+          artifactKinds: ['scene-content', 'image-results', 'video-diagnostics'],
+        });
         try {
           const videosDir = (outputDirectory || './generated-content') + 'videos/';
           this.videoService.setOutputDirectory(videosDir);
@@ -2104,6 +4076,32 @@ export class FullStoryPipeline {
           );
           videoDiagnostics = videoRunResult.diagnostics;
           videoResults = videoRunResult.videoResults;
+          await this.agentMemoryContextBuilder().writeOutcome({
+            role: 'VideoDirectorAgent',
+            lifecycle: 'video-generation',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            artifactKinds: ['video-diagnostics'],
+            outcome: 'completed',
+            summary: `Video generation completed with ${videoResults?.size || 0} clip(s).`,
+            payload: { videoCount: videoResults?.size || 0, diagnostics: videoDiagnostics },
+          });
+          await this.writeArtifactMemory({
+            artifactKind: 'video-diagnostics',
+            storyId: brief.story.title,
+            episodeNumber: brief.episode?.number,
+            lifecycle: 'video-generation',
+            agentRole: 'VideoDirectorAgent',
+            payload: { videoCount: videoResults?.size || 0, diagnostics: videoDiagnostics },
+            projection: {
+              title: `${brief.story.title} episode ${brief.episode.number} video diagnostics`,
+              summary: `Video diagnostics with ${videoResults?.size || 0} generated clip(s) and ${videoDiagnostics.length} diagnostic record(s).`,
+              metrics: {
+                videoCount: videoResults?.size || 0,
+                diagnosticCount: videoDiagnostics.length,
+              },
+            },
+          });
 
           this.emit({
             type: 'phase_complete',
@@ -2131,172 +4129,74 @@ export class FullStoryPipeline {
       // === COVER ART ===
       let storyCoverUrl: string | undefined;
       if (this.config.imageGen?.enabled) {
-        storyCoverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible);
+        storyCoverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, outputDirectory);
       }
 
       // === PHASE 6: ASSEMBLY ===
-      this.emit({ type: 'phase_start', phase: 'assembly', message: 'Phase 6: Assembling final story' });
-      let story = this.assembleStory(
-        brief,
-        worldBible,
-        characterBible,
-        episodeBlueprint,
-        sceneContents,
-        choiceSets,
-        encounters,
-        imageResults,
-        encounterImageResults,
-        storyCoverUrl,
-        videoResults
+      // Extracted to phases/AssemblyPhase.ts (pure move): assembly + registry
+      // asset merge, structural/craft auto-fix, template resolution, the
+      // completeness gate (registry coverage + missing-image walk), asset
+      // HTTP verification, and the deterministic flag-chronology/quote-recall
+      // scans (which escalate onto qaReport in place).
+      story = await this.assemblyPhase().run(
+        {
+          brief, worldBible, characterBible, episodeBlueprint, sceneContents,
+          choiceSets, encounters, imageResults, encounterImageResults,
+          storyCoverUrl, videoResults, outputDirectory, qaReport,
+        },
+        {
+          config: this.config,
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
+        }
       );
-      story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+      await this.writeArtifactMemory({
+        artifactKind: 'story-json',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'assembly',
+        payload: story,
+        projection: {
+          title: `${story.title || brief.story.title} story JSON`,
+          summary: `Assembled story JSON with ${story.episodes?.length || 0} episode(s).`,
+          metrics: {
+            episodeCount: story.episodes?.length || 0,
+            npcCount: story.npcs?.length || 0,
+          },
+        },
+      });
 
-      // === STORYLET / ENCOUNTER IMAGE GAP WARNING (non-fatal) ===
-      // Missing encounter or storylet images are logged but no longer halt the
-      // pipeline. The gaps are already persisted in the run-state files and
-      // AssetRegistry for targeted retry on re-run.
-      if (encounterImageResults?.storyletFailures?.length) {
-        const failMsg = encounterImageResults.storyletFailures.join('; ');
-        console.warn(`[Pipeline] Encounter/storylet image gaps (non-fatal, continuing): ${failMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: `Image gaps (continuing): ${failMsg}` });
-      }
-
-      // === PRE-GENERATION COMPLETENESS GATE ===
-      // Scan the assembled story for any missing images. Encounter images are
-      // mandatory with no fallback. Beat images can fall back to scene backgrounds.
-      if (story) {
-        const registryCoverage = validateRegistryCoverage(story, this.assetRegistry);
-        const missingEncounterImages: string[] = [];
-        const missingBeatImages: string[] = [];
-        for (const episode of story.episodes || []) {
-          for (const scene of episode.scenes || []) {
-            for (const beat of scene.beats || []) {
-              if (!beat.image) {
-                missingBeatImages.push(`beat:${scene.id}::${beat.id}`);
-              }
-            }
-            if (scene.encounter) {
-              missingEncounterImages.push(...collectMissingEncounterImageKeys(scene.id, scene.encounter));
-            }
-          }
-        }
-
-        if (registryCoverage.missingRequiredCoverageKeys.length > 0) {
-          console.error(
-            `[Pipeline] REGISTRY COVERAGE GATE: ${registryCoverage.missingRequiredCoverageKeys.length} required slots unresolved`
-          );
-          throw new PipelineError(
-            `Registry coverage gate failed: ${registryCoverage.missingRequiredCoverageKeys.length} required image slots unresolved`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: registryCoverage.missingRequiredCoverageKeys.length,
-                missingImages: registryCoverage.missingRequiredCoverageKeys.slice(0, 50),
-                failureKind: 'registry_coverage',
-              },
-            }
-          );
-        }
-
-        // Encounter images: hard failure, no fallback
-        if (missingEncounterImages.length > 0) {
-          console.error(`[Pipeline] COMPLETENESS GATE: ${missingEncounterImages.length} ENCOUNTER images missing (mandatory):`);
-          for (const m of missingEncounterImages.slice(0, 20)) {
-            console.error(`[Pipeline]   - ${m}`);
-          }
-          throw new PipelineError(
-            `Encounter image completeness gate failed: ${missingEncounterImages.length} encounter images missing after assembly`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: missingEncounterImages.length,
-                missingImages: missingEncounterImages.slice(0, 50),
-                failureKind: 'encounter_image_mandatory',
-              },
-            }
-          );
-        }
-
-        // Beat images: scene background fallback is acceptable
-        if (missingBeatImages.length > 0) {
-          console.warn(`[Pipeline] PRE-GENERATION COMPLETENESS: ${missingBeatImages.length} beat images missing after assembly:`);
-          for (const m of missingBeatImages.slice(0, 20)) {
-            console.warn(`[Pipeline]   - ${m}`);
-          }
-          this.throwIfFailFast(
-            `Pre-generation completeness gate: ${missingBeatImages.length} beat images missing`,
-            'completeness_gate',
-            {
-              context: {
-                missingCount: missingBeatImages.length,
-                missingImages: missingBeatImages.slice(0, 50),
-                failureKind: 'image_step',
-              },
-            }
-          );
-          for (const episode of story.episodes || []) {
-            for (const scene of episode.scenes || []) {
-              const sceneBackground = scene.backgroundImage;
-              if (sceneBackground) {
-                for (const beat of scene.beats || []) {
-                  if (!beat.image) {
-                    beat.image = sceneBackground;
-                    console.log(`[Pipeline] Assigned scene background as fallback for beat ${beat.id} in ${scene.id}`);
-                  }
-                }
-              }
-            }
-          }
-          const stillMissing: string[] = [];
-          for (const episode of story.episodes || []) {
-            for (const scene of episode.scenes || []) {
-              for (const beat of scene.beats || []) {
-                if (!beat.image) stillMissing.push(`beat:${scene.id}::${beat.id}`);
-              }
-            }
-          }
-          if (stillMissing.length > 0) {
-            throw new PipelineError(
-              `Pre-generation completeness gate failed: ${stillMissing.length} beat images remain after fallback`,
-              'completeness_gate',
-              {
-                context: {
-                  missingCount: stillMissing.length,
-                  missingImages: stillMissing.slice(0, 50),
-                  failureKind: 'image_step',
-                },
-              }
-            );
-          }
-          this.emit({ type: 'warning', phase: 'completeness_gate', message: `${missingBeatImages.length} beat images assigned scene background fallbacks.` });
-        } else {
-          console.log(`[Pipeline] PRE-GENERATION COMPLETENESS: 100% image coverage — all beats and encounters have images.`);
-        }
-      }
-
-      // === DETERMINISTIC FLAG CHRONOLOGY SCAN ===
-      // Walk the assembled story to catch forward-reference paradoxes that the
-      // LLM-based QA may have missed or mis-classified. Any violations become
-      // criticalIssues on the QA report, which would have triggered the repair
-      // loop had they been caught earlier.
-      if (story && qaReport) {
-        const flagIssues = this.runFlagChronologyScan(story);
-        if (flagIssues.length > 0) {
-          for (const issue of flagIssues) {
-            if (!qaReport.criticalIssues.includes(issue)) {
-              qaReport.criticalIssues.push(issue);
-            }
-          }
-          if (qaReport.criticalIssues.length > 0) {
-            qaReport.passesQA = false;
-          }
-          this.emit({
-            type: 'warning',
-            phase: 'qa',
-            message: `Deterministic flag chronology scan found ${flagIssues.length} forward-reference issue(s): ${flagIssues.join('; ')}`,
-          });
-        }
-      }
+      finalStoryContractReport = await this.enforceFinalStoryContract({
+        story,
+        brief,
+        requestedEpisodeNumbers: [brief.episode.number],
+        qaReport,
+        bestPracticesReport,
+        phase: 'final_story_contract',
+        validationScope: {
+          mode: 'generated-slice',
+          requestedEpisodeNumbers: [brief.episode.number],
+          generatedEpisodeNumbers: story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? [brief.episode.number],
+          generatedThroughEpisode: brief.episode.number,
+        },
+      });
+      await this.qualityCouncil?.runRoutePlaytest({
+        brief,
+        story,
+        episodeBlueprint,
+        choiceSets,
+        finalStoryContractReport,
+        notes: 'Single-episode route playtest after final story contract validation.',
+      });
+      await this.qualityCouncil?.runFinal({
+        brief,
+        story,
+        qaReport,
+        bestPracticesReport,
+        finalStoryContractReport,
+        notes: 'Single-episode final council audit before saving.',
+      });
+      this.enforceQualityCouncilStrictMode('quality_council_final');
 
       this.addCheckpoint('Final Story', story, false);
 
@@ -2309,40 +4209,53 @@ export class FullStoryPipeline {
           outputDirectory = await createOutputDirectory(brief.story.title);
         }
         if (story) story.outputDir = outputDirectory;
-        
-        // Prepare visual planning outputs for saving
-        const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
-        
-        const OUTPUT_WRITER_TIMEOUT_MS = 120_000; // 2 minutes max for disk saves
-        const savePromise = savePipelineOutputs(outputDirectory, {
-          brief,
-          worldBible,
-          characterBible,
-          episodeBlueprint,
-          sceneContents,
-          choiceSets,
-          encounters: Array.from(encounters.values()),
-          qaReport,
-          bestPracticesReport,
-          finalStory: story,
-          visualPlanning: visualPlanningOutputs,
-          videoClipsGenerated: videoResults?.size || 0,
-          videoDiagnostics,
-          audioDiagnostics,
-          encounterImageDiagnostics,
-        }, Date.now() - startTime);
 
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`OutputWriter timed out after ${OUTPUT_WRITER_TIMEOUT_MS / 1000}s`)), OUTPUT_WRITER_TIMEOUT_MS)
+        const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
+
+        const savingPhase = new SavingPhase();
+        const savingResult = await savingPhase.run(
+          {
+            outputDirectory,
+            durationMs: Date.now() - startTime,
+            outputs: {
+              brief,
+              worldBible,
+              characterBible,
+              episodeBlueprint,
+              sceneContents,
+              choiceSets,
+              encounters: Array.from(encounters.values()),
+              qaReport,
+              incrementalValidationResults:
+                this.allSceneValidationResults.length > 0 ? this.allSceneValidationResults : undefined,
+              encounterTelemetry:
+                this.encounterTelemetry.length > 0 ? this.encounterTelemetry : undefined,
+              llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+              branchShadowDiffs:
+                this.branchShadowDiffs.length > 0 ? this.branchShadowDiffs : undefined,
+              bestPracticesReport,
+              finalStoryContractReport,
+              qualityCouncilReport: this.qualityCouncil?.getReport(),
+              finalStory: story,
+              visualPlanning: visualPlanningOutputs,
+              videoClipsGenerated: videoResults?.size || 0,
+              videoDiagnostics,
+              audioDiagnostics,
+              encounterImageDiagnostics,
+            },
+          },
+          {
+            config: this.config,
+            emit: this.emit.bind(this),
+            addCheckpoint: this.addCheckpoint.bind(this),
+          }
         );
 
-        outputManifest = await Promise.race([savePromise, timeoutPromise]);
-
-        this.emit({
-          type: 'phase_complete',
-          phase: 'saving',
-          message: `Saved ${outputManifest.files.length} files to ${outputDirectory}`,
-        });
+        if (savingResult.manifest) {
+          outputManifest = savingResult.manifest;
+        } else if (savingResult.error) {
+          console.warn(`[Pipeline] Failed to save outputs: ${savingResult.error.message}`);
+        }
       } catch (saveError) {
         const saveErrorMsg = saveError instanceof Error ? saveError.message : String(saveError);
         console.warn(`[Pipeline] Failed to save outputs: ${saveErrorMsg}`);
@@ -2353,190 +4266,66 @@ export class FullStoryPipeline {
         });
       }
 
-      // Pre-generate audio if enabled (check both enabled flag and preGenerateAudio)
-      await this.checkCancellation();
-      if (this.config.narration?.enabled !== false && this.config.narration?.preGenerateAudio && this.config.narration?.elevenLabsApiKey) {
-        this.requirePhases('audio_generation', ['content_generation']);
-        this.emit({ type: 'phase_start', phase: 'audio_generation', message: 'Pre-generating narration audio...' });
-        try {
-          // Auto-cast voices for characters
-          if (characterBible) {
-            await this.audioService.autoCastVoices(characterBible);
-            audioDiagnostics.push({
-              timestamp: new Date().toISOString(),
-              stage: 'voice_cast',
-              status: 'completed',
-              message: `Auto-cast voices for ${characterBible.characters.length} characters`,
-            });
-          }
-          
-          // Extract all beats and generate audio
-          const beats = this.audioService.extractBeatsForAudio(story);
-          if (beats.length > 0) {
-            const audioResult = await this.audioWorkerQueue.run(() =>
-              this.measurePhase('audio_generation', () => this.audioService.generateStoryAudio(
-                story.id,
-                beats,
-                (completed, total) => {
-                  this.emit({
-                    type: 'agent_start',
-                    phase: 'audio_generation',
-                    message: `Generating audio: ${completed}/${total} beats`,
-                    data: { completed, total, currentItem: completed, totalItems: total, subphaseLabel: 'audio:beats' },
-                  });
-                }
-              ))
-            );
-            const mappedAudioCount = this.bindGeneratedAudioToStory(story, audioResult.results || []);
-            audioDiagnostics.push({
-              timestamp: new Date().toISOString(),
-              stage: 'batch_generation',
-              status: audioResult.success ? 'completed' : 'failed',
-              message: `Audio batch finished: ${audioResult.generated} generated, ${audioResult.cached} cached, ${audioResult.failed} failed`,
-              generated: audioResult.generated,
-              cached: audioResult.cached,
-              failed: audioResult.failed,
-            });
-            audioDiagnostics.push({
-              timestamp: new Date().toISOString(),
-              stage: 'binding',
-              status: mappedAudioCount > 0 ? 'completed' : 'skipped',
-              message: `Mapped audio onto ${mappedAudioCount} beats`,
-              mapped: mappedAudioCount,
-            });
-            for (const result of audioResult.results || []) {
-              if (result?.audioUrl) {
-                audioDiagnostics.push({
-                  timestamp: new Date().toISOString(),
-                  stage: 'binding',
-                  status: 'completed',
-                  message: result.cached ? 'Bound cached audio to beat' : 'Bound generated audio to beat',
-                  beatId: result.beatId,
-                  audioUrl: result.audioUrl,
-                });
-              }
-            }
-            for (const error of audioResult.errors || []) {
-              audioDiagnostics.push({
-                timestamp: new Date().toISOString(),
-                stage: 'batch_generation',
-                status: 'failed',
-                message: error.error,
-                beatId: error.beatId,
-              });
-            }
-            this.emit({
-              type: 'debug',
-              phase: 'audio_generation',
-              message: `Audio complete: ${audioResult.generated} generated, ${audioResult.cached} cached, ${audioResult.failed} failed, ${mappedAudioCount} beats mapped`,
-              data: {
-                generated: audioResult.generated,
-                cached: audioResult.cached,
-                failed: audioResult.failed,
-                mappedAudioCount,
-              },
-            });
-            if (outputDirectory) {
-              const savedAudioDiagnostics = await saveAudioDiagnosticsLog(outputDirectory, audioDiagnostics);
-              if (savedAudioDiagnostics) {
-                await updateOutputManifest(outputDirectory, {
-                  file: {
-                    name: 'Audio Diagnostics',
-                    path: savedAudioDiagnostics.path,
-                    type: 'audio_diagnostics',
-                    size: savedAudioDiagnostics.size,
-                  },
-                  summary: {
-                    audioDiagnosticsCount: audioDiagnostics.length,
-                  },
-                });
-              }
-              await fetch(PROXY_CONFIG.writeFile, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  filePath: `${outputDirectory}08-final-story.json`,
-                  content: JSON.stringify(story, null, 2),
-                  isBase64: false,
-                }),
-              });
-            }
-          } else {
-            audioDiagnostics.push({
-              timestamp: new Date().toISOString(),
-              stage: 'gate',
-              status: 'skipped',
-              message: 'No beats found that required narration audio',
-            });
-            if (outputDirectory) {
-              const savedAudioDiagnostics = await saveAudioDiagnosticsLog(outputDirectory, audioDiagnostics);
-              if (savedAudioDiagnostics) {
-                await updateOutputManifest(outputDirectory, {
-                  file: {
-                    name: 'Audio Diagnostics',
-                    path: savedAudioDiagnostics.path,
-                    type: 'audio_diagnostics',
-                    size: savedAudioDiagnostics.size,
-                  },
-                  summary: {
-                    audioDiagnosticsCount: audioDiagnostics.length,
-                  },
-                });
-              }
-            }
-          }
-          this.emit({ type: 'phase_complete', phase: 'audio_generation', message: `Audio narration generated for ${beats.length} beats` });
-          this.markPhaseComplete('audio_generation');
-        } catch (audioError) {
-          const audioErrMsg = audioError instanceof Error ? audioError.message : String(audioError);
-          audioDiagnostics.push({
-            timestamp: new Date().toISOString(),
-            stage: 'batch_generation',
-            status: 'failed',
-            message: audioErrMsg,
-          });
-          console.warn(`[Pipeline] Audio generation failed: ${audioErrMsg}`);
-          this.emit({ type: 'warning', phase: 'audio_generation', message: `Audio generation failed (non-blocking): ${audioErrMsg}` });
-          if (outputDirectory) {
-            const savedAudioDiagnostics = await saveAudioDiagnosticsLog(outputDirectory, audioDiagnostics);
-            if (savedAudioDiagnostics) {
-              await updateOutputManifest(outputDirectory, {
-                file: {
-                  name: 'Audio Diagnostics',
-                  path: savedAudioDiagnostics.path,
-                  type: 'audio_diagnostics',
-                  size: savedAudioDiagnostics.size,
-                },
-                summary: {
-                  audioDiagnosticsCount: audioDiagnostics.length,
-                },
-              });
-            }
-          }
+      // Audio pre-generation extracted to phases/AudioPhase.ts (pure move);
+      // gate condition, events, diagnostics, and the story.json package rewrite
+      // all live there now.
+      await this.getScopedAgentMemoryContext('AudioGenerationService', 'audio-generation', brief, {
+        artifactKinds: ['story-json', 'character-bible', 'audio-diagnostics'],
+        characterIds: characterBible.characters.map((character) => character.id),
+      });
+      await new AudioPhase({
+        audioService: this.audioService,
+        audioWorkerQueue: this.audioWorkerQueue,
+        requirePhases: this.requirePhases.bind(this),
+        markPhaseComplete: this.markPhaseComplete.bind(this),
+        measurePhase: this.measurePhase.bind(this),
+        checkCancellation: () => this.checkCancellation(),
+      }).run(
+        { story, characterBible, outputDirectory, audioDiagnostics },
+        {
+          config: this.config,
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
         }
-      } else {
-        audioDiagnostics.push({
-          timestamp: new Date().toISOString(),
-          stage: 'gate',
-          status: 'skipped',
-          message: `Audio generation skipped: enabled=${this.config.narration?.enabled !== false}, preGenerateAudio=${!!this.config.narration?.preGenerateAudio}, hasApiKey=${!!this.config.narration?.elevenLabsApiKey}`,
-        });
-        if (outputDirectory) {
-          const savedAudioDiagnostics = await saveAudioDiagnosticsLog(outputDirectory, audioDiagnostics);
-          if (savedAudioDiagnostics) {
-            await updateOutputManifest(outputDirectory, {
-              file: {
-                name: 'Audio Diagnostics',
-                path: savedAudioDiagnostics.path,
-                type: 'audio_diagnostics',
-                size: savedAudioDiagnostics.size,
-              },
-              summary: {
-                audioDiagnosticsCount: audioDiagnostics.length,
-              },
-            });
+      );
+      await this.agentMemoryContextBuilder().writeOutcome({
+        role: 'AudioGenerationService',
+        lifecycle: 'audio-generation',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode?.number,
+        artifactKinds: ['audio-diagnostics'],
+        outcome: 'completed',
+        summary: `Audio phase completed with ${audioDiagnostics.length} diagnostic record(s).`,
+        payload: { diagnosticCount: audioDiagnostics.length, diagnostics: audioDiagnostics },
+      });
+      await this.writeArtifactMemory({
+        artifactKind: 'audio-diagnostics',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode?.number,
+        lifecycle: 'audio-generation',
+        agentRole: 'AudioGenerationService',
+        payload: { diagnosticCount: audioDiagnostics.length, diagnostics: audioDiagnostics },
+        projection: {
+          title: `${brief.story.title} episode ${brief.episode.number} audio diagnostics`,
+          summary: `Audio diagnostics with ${audioDiagnostics.length} diagnostic record(s).`,
+          metrics: { diagnosticCount: audioDiagnostics.length },
+        },
+      });
+
+      // Browser QA extracted to phases/BrowserQAPhase.ts (pure move). The
+      // phase may replace `story` (assets reassembled during remediation).
+      if (story && outputDirectory && this.config.validation?.playwrightQA !== false) {
+        story = await new BrowserQAPhase({
+          imageService: this.imageService,
+          assetRegistry: this.assetRegistry,
+        }).run(
+          { story, storyTitle: brief.story.title || '', outputDirectory },
+          {
+            config: this.config,
+            emit: this.emit.bind(this),
+            addCheckpoint: this.addCheckpoint.bind(this),
           }
-        }
+        );
       }
 
       this.emit({ type: 'phase_complete', phase: 'complete', message: 'Story generation complete!' });
@@ -2658,6 +4447,26 @@ export class FullStoryPipeline {
       // Handle job cancellation
       if (error instanceof JobCancelledError) {
         this.emit({ type: 'error', message: 'Generation cancelled by user' });
+        if (outputDirectory && story && brief && worldBible && characterBible) {
+          await this.finalizeImageRunFromRegistry(
+            outputDirectory,
+            story,
+            brief,
+            worldBible,
+            characterBible,
+            choiceSets || [],
+            Array.from(encounters?.values?.() || []),
+            [],
+            'cancelled',
+            startTime,
+          ).catch((finalizeErr) => {
+            this.emit({
+              type: 'warning',
+              phase: 'images',
+              message: `Failed to finalize cancelled pipeline from registry: ${finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr)}`,
+            });
+          });
+        }
       } else {
         this.emit({ type: 'error', message: `Pipeline failed: ${errorMessage}` });
         if (this.jobId) {
@@ -2684,1760 +4493,263 @@ export class FullStoryPipeline {
     }
   }
 
+  // Extracted to phases/WorldBuildingPhase.ts (pure move). This thin wrapper
+  // keeps all three call sites (single-episode, world retry, multi-episode)
+  // unchanged while the body lives in the typed phase module.
   private async runWorldBuilding(brief: FullCreativeBrief): Promise<WorldBible> {
-    this.emit({ type: 'agent_start', agent: 'WorldBuilder', message: 'Creating world bible' });
-
-    // Debug: Log the locations being sent to WorldBuilder
-    this.emit({ type: 'debug', phase: 'world', message: `Sending ${brief.world.keyLocations.length} locations to WorldBuilder` });
-    if (this.config.debug) {
-      brief.world.keyLocations.forEach((loc, i) => {
-        this.emit({ type: 'debug', phase: 'world', message: `  ${i + 1}. ${loc.id}: "${loc.name}" (${loc.importance})` });
-      });
-    }
-    this.emit({ type: 'debug', phase: 'world', message: `Starting location ID: ${brief.episode.startingLocation}` });
-
-    const result = await withTimeout(this.worldBuilder.execute({
-      storyContext: {
-        ...brief.story,
-        userPrompt: brief.userPrompt,
-      },
-      worldPremise: brief.world.premise,
-      timePeriod: brief.world.timePeriod,
-      technologyLevel: brief.world.technologyLevel,
-      magicSystem: brief.world.magicSystem,
-      locationsToCreate: brief.world.keyLocations.map(loc => ({
-        id: loc.id,
-        name: loc.name,
-        type: loc.type,
-        briefDescription: loc.description,
-        importance: loc.importance,
-      })),
-      rawDocument: brief.rawDocument,
-      memoryContext: this.cachedPipelineMemory || undefined,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'WorldBuilder.execute');
-
-    if (!result.success || !result.data) {
-      console.error(`[Pipeline] World Builder failed with error:`, result.error);
-      throw new PipelineError(
-        `World Builder failed: ${result.error}`,
-        'world_building',
-        {
-          agent: 'WorldBuilder',
-          context: {
-            locationsRequested: brief.world.keyLocations.length,
-            premise: brief.world.premise?.substring(0, 100),
-          },
-        }
-      );
-    }
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'WorldBuilder',
-      message: `Created ${result.data.locations.length} locations, ${result.data.factions.length} factions`,
+    const memoryContext = await this.getScopedAgentMemoryContext('WorldBuilder', 'world-building', brief, {
+      artifactKinds: ['source-analysis', 'season-plan'],
     });
-
-    return result.data;
+    return new WorldBuildingPhase(this.worldBuilder).run(
+      {
+        story: brief.story,
+        userPrompt: brief.userPrompt,
+        world: brief.world,
+        startingLocationId: brief.episode.startingLocation,
+        rawDocument: brief.rawDocument,
+        memoryContext: memoryContext || undefined,
+        locationIntroductions: brief.seasonPlan?.locationIntroductions,
+        debug: this.config.debug,
+      },
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
+      }
+    );
   }
 
+  // Extracted to phases/CharacterDesignPhase.ts (pure move). Thin delegating
+  // wrapper keeps all three call sites (initial design, PhaseValidator retry,
+  // the NPC-depth Karpathy retry) unchanged; cachedPipelineMemory is
+  // accessor-backed.
   private async runCharacterDesign(
     brief: FullCreativeBrief,
     worldBible: WorldBible
   ): Promise<CharacterBible> {
-    this.emit({ type: 'agent_start', agent: 'CharacterDesigner', message: 'Designing characters' });
-
-    const protagonistEntry = {
-      id: brief.protagonist.id,
-      name: brief.protagonist.name,
-      role: 'protagonist' as const,
-      briefDescription: brief.protagonist.description,
-      importance: 'major' as const,
-    };
-
-    // Deduplicate: filter any NPC that shares an ID or name with the protagonist
-    const protId = brief.protagonist.id;
-    const protName = brief.protagonist.name?.toLowerCase();
-    const npcEntries = brief.npcs
-      .filter(npc => npc.id !== protId && npc.name?.toLowerCase() !== protName)
-      .map(npc => ({
-        id: npc.id,
-        name: npc.name,
-        role: npc.role,
-        briefDescription: npc.description,
-        importance: npc.importance,
-      }));
-
-    const charactersToCreate = [protagonistEntry, ...npcEntries];
-
-    const result = await withTimeout(this.characterDesigner.execute({
-      storyContext: {
-        title: brief.story.title,
-        genre: brief.story.genre,
-        tone: brief.story.tone,
-        themes: brief.story.themes,
-        userPrompt: brief.userPrompt,
-      },
-      charactersToCreate,
-      worldContext: worldBible.worldRules.join('. '),
-      culturalNotes: worldBible.customs,
-      rawDocument: brief.rawDocument,
-      memoryContext: this.cachedPipelineMemory || undefined,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'CharacterDesigner.execute');
-
-    if (!result.success || !result.data) {
-      throw new PipelineError(
-        `Character Designer failed: ${result.error}`,
-        'character_design',
-        {
-          agent: 'CharacterDesigner',
-          context: {
-            charactersRequested: charactersToCreate.length,
-            characterNames: charactersToCreate.map(c => c.name),
-          },
-        }
-      );
-    }
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'CharacterDesigner',
-      message: `Created ${result.data.characters.length} character profiles`,
+    const memoryContext = await this.getScopedAgentMemoryContext('CharacterDesigner', 'character-design', brief, {
+      artifactKinds: ['source-analysis', 'world-bible'],
+      characterIds: [brief.protagonist.id, ...brief.npcs.map((npc) => npc.id)],
     });
-
-    return result.data;
+    const deps = { characterDesigner: this.characterDesigner } satisfies Partial<CharacterDesignPhaseDeps> as unknown as CharacterDesignPhaseDeps;
+    Object.defineProperties(deps, {
+      cachedPipelineMemory: { get: () => memoryContext || this.renderedPipelineMemory },
+    });
+    return new CharacterDesignPhase(deps).run(brief, worldBible, {
+      config: this.config,
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
+    });
   }
 
+  // Extracted to phases/EpisodeArchitecturePhase.ts (pure move). Thin
+  // delegating wrapper keeps both call sites (initial + PhaseValidator retry)
+  // unchanged; seasonChoicePlan (written by the phase), generationPlan,
+  // architectAdvisoryWarnings, and cachedPipelineMemory are accessor-backed.
   private async runEpisodeArchitecture(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
     characterBible: CharacterBible
   ): Promise<EpisodeBlueprint> {
-    this.emit({ type: 'agent_start', agent: 'StoryArchitect', message: 'Creating episode blueprint' });
-
-    const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-
-    // Build season plan directives for this specific episode
-    const seasonPlanDirectives = buildSeasonPlanDirectives(brief, (message) => {
-      console.warn(
-        `[Pipeline] Season plan has no entry for episode ${brief.episode.number} — available episodes: ${brief.seasonPlan?.episodes.map((e) => e.episodeNumber).join(', ')}`,
-      );
-      this.emit({ type: 'warning', phase: 'architecture', message });
+    const memoryContext = await this.getScopedAgentMemoryContext('StoryArchitect', 'episode-architecture', brief, {
+      artifactKinds: ['source-analysis', 'season-plan', 'world-bible', 'character-bible'],
+      characterIds: characterBible.characters.map((character) => character.id),
     });
-    if (seasonPlanDirectives) {
-      const encCount = seasonPlanDirectives.plannedEncounters?.length || 0;
-      const branchCount = seasonPlanDirectives.incomingBranchEffects?.length || 0;
-      this.emit({ 
-        type: 'debug', 
-        phase: 'architecture', 
-        message: `Season plan directives: ${encCount} planned encounters, ${branchCount} incoming branch effects, difficulty: ${seasonPlanDirectives.difficultyTier || 'unset'}`
-      });
-    }
-
-    const result = await withTimeout(this.storyArchitect.execute({
-      storyTitle: brief.story.title,
-      genre: brief.story.genre,
-      synopsis: brief.story.synopsis,
-      tone: brief.story.tone,
-      userPrompt: brief.userPrompt,
-      episodeNumber: brief.episode.number,
-      episodeTitle: brief.episode.title,
-      episodeSynopsis: brief.episode.synopsis,
-      protagonistDescription: protagonistProfile?.fullBackground || brief.protagonist.description,
-      availableNPCs: characterBible.characters
-        .filter(c => c.id !== brief.protagonist.id)
-        .map(c => ({
-          id: c.id,
-          name: c.name,
-          description: c.overview,
-          relationshipContext: c.relationships.find(r => r.targetId === brief.protagonist.id)?.currentDynamic,
-          initialRelationship: c.initialStats,
-        })),
-      worldContext: worldBible.worldRules.join('. ') + ' ' + worldBible.tensions.join('. '),
-      currentLocation: brief.episode.startingLocation,
-      previousEpisodeSummary: brief.episode.previousSummary,
-      targetSceneCount: brief.multiEpisode?.preferences?.targetScenesPerEpisode || this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || brief.options?.targetSceneCount || 6,
-      majorChoiceCount: brief.multiEpisode?.preferences?.targetChoicesPerEpisode || this.config.generation?.majorChoiceCount || brief.options?.majorChoiceCount || 2,
-      pacing: brief.multiEpisode?.preferences?.pacing,
-      seasonPlanDirectives,
-      memoryContext: this.cachedPipelineMemory || undefined,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'StoryArchitect.execute');
-
-    if (!result.success || !result.data) {
-      throw new PipelineError(
-        `Story Architect failed: ${result.error}`,
-        'episode_architecture',
-        {
-          agent: 'StoryArchitect',
-          context: {
-            episodeNumber: brief.episode.number,
-            episodeTitle: brief.episode.title,
-            hasSeasonPlanDirectives: !!seasonPlanDirectives,
-          },
-        }
-      );
-    }
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'StoryArchitect',
-      message: `Created blueprint with ${result.data.scenes.length} scenes`,
+    const deps = {
+      storyArchitect: this.storyArchitect,
+      emitPlanUpdate: this.emitPlanUpdate.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
+    } satisfies Partial<EpisodeArchitecturePhaseDeps> as unknown as EpisodeArchitecturePhaseDeps;
+    Object.defineProperties(deps, {
+      cachedPipelineMemory: { get: () => memoryContext || this.renderedPipelineMemory },
+      generationPlan: { get: () => this.generationPlan },
+      architectAdvisoryWarnings: { get: () => this.architectAdvisoryWarnings },
+      seasonChoicePlan: {
+        get: () => this.seasonChoicePlan,
+        set: (value) => { this.seasonChoicePlan = value; },
+      },
     });
+    return new EpisodeArchitecturePhase(deps).run(brief, worldBible, characterBible, {
+      config: this.config,
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
+    });
+  }
 
-    return result.data;
+  private getTargetBeatCountForScene(sceneBlueprint: SceneBlueprint): number {
+    // LEVER B3: clamp the computed target to a hard ceiling (default 10) so an
+    // outlier blueprint can't produce a pathologically large single scene call.
+    const cap = this.config.generation?.maxBeatsPerScene || MAX_BEATS_PER_SCENE;
+    if (sceneBlueprint.recommendedBeatCount) {
+      return clampTargetBeatCount(sceneBlueprint.recommendedBeatCount, cap);
+    }
+    return clampTargetBeatCount(sceneBlueprint.purpose === 'bottleneck'
+      ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
+      : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount), cap);
   }
 
   /**
    * Run BranchManager to analyze and validate branch structure
    */
+  // Extracted to phases/BranchAnalysisPhase.ts (pure move). Thin delegating
+  // wrapper; branchShadowDiffs is accessor-backed run-scoped state.
   private async runBranchAnalysis(
     brief: FullCreativeBrief,
     blueprint: EpisodeBlueprint
   ): Promise<BranchAnalysis | null> {
-    this.emit({ type: 'agent_start', agent: 'BranchManager', message: 'Analyzing branch structure' });
-
-    try {
-      const result = await withTimeout(this.branchManager.execute({
-        episodeId: blueprint.episodeId,
-        episodeTitle: blueprint.title,
-        scenes: blueprint.scenes,
-        startingSceneId: blueprint.startingSceneId,
-        bottleneckScenes: blueprint.bottleneckScenes || [],
-        availableFlags: blueprint.suggestedFlags || [],
-        availableScores: blueprint.suggestedScores || [],
-        availableTags: blueprint.suggestedTags || [],
-        storyContext: {
-          title: brief.story.title,
-          genre: brief.story.genre,
-          tone: brief.story.tone,
-        },
-      }), PIPELINE_TIMEOUTS.llmAgent, 'BranchManager.execute');
-
-      if (!result.success || !result.data) {
-        console.warn(`[Pipeline] BranchManager analysis failed: ${result.error}`);
-        this.emit({
-          type: 'agent_complete',
-          agent: 'BranchManager',
-          message: `Branch analysis failed (non-critical): ${result.error}`,
-        });
-        return null;
-      }
-
-      // Log validation issues (as warnings - branch structure issues are advisory, not blocking)
-      if (result.data.validationIssues.length > 0) {
-        for (const issue of result.data.validationIssues) {
-          // Branch validation issues are advisory - don't block generation
-          // The story can still work even if branching isn't perfect
-          this.emit({
-            type: 'warning',
-            phase: 'branch_validation',
-            message: `[${issue.type}] ${issue.description}`,
-          });
-        }
-      }
-
-      const deterministicTopology = analyzeBranchTopology(blueprint);
-      for (const sceneId of deterministicTopology.unreachableSceneIds) {
-        this.emit({
-          type: 'warning',
-          phase: 'branch_validation',
-          message: `[deterministic] Scene ${sceneId} is unreachable from ${blueprint.startingSceneId}`,
-        });
-      }
-      for (const sceneId of deterministicTopology.deadEndSceneIds) {
-        this.emit({
-          type: 'warning',
-          phase: 'branch_validation',
-          message: `[deterministic] Scene ${sceneId} dead-ends before the ending scene`,
-        });
-      }
-
-      this.emit({
-        type: 'agent_complete',
-        agent: 'BranchManager',
-        message: `Found ${result.data.branchPaths.length} paths, ${result.data.reconvergencePoints.length} reconvergence points, ${result.data.validationIssues.length} issues`,
+    await this.getScopedAgentMemoryContext('BranchManager', 'branch-analysis', brief, {
+      artifactKinds: ['episode-blueprint'],
+    });
+    const deps = { branchManager: this.branchManager } satisfies Partial<BranchAnalysisPhaseDeps> as unknown as BranchAnalysisPhaseDeps;
+    Object.defineProperties(deps, {
+      branchShadowDiffs: { get: () => this.branchShadowDiffs },
+    });
+    const result = await new BranchAnalysisPhase(deps).run(brief, blueprint, {
+      config: this.config,
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
+    });
+    if (result) {
+      await this.agentMemoryContextBuilder().writeOutcome({
+        role: 'BranchManager',
+        lifecycle: 'branch-analysis',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode?.number,
+        artifactIds: ['branch-analysis'],
+        outcome: 'adopted',
+        summary: 'Branch analysis adopted by the generation pipeline.',
+        payload: result,
       });
-
-      return result.data;
-    } catch (error) {
-      console.warn(`[Pipeline] BranchManager threw error:`, error);
-      this.emit({
-        type: 'warning',
-        phase: 'branch_analysis',
-        message: `Branch analysis skipped due to error`,
-      });
-      return null;
     }
+    return result;
   }
 
+  // Extracted to phases/ContentGenerationPhase.ts (pure move). Thin delegating
+  // wrapper covering both call sites (generate() and the multi-episode
+  // generateEpisodeFromOutline). Run-scoped state is accessor-backed; the four
+  // fields the phase ASSIGNS (incrementalValidator, sceneValidationResults,
+  // seasonSkillPlan, encounterTelemetry) are wired with setters.
   private async runContentGeneration(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
     characterBible: CharacterBible,
     blueprint: EpisodeBlueprint,
-    branchAnalysis?: BranchAnalysis
+    branchAnalysis?: BranchAnalysis,
+    outputDirectory?: string,
+    episodeNumber?: number
   ): Promise<{ sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> }> {
-    const sceneContents: SceneContent[] = [];
-    const choiceSets: ChoiceSet[] = [];
-    const encounters: Map<string, EncounterStructure> = new Map();
-
-    // Initialize incremental validation
-    const incrementalConfig = {
-      ...INCREMENTAL_VALIDATION_DEFAULTS,
-      ...brief.options?.incrementalValidation,
-    };
-    
-    // Extract known flags and scores from blueprint
-    const knownFlags = blueprint.suggestedFlags?.map(f => f.name) || [];
-    const knownScores = blueprint.suggestedScores?.map(s => s.name) || [];
-    
-    // Extract valid skills for encounter validation
-    const validSkills = ['athletics', 'stealth', 'perception', 'persuasion', 'intimidation', 'deception', 'investigation', 'survival'];
-    
-    this.incrementalValidator = new IncrementalValidationRunner(
-      knownFlags,
-      knownScores,
-      validSkills,
-      incrementalConfig
-    );
-
-    // Initialize relationship baselines from character bible so the
-    // validator can detect unreachable relationship conditions.
-    const npcBaselines = characterBible.characters
-      .filter(c => c.id !== brief.protagonist.id)
-      .map(c => ({
-        id: c.id,
-        initialRelationship: c.initialStats as Partial<Record<string, number>> | undefined,
-      }));
-    this.incrementalValidator.setRelationshipBaselines(npcBaselines);
-    
-    // Reset scene validation results
-    this.sceneValidationResults = [];
-    
-    this.emit({
-      type: 'debug',
-      phase: 'incremental_validation',
-      message: `Initialized incremental validation with ${knownFlags.length} flags, ${knownScores.length} scores, ${npcBaselines.length} NPC relationship baselines`,
-      data: { config: incrementalConfig },
-    });
-
-    // Defense-in-depth: if the LLM set isEncounter but omitted encounterType,
-    // auto-assign 'mixed' so the encounter pipeline doesn't silently skip the scene.
-    for (const scene of blueprint.scenes) {
-      if (scene.isEncounter && !scene.encounterType) {
-        scene.encounterType = 'mixed';
-        console.warn(`[Pipeline] Scene ${scene.id} has isEncounter=true but missing encounterType — defaulting to 'mixed'`);
-        this.emit({ type: 'warning', phase: 'content', message: `Scene ${scene.id} encounter missing encounterType — defaulted to 'mixed'` });
-      }
-    }
-
-    // Find the primary encounter scene so pre-encounter scenes can be written
-    // with the encounter in mind. We take the first encounter scene as the anchor.
-    const primaryEncounterScene = blueprint.scenes.find(s => s.isEncounter && s.encounterType);
-    const primaryEncounterContext = primaryEncounterScene ? {
-      encounterType: primaryEncounterScene.encounterType!,
-      encounterDescription: primaryEncounterScene.encounterDescription || primaryEncounterScene.description,
-      encounterDifficulty: primaryEncounterScene.encounterDifficulty || 'moderate',
-      // encounterBuildup will be overridden per-scene below
-      encounterBuildup: primaryEncounterScene.encounterBuildup || '',
-    } : undefined;
-    const dependencyGraph = buildSceneDependencyGraph(blueprint);
-    const topoWaves = dependencyGraph.hasCycle ? [] : buildTopologicalWaves(blueprint);
-    this.dependencySchedulerStats.hasCycle = dependencyGraph.hasCycle;
-    this.dependencySchedulerStats.waveCount = topoWaves.length;
-    this.dependencySchedulerStats.usedParallelScheduling = Boolean(
-      this.config.generation?.sceneParallelismEnabled && !dependencyGraph.hasCycle && topoWaves.length > 0
-    );
-    this.dependencySchedulerStats.fallbackToSerial = dependencyGraph.hasCycle;
-    if (dependencyGraph.hasCycle) {
-      this.emit({
-        type: 'warning',
-        phase: 'content',
-        message: dependencyGraph.cycleReason || 'Scene dependency graph cycle detected; falling back to serial ordering.',
-      });
-    } else if (this.config.generation?.shadowSchedulerEnabled) {
-      this.emit({
-        type: 'debug',
-        phase: 'content',
-        message: `Dependency scheduler planned ${topoWaves.length} wave(s): ${topoWaves.map(w => `[${w.sceneIds.join(',')}]`).join(' -> ')}`,
-      });
-    }
-
-    const sceneOrder = (!dependencyGraph.hasCycle && topoWaves.length > 0)
-      ? topoWaves.flatMap((wave) => wave.sceneIds.map((id) => blueprint.scenes.find((s) => s.id === id)).filter((s): s is SceneBlueprint => Boolean(s)))
-      : blueprint.scenes;
-
-    // Safety: ensure every blueprint scene gets content, even if the dependency graph missed it
-    const orderedIds = new Set(sceneOrder.map(s => s.id));
-    for (const bp of blueprint.scenes) {
-      if (!orderedIds.has(bp.id)) {
-        console.warn(`[Pipeline] Scene ${bp.id} missing from topological order — appending to ensure content generation`);
-        this.emit({ type: 'warning', phase: 'scenes', message: `Scene ${bp.id} not in dependency graph — appended to generation order` });
-        sceneOrder.push(bp);
-      }
-    }
-
-    const finalizedScenes = new Set<string>();
-    const contentWorkTotal = Math.max(
-      1,
-      sceneOrder.reduce((sum, scene) =>
-        sum + 1 + (scene.choicePoint ? 1 : 0) + (scene.isEncounter && scene.encounterType ? 1 : 0), 0)
-    );
-    let contentWorkCompleted = 0;
-    this.emitPhaseProgress('content', 0, contentWorkTotal, 'content:work', 'Preparing scene generation queue...');
-
-    for (let i = 0; i < sceneOrder.length; i++) {
-      await this.checkCancellation();
-      const sceneBlueprint = sceneOrder[i];
-      const previousScene = i > 0 ? sceneContents[i - 1] : undefined;
-      const requiredScenes = new Set<string>([
-        ...(sceneBlueprint.requires || []),
-        ...((dependencyGraph.nodes.get(sceneBlueprint.id)?.predecessors || [])),
-      ]);
-      const unresolvedDeps = Array.from(requiredScenes).filter((dep) => !finalizedScenes.has(dep));
-      if (unresolvedDeps.length > 0) {
-        throw new PipelineError(
-          `Dependency contract violation in content generation for ${sceneBlueprint.id}: unresolved prerequisites ${unresolvedDeps.join(', ')}`,
-          'content_generation',
-          { context: { sceneId: sceneBlueprint.id, unresolvedDeps } }
-        );
-      }
-
-      // Filter protagonist from npcsPresent — the protagonist is always implicit,
-      // and including them as an NPC causes duplication in scenes and images
-      if (sceneBlueprint.npcsPresent) {
-        sceneBlueprint.npcsPresent = sceneBlueprint.npcsPresent.filter(
-          npcId => npcId !== brief.protagonist.id
-        );
-      }
-
-      // Resolve authored location first so downstream image systems do not re-guess scene setting.
-      const location = this.resolveWorldLocationForScene(sceneBlueprint, worldBible);
-      const sceneSettingContext = buildSceneSettingContext(sceneBlueprint, location, worldBible, brief);
-
-      const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-
-      // Skip SceneWriter for encounter scenes - EncounterArchitect provides all content
-      if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
+    const deps = {
+      sceneWriter: this.sceneWriter,
+      choiceAuthor: this.choiceAuthor,
+      encounterArchitect: this.encounterArchitect,
+      getThreadPlanner: () => this.getThreadPlanner(),
+      getTwistArchitect: () => this.getTwistArchitect(),
+      getCharacterArcTracker: () => this.getCharacterArcTracker(),
+      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
+      writeAgentOutcome: this.agentMemoryContextBuilder().writeOutcome.bind(this.agentMemoryContextBuilder()),
+      assertSceneDependencyInvariants: this.assertSceneDependencyInvariants.bind(this),
+      buildBranchFallbackChoiceSet: this.buildBranchFallbackChoiceSet.bind(this),
+      buildDeterministicChoiceSet: (sceneBlueprint, choiceBeat) =>
+        choiceBeat ? this.createFallbackChoiceSet(sceneBlueprint, choiceBeat) : undefined,
+      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+      buildEncounterPriorStateContext: this.buildEncounterPriorStateContext.bind(this),
+      captureEncounterTelemetry: this.captureEncounterTelemetry.bind(this),
+      checkCancellation: () => this.checkCancellation(),
+      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+      emitPhaseProgress: this.emitPhaseProgress.bind(this),
+      emitPlanUpdate: this.emitPlanUpdate.bind(this),
+      episodeCheckpointFile: this.episodeCheckpointFile.bind(this),
+      establishedCanonForPrompt: this.establishedCanonForPrompt.bind(this),
+      getPhase4DefaultCollisions: this.getPhase4DefaultCollisions.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      getUnresolvedCallbacksForPrompt: this.getUnresolvedCallbacksForPrompt.bind(this),
+      inferBranchType: this.inferBranchType.bind(this),
+      isEpisodeFinalScene: this.isEpisodeFinalScene.bind(this),
+      canLoadResumeUnit: (resumeEpisodeNumber, unitId) => {
+        if (typeof resumeEpisodeNumber !== 'number') return true;
+        if (!this.invalidatedResumeEpisodes.has(resumeEpisodeNumber)) return true;
         this.emit({
           type: 'debug',
-          phase: 'scenes',
-          message: `Skipping SceneWriter for encounter scene ${sceneBlueprint.id} - EncounterArchitect will provide content`,
+          phase: 'resume',
+          message: `Skipped stale resume unit ${unitId} for invalidated episode ${resumeEpisodeNumber}.`,
         });
-
-        // Create minimal placeholder scene content for encounters
-        // The actual narrative content comes from EncounterArchitect's setupText and outcome narratives
-        
-        // Determine branch metadata
-        const isBottleneck = blueprint.bottleneckScenes?.includes(sceneBlueprint.id) || sceneBlueprint.purpose === 'bottleneck';
-        const incomingScenes = blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id));
-        const isConvergencePoint = incomingScenes.length > 1;
-        
-        const encounterSceneContent: SceneContent = {
-          sceneId: sceneBlueprint.id,
-          sceneName: sceneBlueprint.name,
-          locationId: sceneSettingContext.locationId,
-          beats: [], // Empty - encounter beats come from EncounterArchitect
-          startingBeatId: '', // Will be set from encounter structure
-          moodProgression: [sceneBlueprint.mood],
-          charactersInvolved: sceneBlueprint.npcsPresent,
-          keyMoments: [sceneBlueprint.encounterDescription || sceneBlueprint.description],
-          continuityNotes: [`Encounter scene: ${sceneBlueprint.encounterType}`],
-          // Branch metadata for visual differentiation
-          branchType: this.inferBranchType(sceneBlueprint, blueprint),
-          isBottleneck,
-          isConvergencePoint,
-          settingContext: sceneSettingContext,
-        };
-        sceneContents.push(encounterSceneContent);
-        contentWorkCompleted += 1;
-        this.emitPhaseProgress(
-          'content',
-          contentWorkCompleted,
-          contentWorkTotal,
-          'content:work',
-          `Scene scaffold ready for ${sceneBlueprint.id}`
-        );
-      } else {
-        // Regular scene - use SceneWriter
-        this.emit({
-          type: 'agent_start',
-          agent: 'SceneWriter',
-          message: `Writing scene ${i + 1}/${blueprint.scenes.length}: ${sceneBlueprint.name}`,
-        });
-
-        const sceneWriterInput = {
-          sceneBlueprint,
-          storyContext: {
-            title: brief.story.title,
-            genre: brief.story.genre,
-            tone: brief.story.tone,
-            userPrompt: brief.userPrompt,
-            worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
-          },
-          protagonistInfo: {
-            name: brief.protagonist.name,
-            pronouns: brief.protagonist.pronouns,
-            description: protagonistProfile?.fullBackground || brief.protagonist.description,
-            physicalDescription: protagonistProfile?.physicalDescription,
-          },
-          npcs: sceneBlueprint.npcsPresent.map(npcId => {
-            const profile = characterBible.characters.find(c => c.id === npcId);
-            return {
-              id: npcId,
-              name: profile?.name || npcId,
-              pronouns: profile?.pronouns || 'he/him',
-              description: profile?.overview || '',
-              physicalDescription: profile?.physicalDescription,
-              voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-              currentMood: profile?.voiceProfile?.whenNervous,
-            };
-          }),
-          relevantFlags: blueprint.suggestedFlags,
-          relevantScores: blueprint.suggestedScores,
-          targetBeatCount: sceneBlueprint.purpose === 'bottleneck' 
-            ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-            : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
-          dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-          previousSceneSummary: previousScene
-            ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
-            : undefined,
-          incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
-          sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-          episodeEncounterContext: primaryEncounterContext && !sceneBlueprint.isEncounter
-            ? {
-                ...primaryEncounterContext,
-                encounterBuildup: sceneBlueprint.encounterBuildup || primaryEncounterContext.encounterBuildup,
-              }
-            : undefined,
-          memoryContext: this.cachedPipelineMemory || undefined,
-        };
-
-        // === KARPATHY LOOP: Best-of-N for critical scenes ===
-        const bestOfN = brief.options?.bestOfN ?? BEST_OF_N_DEFAULTS.candidates;
-        const isCriticalScene =
-          (BEST_OF_N_DEFAULTS.enabledForBottleneck && (sceneBlueprint.purpose === 'bottleneck' || blueprint.bottleneckScenes?.includes(sceneBlueprint.id))) ||
-          (BEST_OF_N_DEFAULTS.enabledForOpening && sceneBlueprint.id === blueprint.startingSceneId) ||
-          (BEST_OF_N_DEFAULTS.enabledForClimax && sceneBlueprint.purpose === 'climax');
-        const useBestOfN = bestOfN > 1 && isCriticalScene && this.incrementalValidator;
-
-        let sceneResult: AgentResponse<SceneContent>;
-
-        if (useBestOfN) {
-          this.emit({
-            type: 'debug',
-            phase: 'scenes',
-            message: `Best-of-${bestOfN} for critical scene ${sceneBlueprint.id} (${sceneBlueprint.purpose || 'opening'})`,
-          });
-
-          const candidates = await Promise.all(
-            Array.from({ length: bestOfN }, (_, idx) =>
-              withTimeout(
-                this.sceneWriter.execute(sceneWriterInput),
-                PIPELINE_TIMEOUTS.llmAgent,
-                `SceneWriter.execute(${sceneBlueprint.id} candidate-${idx})`
-              ).catch((err) => ({
-                success: false as const,
-                data: null as SceneContent | null,
-                error: err instanceof Error ? err.message : String(err),
-              }))
-            )
-          );
-
-          const validCandidates = candidates.filter(
-            (c): c is AgentResponse<SceneContent> & { success: true; data: SceneContent } =>
-              c.success === true && c.data != null
-          );
-
-          if (validCandidates.length > 1) {
-            const bestOfNVoiceProfiles: CharacterVoiceProfile[] = sceneBlueprint.npcsPresent
-              .map(npcId => {
-                const profile = characterBible.characters.find(c => c.id === npcId);
-                if (!profile?.voiceProfile) return null;
-                return {
-                  characterId: npcId,
-                  characterName: profile.name,
-                  voiceGuidance: profile.voiceProfile.writingGuidance || '',
-                  speechPatterns: profile.voiceProfile.speechPatterns || [],
-                  vocabularyLevel: profile.voiceProfile.vocabularyLevel,
-                };
-              })
-              .filter((p): p is CharacterVoiceProfile => p !== null);
-
-            const scored = await Promise.all(
-              validCandidates.map(async (candidate) => {
-                const tempContent = { ...candidate.data, sceneId: sceneBlueprint.id };
-                const validation = await this.incrementalValidator!.validateScene(
-                  tempContent,
-                  undefined,
-                  bestOfNVoiceProfiles,
-                  undefined
-                );
-                const voiceScore = validation.voice?.score ?? 0;
-                const stakesScore = validation.stakes?.score ?? 0;
-                return { candidate, score: voiceScore + stakesScore, validation };
-              })
-            );
-
-            scored.sort((a, b) => b.score - a.score);
-            sceneResult = scored[0].candidate;
-            this.emit({
-              type: 'debug',
-              phase: 'scenes',
-              message: `Best-of-${bestOfN} winner for ${sceneBlueprint.id}: score ${scored[0].score} vs ${scored.slice(1).map(s => s.score).join(', ')}`,
-            });
-          } else if (validCandidates.length === 1) {
-            sceneResult = validCandidates[0];
-          } else {
-            sceneResult = candidates[0] as AgentResponse<SceneContent>;
-          }
-        } else {
-          sceneResult = await withTimeout(
-            this.sceneWriter.execute(sceneWriterInput),
-            PIPELINE_TIMEOUTS.llmAgent,
-            `SceneWriter.execute(${sceneBlueprint.id})`
-          );
-        }
-
-        if (!sceneResult.success || !sceneResult.data) {
-          // Karpathy loop: retry SceneWriter once with explicit error feedback before falling back
-          this.emit({
-            type: 'regeneration_triggered',
-            phase: 'scenes',
-            message: `SceneWriter failed for ${sceneBlueprint.id}, retrying with error feedback`,
-            data: { reason: sceneResult.error },
-          });
-
-          const retrySceneResult = await withTimeout(this.sceneWriter.execute({
-            sceneBlueprint,
-            storyContext: {
-              title: brief.story.title,
-              genre: brief.story.genre,
-              tone: brief.story.tone,
-              userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Previous scene generation attempt FAILED with error: ${sceneResult.error}. Please produce valid scene content. Keep it simple and well-structured.`,
-              worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
-            },
-            protagonistInfo: {
-              name: brief.protagonist.name,
-              pronouns: brief.protagonist.pronouns,
-              description: protagonistProfile?.fullBackground || brief.protagonist.description,
-              physicalDescription: protagonistProfile?.physicalDescription,
-            },
-            npcs: sceneBlueprint.npcsPresent.map(npcId => {
-              const profile = characterBible.characters.find(c => c.id === npcId);
-              return {
-                id: npcId,
-                name: profile?.name || npcId,
-                pronouns: profile?.pronouns || 'he/him',
-                description: profile?.overview || '',
-                physicalDescription: profile?.physicalDescription,
-                voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-                currentMood: profile?.voiceProfile?.whenNervous,
-              };
-            }),
-            relevantFlags: blueprint.suggestedFlags,
-            relevantScores: blueprint.suggestedScores,
-            targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-              ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-              : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
-            dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-            previousSceneSummary: previousScene
-              ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
-              : undefined,
-            incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
-            sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-            memoryContext: this.cachedPipelineMemory || undefined,
-          }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneBlueprint.id} retry)`);
-
-          if (retrySceneResult.success && retrySceneResult.data) {
-            // Retry succeeded — replace the original result so the rest of the loop uses it
-            sceneResult = retrySceneResult;
-            this.emit({
-              type: 'debug',
-              phase: 'scenes',
-              message: `SceneWriter retry succeeded for ${sceneBlueprint.id}`,
-            });
-          } else {
-            // Retry also failed — fall back to placeholder
-            const swFailMsg = `Scene Writer failed on ${sceneBlueprint.id} after retry: ${retrySceneResult.error || sceneResult.error}`;
-            console.error(`[Pipeline] ❌ ${swFailMsg}`);
-            this.emit({ type: 'warning', phase: 'scenes', message: swFailMsg });
-            this.throwIfFailFast(swFailMsg, 'content', {
-              agent: 'SceneWriter',
-              context: {
-                sceneId: sceneBlueprint.id,
-                sceneName: sceneBlueprint.name,
-                failureKind: 'content',
-              },
-            });
-
-            sceneContents.push({
-              sceneId: sceneBlueprint.id,
-              sceneName: sceneBlueprint.name,
-              locationId: sceneSettingContext.locationId,
-              beats: [{
-                id: `${sceneBlueprint.id}-fallback-beat-1`,
-                text: `[Scene content generation failed: ${sceneResult.error || 'Unknown error'}]`,
-                nextBeatId: undefined,
-              }],
-              startingBeatId: `${sceneBlueprint.id}-fallback-beat-1`,
-              moodProgression: [sceneBlueprint.mood],
-              charactersInvolved: sceneBlueprint.npcsPresent,
-              keyMoments: [sceneBlueprint.description],
-              continuityNotes: [`SceneWriter failed: ${sceneResult.error}`],
-              settingContext: sceneSettingContext,
-            });
-            finalizedScenes.add(sceneBlueprint.id);
-            contentWorkCompleted += 1;
-            this.emitPhaseProgress(
-              'content',
-              contentWorkCompleted,
-              contentWorkTotal,
-              'content:work',
-              `Fallback scene scaffold created for ${sceneBlueprint.id}`
-            );
-            if (sceneBlueprint.choicePoint) {
-              contentWorkCompleted += 1;
-              this.emitPhaseProgress(
-                'content',
-                contentWorkCompleted,
-                contentWorkTotal,
-                'content:work',
-                `Skipped choice generation for ${sceneBlueprint.id}`
-              );
-            }
-            continue;
-          }
-        }
-
-        // Ensure the scene content has the correct sceneId matching the blueprint
-        const sceneContent = sceneResult.data;
-        sceneContent.sceneId = sceneBlueprint.id;
-        sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
-        sceneContent.locationId = sceneSettingContext.locationId;
-        sceneContent.settingContext = sceneSettingContext;
-        
-        // Add branch metadata for visual differentiation
-        const isSceneBottleneck = blueprint.bottleneckScenes?.includes(sceneBlueprint.id) || sceneBlueprint.purpose === 'bottleneck';
-        const incomingToScene = blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id));
-        const isSceneConvergence = incomingToScene.length > 1;
-        
-        sceneContent.branchType = this.inferBranchType(sceneBlueprint, blueprint);
-        sceneContent.isBottleneck = isSceneBottleneck;
-        sceneContent.isConvergencePoint = isSceneConvergence;
-        sceneContent.incomingChoiceContext = sceneBlueprint.incomingChoiceContext;
-
-        sceneContents.push(sceneContent);
-
-        this.emit({
-          type: 'agent_complete',
-          agent: 'SceneWriter',
-          message: `Wrote ${sceneContent.beats.length} beats for ${sceneBlueprint.id}`,
-        });
-        contentWorkCompleted += 1;
-        this.emitPhaseProgress(
-          'content',
-          contentWorkCompleted,
-          contentWorkTotal,
-          'content:work',
-          `Scene written for ${sceneBlueprint.id}`
-        );
-
-        // Choice Author (for non-encounter scenes with choice points)
-        this.emit({ type: 'debug', phase: 'scenes', message: `Scene ${sceneBlueprint.id} choicePoint: ${sceneBlueprint.choicePoint ? `YES (${sceneBlueprint.choicePoint.type})` : 'NO'}` });
-        if (sceneBlueprint.choicePoint) {
-          let choicePointBeat = sceneResult.data.beats.find(b => b.isChoicePoint);
-          this.emit({ type: 'debug', phase: 'choices', message: `Looking for choicePoint beat in ${sceneResult.data.beats.length} beats... Found: ${choicePointBeat ? choicePointBeat.id : 'NONE'}` });
-
-          // FALLBACK: If SceneWriter didn't mark a choice point but the blueprint requires one,
-          // auto-mark the last beat as the choice point to ensure choices are generated
-          if (!choicePointBeat && sceneResult.data.beats.length > 0) {
-            const lastBeat = sceneResult.data.beats[sceneResult.data.beats.length - 1];
-            console.warn(`[Pipeline] FALLBACK: Auto-marking last beat "${lastBeat.id}" as isChoicePoint for scene ${sceneBlueprint.id}`);
-            lastBeat.isChoicePoint = true;
-            choicePointBeat = lastBeat;
-          }
-
-          if (choicePointBeat) {
-            this.emit({
-              type: 'agent_start',
-              agent: 'ChoiceAuthor',
-              message: `Creating choices for ${sceneBlueprint.name}`,
-            });
-
-            const choiceResult = await withTimeout(this.choiceAuthor.execute({
-              sceneBlueprint,
-              beatText: choicePointBeat.text,
-              beatId: choicePointBeat.id,
-              storyContext: {
-                title: brief.story.title,
-                genre: brief.story.genre,
-                tone: brief.story.tone,
-                userPrompt: brief.userPrompt,
-                worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
-              },
-              protagonistInfo: {
-                name: brief.protagonist.name,
-                pronouns: brief.protagonist.pronouns,
-              },
-              npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-              availableFlags: blueprint.suggestedFlags,
-              availableScores: blueprint.suggestedScores,
-              availableTags: blueprint.suggestedTags,
-              possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-                const scene = blueprint.scenes.find(s => s.id === id);
-                return {
-                  id,
-                  name: scene?.name || id,
-                  description: scene?.description || '',
-                };
-              }),
-              optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
-              sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: this.cachedPipelineMemory || undefined,
-            }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
-
-            if (!choiceResult.success || !choiceResult.data) {
-              // ChoiceAuthor failed — warn and continue. The scene will be included
-              // but without branching choices at this point.
-              const caFailMsg = `Choice Author failed on ${sceneBlueprint.id}: ${choiceResult.error}`;
-              console.error(`[Pipeline] ❌ ${caFailMsg}`);
-              this.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
-            } else {
-            choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
-
-            this.emit({
-              type: 'agent_complete',
-              agent: 'ChoiceAuthor',
-              message: `Created ${choiceResult.data.choices.length} choices`,
-            });
-
-            // === INCREMENTAL STAKES VALIDATION ===
-            if (this.incrementalValidator && incrementalConfig.stakesValidation) {
-              const stakesResult = this.incrementalValidator.validateStakes(choiceResult.data);
-              
-              if (!stakesResult.passed) {
-                this.emit({
-                  type: 'incremental_validation',
-                  phase: 'stakes',
-                  message: `Stakes validation: ${stakesResult.score}/100 for ${sceneBlueprint.id}`,
-                  data: { issues: stakesResult.issues, hasFalseChoices: stakesResult.hasFalseChoices },
-                });
-
-                // Attempt regeneration if needed
-                if (stakesResult.shouldRegenerate) {
-                  let choiceRegenerationAttempt = 0;
-                  let currentStakesResult = stakesResult;
-                  let currentChoiceData = choiceResult.data;
-                  
-                  while (
-                    currentStakesResult.shouldRegenerate &&
-                    choiceRegenerationAttempt < incrementalConfig.maxRegenerationAttempts
-                  ) {
-                    choiceRegenerationAttempt++;
-                    this.emit({
-                      type: 'regeneration_triggered',
-                      phase: 'choices',
-                      message: `Regenerating choices for ${sceneBlueprint.id} (attempt ${choiceRegenerationAttempt})`,
-                      data: { reason: currentStakesResult.issues.map(i => i.issue) },
-                    });
-
-                    // Regenerate with guidance
-                    const revisedChoiceResult = await withTimeout(this.choiceAuthor.execute({
-                      sceneBlueprint,
-                      beatText: choicePointBeat.text,
-                      beatId: choicePointBeat.id,
-                      storyContext: {
-                        title: brief.story.title,
-                        genre: brief.story.genre,
-                        tone: brief.story.tone,
-                        userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these stakes issues: ${currentStakesResult.issues.map(i => i.issue).join('; ')}`,
-                        worldContext: this.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
-                      },
-                      protagonistInfo: {
-                        name: brief.protagonist.name,
-                        pronouns: brief.protagonist.pronouns,
-                      },
-                      npcsInScene: this.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
-                      availableFlags: blueprint.suggestedFlags,
-                      availableScores: blueprint.suggestedScores,
-                      availableTags: blueprint.suggestedTags,
-                      possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
-                        const scene = blueprint.scenes.find(s => s.id === id);
-                        return { id, name: scene?.name || id, description: scene?.description || '' };
-                      }),
-                      optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
-                      sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                      memoryContext: this.cachedPipelineMemory || undefined,
-                    }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
-
-                    if (revisedChoiceResult.success && revisedChoiceResult.data) {
-                      currentChoiceData = revisedChoiceResult.data;
-                      currentStakesResult = this.incrementalValidator.validateStakes(currentChoiceData);
-                      
-                      // Update the choice set in the array
-                      choiceSets[choiceSets.length - 1] = currentChoiceData;
-                    } else {
-                      break; // Stop if regeneration fails
-                    }
-                  }
-
-                  if (currentStakesResult.hasFalseChoices) {
-                    this.emit({
-                      type: 'warning',
-                      phase: 'incremental_validation',
-                      message: `False choices remain in ${sceneBlueprint.id} after ${choiceRegenerationAttempt} attempts`,
-                    });
-                  }
-                }
-              }
-
-              // Track flags and relationship changes set by choices for continuity
-              for (const choice of choiceResult.data.choices) {
-                for (const consequence of choice.consequences || []) {
-                  if (consequence.type === 'setFlag') {
-                    this.incrementalValidator.trackFlagSet((consequence as { flag: string }).flag);
-                  }
-                  if (consequence.type === 'relationship' || consequence.type === 'changeRelationship') {
-                    const rel = consequence as { characterId?: string; npcId?: string; dimension?: string; change?: number };
-                    const npcId = rel.characterId || rel.npcId;
-                    if (npcId && rel.dimension && typeof rel.change === 'number') {
-                      this.incrementalValidator.trackRelationshipChange(npcId, rel.dimension, rel.change);
-                    }
-                  }
-                }
-              }
-            }
-            // === CHOICE PAYOFF BEATS ===
-            // For non-branching choices (expression/flavor), create per-choice payoff beats
-            // so each choice gets a unique visual beat showing the action before advancing.
-            const finalChoiceSet = choiceSets[choiceSets.length - 1];
-            if (finalChoiceSet) {
-              const nonBranchingChoices = finalChoiceSet.choices.filter(
-                c => !c.nextSceneId && !c.nextBeatId
-              );
-
-              if (nonBranchingChoices.length > 0 && choicePointBeat) {
-                const nextSceneId = sceneBlueprint.leadsTo?.[0];
-
-                for (let ci = 0; ci < nonBranchingChoices.length; ci++) {
-                  const choice = nonBranchingChoices[ci];
-                  const payoffId = `${choicePointBeat.id}-payoff-${ci + 1}`;
-
-                  // Use the authored outcomeTexts.partial as the narrative prose for this beat.
-                  // This is the original story text describing the choice IN ACTION — not the
-                  // choice label itself (which is dialogue / a decision prompt, not prose).
-                  //
-                  // Fallback chain (best → worst):
-                  //   1. outcomeTexts.partial — distinct narrative prose (preferred)
-                  //   2. reactionText — world response to the choice (better than repeating label)
-                  //   3. Derived from choice label — used only as last resort
-                  const GENERIC_REACTION = 'The moment settles, its weight already reshaping what comes next.';
-                  const partialIsDistinct = choice.outcomeTexts?.partial
-                    && choice.outcomeTexts.partial.trim() !== choice.text.trim();
-                  const reactionIsDistinct = choice.reactionText
-                    && choice.reactionText.trim() !== choice.text.trim()
-                    && choice.reactionText.trim() !== GENERIC_REACTION;
-                  
-                  const narrativeText = partialIsDistinct
-                    ? choice.outcomeTexts!.partial
-                    : reactionIsDistinct
-                      ? choice.reactionText!
-                      : (choice.text.endsWith('.') ? choice.text : choice.text + '.');
-                  
-                  if (!partialIsDistinct) {
-                    console.warn(`[Pipeline] ⚠ Choice "${choice.id}" has no distinct outcomeTexts.partial — payoff beat will ${reactionIsDistinct ? 'use reactionText' : 'repeat choice label'}. This means the ChoiceAuthor LLM omitted or repeated outcomeTexts for this choice.`);
-                  }
-
-                  const payoffBeat: GeneratedBeat & {
-                    isChoicePayoff?: boolean;
-                    textVariants?: Array<{ condition: object; text: string }>;
-                    choiceContext?: string;
-                  } = {
-                    id: payoffId,
-                    text: narrativeText,
-                    // textVariants: swap to success/failure outcome prose at runtime based on stat-check result
-                    textVariants: choice.outcomeTexts ? [
-                      {
-                        condition: { type: 'flag', flag: '_outcome_success', value: true },
-                        text: choice.outcomeTexts.success,
-                      },
-                      {
-                        condition: { type: 'flag', flag: '_outcome_failure', value: true },
-                        text: choice.outcomeTexts.failure,
-                      },
-                    ] : undefined,
-                    isChoicePoint: false,
-                    nextBeatId: choicePointBeat.nextBeatId,
-                    // Use the narrative prose as the visual description, NOT the choice label.
-                    // The choice label is dialogue/decision text; the outcomeTexts describe the
-                    // physical action unfolding — which is what the image should depict.
-                    visualMoment: narrativeText,
-                    primaryAction: narrativeText,
-                    emotionalRead: 'Living out the consequences of the chosen action',
-                    // mustShowDetail is intentionally omitted here — embedding the narrative
-                    // prose into the composition "Must include:" field produces bad prompts.
-                    // The visualMoment + primaryAction fields carry the visual intent.
-                    //
-                    // Store the choice label separately so the image system can use it as a
-                    // natural-language anchor ("the player chose X — show it playing out").
-                    choiceContext: choice.text,
-                    isChoicePayoff: true,
-                  };
-
-                  choice.nextBeatId = payoffId;
-                  sceneContent.beats.push(payoffBeat as GeneratedBeat);
-                }
-
-                this.emit({
-                  type: 'debug',
-                  phase: 'choices',
-                  message: `Created ${nonBranchingChoices.length} payoff beats for expression choices in ${sceneBlueprint.id}`,
-                });
-              }
-            }
-
-            } // close else (choiceResult success)
-          }
-          contentWorkCompleted += 1;
-          this.emitPhaseProgress(
-            'content',
-            contentWorkCompleted,
-            contentWorkTotal,
-            'content:work',
-            `Choice pass complete for ${sceneBlueprint.id}`
-          );
-        }
-
-        // === INCREMENTAL SCENE VALIDATION (Voice, Sensitivity, Continuity) ===
-        if (this.incrementalValidator) {
-          const voiceProfiles: CharacterVoiceProfile[] = sceneBlueprint.npcsPresent
-            .map(npcId => {
-              const profile = characterBible.characters.find(c => c.id === npcId);
-              if (profile && profile.voiceProfile) {
-                return {
-                  id: profile.id,
-                  name: profile.name,
-                  voiceProfile: profile.voiceProfile,
-                };
-              }
-              return null;
-            })
-            .filter((p): p is CharacterVoiceProfile => p !== null);
-
-          const sceneChoiceSet = choiceSets.find(cs => 
-            sceneContent.beats.some(b => b.id === cs.beatId)
-          );
-
-          const sceneValidation = await this.incrementalValidator.validateScene(
-            sceneContent,
-            sceneChoiceSet,
-            voiceProfiles,
-            undefined // No encounter for regular scenes
-          );
-
-          this.sceneValidationResults.push(sceneValidation);
-
-          this.emit({
-            type: 'incremental_validation',
-            phase: 'scene_complete',
-            message: `Scene ${sceneBlueprint.id}: ${sceneValidation.overallPassed ? 'PASSED' : 'ISSUES FOUND'}`,
-            data: {
-              voice: sceneValidation.voice ? { score: sceneValidation.voice.score, issues: sceneValidation.voice.issues.length } : null,
-              sensitivity: sceneValidation.sensitivity ? { passed: sceneValidation.sensitivity.passed, flags: sceneValidation.sensitivity.flags.length } : null,
-              continuity: sceneValidation.continuity ? { passed: sceneValidation.continuity.passed, issues: sceneValidation.continuity.issues.length } : null,
-            },
-          });
-
-          // Emit warnings for sensitivity issues
-          if (sceneValidation.sensitivity && !sceneValidation.sensitivity.passed) {
-            this.emit({
-              type: 'warning',
-              phase: 'sensitivity',
-              message: `Content rating concern in ${sceneBlueprint.id}: may push to ${sceneValidation.sensitivity.ratingImplication}`,
-              data: { flags: sceneValidation.sensitivity.flags },
-            });
-          }
-
-          // Emit warnings for continuity issues (non-blocking)
-          if (sceneValidation.continuity && !sceneValidation.continuity.passed) {
-            for (const issue of sceneValidation.continuity.issues.filter(i => i.severity === 'error')) {
-              this.emit({
-                type: 'warning',
-                phase: 'continuity',
-                message: `Continuity issue in ${sceneBlueprint.id}: ${issue.detail}`,
-              });
-            }
-          }
-
-          // === KARPATHY LOOP: Scene regeneration based on voice/continuity validation ===
-          if (sceneValidation.regenerationRequested === 'scene' && incrementalConfig.voiceValidation) {
-            let sceneRegenAttempt = 0;
-            const maxSceneRegenAttempts = incrementalConfig.maxRegenerationAttempts;
-
-            while (sceneRegenAttempt < maxSceneRegenAttempts) {
-              sceneRegenAttempt++;
-              const issueDescriptions: string[] = [];
-              if (sceneValidation.voice && sceneValidation.voice.issues.length > 0) {
-                issueDescriptions.push(
-                  ...sceneValidation.voice.issues.map(i => `Voice issue (${i.characterName}): ${i.issue}`)
-                );
-              }
-              if (sceneValidation.continuity && sceneValidation.continuity.issues.length > 0) {
-                issueDescriptions.push(
-                  ...sceneValidation.continuity.issues.map(i => `Continuity: ${i.detail}`)
-                );
-              }
-
-              this.emit({
-                type: 'regeneration_triggered',
-                phase: 'scenes',
-                message: `Regenerating scene ${sceneBlueprint.id} for voice/continuity (attempt ${sceneRegenAttempt}/${maxSceneRegenAttempts})`,
-                data: { reason: issueDescriptions },
-              });
-
-              const revisedSceneResult = await withTimeout(this.sceneWriter.execute({
-                sceneBlueprint,
-                storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}`,
-                  worldContext: this.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
-                },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                  description: protagonistProfile?.fullBackground || brief.protagonist.description,
-                  physicalDescription: protagonistProfile?.physicalDescription,
-                },
-                npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                  const profile = characterBible.characters.find(c => c.id === npcId);
-                  return {
-                    id: npcId,
-                    name: profile?.name || npcId,
-                    pronouns: profile?.pronouns || 'he/him',
-                    description: profile?.overview || '',
-                    physicalDescription: profile?.physicalDescription,
-                    voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-                    currentMood: profile?.voiceProfile?.whenNervous,
-                  };
-                }),
-                relevantFlags: blueprint.suggestedFlags,
-                relevantScores: blueprint.suggestedScores,
-                targetBeatCount: sceneBlueprint.purpose === 'bottleneck'
-                  ? (this.config.generation?.bottleneckBeatCount || SCENE_DEFAULTS.bottleneckBeatCount)
-                  : (this.config.generation?.standardBeatCount || SCENE_DEFAULTS.standardBeatCount),
-                dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-                previousSceneSummary: previousScene
-                  ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
-                  : undefined,
-                incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                memoryContext: this.cachedPipelineMemory || undefined,
-              }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneBlueprint.id} regen-${sceneRegenAttempt})`);
-
-              if (!revisedSceneResult.success || !revisedSceneResult.data) {
-                this.emit({
-                  type: 'warning',
-                  phase: 'scenes',
-                  message: `Scene regeneration failed for ${sceneBlueprint.id}, keeping original`,
-                });
-                break;
-              }
-
-              const revisedContent = revisedSceneResult.data;
-              revisedContent.sceneId = sceneBlueprint.id;
-              revisedContent.sceneName = revisedContent.sceneName || sceneBlueprint.name;
-              revisedContent.locationId = sceneSettingContext.locationId;
-              revisedContent.settingContext = sceneSettingContext;
-
-              const revisedValidation = await this.incrementalValidator.validateScene(
-                revisedContent,
-                sceneChoiceSet,
-                voiceProfiles,
-                undefined
-              );
-
-              if (revisedValidation.regenerationRequested === 'none' ||
-                  (revisedValidation.voice && sceneValidation.voice &&
-                   revisedValidation.voice.score > sceneValidation.voice.score)) {
-                // Revised version is better — swap it in
-                const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneBlueprint.id);
-                if (sceneIdx !== -1) {
-                  sceneContents[sceneIdx] = revisedContent;
-                }
-                // Update the validation result too
-                const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
-                if (valIdx !== -1) {
-                  this.sceneValidationResults[valIdx] = revisedValidation;
-                }
-                this.emit({
-                  type: 'debug',
-                  phase: 'scenes',
-                  message: `Scene ${sceneBlueprint.id} regenerated successfully (voice: ${sceneValidation.voice?.score ?? '?'} -> ${revisedValidation.voice?.score ?? '?'})`,
-                });
-                break;
-              }
-
-              // Update references for next loop iteration
-              Object.assign(sceneValidation, revisedValidation);
-            }
-          }
-        }
-      }
-
-      // Encounter Architect (if this is an encounter scene)
-      if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
-        this.emit({
-          type: 'agent_start',
-          agent: 'EncounterArchitect',
-          message: `Designing ${sceneBlueprint.encounterType} encounter for ${sceneBlueprint.name}`,
-        });
-
-        // Build available skills — start with defaults, then merge in season plan skills
-        const defaultSkills: Array<{ name: string; attribute: string; description: string }> = [...DEFAULT_SKILLS];
-        const seasonEp = brief.seasonPlan?.episodes.find(e => e.episodeNumber === brief.episode.number);
-        const plannedEnc = seasonEp?.plannedEncounters?.find(pe => 
-          pe.id === sceneBlueprint.plannedEncounterId ||
-          pe.id === sceneBlueprint.id || 
-          sceneBlueprint.name?.toLowerCase().includes(pe.description?.toLowerCase()?.substring(0, 20) || '')
-        );
-        const encounterBeatPlan = (sceneBlueprint.encounterBeatPlan && sceneBlueprint.encounterBeatPlan.length > 0
-          ? sceneBlueprint.encounterBeatPlan
-          : [
-              sceneBlueprint.encounterBuildup || plannedEnc?.encounterBuildup || `Opening pressure around ${sceneBlueprint.encounterDescription || sceneBlueprint.description}`,
-              sceneBlueprint.encounterDescription || plannedEnc?.description || sceneBlueprint.description,
-              sceneBlueprint.encounterStakes || plannedEnc?.stakes || 'A final commitment decides the cost of success or failure',
-            ]
-        )
-          .map((beat) => (beat || '').trim())
-          .filter(Boolean)
-          .slice(0, 5);
-        const encounterRelevantSkills = Array.from(new Set([
-          ...(sceneBlueprint.encounterRelevantSkills || []),
-          ...(plannedEnc?.relevantSkills || []),
-        ].map((skill) => skill.trim()).filter(Boolean)));
-        const encounterRequiredNpcIds = Array.from(new Set([
-          ...(sceneBlueprint.encounterRequiredNpcIds || []),
-          ...(plannedEnc?.npcsInvolved || []),
-          ...(sceneBlueprint.npcsPresent || []),
-        ]));
-        
-        // Merge in skills from season plan's planned encounters for this scene
-        if (brief.seasonPlan) {
-          if (encounterRelevantSkills.length > 0) {
-            const existingNames = new Set(defaultSkills.map(s => s.name.toLowerCase()));
-            for (const skillName of encounterRelevantSkills) {
-              if (!existingNames.has(skillName.toLowerCase())) {
-                // Infer attribute from skill name
-                const socialSkills = ['diplomacy', 'charm', 'bluff', 'negotiation', 'leadership', 'empathy'];
-                const mindSkills = ['arcana', 'lore', 'history', 'medicine', 'technology', 'hacking', 'engineering', 'science'];
-                const attr = socialSkills.includes(skillName.toLowerCase()) ? 'social' 
-                  : mindSkills.includes(skillName.toLowerCase()) ? 'mind' : 'body';
-                defaultSkills.push({ name: skillName.toLowerCase(), attribute: attr, description: `${skillName} (from season plan)` });
-              }
-            }
-          }
-        }
-
-        // Determine next scene IDs for storylet branching
-        // Victory continues to first leadsTo scene, defeat to second (or same if only one)
-        const leadsToScenes = sceneBlueprint.leadsTo || [];
-        const victoryNextSceneId = leadsToScenes[0] || '';
-        const defeatNextSceneId = leadsToScenes[1] || leadsToScenes[0] || '';
-
-        // Dynamic beat count based on difficulty - use config.generation.encounterBeatCount as base
-        const baseEncounterBeats = this.config.generation?.encounterBeatCount || 4;
-        const beatCountByDifficulty: Record<string, number> = {
-          easy: Math.max(2, baseEncounterBeats - 1),
-          moderate: baseEncounterBeats,
-          hard: baseEncounterBeats + 1,
-          extreme: baseEncounterBeats + 2,
-        };
-        const targetBeatCount = beatCountByDifficulty[sceneBlueprint.encounterDifficulty || 'moderate'] || baseEncounterBeats;
-
-        // Extract protagonist skills from character profile if available
-        const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
-        const protagonistSkills = protagonistProfile?.skills?.map(s => ({
-          name: s.name,
-          level: s.level || 1,
-        })) || [];
-
-        // Build NPCs list - add a fallback antagonist if none present for combat/chase encounters
-        let npcsInvolved = encounterRequiredNpcIds.map(npcId => {
-          const profile = characterBible.characters.find(c => c.id === npcId);
-          const npcBrief = brief.npcs.find(n => n.id === npcId);
-          return {
-            id: npcId,
-            name: profile?.name || npcId,
-            pronouns: (profile?.pronouns || 'he/him') as 'he/him' | 'she/her' | 'they/them',
-            role: (npcBrief?.role === 'antagonist' ? 'enemy' : 
-                   npcBrief?.role === 'ally' ? 'ally' : 
-                   npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
-            description: profile?.overview || '',
-            physicalDescription: profile?.physicalDescription,
-          };
-        });
-
-        // If no NPCs for an encounter that typically needs one, create a placeholder
-        if (npcsInvolved.length === 0 && ['combat', 'chase', 'social', 'stealth'].includes(sceneBlueprint.encounterType || '')) {
-          this.throwIfFailFast(
-            `Encounter ${sceneBlueprint.id} has no NPC participants to author against`,
-            'encounter_generation',
-            {
-              agent: 'EncounterArchitect',
-              context: {
-                sceneId: sceneBlueprint.id,
-                encounterType: sceneBlueprint.encounterType,
-                failureKind: 'validation',
-              },
-            }
-          );
-          console.warn(`[Pipeline] No NPCs for ${sceneBlueprint.encounterType} encounter ${sceneBlueprint.id} - creating placeholder antagonist`);
-          npcsInvolved = [{
-            id: 'unnamed-antagonist',
-            name: 'the adversary',
-            pronouns: 'he/him' as const,
-            role: 'enemy' as const,
-            description: sceneBlueprint.encounterDescription || 'An opposing force',
-            physicalDescription: undefined,
-          }];
-        }
-
-        if (plannedEnc && sceneBlueprint.plannedEncounterId !== plannedEnc.id) {
-          throw new PipelineError(
-            `Encounter scene ${sceneBlueprint.id} is not explicitly bound to planned encounter ${plannedEnc.id}. Story Architect must set plannedEncounterId exactly.`,
-            'encounters',
-            {
-              agent: 'StoryArchitect',
-              context: {
-                sceneId: sceneBlueprint.id,
-                plannedEncounterId: plannedEnc.id,
-                failureKind: 'validation',
-              },
-            }
-          );
-        }
-
-        if (!(sceneBlueprint.encounterDescription || plannedEnc?.description || sceneBlueprint.description)) {
-          throw new PipelineError(
-            `Encounter scene ${sceneBlueprint.id} is missing an encounter description.`,
-            'encounters',
-            { agent: 'StoryArchitect', context: { sceneId: sceneBlueprint.id, failureKind: 'validation' } }
-          );
-        }
-        if (!(sceneBlueprint.encounterStakes || plannedEnc?.stakes)) {
-          throw new PipelineError(
-            `Encounter scene ${sceneBlueprint.id} is missing encounter stakes.`,
-            'encounters',
-            { agent: 'StoryArchitect', context: { sceneId: sceneBlueprint.id, failureKind: 'validation' } }
-          );
-        }
-        if (encounterBeatPlan.length < 3) {
-          throw new PipelineError(
-            `Encounter scene ${sceneBlueprint.id} is missing a usable encounter beat plan (need at least 3 beats).`,
-            'encounters',
-            { agent: 'StoryArchitect', context: { sceneId: sceneBlueprint.id, failureKind: 'validation' } }
-          );
-        }
-
-        // Build priorStateContext from the blueprint's encounterSetupContext and
-        // the suggested flags/relationships defined by the StoryArchitect.
-        // Pass current setFlags so the architect knows which flags are already available.
-        const currentSetFlags = this.incrementalValidator?.getSetFlags();
-        const priorStateContext = this.buildEncounterPriorStateContext(
-          sceneBlueprint,
-          blueprint,
-          npcsInvolved,
-          currentSetFlags
-        );
-        if (priorStateContext) {
-          const authoredRelationships = priorStateContext.relevantRelationships.filter((entry) => entry.authored !== false).length;
-          const autoRelationships = priorStateContext.relevantRelationships.filter((entry) => entry.authored === false).length;
-          this.emit({
-            type: 'debug',
-            phase: 'encounters',
-            message: `Encounter prior-state context for ${sceneBlueprint.id}: ${priorStateContext.relevantFlags.length} flag(s), ${authoredRelationships} authored relationship check(s), ${autoRelationships} fallback relationship check(s), ${priorStateContext.significantChoices.length} significant choice hint(s)`,
-          });
-        }
-
-        const encounterInput: EncounterArchitectInput = {
-          sceneId: sceneBlueprint.id,
-          sceneName: sceneBlueprint.name,
-          sceneDescription: sceneBlueprint.description,
-          sceneMood: sceneBlueprint.mood,
-          plannedEncounterId: sceneBlueprint.plannedEncounterId || plannedEnc?.id,
-          storyContext: {
-            title: brief.story.title,
-            genre: brief.story.genre,
-            tone: brief.story.tone,
-            userPrompt: brief.userPrompt,
-          },
-          encounterType: sceneBlueprint.encounterType,
-          encounterStyle: sceneBlueprint.encounterStyle || plannedEnc?.style || (
-            sceneBlueprint.encounterType === 'combat' || sceneBlueprint.encounterType === 'chase'
-              ? 'action'
-              : sceneBlueprint.encounterType === 'stealth' || sceneBlueprint.encounterType === 'heist'
-                ? 'stealth'
-                : sceneBlueprint.encounterType === 'exploration' || sceneBlueprint.encounterType === 'survival'
-                  ? 'adventure'
-                  : sceneBlueprint.encounterType === 'puzzle' || sceneBlueprint.encounterType === 'investigation'
-                    ? 'mystery'
-                    : sceneBlueprint.encounterType === 'romantic'
-                      ? 'romantic'
-                      : sceneBlueprint.encounterType === 'dramatic'
-                        ? 'dramatic'
-                        : 'social'
-          ),
-          encounterDescription: sceneBlueprint.encounterDescription || sceneBlueprint.description,
-          encounterStakes: sceneBlueprint.encounterStakes || plannedEnc?.stakes,
-          encounterRequiredNpcIds,
-          encounterRelevantSkills,
-          encounterBeatPlan,
-          difficulty: sceneBlueprint.encounterDifficulty || 'moderate',
-          partialVictoryCost: sceneBlueprint.encounterPartialVictoryCost,
-          protagonistInfo: {
-            name: brief.protagonist.name,
-            pronouns: brief.protagonist.pronouns,
-            physicalDescription: protagonistProfile?.physicalDescription,
-            relevantSkills: protagonistSkills.length > 0 ? protagonistSkills : undefined,
-          },
-          npcsInvolved,
-          availableSkills: defaultSkills,
-          targetBeatCount,
-          victoryNextSceneId,
-          defeatNextSceneId,
-          priorStateContext,
-          memoryContext: this.cachedPipelineMemory || undefined,
-        };
-
-        const encounterInputSummary = {
-          sceneId: sceneBlueprint.id,
-          sceneName: sceneBlueprint.name,
-          plannedEncounterId: sceneBlueprint.plannedEncounterId || plannedEnc?.id || 'none',
-          encounterType: sceneBlueprint.encounterType,
-          difficulty: sceneBlueprint.encounterDifficulty || 'moderate',
-          descriptionChars: (sceneBlueprint.encounterDescription || sceneBlueprint.description || '').length,
-          stakesChars: (sceneBlueprint.encounterStakes || plannedEnc?.stakes || '').length,
-          userPromptChars: (brief.userPrompt || '').length,
-          npcCount: npcsInvolved.length,
-          requiredNpcCount: encounterRequiredNpcIds.length,
-          availableSkillCount: defaultSkills.length,
-          relevantSkillCount: encounterRelevantSkills.length,
-          protagonistSkillCount: protagonistSkills.length,
-          targetBeatCount,
-          beatPlanCount: encounterBeatPlan.length,
-          priorStateFlags: priorStateContext?.relevantFlags.length || 0,
-          priorStateRelationships: priorStateContext?.relevantRelationships.length || 0,
-          priorStateSignificantChoices: priorStateContext?.significantChoices.length || 0,
-        };
-
-        // Log input for debugging encounter generation issues
-        console.log(`[Pipeline] EncounterArchitect input summary for ${sceneBlueprint.id}: ${JSON.stringify(encounterInputSummary)}`);
-        console.log(`[Pipeline] EncounterArchitect input preview for ${sceneBlueprint.id}:
-  - Scene: ${sceneBlueprint.name}
-  - Planned encounter: ${sceneBlueprint.plannedEncounterId || plannedEnc?.id || 'none'}
-  - Type: ${sceneBlueprint.encounterType}
-  - Description: ${(sceneBlueprint.encounterDescription || sceneBlueprint.description || '').substring(0, 100)}...
-  - Stakes: ${(sceneBlueprint.encounterStakes || plannedEnc?.stakes || '').substring(0, 100)}
-  - Difficulty: ${sceneBlueprint.encounterDifficulty || 'moderate'}
-  - NPCs: ${npcsInvolved.map(n => n.name).join(', ') || 'None'}
-  - Target beats: ${targetBeatCount}
-  - Beat plan: ${encounterBeatPlan.join(' | ')}`);
-
-        // Build initial relationship snapshot from character profiles for the
-        // relationship dynamics analysis in the phased encounter generator.
-        const playerRelationships: Record<string, import('../../types').Relationship> = {};
-        for (const npc of npcsInvolved) {
-          const profile = characterBible.characters.find(c => c.id === npc.id);
-          const stats = profile?.initialStats;
-          playerRelationships[npc.id] = {
-            npcId: npc.id,
-            trust: stats?.trust ?? 0,
-            affection: stats?.affection ?? 0,
-            respect: stats?.respect ?? 0,
-            fear: stats?.fear ?? 0,
-          };
-        }
-        const allNpcInfos = characterBible.characters
-          .filter(c => c.id !== brief.protagonist.id)
-          .map(c => ({ id: c.id, name: c.name }));
-
-        // EncounterArchitect.execute() uses phased generation with fallback:
-        //   Phase 1: Opening beat (120s timeout)
-        //   Phase 2a/2b/2c: Branch situations (3 parallel, 120s each)
-        //   Phase 3: Enrichment (90s)
-        //   Phase 4: Storylets (90s)
-        //   Legacy fallback: lean prompt → retry → deterministic
-        // A safety-net timeout is kept for truly pathological cases.
-        let encounterResult: AgentResponse<EncounterStructure> | null = null;
-        try {
-          encounterResult = await withTimeout(
-            this.encounterArchitect.execute(encounterInput, playerRelationships, allNpcInfos),
-            PIPELINE_TIMEOUTS.encounterAgent,
-            `EncounterArchitect.execute(${sceneBlueprint.id})`,
-            () => {
-              console.error(
-                `[Pipeline] EncounterArchitect safety-net timeout for ${sceneBlueprint.id}: ${JSON.stringify(encounterInputSummary)}`
-              );
-            }
-          );
-        } catch (encErr) {
-          const encErrMsg = encErr instanceof Error ? encErr.message : String(encErr);
-          console.error(`[Pipeline] Encounter generation threw for ${sceneBlueprint.id}: ${encErrMsg}`);
-          this.emit({
-            type: 'warning',
-            phase: 'encounters',
-            message: `Encounter generation failed for ${sceneBlueprint.id}: ${encErrMsg}`,
-          });
-          throw new PipelineError(
-            `Encounter generation failed for ${sceneBlueprint.id}: ${encErrMsg}`,
-            'encounters',
-            {
-              agent: 'EncounterArchitect',
-              context: {
-                sceneId: sceneBlueprint.id,
-                sceneName: sceneBlueprint.name,
-                encounterType: sceneBlueprint.encounterType,
-                failureKind: 'content',
-              },
-            }
-          );
-        }
-
-        if (encounterResult && !encounterResult.success && !encounterResult.data) {
-          const encFailMsg = `Encounter Architect failed on ${sceneBlueprint.id}: ${encounterResult.error}`;
-          console.error(`[Pipeline] ${encFailMsg}`);
-          this.emit({
-            type: 'warning',
-            phase: 'encounters',
-            message: encFailMsg,
-          });
-          throw new PipelineError(
-            encFailMsg,
-            'encounters',
-            {
-              agent: 'EncounterArchitect',
-              context: {
-                sceneId: sceneBlueprint.id,
-                sceneName: sceneBlueprint.name,
-                encounterType: sceneBlueprint.encounterType,
-                failureKind: 'content',
-              },
-            }
-          );
-        }
-        
-        // Only register encounter + run validation if EncounterArchitect succeeded
-        if (encounterResult?.success && encounterResult.data) {
-          encounters.set(sceneBlueprint.id, encounterResult.data);
-          this.emit({
-            type: 'agent_complete',
-            agent: 'EncounterArchitect',
-            message: `Designed ${encounterResult.data.beats.length}-beat ${sceneBlueprint.encounterDifficulty || 'moderate'} encounter with ${Object.keys(encounterResult.data.storylets || {}).length} storylets for ${sceneBlueprint.id}`,
-          });
-
-          // === FLAG CHRONOLOGY CHECK: validate encounter conditions BEFORE tracking flags ===
-          if (this.incrementalValidator) {
-            const conditionIssues = this.incrementalValidator.checkEncounterChoiceConditions(encounterResult.data);
-            if (conditionIssues.length > 0) {
-              this.emit({
-                type: 'warning',
-                phase: 'encounter',
-                message: `Encounter ${sceneBlueprint.id}: ${conditionIssues.length} flag chronology issue(s) — ${conditionIssues.map(i => i.detail).join('; ')}`,
-              });
-            }
-
-            // Track setFlag consequences from encounter choice outcomes so
-            // subsequent scenes/encounters see them in the flag tracker.
-            this.trackEncounterFlagConsequences(encounterResult.data);
-          }
-
-          // === INCREMENTAL ENCOUNTER VALIDATION ===
-          if (this.incrementalValidator && incrementalConfig.encounterValidation) {
-            const encounterValidation = this.incrementalValidator.validators.encounter.validateEncounter(encounterResult.data);
-            
-            // Get the placeholder scene content for this encounter
-            const encounterSceneContent = sceneContents.find(sc => sc.sceneId === sceneBlueprint.id);
-            
-            if (encounterSceneContent) {
-              // Create a validation result for the encounter scene
-              const sceneValidation: SceneValidationResult = {
-                sceneId: sceneBlueprint.id,
-                sceneName: sceneBlueprint.name,
-                encounter: encounterValidation,
-                overallPassed: encounterValidation.passed,
-                regenerationRequested: encounterValidation.passed ? 'none' : 'encounter',
-                validationTimeMs: 0,
-              };
-              
-              this.sceneValidationResults.push(sceneValidation);
-
-              this.emit({
-                type: 'incremental_validation',
-                phase: 'encounter',
-                message: `Encounter ${sceneBlueprint.id}: ${encounterValidation.passed ? 'PASSED' : 'ISSUES FOUND'} (${encounterValidation.beatCount} beats)`,
-                data: {
-                  passed: encounterValidation.passed,
-                  beatCount: encounterValidation.beatCount,
-                  hasVictoryPath: encounterValidation.hasVictoryPath,
-                  hasDefeatPath: encounterValidation.hasDefeatPath,
-                  issues: encounterValidation.issues,
-                },
-              });
-
-              // Warn about missing victory/defeat paths
-              if (!encounterValidation.hasVictoryPath || !encounterValidation.hasDefeatPath) {
-                this.emit({
-                  type: 'warning',
-                  phase: 'encounter',
-                  message: `Encounter ${sceneBlueprint.id} may be missing ${!encounterValidation.hasVictoryPath ? 'victory' : ''} ${!encounterValidation.hasDefeatPath ? 'defeat' : ''} path`,
-                });
-              }
-
-              // === KARPATHY LOOP: Encounter regeneration based on incremental validation ===
-              if (sceneValidation.regenerationRequested === 'encounter' && incrementalConfig.encounterValidation) {
-                let encounterRegenAttempt = 0;
-                const maxEncounterRegenAttempts = incrementalConfig.maxRegenerationAttempts;
-
-                while (encounterRegenAttempt < maxEncounterRegenAttempts) {
-                  encounterRegenAttempt++;
-                  const issueDescriptions = encounterValidation.issues
-                    .map(i => `- [${i.severity}] ${i.type}: ${i.detail}`)
-                    .join('\n');
-
-                  this.emit({
-                    type: 'regeneration_triggered',
-                    phase: 'encounters',
-                    message: `Regenerating encounter ${sceneBlueprint.id} (attempt ${encounterRegenAttempt}/${maxEncounterRegenAttempts}): ${encounterValidation.issues.length} issue(s)`,
-                    data: { issues: encounterValidation.issues },
-                  });
-
-                  const regenEncounterInput: EncounterArchitectInput = {
-                    ...encounterInput,
-                    storyContext: {
-                      ...encounterInput.storyContext,
-                      userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nCRITICAL ENCOUNTER FIXES REQUIRED:\n${issueDescriptions}\n\nEnsure the encounter has ${!encounterValidation.hasVictoryPath ? 'a clear victory path, ' : ''}${!encounterValidation.hasDefeatPath ? 'a clear defeat path, ' : ''}proper skill checks, and complete outcome branches.`,
-                    },
-                  };
-
-                  try {
-                    const regenEncounterResult = await withTimeout(
-                      this.encounterArchitect.execute(regenEncounterInput, playerRelationships, allNpcInfos),
-                      PIPELINE_TIMEOUTS.encounterAgent,
-                      `EncounterArchitect.execute(${sceneBlueprint.id} regen-${encounterRegenAttempt})`
-                    );
-
-                    if (!regenEncounterResult.success || !regenEncounterResult.data) {
-                      this.emit({
-                        type: 'warning',
-                        phase: 'encounters',
-                        message: `Encounter regeneration failed for ${sceneBlueprint.id}, keeping original`,
-                      });
-                      break;
-                    }
-
-                    const regenValidation = this.incrementalValidator!.validators.encounter.validateEncounter(regenEncounterResult.data);
-
-                    if (regenValidation.passed ||
-                        regenValidation.issues.length < encounterValidation.issues.length) {
-                      encounters.set(sceneBlueprint.id, regenEncounterResult.data);
-                      // Update the stored validation result
-                      const valIdx = this.sceneValidationResults.findIndex(v => v.sceneId === sceneBlueprint.id);
-                      if (valIdx !== -1) {
-                        this.sceneValidationResults[valIdx] = {
-                          ...this.sceneValidationResults[valIdx],
-                          encounter: regenValidation,
-                          overallPassed: regenValidation.passed,
-                          regenerationRequested: regenValidation.passed ? 'none' : 'encounter',
-                        };
-                      }
-                      this.emit({
-                        type: 'debug',
-                        phase: 'encounters',
-                        message: `Encounter ${sceneBlueprint.id} regenerated (issues: ${encounterValidation.issues.length} -> ${regenValidation.issues.length})`,
-                      });
-                      if (regenValidation.passed) break;
-                      Object.assign(encounterValidation, regenValidation);
-                    } else {
-                      this.emit({
-                        type: 'debug',
-                        phase: 'encounters',
-                        message: `Encounter ${sceneBlueprint.id} regen attempt ${encounterRegenAttempt} did not improve, keeping previous`,
-                      });
-                    }
-                  } catch (regenErr) {
-                    this.emit({
-                      type: 'warning',
-                      phase: 'encounters',
-                      message: `Encounter regeneration threw for ${sceneBlueprint.id}: ${regenErr instanceof Error ? regenErr.message : String(regenErr)}`,
-                    });
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-        contentWorkCompleted += 1;
-        this.emitPhaseProgress(
-          'content',
-          contentWorkCompleted,
-          contentWorkTotal,
-          'content:work',
-          `Encounter pass complete for ${sceneBlueprint.id}`
-        );
-      }
-      finalizedScenes.add(sceneBlueprint.id);
-    }
-
-    // Emit aggregated validation summary
-    if (this.incrementalValidator && this.sceneValidationResults.length > 0) {
-      const aggregated = aggregateValidationResults(this.sceneValidationResults);
-      this.emit({
-        type: 'validation_aggregated',
-        phase: 'incremental_validation',
-        message: `Incremental validation complete: ${aggregated.passedScenes}/${aggregated.totalScenes} scenes passed`,
-        data: aggregated,
-      });
-    }
-
-    // Summary of content generation
-    const totalChoices = choiceSets.reduce((sum, cs) => sum + cs.choices.length, 0);
-    const totalEncounters = encounters.size;
-    this.emit({ 
-      type: 'phase_complete', 
-      phase: 'content', 
-      message: `Content complete: ${sceneContents.length} scenes, ${choiceSets.length} choice sets, ${totalChoices} choices, ${totalEncounters} encounters` 
+        return false;
+      },
+      loadResumeUnit: this.loadResumeUnit.bind(this),
+      recordRemediationSafe: this.recordRemediationSafe.bind(this),
+      recordSceneValidationResult: this.recordSceneValidationResult.bind(this),
+      resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
+      runSceneCriticPass: this.runSceneCriticPass.bind(this),
+      sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
+      saveResumeUnit: this.saveResumeUnit.bind(this),
+      throwIfFailFast: this.throwIfFailFast.bind(this),
+      trackEncounterFlagConsequences: this.trackEncounterFlagConsequences.bind(this),
+    } satisfies Partial<ContentGenerationPhaseDeps> as unknown as ContentGenerationPhaseDeps;
+    Object.defineProperties(deps, {
+      incrementalValidator: {
+        get: () => this.incrementalValidator,
+        set: (value) => { this.incrementalValidator = value; },
+      },
+      sceneValidationResults: {
+        get: () => this.sceneValidationResults,
+        set: (value) => { this.sceneValidationResults = value; },
+      },
+      seasonSkillPlan: {
+        get: () => this.seasonSkillPlan,
+        set: (value) => { this.seasonSkillPlan = value; },
+      },
+      encounterTelemetry: {
+        get: () => this.encounterTelemetry,
+        set: (value) => { this.encounterTelemetry = value; },
+      },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
+      callbackLedger: { get: () => this.callbackLedger },
+      dependencySchedulerStats: { get: () => this.dependencySchedulerStats },
+      episodeTwistPlans: { get: () => this.episodeTwistPlans },
+      episodeArcTargets: { get: () => this.episodeArcTargets },
+      generationPlan: { get: () => this.generationPlan },
+      remediationBudget: { get: () => this.remediationBudget },
+      seasonChoicePlan: { get: () => this.seasonChoicePlan },
+      plannedChoiceTypesByScene: {
+        get: () => this.plannedChoiceTypesByScene,
+        set: (value) => { this.plannedChoiceTypesByScene = value; },
+      },
+      seasonThreadLedger: { get: () => this.seasonThreadLedger },
     });
-    if (totalChoices === 0 && totalEncounters === 0) {
-      console.error(`[Pipeline] CRITICAL: No choices or encounters were generated! This will result in a non-interactive story.`);
-    }
-    // Gate on isEncounter alone — encounterType should have been normalized above,
-    // but we never want the safety check to use a narrower filter than the generation gate.
-    const expectedEncounterSceneIds = blueprint.scenes
-      .filter((scene) => scene.isEncounter)
-      .map((scene) => scene.id);
-    const missingEncounterSceneIds = expectedEncounterSceneIds.filter((sceneId) => !encounters.has(sceneId));
-    if (missingEncounterSceneIds.length > 0) {
-      throw new PipelineError(
-        `Encounter scenes missing concrete encounter content: ${missingEncounterSceneIds.join(', ')}. ` +
-        `This usually means encounterType was missing and the scene was processed by SceneWriter instead of EncounterArchitect.`,
-        'encounters',
-        {
-          context: {
-            expectedEncounterSceneIds,
-            missingEncounterSceneIds,
-            failureKind: 'content',
-          },
-        }
-      );
-    }
-    this.assertSceneDependencyInvariants(blueprint, sceneContents);
-
-    return { sceneContents, choiceSets, encounters };
+    return new ContentGenerationPhase(deps).run(
+      brief,
+      worldBible,
+      characterBible,
+      blueprint,
+      branchAnalysis,
+      outputDirectory,
+      episodeNumber,
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
+      }
+    );
   }
 
+  /**
+   * Optional SceneCritic rewrite pass (Phase 9.2). Re-authors the *text* of
+   * beats in a small number of scenes to improve subtext / reversals /
+   * show-don't-tell. Non-destructive — merges rewritten beats back into the
+   * existing SceneContent objects, preserving structural fields.
+   */
+  private runSceneCriticPass(
+    sceneContents: SceneContent[],
+    characterBible: CharacterBible,
+  ): Promise<void> {
+    return this.sceneCriticContinuity().runSceneCriticPass(sceneContents, characterBible);
+  }
+
+  // Extracted to phases/QAPhase.ts (pure move): the QARunner full-QA pass
+  // with incremental-validation skip stubs. Thin delegating wrapper keeps the
+  // per-episode QA pass in the multi-episode loop unchanged.
   private async runQualityAssurance(
     brief: FullCreativeBrief,
     sceneContents: SceneContent[],
@@ -4445,70 +4757,199 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     blueprint: EpisodeBlueprint
   ): Promise<QAReport> {
-    const qaStepTotal = 3;
-    this.emitPhaseProgress('qa', 0, qaStepTotal, 'qa:steps', 'Preparing quality assurance checks...');
-    // Determine which checks to skip based on incremental validation
-    const skipRedundantQA = brief.options?.skipRedundantQA !== false && this.incrementalValidator !== null;
-    
-    const qaOptions: QARunnerOptions = {};
-    
-    if (skipRedundantQA && this.sceneValidationResults.length > 0) {
-      // Calculate issue counts from incremental validation
-      const aggregated = aggregateValidationResults(this.sceneValidationResults);
-      
-      qaOptions.skipVoiceValidation = true;
-      qaOptions.skipStakesAnalysis = true;
-      qaOptions.continuityFocusCrossScene = true;
-      qaOptions.incrementalResults = {
-        voiceIssueCount: aggregated.totalIssues.voice,
-        stakesIssueCount: aggregated.totalIssues.stakes,
-        continuityIssueCount: aggregated.totalIssues.continuity,
-      };
-      
-      this.emit({ 
-        type: 'debug', 
-        agent: 'QARunner', 
-        message: `Skipping redundant QA checks (voice: ${aggregated.totalIssues.voice} issues, stakes: ${aggregated.totalIssues.stakes} issues caught incrementally)` 
-      });
-    }
-    this.emitPhaseProgress('qa', 1, qaStepTotal, 'qa:steps', 'QA input bundle prepared');
-
-    this.emit({ type: 'agent_start', agent: 'QARunner', message: 'Running quality assurance checks' });
-
-    const report = await this.qaRunner.runFullQA({
-      sceneContents,
-      choiceSets,
-      characterProfiles: characterBible.characters.map(c => ({
-        id: c.id,
-        name: c.name,
-        voiceProfile: c.voiceProfile,
-      })),
-      knownFlags: blueprint.suggestedFlags,
-      knownScores: blueprint.suggestedScores,
-      establishedFacts: [],
-      storyThemes: brief.story.themes,
-      targetTone: brief.story.tone,
-      sceneContexts: blueprint.scenes.map(s => ({
-        sceneId: s.id,
-        sceneName: s.name,
-        mood: s.mood,
-        narrativeFunction: s.narrativeFunction,
-      })),
-    }, qaOptions);
-    this.emitPhaseProgress('qa', 2, qaStepTotal, 'qa:steps', 'QA analysis complete');
-
-    const skippedMsg = report.skippedChecks && report.skippedChecks.length > 0 
-      ? ` (skipped: ${report.skippedChecks.join(', ')})` 
-      : '';
-
-    this.emit({
-      type: 'agent_complete',
-      agent: 'QARunner',
-      message: `QA Score: ${report.overallScore}/100 - ${report.passesQA ? 'PASSED' : 'NEEDS REVISION'}${skippedMsg}`,
+    return this.qaPhase().runQualityAssurance(brief, sceneContents, choiceSets, characterBible, blueprint, {
+      config: this.config,
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
     });
-    this.emitPhaseProgress('qa', 3, qaStepTotal, 'qa:steps', 'QA report finalized');
+  }
 
-    return report;
+  private qaPhase(): QAPhase {
+    const deps = {
+      qaRunner: this.qaRunner,
+      integratedValidator: this.integratedValidator,
+      distributionValidator: this.distributionValidator,
+      sceneWriter: this.sceneWriter,
+      choiceAuthor: this.choiceAuthor,
+      requirePhases: this.requirePhases.bind(this),
+      markPhaseComplete: this.markPhaseComplete.bind(this),
+      measurePhase: this.measurePhase.bind(this),
+      emitPhaseProgress: this.emitPhaseProgress.bind(this),
+      prepareValidationInput: this.prepareValidationInput.bind(this),
+      buildContinuityCharacterKnowledge: this.buildContinuityCharacterKnowledge.bind(this),
+      buildContinuityTimeline: this.buildContinuityTimeline.bind(this),
+      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
+    } satisfies Partial<QAPhaseDeps> as unknown as QAPhaseDeps;
+    // Accessor-backed run-scoped state: reads on the phase side always see
+    // the pipeline's current values.
+    Object.defineProperties(deps, {
+      incrementalValidator: { get: () => this.incrementalValidator },
+      sceneValidationResults: { get: () => this.sceneValidationResults },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
+    });
+    return new QAPhase(deps);
+  }
+
+  private quickValidationPhase(): QuickValidationPhase {
+    const deps = {
+      integratedValidator: this.integratedValidator,
+      sceneWriter: this.sceneWriter,
+      choiceAuthor: this.choiceAuthor,
+      prepareValidationInput: this.prepareValidationInput.bind(this),
+      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
+      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
+    } satisfies Partial<QuickValidationPhaseDeps> as unknown as QuickValidationPhaseDeps;
+    // Accessor-backed run-scoped state: reads on the phase side always see
+    // the pipeline's current values.
+    Object.defineProperties(deps, {
+      sceneValidationResults: { get: () => this.sceneValidationResults },
+      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
+    });
+    return new QuickValidationPhase(deps);
+  }
+
+  // Extracted to phases/AssemblyPhase.ts (pure move, one documented
+  // deviation: the completeness walk's encounter-validation branch
+  // referenced out-of-scope variables — a latent ReferenceError — and was
+  // dropped; see the NOTE in AssemblyPhase). assembleStory stays here with
+  // its other callers (multi-episode loop, branch validation) and is
+  // injected as a closure.
+  private assemblyPhase(): AssemblyPhase {
+    return new AssemblyPhase({
+      assetRegistry: this.assetRegistry,
+      assembleStory: this.assembleStory.bind(this),
+      recordRemediationSafe: this.recordRemediationSafe.bind(this),
+      resolveGeneratedStoryPlayerTemplates: this.resolveGeneratedStoryPlayerTemplates.bind(this),
+      runFlagChronologyScan: this.runFlagChronologyScan.bind(this),
+      saveDraftImageManifest: this.saveDraftImageManifest.bind(this),
+      buildImageManifestFromStory: this.buildImageManifestFromStory.bind(this),
+    });
+  }
+
+  /**
+   * Phase B (Season Canon): targeted, advisory continuity repair. For scenes the
+   * ContinuityChecker flagged with a character-consistency contradiction
+   * (state_conflict / impossible_knowledge / contradiction), re-author the flagged
+   * beats via SceneCritic — grounded in the capability canon — and merge the
+   * rewritten PROSE back into the already-assembled story (ids/nav/choices
+   * untouched). Bounded + advisory: never blocks; keeps the original on any failure.
+   */
+  private repairContinuityFindings(
+    story: Story,
+    sceneContents: SceneContent[],
+    characterBible: CharacterBible,
+    qaReport: QAReport,
+    outputDirectory: string,
+    blueprint?: EpisodeBlueprint,
+    options?: { forceRevalidation?: boolean; revalidationReason?: string },
+  ): Promise<void> {
+    return this.sceneCriticContinuity().repairContinuityFindings(
+      story, sceneContents, characterBible, qaReport, outputDirectory, blueprint, options,
+    );
+  }
+
+  /**
+   * Pull an `EncounterTelemetry` payload out of an EncounterArchitect
+   * response's metadata (if present) and append it to the run-level
+   * telemetry collector. Silently ignores responses that predate the
+   * telemetry contract.
+   */
+  private captureEncounterTelemetry(
+    metadata: Record<string, unknown> | undefined,
+    sceneId?: string
+  ): void {
+    captureEncounterTelemetryInto(
+      { perEpisode: this.encounterTelemetry, season: this.allEncounterTelemetry },
+      metadata,
+      sceneId
+    );
+  }
+
+  /** Outcome slots that shipped identical default fallback prose (advisory). */
+  private getPhase4DefaultCollisions(metadata: Record<string, unknown> | undefined): string[] {
+    const raw = metadata?.encounterTelemetry as EncounterTelemetry | undefined;
+    return Array.isArray(raw?.phase4DefaultCollisions) ? raw.phase4DefaultCollisions : [];
+  }
+
+  /**
+   * Build a best-effort `characterKnowledge` bundle for ContinuityChecker.
+   *
+   * The pipeline does not model first-class "what does this character know
+   * at time T" data, so we populate this from the character bible using
+   * information we DO have:
+   *   - Each character knows their own overview, core want/fear/flaw, and
+   *     any relationships they explicitly hold.
+   *   - Each character is assumed NOT to know the hidden secrets of OTHER
+   *     characters (this is the most common source of "character knows
+   *     something they shouldn't" continuity bugs).
+   *
+   * This is intentionally conservative: we feed the LLM real data where we
+   * have it, and we do not invent knowledge facts we cannot verify.
+   */
+  private buildContinuityCharacterKnowledge(
+    characterBible: CharacterBible
+  ): Array<{ characterId: string; knows: string[]; doesNotKnow: string[] }> {
+    const characters = characterBible.characters ?? [];
+    if (characters.length === 0) return [];
+
+    return characters.map(c => {
+      const knows: string[] = [];
+      if (c.overview) knows.push(c.overview);
+      if (c.want) knows.push(`their own goal: ${c.want}`);
+      if (c.fear) knows.push(`their own fear: ${c.fear}`);
+      const relationships = Array.isArray(c.relationships) ? c.relationships : [];
+      relationships.forEach(r => {
+        if (r.targetName && r.relationshipType) {
+          knows.push(`${r.targetName} (${r.relationshipType})`);
+        }
+      });
+
+      const doesNotKnow: string[] = [];
+      for (const other of characters) {
+        if (other.id === c.id) continue;
+        if (other.hiddenSecret) {
+          doesNotKnow.push(`${other.name}'s secret: ${other.hiddenSecret}`);
+        }
+      }
+
+      return {
+        characterId: c.id,
+        knows,
+        doesNotKnow,
+      };
+    });
+  }
+
+  /**
+   * Build a best-effort `timelineEvents` list for ContinuityChecker from
+   * the episode blueprint's ordered scene list. This gives the LLM a
+   * concrete reference for "what happens when" so it can flag forward
+   * references and impossible knowledge across scenes.
+   */
+  private buildContinuityTimeline(
+    blueprint: EpisodeBlueprint
+  ): Array<{ event: string; when: string }> {
+    const scenes = blueprint.scenes ?? [];
+    if (scenes.length === 0) return [];
+
+    // Branch-aware numbering: mutually-exclusive alternatives (scene-3a/scene-3b)
+    // share a display number so the timeline doesn't read them as sequential.
+    const timelineLabels = buildSceneTimelineLabels(scenes.map((s) => s.id));
+    return scenes.map((s, idx) => {
+      const label = s.name || s.id;
+      const details = [s.narrativeFunction, s.mood].filter(Boolean).join(' / ');
+      return {
+        event: details ? `${label} (${details})` : label,
+        when: `${timelineLabels[idx].label} (${s.id})`,
+      };
+    });
   }
 
   private assembleStory(
@@ -4524,219 +4965,10 @@ export class FullStoryPipeline {
     storyCoverUrl?: string,
     videoResults?: Map<string, string>
   ): Story {
-    const contentMap = new Map(sceneContents.map(sc => [sc.sceneId, sc]));
-    const choiceMap = new Map(choiceSets.map(cs => [cs.sceneId ? `${cs.sceneId}::${cs.beatId}` : cs.beatId, cs]));
-    const beatImages = imageResults?.beatImages || new Map<string, string>();
-    const sceneImages = imageResults?.sceneImages || new Map<string, string>();
-    const beatVideos = videoResults || new Map<string, string>();
-    const encounterImages = encounterImageResults?.encounterImages || new Map();
-    const storyletImages = encounterImageResults?.storyletImages || new Map<string, Map<string, Map<string, string>>>();
-
-    // Build scenes
-    const scenes: Scene[] = blueprint.scenes.map(sceneBlueprint => {
-      const content = contentMap.get(sceneBlueprint.id);
-      if (!content) {
-        throw new Error(`Missing content for scene ${sceneBlueprint.id}`);
-      }
-
-      // Check if this scene has an encounter - use extracted converter
-      const encounterStructure = encounters.get(sceneBlueprint.id);
-      const sceneEncounterImages = encounterImages.get(sceneBlueprint.id);
-      let encounter = encounterStructure 
-        ? convertEncounterStructureToEncounter(encounterStructure, sceneBlueprint)
-        : undefined;
-      
-      // Map encounter images to the encounter structure (including recursive nextSituation trees)
-      if (encounter && sceneEncounterImages) {
-        let mappedSetupCount = 0;
-        let mappedOutcomeCount = 0;
-        encounter.phases.forEach(phase => {
-          phase.beats.forEach(beat => {
-            const isEncounterBeat = 'setupText' in beat;
-            
-            const setupImage = sceneEncounterImages.setupImages.get(beat.id);
-            if (setupImage && isEncounterBeat) {
-              (beat as TypeEncounterBeat).situationImage = setupImage;
-              mappedSetupCount++;
-            }
-            
-            if (isEncounterBeat) {
-              const encounterBeat = beat as TypeEncounterBeat;
-              if (encounterBeat.choices) {
-                const treeResult = this.wireEncounterTreeImages(
-                  encounterBeat.choices,
-                  encounterBeat.id,
-                  '',
-                  sceneEncounterImages.setupImages,
-                  sceneEncounterImages.outcomeImages,
-                  encounterBeat.situationImage,
-                );
-                mappedSetupCount += treeResult.setupCount;
-                mappedOutcomeCount += treeResult.outcomeCount;
-              }
-            }
-          });
-        });
-        console.log(`[Pipeline] Encounter image mapping for ${sceneBlueprint.id}: ${mappedSetupCount} setup images, ${mappedOutcomeCount} outcome images wired`);
-      } else if (encounter && !sceneEncounterImages) {
-        console.warn(`[Pipeline] Scene ${sceneBlueprint.id} has encounter but NO encounter images were generated`);
-      }
-
-      // Wire storylet aftermath images into each storylet beat's image field
-      if (encounter) {
-        const sceneStoryletImages = storyletImages.get(sceneBlueprint.id);
-        if (sceneStoryletImages && encounter.storylets) {
-          const outcomes: Array<[string, TypeGeneratedStorylet | undefined]> = [
-            ['victory', encounter.storylets.victory],
-            ['partialVictory', encounter.storylets.partialVictory],
-            ['defeat', encounter.storylets.defeat],
-            ['escape', encounter.storylets.escape],
-          ];
-          for (const [outcomeName, storylet] of outcomes) {
-            if (!storylet) continue;
-            const beatImageMap = sceneStoryletImages.get(outcomeName);
-            if (beatImageMap) {
-              storylet.beats.forEach(beat => {
-                const url = beatImageMap.get(beat.id);
-                if (url) beat.image = url;
-              });
-            }
-          }
-        }
-      }
-
-      const beats: Beat[] = content.beats.map(genBeat => {
-        const compositeKey = this.getEpisodeScopedBeatKey(brief, sceneBlueprint.id, genBeat.id);
-        const beat: Beat = {
-          id: genBeat.id,
-          text: genBeat.text,
-          textVariants: genBeat.textVariants,
-          speaker: genBeat.speaker,
-          speakerMood: genBeat.speakerMood,
-          nextBeatId: genBeat.nextBeatId,
-          onShow: genBeat.onShow,
-          image: beatImages.get(compositeKey),
-          video: beatVideos.get(compositeKey),
-        };
-
-        if (genBeat.isChoicePoint) {
-          const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${genBeat.id}`);
-          if (choiceSet) {
-            beat.choices = choiceSet.choices.map((gc, ci) => {
-              let nextSceneId = gc.nextSceneId;
-
-              // Guard: prevent backward navigation to current scene or scenes
-              // that precede it in the episode (which would cause loops).
-              if (nextSceneId) {
-                const targetIdx = blueprint.scenes.findIndex(s => s.id === nextSceneId);
-                const currentIdx = blueprint.scenes.findIndex(s => s.id === sceneBlueprint.id);
-                if (targetIdx >= 0 && targetIdx <= currentIdx) {
-                  const leadsTo = sceneBlueprint.leadsTo || [];
-                  const corrected = leadsTo[ci % leadsTo.length] || leadsTo[0];
-                  if (corrected) {
-                    console.warn(
-                      `[Pipeline] assembleStory: choice "${gc.id}" in scene "${sceneBlueprint.id}" ` +
-                      `routes backward to "${nextSceneId}" (idx ${targetIdx} <= ${currentIdx}). ` +
-                      `Auto-correcting to "${corrected}".`
-                    );
-                    nextSceneId = corrected;
-                  }
-                }
-              }
-
-              return {
-                id: gc.id,
-                text: gc.text,
-                choiceType: gc.choiceType,
-                conditions: gc.conditions,
-                showWhenLocked: gc.showWhenLocked,
-                lockedText: gc.lockedText,
-                statCheck: gc.statCheck,
-                consequences: normalizeConsequences(gc.consequences),
-                delayedConsequences: gc.delayedConsequences,
-                nextSceneId,
-                nextBeatId: gc.nextBeatId,
-                outcomeTexts: gc.outcomeTexts,
-                reactionText: gc.reactionText,
-                tintFlag: gc.tintFlag,
-                consequenceDomain: gc.consequenceDomain,
-                reminderPlan: gc.reminderPlan,
-                feedbackCue: gc.feedbackCue,
-              };
-            });
-          }
-        }
-
-        return beat;
-      });
-
-      return {
-        id: sceneBlueprint.id,
-        name: sceneBlueprint.name,
-        beats,
-        startingBeatId: content.startingBeatId,
-        backgroundImage: sceneImages.get(this.getEpisodeScopedSceneId(brief, sceneBlueprint.id)),
-        encounter,
-      };
-    });
-
-    const episodeCover = storyCoverUrl
-      || (scenes.length > 0 ? sceneImages.get(this.getEpisodeScopedSceneId(brief, scenes[0].id)) || '' : '');
-
-    const episode: Episode = {
-      id: generateEpisodeId(brief.episode.number, brief.episode.title),
-      number: brief.episode.number,
-      title: brief.episode.title,
-      synopsis: brief.episode.synopsis,
-      coverImage: episodeCover,
-      scenes,
-      startingSceneId: blueprint.startingSceneId,
-    };
-
-    const storyCover = episodeCover;
-
-    // Build complete story
-    const story: Story = {
-      id: idSlugify(brief.story.title) || 'untitled-story',
-      title: brief.story.title,
-      genre: brief.story.genre,
-      synopsis: brief.story.synopsis,
-      coverImage: storyCover,
-      author: 'AI Generated',
-      tags: brief.story.themes,
-
-      initialState: {
-        attributes: { ...CHARACTER_DEFAULTS.attributes },
-        skills: Object.fromEntries(DEFAULT_SKILLS.map(s => [s.name, 10])),
-        tags: [],
-        inventory: [],
-      },
-
-      npcs: characterBible.characters
-        .filter(c => c.id !== brief.protagonist.id)
-        .map(c => {
-          let portrait: string | undefined;
-          const refSheet = this.imageAgentTeam.getReferenceSheet(c.id);
-          if (refSheet) {
-            const frontImg = refSheet.generatedImages.get('front') || refSheet.generatedImages.get('composite');
-            portrait = frontImg?.imageUrl || frontImg?.imagePath;
-          }
-          return {
-            id: c.id,
-            name: c.name,
-            description: c.overview,
-            role: c.role,
-            pronouns: c.pronouns,
-            portrait,
-            initialRelationship: c.initialStats,
-          };
-        }),
-
-      episodes: [episode],
-      outputDir: '', // Will be filled in by pipeline
-    };
-
-    return story;
+    return this.assembly().assembleStory(
+      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters,
+      imageResults, encounterImageResults, storyCoverUrl, videoResults,
+    );
   }
 
   // Note: convertEncounterStructureToEncounter moved to ../converters/encounterConverter.ts
@@ -4745,92 +4977,193 @@ export class FullStoryPipeline {
   /**
    * Prepare validation input from pipeline data
    */
+  /**
+   * Phase 1.3 / 1.6: Build a runtime-persisted NPC entry from a CharacterProfile.
+   * Preserves first-class `tier`, want/fear/flaw, voice profile slice, secrets,
+   * and arc so the playback runtime, UI, and downstream validators can read
+   * them without re-loading the full CharacterBible.
+   */
+  private buildPersistedNpc(
+    c: CharacterBible['characters'][number],
+    portrait?: string
+  ) {
+    const tier = (c as unknown as { tier?: 'core' | 'supporting' | 'background' }).tier;
+    const voice = c.voiceProfile;
+    const voiceSlice = voice
+      ? {
+          writingGuidance: voice.writingGuidance,
+          speechPatterns: [
+            ...(voice.verbalTics || []),
+            ...(voice.favoriteExpressions || []),
+          ].filter(Boolean),
+          vocabularyLevel: voice.vocabulary,
+          whenNervous: voice.whenNervous,
+          whenAngry: voice.whenAngry,
+          whenConfident: voice.whenHappy,
+        }
+      : undefined;
+    const authoredSecrets = (c as unknown as { secrets?: string[] }).secrets;
+    const secrets = Array.isArray(authoredSecrets) && authoredSecrets.length > 0
+      ? authoredSecrets
+      : c.hiddenSecret
+        ? [c.hiddenSecret]
+        : undefined;
+    const arc = c.arcPotential
+      ? {
+          startState: c.arcPotential.currentState,
+          endState: c.arcPotential.possibleGrowth,
+          keyBeats: c.arcPotential.triggerEvents,
+        }
+      : undefined;
+    return {
+      id: c.id,
+      name: c.name,
+      description: c.overview,
+      role: c.role,
+      pronouns: c.pronouns,
+      portrait,
+      initialRelationship: this.ensureRelationshipStats(c.initialStats, tier),
+      relationshipDimensions: this.relationshipDimensionsForNpc(c.initialStats, tier),
+      tier,
+      want: c.want,
+      fear: c.fear,
+      flaw: c.flaw,
+      voiceProfile: voiceSlice,
+      secrets,
+      arc,
+    };
+  }
+
+  private relationshipDimensionsForNpc(
+    initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
+    tier?: 'core' | 'supporting' | 'background',
+  ): RelationshipDimension[] {
+    const dimensions = new Set<RelationshipDimension>();
+    if (initialStats) {
+      if (initialStats.trust !== undefined) dimensions.add('trust');
+      if (initialStats.affection !== undefined) dimensions.add('affection');
+      if (initialStats.respect !== undefined) dimensions.add('respect');
+      if (initialStats.fear !== undefined) dimensions.add('fear');
+    }
+    if (tier === 'core') {
+      dimensions.add('trust');
+      dimensions.add('affection');
+      dimensions.add('respect');
+      dimensions.add('fear');
+    }
+    return Array.from(dimensions);
+  }
+
+  private ensureRelationshipStats(
+    initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
+    tier?: 'core' | 'supporting' | 'background',
+  ) {
+    if (tier !== 'core') return initialStats;
+    return {
+      trust: initialStats?.trust ?? 0,
+      affection: initialStats?.affection ?? 0,
+      respect: initialStats?.respect ?? 0,
+      fear: initialStats?.fear ?? 0,
+    };
+  }
+
+  /**
+   * Deterministically derive the per-episode character-arc and relationship deltas to
+   * seal into the Season Canon. Without this the canon's `characters[]` / `relationships[]`
+   * arrays were always empty (only flag-knowledge + worldFacts were sealed), so
+   * later-episode prompts inherited no character-state or relationship continuity.
+   *
+   * No new LLM call: arc phase is derived from the episode's position in the season and
+   * the bible's want→need framing; relationship dimensions come from the core NPCs'
+   * tracked stats (`relationshipDimensionsForNpc` / `ensureRelationshipStats`). The
+   * protagonist id is the literal 'protagonist' to match the flag-knowledge sealed by
+   * extractCanonDeltasFromEpisode.
+   */
+  private extractArcAndRelationshipDeltas(
+    characterBible: CharacterBible,
+    episodeNumber: number,
+    seasonLength: number,
+  ): { arcStates: Array<{ characterId: string; state: string }>; relationships: Array<{ a: string; b: string; dimension: string; value: number }> } {
+    const phases = ['establishment', 'test', 'turning_point', 'commitment', 'resolution'] as const;
+    const ratio = seasonLength > 1 ? (episodeNumber - 1) / (seasonLength - 1) : 0;
+    const phase =
+      ratio < 0.2 ? phases[0]
+      : ratio < 0.45 ? phases[1]
+      : ratio < 0.6 ? phases[2]
+      : ratio < 0.85 ? phases[3]
+      : phases[4];
+
+    const arcStates: Array<{ characterId: string; state: string }> = [];
+    const relationships: Array<{ a: string; b: string; dimension: string; value: number }> = [];
+    const protagonistCanonId = 'protagonist';
+
+    const truncate = (text: string | undefined, max = 120): string =>
+      (text ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+    for (const c of characterBible.characters) {
+      const isProtagonist = c.role === 'protagonist';
+      if (isProtagonist) {
+        const want = truncate(c.want, 90);
+        const need = truncate((c as { need?: string }).need, 90);
+        const headline = need ? `want: ${want} → need: ${need}` : `want: ${want}`;
+        arcStates.push({ characterId: protagonistCanonId, state: `${phase} — ${headline}` });
+        continue;
+      }
+      if (c.tier !== 'core') continue;
+
+      // Arc state for a core NPC: phase + their relationship-to-protagonist framing.
+      const relToProtag = (c.relationships ?? []).find(
+        (r) => r.targetId === characterBible.characters.find((x) => x.role === 'protagonist')?.id,
+      );
+      const relType = truncate(relToProtag?.relationshipType, 80);
+      arcStates.push({
+        characterId: c.id,
+        state: relType ? `${phase} — ${relType}` : phase,
+      });
+
+      // Relationship dimensions (protagonist ↔ NPC). Values come from the NPC's tracked
+      // stats; neutral (0) when the bible has not seeded them, which still records that
+      // the relationship is canon and tracked.
+      const stats = this.ensureRelationshipStats(c.initialStats, c.tier);
+      for (const dimension of this.relationshipDimensionsForNpc(stats, c.tier)) {
+        const value = (stats as Record<string, number | undefined>)?.[dimension] ?? 0;
+        relationships.push({ a: protagonistCanonId, b: c.id, dimension, value });
+      }
+    }
+
+    return { arcStates, relationships };
+  }
+
   private prepareValidationInput(
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
     characterBible: CharacterBible,
-    encounters?: Map<string, EncounterStructure>
+    encounters?: Map<string, EncounterStructure>,
+    blueprint?: EpisodeBlueprint
   ) {
-    // Prepare scenes for validation
-    const scenes = sceneContents.map(sc => ({
-      id: sc.sceneId,
-      beats: sc.beats.map(b => ({
-        id: b.id,
-        text: b.text,
-        isChoicePoint: b.isChoicePoint,
-      })),
-    }));
+    return this.finalContract().prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
+  }
 
-    // Prepare NPCs for validation
-    const npcs = characterBible.characters
-      .filter(c => c.role !== 'protagonist')
-      .map(c => {
-        // Infer tier from importance/role
-        let tier: NPCTier = 'background';
-        if (c.role === 'antagonist' || c.role === 'ally') {
-          tier = 'core';
-        } else if (c.role === 'neutral') {
-          tier = 'supporting';
-        }
-
-        // Determine relationship dimensions from initial stats
-        const dimensions: RelationshipDimension[] = [];
-        if (c.initialStats) {
-          if (c.initialStats.trust !== undefined) dimensions.push('trust');
-          if (c.initialStats.affection !== undefined) dimensions.push('affection');
-          if (c.initialStats.respect !== undefined) dimensions.push('respect');
-          if (c.initialStats.fear !== undefined) dimensions.push('fear');
-        }
-
-        return {
-          id: c.id,
-          name: c.name,
-          tier,
-          relationshipDimensions: dimensions,
-        };
-      });
-
-    // Prepare choices for validation (regular choices)
-    const choices = choiceSets.flatMap(cs =>
-      cs.choices.map(choice => ({
-        id: choice.id,
-        text: choice.text,
-        choiceType: choice.choiceType || cs.choiceType,
-        consequences: choice.consequences || [],
-        stakesAnnotation: choice.stakesAnnotation || cs.overallStakes,
-        sceneContext: cs.designNotes,
-        nextSceneId: choice.nextSceneId,
-        reminderPlan: choice.reminderPlan,
-      }))
+  private enforceQualityCouncilStrictMode(phase: string): void {
+    const blockingFindings = this.qualityCouncil?.getStrictBlockingFindings() || [];
+    if (blockingFindings.length === 0) return;
+    const summary = blockingFindings
+      .map((finding) => `[${finding.validatorMapping}] ${finding.evidence[0] || finding.category}`)
+      .join('; ');
+    throw new PipelineError(
+      `Quality Council strict mode blocked the run: ${summary}`,
+      phase,
+      { context: { blockingFindings } },
     );
+  }
 
-    // Prepare encounters for validation
-    const encounterValidation = encounters ? Array.from(encounters.values()).map(enc => ({
-      sceneId: enc.sceneId,
-      type: enc.encounterType,
-      beatCount: enc.beats.length,
-      hasStorylets: !!(enc.storylets?.victory && enc.storylets?.defeat),
-      hasEnvironmentalElements: (enc.environmentalElements?.length || 0) > 0,
-      hasNPCStates: (enc.npcStates?.length || 0) > 0,
-      hasEscalationTriggers: (enc.escalationTriggers?.length || 0) > 0,
-      choiceCount: enc.beats.reduce((sum, b) => sum + (b.choices?.length || 0), 0),
-      // Validate beat flow - each non-terminal beat should have choices with nextBeatId
-      beatFlowValid: enc.beats.every((beat, idx) => {
-        if (beat.isTerminal || idx === enc.beats.length - 1) return true;
-        return beat.choices?.every(c => 
-          c.outcomes?.success?.nextBeatId && 
-          c.outcomes?.complicated?.nextBeatId && 
-          c.outcomes?.failure?.nextBeatId
-        ) ?? false;
-      }),
-      // Validate storylets have beats
-      storyletsValid: enc.storylets ? (
-        (enc.storylets.victory?.beats?.length || 0) > 0 &&
-        (enc.storylets.defeat?.beats?.length || 0) > 0
-      ) : false,
-    })) : [];
-
-    return { scenes, npcs, choices, encounters: encounterValidation };
+  private resetQualityCouncil(): void {
+    this.qualityCouncil = this.config.qualityCouncil?.enabled
+      ? new QualityCouncilRunner({
+          config: this.config,
+          emit: this.emit.bind(this),
+        })
+      : undefined;
   }
 
   // ==========================================
@@ -4867,12 +5200,20 @@ export class FullStoryPipeline {
         : 'Phase 0: Analyzing story concept from prompt'
     });
 
-    const result = await withTimeout(this.sourceMaterialAnalyzer.execute({
+    const memoryContext = await this.getAgentMemoryContext({
+      agentRole: 'SourceMaterialAnalyzer',
+      lifecycle: 'source-analysis',
+      storyId: title,
+      treatmentId: title,
+      artifactKinds: ['source-analysis'],
+    });
+    const result = await withTimeoutAbort((signal) => this.sourceMaterialAnalyzer.execute({
       sourceText: sourceText || '',
       title,
       preferences,
       userPrompt,
-    }), PIPELINE_TIMEOUTS.llmAgent, 'SourceMaterialAnalyzer.execute');
+      memoryContext: memoryContext || undefined,
+    }, { signal }), PIPELINE_TIMEOUTS.sourceAnalysis, 'SourceMaterialAnalyzer.execute');
 
     if (!result.success || !result.data) {
       throw new Error(`Source material analysis failed: ${result.error}`);
@@ -4888,11 +5229,34 @@ export class FullStoryPipeline {
         totalEpisodes: analysis.totalEstimatedEpisodes,
         complexity: analysis.confidenceScore,
         warnings: analysis.warnings,
+        writingStyleGuide: analysis.writingStyleGuide
+          ? {
+              source: analysis.writingStyleGuide.source,
+              summary: analysis.writingStyleGuide.summary,
+            }
+          : undefined,
       },
     });
 
     // Create suggested options for user
     const suggestedOptions = createEpisodeOptions(analysis);
+    await this.writeArtifactMemory({
+      artifactKind: 'source-analysis',
+      storyId: title || analysis.sourceTitle || 'untitled-source',
+      lifecycle: 'source-analysis',
+      agentRole: 'SourceMaterialAnalyzer',
+      sourceFingerprint: analysis.sourceTitle,
+      payload: analysis,
+      projection: {
+        title: `${analysis.sourceTitle || title || 'Source'} analysis`,
+        summary: `Source analysis for ${analysis.totalEstimatedEpisodes} episode(s), ${analysis.episodeBreakdown?.length || 0} outline(s), confidence ${analysis.confidenceScore}.`,
+        metrics: {
+          totalEstimatedEpisodes: analysis.totalEstimatedEpisodes,
+          episodeOutlineCount: analysis.episodeBreakdown?.length || 0,
+          confidenceScore: analysis.confidenceScore,
+        },
+      },
+    });
 
     return {
       analysis,
@@ -4925,11 +5289,94 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(baseBrief);
-    
+    BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
+    analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
+    baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
+    baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
+    // Arm treatmentSourced: the final-contract fidelity path reads the treatment
+    // analysis from `brief.multiEpisode.sourceAnalysis`, but nothing ever populated it
+    // (so `treatmentSourced` resolved false and the §4 gates never enforced). Stitch the
+    // live, treatment-detected analysis back onto the brief. Gated default-OFF until the
+    // remaining §4 validators are partial-season-safe (see GATE_TREATMENT_SOURCED_ARM).
+    if (isGateEnabled('GATE_TREATMENT_SOURCED_ARM')) {
+      baseBrief = {
+        ...baseBrief,
+        multiEpisode: { ...(baseBrief.multiEpisode || {}), sourceAnalysis: analysis },
+      };
+    }
+
     if (!analysis || !analysis.episodeBreakdown || analysis.episodeBreakdown.length === 0) {
       throw new Error('Invalid source analysis: no episode breakdown provided');
     }
-    
+
+    // WS1 (contracts upstream): the two plan-checkable §4 fidelity gates
+    // (authored episode conformance, Story Circle anchor conformance) run HERE,
+    // before any generation is spent. A deterministic plan-vs-treatment
+    // mismatch previously survived to the season-final contract and killed the
+    // run after the full generation spend. Warnings surface; errors fail fast.
+    // The season-final dispatch stays as a regression net for mid-run drift.
+    this.planTimeFidelityFindings = [];
+    this.planTimeFidelityBaseline = undefined;
+    {
+      const planTimeRequestedEpisodes = episodeRange.specific?.length
+        ? [...new Set(episodeRange.specific)]
+        : Array.from({ length: Math.max(0, episodeRange.end - episodeRange.start + 1) }, (_, idx) => episodeRange.start + idx);
+      const isFullSeasonPlanTimeScope = analysis.totalEstimatedEpisodes > 0
+        && planTimeRequestedEpisodes.length >= analysis.totalEstimatedEpisodes
+        && Array.from({ length: analysis.totalEstimatedEpisodes }, (_, idx) => idx + 1)
+          .every((episodeNumber) => planTimeRequestedEpisodes.includes(episodeNumber));
+      const planFidelityEvidence = await this.recallValidatorEvidence(
+        'runPlanTimeFidelityChecks',
+        'plan-fidelity',
+        baseBrief,
+        { artifactKinds: ['source-analysis', 'season-plan'], evidenceMode: 'advisory-memory' },
+      );
+      const planFidelity = runPlanTimeFidelityChecks({
+        seasonPlan: baseBrief.seasonPlan,
+        sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? analysis,
+        scope: {
+          mode: isFullSeasonPlanTimeScope ? 'full-season' : 'generated-slice',
+          requestedEpisodeNumbers: planTimeRequestedEpisodes,
+        },
+      });
+	      this.planTimeFidelityFindings = planFidelity.findings;
+	      this.planTimeFidelityBaseline = planFidelity.baseline;
+	      if (planFidelity.findings.length > 0 || planFidelity.blockingErrors.length > 0) {
+	        this.writeValidatorMemory({
+	          validator: 'runPlanTimeFidelityChecks',
+	          lifecycle: 'plan-fidelity',
+	          stage: 'plan_fidelity',
+	          severity: planFidelity.blockingErrors.length > 0 ? 'blocking' : 'warning',
+	          outcome: planFidelity.blockingErrors.length > 0 ? 'failed' : 'passed_with_warnings',
+	          storyId: baseBrief.story.title,
+	          repairRoute: 'plan-time',
+	          findings: {
+	            requestedEpisodeNumbers: planTimeRequestedEpisodes,
+	            findings: planFidelity.findings,
+	            blockingErrors: planFidelity.blockingErrors,
+	            baseline: planFidelity.baseline,
+	            memoryEvidence: [
+	              this.validatorEvidenceService().summarize(planFidelityEvidence, 'advisory-memory'),
+	            ],
+	          },
+	        }).catch(() => {});
+	      }
+	      for (const f of planFidelity.findings) {
+        if (f.severity !== 'error') {
+          this.emit({ type: 'warning', phase: 'plan_fidelity', message: `[${f.validator}] ${f.message}` });
+        }
+      }
+      if (planFidelity.blockingErrors.length > 0) {
+        const summary = planFidelity.blockingErrors
+          .map((f) => `[${f.validator}] ${f.message}`)
+          .join('; ');
+        throw new PipelineError(
+          `Plan-time treatment-fidelity check failed before generation: ${summary}`,
+          'plan_fidelity',
+          { context: { blockingErrors: planFidelity.blockingErrors } },
+        );
+      }
+    }
     if (episodeRange.start < 1) {
       throw new Error('Episode range start must be at least 1');
     }
@@ -4958,9 +5405,16 @@ export class FullStoryPipeline {
     this.dependencySchedulerStats = {
       hasCycle: false,
       waveCount: 0,
-      usedParallelScheduling: false,
       fallbackToSerial: false,
     };
+    this.sceneValidationResults = [];
+    this.allSceneValidationResults = [];
+    this.allEncounterTelemetry = [];
+    this.resetQualityCouncil();
+    this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
+    this.seasonCanon = new SeasonCanon({ storyId: idSlugify(baseBrief.story.title) });
+    this.sourceCanonPromptBlock = renderSourceCanonPrompt(analysis.sourceCanon);
+    this.priorEpisodeSnapshot = undefined;
     const startTime = Date.now();
 
     // Determine which episodes to generate
@@ -4983,9 +5437,19 @@ export class FullStoryPipeline {
       currentEpisode: this.currentEpisode,
     });
 
+    // Seed the structure plan before world/character/image work so the headline
+    // % is driven by real work units from the start. Episode titles and scene
+    // counts fill in once the per-episode outlines and architect run.
+    const estimatedScenesPerEpisode = this.config.generation?.maxScenesPerEpisode || this.config.generation?.targetSceneCount || 6;
+    this.generationPlan = initPlan({
+      totalEpisodes: this.totalEpisodes,
+      episodes: episodesToGenerate.map((number) => ({ number, expectedSceneCount: estimatedScenesPerEpisode })),
+    });
+    this.emitPlanUpdate(`Generation plan: ${this.totalEpisodes} episode(s)`);
+
     try {
       await this.checkCancellation();
-      const episodeListStr = episodeRange.specific 
+      const episodeListStr = episodeRange.specific
         ? `episodes ${episodesToGenerate.join(', ')}`
         : `episodes ${episodeRange.start} to ${episodeRange.end}`;
       this.emit({
@@ -4996,37 +5460,124 @@ export class FullStoryPipeline {
 
       // 1. Filter analysis for the requested episodes (use specific list or range)
       const filteredAnalysis = this.filterAnalysisForEpisodeRange(analysis, episodeRange, episodesToGenerate);
+      const missingOutlines = episodesToGenerate.filter((episodeNumber) =>
+        !filteredAnalysis.episodeBreakdown.some((episode) => episode.episodeNumber === episodeNumber)
+      );
+      if (missingOutlines.length > 0) {
+        throw new Error(
+          `Requested episode(s) ${missingOutlines.join(', ')} are missing from source analysis after treatment parsing. ` +
+          'Re-run source analysis or check the treatment episode headings.'
+        );
+      }
+      await this.qualityCouncil?.runPlan({
+        brief: baseBrief,
+        sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? filteredAnalysis,
+        seasonPlan: baseBrief.seasonPlan,
+        notes: 'Multi-episode checkpoint after plan-time fidelity checks and requested-episode filtering.',
+      });
+
+      // Adoption flag (A2/A5): run the foundation phases and the sequential
+      // episode loop on the run-graph runner. Default OFF; golden-parity
+      // tested both ways (FullStoryPipeline.runGraphParity.season.test.ts).
+      const runGraphEnabled =
+        this.config.generation?.runGraphEpisodeLoop === true || process.env.STORYRPG_RUN_GRAPH === '1';
 
       // 2. Build foundation (World & Characters)
       this.emit({ type: 'phase_start', phase: 'foundation', message: 'Building story foundation...' });
       this.emitPhaseProgress('foundation', 0, 2, 'foundation:steps', 'Preparing shared story foundation...');
-      
+
       const worldBrief = createWorldBriefFromAnalysis(baseBrief, filteredAnalysis);
-      const resumedWorldBible = this.getResumeOutput<any>(resumeCheckpoint, 'world_bible');
-      const worldBible = resumedWorldBible
-        ? resumedWorldBible
-        : await this.measurePhase('multi_world_building', () => this.runWorldBuilding(worldBrief));
-      if (resumedWorldBible) {
-        this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared world foundation from checkpoint' });
-      } else {
-        this.addCheckpoint('World Bible', worldBible, false);
-      }
-      this.emitPhaseProgress('foundation', 1, 2, 'foundation:steps', 'World foundation complete');
-
       const characterBrief = createCharacterBriefFromAnalysis(baseBrief, filteredAnalysis);
+      const resumedWorldBible = this.getResumeOutput<any>(resumeCheckpoint, 'world_bible');
       const resumedCharacterBible = this.getResumeOutput<any>(resumeCheckpoint, 'character_bible');
-      const characterBible = resumedCharacterBible
-        ? resumedCharacterBible
-        : await this.measurePhase('multi_character_design', () => this.runCharacterDesign(characterBrief, worldBible));
-      if (resumedCharacterBible) {
-        this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared character foundation from checkpoint' });
+      let worldBible: any;
+      let characterBible: any;
+      if (runGraphEnabled) {
+        // A5: same builds, declared as a two-step graph chain with the resume
+        // payload seeded as artifacts (resume-by-construction replaces the
+        // ternaries below; hooks keep emit/checkpoint order byte-identical).
+        ({ worldBible, characterBible } = await runFoundationOnGraph<any, any>({
+          resumedWorldBible,
+          resumedCharacterBible,
+          buildWorldBible: () => this.measurePhase('multi_world_building', () => this.runWorldBuilding(worldBrief)),
+          buildCharacterBible: (world) => this.measurePhase('multi_character_design', () =>
+            this.runCharacterDesign(characterBrief, world)),
+          onWorldBuilt: (world) => this.addCheckpoint('World Bible', world, false),
+          onCharactersBuilt: (characters) => this.addCheckpoint('Character Bible', characters, false),
+          onWorldResumed: () =>
+            this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared world foundation from checkpoint' }),
+          onCharactersResumed: () =>
+            this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared character foundation from checkpoint' }),
+          afterWorld: () => this.emitPhaseProgress('foundation', 1, 2, 'foundation:steps', 'World foundation complete'),
+          afterCharacters: () =>
+            this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete'),
+          emitDebug: (message) => this.emit({ type: 'debug', phase: 'run_graph', message }),
+        }));
       } else {
-        this.addCheckpoint('Character Bible', characterBible, false);
-      }
-      this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete');
+        worldBible = resumedWorldBible
+          ? resumedWorldBible
+          : await this.measurePhase('multi_world_building', () => this.runWorldBuilding(worldBrief));
+        if (resumedWorldBible) {
+          this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared world foundation from checkpoint' });
+        } else {
+          this.addCheckpoint('World Bible', worldBible, false);
+        }
+        this.emitPhaseProgress('foundation', 1, 2, 'foundation:steps', 'World foundation complete');
 
-      // 2.5. Create output directory EARLY so images go to the right place
-      const outputDirectory = await createOutputDirectory(baseBrief.story.title);
+        const characterBrief = createCharacterBriefFromAnalysis(baseBrief, filteredAnalysis);
+        characterBible = resumedCharacterBible
+          ? resumedCharacterBible
+          : await this.measurePhase('multi_character_design', () => this.runCharacterDesign(characterBrief, worldBible));
+        if (resumedCharacterBible) {
+          this.emit({ type: 'debug', phase: 'foundation', message: 'Resumed shared character foundation from checkpoint' });
+        } else {
+          this.addCheckpoint('Character Bible', characterBible, false);
+        }
+        this.emitPhaseProgress('foundation', 2, 2, 'foundation:steps', 'Character foundation complete');
+      }
+
+      // 2.5. Create output directory EARLY so images go to the right place (or resume existing one)
+      const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
+        resumeCheckpoint, 'output_directory'
+      )?.outputDirectory;
+      const artifactRuntime = await new RunArtifactPhase({
+        createOutputDirectory,
+        ensureDirectory,
+        save: saveEarlyDiagnostic,
+        load: loadEarlyDiagnosticSync,
+      }).run(
+        { storyTitle: baseBrief.story.title, resumeOutputDirectory: resumedOutputDir },
+        {
+          config: this.config,
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
+        },
+      );
+      const outputDirectory = artifactRuntime.outputDirectory;
+      this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
+
+      const planningArtifactRefs = await this.persistPlanningArtifacts({
+        artifactRuntime,
+        sourceAnalysis: filteredAnalysis,
+        seasonPlan: baseBrief.seasonPlan,
+      });
+      artifactRuntime.setGlobalUpstreamRefs(planningArtifactRefs);
+
+      // Season Canon (P4) resume: rehydrate sealed canon + ledger from disk so a
+      // later partial run skips re-sealing already-sealed episodes and reads prior
+      // facts. Best-effort — absent/corrupt artifacts just start fresh.
+      if (this.seasonCanonOn) {
+        const savedCanon = loadEarlyDiagnosticSync<any>(outputDirectory, 'season-canon.json');
+        if (savedCanon) { try { this.seasonCanon = SeasonCanon.deserialize(savedCanon); } catch { /* start fresh */ } }
+        const savedLedger = loadEarlyDiagnosticSync<any>(outputDirectory, 'season-ledger.json');
+        if (savedLedger) { try { this.callbackLedger = CallbackLedger.deserialize(savedLedger); } catch { /* start fresh */ } }
+        this.priorEpisodeSnapshot = loadEarlyDiagnosticSync<EpisodeStateSnapshot>(outputDirectory, 'episode-state-snapshot.json') ?? undefined;
+      }
+
+      const savedStoryPackage = loadEarlyDiagnosticSync<{ generator?: Record<string, unknown>; story?: Story } | Story>(outputDirectory, 'story.json');
+      this.hydrateSeasonImageStyleFromStoryPackage(savedStoryPackage);
+      this.applyActiveImageStyleToRuntime();
+      await this.recordArcPressureShadowSafe(baseBrief.seasonPlan, idSlugify(baseBrief.story.title));
       
       // Initialize AssetRegistry with JSONL persistence for durable image tracking
       const registryJsonlPath = (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl';
@@ -5041,20 +5592,21 @@ export class FullStoryPipeline {
       if (this.config.imageGen?.enabled) {
         const imagesDir = outputDirectory + 'images/';
         this.imageService.setOutputDirectory(imagesDir);
+        const invalidatedRefs = this.imageService.reconcileCachedReferenceStyle(this.config.artStyle);
+        if (invalidatedRefs > 0) {
+          this.emit({
+            type: 'debug',
+            phase: 'images',
+            message: `Art style changed — invalidated ${invalidatedRefs} cached reference image(s) so new refs will be generated under the current style.`,
+          });
+        }
         this.emit({ type: 'debug', phase: 'images', message: `Image output directory: ${imagesDir}` });
       }
 
-      // 3. Generate master images for characters and locations
-      await this.checkCancellation();
-      if (this.config.imageGen?.enabled) {
-        this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
-        await this.imageWorkerQueue.run(() =>
-          this.measurePhase('multi_master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, baseBrief))
-        );
-      }
-
-      // 4. Generate each episode (using specific list or range)
+      // 3. Author each episode (using specific list or range). Visual and
+      // optional media agents run only after story authoring + QA complete.
       const episodes: Episode[] = [];
+      const authoredEpisodeArtifacts: AuthoredEpisodeArtifacts[] = [];
       const episodeResults: Array<{ episodeNumber: number; title: string; success: boolean; error?: string }> = [];
       const episodeQAReports: QAReport[] = [];
       const episodeBPReports: ComprehensiveValidationReport[] = [];
@@ -5067,13 +5619,87 @@ export class FullStoryPipeline {
         .filter((item): item is { episodeNumber: number; idx: number; outline: EpisodeOutline } => Boolean(item.outline));
 
       const dependencyMode = this.config.generation?.episodeDependencyMode || 'sequential';
-      const parallelEnabled = this.config.generation?.episodeParallelismEnabled === true && dependencyMode === 'independent';
+      const parallelism = resolveEpisodeParallelism({
+        episodeParallelismEnabled: this.config.generation?.episodeParallelismEnabled,
+        dependencyMode,
+        seasonCanonEnabled: this.seasonCanonOn,
+      });
+      const parallelEnabled = parallelism.enabled;
+      if (parallelism.disabledReason === 'season_canon_enabled') {
+        this.emit({
+          type: 'warning',
+          phase: 'episode_parallelism',
+          message:
+            'Episode parallelism disabled for this run because Season Canon is enabled. Canonical episodes must lock in dependency order so downstream prompts read sealed upstream facts.',
+        });
+      }
       const maxParallelEpisodes = Math.max(1, this.config.generation?.maxParallelEpisodes ?? CONCURRENCY_DEFAULTS.maxParallelEpisodes);
       let completedEpisodeCount = 0;
       const totalEpisodeProgressItems = Math.max(1, episodeSpecs.length);
       const allStoryletFailures: string[] = [];
       const allEncounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
-      this.emitPhaseProgress('content', 0, totalEpisodeProgressItems, 'episodes', 'Preparing episode generation queue...');
+      // Enrich the seeded plan with real episode titles + scene estimates now
+      // that the per-episode outlines are known.
+      if (this.generationPlan) {
+        for (const spec of episodeSpecs) {
+          const node = this.generationPlan.episodes.find((e) => e.number === spec.episodeNumber);
+          if (!node) continue;
+          node.title = spec.outline.title;
+          if (typeof spec.outline.estimatedSceneCount === 'number' && spec.outline.estimatedSceneCount > 0) {
+            node.expectedSceneCount = spec.outline.estimatedSceneCount;
+          }
+        }
+        this.emitPlanUpdate('Episode outlines ready');
+      }
+
+      // WS1a episode-granularity resume: episodes that already fully assembled
+      // in this output directory (valid watermark + assembled artifact) are
+      // rehydrated instead of regenerated.
+      const resumablePartition = partitionResumableEpisodes(
+        episodeSpecs,
+        <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+      );
+      const pendingEpisodeSpecs = [...resumablePartition.pending];
+      const resumedEpisodes = resumablePartition.resumed;
+      for (const { spec, episode, watermark } of resumedEpisodes) {
+        const resumedDiagnostics = loadResumedEpisodeDiagnostics<QAReport, ComprehensiveValidationReport>(
+          spec.episodeNumber,
+          <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+        );
+        const invalidationReasons = findResumedEpisodeInvalidationReasons({
+          episode,
+          qaReport: resumedDiagnostics.qaReport,
+          bestPracticesReport: resumedDiagnostics.bestPracticesReport,
+          incrementalContract: resumedDiagnostics.incrementalContract,
+          requireQaReport: baseBrief.options?.runQA !== false,
+          requireBestPracticesReport: this.config.validation.enabled === true,
+        });
+        if (invalidationReasons.length > 0) {
+          pendingEpisodeSpecs.push(spec);
+          this.invalidatedResumeEpisodes.add(spec.episodeNumber);
+          this.emit({
+            type: 'warning',
+            phase: `episode_${spec.episodeNumber}`,
+            message: `Invalidated resumed episode ${spec.episodeNumber} checkpoint (${invalidationReasons.join(', ')}) — regenerating instead of reusing stale content.`,
+          });
+          continue;
+        }
+        episodes.push(episode);
+        episodeResults.push({ episodeNumber: spec.episodeNumber, title: spec.outline.title, success: true });
+        if (resumedDiagnostics.qaReport) episodeQAReports.push(resumedDiagnostics.qaReport);
+        if (resumedDiagnostics.bestPracticesReport) episodeBPReports.push(resumedDiagnostics.bestPracticesReport);
+        completedEpisodeCount += 1;
+        if (this.generationPlan) markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
+        this.emit({
+          type: 'debug',
+          phase: `episode_${spec.episodeNumber}`,
+          message: `Resumed episode ${spec.episodeNumber} from completion watermark (${watermark.sceneCount} scenes) — skipping regeneration${resumedDiagnostics.qaReport ? ' with QA diagnostics' : ''}${resumedDiagnostics.bestPracticesReport ? ' and validation diagnostics' : ''}`,
+        });
+      }
+      if (completedEpisodeCount > 0) {
+        this.emitPlanUpdate(`${completedEpisodeCount} episode(s) resumed from checkpoints`);
+      }
+      this.emitPhaseProgress('content', completedEpisodeCount, totalEpisodeProgressItems, 'episodes', 'Preparing episode generation queue...');
 
       if (parallelEnabled) {
         this.emit({
@@ -5083,7 +5709,7 @@ export class FullStoryPipeline {
         });
         const queue = new LocalWorkerQueue(maxParallelEpisodes);
         const processed = await mapWithConcurrency(
-          episodeSpecs,
+          pendingEpisodeSpecs,
           async (spec) => queue.run(async () => {
             await this.checkCancellation();
             const nextCompleted = episodeResults.length + 1;
@@ -5094,6 +5720,7 @@ export class FullStoryPipeline {
               phase: `episode_${spec.episodeNumber}`,
               message: `Generating Episode ${spec.episodeNumber}: ${spec.outline.title}`,
             });
+            if (this.generationPlan) markEpisode(this.generationPlan, spec.episodeNumber, 'active');
             const generatedEpisode = await this.generateEpisodeFromOutline({
               episodeNumber: spec.episodeNumber,
               episodeIndex: spec.idx,
@@ -5106,7 +5733,37 @@ export class FullStoryPipeline {
               outputDirectory,
               previousSummary: baseBrief.episode.previousSummary,
             });
+            if (generatedEpisode.episode) {
+              const episodePlanningRefs = await this.persistEpisodePlanningArtifacts({
+                artifactRuntime,
+                episodeNumber: spec.episodeNumber,
+                blueprint: generatedEpisode.blueprint,
+                branchAnalysis: generatedEpisode.branchAnalysis,
+                sceneContents: generatedEpisode.sceneContents,
+                choiceSets: generatedEpisode.choiceSets,
+                encounters: generatedEpisode.encounters,
+              });
+              artifactRuntime.setEpisodeUpstreamRefs(spec.episodeNumber, episodePlanningRefs);
+              await this.lockGeneratedEpisode({
+                episodeNumber: spec.episodeNumber,
+                title: spec.outline.title,
+                episode: generatedEpisode.episode,
+                episodeBrief: generatedEpisode.episodeBrief,
+                baseBrief,
+                analysis,
+                characterBible,
+                qaReport: generatedEpisode.qaReport,
+                bestPracticesReport: generatedEpisode.bestPracticesReport,
+                outputDirectory,
+                artifactRuntime,
+                writeWatermark: true,
+              });
+            }
             completedEpisodeCount += 1;
+            if (this.generationPlan) {
+              markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
+              this.emitPlanUpdate(`Episode ${spec.episodeNumber} complete`);
+            }
             this.emitPhaseProgress(
               'content',
               completedEpisodeCount,
@@ -5121,18 +5778,38 @@ export class FullStoryPipeline {
         );
         for (const result of processed.values) {
           if (result.episode) episodes.push(result.episode);
+          if (
+            result.episode &&
+            result.episodeBrief &&
+            result.blueprint &&
+            result.sceneContents &&
+            result.choiceSets &&
+            result.encounters
+          ) {
+            authoredEpisodeArtifacts.push({
+              episode: result.episode,
+              episodeBrief: result.episodeBrief,
+              blueprint: result.blueprint,
+              branchAnalysis: result.branchAnalysis,
+              sceneContents: result.sceneContents,
+              choiceSets: result.choiceSets,
+              encounters: result.encounters,
+            });
+          }
           episodeResults.push(result.result);
           if (result.qaReport) episodeQAReports.push(result.qaReport);
           if (result.bestPracticesReport) episodeBPReports.push(result.bestPracticesReport);
-          if (result.storyletFailures?.length) {
-            allStoryletFailures.push(...result.storyletFailures);
-          }
-          if (result.encounterImageDiagnostics?.length) {
-            allEncounterImageDiagnostics.push(...result.encounterImageDiagnostics);
-          }
         }
       } else {
-        for (const spec of episodeSpecs) {
+        // Sequential episode generation. The per-episode body is ONE closure
+        // shared by both execution paths below: the legacy for-loop, and the
+        // run-graph chain (adoption A2) that journals each episode as an
+        // artifact (resume/surgical-invalidation semantics owned by the
+        // runner). Same body either way — golden-parity tested.
+        const processPendingEpisode = async (
+          spec: (typeof pendingEpisodeSpecs)[number],
+          opts: { writeWatermark: boolean },
+        ): Promise<Episode | null> => {
           const i = spec.episodeNumber;
           await this.checkCancellation();
           this.currentEpisode = spec.idx + 1;
@@ -5143,6 +5820,7 @@ export class FullStoryPipeline {
             phase: `episode_${i}`,
             message: `Generating Episode ${i}: ${spec.outline.title}`,
           });
+          if (this.generationPlan) markEpisode(this.generationPlan, i, 'active');
           const previousSummary = episodes.length > 0
             ? this.summarizeEpisode(episodes[episodes.length - 1])
             : baseBrief.episode.previousSummary;
@@ -5159,10 +5837,62 @@ export class FullStoryPipeline {
             previousSummary,
           });
           if (generated.episode) episodes.push(generated.episode);
+          if (
+            generated.episode &&
+            generated.episodeBrief &&
+            generated.blueprint &&
+            generated.sceneContents &&
+            generated.choiceSets &&
+            generated.encounters
+          ) {
+            authoredEpisodeArtifacts.push({
+              episode: generated.episode,
+              episodeBrief: generated.episodeBrief,
+              blueprint: generated.blueprint,
+              branchAnalysis: generated.branchAnalysis,
+              sceneContents: generated.sceneContents,
+              choiceSets: generated.choiceSets,
+              encounters: generated.encounters,
+            });
+          }
           episodeResults.push(generated.result);
           if (generated.qaReport) episodeQAReports.push(generated.qaReport);
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
+          // WS1a: watermark only after content + canon seal both succeeded, so
+          // a resume never rehydrates an episode that failed its season gate.
+          // (In run-graph mode the artifact store writes the same watermark
+          // when the step's output persists — same files, same ordering.)
+          if (generated.episode) {
+            const episodePlanningRefs = await this.persistEpisodePlanningArtifacts({
+              artifactRuntime,
+              episodeNumber: i,
+              blueprint: generated.blueprint,
+              branchAnalysis: generated.branchAnalysis,
+              sceneContents: generated.sceneContents,
+              choiceSets: generated.choiceSets,
+              encounters: generated.encounters,
+            });
+            artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
+            await this.lockGeneratedEpisode({
+              episodeNumber: i,
+              title: spec.outline.title,
+              episode: generated.episode,
+              episodeBrief: generated.episodeBrief,
+              baseBrief,
+              analysis,
+              characterBible,
+              qaReport: generated.qaReport,
+              bestPracticesReport: generated.bestPracticesReport,
+              outputDirectory,
+              artifactRuntime,
+              writeWatermark: opts.writeWatermark,
+            });
+          }
           completedEpisodeCount += 1;
+          if (this.generationPlan) {
+            markEpisode(this.generationPlan, i, 'complete');
+            this.emitPlanUpdate(`Episode ${i} complete`);
+          }
           this.emitPhaseProgress(
             'content',
             completedEpisodeCount,
@@ -5172,14 +5902,25 @@ export class FullStoryPipeline {
             { episodeNumber: i }
           );
 
-          if (generated.encounterImageDiagnostics?.length) {
-            allEncounterImageDiagnostics.push(...generated.encounterImageDiagnostics);
-          }
-          if (generated.storyletFailures?.length) {
-            allStoryletFailures.push(...generated.storyletFailures);
-            const failMsg = generated.storyletFailures.join('; ');
-            console.warn(`[Pipeline] Episode ${i}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
-            this.emit({ type: 'warning', phase: `images_ep_${i}`, message: `Storylet image gaps (continuing): ${failMsg}` });
+          return generated.episode ?? null;
+        };
+
+        if (runGraphEnabled) {
+          // Adoption A2: same body, scheduled/journaled by the run-graph
+          // runner — see pipeline/episodeRunGraph.ts for the semantics.
+          await runEpisodeLoopOnGraph({
+            specs: pendingEpisodeSpecs,
+            strict: this.config.validation.mode === 'strict',
+            io: {
+              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+              load: <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+            },
+            processEpisode: (spec) => processPendingEpisode(spec, { writeWatermark: false }),
+            emitDebug: (message) => this.emit({ type: 'debug', phase: 'run_graph', message }),
+          });
+        } else {
+          for (const spec of pendingEpisodeSpecs) {
+            await processPendingEpisode(spec, { writeWatermark: true });
           }
         }
       }
@@ -5187,22 +5928,50 @@ export class FullStoryPipeline {
       episodeResults.sort((a, b) => a.episodeNumber - b.episodeNumber);
       this.assertEpisodeOrderingInvariants(episodes, episodeResults);
 
+      // Season Canon (P5): when the whole season has been sealed, run the
+      // completion gate — every promise must be paid or abandoned. Advisory.
+      if (this.seasonCanonOn &&
+          this.seasonCanon.sealedEpisodeNumbers().length >= (analysis.totalEstimatedEpisodes || this.totalEpisodes)) {
+        for (const issue of validateSeasonCompletion(this.callbackLedger)) {
+          this.emit({ type: 'warning', phase: 'season_canon_completion', message: `[advisory] ${issue.message}` });
+        }
+      }
+
       // Aggregate per-episode QA reports into a single summary
       let aggregatedQAReport: QAReport | undefined;
       let aggregatedBPReport: ComprehensiveValidationReport | undefined;
+      let finalStoryContractReport: FinalStoryContractReport | undefined;
 
       if (episodeQAReports.length > 0) {
         const avgScore = Math.round(episodeQAReports.reduce((sum, r) => sum + r.overallScore, 0) / episodeQAReports.length);
+        const minScore = Math.min(...episodeQAReports.map(r => r.overallScore));
+        const allEpisodesPassedQA = episodeQAReports.every(r => r.passesQA);
+        const aggregateScore = allEpisodesPassedQA ? avgScore : minScore;
+        // A4 (bite-me-g16): the continuity field previously took the LAST episode only, so
+        // earlier episodes' continuity issues (e.g. ep3's timeline inversion when ep3 was
+        // not last) were dropped before the final-story contract ever saw them. Accumulate
+        // continuity issues across ALL episodes and report the worst (min) score, so nothing
+        // is silently lost. Voice/stakes keep representative (last) summaries.
+        const allContinuityIssues = episodeQAReports.flatMap(r => r.continuity?.issues ?? []);
+        const sevCount = (sev: string) => allContinuityIssues.filter(x => (x as { severity?: string }).severity === sev).length;
+        const mergedContinuity = {
+          overallScore: Math.min(...episodeQAReports.map(r => r.continuity?.overallScore ?? 100)),
+          issueCount: { errors: sevCount('error'), warnings: sevCount('warning'), suggestions: sevCount('suggestion') },
+          issues: allContinuityIssues,
+          passedChecks: [],
+          recommendations: Array.from(new Set(episodeQAReports.flatMap(r => r.continuity?.recommendations ?? []))),
+        } as QAReport['continuity'];
         aggregatedQAReport = {
-          continuity: episodeQAReports[episodeQAReports.length - 1].continuity,
+          continuity: mergedContinuity,
           voice: episodeQAReports[episodeQAReports.length - 1].voice,
           stakes: episodeQAReports[episodeQAReports.length - 1].stakes,
-          overallScore: avgScore,
-          passesQA: episodeQAReports.every(r => r.passesQA),
+          overallScore: aggregateScore,
+          passesQA: allEpisodesPassedQA,
           criticalIssues: episodeQAReports.flatMap(r => r.criticalIssues),
-          summary: `Aggregated QA across ${episodeQAReports.length} episode(s): avg score ${avgScore}/100`,
+          summary: `Aggregated QA across ${episodeQAReports.length} episode(s): score ${aggregateScore}/100 (avg ${avgScore}/100, weakest ${minScore}/100)`,
         };
         this.addCheckpoint('Aggregated QA Report', aggregatedQAReport, !aggregatedQAReport.passesQA);
+        await saveEarlyDiagnostic(outputDirectory, '06-qa-report.json', aggregatedQAReport);
       }
 
       if (episodeBPReports.length > 0) {
@@ -5210,6 +5979,7 @@ export class FullStoryPipeline {
         aggregatedBPReport = {
           overallPassed: episodeBPReports.every(r => r.overallPassed),
           overallScore: avgBPScore,
+          qualityScore: avgBPScore,
           blockingIssues: episodeBPReports.flatMap(r => r.blockingIssues),
           warnings: episodeBPReports.flatMap(r => r.warnings),
           suggestions: episodeBPReports.flatMap(r => r.suggestions),
@@ -5218,6 +5988,7 @@ export class FullStoryPipeline {
           duration: episodeBPReports.reduce((sum, r) => sum + r.duration, 0),
         };
         this.addCheckpoint('Aggregated Best Practices Report', aggregatedBPReport, !aggregatedBPReport.overallPassed);
+        await saveEarlyDiagnostic(outputDirectory, '06b-best-practices-report.json', aggregatedBPReport);
       }
 
       // Check if no episodes were even attempted (e.g., filteredAnalysis had no matching outlines)
@@ -5256,7 +6027,7 @@ export class FullStoryPipeline {
         
         // Persist all episode errors to disk
         try {
-          await savePipelineErrorLog(outputDirectory, 
+          await savePipelineErrorLog(outputDirectory,
             episodeResults.filter(r => !r.success).map(r => ({
               timestamp: new Date().toISOString(),
               phase: `episode_${r.episodeNumber}`,
@@ -5264,6 +6035,8 @@ export class FullStoryPipeline {
               episodeNumber: r.episodeNumber,
             }))
           );
+          // F4: early-return path — record the failed run in the quality ledger.
+          await appendFailedRunLedger(outputDirectory, episodeResults.filter(r => !r.success).length);
         } catch (_logErr) { /* non-fatal */ }
         
         // Still save partial results (world bible, character bible) for debugging
@@ -5272,21 +6045,10 @@ export class FullStoryPipeline {
           brief: baseBrief,
           worldBible,
           characterBible,
-          finalStory: {
-            id: idSlugify(baseBrief.story.title) || 'untitled-story',
-            title: baseBrief.story.title,
-            genre: baseBrief.story.genre,
-            synopsis: baseBrief.story.synopsis,
-            coverImage: '',
-            author: 'AI Generated',
-            tags: baseBrief.story.themes,
-            initialState: { attributes: {}, skills: {}, tags: [], inventory: [] },
-            npcs: [],
-            episodes: [],
-            outputDir: outputDirectory,
-          },
+          generator: this.buildStoryGeneratorMetadata(),
           visualPlanning: visualPlanningOutputs,
           encounterImageDiagnostics: allEncounterImageDiagnostics,
+          llmLedger: this.telemetry.getLlmLedger() ?? undefined,
         }, Date.now() - startTime);
         const partialTimeout = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Partial save timed out')), 120_000)
@@ -5305,14 +6067,107 @@ export class FullStoryPipeline {
         };
       }
 
+      const failedEpisodeResults = episodeResults.filter(result => !result.success);
+      if (failedEpisodeResults.length > 0) {
+        const failedErrors = failedEpisodeResults
+          .map(result => `Episode ${result.episodeNumber}: ${result.error || 'Unknown error'}`)
+          .join('; ');
+        const failMsg = `${failedEpisodeResults.length} of ${episodeResults.length} episode(s) failed to generate: ${failedErrors}`;
+        console.error(`[Pipeline] ❌ ${failMsg}`);
+
+        if (this.jobId) {
+          await failJob(this.jobId, failMsg);
+        }
+
+        this.emit({ type: 'error', phase: 'episode_generation', message: failMsg });
+
+        try {
+          await savePipelineErrorLog(outputDirectory,
+            failedEpisodeResults.map(result => ({
+              timestamp: new Date().toISOString(),
+              phase: `episode_${result.episodeNumber}`,
+              message: result.error || 'Unknown error',
+              episodeNumber: result.episodeNumber,
+            }))
+          );
+          // F4: this episode-failure path returns early (never reaches the
+          // terminal catch), so record the failed run in the quality ledger here.
+          await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length);
+        } catch (_logErr) { /* non-fatal */ }
+
+        return {
+          success: false,
+          checkpoints: this.checkpoints,
+          events: this.events,
+          error: failMsg,
+          duration: Date.now() - startTime,
+          outputDirectory,
+        };
+      }
+
+      this.emit({
+        type: 'phase_complete',
+        phase: 'story_authoring',
+        message: `Story authoring complete for ${episodes.length} episode(s).`,
+      });
+
+      if (this.config.imageGen?.enabled) {
+        await this.checkCancellation();
+        this.emit({
+          type: 'phase_start',
+          phase: 'post_story_media',
+          message: 'Story agents complete; starting image and optional media agents...',
+        });
+        this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
+        await this.imageWorkerQueue.run(() =>
+          this.measurePhase('multi_master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, baseBrief))
+        );
+
+        const replaceEpisode = (episode: Episode): void => {
+          const idx = episodes.findIndex((candidate) => candidate.number === episode.number);
+          if (idx >= 0) {
+            episodes[idx] = episode;
+          } else {
+            episodes.push(episode);
+          }
+        };
+
+        const mediaArtifacts = [...authoredEpisodeArtifacts].sort((a, b) => (a.episode.number || 0) - (b.episode.number || 0));
+        for (const authored of mediaArtifacts) {
+          await this.checkCancellation();
+          const mediaResult = await this.generateMediaForAuthoredEpisode({
+            ...authored,
+            worldBible,
+            characterBible,
+            outputDirectory,
+          });
+          replaceEpisode(mediaResult.episode);
+          if (mediaResult.encounterImageDiagnostics?.length) {
+            allEncounterImageDiagnostics.push(...mediaResult.encounterImageDiagnostics);
+          }
+          if (mediaResult.storyletFailures?.length) {
+            allStoryletFailures.push(...mediaResult.storyletFailures);
+            const failMsg = mediaResult.storyletFailures.join('; ');
+            console.warn(`[Pipeline] Episode ${mediaResult.episode.number}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
+            this.emit({ type: 'warning', phase: `images_ep_${mediaResult.episode.number}`, message: `Storylet image gaps (continuing): ${failMsg}` });
+          }
+        }
+        episodes.sort((a, b) => (a.number || 0) - (b.number || 0));
+        this.emit({
+          type: 'phase_complete',
+          phase: 'post_story_media',
+          message: `Image/media pass complete for ${mediaArtifacts.length} newly authored episode(s).`,
+        });
+      }
+
       // 5. Generate cover art + Assemble final story
       let multiCoverUrl: string | undefined;
       if (this.config.imageGen?.enabled) {
-        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible);
+        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible, outputDirectory);
       }
 
       const storyCoverImage = multiCoverUrl
-        || (episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage : '');
+        || (episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage as unknown as string : '');
         
       let story: Story = {
         id: idSlugify(baseBrief.story.title) || 'untitled-story',
@@ -5329,23 +6184,15 @@ export class FullStoryPipeline {
           inventory: [],
         },
         npcs: characterBible.characters
-          .filter(c => c.id !== baseBrief.protagonist.id)
-          .map(c => {
+          .filter((c: CharacterProfile) => c.id !== baseBrief.protagonist.id)
+          .map((c: CharacterProfile) => {
             let portrait: string | undefined;
             const refSheet = this.imageAgentTeam.getReferenceSheet(c.id);
             if (refSheet) {
               const frontImg = refSheet.generatedImages.get('front') || refSheet.generatedImages.get('composite');
               portrait = frontImg?.imageUrl || frontImg?.imagePath;
             }
-            return {
-              id: c.id,
-              name: c.name,
-              description: c.overview,
-              role: c.role,
-              pronouns: c.pronouns,
-              portrait,
-              initialRelationship: c.initialStats,
-            };
+            return this.buildPersistedNpc(c, portrait);
           }),
         episodes,
         outputDir: outputDirectory,
@@ -5353,6 +6200,104 @@ export class FullStoryPipeline {
 
       // Overlay images from AssetRegistry into the assembled story
       story = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
+      const continuationStory = this.loadContinuationStory(outputDirectory, resumeCheckpoint);
+      if (continuationStory?.episodes?.length) {
+        const mergeResult = mergeSeasonEpisodes(continuationStory, story);
+        story = assembleStoryAssetsFromRegistry(mergeResult.story, this.assetRegistry);
+        this.emit({
+          type: 'debug',
+          phase: 'season_continuation',
+          message: `Merged ${mergeResult.appendedEpisodeNumbers.length} new episode(s) into existing season (${story.episodes.length} total).`,
+          data: {
+            appendedEpisodeNumbers: mergeResult.appendedEpisodeNumbers,
+            replacedEpisodeNumbers: mergeResult.replacedEpisodeNumbers,
+          },
+        });
+      }
+      if (this.config.generation?.assetGenerationMode === 'story-only') {
+        story.imagesStatus = 'pending';
+        await this.saveDraftImageManifest(outputDirectory, story);
+      } else if (this.config.imageGen?.enabled) {
+        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
+      }
+
+      // STRUCTURAL AUTO-FIX (parity with the single-episode path, which runs
+      // this before its contract): repair navigation/structure issues on the
+      // merged season — including dangling choice nextBeatId references — so the
+      // final contract doesn't abort on defects that are mechanically fixable.
+      try {
+        const autoFixResult = new StructuralValidator().autoFix(story);
+        story = autoFixResult.story;
+        if (autoFixResult.fixedCount > 0) {
+          this.emit({
+            type: 'debug',
+            phase: 'final_story',
+            message: `StructuralValidator.autoFix applied ${autoFixResult.fixedCount} repair(s) to the merged season`,
+            data: { fixes: autoFixResult.fixes.slice(0, 20) },
+          });
+        }
+      } catch (autoFixError) {
+        this.emit({
+          type: 'warning',
+          phase: 'final_story',
+          message: `StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`,
+        });
+      }
+
+      // B2: never discard generated work. Snapshot the assembled story BEFORE
+      // the final gates (treatment fidelity, story contract) that can throw, so
+      // completed episodes survive a late abort as partial-story.json.
+      await savePartialStory(outputDirectory, story);
+
+      this.enforceFinalTreatmentFidelity({
+        story,
+        analysis: filteredAnalysis,
+        expectedEpisodeCount: episodesToGenerate.length,
+        sourceEpisodeCount: analysis.totalEstimatedEpisodes,
+        isCompleteSeason: story.episodes.length >= analysis.totalEstimatedEpisodes,
+        sourceText: baseBrief.rawDocument,
+      });
+      finalStoryContractReport = await this.enforceFinalStoryContract({
+        story,
+        brief: baseBrief,
+        requestedEpisodeNumbers: episodesToGenerate,
+        qaReport: aggregatedQAReport,
+        bestPracticesReport: aggregatedBPReport,
+        phase: 'final_story_contract',
+        validationScope: {
+          mode: story.episodes.length >= analysis.totalEstimatedEpisodes ? 'full-season' : 'generated-slice',
+          requestedEpisodeNumbers: episodesToGenerate,
+          generatedEpisodeNumbers: story.episodes.map((episode) => episode.number).filter((n): n is number => typeof n === 'number'),
+          generatedThroughEpisode: Math.max(0, ...story.episodes.map((episode) => episode.number).filter((n): n is number => typeof n === 'number')),
+        },
+      });
+      await this.qualityCouncil?.runRoutePlaytest({
+        brief: baseBrief,
+        sourceAnalysis: filteredAnalysis,
+        seasonPlan: baseBrief.seasonPlan,
+        story,
+        finalStoryContractReport,
+        notes: 'Multi-episode route playtest after final story contract validation.',
+      });
+      await this.qualityCouncil?.runFinal({
+        brief: baseBrief,
+        sourceAnalysis: filteredAnalysis,
+        seasonPlan: baseBrief.seasonPlan,
+        story,
+        qaReport: aggregatedQAReport,
+        bestPracticesReport: aggregatedBPReport,
+        finalStoryContractReport,
+        notes: 'Multi-episode final council audit before saving.',
+      });
+      this.enforceQualityCouncilStrictMode('quality_council_final');
+
+      this.addCheckpoint('Final Story', story, false);
+      await this.saveResumeUnit(
+        outputDirectory,
+        'final_story_package',
+        'checkpoints/final-story-before-save.json',
+        story,
+      );
 
       // 6. Save results (using outputDirectory created earlier)
       // Prepare visual planning outputs for saving
@@ -5363,10 +6308,23 @@ export class FullStoryPipeline {
         worldBible,
         characterBible,
         finalStory: story,
+        generator: this.buildStoryGeneratorMetadata(),
         visualPlanning: visualPlanningOutputs,
         qaReport: aggregatedQAReport,
+        incrementalValidationResults: this.allSceneValidationResults.length > 0
+          ? this.allSceneValidationResults
+          : undefined,
+        // allEncounterTelemetry is the season superset (per-episode buffer is reset).
+        encounterTelemetry: this.allEncounterTelemetry.length > 0 ? this.allEncounterTelemetry : undefined,
+        llmLedger: this.telemetry.getLlmLedger() ?? undefined,
+        branchShadowDiffs: this.branchShadowDiffs.length > 0
+          ? this.branchShadowDiffs
+          : undefined,
         bestPracticesReport: aggregatedBPReport,
+        finalStoryContractReport,
+        qualityCouncilReport: this.qualityCouncil?.getReport(),
         encounterImageDiagnostics: allEncounterImageDiagnostics,
+        remediationSummary: this.getRemediationSummary(),
       }, Date.now() - startTime);
       const multiEpTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Multi-episode save timed out')), 120_000)
@@ -5395,20 +6353,30 @@ export class FullStoryPipeline {
         dependencyScheduler: { ...this.dependencySchedulerStats },
       };
 
-      // If storylet images failed, halt the pipeline AFTER saving. The partial story
-      // with encounter tree images is on disk. Stop here to avoid wasting credits.
+      // If storylet images failed, save diagnostics then halt the pipeline.
       if (allStoryletFailures.length > 0) {
         const failMsg = allStoryletFailures.join('; ');
-        console.warn(`[Pipeline] Encounter/storylet image gaps across episodes (non-fatal): ${failMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: `Image gaps across episodes (continuing): ${failMsg}` });
+        console.error(`[Pipeline] Encounter/storylet image gaps across episodes: ${failMsg}`);
+        this.emit({ type: 'error', phase: 'encounter_images', message: `Image gaps across episodes: ${failMsg}` });
         try {
           await savePipelineErrorLog(outputDirectory, allStoryletFailures.map(f => ({
             timestamp: new Date().toISOString(),
             phase: 'encounter_images',
             message: f,
-            severity: 'warning',
           })));
-        } catch { /* non-fatal */ }
+        } catch { /* best-effort save */ }
+        throw new PipelineError(
+          `Storylet image gaps: ${allStoryletFailures.length} storylet images missing across episodes`,
+          'encounter_images',
+          {
+            context: {
+              outputDirectory,
+              failureKind: 'image_completeness',
+              totalMissing: allStoryletFailures.length,
+              failures: allStoryletFailures.slice(0, 30),
+            },
+          }
+        );
       }
 
       // Mark job as completed
@@ -5448,6 +6416,35 @@ export class FullStoryPipeline {
         if (this.jobId) {
           await failJob(this.jobId, errorMessage);
         }
+        // F4: record the failure to disk + the quality ledger. The catch is
+        // outside the try that declares outputDirectory, so use the field.
+        if (this._currentOutputDirectory) {
+          // Preserve the structured failure context so the run is inspectable
+          // on disk and the generator can be fixed — not just the top-line
+          // message. PipelineError carries .context (e.g. the final story
+          // contract's blocking issues); ValidationError carries .issues (e.g.
+          // the specific treatment-fidelity anchors that drifted).
+          let details: Record<string, unknown> | undefined;
+          if (error instanceof PipelineError && error.context) {
+            details = error.context;
+          } else if (error instanceof ValidationError && error.issues?.length) {
+            details = { issues: error.issues };
+          }
+          await savePipelineErrorLog(this._currentOutputDirectory, [{
+            timestamp: new Date().toISOString(),
+            phase: 'pipeline_abort',
+            message: errorMessage,
+            stack: error instanceof Error ? error.stack : undefined,
+            ...(details ? { details } : {}),
+          }]);
+          // B3a: record the failure kind for cross-run triage. PipelineError carries
+          // the phase (failureKind) + agent/validator (validatorId).
+          await appendFailedRunLedger(this._currentOutputDirectory, 1, {
+            blocked: true,
+            failureKind: error instanceof PipelineError ? error.phase : (error instanceof Error ? error.name : 'unknown'),
+            validatorId: error instanceof PipelineError ? error.agent : undefined,
+          });
+        }
       }
 
       return {
@@ -5458,6 +6455,546 @@ export class FullStoryPipeline {
         duration: Date.now() - startTime,
       };
     }
+  }
+
+  private async persistPlanningArtifacts(params: {
+    artifactRuntime: RunArtifactRuntime;
+    sourceAnalysis: SourceMaterialAnalysis;
+    seasonPlan?: SeasonPlan;
+  }): Promise<ArtifactRef[]> {
+    const { artifactRuntime, sourceAnalysis, seasonPlan } = params;
+    const savedKinds = ['source analysis'];
+    const sourceAnalysisArtifact = await artifactRuntime.saveArtifact({
+      kind: 'source-analysis',
+      payload: sourceAnalysis,
+      status: 'valid',
+      provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
+    });
+    const sourceAnalysisRef = artifactRuntime.refFor(sourceAnalysisArtifact);
+    const upstream = [sourceAnalysisRef];
+    const planningRefs = [sourceAnalysisRef];
+
+    if (sourceAnalysis.sourceCanon) {
+      const sourceCanonArtifact = await artifactRuntime.saveArtifact({
+        kind: 'source-canon',
+        payload: sourceAnalysis.sourceCanon,
+        status: 'valid',
+        upstream,
+        provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
+      });
+      const sourceCanonRef = artifactRuntime.refFor(sourceCanonArtifact);
+      upstream.push(sourceCanonRef);
+      planningRefs.push(sourceCanonRef);
+      savedKinds.push('source canon');
+    }
+
+    if (seasonPlan) {
+      const seasonPlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'season-plan',
+        payload: seasonPlan,
+        status: 'valid',
+        upstream,
+        provenance: { phase: 'season_planning', agent: 'SeasonPlannerAgent' },
+      });
+      planningRefs.push(artifactRuntime.refFor(seasonPlanArtifact));
+      savedKinds.push('season plan');
+    }
+
+    this.emit({
+      type: 'debug',
+      phase: 'artifacts',
+      message: `Saved revisioned planning artifacts for ${savedKinds.join(', ')}.`,
+    });
+    return planningRefs;
+  }
+
+  private async persistEpisodePlanningArtifacts(params: {
+    artifactRuntime: RunArtifactRuntime;
+    episodeNumber: number;
+    blueprint?: EpisodeBlueprint;
+    branchAnalysis?: BranchAnalysis | null;
+    sceneContents?: SceneContent[];
+    choiceSets?: ChoiceSet[];
+    encounters?: Map<string, EncounterStructure>;
+  }): Promise<ArtifactRef[]> {
+    const {
+      artifactRuntime,
+      episodeNumber,
+      blueprint,
+      branchAnalysis,
+      sceneContents,
+      choiceSets,
+      encounters,
+    } = params;
+    const globalUpstream = artifactRuntime.getGlobalUpstreamRefs();
+    const refs: ArtifactRef[] = [];
+
+    let episodeBlueprintRef: ArtifactRef | undefined;
+    if (blueprint) {
+      const episodeBlueprintArtifact = await artifactRuntime.saveArtifact({
+        kind: 'episode-blueprint',
+        episodeNumber,
+        payload: blueprint,
+        status: 'valid',
+        upstream: globalUpstream,
+        provenance: { phase: `episode_${episodeNumber}_architecture`, agent: 'StoryArchitect' },
+      });
+      episodeBlueprintRef = artifactRuntime.refFor(episodeBlueprintArtifact);
+      refs.push(episodeBlueprintRef);
+    }
+
+    let branchPlanRef: ArtifactRef | undefined;
+    if (branchAnalysis) {
+      const branchPlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'branch-plan',
+        episodeNumber,
+        payload: branchAnalysis,
+        status: 'valid',
+        upstream: episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream,
+        provenance: { phase: `episode_${episodeNumber}_branch_analysis`, agent: 'BranchManager' },
+      });
+      branchPlanRef = artifactRuntime.refFor(branchPlanArtifact);
+      refs.push(branchPlanRef);
+    }
+
+    let scenePlanRef: ArtifactRef | undefined;
+    if (blueprint || sceneContents) {
+      const scenePlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'scene-plan',
+        episodeNumber,
+        payload: {
+          episodeNumber,
+          blueprintScenes: blueprint?.scenes ?? [],
+          authoredScenes: sceneContents ?? [],
+        },
+        status: 'valid',
+        upstream: [
+          ...(episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream),
+          ...(branchPlanRef ? [branchPlanRef] : []),
+        ],
+        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'SceneWriter' },
+      });
+      scenePlanRef = artifactRuntime.refFor(scenePlanArtifact);
+      refs.push(scenePlanRef);
+    }
+
+    if (choiceSets) {
+      const choicePlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'choice-consequence-plan',
+        episodeNumber,
+        payload: { episodeNumber, choiceSets },
+        status: 'valid',
+        upstream: [
+          ...(scenePlanRef ? [scenePlanRef] : episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream),
+          ...(branchPlanRef ? [branchPlanRef] : []),
+        ],
+        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'ChoiceAuthor' },
+      });
+      refs.push(artifactRuntime.refFor(choicePlanArtifact));
+    }
+
+    if (encounters) {
+      const encounterPlanArtifact = await artifactRuntime.saveArtifact({
+        kind: 'encounter-plan',
+        episodeNumber,
+        payload: {
+          episodeNumber,
+          encounters: Array.from(encounters.entries()).map(([id, encounter]) => ({ id, encounter })),
+        },
+        status: 'valid',
+        upstream: scenePlanRef ? [scenePlanRef] : episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream,
+        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'EncounterArchitect' },
+      });
+      refs.push(artifactRuntime.refFor(encounterPlanArtifact));
+    }
+
+    if (refs.length > 0) {
+      this.emit({
+        type: 'debug',
+        phase: `episode_${episodeNumber}_artifacts`,
+        message: `Saved ${refs.length} revisioned episode planning artifact(s).`,
+      });
+    }
+    return refs;
+  }
+
+  /**
+   * The episode lock boundary: an episode becomes resumable only after its
+   * runtime contract passes, then its facts are sealed into canon, then the
+   * completion watermark is written. Keeping this order prevents failed
+   * episode-local repairs from polluting downstream canon.
+   */
+  private async lockGeneratedEpisode(params: {
+    episodeNumber: number;
+    title: string;
+    episode: Episode;
+    episodeBrief?: FullCreativeBrief;
+    baseBrief: FullCreativeBrief;
+    analysis: SourceMaterialAnalysis;
+    characterBible: CharacterBible;
+    qaReport?: QAReport;
+    bestPracticesReport?: ComprehensiveValidationReport;
+    outputDirectory: string;
+    artifactRuntime: RunArtifactRuntime;
+    writeWatermark: boolean;
+  }): Promise<EpisodeCompletionLockEvidence> {
+    const {
+      episodeNumber,
+      title,
+      episode,
+      episodeBrief,
+      baseBrief,
+      analysis,
+      characterBible,
+      qaReport,
+      bestPracticesReport,
+      outputDirectory,
+      artifactRuntime,
+      writeWatermark,
+    } = params;
+    let runtimeLockEvidence: EpisodeCompletionLockEvidence = {};
+    return lockGeneratedEpisodeArtifact({
+      episodeNumber,
+      title,
+      episode,
+      hasEpisodeBrief: Boolean(episodeBrief),
+      writeWatermark,
+      validateRuntimeContract: async () => {
+        const sceneLockReport = buildEpisodeSceneLockReport({
+          episodeNumber,
+          episode,
+          validationResults: this.allSceneValidationResults.length > 0
+            ? this.allSceneValidationResults
+            : this.sceneValidationResults,
+        });
+        const sceneLockArtifact = sceneLockArtifactName(episodeNumber);
+        await artifactRuntime.save(sceneLockArtifact, sceneLockReport);
+        runtimeLockEvidence = {
+          sceneLocksPassed: sceneLockReport.passed,
+          sceneLockArtifact,
+        };
+        if (!sceneLockReport.passed) {
+          const detail = sceneLockReport.validation.issues
+            .slice(0, 5)
+            .map((issue) => issue.message)
+            .join('; ');
+          throw new Error(`Episode ${episodeNumber} cannot be locked: scene validation locks failed. ${detail}`);
+        }
+
+        const episodeValidation = await this.validateEpisodeIncrementally({
+          episodeNumber,
+          episode,
+          episodeBrief: episodeBrief!,
+          characterBible,
+          qaReport,
+          bestPracticesReport,
+          outputDirectory,
+        });
+        return mergeArtifactValidationSummaries(`runtime_contract_ep_${episodeNumber}`, [
+          sceneLockReport.validation,
+          episodeValidation,
+        ]);
+      },
+      sealCanon: async () => ({
+        ...runtimeLockEvidence,
+        ...(await this.sealGeneratedEpisodeForCanon({
+          episodeNumber,
+          episode,
+          baseBrief,
+          analysis,
+          characterBible,
+          outputDirectory,
+        }) ?? {}),
+      }),
+      writeCompletion: (lock, validation) => artifactRuntime.writeEpisodeCompletion({
+        episode,
+        episodeNumber,
+        title,
+        lock,
+        validation,
+      }).then(() => undefined),
+    });
+  }
+
+  /**
+   * Seal a freshly-authored episode into Season Canon and return the durable
+   * sidecars that make the completion watermark auditable. This is the canon
+   * half of episode locking; the runtime-contract half lives in
+   * validateEpisodeIncrementally and the caller writes the watermark only after
+   * both steps complete.
+   */
+  private async sealGeneratedEpisodeForCanon(params: {
+    episodeNumber: number;
+    episode: Episode;
+    baseBrief: FullCreativeBrief;
+    analysis: SourceMaterialAnalysis;
+    characterBible: CharacterBible;
+    outputDirectory: string;
+  }): Promise<EpisodeCompletionLockEvidence | undefined> {
+    const { episodeNumber: i, episode, baseBrief, analysis, characterBible, outputDirectory } = params;
+    if (!this.seasonCanonOn) {
+      return { canonSealed: false };
+    }
+
+    // Phase G: pin each promise's explicit payoffEpisode from the season spine
+    // (derived from seasonFlags) so the promise-due gate has real targets.
+    // E1: also pin the later-payoff choice moments (a "pays off later" choice IS a
+    // promise with an explicit payoffEpisode) so the same gate enforces them.
+    const spineEntries = [
+      ...deriveSpinePlantMap(baseBrief.seasonPlan).entries,
+      ...spineEntriesFromChoicePlan(this.seasonChoicePlan),
+    ];
+    const spineResult = applySpinePlantMap(this.callbackLedger, { entries: spineEntries });
+    if (spineResult.unmatched.length > 0) {
+      this.emit({
+        type: 'debug',
+        phase: `season_canon_ep_${i}`,
+        message: `Spine plant map: ${spineResult.applied} applied, ${spineResult.unmatched.length} not yet planted.`,
+      });
+    }
+
+    // B2: extract prose knowledge + claims so the canon holds who-knows-what
+    // (not just flags+capability) and the canon-consistency gate runs over real
+    // claims. Deterministic seed from the QA character-knowledge bundle + the
+    // flags this episode gates on.
+    const episodeKnowledge = extractEpisodeKnowledge({
+      episodeNumber: i,
+      protagonistId: 'protagonist',
+      characterKnowledge: this.buildContinuityCharacterKnowledge(characterBible),
+      referencedFlags: collectReferencedFlags(episode as any),
+      sceneText: episodeProseCorpus(episode as any),
+    });
+    const seasonLengthForArc = analysis.totalEstimatedEpisodes || this.totalEpisodes;
+    const arcAndRelationship = this.extractArcAndRelationshipDeltas(
+      characterBible,
+      i,
+      seasonLengthForArc,
+    );
+    const seal = await sealAndPersistEpisode({
+      episode: episode as any,
+      episodeNumber: i,
+      seasonLength: seasonLengthForArc,
+      ledger: this.callbackLedger,
+      canon: this.seasonCanon,
+      priorSnapshot: this.priorEpisodeSnapshot,
+      claims: episodeKnowledge.claims,
+      // Seal capability facts (who-can-do-what) + extracted knowledge/worldFacts
+      // so downstream prompts inherit a richer canon. Plus per-episode character
+      // arc state + relationship dimensions so the canon tracks the actual
+      // episode endpoint instead of only the original plan.
+      extraDeltas: {
+        worldFacts: [
+          ...characterCapabilityWorldFacts(characterBible.characters),
+          ...(episodeKnowledge.deltas.worldFacts ?? []),
+        ],
+        knowledge: episodeKnowledge.deltas.knowledge,
+        arcStates: arcAndRelationship.arcStates,
+        relationships: arcAndRelationship.relationships,
+      },
+      save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+    });
+    this.priorEpisodeSnapshot = seal.snapshot;
+    for (const issue of seal.evaluation.issues) {
+      this.emit({ type: 'warning', phase: `season_canon_ep_${i}`, message: `[advisory] ${issue.message}` });
+    }
+    const blockingIssues = seal.evaluation.issues.filter((x) => x.severity === 'error');
+    if (this.seasonCanonBlockingOn && blockingIssues.length > 0) {
+      throw new Error(`Season Canon gate failed for episode ${i}: ${blockingIssues.map((x) => x.message).join('; ')}`);
+    }
+
+    return {
+      canonSealed: true,
+      seasonCanonArtifact: 'season-canon.json',
+      seasonLedgerArtifact: 'season-ledger.json',
+      episodeStateSnapshotArtifact: 'episode-state-snapshot.json',
+    };
+  }
+
+  /**
+   * WS-A (bite-me-g16): run the final-story contract validators on a SINGLE freshly
+   * generated episode, so POV / treatment-fidelity / flag / pronoun / conformance defects
+   * surface as each episode is produced — not only after the whole season is assembled.
+   * Episode-level contract: run the same final-story contract validators on a SINGLE
+   * freshly generated episode, repair blocking findings while the episode artifact is
+   * still mutable, and only allow completion when blockers are gone. Writes
+   * `episode-<n>-incremental-contract.json` for diagnostics before the season package
+   * bundling step.
+   */
+  private async validateEpisodeIncrementally(params: {
+    episodeNumber: number;
+    episode: Episode;
+    episodeBrief: FullCreativeBrief;
+    characterBible: CharacterBible;
+    qaReport?: QAReport;
+    bestPracticesReport?: ComprehensiveValidationReport;
+    outputDirectory: string;
+  }): Promise<ArtifactValidationSummary> {
+    const { episodeNumber: i, episode, episodeBrief, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
+    try {
+      const protagonistId = episodeBrief.protagonist?.id;
+      const npcs = (characterBible.characters || [])
+        .filter((c: CharacterProfile) => c.id !== protagonistId)
+        .map((c: CharacterProfile) => ({ id: c.id, name: c.name, pronouns: (c as { pronouns?: string }).pronouns }));
+      const oneEpisodeStory = {
+        id: (episodeBrief.story as { id?: string })?.id || 'incremental',
+        title: episodeBrief.story?.title || '',
+        genre: episodeBrief.story?.genre || '',
+        synopsis: '',
+        coverImage: '',
+        initialState: { attributes: {}, skills: Object.fromEntries(DEFAULT_SKILLS.map(s => [s.name, 10])), tags: [], inventory: [] },
+        npcs,
+        episodes: [episode],
+      } as unknown as Story;
+
+      // Keep episode-level diagnostics aligned with the final package contract:
+      // outcome flags/variants are part of the episode seal, not post-season surgery.
+      await this.authorEncounterOutcomeVariants(oneEpisodeStory);
+
+      const fidelity = runFidelityValidators({
+        story: oneEpisodeStory,
+        seasonPlan: episodeBrief.seasonPlan,
+        sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
+        planTimeBaseline: this.planTimeFidelityBaseline,
+        scope: {
+          mode: 'episode-incremental',
+          requestedEpisodeNumbers: [i],
+          generatedEpisodeNumbers: [i],
+          generatedThroughEpisode: i,
+        },
+      });
+      const plannedChoiceTypes = this.plannedChoiceTypesByScene && Object.keys(this.plannedChoiceTypesByScene).length > 0
+        ? this.plannedChoiceTypesByScene
+        : plannedChoiceTypesByScene(episodeBrief.seasonPlan);
+      const plannedConsequenceTiers = plannedConsequenceTiersByScene(episodeBrief.seasonPlan);
+
+      let report = await new FinalStoryContractValidator().validate({
+        story: oneEpisodeStory,
+        protagonist: episodeBrief.protagonist
+          ? { name: episodeBrief.protagonist.name, pronouns: episodeBrief.protagonist.pronouns }
+          : undefined,
+        requestedEpisodeNumbers: [i],
+        sourceSeasonPlan: episodeBrief.seasonPlan,
+        incrementalValidationResults: this.allSceneValidationResults.length > 0 ? this.allSceneValidationResults : this.sceneValidationResults,
+        qaReport,
+        bestPracticesReport,
+        validSkills: Object.keys(oneEpisodeStory.initialState?.skills || {}),
+        mode: this.config.validation?.mode,
+        fidelityFindings: fidelity.fidelityFindings,
+        planTimeFidelityFindings: this.planTimeFidelityFindings,
+        treatmentSourced: fidelity.treatmentSourced,
+        callbackLedger: this.callbackLedger.serialize(),
+        seasonResiduePlan: episodeBrief.seasonPlan?.residuePlan,
+        seasonChoicePlan: this.seasonChoicePlan,
+        plannedChoiceTypesByScene: plannedChoiceTypes,
+        plannedConsequenceTiersByScene: plannedConsequenceTiers,
+        seasonSkillPlan: this.seasonSkillPlan,
+      });
+      let repairedByEpisodeContract = false;
+
+      if (!report.passed || report.blockingIssues.length > 0) {
+        this.emit({
+          type: 'debug',
+          phase: `incremental_contract_ep_${i}`,
+          message: `Episode ${i} contract has ${report.blockingIssues.length} blocker(s); attempting episode-local repair before completion.`,
+          data: { blockingIssues: report.blockingIssues.slice(0, 5) },
+        });
+        const repairedReport = await this.enforceEpisodeIncrementalContractWithTimeout(i, {
+          story: oneEpisodeStory,
+          brief: episodeBrief,
+          requestedEpisodeNumbers: [i],
+          qaReport,
+          bestPracticesReport,
+          phase: `incremental_contract_ep_${i}`,
+          validationScope: {
+            mode: 'episode-incremental',
+            requestedEpisodeNumbers: [i],
+            generatedEpisodeNumbers: [i],
+            generatedThroughEpisode: i,
+          },
+        });
+        if (repairedReport) {
+          report = repairedReport;
+          repairedByEpisodeContract = true;
+        }
+      }
+
+      const byType: Record<string, number> = {};
+      for (const issue of [...report.blockingIssues, ...report.warnings]) {
+        byType[issue.type] = (byType[issue.type] ?? 0) + 1;
+      }
+      await saveEarlyDiagnostic(outputDirectory, `episode-${i}-incremental-contract.json`, {
+        generatedAt: new Date().toISOString(),
+        episodeNumber: i,
+        advisory: false,
+        repairedByEpisodeContract,
+        passed: report.passed,
+        blockingCount: report.blockingIssues.length,
+        warningCount: report.warnings.length,
+        byType,
+        blockingIssues: report.blockingIssues,
+        warnings: report.warnings,
+      }).catch(() => undefined);
+
+      // Stable, fixture-independent event message (counts/types live in the diagnostic
+      // file, not the event stream, so the progress-contract golden stays deterministic).
+      const total = report.blockingIssues.length + report.warnings.length;
+      if (total > 0) {
+        console.info(`[Pipeline] Episode ${i} incremental contract: ${total} issue(s) — ${Object.entries(byType).map(([t, n]) => `${t}:${n}`).join(', ')}`);
+      }
+      this.emit({
+        type: 'debug',
+        phase: `incremental_contract_ep_${i}`,
+        message: `Episode ${i} incremental contract validated (${report.passed ? 'passed' : 'failed'}).`,
+      });
+      if (!report.passed || report.blockingIssues.length > 0) {
+        throw new Error(
+          `Episode ${i} incremental contract failed with ${report.blockingIssues.length} blocking issue(s): ` +
+          report.blockingIssues.slice(0, 3).map(issue => issue.message).join('; '),
+        );
+      }
+      return this.toArtifactValidationSummary(`incremental_contract_ep_${i}`, report);
+    } catch (err) {
+      this.emit({
+        type: 'error',
+        phase: `incremental_contract_ep_${i}`,
+        message: `Incremental contract validation for Episode ${i} failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      throw err;
+    }
+  }
+
+  private toArtifactValidationSummary(
+    gate: string,
+    report: Pick<FinalStoryContractReport, 'passed' | 'blockingIssues' | 'warnings'>,
+  ): ArtifactValidationSummary {
+    return {
+      passed: report.passed && report.blockingIssues.length === 0,
+      gate,
+      issues: [
+        ...report.blockingIssues.map((issue) => ({
+          validator: issue.validator || 'FinalStoryContractValidator',
+          severity: 'error' as const,
+          message: issue.message,
+          code: issue.type,
+          path: [
+            issue.episodeNumber != null ? `episode:${issue.episodeNumber}` : undefined,
+            issue.sceneId ? `scene:${issue.sceneId}` : undefined,
+            issue.beatId ? `beat:${issue.beatId}` : undefined,
+          ].filter(Boolean).join('/'),
+        })),
+        ...report.warnings.map((issue) => ({
+          validator: issue.validator || 'FinalStoryContractValidator',
+          severity: 'warning' as const,
+          message: issue.message,
+          code: issue.type,
+          path: [
+            issue.episodeNumber != null ? `episode:${issue.episodeNumber}` : undefined,
+            issue.sceneId ? `scene:${issue.sceneId}` : undefined,
+            issue.beatId ? `beat:${issue.beatId}` : undefined,
+          ].filter(Boolean).join('/'),
+        })),
+      ],
+    };
   }
 
   private async generateEpisodeFromOutline(params: {
@@ -5471,14 +7008,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible;
     outputDirectory: string;
     previousSummary?: string;
-  }): Promise<{
-    episode?: Episode;
-    result: { episodeNumber: number; title: string; success: boolean; error?: string };
-    qaReport?: QAReport;
-    bestPracticesReport?: ComprehensiveValidationReport;
-    storyletFailures?: string[];
-    encounterImageDiagnostics?: EncounterImageRunDiagnostic[];
-  }> {
+  }): Promise<GeneratedEpisodeFromOutlineResult> {
     const {
       episodeNumber: i,
       episodeIndex: idx,
@@ -5518,9 +7048,28 @@ export class FullStoryPipeline {
         }
       };
 
-      const blueprint = await this.measurePhase(`episode_${i}_architecture`, () => this.runEpisodeArchitecture(episodeBrief, worldBible, characterBible));
+      const blueprintPath = this.episodeCheckpointFile(i, 'blueprint');
+      const canHydrateEpisodeResume = !this.invalidatedResumeEpisodes.has(i);
+      const blueprint = (canHydrateEpisodeResume
+        ? this.loadResumeUnit<EpisodeBlueprint>(
+          outputDirectory,
+          `episode_blueprint:episode-${i}`,
+          blueprintPath,
+        )
+        : undefined)
+        || await this.measurePhase(`episode_${i}_architecture`, () => this.runEpisodeArchitecture(episodeBrief, worldBible, characterBible));
+      await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, blueprint);
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, blueprint);
-      const branchAnalysis = await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, blueprint));
+      const branchPath = this.episodeCheckpointFile(i, 'branch-analysis');
+      const branchAnalysis = (canHydrateEpisodeResume
+        ? this.loadResumeUnit<BranchAnalysis | null>(
+          outputDirectory,
+          `branch_analysis:episode-${i}`,
+          branchPath,
+        )
+        : undefined)
+        ?? await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, blueprint));
+      await this.saveResumeUnit(outputDirectory, `branch_analysis:episode-${i}`, branchPath, branchAnalysis);
       const { sceneContents, choiceSets, encounters } = await this.measurePhase(
         `episode_${i}_content`,
         () => this.runContentGeneration(
@@ -5528,96 +7077,443 @@ export class FullStoryPipeline {
           worldBible,
           characterBible,
           blueprint,
-          branchAnalysis || undefined
+          branchAnalysis || undefined,
+          outputDirectory,
+          i
         )
       );
+      await this.qualityCouncil?.runChoice({
+        brief: episodeBrief,
+        sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
+        seasonPlan: episodeBrief.seasonPlan,
+        episodeBlueprint: blueprint,
+        sceneContents,
+        choiceSets,
+        notes: `Multi-episode checkpoint after ChoiceAuthor for episode ${i}.`,
+      });
 
-      let imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> } | undefined;
-      let encounterImageResults: { encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>; storyletImages: Map<string, Map<string, Map<string, string>>>; storyletFailures?: string[] } | undefined;
-      let encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
-      if (this.config.imageGen?.enabled) {
-        this.emit({ type: 'phase_start', phase: `images_ep_${i}`, message: `Generating visuals for Episode ${i}...` });
-        try {
-          imageResults = await this.imageWorkerQueue.run(() =>
-            this.measurePhase(
-              `episode_${i}_images`,
-              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible)
-            )
-          );
-        } catch (imgError) {
-          if (this.isLlmQuotaFailure(imgError)) {
-            const quotaMsg = imgError instanceof Error ? imgError.message : String(imgError);
-            this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Image generation stopped: ${quotaMsg}` });
-            throw new PipelineError(`Episode ${i} image generation stopped due to LLM quota exhaustion: ${quotaMsg}`, `images_ep_${i}`, {
-              agent: 'ImageAgentTeam',
-              context: { episode: i },
-              originalError: imgError instanceof Error ? imgError : undefined,
-            });
-          }
-          const imgMsg = imgError instanceof Error ? imgError.message : String(imgError);
-          console.error(`[Pipeline] Episode ${i} beat image generation failed (non-fatal): ${imgMsg}`);
-          this.emit({ type: 'warning', phase: `images_ep_${i}`, message: `Beat image generation failed (continuing without images): ${imgMsg}` });
-        }
+      let callbackNewHooks = 0;
+      let authoredCallbackPayoffs = 0;
 
-        if (encounters.size > 0) {
-          console.log(`[Pipeline] Episode ${i}: Starting encounter image generation for ${encounters.size} encounters`);
-          try {
-            this.imageService.clearEncounterDiagnostics();
-            await this.runEncounterProviderPreflight(outputDirectory);
-            encounterImageResults = await this.imageWorkerQueue.run(() =>
-              this.measurePhase(
-                `episode_${i}_encounter_images`,
-                () => this.generateEncounterImages(encounters, characterBible, episodeBrief, outputDirectory)
-              )
-            );
-            encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
-            const totalEncImages = encounterImageResults?.encounterImages
-              ? Array.from(encounterImageResults.encounterImages.values()).reduce((sum, v) => sum + v.setupImages.size + v.outcomeImages.size, 0)
-              : 0;
-            const totalStoryletImages = encounterImageResults?.storyletImages
-              ? Array.from(encounterImageResults.storyletImages.values()).reduce((sum, outcomeMap) =>
-                sum + Array.from(outcomeMap.values()).reduce((s, beatMap) => s + beatMap.size, 0), 0)
-              : 0;
-            console.log(`[Pipeline] Episode ${i}: Encounter image generation complete — ${totalEncImages} encounter images, ${totalStoryletImages} storylet images`);
-          } catch (encImgError) {
-            encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
-            if (encounterImageDiagnostics.length > 0) {
-              await saveEncounterImageDiagnosticsLog(outputDirectory, encounterImageDiagnostics);
-            }
-            if (this.isLlmQuotaFailure(encImgError)) {
-              const quotaMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
-              this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Encounter image generation stopped: ${quotaMsg}` });
-              throw new PipelineError(`Episode ${i} encounter image generation stopped due to LLM quota exhaustion: ${quotaMsg}`, `images_ep_${i}`, {
-                agent: 'EncounterImageAgent',
-                context: { episode: i },
-                originalError: encImgError instanceof Error ? encImgError : undefined,
-              });
-            }
-            const encImgMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
-            console.error(`[Pipeline] Episode ${i} encounter image generation failed: ${encImgMsg}`);
-            this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Encounter image generation failed for episode ${i}: ${encImgMsg}` });
-            throw new PipelineError(`Episode ${i} encounter image generation failed: ${encImgMsg}`, `images_ep_${i}`, {
-              agent: 'EncounterImageAgent',
-              context: { episode: i, encounterCount: encounters.size, failureKind: 'image_step' },
-              originalError: encImgError instanceof Error ? encImgError : undefined,
-            });
-          }
-        }
+      // Plan 1: Harvest delayed-consequence callbacks from this episode's
+      // choices (seed new hooks) and textVariants (record payoffs). Planned
+      // residue runs next and gets first claim on due choice-memory debt before
+      // generic fallback callbacks fill remaining unresolved hooks.
+      try {
+        const { newHooks, payoffs } = this.harvestEpisodeCallbacks({
+          episodeNumber: i,
+          sceneContents: sceneContents as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['sceneContents'],
+          choiceSets: choiceSets as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['choiceSets'],
+        });
+        callbackNewHooks = newHooks;
+        authoredCallbackPayoffs = payoffs;
+      } catch (ledgerErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_callbacks`,
+          message: `CallbackLedger harvest failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
+        });
       }
 
-      // Wire AssetRegistry for this episode (mirrors single-episode path)
-      if (this.config.imageGen?.enabled && (imageResults || encounterImageResults)) {
-        try {
-          this.seedAssetRegistryFromResults(episodeBrief, sceneContents, encounters, imageResults, encounterImageResults);
-          if (this.assetRegistry && !this.assetRegistry['persistPath'] && outputDirectory) {
-            this.assetRegistry.setPersistPath(
-              (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl'
+      const residueContract = implementEpisodeResidueObligations({
+        episodeNumber: i,
+        sceneContents,
+        choiceSets,
+        blueprint,
+        seasonResiduePlan: episodeBrief.seasonPlan?.residuePlan,
+        callbackLedger: this.callbackLedger,
+        importedCallbackLedger: this.callbackLedger.serialize(),
+        generatedThroughEpisode: this.totalEpisodes,
+      });
+      if (
+        residueContract.autoInjected.length > 0 ||
+        residueContract.missingIncoming.length > 0 ||
+        residueContract.missingOutgoing.length > 0 ||
+        residueContract.unplannedConsequentialFlags.length > 0
+      ) {
+        this.emit({
+          type: residueContract.missingIncoming.length || residueContract.missingOutgoing.length || residueContract.unplannedConsequentialFlags.length ? 'warning' : 'debug',
+          phase: `episode_${i}_residue_contract`,
+          message:
+            `Residue contract: ${residueContract.createdOutgoing.length}/${residueContract.plannedOutgoing.length} outgoing created, ` +
+            `${residueContract.paidIncoming.length}/${residueContract.dueIncoming.length} due paid, ` +
+            `${residueContract.autoInjected.length} auto-injected, ${residueContract.unplannedConsequentialFlags.length} unplanned flag(s).`,
+        });
+      }
+      await saveEarlyDiagnostic(outputDirectory, `episode-${i}-residue-contract.json`, residueContract);
+      await saveEarlyDiagnostic(outputDirectory, '10-residue-ledger.json', {
+        episodeNumber: i,
+        residueContract,
+        callbackLedger: this.callbackLedger.serialize(),
+      });
+
+      try {
+        // Deterministically realize planted-but-uncollected callbacks after
+        // planned residue has had the first opportunity to pay its assigned
+        // obligations. This prevents a generic callback line from double-paying
+        // the same hook before the residue contract can attach source-specific
+        // prose and evidence.
+        const { injected } = this.injectFallbackCallbacks({
+          episodeNumber: i,
+          sceneContents: sceneContents as unknown as InjectFallbackCallbacksParams['sceneContents'],
+          choiceSets: choiceSets as unknown as InjectFallbackCallbacksParams['choiceSets'],
+        });
+        if (callbackNewHooks > 0 || authoredCallbackPayoffs > 0 || injected > 0) {
+          this.emit({
+            type: 'debug',
+            phase: `episode_${i}_callbacks`,
+            message: `Callback ledger: +${callbackNewHooks} new hook(s), +${authoredCallbackPayoffs} authored payoff(s), +${injected} auto-realized this episode; ${this.callbackLedger.size()} total`,
+          });
+        }
+        await saveEarlyDiagnostic(outputDirectory, '09-callback-ledger.json', this.callbackLedger.serialize());
+      } catch (ledgerErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_callbacks`,
+          message: `CallbackLedger fallback injection failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
+        });
+      }
+
+      await this.repairWeakCliffhangerBeforeImages(
+        episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        sceneContents,
+        choiceSets,
+        encounters,
+      );
+
+      await this.repairSceneGraphBranchingChoices(
+        episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        sceneContents,
+        choiceSets,
+        encounters,
+        { phase: `episode_${i}_branch_repair` }
+      );
+      const branchValidationEpisode = this.assembleEpisode(
+        episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        sceneContents,
+        choiceSets,
+        undefined,
+        encounters,
+        undefined,
+      );
+      await this.validateSceneGraphBranching(branchValidationEpisode, blueprint, {
+        phase: `episode_${i}_branch_validation`,
+        outputDirectory,
+        artifactName: `episode-${i}-branch-metrics.json`,
+        choiceSets,
+        residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(episodeBrief, worldBible, characterBible, blueprint, sceneContents, choiceSets, undefined, encounters, undefined) },
+      });
+      // Narrative diagnostics (SetupPayoff / Twist / ArcDelta / Divergence / Callback /
+      // FailureMode + E5 intensity / #26C prop-intro / D4 choice-coverage). RELOCATED here
+      // — BEFORE image generation — because the image-gen block below can short-circuit the
+      // rest of this method, which silently dropped ALL narrative diagnostics (and
+      // 08-registry-state) in EVERY multi-episode run, going back months: the branch-metrics
+      // write just above lands, but nothing after the image block did. This point is
+      // guaranteed reached, and `branchValidationEpisode` is a full assembled episode (sans
+      // images — all the divergence check needs). The unconditional marker confirms reach.
+      this.emit({ type: 'debug', phase: `episode_${i}_narrative_diagnostics`, message: 'Narrative diagnostics: reached (pre-image-gen).' });
+      let narrativeDiagnosticsReport: NarrativeDiagnosticsReport | undefined;
+      try {
+        const narrativeDiagnostics = runNarrativeDiagnostics({
+          episodeNumber: i,
+          totalEpisodes: baseBrief.seasonPlan?.episodes?.length ?? i,
+          sceneContents,
+          episode: branchValidationEpisode,
+          // Thread/Twist planning (default-off): hand SetupPayoff/TwistQuality the
+          // REAL ThreadPlanner ledger + this episode's TwistPlan when the flag
+          // populated them. Undefined otherwise — the historical derived/absent
+          // behavior is unchanged.
+          threadLedger: this.seasonThreadLedger.threads.length > 0 ? this.seasonThreadLedger : undefined,
+          twistPlan: this.episodeTwistPlans.get(i),
+          // Character-arc tracking (default-off): hand ArcDelta the REAL
+          // CharacterArcTracker targets plus deterministic best-effort observed
+          // deltas simulated from the authored choice sets. Undefined otherwise —
+          // the historical skipped behavior is unchanged.
+          arcTargets: this.episodeArcTargets.get(i),
+          ...(() => {
+            if (!this.episodeArcTargets.get(i)) return {};
+            const simulated = simulateEpisodeArcDeltas(choiceSets);
+            if (!simulated) return {};
+            return {
+              startIdentity: {},
+              endIdentity: simulated.endIdentity,
+              relationshipDeltas: simulated.relationshipDeltas,
+            };
+          })(),
+          callbackLedger: this.callbackLedger.serialize(),
+          // #26C: declared cast (ids AND display names — charactersInvolved mixes both forms).
+          knownEntityIds: (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]).filter(Boolean),
+          // D4: planned (blueprint) choice scenes vs scenes that actually authored a choice.
+          // ChoiceAuthor stores choices in the phase-level choiceSets; beat-level choices
+          // are attached later during episode assembly, so sceneContents alone can report
+          // a false "authored 0 choices" warning after a successful content pass.
+          choicePlannedSceneIds: (blueprint.scenes ?? []).filter((s) => !s.isEncounter && s.choicePoint).map((s) => s.id),
+          choiceAuthoredSceneIds: choiceSets.filter((cs) => (cs.choices ?? []).length > 0).map((cs) => cs.sceneId).filter(Boolean) as string[],
+        });
+        narrativeDiagnosticsReport = narrativeDiagnostics;
+        await saveEarlyDiagnostic(outputDirectory, `episode-${i}-narrative-diagnostics.json`, narrativeDiagnostics);
+        const activeChecks = narrativeDiagnostics.checks
+          .map((check) => `${check.name}:${check.status}${typeof check.score === 'number' ? `(${check.score})` : ''}`)
+          .join(', ');
+        this.emit({
+          type: narrativeDiagnostics.overallStatus === 'passed' ? 'debug' : 'warning',
+          phase: `episode_${i}_narrative_diagnostics`,
+          message: `Narrative diagnostics ${narrativeDiagnostics.overallStatus}: ${activeChecks}`,
+          data: narrativeDiagnostics,
+        });
+      } catch (diagErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_narrative_diagnostics`,
+          message: `Narrative diagnostics failed (non-fatal): ${diagErr instanceof Error ? diagErr.message : String(diagErr)}`,
+        });
+      }
+
+      // Bucket D: plan-time craft gates (opt-in, default OFF). The validators ran
+      // advisory inside runNarrativeDiagnostics above (report unchanged); these only
+      // HARD-BLOCK on error-severity findings when the per-rule flag is set. The gate
+      // checks run OUTSIDE the diagnostics try/catch so a real gate failure propagates
+      // as a PipelineError instead of being swallowed as a non-fatal warning. With the
+      // flags unset, shouldGate returns gate:false → behavior is unchanged.
+      // NOTE(de-@ts-nocheck): this block previously referenced out-of-scope
+      // `brief`/`story` copied from generate(). The `brief` ReferenceError
+      // killed runNarrativeDiagnostics above as a "non-fatal" warning, which
+      // left narrativeDiagnosticsReport undefined and silently skipped every
+      // plan-time gate in multi-episode runs. Fixed to baseBrief; the gate
+      // shadow records pass storyId: undefined (no Story exists in this
+      // scope — the season story is assembled later by the driver).
+      if (narrativeDiagnosticsReport) {
+        const isEnabled = isGateEnabled;
+        const shadow = isShadowLoggingEnabled();
+        // SHADOW-ONLY in the season path: before the scope fix above, these
+        // gates could never fire here, so their default-ON promotion was
+        // validated exclusively against single-episode shadow data (the
+        // season fixture trips ConsequenceBudget immediately). Validation +
+        // shadow records run with the real flags; blocking stays disabled
+        // until a fresh multi-episode shadow pass proves the profile clean.
+        const seasonGateEnforcement = () => false;
+        const checkIssues = (name: NarrativeDiagnosticsReport['checks'][number]['name']) =>
+          narrativeDiagnosticsReport.checks.find((c) => c.name === name)?.issues ?? [];
+
+        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), seasonGateEnforcement);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'SetupPayoffValidator', setupPayoffGate.blockingCount, checkIssues('setup_payoff'), undefined);
+        if (setupPayoffGate.gate) {
+          const errs = checkIssues('setup_payoff').filter((iss) => iss.severity === 'error');
+          // S3: record the hard block before throwing (best-effort).
+          await this.recordRemediationSafe({
+            rule: 'setup_payoff_gate', scope: 'episode', attempted: 1,
+            succeeded: false, degraded: false, blocked: true, attempts: 1,
+            storyId: undefined, details: `Setup/payoff gate blocked episode ${i}: ${setupPayoffGate.blockingCount} issue(s)`,
+          });
+          throw new PipelineError(
+            `[SetupPayoffGate] Setup/payoff failed the blocking gate (${setupPayoffGate.blockingCount} issue(s)): ` +
+              errs.map((iss) => iss.message).join('; ') +
+              '. Unset GATE_SETUP_PAYOFF to downgrade to advisory.',
+            `episode_${i}_setup_payoff_gate`,
+            { context: { episode: i, blockingCount: setupPayoffGate.blockingCount } },
+          );
+        }
+
+        // CallbackCoverage strict seam: the advisory diagnostics run emits only
+        // warning/suggestion levels, so the gate would never fire on the report
+        // issues. When the rollout flag is on, re-run the validator in STRICT
+        // mode (a pure, deterministic, idempotent re-evaluation of the same
+        // serialized ledger + episode) so a genuine coverage failure surfaces as
+        // an 'error' that shouldGate can block on. The diagnostics report itself
+        // stays advisory/unchanged — only the gate sees the strict issues. With
+        // the flag OFF this branch is skipped and the historical report issues
+        // are used, so default behavior is byte-for-byte unchanged.
+        let callbackGateIssues: Array<{ severity: string; message?: string }> = checkIssues('callback_coverage');
+        // Run the strict re-eval when the gate is on OR when shadow logging wants
+        // the would-gate data. Pure/deterministic/idempotent — no LLM.
+        if (isEnabled(PLAN_GATE_FLAGS.callbackCoverage) || shadow) {
+          const strictResult = new CallbackCoverageValidator().validate(
+            {
+              ledger: this.callbackLedger.serialize(),
+              currentEpisode: i,
+              totalEpisodes: baseBrief.seasonPlan?.episodes?.length ?? i,
+            },
+            { strict: true },
+          );
+          callbackGateIssues = strictResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
+        }
+        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, seasonGateEnforcement);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'CallbackCoverageValidator', callbackGate.blockingCount, callbackGateIssues, undefined);
+        if (callbackGate.gate) {
+          const errs = callbackGateIssues.filter((iss) => iss.severity === 'error');
+          // S3: record the hard block before throwing (best-effort).
+          await this.recordRemediationSafe({
+            rule: 'callback_coverage_gate', scope: 'episode', attempted: 1,
+            succeeded: false, degraded: false, blocked: true, attempts: 1,
+            storyId: undefined, details: `Callback coverage gate blocked episode ${i}: ${callbackGate.blockingCount} issue(s)`,
+          });
+          throw new PipelineError(
+            `[CallbackCoverageGate] Callback coverage failed the blocking gate (${callbackGate.blockingCount} issue(s)): ` +
+              errs.map((iss) => iss.message).join('; ') +
+              '. Unset GATE_CALLBACK_COVERAGE to downgrade to advisory.',
+            `episode_${i}_callback_coverage_gate`,
+            { context: { episode: i, blockingCount: callbackGate.blockingCount } },
+          );
+        }
+
+        // ChoiceDensity gate (default OFF; GATE_CHOICE_DENSITY=1). The validator
+        // emits 'error' only for the "zero choices" case; all genuine structural
+        // (D4) and timing-cap violations are warning-level by default, so the
+        // gate would never fire on them. When the flag is on we re-run the
+        // validator in STRICT mode (a pure, deterministic re-eval of the same
+        // beats/scenes) so those violations surface as 'error' for shouldGate.
+        // With the flag OFF this branch is skipped entirely → behavior unchanged.
+        if (isEnabled(PLAN_GATE_FLAGS.choiceDensity) || shadow) {
+          const densityResult = await new ChoiceDensityValidator().validate(
+            {
+              beats: sceneContents.flatMap((sc) =>
+                (sc.beats ?? []).map((b) => ({
+                  id: b.id,
+                  text: b.text ?? b.content ?? '',
+                  isChoicePoint: ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0 || b.isChoicePoint,
+                })),
+              ),
+              scenes: sceneContents.map((sc) => ({
+                id: sc.sceneId,
+                beats: (sc.beats ?? []).map((b) => ({
+                  id: b.id,
+                  text: b.text ?? b.content ?? '',
+                  isChoicePoint: ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0 || b.isChoicePoint,
+                })),
+              })),
+            },
+            { strict: true },
+          );
+          const densityIssues = densityResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
+          const densityGate = shouldGate(PLAN_GATE_FLAGS.choiceDensity, densityIssues, seasonGateEnforcement);
+          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.choiceDensity, 'ChoiceDensityValidator', densityGate.blockingCount, densityIssues, undefined);
+          if (densityGate.gate) {
+            const errs = densityIssues.filter((iss) => iss.severity === 'error');
+            await this.recordRemediationSafe({
+              rule: 'choice_density_gate', scope: 'episode', attempted: 1,
+              succeeded: false, degraded: false, blocked: true, attempts: 1,
+              storyId: undefined, details: `Choice density gate blocked episode ${i}: ${densityGate.blockingCount} issue(s)`,
+            });
+            throw new PipelineError(
+              `[ChoiceDensityGate] Choice density failed the blocking gate (${densityGate.blockingCount} issue(s)): ` +
+                errs.map((iss) => iss.message).join('; ') +
+                '. Unset GATE_CHOICE_DENSITY to downgrade to advisory.',
+              `episode_${i}_choice_density_gate`,
+              { context: { episode: i, blockingCount: densityGate.blockingCount } },
             );
           }
-          await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
-        } catch (regErr) {
-          const regMsg = regErr instanceof Error ? regErr.message : String(regErr);
-          console.warn(`[Pipeline] AssetRegistry seeding failed for episode ${i} (non-fatal): ${regMsg}`);
+        }
+
+        // Consequence-budget balance is a season-plan property. Do not re-run
+        // the whole-season percentage validator against this generated episode
+        // slice; FinalStoryContractValidator checks per-scene consequence-tier
+        // conformance against the season plan instead.
+
+        // PropIntroduction gate (default OFF; GATE_PROP_INTRODUCTION=1). PARTIAL
+        // gate (see propIntroductionGate.ts SCOPE NOTE): the deterministic
+        // episode-level subset. Known entities = declared cast (ids + display
+        // names) folded with every scene's declared introductions; references
+        // come from each scene's charactersInvolved (the only per-scene entity
+        // signal available at this seam — props are not yet a tracked field, so
+        // unresolved-prop detection is deferred to a future SceneContent
+        // .referencedEntityIds/.introducesEntityIds population). The validator
+        // emits only warning-level issues today, so the gate fires only if it
+        // begins emitting 'error' (shouldGate counts error-severity); with the
+        // flag OFF this branch is skipped → behavior unchanged.
+        if (isEnabled(PLAN_GATE_FLAGS.propIntroduction) || shadow) {
+          const propInput = buildPropIntroductionInput(
+            (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]),
+            sceneContents.map((sc) => ({
+              sceneId: sc.sceneId,
+              sceneName: sc.sceneName,
+              referencedEntityIds: sc.charactersInvolved ?? [],
+            })),
+          );
+          // strict: this block only runs when GATE_PROP_INTRODUCTION is set, so escalate
+          // unresolved references to error-severity here so the gate can actually fire.
+          const propResult = new PropIntroductionValidator().validate(propInput, { strict: true });
+          const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
+          const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, seasonGateEnforcement);
+          await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+            gate: PLAN_GATE_FLAGS.propIntroduction,
+            validator: 'PropIntroductionValidator',
+            scope: 'episode',
+            placement: 'plan',
+            enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
+            blockingCount: propGate.blockingCount,
+            wouldRepairCount: propGate.blockingCount,
+            repairAttempted: false,
+            residualBlockingCount: propGate.blockingCount,
+            issues: propIssues,
+            details: `episode=${i}; unresolved=${propGate.blockingCount}; repairTelemetry=pre`,
+          }));
+          if (propGate.blockingCount > 0) {
+            // Wave 4 repair loop: resolve raw label->canonical-id references (the
+            // witness-bug class) and re-validate before aborting. Genuinely-unknown
+            // references are NOT rewritten, so a real dangling reference still blocks.
+            const propRoster = (characterBible.characters ?? []).map((c) => ({ id: c.id, name: c.name }));
+            const propRepairScenes = sceneContents
+              .filter((sc) => Array.isArray(sc.charactersInvolved))
+              .map((sc) => ({ sceneId: sc.sceneId, sceneName: sc.sceneName, referencedEntityIds: sc.charactersInvolved as string[] }));
+            const propRepair = await repairAndRevalidatePropIntroduction(propRepairScenes, propRoster, {
+              canSpend: () => propGate.gate ? shouldAttemptRemediation(this.remediationBudget) : true,
+            });
+            if (propGate.gate) {
+              for (const rec of propRepair.records) await this.recordRemediationSafe(rec);
+            }
+            const repairedPropResult = new PropIntroductionValidator().validate(
+              buildPropIntroductionInput(
+                propRoster.flatMap((r) => [r.id, r.name]),
+                propRepairScenes.map((sc) => ({
+                  sceneId: sc.sceneId,
+                  sceneName: sc.sceneName,
+                  referencedEntityIds: sc.referencedEntityIds,
+                })),
+              ),
+              { strict: true },
+            );
+            const remainingUnknownCount = repairedPropResult.issues.filter((iss) => iss.severity === 'error').length;
+            await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+              gate: PLAN_GATE_FLAGS.propIntroduction,
+              validator: 'PropIntroductionValidator',
+              scope: 'episode',
+              placement: 'plan',
+              enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
+              blockingCount: propGate.blockingCount,
+              wouldRepairCount: propGate.blockingCount,
+              repairAttempted: true,
+              repairSucceeded: propRepair.passed,
+              residualBlockingCount: remainingUnknownCount,
+              issues: repairedPropResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message })),
+              details:
+                `episode=${i}; wouldRepairCount=${propGate.blockingCount}; repairedCount=${propRepair.fixedCount}; ` +
+                `remainingUnknownCount=${remainingUnknownCount}; examples=${propRepair.examples.join(',') || 'none'}`,
+            }));
+            if (propGate.gate && !propRepair.passed) {
+              const errs = propIssues.filter((iss) => iss.severity === 'error');
+              await this.recordRemediationSafe({
+                rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
+                succeeded: false, degraded: false, blocked: true, attempts: 1,
+                storyId: undefined, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
+              });
+              throw new PipelineError(
+                `[PropIntroductionGate] Prop introduction failed the blocking gate (${propGate.blockingCount} unresolved reference(s)): ` +
+                  errs.map((iss) => iss.message).join('; ') +
+                  '. Unset GATE_PROP_INTRODUCTION to downgrade to advisory.',
+                `episode_${i}_prop_introduction_gate`,
+                { context: { episode: i, blockingCount: propGate.blockingCount } },
+              );
+            }
+          }
         }
       }
 
@@ -5628,10 +7524,13 @@ export class FullStoryPipeline {
         blueprint,
         sceneContents,
         choiceSets,
-        imageResults,
+        undefined,
         encounters,
-        encounterImageResults
+        undefined
       );
+
+      // Story-only assembly is the hard boundary: media agents run after all
+      // story agents and episode QA finish for the requested season slice.
 
       // Per-episode QA pass (mirrors Phase 5 from single-episode generate())
       let qaReport: QAReport | undefined;
@@ -5639,7 +7538,8 @@ export class FullStoryPipeline {
       if (episodeBrief.options?.runQA !== false) {
         try {
           this.emit({ type: 'phase_start', phase: `qa_ep_${i}`, message: `Running QA for Episode ${i}...` });
-          const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters);
+          normalizeChoiceSetStatChecks(choiceSets);
+          const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
           const [qaResult, bpResult] = await this.measurePhase(`episode_${i}_qa`, () => Promise.all([
             this.runQualityAssurance(episodeBrief, sceneContents, choiceSets, characterBible, blueprint),
             this.config.validation.enabled
@@ -5648,6 +7548,10 @@ export class FullStoryPipeline {
           ]));
           qaReport = qaResult;
           bestPracticesReport = bpResult;
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
+          if (bestPracticesReport) {
+            await saveEarlyDiagnostic(outputDirectory, `episode-${i}-best-practices-report.json`, bestPracticesReport);
+          }
           this.emit({
             type: 'phase_complete',
             phase: `qa_ep_${i}`,
@@ -5660,6 +7564,54 @@ export class FullStoryPipeline {
         }
       }
 
+      // A1: targeted, advisory continuity repair — in its OWN try so a QA-phase throw
+      // (e.g. Gemini continuity-parse fragility) can no longer skip it. Runs whenever a
+      // qaReport was produced, even if QA later threw.
+      this.emit({ type: 'debug', phase: `continuity_repair_ep_${i}`, message: `Continuity repair gate: seasonCanonOn=${this.seasonCanonOn} hasQaReport=${!!qaReport}` });
+      if (this.seasonCanonOn && qaReport) {
+        try {
+          // NOTE(de-@ts-nocheck): this call previously referenced an
+          // out-of-scope `story` (a ReferenceError swallowed by this catch),
+          // so multi-episode continuity repair never actually ran. The merge
+          // walks story.episodes[].scenes[], so the assembled episode is
+          // wrapped as a one-episode story; beat rewrites mutate `episode`
+          // in place and flow into the season story downstream.
+          const treatmentSourcedContinuityBlocks = Boolean(
+            episodeBrief.multiEpisode?.sourceAnalysis || episodeBrief.rawDocument?.trim(),
+          );
+          await this.repairContinuityFindings(
+            { episodes: [episode] } as unknown as Story,
+            sceneContents,
+            characterBible,
+            qaReport,
+            outputDirectory,
+            blueprint,
+            treatmentSourcedContinuityBlocks
+              ? {
+                  forceRevalidation: true,
+                  revalidationReason: 'treatment-sourced continuity findings escalate at final contract',
+                }
+              : undefined,
+          );
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.post-repair.json`, qaReport);
+          this.emit({
+            type: 'phase_complete',
+            phase: `qa_ep_${i}_post_repair`,
+            message: `Episode ${i} QA Post-Repair Score: ${qaReport.overallScore}/100 - ${qaReport.passesQA ? 'PASSED' : 'NEEDS REVISION'}`,
+          });
+        } catch (repairErr) {
+          this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
+        }
+      } else {
+        // Reveal why the artifact never appears: write a skip diagnostic.
+        await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
+          generatedAt: new Date().toISOString(),
+          skipped: true,
+          reason: !this.seasonCanonOn ? 'seasonCanon off' : 'no qaReport at repair site',
+        }).catch(() => undefined);
+      }
+
       this.emit({
         type: 'phase_complete',
         phase: `episode_${i}`,
@@ -5668,11 +7620,15 @@ export class FullStoryPipeline {
 
       return {
         episode,
+        episodeBrief,
+        blueprint,
+        branchAnalysis,
+        sceneContents,
+        choiceSets,
+        encounters,
         result: { episodeNumber: i, title: episodeOutline.title, success: true },
         qaReport,
         bestPracticesReport,
-        storyletFailures: encounterImageResults?.storyletFailures,
-        encounterImageDiagnostics,
       };
     } catch (epError) {
       const msg = epError instanceof Error ? epError.message : String(epError);
@@ -5687,6 +7643,12 @@ export class FullStoryPipeline {
       });
 
       try {
+        const architectureDiagnostics = epError instanceof PipelineError
+          ? epError.context?.diagnostics
+          : undefined;
+        if (architectureDiagnostics) {
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-architecture-failure-diagnostics.json`, architectureDiagnostics);
+        }
         await savePipelineErrorLog(outputDirectory, [{
           timestamp: new Date().toISOString(),
           phase: `episode_${i}`,
@@ -5698,7 +7660,7 @@ export class FullStoryPipeline {
         // Keep the episode failure as the primary signal.
       }
 
-      if (this.config.validation.mode === 'strict') {
+      if (this.isFailFastEnabled() || this.config.validation.mode === 'strict') {
         throw epError;
       }
       return {
@@ -5708,827 +7670,325 @@ export class FullStoryPipeline {
           success: false,
           error: msg,
         },
-        encounterImageDiagnostics: this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics()),
       };
     }
   }
 
-  /**
-   * Find user-provided reference images for a character using fuzzy name matching.
-   * Tries: exact id, exact name, lowercase name, then partial/substring matches
-   * against all keys in characterReferenceImages.
-   */
-  private findUserReferenceImages(
-    char: CharacterProfile,
-    brief: FullCreativeBrief
-  ): Array<{ data: string; mimeType: string }> {
-    const refMap = brief.characterReferenceImages;
-    if (!refMap || Object.keys(refMap).length === 0) {
-      console.log(`[Pipeline] findUserReferenceImages("${char.name}"): no characterReferenceImages in brief`);
-      return [];
-    }
+  private async generateMediaForAuthoredEpisode(params: AuthoredEpisodeArtifacts & {
+    worldBible: WorldBible;
+    characterBible: CharacterBible;
+    outputDirectory: string;
+  }): Promise<EpisodeMediaResult> {
+    const {
+      episode,
+      episodeBrief,
+      blueprint,
+      sceneContents,
+      choiceSets,
+      encounters,
+      worldBible,
+      characterBible,
+      outputDirectory,
+    } = params;
+    const i = episode.number ?? episodeBrief.episode.number ?? 0;
+    let imageResults: EpisodeImageResults | undefined;
+    let encounterImageResults: EpisodeEncounterImageResults | undefined;
+    let encounterImageDiagnostics: EncounterImageRunDiagnostic[] = [];
 
-    const refKeys = Object.keys(refMap);
-    console.log(`[Pipeline] findUserReferenceImages("${char.name}", id="${char.id}"): checking against ${refKeys.length} ref key(s): ${refKeys.map(k => `"${k}"(${refMap[k]?.length || 0} imgs)`).join(', ')}`);
-
-    // 1. Exact matches (id, name, lowercase name)
-    if (refMap[char.id]?.length) {
-      console.log(`[Pipeline] ✅ Matched "${char.name}" by exact ID "${char.id}" → ${refMap[char.id].length} image(s)`);
-      return refMap[char.id];
-    }
-    if (refMap[char.name]?.length) {
-      console.log(`[Pipeline] ✅ Matched "${char.name}" by exact name → ${refMap[char.name].length} image(s)`);
-      return refMap[char.name];
-    }
-    if (refMap[char.name.toLowerCase()]?.length) {
-      console.log(`[Pipeline] ✅ Matched "${char.name}" by lowercase name "${char.name.toLowerCase()}" → ${refMap[char.name.toLowerCase()].length} image(s)`);
-      return refMap[char.name.toLowerCase()];
-    }
-
-    // 2. Fuzzy matching: normalize both sides and check substring containment
-    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
-    const charNorm = normalize(char.name);
-    const charParts = charNorm.split(' ').filter(p => p.length > 1);
-
-    for (const [key, images] of Object.entries(refMap)) {
-      if (!images?.length) continue;
-      const keyNorm = normalize(key);
-
-      if (charNorm.includes(keyNorm) || keyNorm.includes(charNorm)) {
-        console.log(`[Pipeline] ✅ Fuzzy match: user ref key "${key}" ↔ character "${char.name}" (substring) → ${images.length} image(s)`);
-        return images;
+    if (this.config.imageGen?.enabled) {
+      this.emit({ type: 'phase_start', phase: `images_ep_${i}`, message: `Generating visuals for Episode ${i}...` });
+      try {
+        if (this.useStoryboardV2ImagePipeline()) {
+          const storyboardResult = await this.imageWorkerQueue.run(() =>
+            this.measurePhase(
+              `episode_${i}_storyboard_v2_images`,
+              () => this.runStoryboardV2ImageGeneration(sceneContents, choiceSets, episodeBrief, characterBible, encounters, outputDirectory),
+            )
+          );
+          imageResults = storyboardResult.imageResults;
+          encounterImageResults = storyboardResult.encounterImageResults;
+        } else {
+          // A10: warm up color script in parallel with the episode image phase.
+          this._preWarmedColorScriptPromise = this.generateEpisodeColorScript(episodeBrief, sceneContents, choiceSets)
+            .catch((err) => {
+              this.emit({
+                type: 'warning',
+                phase: `images_ep_${i}`,
+                message: `A10 color-script prewarm failed (will retry inline): ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return undefined;
+            });
+          imageResults = await this.imageWorkerQueue.run(() =>
+            this.measurePhase(
+              `episode_${i}_images`,
+              () => this.runEpisodeImageGeneration(sceneContents, choiceSets, episodeBrief, worldBible, characterBible, outputDirectory)
+            )
+          );
+        }
+      } catch (imgError) {
+        if (this.isLlmQuotaFailure(imgError)) {
+          const quotaMsg = imgError instanceof Error ? imgError.message : String(imgError);
+          this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Image generation stopped: ${quotaMsg}` });
+          throw new PipelineError(`Episode ${i} image generation stopped due to LLM quota exhaustion: ${quotaMsg}`, `images_ep_${i}`, {
+            agent: 'ImageAgentTeam',
+            context: { episode: i },
+            originalError: imgError instanceof Error ? imgError : undefined,
+          });
+        }
+        if (imgError instanceof PipelineError) {
+          throw imgError;
+        }
+        const imgMsg = imgError instanceof Error ? imgError.message : String(imgError);
+        console.error(`[Pipeline] Episode ${i} beat image generation failed: ${imgMsg}`);
+        this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Beat image generation failed: ${imgMsg}` });
+        try {
+          await savePipelineErrorLog(outputDirectory, [{
+            timestamp: new Date().toISOString(),
+            phase: `images_ep_${i}`,
+            message: imgMsg,
+            episodeNumber: i,
+          }]);
+        } catch { /* best-effort save */ }
+        throw new PipelineError(
+          `Episode ${i} beat image generation failed: ${imgMsg}`,
+          `images_ep_${i}`,
+          {
+            agent: 'ImageAgentTeam',
+            context: {
+              outputDirectory,
+              episode: i,
+              failureKind: 'image_generation',
+            },
+            originalError: imgError instanceof Error ? imgError : undefined,
+          }
+        );
       }
 
-      const keyParts = keyNorm.split(' ').filter(p => p.length > 1);
-      const overlap = charParts.some(cp => keyParts.includes(cp));
-      if (overlap) {
-        console.log(`[Pipeline] ✅ Fuzzy match: user ref key "${key}" ↔ character "${char.name}" (word overlap) → ${images.length} image(s)`);
-        return images;
+      if (!this.useStoryboardV2ImagePipeline() && encounters.size > 0) {
+        console.log(`[Pipeline] Episode ${i}: Starting encounter image generation for ${encounters.size} encounters`);
+        try {
+          this.imageService.clearEncounterDiagnostics();
+          await this.runEncounterProviderPreflight(outputDirectory);
+          encounterImageResults = await this.imageWorkerQueue.run(() =>
+            this.measurePhase(
+              `episode_${i}_encounter_images`,
+              () => this.generateEncounterImages(encounters, characterBible, episodeBrief, outputDirectory)
+            )
+          );
+          encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
+          const totalEncImages = encounterImageResults?.encounterImages
+            ? Array.from(encounterImageResults.encounterImages.values()).reduce((sum, v) => sum + v.setupImages.size + v.outcomeImages.size, 0)
+            : 0;
+          const totalStoryletImages = encounterImageResults?.storyletImages
+            ? Array.from(encounterImageResults.storyletImages.values()).reduce((sum, outcomeMap) =>
+              sum + Array.from(outcomeMap.values()).reduce((s, beatMap) => s + beatMap.size, 0), 0)
+            : 0;
+          console.log(`[Pipeline] Episode ${i}: Encounter image generation complete — ${totalEncImages} encounter images, ${totalStoryletImages} storylet images`);
+        } catch (encImgError) {
+          encounterImageDiagnostics = this.toEncounterRunDiagnostics(this.imageService.getEncounterDiagnostics());
+          if (encounterImageDiagnostics.length > 0) {
+            await saveEncounterImageDiagnosticsLog(outputDirectory, encounterImageDiagnostics);
+          }
+          if (this.isLlmQuotaFailure(encImgError)) {
+            const quotaMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
+            this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Encounter image generation stopped: ${quotaMsg}` });
+            throw new PipelineError(`Episode ${i} encounter image generation stopped due to LLM quota exhaustion: ${quotaMsg}`, `images_ep_${i}`, {
+              agent: 'EncounterImageAgent',
+              context: { episode: i },
+              originalError: encImgError instanceof Error ? encImgError : undefined,
+            });
+          }
+          const encImgMsg = encImgError instanceof Error ? encImgError.message : String(encImgError);
+          console.error(`[Pipeline] Episode ${i} encounter image generation failed: ${encImgMsg}`);
+          this.emit({ type: 'error', phase: `images_ep_${i}`, message: `Encounter image generation failed for episode ${i}: ${encImgMsg}` });
+          throw new PipelineError(`Episode ${i} encounter image generation failed: ${encImgMsg}`, `images_ep_${i}`, {
+            agent: 'EncounterImageAgent',
+            context: { outputDirectory, episode: i, encounterCount: encounters.size, failureKind: 'image_generation' },
+            originalError: encImgError instanceof Error ? encImgError : undefined,
+          });
+        }
       }
     }
 
-    console.log(`[Pipeline] ❌ No reference images matched for "${char.name}" (id="${char.id}")`);
-    return [];
+    if (this.config.imageGen?.enabled && (imageResults || encounterImageResults)) {
+      try {
+        this.seedAssetRegistryFromResults(episodeBrief, sceneContents, encounters, imageResults, encounterImageResults);
+        if (this.assetRegistry && !this.assetRegistry['persistPath'] && outputDirectory) {
+          this.assetRegistry.setPersistPath(
+            (outputDirectory.endsWith('/') ? outputDirectory : outputDirectory + '/') + '08-asset-registry.jsonl'
+          );
+        }
+        await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
+      } catch (regErr) {
+        const regMsg = regErr instanceof Error ? regErr.message : String(regErr);
+        console.warn(`[Pipeline] AssetRegistry seeding failed for episode ${i} (non-fatal): ${regMsg}`);
+      }
+    }
+
+    const episodeWithMedia = this.assembleEpisode(
+      episodeBrief,
+      worldBible,
+      characterBible,
+      blueprint,
+      sceneContents,
+      choiceSets,
+      imageResults,
+      encounters,
+      encounterImageResults
+    );
+
+    return {
+      episode: episodeWithMedia ?? episode,
+      storyletFailures: encounterImageResults?.storyletFailures,
+      encounterImageDiagnostics,
+    };
   }
 
-  /**
-   * Run master image generation for core characters and locations
-   * Now generates full reference sheets for characters (multi-view) for better consistency
-   */
+  // Extracted to phases/MasterImagePhase.ts (pure move). Thin wrappers keep
+  // all call sites unchanged: runMasterImageGeneration (single-episode +
+  // multi-episode) and generateCharacterReferenceSheet (the
+  // hydrate-or-generate resume paths). Run-scoped accumulators
+  // (locationMasterShots, collected character references) are shared with
+  // the phase by reference.
+  private masterImagePhase(): MasterImagePhase {
+    return new MasterImagePhase({
+      imageAgentTeam: this.imageAgentTeam,
+      imageService: this.imageService,
+      checkCancellation: () => this.checkCancellation(),
+      emitPhaseProgress: this.emitPhaseProgress.bind(this),
+      hydrateReferenceSheetFromDisk: this.hydrateReferenceSheetFromDisk.bind(this),
+      readCharacterMemory: this.readCharacterMemory.bind(this),
+      writeCharacterMemory: this.writeCharacterMemory.bind(this),
+      shouldAttachCompositeCharacterRefs: () => this.shouldAttachCompositeCharacterRefs(),
+      locationMasterShots: this.locationMasterShots,
+      characterReferences: this.collectedVisualPlanning.characterReferences,
+    });
+  }
+
   private async runMasterImageGeneration(
     characterBible: CharacterBible,
     worldBible: WorldBible,
     brief: FullCreativeBrief
   ): Promise<void> {
-    const majorCharacters = characterBible.characters.filter((char) =>
-      char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id
+    return this.masterImagePhase().run(
+      { characterBible, worldBible, brief },
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
+      }
     );
-    const majorLocations = worldBible.locations.filter((loc) => {
-      const briefLoc = brief.world.keyLocations.find((location) => location.id === loc.id);
-      return briefLoc?.importance === 'major';
-    });
-    const totalMasterAssets = majorCharacters.length + majorLocations.length;
-    let completedMasterAssets = 0;
-    if (totalMasterAssets > 0) {
-      this.emitPhaseProgress('master_images', 0, totalMasterAssets, 'master-assets', 'Preparing master reference generation...');
-    }
-
-    // Generate reference sheets for major characters (deduplicate by ID to prevent double composites)
-    const processedCharIds = new Set<string>();
-    for (const char of characterBible.characters) {
-      await this.checkCancellation();
-      if (processedCharIds.has(char.id)) {
-        console.warn(`[Pipeline] Skipping duplicate character ID "${char.id}" (${char.name}) — already generated reference sheet.`);
-        continue;
-      }
-      const isMajor = char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id;
-      const userRefImages = this.findUserReferenceImages(char, brief);
-      const hasUserRefs = userRefImages.length > 0;
-
-      if (hasUserRefs && !isMajor) {
-        this.emit({ type: 'debug', phase: 'images',
-          message: `Promoting "${char.name}" to reference-sheet generation (user provided ${userRefImages.length} reference image(s))` });
-      }
-
-      if (isMajor || hasUserRefs) {
-        processedCharIds.add(char.id);
-        await this.generateCharacterReferenceSheet(char, brief, hasUserRefs ? userRefImages : undefined);
-        if (totalMasterAssets > 0) {
-          completedMasterAssets += 1;
-          this.emitPhaseProgress(
-            'master_images',
-            completedMasterAssets,
-            totalMasterAssets,
-            'master-assets',
-            `Master character reference complete for ${char.name}`
-          );
-        }
-      }
-    }
-
-    // Generate master shots for major locations (batch when possible)
-    const locationBatchItems: { prompt: ImagePrompt; identifier: string; metadata?: any; locName: string }[] = [];
-    for (const loc of worldBible.locations) {
-      const briefLoc = brief.world.keyLocations.find(l => l.id === loc.id);
-      if (briefLoc?.importance === 'major') {
-        this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Planning master environment shot for ${loc.name}...` });
-        try {
-          const promptRes = await withTimeout(this.imageAgentTeam.generateLocationMasterPrompt({
-            locationId: loc.id,
-            name: loc.name,
-            description: loc.fullDescription,
-            type: loc.type,
-            genre: brief.story.genre,
-            tone: brief.story.tone
-          }), PIPELINE_TIMEOUTS.llmAgent, `LocationMasterPrompt(${loc.id})`);
-          if (promptRes.success && promptRes.data) {
-            locationBatchItems.push({
-              prompt: promptRes.data,
-              identifier: `master_loc_${loc.id}`,
-              metadata: { type: 'master' as const },
-              locName: loc.name,
-            });
-          }
-        } catch (err) {
-          console.warn(`[Pipeline] Failed to generate master prompt for ${loc.name}:`, err);
-        }
-      }
-    }
-
-    if (locationBatchItems.length > 0) {
-      this.emit({ type: 'agent_start', agent: 'ImageService', message: `Generating ${locationBatchItems.length} location master shots...` });
-      const batchResults = await withTimeout(this.imageService.generateImageBatch(
-        locationBatchItems.map(item => ({ prompt: item.prompt, identifier: item.identifier, metadata: item.metadata }))
-      ), PIPELINE_TIMEOUTS.storyboard, 'locationImageBatch');
-      for (let i = 0; i < batchResults.length; i++) {
-        const locItem = locationBatchItems[i];
-        const locResult = batchResults[i];
-        this.emit({ type: 'debug', phase: 'images', message: `Generated master shot for ${locItem.locName}` });
-        if (locResult?.imageData && locResult?.mimeType) {
-          const locId = locItem.identifier.replace('master_loc_', '');
-          this.locationMasterShots.set(locId, { data: locResult.imageData, mimeType: locResult.mimeType });
-        }
-        if (totalMasterAssets > 0) {
-          completedMasterAssets += 1;
-          this.emitPhaseProgress(
-            'master_images',
-            completedMasterAssets,
-            totalMasterAssets,
-            'master-assets',
-            `Master location reference complete for ${locItem.locName}`
-          );
-        }
-      }
-    }
   }
 
-  /**
-   * Generate a complete character reference sheet with multiple views
-   * This creates the canonical visual reference for a character
-   */
   private async generateCharacterReferenceSheet(
     char: CharacterProfile,
     brief: FullCreativeBrief,
     userReferenceImages?: Array<{ data: string; mimeType: string }>
   ): Promise<GeneratedReferenceSheet | null> {
-    const isMajorCharacter = char.importance === 'major' || char.importance === 'core' || char.id === brief.protagonist.id;
-    
-    this.emit({ 
-      type: 'agent_start', 
-      agent: 'CharacterReferenceSheetAgent', 
-      message: `Generating ${isMajorCharacter ? 'full' : 'basic'} reference for ${char.name} (${char.role})...` 
-    });
-
-    try {
-      // Read any prior character knowledge from memory
-      const priorKnowledge = await this.readCharacterMemory(char.name);
-      if (priorKnowledge) {
-        this.emit({ type: 'debug', phase: 'images', message: `Found prior character knowledge for ${char.name} in memory` });
+    return this.masterImagePhase().generateCharacterReferenceSheet(
+      char,
+      brief,
+      userReferenceImages,
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
+    );
+  }
 
-      // Build the reference sheet request from character profile
-      const generateCharRefs = this.config.generation?.generateCharacterRefs ?? true;
-      const generateBodyVocab = this.config.generation?.generateBodyVocabulary ?? isMajorCharacter;
-      const generateExpressions = (this.config.generation?.generateExpressionSheets ?? false) && isMajorCharacter;
-      const expressionTier = char.id === brief.protagonist.id ? 'core' as const : 'minimal' as const;
-      
-      // Use the first user-provided image as the primary reference for the sheet request
-      // All images are passed to the image generation team for multi-reference consistency
-      const primaryUserRef = userReferenceImages?.[0];
-      
-      // Determine reference mode for this character (face-only vs full-appearance)
-      // Look up by character ID first, then by name, then by lowercase name
-      const refSettings = brief.characterReferenceSettings;
-      const referenceMode: import('../config').CharacterReferenceMode = 
-        refSettings?.[char.id]?.referenceMode ||
-        refSettings?.[char.name]?.referenceMode ||
-        refSettings?.[char.name.toLowerCase()]?.referenceMode ||
-        'face-only';
-      
-      if (referenceMode === 'full-appearance') {
-        this.emit({ type: 'debug', phase: 'images', message: `Reference mode for ${char.name}: FULL APPEARANCE (clothing from reference image)` });
-      }
-      
-      // Start with story-based physical traits
-      let physicalTraits = this.extractPhysicalTraits(char);
-      // Start with story-based clothing (may be overridden by vision in full-appearance mode)
-      let clothingInfo = this.extractClothingInfo(char);
-      
-      // If user provided a reference image, analyze it with a vision LLM
-      // face-only: overrides face/hair/body/skin, clothing stays from story
-      // full-appearance: overrides everything including clothing
-      let visionAnalysisSucceeded = false;
-      if (primaryUserRef) {
-        this.emit({ type: 'debug', phase: 'images', message: `Analyzing reference image for ${char.name} (${referenceMode})...` });
-        const visionResult = await this.analyzeReferenceImageTraits(primaryUserRef, char.name, referenceMode);
-        if (visionResult) {
-          visionAnalysisSucceeded = true;
-          const visionTraits = visionResult.physicalTraits;
-          physicalTraits = {
-            ...physicalTraits,
-            ...(visionTraits.age ? { age: visionTraits.age } : {}),
-            ...(visionTraits.height ? { height: visionTraits.height } : {}),
-            ...(visionTraits.build ? { build: visionTraits.build } : {}),
-            ...(visionTraits.hairColor ? { hairColor: visionTraits.hairColor } : {}),
-            ...(visionTraits.hairStyle ? { hairStyle: visionTraits.hairStyle } : {}),
-            ...(visionTraits.eyeColor ? { eyeColor: visionTraits.eyeColor } : {}),
-            ...(visionTraits.skinTone ? { skinTone: visionTraits.skinTone } : {}),
-            ...(visionTraits.distinguishingFeatures && visionTraits.distinguishingFeatures.length > 0
-              ? { distinguishingFeatures: visionTraits.distinguishingFeatures } 
-              : {}),
-          };
-          
-          if (referenceMode === 'full-appearance' && visionResult.clothingInfo) {
-            clothingInfo = {
-              primary: visionResult.clothingInfo.primary,
-              accessories: visionResult.clothingInfo.accessories,
-              colorPalette: visionResult.clothingInfo.colorPalette,
-            };
-            this.emit({ type: 'debug', phase: 'images', message: `Clothing for ${char.name} overridden from reference image: ${clothingInfo.primary}` });
-          } else {
-            this.emit({ type: 'debug', phase: 'images', message: `Physical traits for ${char.name} updated from reference image (clothing from story)` });
+  /**
+   * Scan disk for beat images that were successfully written but never wired into
+   * `beatImages` / the AssetRegistry — typically because the generation promise
+   * resolved AFTER `withTimeout` rejected (Node has no native promise cancellation,
+   * so the underlying write to disk continues even after the caller gives up).
+   *
+   * For each beat missing from `beatImages`, we try a small set of known identifier
+   * patterns the pipeline uses (single path, panel path, tier1 retry) and, if a
+   * file exists, wire it back into both `beatImages` and the AssetRegistry so the
+   * final story assembly and coverage checks see the image.
+   */
+  private reconcileOrphanedBeatImages(
+    brief: FullCreativeBrief,
+    sceneContents: SceneContent[],
+    beatImages: Map<string, string>,
+    sceneImages: Map<string, string>,
+  ): number {
+    let recoveredCount = 0;
+
+    for (const scene of sceneContents) {
+      const sceneBeats = scene.beats || [];
+      if (sceneBeats.length === 0) continue;
+
+      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
+
+      for (let beatIdx = 0; beatIdx < sceneBeats.length; beatIdx++) {
+        const beat = sceneBeats[beatIdx];
+        const beatKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id);
+        if (beatImages.has(beatKey)) continue;
+
+        // Match the identifier patterns used at generation time, in priority order.
+        const baseId = `beat-${scopedSceneId}-${beat.id}`;
+        const candidateIdentifiers = [
+          `${baseId}-panel-0`,
+          baseId,
+          `${baseId}-retry`,
+        ];
+
+        for (const candidate of candidateIdentifiers) {
+          const existing = this.imageService.findExistingGeneratedImage(candidate);
+          if (!existing?.imageUrl) continue;
+
+          beatImages.set(beatKey, existing.imageUrl);
+          if (beatIdx === 0 && !sceneImages.has(scopedSceneId)) {
+            sceneImages.set(scopedSceneId, existing.imageUrl);
           }
-        } else {
-          // Vision analysis FAILED but we still have reference images.
-          // Strip face/hair/body traits that would conflict with the reference images.
-          // Keep only role, gender, and clothing — let the reference images drive the face.
-          this.emit({ type: 'warning', phase: 'images', message: `Vision analysis failed for ${char.name} — stripping conflicting physical traits so reference images drive the face` });
-          physicalTraits = {
-            ...physicalTraits,
-            hairColor: undefined,
-            hairStyle: undefined,
-            eyeColor: undefined,
-            skinTone: undefined,
-            distinguishingFeatures: [
-              '[IDENTITY FROM REFERENCE IMAGE — do not invent facial features, match the reference photo exactly]',
-            ],
-          };
-        }
-      }
+          recoveredCount++;
 
-      // Determine --ow weight based on reference mode
-      const mjSettings = this.imageService.getMidjourneySettings();
-      const omniWeightOverride = referenceMode === 'full-appearance' 
-        ? mjSettings.fullAppearanceOmniWeight 
-        : undefined; // undefined = use default refSheetOmniWeight
-
-      const request: CharacterReferenceSheetRequest = {
-        characterId: char.id,
-        name: char.name,
-        pronouns: char.pronouns,
-        description: char.fullBackground || char.overview,
-        role: char.role,
-        physicalTraits: physicalTraits,
-        clothing: clothingInfo,
-        personality: char.voiceProfile?.writingGuidance || char.overview,
-        backgroundTraits: char.fullBackground || char.overview, // For body vocabulary derivation
-        genre: brief.story.genre,
-        tone: brief.story.tone,
-        artStyle: this.config.artStyle,
-        // Expression references are generated selectively for major recurring characters.
-        includeExpressions: generateCharRefs && generateExpressions,
-        expressionTier,
-        // Body vocabulary and silhouette for major characters - now configurable
-        includeBodyVocabulary: generateCharRefs && generateBodyVocab && isMajorCharacter,
-        includeSilhouetteProfile: generateCharRefs && isMajorCharacter,
-        // User-provided reference image for visual guidance (primary image)
-        userReferenceImage: primaryUserRef,
-        // All user reference images (for multi-reference generation)
-        userReferenceImages: userReferenceImages,
-        // Prior knowledge from memory (past generation insights)
-        priorKnowledge: priorKnowledge || undefined,
-      };
-      
-      if (userReferenceImages && userReferenceImages.length > 0) {
-        this.emit({ type: 'debug', phase: 'images', message: `Using ${userReferenceImages.length} user-provided reference image(s) for ${char.name}` });
-      }
-
-      // Use full reference generation for major characters
-      if (isMajorCharacter) {
-        const fullRefResult = await withTimeout(
-          this.imageAgentTeam.generateFullCharacterReferenceWithSilhouette(request),
-          PIPELINE_TIMEOUTS.storyboard, `CharacterRefSheet(${char.name})`
-        );
-        
-        if (fullRefResult.errors.length > 0 && !fullRefResult.poseSheet) {
-          console.error(`[Pipeline] Failed to generate full reference for ${char.name}:`, fullRefResult.errors);
-          return this.fallbackToSinglePortrait(char, brief);
-        }
-
-        // Log what was generated
-        const generated: string[] = [];
-        if (fullRefResult.poseSheet) generated.push('pose sheet');
-        if (fullRefResult.expressionSheet) generated.push(`${fullRefResult.expressionSheet.expressions?.length || 0} expressions`);
-        if (fullRefResult.bodyVocabulary) generated.push('body vocabulary');
-        if (fullRefResult.silhouetteProfile) generated.push('silhouette profile');
-        this.emit({ type: 'debug', phase: 'images', message: `Full reference for ${char.name}: ${generated.join(', ')}` });
-        
-        if (fullRefResult.silhouetteProfile?.silhouetteHooks) {
-          this.emit({ type: 'debug', phase: 'images', message: `Silhouette hooks: ${fullRefResult.silhouetteProfile.silhouetteHooks.join(', ')}` });
-        }
-
-        // Generate the actual images from pose sheet
-        if (fullRefResult.poseSheet) {
-          this.emit({ 
-            type: 'agent_start', 
-            agent: 'ImageAgentTeam', 
-            message: `Generating ${fullRefResult.poseSheet.views.length} reference images for ${char.name}...` 
-          });
-
-          // Wrap the image service to inject omniWeightOverride when in full-appearance mode
-          const imageServiceWithOwOverride = omniWeightOverride
-            ? {
-                generateImage: (prompt: any, identifier: string, metadata?: any, refImages?: any[]) =>
-                  this.imageService.generateImage(prompt, identifier, { ...metadata, omniWeightOverride }, refImages),
-              }
-            : this.imageService;
-
-          // Generate reference sheet: individual views for NB2 (better identity signal), composite for older models
-          const useIndividualViews = this.config.imageGen?.gemini?.useIndividualCharacterViews !== false && this.imageService.getGeminiSettings().useIndividualCharacterViews;
-          const progressCb = (status: string, index: number, total: number) => {
-            this.emit({
-              type: 'checkpoint',
-              phase: 'reference_sheet',
-              message: `${char.name}: Generating ${useIndividualViews ? 'individual view' : 'composite'} reference sheet`,
-              data: { characterId: char.id, viewType: status, progress: index / total }
-            });
-          };
-          const generatedSheet = useIndividualViews
-            ? await withTimeout(this.imageAgentTeam.generateIndividualViewImages(
-                fullRefResult.poseSheet, imageServiceWithOwOverride, progressCb, userReferenceImages
-              ), PIPELINE_TIMEOUTS.storyboard, `IndividualViewRefSheet(${char.name})`)
-            : await withTimeout(this.imageAgentTeam.generateCompositeReferenceSheet(
-                fullRefResult.poseSheet, imageServiceWithOwOverride, progressCb, primaryUserRef, userReferenceImages
-              ), PIPELINE_TIMEOUTS.storyboard, `CompositeRefSheet(${char.name})`);
-
+          console.warn(
+            `[Pipeline] Orphan recovery: wired orphaned image for scene "${scene.sceneId}" beat "${beat.id}" (identifier: ${candidate})`,
+          );
           this.emit({
-            type: 'agent_complete',
-            agent: 'CharacterReferenceSheetAgent',
-            message: `${useIndividualViews ? 'Individual view' : 'Composite'} reference sheet complete for ${char.name}: ${generatedSheet.generatedImages.size} images`,
-            data: {
-              characterId: char.id,
-              viewCount: generatedSheet.generatedImages.size,
-              visualAnchors: generatedSheet.visualAnchors,
-              hasBodyVocabulary: !!fullRefResult.bodyVocabulary,
-              hasSilhouetteProfile: !!fullRefResult.silhouetteProfile,
-              silhouetteHooks: fullRefResult.silhouetteProfile?.silhouetteHooks
-            }
+            type: 'warning',
+            phase: 'images',
+            message: `Recovered orphaned image for ${scene.sceneId}:${beat.id}`,
+            data: { sceneId: scene.sceneId, beatId: beat.id, identifier: candidate, imageUrl: existing.imageUrl },
           });
 
-          // Store first character's ref sheet as style anchor for subsequent characters
-          const anchorImg = generatedSheet.generatedImages.get('composite') || generatedSheet.generatedImages.get('front');
-          if (anchorImg?.imageData && anchorImg?.mimeType) {
-            this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
-          }
-
-          let generatedExprSheet: GeneratedExpressionSheet | undefined = undefined;
-          if (generateExpressions && fullRefResult.expressionSheet) {
-            const poseSheetImages = Array.from(generatedSheet.generatedImages.entries())
-              .filter(([viewType, image]) =>
-                ['front', 'three-quarter', 'profile'].includes(viewType) && !!image.imageData && !!image.mimeType
-              )
-              .map(([viewType, image]) => ({
-                data: image.imageData!,
-                mimeType: image.mimeType!,
-                name: viewType,
-              }));
-
-            const expressionProgress = (expressionName: string, index: number, total: number) => {
-              this.emit({
-                type: 'checkpoint',
-                phase: 'expression_sheet',
-                message: `${char.name}: Generating expression reference ${index}/${total} (${expressionName})`,
-                data: { characterId: char.id, expressionName, progress: index / total }
+          // Mirror into AssetRegistry so coverage checks + final assembler agree.
+          const heroSlotId = `story-beat:${scopedSceneId}::${beat.id}`;
+          try {
+            if (!this.assetRegistry.get(heroSlotId)) {
+              this.assetRegistry.planSlot({
+                slotId: heroSlotId,
+                family: 'story-beat',
+                imageType: 'beat',
+                sceneId: scene.sceneId,
+                scopedSceneId,
+                beatId: beat.id,
+                storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beat.id}].image`,
+                baseIdentifier: candidate,
+                required: false,
+                qualityTier: 'standard',
+                coverageKey: `beat:${scene.sceneId}::${beat.id}`,
               });
-            };
-
-            generatedExprSheet = await withTimeout(
-              this.imageAgentTeam.generateExpressionSheetImages(
-                fullRefResult.expressionSheet,
-                imageServiceWithOwOverride,
-                poseSheetImages,
-                expressionProgress,
-                primaryUserRef,
-                userReferenceImages,
-                {
-                  visualAnchors: generatedSheet.visualAnchors,
-                  colorPalette: generatedSheet.colorPalette,
-                }
-              ),
-              PIPELINE_TIMEOUTS.storyboard,
-              `ExpressionRefSheet(${char.name})`
-            );
-          }
-
-          // Store the collected visual reference for saving
-          this.collectedVisualPlanning.characterReferences.set(char.id, {
-            characterId: char.id,
-            characterName: char.name,
-            poseSheet: generatedSheet,
-            expressionSheet: fullRefResult.expressionSheet,
-            generatedExpressionSheet: generatedExprSheet,
-            bodyVocabulary: fullRefResult.bodyVocabulary,
-            silhouetteProfile: fullRefResult.silhouetteProfile
-          });
-
-          // Write character knowledge to memory (non-blocking)
-          this.writeCharacterMemory({
-            characterName: char.name,
-            characterId: char.id,
-            visionAnalysisSucceeded,
-            physicalTraits: request.physicalTraits,
-            hadUserReferenceImages: !!userReferenceImages?.length,
-            userRefCount: userReferenceImages?.length || 0,
-            generationSucceeded: generatedSheet.generatedImages.size > 0,
-            artStyle: this.config.artStyle,
-          }).catch(() => {});
-
-          return generatedSheet;
-        }
-
-        // poseSheet was null despite no errors — fall through to simpler generation
-        console.warn(`[Pipeline] Major character ${char.name} had no poseSheet from full reference; falling back to simpler generation.`);
-      }
-
-      // For non-major characters (or major characters whose full-reference planning returned no poseSheet), use simpler generation
-      const sheetRes = await withTimeout(
-        this.imageAgentTeam.generateCharacterReferenceSheet(request),
-        PIPELINE_TIMEOUTS.llmAgent, `CharacterRefSheetPlan(${char.name})`
-      );
-      
-      if (!sheetRes.success || !sheetRes.data) {
-        console.error(`[Pipeline] Failed to generate reference sheet plan for ${char.name}:`, sheetRes.error);
-        return this.fallbackToSinglePortrait(char, brief);
-      }
-
-      const sheet = sheetRes.data;
-      this.emit({ type: 'debug', phase: 'images', message: `Reference sheet planned for ${char.name}: ${sheet.views.length} views` });
-
-      // Wrap the image service to inject omniWeightOverride when in full-appearance mode
-      const imageServiceWithOwOverrideSimple = omniWeightOverride
-        ? {
-            generateImage: (prompt: any, identifier: string, metadata?: any, refImages?: any[]) =>
-              this.imageService.generateImage(prompt, identifier, { ...metadata, omniWeightOverride }, refImages),
-          }
-        : this.imageService;
-
-      const useIndividualViewsSimple = this.config.imageGen?.gemini?.useIndividualCharacterViews !== false && this.imageService.getGeminiSettings().useIndividualCharacterViews;
-      const simpleProgressCb = (status: string, index: number, total: number) => {
-        this.emit({
-          type: 'checkpoint',
-          phase: 'reference_sheet',
-          message: `${char.name}: Generating ${useIndividualViewsSimple ? 'individual view' : 'composite'} reference sheet`,
-          data: { characterId: char.id, viewType: status, progress: index / total }
-        });
-      };
-      const generatedSheet = useIndividualViewsSimple
-        ? await withTimeout(this.imageAgentTeam.generateIndividualViewImages(
-            sheet, imageServiceWithOwOverrideSimple, simpleProgressCb, userReferenceImages
-          ), PIPELINE_TIMEOUTS.storyboard, `IndividualViewRefSheet(${char.name})`)
-        : await withTimeout(this.imageAgentTeam.generateCompositeReferenceSheet(
-            sheet, imageServiceWithOwOverrideSimple, simpleProgressCb, primaryUserRef, userReferenceImages
-          ), PIPELINE_TIMEOUTS.storyboard, `CompositeRefSheet(${char.name})`);
-
-      this.emit({
-        type: 'agent_complete',
-        agent: 'CharacterReferenceSheetAgent',
-        message: `${useIndividualViewsSimple ? 'Individual view' : 'Composite'} reference sheet complete for ${char.name}: ${generatedSheet.generatedImages.size} images`,
-        data: {
-          characterId: char.id,
-          viewCount: generatedSheet.generatedImages.size,
-          visualAnchors: generatedSheet.visualAnchors
-        }
-      });
-
-      // Store first character's ref sheet as style anchor for subsequent characters
-      const anchorImg = generatedSheet.generatedImages.get('composite') || generatedSheet.generatedImages.get('front');
-      if (anchorImg?.imageData && anchorImg?.mimeType) {
-        this.imageService.setReferenceSheetStyleAnchor(anchorImg.imageData, anchorImg.mimeType);
-      }
-
-      // Write character knowledge to memory (non-blocking)
-      this.writeCharacterMemory({
-        characterName: char.name,
-        characterId: char.id,
-        visionAnalysisSucceeded,
-        physicalTraits: request.physicalTraits,
-        hadUserReferenceImages: !!userReferenceImages?.length,
-        userRefCount: userReferenceImages?.length || 0,
-        generationSucceeded: generatedSheet.generatedImages.size > 0,
-        artStyle: this.config.artStyle,
-      }).catch(() => {});
-
-      return generatedSheet;
-
-    } catch (err) {
-      console.error(`[Pipeline] Failed to generate reference sheet for ${char.name}:`, err);
-      return this.fallbackToSinglePortrait(char, brief);
-    }
-  }
-
-  /**
-   * Fallback: Generate a single portrait if reference sheet generation fails.
-   * Always allowed even in fail-fast mode — ref sheets are an enhancement,
-   * not a hard requirement, and the portrait fallback is the recovery path.
-   */
-  private async fallbackToSinglePortrait(
-    char: CharacterProfile,
-    brief: FullCreativeBrief
-  ): Promise<null> {
-    console.warn(`[Pipeline] Falling back to single portrait for ${char.name}`);
-    this.emit({
-      type: 'warning',
-      phase: 'reference_sheet',
-      message: `Character reference generation failed for ${char.name}; attempting portrait fallback`,
-    });
-    this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Generating single portrait for ${char.name} (fallback)...` });
-
-    try {
-      const promptRes = await withTimeout(this.imageAgentTeam.generateCharacterMasterPrompt({
-        characterId: char.id,
-        name: char.name,
-        description: char.fullBackground || char.overview,
-        role: char.role,
-        genre: brief.story.genre,
-        tone: brief.story.tone
-      }), PIPELINE_TIMEOUTS.llmAgent, `CharacterMasterPrompt(${char.name})`);
-
-      if (promptRes.success && promptRes.data) {
-        await withTimeout(this.imageService.generateImage(
-          promptRes.data,
-          `master_char_${char.id}`,
-          { type: 'master' }
-        ), PIPELINE_TIMEOUTS.imageGeneration, `masterPortrait(${char.name})`);
-        this.emit({ type: 'debug', phase: 'images', message: `Generated fallback portrait for ${char.name}` });
-      }
-    } catch (err) {
-      console.warn(`[Pipeline] Failed to generate fallback portrait for ${char.name}:`, err);
-    }
-
-    return null;
-  }
-
-  /**
-   * Analyze a user-provided reference image to extract physical traits using a vision LLM.
-   * Returns structured physical traits that override the story's text-based descriptions.
-   * In 'face-only' mode: extracts face, eyes, hair, skin, body type — leaves clothing to the story.
-   * In 'full-appearance' mode: also extracts clothing, accessories, and outfit details.
-   */
-  private async analyzeReferenceImageTraits(
-    image: { data: string; mimeType: string },
-    characterName: string,
-    referenceMode: import('../config').CharacterReferenceMode = 'face-only'
-  ): Promise<{ physicalTraits: CharacterReferenceSheetRequest['physicalTraits']; clothingInfo?: { primary: string; accessories?: string[]; colorPalette?: string[] } } | null> {
-    try {
-      const modeLabel = referenceMode === 'full-appearance' ? 'full appearance (including clothing)' : 'physical traits only';
-      this.emit({ type: 'debug', phase: 'images', message: `Analyzing reference image for ${characterName} — mode: ${modeLabel}...` });
-
-      // Use a lightweight BaseAgent subclass for the vision call
-      const { BaseAgent } = await import('../agents/BaseAgent');
-
-      class VisionAnalyzer extends BaseAgent {
-        constructor(config: any) { super('VisionAnalyzer', config); }
-        protected getAgentSpecificPrompt(): string { return ''; }
-        async execute(_input: any): Promise<any> { throw new Error('Use callLLM directly'); }
-      }
-
-      const analyzer = new VisionAnalyzer({
-        ...this.config.agents.storyArchitect,
-        maxTokens: 1024,
-        temperature: 0.2, // Low temp for factual description
-      });
-
-      // Build the vision prompt based on reference mode
-      const clothingFields = referenceMode === 'full-appearance'
-        ? `
-  "clothing": "detailed description of the outfit/clothing visible (e.g. 'rumpled brown trench coat over dark button-up shirt, loosened tie')",
-  "accessories": ["array of visible accessories like 'leather watch', 'silver ring', 'worn messenger bag'"],
-  "clothingColorPalette": ["array of dominant clothing colors like 'dark brown', 'charcoal', 'cream'"],
-  "clothingSummary": "A 1-2 sentence description of the complete outfit suitable for an image generation prompt",`
-        : '';
-
-      const clothingRule = referenceMode === 'full-appearance'
-        ? '- ALSO describe clothing, jewelry, hats, accessories, and outfit details in the clothing fields.'
-        : '- Do NOT describe clothing, jewelry, hats, or accessories.';
-
-      const summaryInstruction = referenceMode === 'full-appearance'
-        ? 'A 1-2 sentence physical description suitable for an image generation prompt, covering face, hair, body, and skin. Clothing is described separately in clothingSummary.'
-        : 'A 1-2 sentence physical description suitable for an image generation prompt, covering face, hair, body, and skin. Do NOT mention clothing.';
-
-      const userInstruction = referenceMode === 'full-appearance'
-        ? `Analyze this reference image for the character "${characterName}". Extract their physical traits AND clothing/outfit details.`
-        : `Analyze this reference image for the character "${characterName}". Extract their physical traits only — no clothing or accessories.`;
-
-      const messages = [
-        {
-          role: 'system' as const,
-          content: `You are a visual character analyst. You examine reference images and extract traits based on the requested mode.
-
-Return a JSON object with ONLY these fields (omit any you can't determine):
-{
-  "age": "estimated age or age range (e.g. 'mid-30s', 'elderly', 'young adult')",
-  "height": "apparent height if determinable (e.g. 'tall', 'average', 'short')",
-  "build": "body type (e.g. 'athletic', 'slim', 'stocky', 'muscular', 'heavyset')",
-  "hairColor": "hair color (e.g. 'dark brown', 'platinum blonde', 'salt-and-pepper')",
-  "hairStyle": "hair style (e.g. 'short cropped', 'long wavy', 'braided', 'bald')",
-  "eyeColor": "eye color if visible (e.g. 'blue', 'dark brown', 'green')",
-  "skinTone": "skin tone (e.g. 'fair', 'olive', 'dark brown', 'tan')",
-  "faceShape": "face shape (e.g. 'angular', 'round', 'square jaw', 'heart-shaped')",
-  "distinguishingFeatures": ["array of notable physical features like 'prominent cheekbones', 'stubble', 'freckles', 'scar across left eye', 'dimpled chin'"],${clothingFields}
-  "physicalSummary": "${summaryInstruction}"
-}
-
-CRITICAL: 
-- Describe WHAT YOU SEE in the image, not what you imagine.
-${clothingRule}
-- Do NOT invent traits you cannot see (e.g. don't guess eye color if the image is too small).
-- Return ONLY valid JSON, no markdown fences.`,
-        },
-        {
-          role: 'user' as const,
-          content: [
-            { type: 'text' as const, text: userInstruction },
-            {
-              type: 'image' as const,
-              source: {
-                type: 'base64' as const,
-                media_type: image.mimeType,
-                data: image.data,
-              }
             }
-          ]
-        }
-      ];
+            this.assetRegistry.markSuccess(heroSlotId, {
+              prompt: { prompt: '' } as any,
+              imageUrl: existing.imageUrl,
+              imagePath: existing.imagePath,
+            } as GeneratedImage);
+          } catch { /* non-fatal */ }
 
-      let response: string;
-      let jsonMatch: RegExpMatchArray | null = null;
-
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        response = await (analyzer as any).callLLM(messages);
-        jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) break;
-        console.warn(`[Pipeline] Vision analysis for ${characterName} attempt ${attempt}: No JSON found. Raw response (first 500 chars): ${response.substring(0, 500)}`);
-        if (attempt < 2) {
-          await new Promise(r => setTimeout(r, 1000));
+          break;
         }
       }
-
-      if (!jsonMatch) {
-        console.error(`[Pipeline] Vision analysis for ${characterName}: No JSON after 2 attempts`);
-        this.emit({ type: 'warning', phase: 'images', message: `Vision analysis failed for ${characterName} — reference images will still be passed directly to image generation` });
-        return null;
-      }
-      
-      const parsed = JSON.parse(jsonMatch[0]);
-      console.log(`[Pipeline] Vision analysis for ${characterName} (${referenceMode}):`, JSON.stringify(parsed).substring(0, 400));
-      
-      this.emit({ type: 'debug', phase: 'images', message: `Reference image analysis for ${characterName} (${referenceMode}): ${parsed.physicalSummary || 'done'}` });
-
-      const physicalTraits = {
-        age: parsed.age,
-        height: parsed.height,
-        build: parsed.build,
-        hairColor: parsed.hairColor,
-        hairStyle: parsed.hairStyle,
-        eyeColor: parsed.eyeColor,
-        skinTone: parsed.skinTone,
-        distinguishingFeatures: [
-          ...(parsed.distinguishingFeatures || []),
-          ...(parsed.faceShape ? [`${parsed.faceShape} face`] : []),
-          // Store the full summary for use in prompt building
-          ...(parsed.physicalSummary ? [`[REF_SUMMARY: ${parsed.physicalSummary}]`] : []),
-        ],
-      };
-
-      // Extract clothing info when in full-appearance mode
-      const clothingInfo = referenceMode === 'full-appearance' && parsed.clothing
-        ? {
-            primary: parsed.clothingSummary || parsed.clothing,
-            accessories: parsed.accessories,
-            colorPalette: parsed.clothingColorPalette,
-          }
-        : undefined;
-
-      if (clothingInfo) {
-        this.emit({ type: 'debug', phase: 'images', message: `Clothing from reference for ${characterName}: ${clothingInfo.primary}` });
-      }
-
-      return { physicalTraits, clothingInfo };
-    } catch (error) {
-      console.error(`[Pipeline] Failed to analyze reference image for ${characterName}:`, error);
-      this.emit({ type: 'debug', phase: 'images', message: `Reference image analysis failed for ${characterName}: ${error}` });
-      return null;
-    }
-  }
-
-  /**
-   * Extract physical traits from a character profile for reference sheet generation
-   */
-  private extractPhysicalTraits(char: CharacterProfile): CharacterReferenceSheetRequest['physicalTraits'] {
-    // Try to parse physical traits from the character's description/background
-    const text = `${char.fullBackground || ''} ${char.overview || ''}`.toLowerCase();
-    
-    const traits: CharacterReferenceSheetRequest['physicalTraits'] = {};
-    
-    // Simple extraction patterns - in production, the CharacterDesigner could provide structured data
-    const agePatterns = [/(\d+)[\s-]*(year|yr)/i, /(young|middle-aged|elderly|teen|child|adult)/i];
-    const heightPatterns = [/(tall|short|average height|petite)/i];
-    const buildPatterns = [/(muscular|slim|slender|stocky|athletic|heavyset|lithe)/i];
-    const hairColorPatterns = [/(blonde?|brunette|red|black|white|gray|silver|auburn|ginger)[\s-]*(hair)?/i];
-    const hairStylePatterns = [/(long|short|curly|straight|wavy|braided?|bald|mohawk|ponytail)/i];
-    const eyeColorPatterns = [/(blue|green|brown|hazel|gray|amber|violet|golden?)[\s-]*(eyes?)/i];
-
-    for (const pattern of agePatterns) {
-      const match = text.match(pattern);
-      if (match) { traits.age = match[1] || match[0]; break; }
     }
 
-    for (const pattern of heightPatterns) {
-      const match = text.match(pattern);
-      if (match) { traits.height = match[1]; break; }
+    if (recoveredCount > 0) {
+      console.log(`[Pipeline] Orphan reconciliation: recovered ${recoveredCount} beat image(s) from disk`);
     }
-
-    for (const pattern of buildPatterns) {
-      const match = text.match(pattern);
-      if (match) { traits.build = match[1]; break; }
-    }
-
-    for (const pattern of hairColorPatterns) {
-      const match = text.match(pattern);
-      if (match) { traits.hairColor = match[1]; break; }
-    }
-
-    for (const pattern of hairStylePatterns) {
-      const match = text.match(pattern);
-      if (match) { traits.hairStyle = match[1]; break; }
-    }
-
-    for (const pattern of eyeColorPatterns) {
-      const match = text.match(pattern);
-      if (match) { traits.eyeColor = match[1]; break; }
-    }
-
-    // Look for distinguishing features
-    const distinguishingPatterns = [
-      /(scar on \w+)/i, /(tattoo)/i, /(glasses)/i, /(freckles)/i,
-      /(beard)/i, /(mustache)/i, /(eyepatch)/i, /(missing \w+)/i
-    ];
-    const features: string[] = [];
-    for (const pattern of distinguishingPatterns) {
-      const match = text.match(pattern);
-      if (match) features.push(match[0]);
-    }
-    if (features.length > 0) traits.distinguishingFeatures = features;
-
-    return traits;
-  }
-
-  /**
-   * Extract clothing info from a character profile
-   */
-  private extractClothingInfo(char: CharacterProfile): CharacterReferenceSheetRequest['clothing'] | undefined {
-    const text = `${char.fullBackground || ''} ${char.overview || ''}`.toLowerCase();
-    
-    // Simple extraction - look for clothing mentions
-    const clothingPatterns = [
-      /(wears? [\w\s]+)/i,
-      /(dressed in [\w\s]+)/i,
-      /([\w\s]+ robes?)/i,
-      /(armor)/i,
-      /(uniform)/i,
-      /(cloak)/i,
-      /(dress)/i,
-      /(suit)/i
-    ];
-
-    for (const pattern of clothingPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        return { primary: match[0].trim() };
-      }
-    }
-
-    return undefined;
+    return recoveredCount;
   }
 
   /**
@@ -6537,813 +7997,360 @@ ${clothingRule}
    * Now uses character reference sheets for consistency AND pose diversity validation
    * ENHANCED: Includes color script, scene context, and full story data mapping
    */
+  private getEffectiveImagePromptMode(): 'deterministic' | 'llm' {
+    return this.config.imageGen?.qa?.promptMode || 'llm';
+  }
+
+  private getEffectiveImageQaMode(): 'off' | 'fast' | 'full' {
+    return this.config.imageGen?.qa?.qaMode || 'full';
+  }
+
+  private getEffectiveImagePlanningMode(): 'text' | 'visual-storyboard' {
+    return normalizeImagePlanningMode(this.config.imageGen?.imagePlanningMode);
+  }
+
+  private getStoryboardMaxPanelsPerSheet(): number {
+    const configured = this.config.imageGen?.storyboardV2?.maxPanelsPerSheet;
+    if (!Number.isFinite(configured) || !configured) return 6;
+    return Math.max(1, Math.min(12, Math.floor(configured)));
+  }
+
+  private async saveSceneVisualPlanningDiagnostic(
+    outputDirectory: string | undefined,
+    scopedSceneId: string,
+    payload: Record<string, unknown>,
+    options?: { suffix?: string },
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      const suffix = options?.suffix ? `.${options.suffix}` : '';
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.visual-planning${suffix}.json`, {
+        generatedAt: new Date().toISOString(),
+        scopedSceneId,
+        ...payload,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save visual planning diagnostic for ${scopedSceneId}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  private buildBeatSceneStoryboardPlan(params: {
+    sceneId: string;
+    scopedSceneId: string;
+    sceneName: string;
+    sceneDescription?: string;
+    beats: Array<{ id: string; text?: string }>;
+    visualPlan?: VisualPlan;
+  }): SceneVisualStoryboardPlan {
+    return buildSceneVisualStoryboardPlan({
+      sceneId: params.sceneId,
+      scopedSceneId: params.scopedSceneId,
+      sceneName: params.sceneName,
+      sceneDescription: params.sceneDescription,
+      slots: visualPlanSlotsFromBeats(params.scopedSceneId, params.beats),
+      panelCap: this.getStoryboardMaxPanelsPerSheet(),
+      branchAware: false,
+      continuityBible: (params.visualPlan as any)?.continuityBible,
+      sequenceGrammar: (params.visualPlan as any)?.sequenceGrammar,
+    });
+  }
+
+  private wrapLlmImagePromptWithContracts(
+    prompt: ImagePrompt,
+    input: import('../images/beatPromptBuilder').BeatPromptInput,
+    sceneContext: import('../images/beatPromptBuilder').ScenePromptContext,
+    characterNames: string[],
+    promptMode: string,
+    brief: FullCreativeBrief,
+  ): ImagePrompt {
+    const action = [
+      input.visualMoment,
+      input.primaryAction,
+      input.emotionalRead,
+      input.relationshipDynamic,
+      input.mustShowDetail,
+    ].filter(Boolean).join(' ');
+    const contracted = applyPromptContract({
+      ...prompt,
+      style: sceneContext.artStyle || prompt.style,
+      promptContract: {
+        ...(prompt.promptContract || {}),
+        sourcePromptMode: promptMode,
+      },
+    }, {
+      style: sceneContext.artStyle || prompt.style || '',
+      styleSource: this._uploadedStyleReferenceImages.length > 0 ? 'user-visual' : 'raw-season-style',
+      mode: 'story-beat',
+      characterIdentity: characterNames,
+      appearanceState: input.characterVisualStates
+        ? Object.entries(input.characterVisualStates).map(([name, state]) => `${name}: ${JSON.stringify(state)}`).join('; ')
+        : undefined,
+      sceneAction: action,
+      composition: prompt.composition,
+      negativeContract: prompt.negativePrompt,
+      hasVisualStyleRef: this._uploadedStyleReferenceImages.length > 0,
+      hasVisualCharacterRef: false,
+    });
+    return this.sanitizeImagePrompt(
+      this.applyVisualContinuityAffordance(contracted, input.coveragePlan),
+      brief,
+    );
+  }
+
+  private applyVisualContinuityAffordance(
+    prompt: ImagePrompt,
+    coveragePlan?: import('../../types/content').BeatCoveragePlan,
+  ): ImagePrompt {
+    const continuity = coveragePlan?.visualContinuity;
+    const mode = continuity?.mode || 'fresh_composition';
+    const result: ImagePrompt = { ...prompt };
+
+    if (mode === 'locked_micro_progression' && continuity?.changeOnly) {
+      const preserve = continuity.preserve?.length
+        ? continuity.preserve.join(', ')
+        : 'camera, blocking, lighting, environment, character position';
+      const directive = `VISUAL CONTINUITY AFFORDANCE: locked micro-progression. Preserve ${preserve}; ONLY visible change: ${continuity.changeOnly}. ${continuity.reason || ''}`.trim();
+      result.prompt = [result.prompt, directive].filter(Boolean).join(' ');
+      result.composition = [result.composition, directive].filter(Boolean).join(' ');
+      return result;
+    }
+
+    const scrubLockedContinuity = (value: string | undefined): string | undefined => {
+      if (!value) return value;
+      return value
+        .replace(/\bIDENTICAL camera angle\b/gi, 'motivated camera angle')
+        .replace(/\bIDENTICAL environment\b/gi, 'recognizable environment continuity')
+        .replace(/\bIDENTICAL lighting\b/gi, 'compatible lighting continuity')
+        .replace(/\bSAME character position\b/gi, 'fresh character position')
+        .replace(/\bsame angle, same environment, same character position\b/gi, 'fresh angle and blocking within the same story setting')
+        .replace(/\bCamera angle MUST BE IDENTICAL:?\s*[^.!?\n]*/gi, 'Camera angle should change when it improves the beat')
+        .replace(/\bCharacter position MUST BE IDENTICAL[^.!?\n]*/gi, 'Character position should be freshly blocked for this beat');
+    };
+
+    const directive = mode === 'preserve_scene_axis'
+      ? 'VISUAL CONTINUITY AFFORDANCE: preserve the broad scene axis and spatial readability, but use fresh camera distance, focal point, pose, and blocking for this beat.'
+      : 'VISUAL CONTINUITY AFFORDANCE: fresh composition is required. Do not repeat previous camera angle, character positions, blocking, or focal point; references and prior panels are continuity aids only.';
+    result.prompt = [scrubLockedContinuity(result.prompt), directive].filter(Boolean).join(' ');
+    result.composition = [scrubLockedContinuity(result.composition), directive].filter(Boolean).join(' ');
+    result.shotDescription = scrubLockedContinuity(result.shotDescription);
+    result.poseSpec = scrubLockedContinuity(result.poseSpec);
+    result.negativePrompt = [
+      result.negativePrompt,
+      'repeated staging from previous image, same character positions as previous image, locked-off camera without explicit micro-progression',
+    ].filter(Boolean).join(', ');
+    return result;
+  }
+
+  private promptMentionsDisallowedCharacters(
+    prompt: ImagePrompt,
+    allowedCharacterNames: string[],
+    allSceneCharacterNames: string[],
+  ): string[] {
+    const allowed = new Set(allowedCharacterNames.map(name => name.toLowerCase()));
+    const text = [
+      prompt.prompt,
+      prompt.composition,
+      prompt.visualNarrative,
+      prompt.keyExpression,
+      prompt.keyBodyLanguage,
+      prompt.poseSpec,
+    ].filter(Boolean).join('\n').toLowerCase();
+    return allSceneCharacterNames
+      .filter(name => !allowed.has(name.toLowerCase()))
+      .filter(name => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+      });
+  }
+
+  private promptMissingRequiredCharacters(
+    prompt: ImagePrompt,
+    requiredCharacterNames: string[],
+  ): string[] {
+    const text = [
+      prompt.prompt,
+      prompt.composition,
+      prompt.visualNarrative,
+      prompt.keyExpression,
+      prompt.keyBodyLanguage,
+      prompt.poseSpec,
+    ].filter(Boolean).join('\n').toLowerCase();
+    return requiredCharacterNames.filter(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return !new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+    });
+  }
+
+  private shouldRunHeroVisualQA(
+    beat: any,
+    beatIndex: number,
+    totalBeats: number,
+    qaMode: 'off' | 'fast' | 'full',
+  ): boolean {
+    if (qaMode === 'off') return false;
+    if (qaMode === 'full') {
+      return beatIndex === 0 ||
+        beatIndex === totalBeats - 1 ||
+        beat.isClimaxBeat === true ||
+        beat.isKeyStoryBeat === true ||
+        beat.isChoicePoint === true ||
+        beat.isChoicePayoff === true;
+    }
+    return beat.isClimaxBeat === true || beat.isKeyStoryBeat === true || beat.isChoicePayoff === true;
+  }
+
+  private async saveSceneVisualQADiagnostic(
+    outputDirectory: string | undefined,
+    scopedSceneId: string,
+    report: unknown,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${scopedSceneId}.visual-qa.json`, {
+        generatedAt: new Date().toISOString(),
+        scopedSceneId,
+        report,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save visual QA diagnostic for ${scopedSceneId}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  private serializeVisualQAReport(report: any): Record<string, unknown> {
+    const mapToObject = (value: unknown) => value instanceof Map ? Object.fromEntries(value.entries()) : value;
+    return {
+      ...report,
+      expressionReports: mapToObject(report?.expressionReports),
+      bodyLanguageReports: mapToObject(report?.bodyLanguageReports),
+      lightingColorReports: mapToObject(report?.lightingColorReports),
+      visualStorytellingReports: mapToObject(report?.visualStorytellingReports),
+    };
+  }
+
+  private async saveBeatVisualQADiagnostic(
+    outputDirectory: string | undefined,
+    identifier: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (!outputDirectory) return;
+    try {
+      await saveEarlyDiagnostic(outputDirectory, `images/prompts/${identifier}.visual-qa.json`, {
+        generatedAt: new Date().toISOString(),
+        identifier,
+        ...payload,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'warning',
+        phase: 'images',
+        message: `Failed to save beat visual QA diagnostic for ${identifier}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  // Extracted to phases/SceneImagePhase.ts (pure move, one documented
+  // deviation: the phase binds the previously-undeclared `imagesDir` in the
+  // disk-artifact beat-resume check — see the NOTE in SceneImagePhase). The
+  // thin wrapper keeps all three call sites (single-episode generate,
+  // multi-episode loop, image-resume) unchanged. Run-scoped mutable image
+  // state (_generatedStyleReferencesAllowed, _preWarmedColorScriptPromise,
+  // _uploadedStyleReferenceImages) is exposed via accessor properties so
+  // writes on either side stay visible to both; _openingBeatPrefetch and
+  // collectedVisualPlanning are shared by reference.
+  private sceneImagePhase(): SceneImagePhase {
+    const deps = {
+      imageAgentTeam: this.imageAgentTeam,
+      imageService: this.imageService,
+      assetRegistry: this.assetRegistry,
+      collectedVisualPlanning: this.collectedVisualPlanning,
+      checkCancellation: () => this.checkCancellation(),
+      _openingBeatPrefetch: this._openingBeatPrefetch,
+      analyzeBeatCharacters: this.analyzeBeatCharacters.bind(this),
+      applyThirdPersonRenderContract: this.applyThirdPersonRenderContract.bind(this),
+      buildBeatSceneStoryboardPlan: this.buildBeatSceneStoryboardPlan.bind(this),
+      buildCharacterDescriptions: this.buildCharacterDescriptions.bind(this),
+      createSlotReferencePack: this.createSlotReferencePack.bind(this),
+      ensureCharacterReferencesForVisibleCharacters: this.ensureCharacterReferencesForVisibleCharacters.bind(this),
+      extractSceneContext: this.extractSceneContext.bind(this),
+      findExistingImageArtifact: this.findExistingImageArtifact.bind(this),
+      gatherCharacterBodyVocabularies: this.gatherCharacterBodyVocabularies.bind(this),
+      gatherCharacterReferenceImages: this.gatherCharacterReferenceImages.bind(this),
+      generateEpisodeColorScript: this.generateEpisodeColorScript.bind(this),
+      generateEpisodeStyleBible: this.generateEpisodeStyleBible.bind(this),
+      generateImageWithDefectRetries: this.generateImageWithDefectRetries.bind(this),
+      getCharacterIdsInScene: this.getCharacterIdsInScene.bind(this),
+      getEffectiveImagePlanningMode: () => this.getEffectiveImagePlanningMode(),
+      getEffectiveImagePromptMode: () => this.getEffectiveImagePromptMode(),
+      getEffectiveImageQaMode: () => this.getEffectiveImageQaMode(),
+      getEpisodeScopedBeatKey: this.getEpisodeScopedBeatKey.bind(this),
+      getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
+      getStoryboardMaxPanelsPerSheet: () => this.getStoryboardMaxPanelsPerSheet(),
+      inferIntensity: this.inferIntensity.bind(this),
+      inferValence: this.inferValence.bind(this),
+      isEstablishingBeat: this.isEstablishingBeat.bind(this),
+      isLlmQuotaFailure: this.isLlmQuotaFailure.bind(this),
+      mapChoicePositions: this.mapChoicePositions.bind(this),
+      mapSpeakerMoodToEmotion: this.mapSpeakerMoodToEmotion.bind(this),
+      prefetchSceneOpeningBeats: this.prefetchSceneOpeningBeats.bind(this),
+      promptMentionsDisallowedCharacters: this.promptMentionsDisallowedCharacters.bind(this),
+      promptMissingRequiredCharacters: this.promptMissingRequiredCharacters.bind(this),
+      reconcileOrphanedBeatImages: this.reconcileOrphanedBeatImages.bind(this),
+      runLoraTrainingIfEligible: this.runLoraTrainingIfEligible.bind(this),
+      sanitizeImagePrompt: this.sanitizeImagePrompt.bind(this),
+      sanitizePromptText: this.sanitizePromptText.bind(this),
+      saveBeatVisualQADiagnostic: this.saveBeatVisualQADiagnostic.bind(this),
+      saveSceneVisualPlanningDiagnostic: this.saveSceneVisualPlanningDiagnostic.bind(this),
+      saveSceneVisualQADiagnostic: this.saveSceneVisualQADiagnostic.bind(this),
+      serializeVisualQAReport: this.serializeVisualQAReport.bind(this),
+      shouldRunHeroVisualQA: this.shouldRunHeroVisualQA.bind(this),
+      throwIfFailFast: this.throwIfFailFast.bind(this),
+      withSettingAwarePrompt: this.withSettingAwarePrompt.bind(this),
+      wrapLlmImagePromptWithContracts: this.wrapLlmImagePromptWithContracts.bind(this),
+    } satisfies Partial<SceneImagePhaseDeps> as unknown as SceneImagePhaseDeps;
+    // Accessor-backed mutable state: arrow getters/setters capture the
+    // pipeline instance lexically, so reads/writes on either side of the
+    // phase boundary stay visible to both.
+    Object.defineProperties(deps, {
+      _generatedStyleReferencesAllowed: {
+        get: () => this._generatedStyleReferencesAllowed,
+        set: (value) => { this._generatedStyleReferencesAllowed = value; },
+      },
+      _preWarmedColorScriptPromise: {
+        get: () => this._preWarmedColorScriptPromise,
+        set: (value) => { this._preWarmedColorScriptPromise = value; },
+      },
+      _uploadedStyleReferenceImages: {
+        get: () => this._uploadedStyleReferenceImages,
+      },
+    });
+    return new SceneImagePhase(deps);
+  }
+
   private async runEpisodeImageGeneration(
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
     brief: FullCreativeBrief,
     worldBible: WorldBible,
-    characterBible: CharacterBible
+    characterBible: CharacterBible,
+    outputDirectory?: string,
+    options?: { skipColorScriptAndStyleBible?: boolean; missingSlotIds?: string[] },
   ): Promise<{ beatImages: Map<string, string>; sceneImages: Map<string, string> }> {
-    const beatImages = new Map<string, string>();
-    const sceneImages = new Map<string, string>();
-
-    // Track last generated image for continuity (previous scene + style reference fallback)
-    let lastGeneratedImage: { data: string; mimeType: string } | null = null;
-    let styleReferenceStored = false;
-
-    // Global image counter across all scenes for progress reporting
-    let globalImageIndex = 0;
-    const estimatedTotalImages = sceneContents.reduce((sum, sc) => sum + (sc.beats?.length || 0), 0);
-    
-    // PHASE 1: Generate color script for visual arc consistency
-    const colorScript = await this.generateEpisodeColorScript(brief, sceneContents, choiceSets);
-    
-    // Store color script for saving
-    if (colorScript) {
-      this.collectedVisualPlanning.colorScript = colorScript;
-    }
-
-    if (colorScript) {
-      styleReferenceStored = await this.generateEpisodeStyleBible(brief, colorScript, characterBible);
-    }
-    
-    for (let sceneIndex = 0; sceneIndex < sceneContents.length; sceneIndex++) {
-      await this.checkCancellation();
-      const scene = sceneContents[sceneIndex];
-      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
-      this.emit({ type: 'agent_start', agent: 'ImageAgentTeam', message: `Planning visuals for scene: ${scene.sceneName}...` });
-      
-      try {
-        // Null-safety: guarantee array fields are always arrays before any downstream code touches them
-        if (!Array.isArray(scene.moodProgression)) scene.moodProgression = scene.moodProgression ? [scene.moodProgression as unknown as string] : [];
-        if (!Array.isArray(scene.keyMoments)) scene.keyMoments = scene.keyMoments ? [scene.keyMoments as unknown as string] : [];
-        if (!Array.isArray(scene.charactersInvolved)) scene.charactersInvolved = [];
-        if (!Array.isArray(scene.continuityNotes)) scene.continuityNotes = [];
-
-        console.log(`[Pipeline] 🖼 Image generation step 1/6: gathering characters for scene "${scene.sceneId}"`);
-        // Collect character IDs present in this scene for reference image gathering
-        const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
-        
-        console.log(`[Pipeline] 🖼 Image generation step 2/6: body vocabularies for scene "${scene.sceneId}"`);
-        // Get body vocabularies for characters in scene (for pose consistency)
-        // Note: silhouette data is now injected per-character via characterDescriptions below
-        const characterBodyVocabularies = this.gatherCharacterBodyVocabularies(sceneCharacterIds, characterBible);
-        
-        console.log(`[Pipeline] 🖼 Image generation step 3/6: extracting scene context for scene "${scene.sceneId}"`);
-        // Extract scene context
-        const sceneContext = {
-          ...this.extractSceneContext(scene, sceneIndex, sceneContents.length, worldBible),
-          settingContext: scene.settingContext,
-        };
-        
-        console.log(`[Pipeline] 🖼 Image generation step 4/6: mapping choice positions for scene "${scene.sceneId}"`);
-        // Map choice positions for this scene
-        const choicePositions = this.mapChoicePositions(choiceSets, scene);
-        
-        console.log(`[Pipeline] 🖼 Image generation step 5/6: getting location info for scene "${scene.sceneId}"`);
-        // Get location info
-        const locationInfo = getLocationInfoForScene(scene, worldBible);
-        
-        const sceneLocationId = locationInfo?.locationId;
-        const imageServiceWithRefs = {
-          generateImage: async (prompt: ImagePrompt, identifier: string, metadata?: any) => {
-            const shotCharacterIds = metadata?.characters || sceneCharacterIds;
-            const referenceImages = this.gatherCharacterReferenceImages(
-              shotCharacterIds,
-              characterBible,
-              sceneLocationId,
-              {
-                includeExpressions: metadata?.includeExpressionRefs === true,
-                family: 'story-beat',
-                slotId: metadata?.sceneId && metadata?.beatId
-                  ? `story-beat:${metadata.sceneId}::${metadata.beatId}`
-                  : `story-scene:${scopedSceneId}`,
-              }
-            );
-            
-            return this.imageService.generateImage(
-              prompt,
-              identifier,
-              metadata,
-              referenceImages.length > 0 ? referenceImages : undefined
-            );
-          }
-        };
-
-        // Filter beats based on image generation strategy (narrative-aware, mirrors story approach)
-        const imageStrategy = this.config.imageGen?.strategy || 'selective';
-        const beatsToIllustrate = imageStrategy === 'all-beats' 
-          ? scene.beats 
-          : scene.beats.filter((b, idx) => {
-              const isStartingBeat = b.id === scene.startingBeatId || idx === 0;
-              const isChoicePoint = b.isChoicePoint === true;
-              const isLastBeat = idx === scene.beats.length - 1;
-              const isClimaxBeat = (b as { isClimaxBeat?: boolean }).isClimaxBeat === true;
-              const isKeyStoryBeat = (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat === true;
-              const isChoicePayoff = (b as { isChoicePayoff?: boolean }).isChoicePayoff === true;
-              const isIntervalBeat = idx % 3 === 0;
-              return isStartingBeat || isChoicePoint || isLastBeat || isClimaxBeat || isKeyStoryBeat || isChoicePayoff || isIntervalBeat;
-            });
-        
-        console.log(`[Pipeline] 🖼 Image generation step 6/6: building enrichedBeats for scene "${scene.sceneId}" (${beatsToIllustrate.length} beats selected)`);
-        // Build enriched beat data with per-beat character analysis
-        // This determines WHO is in the visual foreground vs background for each beat
-        const enrichedBeats = beatsToIllustrate.map((b, beatIndex) => {
-          const beatCharContext = this.analyzeBeatCharacters(
-            b.text,
-            b.speaker,
-            sceneCharacterIds,
-            characterBible,
-            brief.protagonist.id
-          );
-          // Resolve shotType: use SceneWriter's explicit value when available, otherwise derive from
-          // character context. Beats where the protagonist only entered foreground via the "your/you"
-          // second-person fallback (no named characters in text, no speaker, no action verb) are
-          // treated as establishing shots — environment-only, no character poses.
-          const explicitShotType = (b as any).shotType as 'establishing' | 'character' | 'action' | undefined;
-          const isEstablishing = explicitShotType === 'establishing'
-            || (!explicitShotType && this.isEstablishingBeat(b.text, b.speaker, (b as any).primaryAction, beatCharContext));
-          const resolvedShotType: 'establishing' | 'character' | 'action' = explicitShotType
-            || (isEstablishing ? 'establishing' : 'character');
-          return {
-            id: b.id,
-            text: b.text,
-            isClimaxBeat: (b as { isClimaxBeat?: boolean }).isClimaxBeat,
-            isKeyStoryBeat: (b as { isKeyStoryBeat?: boolean }).isKeyStoryBeat,
-            // Per-beat character classification — empty for establishing shots so no identity block is injected
-            characters: isEstablishing ? [] : beatCharContext.foreground,
-            foregroundCharacters: isEstablishing ? [] : beatCharContext.foregroundNames,
-            backgroundCharacters: isEstablishing ? [] : beatCharContext.backgroundNames,
-            // Map speakerMood to emotional hints for visual generation
-            emotionHint: isEstablishing ? undefined : this.mapSpeakerMoodToEmotion(b.speakerMood),
-            intensityHint: this.inferIntensity(b.speakerMood, b.text),
-            valenceHint: this.inferValence(b.speakerMood, b.text),
-            // Thread SceneWriter-authored visual contract directly to StoryboardAgent
-            visualMoment: (b as any).visualMoment,
-            primaryAction: isEstablishing ? '' : (b as any).primaryAction,
-            emotionalRead: isEstablishing ? '' : (b as any).emotionalRead,
-            relationshipDynamic: isEstablishing ? '' : (b as any).relationshipDynamic,
-            mustShowDetail: (b as any).mustShowDetail,
-            // Shot intent — drives image prompt strategy (establishing = environment-only)
-            shotType: resolvedShotType,
-          };
-        });
-        
-        // --- Shot Sequence Planning (runs for ALL beats regardless of panelMode) ---
-        const panelMode: PanelMode = this.config.imageGen?.panelMode || 'single';
-        const shotPlans = planShotSequence(
-          enrichedBeats.map(b => ({
-            id: b.id,
-            text: b.text,
-            shotType: (b as any).shotType,
-            isClimaxBeat: b.isClimaxBeat,
-            isKeyStoryBeat: b.isKeyStoryBeat,
-            isChoicePayoff: (b as any).isChoicePayoff,
-            emotionalRead: (b as any).emotionalRead,
-            relationshipDynamic: (b as any).relationshipDynamic,
-            primaryAction: (b as any).primaryAction,
-            intensityTier: (b as any).intensityTier,
-          })),
-          { genre: brief.story.genre, tone: brief.story.tone },
-          panelMode,
-        );
-        const shotPlanMap = new Map<string, ShotPlan>(
-          shotPlans.map(sp => [sp.beatId, sp])
-        );
-
-        this.emit({ 
-          type: 'debug', 
-          phase: 'images', 
-          message: `Image strategy "${imageStrategy}": ${beatsToIllustrate.length}/${scene.beats.length} beats to illustrate for scene ${scene.sceneId}. Shot plan: ${shotPlans.filter(sp => sp.isPanelBeat).length} panel beats, panelMode=${panelMode}` 
-        });
-
-        // Skip storyboard for encounter scenes (0 narrative beats — images are handled by EncounterImageAgent)
-        if (enrichedBeats.length === 0) {
-          console.log(`[Pipeline] ⏭ Skipping storyboard for scene "${scene.sceneId}" — no narrative beats to illustrate (encounter-only scene)`);
-          this.emit({ type: 'debug', phase: 'images', message: `Skipped storyboard for ${scene.sceneName}: no narrative beats` });
-          continue;
-        }
-
-        // Determine scene mood from mood progression
-        const sceneMood = scene.moodProgression.length > 0 
-          ? scene.moodProgression[0] 
-          : (sceneContext.isClimactic ? 'intense' : 'dramatic');
-
-        // ----- DETERMINISTIC BEAT IMAGE GENERATION -----
-        // Replaces the LLM-driven StoryboardAgent + IllustratorAgent + QA cascade
-        // with CinematicBeatAnalyzer templates + direct image generation.
-        const chatModeEnabled = this.imageService.getGeminiSettings().useChatMode === true;
-        if (chatModeEnabled) {
-          const artStyle = this.imageService.getGeminiSettings().canonicalArtStyle || this.config.artStyle || 'dramatic cinematic story art';
-          const sceneCharIds = [...new Set(enrichedBeats.flatMap(b => b.characters || []))];
-          const sceneCharDescs = this.buildCharacterDescriptions(sceneCharIds, characterBible);
-          const charIdentityLines = sceneCharDescs.map(d => `${d.name}: ${d.appearance}`);
-          const charNames = sceneCharDescs.map(d => d.name).join(', ');
-          let systemContext = 
-            `You are generating a series of dramatic story images for a scene. ` +
-            `Art style (MANDATORY): ${artStyle}. Maintain this exact art style across ALL images in this series. ` +
-            `Characters in this scene: ${charNames || 'see references'}. `;
-          if (charIdentityLines.length > 0) {
-            systemContext += `CHARACTER VISUAL IDENTITY (use these exact descriptions across ALL images, do NOT contradict): ${charIdentityLines.join('. ')}. `;
-          }
-          systemContext +=
-            `CRITICAL: Maintain identical character appearance AND identical art style across ALL images in this series. ` +
-            `Every image must look like it belongs in the same art series. Each image should show a different moment in the same scene.`;
-          this.imageService.startChatSession(scopedSceneId, systemContext);
-        }
-
-        // Extract color mood for this scene (if color script is available)
-        const sceneColorMood = (colorScript as any)?.scenes
-          ?.find((cs: any) => cs.sceneId === scene.sceneId || cs.sceneName === scene.sceneName);
-        const colorMoodHints = sceneColorMood ? {
-          palette: (sceneColorMood as any).palette || (sceneColorMood as any).colorPalette,
-          lighting: (sceneColorMood as any).lighting || (sceneColorMood as any).lightingMood,
-          temperature: (sceneColorMood as any).temperature,
-        } : undefined;
-
-        const scenePromptCtx: import('../images/beatPromptBuilder').ScenePromptContext = {
-          sceneId: scene.sceneId,
-          sceneName: scene.sceneName,
-          genre: brief.story.genre,
-          tone: brief.story.tone,
-          mood: sceneMood,
-          settingContext: scene.settingContext,
-          artStyle: this.config.artStyle,
-          colorMood: colorMoodHints,
-        };
-
-        // Build beat-level character lookup from our earlier analysis
-        const beatCharacterMap = new Map<string, string[]>();
-        for (const eb of enrichedBeats) {
-          beatCharacterMap.set(eb.id, eb.characters);
-        }
-
-        for (let beatIdx = 0; beatIdx < enrichedBeats.length; beatIdx++) {
-          await this.checkCancellation();
-          const beat = enrichedBeats[beatIdx];
-          const beatId = beat.id;
-          const identifier = `beat-${scopedSceneId}-${beatId}`;
-
-          // Beat resume: if the AssetRegistry already has a successful result for this beat, reuse it
-          const resumeSlotId = `story-beat:${scene.sceneId}::${beatId}`;
-          const existingRecord = this.assetRegistry.getResolvedAsset(resumeSlotId);
-          if (existingRecord?.latestUrl) {
-            console.log(`[Pipeline] Beat resume: reusing existing image for ${beatId} from registry`);
-            const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
-            beatImages.set(beatMapKey, existingRecord.latestUrl);
-            if (beatIdx === 0) sceneImages.set(scopedSceneId, existingRecord.latestUrl);
-            globalImageIndex++;
-            continue;
-          }
-
-          const isEstablishingBeat = (beat as any).shotType === 'establishing';
-          let shotCharacterIds: string[];
-          if (isEstablishingBeat) {
-            shotCharacterIds = [];
-          } else {
-            shotCharacterIds = beat.characters && beat.characters.length > 0
-              ? beat.characters
-              : sceneCharacterIds;
-            if (!shotCharacterIds.includes(brief.protagonist.id)) {
-              shotCharacterIds = [brief.protagonist.id, ...shotCharacterIds];
-            }
-          }
-          const shotCharacterNames = shotCharacterIds
-            .map(id => characterBible.characters.find(c => c.id === id)?.name)
-            .filter(Boolean) as string[];
-
-          const beatPromptInput: import('../images/beatPromptBuilder').BeatPromptInput = {
-            beatId,
-            beatText: beat.text,
-            beatIndex: beatIdx,
-            totalBeats: enrichedBeats.length,
-            visualMoment: this.sanitizePromptText((beat as any).visualMoment || '', brief, ''),
-            primaryAction: isEstablishingBeat ? '' : this.sanitizePromptText((beat as any).primaryAction || '', brief, ''),
-            emotionalRead: isEstablishingBeat ? '' : this.sanitizePromptText((beat as any).emotionalRead || '', brief, ''),
-            relationshipDynamic: isEstablishingBeat ? '' : this.sanitizePromptText((beat as any).relationshipDynamic || '', brief, ''),
-            mustShowDetail: this.sanitizePromptText((beat as any).mustShowDetail || '', brief, ''),
-            shotType: (beat as any).shotType || 'character',
-            isClimaxBeat: beat.isClimaxBeat,
-            isKeyStoryBeat: beat.isKeyStoryBeat,
-            isChoicePayoff: (beat as any).isChoicePayoff,
-            choiceContext: this.sanitizePromptText((beat as any).choiceContext || '', brief, ''),
-            incomingChoiceContext: this.sanitizePromptText(scene.incomingChoiceContext || '', brief, ''),
-            isBranchPayoff: beatIdx === 0 && !!scene.incomingChoiceContext,
-            foregroundCharacterNames: isEstablishingBeat ? [] : (beat.foregroundCharacters || shotCharacterNames),
-            backgroundCharacterNames: isEstablishingBeat ? [] : beat.backgroundCharacters,
-          };
-
-          let imagePrompt = buildBeatImagePrompt(beatPromptInput, scenePromptCtx);
-          imagePrompt = this.sanitizeImagePrompt(imagePrompt, brief);
-
-          // Apply shot plan override (universal — all beats get their shot type from the scene-level planner)
-          const beatPlan = shotPlanMap.get(beatId);
-          if (beatPlan) {
-            imagePrompt = overrideShotFromPlan(imagePrompt, beatPlan.assignedShotType, beatPlan.assignedAngle);
-          }
-
-          this.emit({ type: 'agent_start', agent: 'ImageService', message: `Generating image for beat ${beatId} in ${scene.sceneName}...` });
-
-          const includeExpressionRefs = !!(
-            beat.isClimaxBeat ||
-            beat.isKeyStoryBeat
-          );
-          const referenceImages = this.gatherCharacterReferenceImages(
-            shotCharacterIds,
-            characterBible,
-            sceneLocationId,
-            {
-              includeExpressions: includeExpressionRefs,
-              family: 'story-beat',
-              slotId: `story-beat:${scene.sceneId}::${beatId}`,
-            }
-          );
-
-          try {
-            // --- PANEL PATH: generate multiple sub-images for this beat ---
-            if (beatPlan?.isPanelBeat && beatPlan.panelShotSequence && beatPlan.panelCount) {
-              const panelUrls: string[] = [];
-              let previousPanelImage: { data: string; mimeType: string } | null = null;
-              this.emit({ type: 'debug', phase: 'images', message: `Panel beat ${beatId}: generating ${beatPlan.panelCount} panels` });
-
-              for (let pIdx = 0; pIdx < beatPlan.panelCount; pIdx++) {
-                const panelShotType = beatPlan.panelShotSequence[pIdx] || beatPlan.assignedShotType;
-                const panelPrompt = overrideShotFromPlan(
-                  { ...imagePrompt },
-                  panelShotType,
-                  beatPlan.assignedAngle,
-                  pIdx,
-                  beatPlan.panelCount,
-                );
-                const panelIdentifier = `${identifier}-panel-${pIdx}`;
-                const panelLabel = `imageService(${scopedSceneId}:${beatId}:panel-${pIdx})`;
-                const shotCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);
-
-                // Build panel-specific references: base refs + previous panel for style continuity
-                const panelRefs = referenceImages.length > 0 ? [...referenceImages] : [];
-                if (previousPanelImage) {
-                  panelRefs.push({
-                    data: previousPanelImage.data,
-                    mimeType: previousPanelImage.mimeType,
-                    role: 'previous-panel-continuity',
-                    characterName: '',
-                    viewType: 'panel',
-                  });
-                }
-
-                let panelResult: GeneratedImage;
-                if (chatModeEnabled && this.imageService.hasChatSession(scopedSceneId)) {
-                  panelResult = await withTimeout(this.imageService.generateImageInChat(
-                    panelPrompt,
-                    panelIdentifier,
-                    panelRefs.length > 0 ? panelRefs : undefined,
-                    { characterNames: shotCharacterNames, characterDescriptions: shotCharacterDescriptions }
-                  ), PIPELINE_TIMEOUTS.imageGeneration, panelLabel);
-                } else {
-                  panelResult = await withTimeout(this.imageService.generateImage(
-                    panelPrompt,
-                    panelIdentifier,
-                    {
-                      sceneId: scopedSceneId,
-                      beatId,
-                      type: 'scene',
-                      characters: shotCharacterIds,
-                      characterNames: shotCharacterNames,
-                      characterDescriptions: shotCharacterDescriptions,
-                    },
-                    panelRefs.length > 0 ? panelRefs : undefined
-                  ), PIPELINE_TIMEOUTS.imageGeneration, panelLabel);
-                }
-
-                // Tier 1 validation for panel
-                const panelTier1 = runTier1Checks(panelResult, panelIdentifier);
-                if (!panelTier1.passed && panelTier1.shouldRetry) {
-                  console.warn(`[Pipeline] Panel Tier 1 check failed for ${panelIdentifier}: ${panelTier1.reason}. Retrying once.`);
-                  this.emit({ type: 'warning', phase: 'images', message: `Panel Tier 1 retry for ${beatId} panel ${pIdx}: ${panelTier1.reason}` });
-                  try {
-                    const retryPanelResult = await withTimeout(this.imageService.generateImage(
-                      panelPrompt,
-                      `${panelIdentifier}-retry`,
-                      { sceneId: scopedSceneId, beatId, type: 'scene', characters: shotCharacterIds, regeneration: 1 },
-                      panelRefs.length > 0 ? panelRefs : undefined
-                    ), PIPELINE_TIMEOUTS.imageGeneration, `${panelLabel}-retry`);
-                    const retryTier1 = runTier1Checks(retryPanelResult, `${panelIdentifier}-retry`);
-                    if (retryTier1.passed) {
-                      panelResult = retryPanelResult;
-                    }
-                  } catch { /* retry is best-effort */ }
-                }
-
-                if (panelResult.imageUrl) {
-                  panelUrls.push(panelResult.imageUrl);
-                  const panelSlotId = `story-beat-panel:${scene.sceneId}::${beatId}::panel-${pIdx}`;
-                  try {
-                    if (!this.assetRegistry.get(panelSlotId)) {
-                      this.assetRegistry.planSlot({
-                        slotId: panelSlotId,
-                        family: 'story-beat-panel',
-                        imageType: 'beat',
-                        sceneId: scene.sceneId,
-                        scopedSceneId,
-                        beatId,
-                        storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].panelImages[${pIdx}]`,
-                        baseIdentifier: panelIdentifier,
-                        required: false,
-                        qualityTier: 'standard',
-                        coverageKey: `beat-panel:${scene.sceneId}::${beatId}::${pIdx}`,
-                        metadata: { panelIndex: pIdx },
-                      });
-                    }
-                    this.assetRegistry.markSuccess(panelSlotId, panelResult, { prompt: panelPrompt });
-                  } catch { /* non-fatal */ }
-
-                  if (panelResult.imageData && panelResult.mimeType) {
-                    lastGeneratedImage = { data: panelResult.imageData, mimeType: panelResult.mimeType };
-                    previousPanelImage = { data: panelResult.imageData, mimeType: panelResult.mimeType };
-                  }
-                }
-
-                await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-              }
-
-              if (panelUrls.length > 0) {
-                const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
-                beatImages.set(beatMapKey, panelUrls[0]);
-                if (beatIdx === 0) sceneImages.set(scopedSceneId, panelUrls[0]);
-
-                const heroSlotId = `story-beat:${scene.sceneId}::${beatId}`;
-                try {
-                  if (!this.assetRegistry.get(heroSlotId)) {
-                    this.assetRegistry.planSlot({
-                      slotId: heroSlotId,
-                      family: 'story-beat',
-                      imageType: 'beat',
-                      sceneId: scene.sceneId,
-                      scopedSceneId,
-                      beatId,
-                      storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].image`,
-                      baseIdentifier: identifier,
-                      required: false,
-                      qualityTier: 'standard',
-                      coverageKey: `beat:${scene.sceneId}::${beatId}`,
-                    });
-                  }
-                  this.assetRegistry.markSuccess(heroSlotId, { imageUrl: panelUrls[0] } as GeneratedImage);
-                } catch { /* non-fatal */ }
-              }
-
-              if (!styleReferenceStored && lastGeneratedImage) {
-                this.imageService.setGeminiStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
-                styleReferenceStored = true;
-              }
-            } else {
-            // --- SINGLE IMAGE PATH (existing behavior with shot plan override applied above) ---
-            let result: GeneratedImage;
-            const imgLabel = `imageService(${scopedSceneId}:${beatId})`;
-            if (chatModeEnabled && this.imageService.hasChatSession(scopedSceneId)) {
-              const chatCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);
-              result = await withTimeout(this.imageService.generateImageInChat(
-                imagePrompt,
-                identifier,
-                referenceImages.length > 0 ? referenceImages : undefined,
-                { characterNames: shotCharacterNames, characterDescriptions: chatCharacterDescriptions }
-              ), PIPELINE_TIMEOUTS.imageGeneration, imgLabel);
-            } else {
-              const shotCharacterDescriptions = this.buildCharacterDescriptions(shotCharacterIds, characterBible);
-              result = await withTimeout(this.imageService.generateImage(
-                imagePrompt,
-                identifier,
-                {
-                  sceneId: scopedSceneId,
-                  beatId,
-                  type: 'scene',
-                  characters: shotCharacterIds,
-                  characterNames: shotCharacterNames,
-                  characterDescriptions: shotCharacterDescriptions,
-                },
-                referenceImages.length > 0 ? referenceImages : undefined
-              ), PIPELINE_TIMEOUTS.imageGeneration, imgLabel);
-            }
-
-            // Tier 1 validation: deterministic inline check
-            const tier1 = runTier1Checks(result, identifier);
-            if (!tier1.passed && tier1.shouldRetry) {
-              console.warn(`[Pipeline] Tier 1 check failed for ${identifier}: ${tier1.reason}. Retrying once.`);
-              this.emit({ type: 'warning', phase: 'images', message: `Tier 1 retry for ${beatId}: ${tier1.reason}` });
-              const retryResult = await withTimeout(this.imageService.generateImage(
-                imagePrompt,
-                `${identifier}-retry`,
-                { sceneId: scopedSceneId, beatId, type: 'scene', characters: shotCharacterIds, regeneration: 1 },
-                referenceImages.length > 0 ? referenceImages : undefined
-              ), PIPELINE_TIMEOUTS.imageGeneration, `${imgLabel}-retry`);
-              const retryTier1 = runTier1Checks(retryResult, `${identifier}-retry`);
-              if (retryTier1.passed) {
-                result = retryResult;
-              } else {
-                console.warn(`[Pipeline] Tier 1 retry also failed for ${identifier}: ${retryTier1.reason}. Using original.`);
-              }
-            }
-
-            if (result.imageUrl) {
-              const beatMapKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beatId);
-              beatImages.set(beatMapKey, result.imageUrl);
-
-              // Register with AssetRegistry for durable tracking
-              const slotId = `story-beat:${scene.sceneId}::${beatId}`;
-              try {
-                if (!this.assetRegistry.get(slotId)) {
-                  this.assetRegistry.planSlot({
-                    slotId,
-                    family: 'story-beat',
-                    imageType: 'beat',
-                    sceneId: scene.sceneId,
-                    scopedSceneId,
-                    beatId,
-                    storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].beats[id=${beatId}].image`,
-                    baseIdentifier: identifier,
-                    required: false,
-                    qualityTier: 'standard',
-                    coverageKey: `beat:${scene.sceneId}::${beatId}`,
-                  });
-                }
-                this.assetRegistry.markSuccess(slotId, result, { prompt: imagePrompt });
-              } catch { /* non-fatal: registry is supplementary to beatImages map */ }
-
-              if (beatIdx === 0) {
-                sceneImages.set(scopedSceneId, result.imageUrl);
-                const sceneSlotId = `story-scene:${scene.sceneId}`;
-                try {
-                  if (!this.assetRegistry.get(sceneSlotId)) {
-                    this.assetRegistry.planSlot({
-                      slotId: sceneSlotId,
-                      family: 'story-scene',
-                      imageType: 'scene',
-                      sceneId: scene.sceneId,
-                      scopedSceneId,
-                      beatId,
-                      storyFieldPath: `episodes[].scenes[id=${scene.sceneId}].backgroundImage`,
-                      baseIdentifier: `scene-${scopedSceneId}-bg`,
-                      required: false,
-                      qualityTier: 'standard',
-                      coverageKey: `scene:${scene.sceneId}`,
-                    });
-                  }
-                  this.assetRegistry.markSuccess(sceneSlotId, result);
-                } catch { /* non-fatal */ }
-              }
-
-              if (result.imageData && result.mimeType) {
-                lastGeneratedImage = { data: result.imageData, mimeType: result.mimeType };
-              }
-
-              if (!styleReferenceStored && result.imageData && result.mimeType) {
-                this.imageService.setGeminiStyleReference(result.imageData, result.mimeType);
-                styleReferenceStored = true;
-                this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
-              }
-
-              await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-            }
-            } // end single-image / panel branch
-
-            globalImageIndex++;
-            this.emit({
-              type: 'checkpoint',
-              phase: 'images',
-              message: `Image ${globalImageIndex} of ~${estimatedTotalImages} complete`,
-              data: { imageIndex: globalImageIndex, totalImages: estimatedTotalImages, identifier, sceneId: scene.sceneId },
-            });
-          } catch (shotErr) {
-            const shotErrMsg = shotErr instanceof Error ? shotErr.message : String(shotErr);
-            console.warn(`[Pipeline] Beat image generation failed for ${scopedSceneId}:${beatId}: ${shotErrMsg}`);
-            this.emit({ type: 'warning', phase: 'images', message: `Beat image failed for ${scopedSceneId}:${beatId}: ${shotErrMsg}` });
-            if (this.isLlmQuotaFailure(shotErr)) {
-              console.error(`[Pipeline] LLM quota exhausted during shot generation — re-throwing to halt pipeline`);
-              throw shotErr;
-            }
-            await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs * 2));
-          }
-        }
-
-        if (chatModeEnabled) {
-          this.imageService.endChatSession();
-        }
-
-
-        // After all shots in this scene: update Gemini context images for continuity
-        if (lastGeneratedImage) {
-          // Previous scene image: always update to the latest generated scene image
-          this.imageService.setGeminiPreviousScene(lastGeneratedImage.data, lastGeneratedImage.mimeType);
-
-          // Style reference: store the first scene's image as the style anchor
-          if (!styleReferenceStored) {
-            this.imageService.setGeminiStyleReference(lastGeneratedImage.data, lastGeneratedImage.mimeType);
-            styleReferenceStored = true;
-            this.emit({ type: 'debug', phase: 'images', message: `Stored style reference from scene ${scene.sceneId}` });
-          }
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[Pipeline] Image generation THREW for scene "${scene.sceneId}" ("${scene.sceneName}"): ${errMsg}`);
-        this.emit({
-          type: 'error',
-          phase: 'images',
-          message: `Image generation failed for scene ${scene.sceneId} ("${scene.sceneName}"): ${errMsg}`,
-          data: { sceneId: scene.sceneId, sceneName: scene.sceneName, error: errMsg },
-        });
+    return this.sceneImagePhase().run(
+      { sceneContents, choiceSets, brief, worldBible, characterBible, outputDirectory, options },
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
-    }
-
-    // Recovery pass: detect scenes that got zero images and run fallback generation
-    for (const scene of sceneContents) {
-      await this.checkCancellation();
-      const sceneBeats = scene.beats || [];
-      if (sceneBeats.length === 0) continue; // encounter-only scene
-      const scopedSceneId = this.getEpisodeScopedSceneId(brief, scene.sceneId);
-
-      const coveredCount = sceneBeats.filter(b => beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))).length;
-      if (coveredCount > 0) continue; // scene has at least some images
-
-      console.warn(`[Pipeline] 🔄 Recovery: scene "${scene.sceneId}" ("${scene.sceneName}") has 0/${sceneBeats.length} beat images — generating fallback images`);
-      this.throwIfFailFast(
-        `Scene ${scene.sceneName} produced zero beat images`,
-        'images',
-        {
-          context: {
-            sceneId: scene.sceneId,
-            sceneName: scene.sceneName,
-            failureKind: 'image_step',
-          },
-        }
-      );
-      this.emit({
-        type: 'warning',
-        phase: 'images',
-        message: `Recovery: generating fallback images for ${scene.sceneName} (0/${sceneBeats.length} beats had images)`,
-      });
-
-      const sceneCharacterIds = this.getCharacterIdsInScene(scene, characterBible, brief.protagonist.id);
-      const referenceImages = this.gatherCharacterReferenceImages(
-        sceneCharacterIds,
-        characterBible,
-        undefined,
-        { family: 'story-beat', slotId: `story-scene:${scene.sceneId}` }
-      );
-
-      for (const beat of sceneBeats) {
-        try {
-          const fallbackPrompt: ImagePrompt = this.withSettingAwarePrompt({
-            prompt: `${this.sanitizePromptText(beat.text, brief, '')} Show exactly one concrete story moment in a single continuous frame from one camera angle. Do not show multiple moments, repeated figures, or stacked scenes inside the image.`,
-            style: this.config.artStyle || undefined,
-            aspectRatio: '9:19.5',
-            composition: `Scene: ${scene.sceneName}. Genre: ${brief.story.genre}, Tone: ${brief.story.tone}. Generate exactly ONE single full-bleed image with ONE unified scene and ONE camera angle. No split-screen, no diptych, no stacked panels, no repeated subject, no image-within-image.`,
-            negativePrompt: 'text, words, letters, signatures, watermarks, comic panels, split panels, multi-panel, storyboard, grid layout, diptych, triptych, collage, montage, stacked scenes, image within image, duplicate character, same character twice, cloned figure, repeated subject',
-          }, scene.settingContext);
-          const identifier = `beat-${scopedSceneId}-${beat.id}-recovery`;
-          const result = await withTimeout(this.imageService.generateImage(
-            fallbackPrompt, identifier,
-            { sceneId: scopedSceneId, beatId: beat.id, type: 'scene', characters: sceneCharacterIds },
-            referenceImages.length > 0 ? referenceImages : undefined
-          ), PIPELINE_TIMEOUTS.imageGeneration, `recoveryFallback(${scopedSceneId}:${beat.id})`);
-          if (result.imageUrl) {
-            beatImages.set(this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id), result.imageUrl);
-          }
-        } catch (beatErr) {
-          const beatErrMsg = beatErr instanceof Error ? beatErr.message : String(beatErr);
-          console.warn(`[Pipeline] Recovery fallback failed for beat ${beat.id} in scene ${scene.sceneId}: ${beatErrMsg}`);
-          this.emit({ type: 'warning', phase: 'images', message: `Recovery fallback failed for ${scene.sceneId}:${beat.id}: ${beatErrMsg}` });
-        }
-      }
-
-      const recoveredCount = sceneBeats.filter(b => beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))).length;
-      console.log(`[Pipeline] Recovery complete for scene "${scene.sceneId}": ${recoveredCount}/${sceneBeats.length} beats now have images`);
-    }
-
-    // === TIER 2/3 VISUAL VALIDATION: Post-generation quality check ===
-    if (beatImages.size > 0) {
-      const sceneReports: Tier2SceneReport[] = [];
-
-      for (const scene of sceneContents) {
-        const scopedId = brief.episode?.number > 1
-          ? `ep${brief.episode.number}-${scene.sceneId}`
-          : scene.sceneId;
-        const sceneBeats = scene.beats.filter(b =>
-          beatImages.has(this.getEpisodeScopedBeatKey(brief, scene.sceneId, b.id))
-        );
-        if (sceneBeats.length === 0) continue;
-
-        const shots = sceneBeats.map(b => ({
-          cameraAngle: (b as any).shotType || 'unknown',
-          shotType: (b as any).shotType || 'character',
-          beatId: b.id,
-        }));
-
-        const diversity = checkStructuralDiversity(shots);
-        if (!diversity.acceptable) {
-          this.emit({
-            type: 'warning',
-            phase: 'images',
-            message: `Structural diversity issue in ${scene.sceneId}: ${diversity.warnings.join('; ')}`,
-          });
-        }
-
-        const shotReports: Tier2ShotReport[] = sceneBeats.map((b, idx) => {
-          const diversityPenalty = !diversity.acceptable ? 0.5 : 0;
-          const baseScore = 3.5 - diversityPenalty;
-          return {
-            shotId: `${scopedId}-${b.id}`,
-            beatId: b.id,
-            scores: {
-              expression: baseScore,
-              pose: baseScore,
-              flow: idx === 0 ? 5 : baseScore,
-              setting: baseScore,
-            },
-            averageScore: idx === 0
-              ? (baseScore * 3 + 5) / 4
-              : baseScore,
-            flagged: !diversity.acceptable && baseScore < 3,
-            reason: !diversity.acceptable ? diversity.warnings[0] : undefined,
-          };
-        });
-
-        const overallScore = shotReports.length > 0
-          ? shotReports.reduce((sum, r) => sum + r.averageScore, 0) / shotReports.length
-          : 3.5;
-
-        sceneReports.push({
-          sceneId: scene.sceneId,
-          shotReports,
-          overallScore: Math.round(overallScore * 10) / 10,
-          flaggedCount: shotReports.filter(r => r.flagged).length,
-        });
-      }
-
-      const visualQAReport: VisualQAReport = {
-        generatedAt: new Date().toISOString(),
-        scenes: sceneReports,
-        totalImages: beatImages.size,
-        totalFlagged: sceneReports.reduce((sum, s) => sum + s.flaggedCount, 0),
-        overallScore: sceneReports.length > 0
-          ? Math.round(sceneReports.reduce((sum, s) => sum + s.overallScore, 0) / sceneReports.length * 10) / 10
-          : 5,
-      };
-
-      // Tier 3: Identify and regenerate flagged images
-      const regenTargets = identifyRegenTargets(visualQAReport, 2.5);
-      if (regenTargets.length > 0) {
-        this.emit({
-          type: 'regeneration_triggered',
-          phase: 'images',
-          message: `Tier 3 visual QA: regenerating ${regenTargets.length} flagged image(s)`,
-        });
-
-        const maxTier3Regens = Math.min(regenTargets.length, 5);
-        for (let ti = 0; ti < maxTier3Regens; ti++) {
-          const target = regenTargets[ti];
-          const scene = sceneContents.find(sc => sc.sceneId === target.sceneId);
-          if (!scene) continue;
-          const beat = scene.beats.find(b => b.id === target.beatId);
-          if (!beat) continue;
-
-          const scopedId = brief.episode?.number > 1
-            ? `ep${brief.episode.number}-${target.sceneId}`
-            : target.sceneId;
-
-          const identifier = `beat-${scopedId}-${target.beatId}-tier3`;
-          const imgPrompt: ImagePrompt = target.originalPrompt || {
-            prompt: `High-quality dramatic story image for: ${beat.text.slice(0, 200)}`,
-            negativePrompt: 'text, watermark, logo, blurry, low quality',
-            width: 1024,
-            height: 1024,
-          };
-
-          try {
-            const result = await withTimeout(this.imageService.generateImage(
-              imgPrompt,
-              identifier,
-              { sceneId: target.sceneId, beatId: target.beatId, type: 'scene', regeneration: 1 },
-            ), PIPELINE_TIMEOUTS.imageGeneration, `tier3-regen(${target.beatId})`);
-
-            const tier1Check = runTier1Checks(result, identifier);
-            if (tier1Check.passed && result.imageUrl) {
-              const beatMapKey = this.getEpisodeScopedBeatKey(brief, target.sceneId, target.beatId);
-              beatImages.set(beatMapKey, result.imageUrl);
-              this.emit({
-                type: 'debug',
-                phase: 'images',
-                message: `Tier 3 regen succeeded for ${target.beatId}: ${target.reason}`,
-              });
-            }
-          } catch (regenErr) {
-            const errMsg = regenErr instanceof Error ? regenErr.message : String(regenErr);
-            this.emit({ type: 'warning', phase: 'images', message: `Tier 3 regen failed for ${target.beatId}: ${errMsg}` });
-          }
-        }
-      }
-    }
-
-    return { beatImages, sceneImages };
+    );
   }
 
   /**
@@ -7351,307 +8358,84 @@ ${clothingRule}
    * Uses VideoDirectorAgent to generate animation instructions, then VideoGenerationService
    * to produce animated clips from still images via Veo.
    */
+  // Extracted to phases/VideoPhase.ts (pure move). Thin wrapper keeps both
+  // call sites (generate() video phase, runVideoOnly) unchanged.
   private async runVideoGeneration(
     sceneContents: SceneContent[],
     imageResults: { beatImages: Map<string, string>; sceneImages: Map<string, string> },
     brief: FullCreativeBrief,
-    worldBible: WorldBible
+    _worldBible: WorldBible
   ): Promise<{ videoResults: Map<string, string>; diagnostics: VideoGenerationDiagnostic[] }> {
-    const videoResults = new Map<string, string>();
-    const diagnostics: VideoGenerationDiagnostic[] = [];
-    const videoStrategy = this.config.videoGen?.strategy || 'selective';
-    this.videoService.clearDiagnostics();
-
-    const beatsToAnimate: Array<{
-      sceneId: string;
-      beatId: string;
-      beatText: string;
-      imageKey: string;
-      imagePath: string;
-      sceneContext: { name: string; genre: string; tone: string; mood: string };
-      visualMoment?: string;
-      primaryAction?: string;
-      emotionalRead?: string;
-    }> = [];
-
-    for (const scene of sceneContents) {
-      const sceneContext = {
-        name: scene.sceneName || scene.sceneId,
-        genre: brief.story.genre || 'drama',
-        tone: brief.story.tone || 'serious',
-        mood: (scene.moodProgression as string[])?.[0] || 'neutral',
-      };
-
-      for (const beat of scene.beats || []) {
-        const imageKey = this.getEpisodeScopedBeatKey(brief, scene.sceneId, beat.id);
-        const imagePath = imageResults.beatImages.get(imageKey);
-
-        if (!imagePath) continue;
-
-        if (videoStrategy === 'selective') {
-          const isSelectiveBeat = beat.isChoicePoint || beat.visualMoment
-            || beat.shotType === 'action'
-            || scene.beats.indexOf(beat) === 0;
-          if (!isSelectiveBeat) continue;
-        }
-
-        beatsToAnimate.push({
-          sceneId: scene.sceneId,
-          beatId: beat.id,
-          beatText: beat.text,
-          imageKey,
-          imagePath,
-          sceneContext,
-          visualMoment: beat.visualMoment,
-          primaryAction: beat.primaryAction,
-          emotionalRead: beat.emotionalRead,
-        });
+    return new VideoPhase({
+      videoService: this.videoService,
+      videoDirectorAgent: this.videoDirectorAgent,
+      checkCancellation: () => this.checkCancellation(),
+      scopedSceneId: (sceneId) => this.getEpisodeScopedSceneId(brief, sceneId),
+      scopedBeatKey: (sceneId, beatId) => this.getEpisodeScopedBeatKey(brief, sceneId, beatId),
+    }).run(
+      { sceneContents, imageResults, story: { genre: brief.story.genre, tone: brief.story.tone } },
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
-    }
-
-    if (beatsToAnimate.length === 0) {
-      this.emit({ type: 'debug', phase: 'video_generation', message: 'No beats selected for video animation' });
-      diagnostics.push({
-        timestamp: new Date().toISOString(),
-        stage: 'selection',
-        status: 'skipped',
-        message: 'No beats selected for video animation',
-      });
-      return { videoResults, diagnostics };
-    }
-
-    this.emit({
-      type: 'agent_start',
-      agent: 'VideoDirector',
-      message: `Generating animation directions for ${beatsToAnimate.length} beats...`,
-    });
-
-    let completed = 0;
-    const total = beatsToAnimate.length;
-
-    for (const beatInfo of beatsToAnimate) {
-      await this.checkCancellation();
-
-      try {
-        const directionRequest: VideoDirectionRequest = {
-          beatId: beatInfo.beatId,
-          sceneId: beatInfo.sceneId,
-          beatText: beatInfo.beatText,
-          imagePrompt: beatInfo.visualMoment || beatInfo.primaryAction || beatInfo.beatText,
-          sceneContext: beatInfo.sceneContext,
-        };
-
-        const directionResult = await this.videoDirectorAgent.generateVideoDirection(directionRequest);
-
-        if (!directionResult.success || !directionResult.data) {
-          console.warn(`[Pipeline] VideoDirector failed for beat ${beatInfo.beatId}: ${directionResult.error}`);
-          diagnostics.push({
-            timestamp: new Date().toISOString(),
-            sceneId: beatInfo.sceneId,
-            beatId: beatInfo.beatId,
-            imageKey: beatInfo.imageKey,
-            identifier: `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`,
-            sourceImageUrl: beatInfo.imagePath,
-            stage: 'direction',
-            status: 'failed',
-            message: directionResult.error || 'VideoDirector returned no direction data',
-          });
-          completed++;
-          continue;
-        }
-
-        const instruction = directionResult.data;
-
-        const imageData = await this.videoService.readFileAsBase64(beatInfo.imagePath);
-        if (!imageData) {
-          console.warn(`[Pipeline] Could not read image file for video animation: ${beatInfo.imagePath}`);
-          diagnostics.push({
-            timestamp: new Date().toISOString(),
-            sceneId: beatInfo.sceneId,
-            beatId: beatInfo.beatId,
-            imageKey: beatInfo.imageKey,
-            identifier: `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`,
-            sourceImageUrl: beatInfo.imagePath,
-            stage: 'image_load',
-            status: 'failed',
-            message: `Could not read source image for video animation: ${beatInfo.imagePath}`,
-          });
-          completed++;
-          continue;
-        }
-
-        const videoIdentifier = `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`;
-        const videoResult = await this.videoService.generateVideo(
-          instruction,
-          imageData.data,
-          imageData.mimeType,
-          videoIdentifier,
-          { sceneId: beatInfo.sceneId, beatId: beatInfo.beatId },
-          beatInfo.imagePath,
-        );
-
-        if (videoResult.videoUrl || videoResult.videoPath) {
-          videoResults.set(beatInfo.imageKey, videoResult.videoUrl || videoResult.videoPath!);
-        }
-
-        completed++;
-        this.emit({
-          type: 'agent_start',
-          phase: 'video_generation',
-          message: `Video generation: ${completed}/${total} clips`,
-          data: { completed, total, currentItem: completed, totalItems: total, subphaseLabel: 'video:clips' },
-        });
-      } catch (beatVideoError) {
-        const msg = beatVideoError instanceof Error ? beatVideoError.message : String(beatVideoError);
-        console.warn(`[Pipeline] Video generation failed for beat ${beatInfo.beatId}: ${msg}`);
-        diagnostics.push({
-          timestamp: new Date().toISOString(),
-          sceneId: beatInfo.sceneId,
-          beatId: beatInfo.beatId,
-          imageKey: beatInfo.imageKey,
-          identifier: `video-${this.getEpisodeScopedSceneId(brief, beatInfo.sceneId)}-${beatInfo.beatId}`,
-          sourceImageUrl: beatInfo.imagePath,
-          stage: 'veo_generation',
-          status: 'failed',
-          message: msg,
-        });
-        completed++;
-      }
-    }
-
-    diagnostics.push(...this.videoService.getDiagnostics().map((diagnostic) => ({
-      ...diagnostic,
-      imageKey: diagnostic.sceneId && diagnostic.beatId
-        ? `${diagnostic.sceneId}::${diagnostic.beatId}`
-        : diagnostic.imageKey,
-    })));
-
-    console.log(`[Pipeline] Video generation complete: ${videoResults.size}/${total} clips generated`);
-    return { videoResults, diagnostics };
+    );
   }
 
-  /**
-   * Generate a dedicated story cover image — movie-poster style, designed to sell the story.
-   * Uses protagonist reference images, the story's genre/tone/themes, and key dramatic hooks
-   * from the synopsis to create a compelling hero image.
-   */
   private async generateStoryCoverArt(
     brief: FullCreativeBrief,
     characterBible: CharacterBible,
-    worldBible: WorldBible
+    worldBible: WorldBible,
+    outputDirectory?: string
   ): Promise<string | undefined> {
-    if (!this.config.imageGen?.enabled) return undefined;
+    return new CoverArtPhase({
+      imageService: this.imageService,
+      imageAgentTeam: this.imageAgentTeam,
+      uploadedStyleReferenceImages: () => this._uploadedStyleReferenceImages,
+      resolveProtagonistCharacterId: this.resolveProtagonistCharacterId.bind(this),
+      resolveCharacterIdWithBrief: this.resolveCharacterIdWithBrief.bind(this),
+      shouldAttachCompositeCharacterRefs: this.shouldAttachCompositeCharacterRefs.bind(this),
+      generateImageWithDefectRetries: this.generateImageWithDefectRetries.bind(this),
+      buildCharacterDescriptions: this.buildCharacterDescriptions.bind(this),
+    }).run({ brief, characterBible, worldBible, outputDirectory }, {
+      config: this.config,
+      emit: this.emit.bind(this),
+      addCheckpoint: this.addCheckpoint.bind(this),
+    });
+  }
 
-    try {
-      this.emit({ type: 'agent_start', agent: 'ImageService', message: 'Generating story cover art...' });
-
-      const protagonist = characterBible.characters.find(c => c.id === brief.protagonist.id);
-      const antagonist = characterBible.characters.find(c =>
-        c.role === 'antagonist' && c.importance === 'major'
-      );
-      const primaryLocation = worldBible.locations[0];
-
-      const protDesc = protagonist
-        ? `${protagonist.name}: ${protagonist.physicalDescription || protagonist.briefDescription}`
-        : brief.protagonist.description;
-      const antagDesc = antagonist
-        ? `${antagonist.name}: ${antagonist.physicalDescription || antagonist.briefDescription}`
-        : '';
-
-      const artStyle = this.imageService.getGeminiSettings().canonicalArtStyle || this.config.artStyle || 'dramatic cinematic story art';
-
-      const coverPrompt: ImagePrompt = {
-        prompt:
-          `Movie poster cover art for "${brief.story.title}". ` +
-          `Genre: ${brief.story.genre}. Tone: ${brief.story.tone}. ` +
-          `This is a dramatic, high-impact hero image that sells the story — NOT a scene illustration. ` +
-          `Compose it like a Hollywood movie poster or book cover: the protagonist dominates the frame ` +
-          `in a powerful, iconic pose that conveys their role and the story's central conflict. ` +
-          `Protagonist: ${protDesc}. ` +
-          (antagDesc ? `Antagonist presence (looming, shadowed, or reflected): ${antagDesc}. ` : '') +
-          (primaryLocation ? `Setting atmosphere: ${primaryLocation.name} — ${primaryLocation.fullDescription?.substring(0, 150) || primaryLocation.type}. ` : '') +
-          `Themes: ${brief.story.themes.join(', ')}. ` +
-          `Synopsis hook: ${brief.story.synopsis.substring(0, 200)}. ` +
-          `Art style: ${artStyle}. ` +
-          `Dramatic lighting — strong contrast, cinematic color grading, depth of field. ` +
-          `The protagonist should be recognizable and heroic/compelling. ` +
-          `Do NOT include any text, title, or typography on the image. ` +
-          `This should feel like key art that makes someone want to experience this story.`,
-        negativePrompt:
-          'text, words, letters, title, typography, logo, watermark, caption, subtitle, ' +
-          'boring, static, flat lighting, passport photo, mugshot, neutral pose, ' +
-          'multiple panels, comic layout, storyboard, collage, split image',
-        aspectRatio: '3:4',
-        composition: 'Movie poster composition: protagonist hero shot with dramatic background',
-      };
-
-      const gemSettings = this.imageService.getGeminiSettings();
-      const preferIndividualViews = gemSettings.useIndividualCharacterViews ?? false;
-      const maxPerChar = gemSettings.maxRefImagesPerCharacter || 2;
-
-      const referenceImages: Array<{ data: string; mimeType: string; role: string; characterName: string; viewType: string }> = [];
-
-      // Protagonist references
-      const protRefs = this.imageAgentTeam.getCharacterReferenceImages(
-        brief.protagonist.id, false, maxPerChar, 'front', preferIndividualViews
-      );
-      for (const ref of protRefs) {
-        referenceImages.push({
-          data: ref.data, mimeType: ref.mimeType,
-          role: `character-reference-${ref.name}`,
-          characterName: brief.protagonist.name,
-          viewType: ref.name.split('-').pop() || 'front',
-        });
-      }
-
-      // Antagonist references (if available, limited)
-      if (antagonist) {
-        const antagRefs = this.imageAgentTeam.getCharacterReferenceImages(
-          antagonist.id, false, 2, 'front', preferIndividualViews
-        );
-        for (const ref of antagRefs) {
-          referenceImages.push({
-            data: ref.data, mimeType: ref.mimeType,
-            role: `character-reference-${ref.name}`,
-            characterName: antagonist.name,
-            viewType: ref.name.split('-').pop() || 'front',
-          });
-        }
-      }
-
-      const result = await withTimeout(
-        this.imageService.generateImage(
-          coverPrompt,
-          'story-cover',
-          { type: 'cover' as const, characters: [brief.protagonist.id] },
-          referenceImages.length > 0 ? referenceImages : undefined
-        ),
-        PIPELINE_TIMEOUTS.storyboard,
-        'StoryCoverArt'
-      );
-
-      if (result.imageUrl) {
-        this.emit({
-          type: 'agent_complete', agent: 'ImageService',
-          message: `Story cover art generated: ${result.imageUrl}`,
-        });
-        return result.imageUrl;
-      }
-
-      console.warn('[Pipeline] Cover art generation returned no imageUrl');
-      return undefined;
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[Pipeline] Cover art generation failed (non-blocking): ${errMsg}`);
-      this.emit({ type: 'warning', phase: 'images', message: `Cover art generation failed: ${errMsg}` });
-      return undefined;
-    }
+  private encounterImagePhase(): EncounterImagePhase {
+    return new EncounterImagePhase({
+      imageService: this.imageService,
+      encounterImageAgent: this.encounterImageAgent,
+      imageAgentTeam: this.imageAgentTeam,
+      collectedVisualPlanning: this.collectedVisualPlanning,
+      checkCancellation: () => this.checkCancellation(),
+      buildCharacterDescriptions: this.buildCharacterDescriptions.bind(this),
+      ensureCharacterReferencesForVisibleCharacters: this.ensureCharacterReferencesForVisibleCharacters.bind(this),
+      gatherCharacterReferenceImages: this.gatherCharacterReferenceImages.bind(this),
+      getEffectiveImagePlanningMode: () => this.getEffectiveImagePlanningMode(),
+      getEffectiveImagePromptMode: () => this.getEffectiveImagePromptMode(),
+      getEffectiveImageQaMode: () => this.getEffectiveImageQaMode(),
+      getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
+      getStoryboardMaxPanelsPerSheet: () => this.getStoryboardMaxPanelsPerSheet(),
+      isLlmQuotaFailure: this.isLlmQuotaFailure.bind(this),
+      normalizeNarrativeText: this.normalizeNarrativeText.bind(this),
+      resolvePlayerTemplates: this.resolvePlayerTemplates.bind(this),
+      sanitizeImagePrompt: this.sanitizeImagePrompt.bind(this),
+      saveSceneVisualPlanningDiagnostic: this.saveSceneVisualPlanningDiagnostic.bind(this),
+      scrubPromptArtifacts: this.scrubPromptArtifacts.bind(this),
+    });
   }
 
   /**
    * Generate images for encounter beats and outcomes
    * Creates setup images and outcome-specific images (success/complicated/failure) for each choice
    */
+  // Extracted to phases/EncounterImagePhase.ts (pure move). Thin wrapper keeps
+  // all three call sites (regenerate-images resume, runEpisodeForStoryBundle,
+  // generate()) unchanged. wireEncounterTreeImages and the provider preflight
+  // stay in the monolith with their callers.
   private async generateEncounterImages(
     encounters: Map<string, EncounterStructure>,
     characterBible: CharacterBible,
@@ -7665,1143 +8449,14 @@ ${clothingRule}
     storyletImages: Map<string, Map<string, Map<string, string>>>;
     storyletFailures: string[];
   }> {
-    const encounterImages = new Map<string, {
-      setupImages: Map<string, string>;
-      outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }>;
-    }>();
-
-    const emptyStoryletImages = new Map<string, Map<string, Map<string, string>>>();
-    const storyletFailures: string[] = [];
-
-    if (!this.config.imageGen?.enabled) {
-      console.log('[Pipeline] Encounter image generation skipped: imageGen not enabled');
-      this.emit({ type: 'debug', phase: 'encounter_images', message: 'Encounter image generation skipped: imageGen not enabled' });
-      return { encounterImages, storyletImages: emptyStoryletImages, storyletFailures };
-    }
-    if (encounters.size === 0) {
-      console.log('[Pipeline] Encounter image generation skipped: no encounters found');
-      this.emit({ type: 'debug', phase: 'encounter_images', message: 'Encounter image generation skipped: no encounters in this episode' });
-      return { encounterImages, storyletImages: emptyStoryletImages, storyletFailures };
-    }
-
-    this.emit({ type: 'phase_start', phase: 'encounter_images', message: `Generating images for ${encounters.size} encounters` });
-
-    let globalEncounterImageIndex = 0;
-    let totalEncounterImages = 0;
-
-    const encounterManifestShots: { identifier: string; beatId?: string; sceneId: string; description: string }[] = [];
-    for (const [sid, enc] of encounters) {
-      const scopedSid = this.getEpisodeScopedSceneId(brief, sid);
-      const m = buildEncounterSlotManifest(enc, sid, scopedSid, ENCOUNTER_TREE_MAX_DEPTH);
-      totalEncounterImages += m.slots.length;
-      if (m.truncatedPaths.length > 0) {
-        console.warn(
-          `[Pipeline] Encounter ${sid}: ${m.truncatedPaths.length} subtree(s) truncated at max depth ${ENCOUNTER_TREE_MAX_DEPTH} (paths: ${m.truncatedPaths.slice(0, 8).join('; ')})`
-        );
+    return this.encounterImagePhase().run(
+      { encounters, characterBible, brief, outputDirectory },
+      {
+        config: this.config,
+        emit: this.emit.bind(this),
+        addCheckpoint: this.addCheckpoint.bind(this),
       }
-      for (const s of m.slots) {
-        encounterManifestShots.push({
-          identifier: s.baseIdentifier,
-          beatId: s.beatId,
-          sceneId: sid,
-          description: `${s.kind}${s.tier ? `:${s.tier}` : ''}`,
-        });
-      }
-      const storyletManifest = buildStoryletSlotManifest(enc.storylets, sid, scopedSid);
-      totalEncounterImages += storyletManifest.slots.length;
-      for (const s of storyletManifest.slots) {
-        encounterManifestShots.push({
-          identifier: s.baseIdentifier,
-          beatId: s.beatId,
-          sceneId: sid,
-          description: `storylet:${s.outcomeName}`,
-        });
-      }
-    }
-    this.emit({
-      type: 'checkpoint', phase: 'image_manifest',
-      message: `Encounter image manifest: ${encounterManifestShots.length} planned shots`,
-      data: { manifestType: 'encounter', shots: encounterManifestShots },
-    });
-    const persistEncounterRunState = async (
-      sceneId: string,
-      phase: string,
-      setupImages: Map<string, string>,
-      outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }>,
-      failedImages: string[],
-      imagesGenerated: number,
-      imagesAttempted: number,
-      completedBaseIdentifiers?: string[],
-      missingManifestKeys?: string[],
-    ): Promise<void> => {
-      if (!outputDirectory) return;
-      const textFixResolutions = this.imageService
-        .getEncounterDiagnostics()
-        .filter((entry) => entry.baseIdentifier && entry.resolvedIdentifier && entry.baseIdentifier !== entry.resolvedIdentifier)
-        .slice(-50)
-        .map((entry) => ({
-          baseIdentifier: entry.baseIdentifier,
-          resolvedIdentifier: entry.resolvedIdentifier,
-          status: entry.status,
-        }));
-      await saveEarlyDiagnostic(outputDirectory, `08a-encounter-run-state-${idSlugify(sceneId)}.json`, {
-        generatedAt: new Date().toISOString(),
-        sceneId,
-        phase,
-        imagesGenerated,
-        imagesAttempted,
-        setupImageKeys: Array.from(setupImages.keys()),
-        outcomeImageKeys: Array.from(outcomeImages.keys()),
-        failedImages: failedImages.slice(-50),
-        completedBaseIdentifiers: completedBaseIdentifiers?.slice(-200),
-        missingManifestKeys: missingManifestKeys?.slice(0, 100),
-        textFixResolutions,
-      });
-    };
-
-    for (const [sceneId, encounter] of encounters) {
-      const scopedSceneId = this.getEpisodeScopedSceneId(brief, sceneId);
-      const setupImages = new Map<string, string>();
-      const outcomeImages = new Map<string, { success?: string; complicated?: string; failure?: string }>();
-
-      const slotManifest = buildEncounterSlotManifest(encounter, sceneId, scopedSceneId, ENCOUNTER_TREE_MAX_DEPTH);
-      if (slotManifest.truncatedPaths.length > 0) {
-        console.warn(
-          `[Pipeline] Encounter ${sceneId}: ${slotManifest.truncatedPaths.length} subtree(s) not expanded beyond depth ${ENCOUNTER_TREE_MAX_DEPTH}`
-        );
-      }
-
-      const encounterPolicy = new EncounterProviderPolicy(this.imageService, {
-        maxConsecutiveFailuresBeforeAbort: this.config.imageGen?.encounterMaxConsecutiveFailuresBeforeAbort ?? 0,
-      });
-
-      const resumeLoaded = outputDirectory ? loadEncounterResumeStateSync(outputDirectory, idSlugify(sceneId)) : null;
-      const resumeSet = new Set<string>(resumeLoaded?.completedBaseIdentifiers ?? []);
-      const persistResume = async (): Promise<void> => {
-        if (!outputDirectory) return;
-        await saveEncounterResumeState(outputDirectory, idSlugify(sceneId), {
-          version: 1,
-          sceneId,
-          scopedSceneId,
-          completedBaseIdentifiers: [...resumeSet],
-          generatedAt: new Date().toISOString(),
-        });
-      };
-      const markResumeDone = async (baseId: string): Promise<void> => {
-        if (!resumeSet.has(baseId)) {
-          resumeSet.add(baseId);
-          await persistResume();
-        }
-      };
-
-      const onEncounterSlotFailure = async (err: unknown): Promise<void> => {
-        encounterPolicy.onSlotFailure(err);
-        const d = encounterPolicy.getBackoffDelayMs();
-        if (d > 0) await new Promise(r => setTimeout(r, d));
-        if (encounterPolicy.shouldAbortHard()) {
-          throw new PipelineError(
-            `Encounter image generation aborted after repeated failures for ${sceneId}`,
-            'encounter_images',
-            {
-              agent: 'EncounterImageAgent',
-              context: { sceneId, encounterId: encounter.id || `${sceneId}-encounter`, failureKind: 'encounter_consecutive_failures' },
-            },
-          );
-        }
-      };
-
-      this.emit({ type: 'agent_start', agent: 'EncounterImageAgent', message: `Generating images for encounter in ${sceneId}` });
-
-      let imagesGenerated = 0;
-      let imagesAttempted = 0;
-      const failedImages: string[] = [];
-
-      try {
-      // Gather character references and physical descriptions for this encounter
-      const encounterCharacterIds = encounter.npcStates?.map(npc => npc.npcId) || [];
-      encounterCharacterIds.push(brief.protagonist.id);
-      const referenceImages = this.gatherCharacterReferenceImages(
-        encounterCharacterIds,
-        characterBible,
-        undefined,
-        {
-          includeExpressions: this.shouldUseExpressionReferencesForEncounter(encounter),
-          family: 'encounter-setup',
-          slotId: `encounter:${sceneId}`,
-        }
-      );
-      const encounterCharacterDescriptions = this.buildCharacterDescriptions(encounterCharacterIds, characterBible);
-      const encounterCharacterNames = encounterCharacterIds
-        .map(id => characterBible.characters.find(c => c.id === id)?.name)
-        .filter(Boolean) as string[];
-
-      // Use sceneId as encounterId since EncounterStructure.id is optional
-      const encounterId = encounter.id || `${sceneId}-encounter`;
-      const encounterBeats = getEncounterBeats(encounter);
-      const encFirstBeat = encounter.beats?.[0];
-      const encounterSettingContext = resolveSceneSettingContext({
-        sceneName: sceneId,
-        sceneDescription: encFirstBeat?.setupText || encFirstBeat?.description,
-        authoredLocationId: undefined,
-        authoredLocationName: undefined,
-        authoredLocationType: undefined,
-        worldPremise: brief.world.premise,
-        worldTimePeriod: brief.world.timePeriod,
-        worldTechnologyLevel: brief.world.technologyLevel,
-        worldMagicSystem: brief.world.magicSystem,
-      });
-      console.log(`[Pipeline] Encounter ${encounterId}: ${encounterBeats.length} beats, ${encounter.npcStates?.length || 0} NPCs, ${referenceImages.length} reference images`);
-      
-      // Generate images for each beat (skip if beats is empty/undefined)
-      for (const beat of encounterBeats) {
-        await this.checkCancellation();
-        // Generate setup image — use cinematicSetup if available, otherwise create from setupText or fallback
-        // Build characterStates from encounter participants for fallback cinematic descriptions
-        const fallbackCharacterStates = [
-          { characterId: brief.protagonist.id || 'protagonist', pose: 'ready stance', expression: 'determined', position: 'center frame' },
-          ...(encounter.npcStates || []).map(npc => ({
-            characterId: npc.npcId || npc.name || 'npc',
-            pose: 'facing protagonist',
-            expression: npc.initialDisposition || 'neutral',
-            position: 'opposite side',
-          })),
-        ];
-
-        // Ensure we have SOME text for the scene description
-        const setupDescription = this.resolvePlayerTemplates(
-          this.normalizeNarrativeText(
-            beat.setupText ?? beat.description,
-            `${beat.name} - ${encounter.encounterType} encounter in ${sceneId}`
-          ),
-          brief
-        );
-
-        const cinematicSetup = beat.cinematicSetup || (setupDescription ? {
-          sceneDescription: this.makeEncounterVisualSceneDescription(setupDescription),
-          focusSubject: 'protagonist',
-          secondaryElements: encounter.npcStates?.map(npc => npc.name || npc.npcId) || [],
-          cameraAngle: this.inferEncounterCameraAngle(setupDescription, 'setup'),
-          shotType: 'tension_hold' as const,
-          mood: this.inferEncounterMood(setupDescription, 'setup'),
-          lightingDirection: 'dramatic side lighting',
-          colorPalette: 'contextual to genre',
-          characterStates: fallbackCharacterStates,
-        } : null);
-        
-        if (cinematicSetup) {
-          const setupVisualContract = beat.visualContract || this.buildEncounterVisualContract(setupDescription, 'setup');
-          const setupPrompt = this.encounterImageAgent.cinematicDescriptionToPrompt({
-            encounterId,
-            beatId: beat.id,
-            cinematicDescription: cinematicSetup,
-            encounterPhase: 'setup',
-            visualContract: setupVisualContract,
-            genre: brief.story.genre,
-            artStyle: this.config.artStyle,
-            settingContext: encounterSettingContext,
-          });
-
-          console.log(`[Pipeline] Generating encounter setup image for beat ${beat.id} in ${sceneId}`);
-          imagesAttempted++;
-          const setupBaseId = encounterSetupIdentifier(scopedSceneId, beat.id);
-          try {
-            const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-              setupPrompt,
-              setupBaseId,
-              { sceneId: scopedSceneId, beatId: beat.id, type: 'encounter-setup', characters: encounterCharacterIds, characterNames: encounterCharacterNames, characterDescriptions: encounterCharacterDescriptions },
-              referenceImages.length > 0 ? referenceImages : undefined,
-              `setup:${beat.id}`,
-              1,
-              {
-                preferAtlasFirst: encounterPolicy.consumePreferAtlasFirst(),
-                resumeCompleted: resumeSet,
-                resumeBaseIdentifier: setupBaseId,
-                resumeAlternateBaseIdentifiers: [encounterSetupFallbackIdentifier(scopedSceneId, beat.id)],
-              },
-            );
-            const result = generated.result;
-
-            if (result.imageUrl) {
-              if (generated.artifactStatus !== 'accepted_clean') {
-                console.warn(
-                  `[Pipeline] Encounter setup image for beat ${beat.id} accepted with artifact status=${generated.artifactStatus} after ${generated.attempts} attempt(s)`
-                );
-              }
-              setupImages.set(beat.id, result.imageUrl);
-              imagesGenerated++;
-              globalEncounterImageIndex++;
-              encounterPolicy.onSlotSuccess();
-              await markResumeDone(setupBaseId);
-              this.emit({
-                type: 'checkpoint', phase: 'encounter_images',
-                message: `Encounter image ${globalEncounterImageIndex} of ~${totalEncounterImages} complete`,
-                data: { imageIndex: globalEncounterImageIndex, totalImages: totalEncounterImages, identifier: `encounter-setup-${scopedSceneId}-${beat.id}` },
-              });
-              if (result.imageData && result.mimeType) {
-                this.imageService.setGeminiPreviousScene(result.imageData, result.mimeType);
-              }
-            } else {
-              console.warn(`[Pipeline] Encounter setup image for beat ${beat.id} returned no URL`);
-              failedImages.push(`setup:${beat.id}`);
-              await onEncounterSlotFailure(new Error('no_image_url'));
-            }
-          } catch (setupErr) {
-            const msg = setupErr instanceof Error ? setupErr.message : String(setupErr);
-            console.error(`[Pipeline] Encounter setup image FAILED for beat ${beat.id} in ${sceneId}: ${msg}`);
-            failedImages.push(`setup:${beat.id}:${msg}`);
-            if (setupErr instanceof PipelineError) throw setupErr;
-            await onEncounterSlotFailure(setupErr);
-          }
-
-          await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-        } else {
-          // NEVER skip: always generate with a minimal fallback description
-          console.warn(`[Pipeline] No cinematicSetup or setupText for beat ${beat.id} — generating with minimal fallback`);
-          const minimalDescription = `${encounter.encounterType || 'dramatic'} encounter scene - ${brief.protagonist.name} in ${sceneId}`;
-          const minimalPrompt = this.encounterImageAgent.cinematicDescriptionToPrompt({
-            encounterId,
-            beatId: beat.id,
-            cinematicDescription: {
-              sceneDescription: minimalDescription,
-              focusSubject: 'protagonist',
-              secondaryElements: encounter.npcStates?.map(npc => npc.name || npc.npcId) || [],
-              cameraAngle: 'medium shot' as const,
-              shotType: 'tension_hold' as const,
-              mood: 'tense_uncertainty' as const,
-              lightingDirection: 'dramatic side lighting',
-              colorPalette: 'contextual to genre',
-              characterStates: fallbackCharacterStates,
-            },
-            encounterPhase: 'setup',
-            genre: brief.story.genre,
-            artStyle: this.config.artStyle,
-            settingContext: encounterSettingContext,
-          });
-          imagesAttempted++;
-          const setupBaseId = encounterSetupIdentifier(scopedSceneId, beat.id);
-          const setupFbId = encounterSetupFallbackIdentifier(scopedSceneId, beat.id);
-          try {
-            const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-              minimalPrompt,
-              setupFbId,
-              { sceneId: scopedSceneId, beatId: beat.id, type: 'encounter-setup', characters: encounterCharacterIds, characterNames: encounterCharacterNames, characterDescriptions: encounterCharacterDescriptions },
-              referenceImages.length > 0 ? referenceImages : undefined,
-              `setup-fallback:${beat.id}`,
-              1,
-              {
-                preferAtlasFirst: encounterPolicy.consumePreferAtlasFirst(),
-                resumeCompleted: resumeSet,
-                resumeBaseIdentifier: setupBaseId,
-                resumeAlternateBaseIdentifiers: [setupFbId],
-              },
-            );
-            const result = generated.result;
-            if (result.imageUrl) {
-              if (generated.artifactStatus !== 'accepted_clean') {
-                console.warn(
-                  `[Pipeline] Encounter fallback setup image for beat ${beat.id} accepted with artifact status=${generated.artifactStatus} after ${generated.attempts} attempt(s)`
-                );
-              }
-              setupImages.set(beat.id, result.imageUrl);
-              imagesGenerated++;
-              globalEncounterImageIndex++;
-              encounterPolicy.onSlotSuccess();
-              await markResumeDone(setupBaseId);
-              this.emit({
-                type: 'checkpoint', phase: 'encounter_images',
-                message: `Encounter image ${globalEncounterImageIndex} of ~${totalEncounterImages} complete`,
-                data: { imageIndex: globalEncounterImageIndex, totalImages: totalEncounterImages, identifier: `encounter-setup-fallback-${scopedSceneId}-${beat.id}` },
-              });
-            } else {
-              failedImages.push(`setup-fallback:${beat.id}`);
-              await onEncounterSlotFailure(new Error('no_image_url'));
-            }
-          } catch (fallbackErr) {
-            const msg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-            console.error(`[Pipeline] Fallback setup image FAILED for beat ${beat.id}: ${msg}`);
-            failedImages.push(`setup-fallback:${beat.id}:${msg}`);
-            if (fallbackErr instanceof PipelineError) throw fallbackErr;
-            await onEncounterSlotFailure(fallbackErr);
-          }
-          await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-        }
-
-        // Generate outcome images for each choice (including recursive nextSituation trees)
-        const treeCounters = { imagesGenerated, imagesAttempted, globalIndex: globalEncounterImageIndex, total: totalEncounterImages };
-        await this.generateEncounterTreeImages(
-          beat.choices || [],
-          '',
-          sceneId,
-          encounterId,
-          beat.id,
-          {
-            referenceImages,
-            characterIds: encounterCharacterIds,
-            characterNames: encounterCharacterNames,
-            characterDescriptions: encounterCharacterDescriptions,
-            brief,
-            encounter,
-            settingContext: encounterSettingContext,
-          },
-          { setupImages, outcomeImages },
-          treeCounters,
-          failedImages,
-          encounterPolicy,
-          resumeSet,
-          markResumeDone,
-          onEncounterSlotFailure,
-        );
-        imagesGenerated = treeCounters.imagesGenerated;
-        imagesAttempted = treeCounters.imagesAttempted;
-        globalEncounterImageIndex = treeCounters.globalIndex;
-        await persistEncounterRunState(
-          sceneId,
-          `beat:${beat.id}`,
-          setupImages,
-          outcomeImages,
-          failedImages,
-          imagesGenerated,
-          imagesAttempted,
-          [...resumeSet],
-          collectMissingSlotsFromManifest(slotManifest, setupImages, outcomeImages),
-        );
-      }
-
-      // === ENCOUNTER IMAGE RETRY PASS ===
-      // Retries run whenever required manifest slots remain unresolved, even if failedImages bookkeeping missed them.
-      const preRetryMissing = collectMissingSlotsFromManifest(slotManifest, setupImages, outcomeImages);
-      if (preRetryMissing.length > 0) {
-        console.log(`[Pipeline] Starting retry pass for ${preRetryMissing.length} unresolved encounter slots in ${sceneId}...`);
-        this.emit({ type: 'checkpoint', phase: 'encounter_images', message: `Retrying ${preRetryMissing.length} unresolved encounter slots for ${sceneId}` });
-
-        const retryCounters = { imagesGenerated, imagesAttempted, globalIndex: globalEncounterImageIndex, total: totalEncounterImages };
-        let totalRetried = 0;
-        let totalRecovered = 0;
-
-        for (const beat of encounterBeats) {
-          if (!beat.choices?.length) continue;
-          const retryResult = await this.retryMissingEncounterTreeImages(
-            beat.choices,
-            '',
-            sceneId,
-            encounterId,
-            beat.id,
-            {
-              referenceImages,
-              characterIds: encounterCharacterIds,
-              characterNames: encounterCharacterNames,
-              characterDescriptions: encounterCharacterDescriptions,
-              brief,
-              encounter,
-              settingContext: encounterSettingContext,
-            },
-            { setupImages, outcomeImages },
-            retryCounters,
-            encounterPolicy,
-            resumeSet,
-            markResumeDone,
-            onEncounterSlotFailure,
-          );
-          totalRetried += retryResult.retried;
-          totalRecovered += retryResult.recovered;
-        }
-
-        imagesGenerated = retryCounters.imagesGenerated;
-        imagesAttempted = retryCounters.imagesAttempted;
-        globalEncounterImageIndex = retryCounters.globalIndex;
-
-        if (totalRetried > 0) {
-          console.log(`[Pipeline] Retry pass for ${sceneId}: ${totalRecovered}/${totalRetried} recovered`);
-        }
-        await persistEncounterRunState(
-          sceneId,
-          'post-retry',
-          setupImages,
-          outcomeImages,
-          failedImages,
-          imagesGenerated,
-          imagesAttempted,
-          [...resumeSet],
-          collectMissingSlotsFromManifest(slotManifest, setupImages, outcomeImages),
-        );
-      }
-
-      // === ENCOUNTER IMAGE COMPLETENESS CHECK (non-fatal) ===
-      // Log missing slots and continue — they are persisted in the run-state
-      // file and AssetRegistry for later retry. Storylet generation proceeds
-      // regardless so a single missing encounter outcome never kills the pipeline.
-      const postRetryMissing = collectMissingSlotsFromManifest(slotManifest, setupImages, outcomeImages);
-      if (postRetryMissing.length > 0) {
-        const missingSummary = postRetryMissing.slice(0, 20).join(', ');
-        const fullMsg = `Encounter ${sceneId}: ${postRetryMissing.length} encounter images still missing after retries (continuing): ${missingSummary}`;
-        console.warn(`[Pipeline] ENCOUNTER IMAGE GAP (non-fatal): ${fullMsg}`);
-        this.emit({ type: 'warning', phase: 'encounter_images', message: fullMsg });
-      }
-
-      encounterImages.set(sceneId, { setupImages, outcomeImages });
-      await persistEncounterRunState(
-        sceneId,
-        'complete',
-        setupImages,
-        outcomeImages,
-        failedImages,
-        imagesGenerated,
-        imagesAttempted,
-        [...resumeSet],
-        postRetryMissing,
-      );
-
-      const successRate = imagesAttempted > 0 ? `${imagesGenerated}/${imagesAttempted}` : '0/0';
-      console.log(`[Pipeline] Encounter images for ${sceneId}: ${successRate} succeeded (${setupImages.size} setup, ${outcomeImages.size} outcome sets)`);
-
-      this.emit({
-        type: 'agent_complete',
-        agent: 'EncounterImageAgent',
-        message: `Generated ${imagesGenerated}/${imagesAttempted} images for encounter in ${sceneId}`,
-      });
-      } catch (encErr) {
-        if (this.isLlmQuotaFailure(encErr)) throw encErr;
-        if (encErr instanceof PipelineError) throw encErr;
-        const encErrMsg = encErr instanceof Error ? encErr.message : String(encErr);
-        const stack = encErr instanceof Error ? encErr.stack : '';
-        console.error(`[Pipeline] Encounter image generation CRASHED for ${sceneId}: ${encErrMsg}`);
-        console.error(`[Pipeline] Stack: ${stack}`);
-        console.error(`[Pipeline] Progress before crash: ${imagesGenerated} generated, ${imagesAttempted} attempted, failures: [${failedImages.join(', ')}]`);
-        throw new PipelineError(
-          `Encounter image generation crashed for ${sceneId}: ${encErrMsg}`,
-          'encounter_images',
-          {
-            agent: 'EncounterImageAgent',
-            context: { sceneId, imagesGenerated, imagesAttempted, failedImages: failedImages.slice(0, 50) },
-            originalError: encErr instanceof Error ? encErr : undefined,
-          }
-        );
-      }
-    }
-
-    // === STORYLET IMAGES ===
-    // Storylets now use the same reliability model as encounter-tree slots:
-    // manifest, resume, provider policy, and manifest-based completeness.
-    const storyletImages = new Map<string, Map<string, Map<string, string>>>();
-
-    for (const [sceneId, encounter] of encounters) {
-      const scopedSceneId = this.getEpisodeScopedSceneId(brief, sceneId);
-      const storylets = encounter.storylets;
-      if (!storylets) continue;
-
-      const storyletManifest = buildStoryletSlotManifest(storylets, sceneId, scopedSceneId);
-      if (storyletManifest.slots.length === 0) continue;
-
-      const sceneStoryletImages = new Map<string, Map<string, string>>();
-      const encounterCharacterIds = Array.from(new Set([...(encounter.npcStates?.map(npc => npc.npcId) || []), brief.protagonist.id]));
-      const referenceImages = this.gatherCharacterReferenceImages(
-        encounterCharacterIds,
-        characterBible,
-        undefined,
-        {
-          includeExpressions: this.shouldUseExpressionReferencesForEncounter(encounter),
-          family: 'storylet-aftermath',
-          slotId: `storylet:${sceneId}`,
-        }
-      );
-      const encounterCharacterDescriptions = this.buildCharacterDescriptions(encounterCharacterIds, characterBible);
-      const encounterCharacterNames = encounterCharacterIds
-        .map(id => characterBible.characters.find(c => c.id === id)?.name)
-        .filter(Boolean) as string[];
-      const storyletFirstBeat = encounter.beats?.[0];
-      const encounterSettingContext = resolveSceneSettingContext({
-        sceneName: sceneId,
-        sceneDescription: storyletFirstBeat?.setupText || storyletFirstBeat?.description,
-        authoredLocationId: undefined,
-        authoredLocationName: undefined,
-        authoredLocationType: undefined,
-        worldPremise: brief.world.premise,
-        worldTimePeriod: brief.world.timePeriod,
-        worldTechnologyLevel: brief.world.technologyLevel,
-        worldMagicSystem: brief.world.magicSystem,
-      });
-
-      const resumeLoaded = outputDirectory ? loadEncounterResumeStateSync(outputDirectory, idSlugify(sceneId)) : null;
-      const resumeSet = new Set<string>(resumeLoaded?.completedBaseIdentifiers ?? []);
-      const persistResume = async (): Promise<void> => {
-        if (!outputDirectory) return;
-        await saveEncounterResumeState(outputDirectory, idSlugify(sceneId), {
-          version: 1,
-          sceneId,
-          scopedSceneId,
-          completedBaseIdentifiers: [...resumeSet],
-          generatedAt: new Date().toISOString(),
-        });
-      };
-      const markResumeDone = async (baseId: string): Promise<void> => {
-        if (!resumeSet.has(baseId)) {
-          resumeSet.add(baseId);
-          await persistResume();
-        }
-      };
-
-      const storyletPolicy = new EncounterProviderPolicy(this.imageService, {
-        maxConsecutiveFailuresBeforeAbort: this.config.imageGen?.encounterMaxConsecutiveFailuresBeforeAbort ?? 0,
-      });
-      const onStoryletSlotFailure = async (err: unknown): Promise<void> => {
-        storyletPolicy.onSlotFailure(err);
-        const d = storyletPolicy.getBackoffDelayMs();
-        if (d > 0) await new Promise(r => setTimeout(r, d));
-        if (storyletPolicy.shouldAbortHard()) {
-          throw new PipelineError(
-            `Storylet image generation aborted after repeated failures for ${sceneId}`,
-            'encounter_images',
-            {
-              agent: 'EncounterImageAgent',
-              context: { sceneId, encounterId: encounter.id || `${sceneId}-encounter`, failureKind: 'storylet_consecutive_failures' },
-            },
-          );
-        }
-      };
-
-      const toneMoodMap: Record<string, string> = {
-        triumphant: 'victorious, triumphant aftermath, warm heroic lighting',
-        bittersweet: 'quiet bittersweet aftermath, mixed emotions, muted tones',
-        tense: 'tense uneasy aftermath, characters still on edge, harsh shadows',
-        desperate: 'desperate failed aftermath, exhausted and defeated, cold dark tones',
-        relieved: 'relieved escape aftermath, barely survived, shaky breath',
-        somber: 'somber defeated aftermath, heavy silence, dark desaturated palette',
-      };
-      const partialVictoryStoryletCost = storylets.partialVictory?.cost;
-
-      const persistStoryletRunState = async (phase: string): Promise<void> => {
-        if (!outputDirectory) return;
-        await saveEarlyDiagnostic(outputDirectory, `08a-storylet-run-state-${idSlugify(sceneId)}.json`, {
-          generatedAt: new Date().toISOString(),
-          sceneId,
-          phase,
-          completedBaseIdentifiers: [...resumeSet].slice(-300),
-          outcomes: Array.from(sceneStoryletImages.entries()).map(([outcomeName, beatImages]) => ({
-            outcomeName,
-            beatIds: Array.from(beatImages.keys()),
-          })),
-          missingCoverageKeys: collectMissingStoryletSlotsFromManifest(storyletManifest, sceneStoryletImages).slice(0, 100),
-        });
-      };
-
-      const getOutcomeBeatImages = (outcomeName: string): Map<string, string> => {
-        const existing = sceneStoryletImages.get(outcomeName);
-        if (existing) return existing;
-        const created = new Map<string, string>();
-        sceneStoryletImages.set(outcomeName, created);
-        return created;
-      };
-
-      const buildStoryletPrompt = (
-        slot: StoryletSlot,
-        stage: 'primary' | 'retry' | 'aggressive',
-      ): ImagePrompt => {
-        const beatDesc = this.resolvePlayerTemplates(
-          this.normalizeNarrativeText(slot.beat.text ?? '', `${slot.outcomeName} aftermath`),
-          brief
-        );
-        const sanitizedBeatDesc = this.scrubPromptArtifacts(beatDesc);
-        const visualContract = (slot.beat.visualContract as any) || this.buildEncounterVisualContract(sanitizedBeatDesc, 'resolution');
-        const costForSlot = (slot.beat.cost || slot.storyletCost || partialVictoryStoryletCost) as any;
-        if (slot.outcomeName === 'partialVictory' && costForSlot && !visualContract.visibleCost) {
-          visualContract.visibleCost = costForSlot?.visibleComplication;
-        }
-        const aggressive = stage !== 'primary';
-        const tone = slot.storyletTone;
-        return this.sanitizeImagePrompt(this.encounterImageAgent.cinematicDescriptionToPrompt({
-          encounterId: encounter.id || `${sceneId}-encounter`,
-          beatId: slot.beatId,
-          encounterPhase: 'resolution',
-          outcomeType: slot.outcomeName as EncounterOutcome,
-          cost: slot.outcomeName === 'partialVictory' ? costForSlot : undefined,
-          cinematicDescription: {
-            sceneDescription: sanitizedBeatDesc,
-            focusSubject: brief.protagonist.name,
-            secondaryElements: aggressive ? encounterCharacterNames.filter(name => name !== brief.protagonist.name).slice(0, 2) : encounterCharacterNames.filter(name => name !== brief.protagonist.name),
-            cameraAngle: 'reaction_shot',
-            shotType: 'consequence',
-            mood: aggressive
-              ? 'tense_uncertainty'
-              : tone === 'triumphant' ? 'triumphant' : tone === 'relieved' ? 'relief' : tone === 'somber' ? 'desperate' : 'tense_uncertainty',
-            lightingDirection: toneMoodMap[tone] || 'dramatic aftermath',
-            colorPalette: aggressive ? 'muted aftermath tones' : 'storylet aftermath palette grounded in the encounter tone',
-            characterStates: [
-              {
-                characterId: brief.protagonist.id || 'protagonist',
-                pose: aggressive ? 'aftermath posture' : 'after the decisive turn',
-                expression: aggressive ? 'processing the cost' : tone,
-                position: 'center frame'
-              },
-            ],
-          },
-          visualContract,
-          genre: brief.story.genre,
-          artStyle: this.config.artStyle,
-          settingContext: encounterSettingContext,
-        }), brief);
-      };
-
-      const attemptStoryletSlot = async (
-        slot: StoryletSlot,
-        stage: 'primary' | 'retry' | 'aggressive',
-        pass: number = 0,
-      ): Promise<void> => {
-        const beatImages = getOutcomeBeatImages(slot.outcomeName);
-        if (beatImages.has(slot.beatId)) return;
-
-        const identifier = stage === 'primary'
-          ? slot.baseIdentifier
-          : stage === 'retry'
-            ? storyletRetryIdentifier(scopedSceneId, slot.outcomeName, slot.beatId)
-            : storyletAggressiveRetryIdentifier(scopedSceneId, slot.outcomeName, slot.beatId, pass);
-        const qaIdentifier = stage === 'primary'
-          ? `storylet:${scopedSceneId}:${slot.outcomeName}:${slot.beatId}`
-          : stage === 'retry'
-            ? `retry:storylet:${scopedSceneId}:${slot.outcomeName}:${slot.beatId}`
-            : `retry2:storylet:${scopedSceneId}:${slot.outcomeName}:${slot.beatId}:${pass}`;
-        const prompt = buildStoryletPrompt(slot, stage);
-
-        try {
-          const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-            prompt,
-            identifier,
-            {
-              sceneId: scopedSceneId,
-              beatId: slot.beatId,
-              type: 'storylet-aftermath',
-              outcomeType: slot.outcomeName as EncounterOutcome,
-              characters: encounterCharacterIds,
-              characterNames: encounterCharacterNames,
-              characterDescriptions: encounterCharacterDescriptions,
-            },
-            referenceImages.length > 0 ? referenceImages : undefined,
-            qaIdentifier,
-            1,
-            {
-              preferAtlasFirst: storyletPolicy.consumePreferAtlasFirst(),
-              resumeCompleted: resumeSet,
-              resumeBaseIdentifier: slot.baseIdentifier,
-              resumeAlternateBaseIdentifiers: identifier === slot.baseIdentifier ? undefined : [identifier],
-            },
-          );
-
-          if (generated.result.imageUrl) {
-            beatImages.set(slot.beatId, generated.result.imageUrl);
-            globalEncounterImageIndex++;
-            storyletPolicy.onSlotSuccess();
-            await markResumeDone(slot.baseIdentifier);
-            this.emit({
-              type: 'checkpoint',
-              phase: 'encounter_images',
-              message: `Encounter image ${globalEncounterImageIndex} of ~${totalEncounterImages} complete`,
-              data: { imageIndex: globalEncounterImageIndex, totalImages: totalEncounterImages, identifier },
-            });
-          } else {
-            await onStoryletSlotFailure(new Error('no_image_url'));
-          }
-        } catch (err) {
-          if (err instanceof PipelineError) throw err;
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[Pipeline] Storylet image failed for ${sceneId}/${slot.outcomeName}/${slot.beatId}: ${msg}`);
-          this.emit({ type: 'warning', phase: 'encounter_images', message: `Storylet image failed for ${sceneId}/${slot.outcomeName}/${slot.beatId}: ${msg}` });
-          await onStoryletSlotFailure(err);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, stage === 'aggressive' ? TIMING_DEFAULTS.rateLimitDelayMs * 2 : TIMING_DEFAULTS.rateLimitDelayMs));
-      };
-
-      for (const slot of storyletManifest.slots) {
-        await attemptStoryletSlot(slot, 'primary');
-      }
-      await persistStoryletRunState('primary');
-
-      let missingSlots = storyletManifest.slots.filter(slot => !sceneStoryletImages.get(slot.outcomeName)?.has(slot.beatId));
-      if (missingSlots.length > 0) {
-        console.log(`[Pipeline] Retrying ${missingSlots.length} missing storylet images for ${sceneId}`);
-        for (const slot of missingSlots) {
-          await attemptStoryletSlot(slot, 'retry');
-        }
-        await persistStoryletRunState('retry');
-      }
-
-      for (let pass = 0; pass < 2; pass++) {
-        missingSlots = storyletManifest.slots.filter(slot => !sceneStoryletImages.get(slot.outcomeName)?.has(slot.beatId));
-        if (missingSlots.length === 0) break;
-        console.warn(`[Pipeline] ${missingSlots.length} storylet images still missing for ${sceneId} after retry — aggressive pass ${pass + 1}`);
-        for (const slot of missingSlots) {
-          await attemptStoryletSlot(slot, 'aggressive', pass);
-        }
-        await persistStoryletRunState(`aggressive-${pass + 1}`);
-      }
-
-      // Last-resort recovery: for any slots still missing after all retries,
-      // generate with a drastically simplified prompt, no reference images,
-      // and no QA validation. This ensures every storylet beat gets an image.
-      const recoverySlots = storyletManifest.slots.filter(slot => !sceneStoryletImages.get(slot.outcomeName)?.has(slot.beatId));
-      if (recoverySlots.length > 0) {
-        console.warn(`[Pipeline] ${recoverySlots.length} storylet images still missing for ${sceneId} — running last-resort recovery`);
-        for (const slot of recoverySlots) {
-          const beatImages = getOutcomeBeatImages(slot.outcomeName);
-          if (beatImages.has(slot.beatId)) continue;
-          const beatDesc = this.resolvePlayerTemplates(
-            this.normalizeNarrativeText(slot.beat.text ?? '', `${slot.outcomeName} aftermath`),
-            brief
-          );
-          const tone = slot.storyletTone;
-          const moodHint = toneMoodMap[tone] || 'dramatic aftermath';
-          const artStyle = this.config.artStyle || 'cinematic illustration';
-          const recoveryPromptText = `${artStyle} style. ${moodHint}. ${beatDesc.slice(0, 300)}`;
-          const recoveryPrompt: ImagePrompt = this.sanitizeImagePrompt({
-            prompt: recoveryPromptText,
-            style: artStyle,
-            aspectRatio: '16:9',
-          }, brief);
-          const recoveryId = sanitizeEncounterIdentifier(`storylet-${scopedSceneId}-${slot.outcomeName}-${slot.beatId}-recovery`);
-          try {
-            const result = await withTimeout(this.imageService.generateImage(
-              recoveryPrompt,
-              recoveryId,
-              {
-                sceneId: scopedSceneId,
-                beatId: slot.beatId,
-                type: 'storylet-aftermath',
-                characters: encounterCharacterIds,
-                characterNames: encounterCharacterNames,
-                characterDescriptions: encounterCharacterDescriptions,
-              },
-              undefined,
-            ), PIPELINE_TIMEOUTS.imageGeneration, `storyletRecovery(${recoveryId})`);
-            if (result.imageUrl) {
-              beatImages.set(slot.beatId, result.imageUrl);
-              globalEncounterImageIndex++;
-              storyletPolicy.onSlotSuccess();
-              await markResumeDone(slot.baseIdentifier);
-              console.log(`[Pipeline] Storylet recovery succeeded for ${sceneId}/${slot.outcomeName}/${slot.beatId}`);
-              this.emit({
-                type: 'checkpoint', phase: 'encounter_images',
-                message: `Encounter image ${globalEncounterImageIndex} of ~${totalEncounterImages} complete (recovery)`,
-                data: { imageIndex: globalEncounterImageIndex, totalImages: totalEncounterImages, identifier: recoveryId },
-              });
-            } else {
-              console.error(`[Pipeline] Storylet recovery returned no URL for ${sceneId}/${slot.outcomeName}/${slot.beatId}`);
-            }
-          } catch (recoveryErr) {
-            const msg = recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr);
-            console.error(`[Pipeline] Storylet recovery FAILED for ${sceneId}/${slot.outcomeName}/${slot.beatId}: ${msg}`);
-          }
-          await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-        }
-        await persistStoryletRunState('recovery');
-      }
-
-      const finalMissingKeys = collectMissingStoryletSlotsFromManifest(storyletManifest, sceneStoryletImages);
-      if (finalMissingKeys.length > 0) {
-        const missingByOutcome = new Map<string, string[]>();
-        for (const slot of storyletManifest.slots) {
-          if (sceneStoryletImages.get(slot.outcomeName)?.has(slot.beatId)) continue;
-          const existing = missingByOutcome.get(slot.outcomeName) || [];
-          existing.push(slot.beatId);
-          missingByOutcome.set(slot.outcomeName, existing);
-        }
-        for (const [outcomeName, beatIds] of missingByOutcome) {
-          const msg = `Storylet ${sceneId}/${outcomeName}: ${beatIds.length} beats still missing images after all retries + recovery: ${beatIds.join(', ')}`;
-          console.error(`[Pipeline] STORYLET IMAGE FAILURE: ${msg}`);
-          this.emit({ type: 'error', phase: 'encounter_images', message: msg });
-          storyletFailures.push(msg);
-        }
-      }
-
-      if (sceneStoryletImages.size > 0) {
-        storyletImages.set(sceneId, sceneStoryletImages);
-      }
-    }
-
-    this.emit({ type: 'phase_complete', phase: 'encounter_images', message: `Encounter image generation complete` });
-
-    return { encounterImages, storyletImages, storyletFailures };
-  }
-
-  /**
-   * Recursively generate outcome images for an encounter choice tree.
-   * Traverses choices → outcomes → nextSituation → choices → ... producing
-   * an image for every outcome and every nested situation node.
-   */
-  private async generateEncounterTreeImages(
-    choices: Array<{ id: string; text?: string; outcomes?: Record<string, any> }>,
-    pathPrefix: string,
-    sceneId: string,
-    encounterId: string,
-    beatId: string,
-    context: {
-      referenceImages: ReferenceImage[];
-      characterIds: string[];
-      characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
-      brief: FullCreativeBrief;
-      encounter: EncounterStructure;
-      settingContext?: SceneSettingContext;
-    },
-    maps: {
-      setupImages: Map<string, string>;
-      outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }>;
-    },
-    counters: { imagesGenerated: number; imagesAttempted: number; globalIndex: number; total: number },
-    failedImages: string[],
-    encounterPolicy: EncounterProviderPolicy,
-    resumeSet: Set<string>,
-    markResumeDone: (baseId: string) => Promise<void>,
-    onEncounterSlotFailure: (err: unknown) => Promise<void>,
-    depth: number = 0,
-  ): Promise<void> {
-    if (depth > ENCOUNTER_TREE_MAX_DEPTH) {
-      console.warn(`[Pipeline] Encounter tree depth limit (${ENCOUNTER_TREE_MAX_DEPTH}) reached at ${pathPrefix} — skipping deeper nodes`);
-      return;
-    }
-
-    const { referenceImages, characterIds, characterNames, characterDescriptions, brief, encounter, settingContext } = context;
-    const scopedSceneId = this.getEpisodeScopedSceneId(brief, sceneId);
-
-    const makeFallbackCinematic = (narrativeText: string | undefined, tier: 'success' | 'complicated' | 'failure') => {
-      if (!narrativeText) return null;
-      const moodMap = { success: 'triumphant' as const, complicated: 'tense_uncertainty' as const, failure: 'desperate' as const };
-      const expressionMap = { success: 'triumphant', complicated: 'strained', failure: 'pained' };
-      const poseMap = { success: 'victorious follow-through', complicated: 'bracing', failure: 'recoiling' };
-      return {
-        sceneDescription: this.makeEncounterVisualSceneDescription(narrativeText),
-        focusSubject: 'protagonist',
-        secondaryElements: encounter.npcStates?.map(npc => npc.name || npc.npcId) || [],
-        cameraAngle: this.inferEncounterCameraAngle(narrativeText, tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising'),
-        shotType: 'consequence' as const,
-        mood: this.inferEncounterMood(narrativeText, tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising') || moodMap[tier],
-        lightingDirection: tier === 'success' ? 'warm front lighting' : tier === 'failure' ? 'harsh side lighting' : 'neutral fill',
-        colorPalette: tier === 'success' ? 'warm tones' : tier === 'failure' ? 'cold desaturated' : 'muted mixed',
-        characterStates: [
-          { characterId: brief.protagonist.id || 'protagonist', pose: poseMap[tier], expression: expressionMap[tier], position: 'center frame' },
-          ...(encounter.npcStates || []).map(npc => ({
-            characterId: npc.npcId || npc.name || 'npc',
-            pose: tier === 'success' ? 'staggering back' : tier === 'failure' ? 'pressing advantage' : 'locked in struggle',
-            expression: tier === 'success' ? 'shocked' : tier === 'failure' ? 'confident' : 'straining',
-            position: 'opposite side',
-          })),
-        ],
-      };
-    };
-
-    for (const choice of choices) {
-      if (!choice.outcomes) continue;
-
-      const choiceMapKey = pathPrefix ? `${pathPrefix}::${choice.id}` : choice.id;
-      const choiceOutcomes: { success?: string; complicated?: string; failure?: string } = {};
-      let previousOutcomeTier: 'success' | 'complicated' | 'failure' | undefined;
-
-      for (const tier of ['success', 'complicated', 'failure'] as const) {
-        await this.checkCancellation();
-        const outcomeData = choice.outcomes[tier];
-        if (!outcomeData) continue;
-
-        const outcomeText = this.resolvePlayerTemplates(
-          this.normalizeNarrativeText(
-            outcomeData.narrativeText,
-            `${this.normalizeNarrativeText(choice.text, 'choice')} - ${tier} result`
-          ),
-          brief
-        );
-        const outcomeVisualContract = outcomeData.visualContract || this.buildEncounterVisualContract(
-          outcomeText,
-          tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising'
-        );
-        if (outcomeData.encounterOutcome === 'partialVictory' && outcomeData.cost && !outcomeVisualContract.visibleCost) {
-          outcomeVisualContract.visibleCost = outcomeData.cost.visibleComplication;
-        }
-
-        const cinematic = outcomeData.cinematicDescription
-          || makeFallbackCinematic(outcomeText, tier)
-          || makeFallbackCinematic(`${encounter.encounterType || 'dramatic'} encounter - ${tier} outcome for ${brief.protagonist.name}`, tier)!;
-
-        const outcomeBaseId = encounterOutcomeIdentifier(scopedSceneId, beatId, choiceMapKey, tier);
-        counters.imagesAttempted++;
-        try {
-          const outcomePrompt = this.encounterImageAgent.cinematicDescriptionToPrompt({
-            encounterId,
-            beatId,
-            choiceId: choiceMapKey,
-            outcomeTier: tier,
-            outcomeType: outcomeData.encounterOutcome,
-            cost: outcomeData.cost,
-            cinematicDescription: cinematic,
-            encounterPhase: tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising',
-            previousOutcomeTier,
-            visualContract: outcomeVisualContract,
-            genre: brief.story.genre,
-            artStyle: this.config.artStyle,
-            settingContext,
-          });
-
-          const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-            outcomePrompt,
-            outcomeBaseId,
-            { sceneId: scopedSceneId, beatId, choiceId: choiceMapKey, type: 'encounter-outcome', tier, outcomeType: outcomeData.encounterOutcome, characters: characterIds, characterNames, characterDescriptions },
-            referenceImages.length > 0 ? referenceImages : undefined,
-            `${tier}:${beatId}:${choiceMapKey}`,
-            1,
-            {
-              preferAtlasFirst: encounterPolicy.consumePreferAtlasFirst(),
-              resumeCompleted: resumeSet,
-              resumeBaseIdentifier: outcomeBaseId,
-            },
-          );
-          const result = generated.result;
-
-          if (result.imageUrl) {
-            if (generated.artifactStatus !== 'accepted_clean') {
-              console.warn(
-                `[Pipeline] Encounter ${tier} image for ${choiceMapKey} accepted with artifact status=${generated.artifactStatus} after ${generated.attempts} attempt(s)`
-              );
-            }
-            choiceOutcomes[tier] = result.imageUrl;
-            counters.imagesGenerated++;
-            counters.globalIndex++;
-            encounterPolicy.onSlotSuccess();
-            await markResumeDone(outcomeBaseId);
-            this.emit({
-              type: 'checkpoint', phase: 'encounter_images',
-              message: `Encounter image ${counters.globalIndex} of ~${counters.total} complete (depth ${depth})`,
-              data: { imageIndex: counters.globalIndex, totalImages: counters.total, identifier: outcomeBaseId },
-            });
-            previousOutcomeTier = tier;
-          } else {
-            failedImages.push(`${tier}:${choiceMapKey}`);
-            await onEncounterSlotFailure(new Error('no_image_url'));
-          }
-        } catch (outcomeErr) {
-          const msg = outcomeErr instanceof Error ? outcomeErr.message : String(outcomeErr);
-          console.error(`[Pipeline] Encounter ${tier} image FAILED for ${choiceMapKey} in ${sceneId}: ${msg}`);
-          failedImages.push(`${tier}:${choiceMapKey}:${msg}`);
-          if (outcomeErr instanceof PipelineError) throw outcomeErr;
-          await onEncounterSlotFailure(outcomeErr);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-
-        // Recurse into nextSituation if present
-        const nextSituation = outcomeData.nextSituation;
-        if (nextSituation && nextSituation.choices && nextSituation.choices.length > 0) {
-          const situationKey = encounterSituationKey(beatId, choiceMapKey, tier);
-          const legacySituationKey = legacyEncounterSituationKey(choiceMapKey, tier);
-          const sitText = this.resolvePlayerTemplates(
-            this.normalizeNarrativeText(
-              nextSituation.setupText,
-              `Next situation after ${tier} outcome`
-            ),
-            brief
-          );
-
-          const sitCinematic = nextSituation.cinematicSetup || {
-            sceneDescription: this.makeEncounterVisualSceneDescription(sitText),
-            focusSubject: 'protagonist',
-            secondaryElements: encounter.npcStates?.map(npc => npc.name || npc.npcId) || [],
-            cameraAngle: this.inferEncounterCameraAngle(sitText, 'setup'),
-            shotType: 'tension_hold' as const,
-            mood: this.inferEncounterMood(sitText, 'setup'),
-            lightingDirection: 'dramatic side lighting',
-            colorPalette: 'contextual to genre',
-            characterStates: [
-              { characterId: brief.protagonist.id || 'protagonist', pose: 'ready stance', expression: 'determined', position: 'center frame' },
-              ...(encounter.npcStates || []).map(npc => ({
-                characterId: npc.npcId || npc.name || 'npc',
-                pose: 'facing protagonist',
-                expression: npc.initialDisposition || 'neutral',
-                position: 'opposite side',
-              })),
-            ],
-          };
-
-          const sitBaseId = encounterSituationIdentifier(scopedSceneId, beatId, choiceMapKey, tier);
-          const legacySitBaseId = legacyEncounterSituationIdentifier(scopedSceneId, choiceMapKey, tier);
-          counters.imagesAttempted++;
-          try {
-            const sitVisualContract = nextSituation.visualContract || this.buildEncounterVisualContract(sitText, 'setup');
-            const sitPrompt = this.encounterImageAgent.cinematicDescriptionToPrompt({
-              encounterId,
-              beatId,
-              cinematicDescription: sitCinematic,
-              encounterPhase: 'setup',
-              visualContract: sitVisualContract,
-              genre: brief.story.genre,
-              artStyle: this.config.artStyle,
-              settingContext,
-            });
-
-            const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-              sitPrompt,
-              sitBaseId,
-              { sceneId: scopedSceneId, beatId, type: 'encounter-setup', characters: characterIds, characterNames, characterDescriptions },
-              referenceImages.length > 0 ? referenceImages : undefined,
-              `situation:${choiceMapKey}::${tier}`,
-              1,
-              {
-                preferAtlasFirst: encounterPolicy.consumePreferAtlasFirst(),
-                resumeCompleted: resumeSet,
-                resumeBaseIdentifier: sitBaseId,
-                resumeAlternateBaseIdentifiers: [legacySitBaseId],
-              },
-            );
-
-            if (generated.result.imageUrl) {
-              maps.setupImages.set(situationKey, generated.result.imageUrl);
-              maps.setupImages.set(legacySituationKey, generated.result.imageUrl);
-              counters.imagesGenerated++;
-              counters.globalIndex++;
-              encounterPolicy.onSlotSuccess();
-              await markResumeDone(sitBaseId);
-              this.emit({
-                type: 'checkpoint', phase: 'encounter_images',
-                message: `Encounter image ${counters.globalIndex} of ~${counters.total} complete (situation depth ${depth + 1})`,
-                data: { imageIndex: counters.globalIndex, totalImages: counters.total, identifier: sitBaseId },
-              });
-              if (generated.result.imageData && generated.result.mimeType) {
-                this.imageService.setGeminiPreviousScene(generated.result.imageData, generated.result.mimeType);
-              }
-            } else {
-              failedImages.push(`situation:${choiceMapKey}::${tier}`);
-              await onEncounterSlotFailure(new Error('no_image_url'));
-            }
-          } catch (sitErr) {
-            const msg = sitErr instanceof Error ? sitErr.message : String(sitErr);
-            console.error(`[Pipeline] Encounter situation image FAILED for ${situationKey} in ${sceneId}: ${msg}`);
-            failedImages.push(`situation:${situationKey}:${msg}`);
-            if (sitErr instanceof PipelineError) throw sitErr;
-            await onEncounterSlotFailure(sitErr);
-          }
-
-          await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-
-          // Recurse into the nextSituation's choices
-          const nestedPathPrefix = `${choiceMapKey}::${tier}`;
-          console.log(`[Pipeline] Recursing into nextSituation at depth ${depth + 1}: ${nestedPathPrefix} (${nextSituation.choices.length} choices)`);
-          await this.generateEncounterTreeImages(
-            nextSituation.choices,
-            nestedPathPrefix,
-            sceneId,
-            encounterId,
-            beatId,
-            context,
-            maps,
-            counters,
-            failedImages,
-            encounterPolicy,
-            resumeSet,
-            markResumeDone,
-            onEncounterSlotFailure,
-            depth + 1,
-          );
-        }
-      }
-
-      if (Object.keys(choiceOutcomes).length > 0) {
-        maps.outcomeImages.set(choiceMapKey, choiceOutcomes);
-      }
-    }
+    );
   }
 
   /**
@@ -8810,8 +8465,7 @@ ${clothingRule}
   private getCharacterIdsInScene(scene: SceneContent, characterBible: CharacterBible, protagonistId?: string): string[] {
     const characterIds = new Set<string>();
     
-    // ALWAYS include the protagonist — they are in every scene even if not explicitly named
-    // (beat text often uses {{player.name}} templates instead of the actual name)
+    // ALWAYS include the protagonist — they are in every scene even if not explicitly named.
     if (protagonistId) {
       const protagonistExists = characterBible.characters.some(c => c.id === protagonistId);
       if (protagonistExists) characterIds.add(protagonistId);
@@ -8856,13 +8510,13 @@ ${clothingRule}
       if (!text.trim()) continue;
 
       for (const c of characterBible.characters) {
-        const tokens = c.name
-          .split(/\s+/)
-          .map(t => t.trim())
-          .filter(t => t.length > 2);
-        if (tokens.length === 0) continue;
-
-        const mentioned = tokens.some(tok => new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i').test(text));
+        const name = c.name.trim();
+        if (!name) continue;
+        const [firstName] = name.split(/\s+/).map(t => t.trim()).filter(Boolean);
+        const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedFirstName = firstName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const mentioned = new RegExp(`\\b${escapedName}\\b`, 'i').test(text)
+          || Boolean(firstName && firstName.length > 2 && escapedFirstName && new RegExp(`\\b${escapedFirstName}\\b`, 'i').test(text));
         if (mentioned) characterIds.add(c.id);
       }
     }
@@ -8870,272 +8524,126 @@ ${clothingRule}
     return Array.from(characterIds);
   }
 
-  /**
-   * Shared QA check for encounter images: validates text artifacts using Gemini vision.
-   * Returns the validated image result, or null if the image fails QA and retry also fails.
-   * Applies the same minimum QA that episode images receive.
-   */
-  private async validateEncounterImage(
-    result: { imageUrl?: string; imageData?: string; mimeType?: string },
-    identifier: string,
-    prompt?: ImagePrompt,
-    metadata?: {
-      sceneId: string;
-      beatId: string;
-      type: 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath';
-      characters: string[];
-      characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
-      choiceId?: string;
-      tier?: 'success' | 'complicated' | 'failure';
-      outcomeType?: EncounterOutcome;
-    },
-    allowDiegeticText: boolean = false,
-    maxRetries: number = 2
-  ): Promise<{ passed: boolean; result: typeof result }> {
-    if (!result.imageData || !result.mimeType) {
-      return { passed: true, result };
-    }
-
-    const textCheck = await withTimeout(this.imageService.checkImageForTextArtifacts(
-      result.imageData,
-      result.mimeType,
-      allowDiegeticText
-    ), PIPELINE_TIMEOUTS.imageGeneration, `textArtifactCheck(${identifier})`);
-
-    if (!textCheck.hasText) {
-      // Continue to visual readability checks below.
-    } else {
-      console.warn(`[Pipeline] Encounter image ${identifier} has text artifact: ${textCheck.description}. Will be flagged for observability.`);
-      return { passed: false, result };
-    }
-
-    if (!prompt || !metadata) {
-      return { passed: true, result };
-    }
-
-    const focalCharacterName = metadata.characterNames[0] || 'protagonist';
-    const focalEmotion = prompt.emotionalCore || prompt.keyExpression || 'determined tension';
-    const expressionTargets = prompt.keyExpression || prompt.emotionalCore ? [{
-      characterName: focalCharacterName,
-      emotion: focalEmotion,
-      intensity: metadata.type === 'encounter-outcome' ? 'intense' as const : 'moderate' as const,
-      reason: prompt.visualNarrative || prompt.prompt,
-    }] : [];
-
-    const actingTargets = prompt.keyBodyLanguage || prompt.keyGesture ? [{
-      characterName: focalCharacterName,
-      intent: metadata.type === 'encounter-outcome'
-        ? (metadata.tier === 'failure' ? 'protect_self' : metadata.tier === 'success' ? 'challenge' : 'process')
-        : 'observe',
-      primaryEmotion: focalEmotion,
-      intensity: metadata.type === 'encounter-outcome' ? 'intense' as const : 'moderate' as const,
-      status: metadata.type === 'encounter-outcome' && metadata.tier === 'success' ? 'dominant' as const : 'equal' as const,
-      relationalStance: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'guarded' as const : 'open' as const,
-      spatialRelation: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'withdrawing' as const : 'approaching' as const,
-      bodyLanguage: {
-        spine: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'curved_forward' : 'upright',
-        shoulderState: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'raised_tense' : 'open_tense',
-        chestDirection: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'closed_inward' : 'open_forward',
-        weightDistribution: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'back' : 'forward',
-        stanceWidth: metadata.type === 'encounter-outcome' ? 'wide_confident' : 'normal',
-        feetDirection: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'away_from_target' : 'toward_target',
-        headPosition: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'chin_down' : 'chin_up',
-        neckTension: 'tense',
-        gazeDirection: metadata.type === 'encounter-outcome' && metadata.tier === 'failure' ? 'averted' : 'direct_contact',
-        armPosition: prompt.keyGesture?.includes('reach') ? 'reaching_out' : 'gesturing',
-        handState: prompt.keyGesture?.includes('grip') ? 'gripping_object' : 'gesturing_emphatic',
-        gestureSize: metadata.type === 'encounter-outcome' ? 'moderate' : 'small_contained',
-        spatialDistance: metadata.characterNames.length > 1 ? 'personal' : undefined,
-        bodyOrientation: metadata.characterNames.length > 1 ? 'angled_toward' : undefined,
-      },
-      reason: prompt.keyBodyLanguage || prompt.keyGesture,
-    }] : [];
-
-    const hardFailures: string[] = [];
-
-    if (metadata?.outcomeType === 'partialVictory') {
-      if (!prompt?.prompt?.toLowerCase().includes('partial victory rule')) {
-        hardFailures.push('partialVictory prompt is missing costly-success guardrails');
-      }
-      if (!prompt?.prompt?.toLowerCase().includes('visible complication')) {
-        hardFailures.push('partialVictory prompt does not describe the visible cost');
-      }
-    }
-
-    if (expressionTargets.length > 0) {
-      const expressionCheck = await this.imageAgentTeam.validateExpressions(
-        identifier,
-        result.imageData,
-        result.mimeType,
-        expressionTargets as any,
-        prompt.emotionalCore,
-        false
-      );
-      if (expressionCheck.success && expressionCheck.data && !expressionCheck.data.isAcceptable) {
-        hardFailures.push(`expression readability: ${expressionCheck.data.issues.join(', ')}`);
-      }
-    }
-
-    if (actingTargets.length > 0) {
-      const bodyCheck = await this.imageAgentTeam.validateBodyLanguage(
-        identifier,
-        result.imageData,
-        result.mimeType,
-        actingTargets as any,
-        {
-          expectedPowerDynamic: metadata.type === 'encounter-outcome' ? 'shifting' : 'balanced',
-          expectedEmotionalDistance: metadata.characterNames.length > 1 ? 'close' : 'neutral',
-          isConflictScene: metadata.type !== 'storylet-aftermath',
-        }
-      );
-      if (bodyCheck.success && bodyCheck.data && !bodyCheck.data.isAcceptable) {
-        hardFailures.push(`body language: ${bodyCheck.data.issues.join(', ')}`);
-      }
-    }
-
-    const storyCheck = await this.imageAgentTeam.validateVisualStorytelling(
-      identifier,
-      result.imageData,
-      result.mimeType,
-      {
-        beatId: metadata.beatId,
-        clarity: 'instant_read',
-        pacing: metadata.type === 'encounter-outcome' ? 'peak' : metadata.type === 'storylet-aftermath' ? 'aftermath' : 'hold',
-        choiceTelegraph: prompt.visualNarrative || prompt.prompt,
-      } as any,
-      undefined,
-      undefined,
-      undefined,
-      { action: prompt.keyGesture || prompt.visualNarrative || prompt.prompt, emotion: focalEmotion },
-      undefined
+  private resolveCharacterId(idOrName: string, characterBible: CharacterBible): string | null {
+    const raw = String(idOrName || '').trim();
+    if (!raw) return null;
+    const normalize = (value: string) => value
+      .toLowerCase()
+      .replace(/^char[-_]/, '')
+      .replace(/\s*\([^)]*\)\s*/g, ' ')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const rawNorm = normalize(raw);
+    const direct = characterBible.characters.find((c) => c.id === raw || c.name === raw);
+    if (direct) return direct.id;
+    const fuzzy = characterBible.characters.find((c) =>
+      normalize(c.id) === rawNorm ||
+      normalize(c.name) === rawNorm ||
+      normalize(c.name).includes(rawNorm) ||
+      rawNorm.includes(normalize(c.name))
     );
-    if (storyCheck.success && storyCheck.data && !storyCheck.data.isAcceptable) {
-      hardFailures.push(`storytelling clarity: ${storyCheck.data.criticalIssues.join(', ')}`);
-    }
-
-    if (hardFailures.length > 0) {
-      console.warn(`[Pipeline] Encounter image ${identifier} failed visual QA: ${hardFailures.join(' | ')}`);
-      return { passed: false, result };
-    }
-
-    return { passed: true, result };
+    return fuzzy?.id || null;
   }
 
-  private strengthenPromptForTextArtifacts(prompt: ImagePrompt, attempt: number): ImagePrompt {
-    const strengthened = { ...prompt };
-    const banTextDirective =
-      attempt === 0
-        ? 'Do not overlay any narrative text, dialog, captions, sound effects, or onomatopoeia on the image. Text on in-world objects (signs, clothing, screens) is fine.'
-        : 'CRITICAL: absolutely no narrative text, dialog, speech bubbles, captions, sound effects, or onomatopoeia overlaid on the image.';
-    strengthened.prompt = `${this.scrubPromptArtifacts(strengthened.prompt || '')} ${banTextDirective}`.trim();
-    strengthened.negativePrompt = `${strengthened.negativePrompt || ''}, caption text, dialog text, narrative text, speech bubbles, thought bubbles, sound effect text, onomatopoeia, chapter title, character name labels, credits, watermarks`.trim();
-    return strengthened;
+  private resolveProtagonistCharacterId(characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
+    const byRole = characterBible.characters.find((c: any) =>
+      /\b(protagonist|main character|player character)\b/i.test(String(c.role || c.archetype || ''))
+    );
+    if (byRole?.id) return byRole.id;
+
+    const briefName = String(brief.protagonist?.name || '').trim();
+    if (briefName && !/^hero$/i.test(briefName)) {
+      const byBriefName = this.resolveCharacterId(briefName, characterBible);
+      if (byBriefName) return byBriefName;
+    }
+
+    const briefId = String(brief.protagonist?.id || '').trim();
+    if (briefId && !/^p(?:rotagonist)?[-_ ]?1$/i.test(briefId) && !/^hero$/i.test(briefId)) {
+      const byBriefId = this.resolveCharacterId(briefId, characterBible);
+      if (byBriefId) return byBriefId;
+    }
+
+    return characterBible.characters[0]?.id || null;
   }
 
-  private async generateEncounterImageWithTextArtifactPolicy(
-    prompt: ImagePrompt,
-    identifier: string,
-    metadata: {
-      sceneId: string;
-      beatId: string;
-      type: 'encounter-setup' | 'encounter-outcome' | 'storylet-aftermath';
-      characters: string[];
-      characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
-      choiceId?: string;
-      tier?: 'success' | 'complicated' | 'failure';
-      outcomeType?: EncounterOutcome;
-    },
-    referenceImages: ReferenceImage[] | undefined,
-    qaIdentifier: string,
-    maxTextArtifactRetries = 1,
-    encounterGenOptions?: {
-      preferAtlasFirst?: boolean;
-      resumeCompleted?: Set<string>;
-      resumeBaseIdentifier?: string;
-      resumeAlternateBaseIdentifiers?: string[];
+  private resolveCharacterIdWithBrief(idOrName: string, characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
+    const raw = String(idOrName || '').trim();
+    if (!raw) return null;
+    if (/^p(?:rotagonist)?[-_ ]?1$/i.test(raw) || /^player$/i.test(raw) || /^hero$/i.test(raw)) {
+      return this.resolveProtagonistCharacterId(characterBible, brief)
+        || this.resolveCharacterId(brief.protagonist?.name || brief.protagonist?.id || raw, characterBible);
     }
-  ): Promise<{
-    result: GeneratedImage;
-    artifactStatus: 'accepted_clean' | 'accepted_after_retry' | 'accepted_with_artifact';
-    attempts: number;
-    resolvedIdentifier: string;
-  }> {
+    return this.resolveCharacterId(raw, characterBible);
+  }
+
+  private normalizeCharacterIds(ids: string[] | undefined, characterBible: CharacterBible): string[] {
+    const normalized = new Set<string>();
+    for (const value of ids || []) {
+      const resolved = this.resolveCharacterId(value, characterBible);
+      if (resolved) normalized.add(resolved);
+    }
+    return [...normalized];
+  }
+
+  private async ensureCharacterReferencesForVisibleCharacters(
+    ids: string[] | undefined,
+    characterBible: CharacterBible,
+    brief: FullCreativeBrief,
+    contextLabel: string,
+  ): Promise<string[]> {
+    const attemptedLookup = [...(ids || [])];
+    const characterIds = Array.from(new Set(
+      attemptedLookup
+        .map((id) => this.resolveCharacterIdWithBrief(id, characterBible, brief))
+        .filter((id): id is string => Boolean(id))
+    ));
     if (
-      encounterGenOptions?.resumeBaseIdentifier &&
-      encounterGenOptions.resumeCompleted?.has(encounterGenOptions.resumeBaseIdentifier)
+      characterIds.length === 0 ||
+      this.config.imageGen?.requireCharacterRefsForVisibleCharacters === false ||
+      this.config.imageGen?.enabled === false
     ) {
-      const tryIds = [
-        identifier,
-        ...(encounterGenOptions.resumeAlternateBaseIdentifiers || []),
-      ];
-      for (const cand of tryIds) {
-        const existing = this.imageService.findExistingGeneratedImage(cand);
-        if (existing?.imageUrl) {
-          return {
-            result: { prompt, imageUrl: existing.imageUrl, imagePath: existing.imagePath },
-            artifactStatus: 'accepted_clean',
-            attempts: 0,
-            resolvedIdentifier: cand,
-          };
+      return characterIds;
+    }
+
+    const missing = characterIds.filter((id) => !this.imageAgentTeam.hasReferenceSheet(id));
+    if (missing.length > 0) {
+      for (const id of missing) {
+        const char = characterBible.characters.find((c) => c.id === id);
+        if (char) await this.hydrateReferenceSheetFromDisk(char);
+      }
+    }
+    const stillMissing = characterIds.filter((id) => !this.imageAgentTeam.hasReferenceSheet(id));
+    if (stillMissing.length === 0) return characterIds;
+
+    this.emit({
+      type: 'warning',
+      phase: 'images',
+      message: `Character continuity refs missing for ${contextLabel}: ${stillMissing
+        .map((id) => characterBible.characters.find((c) => c.id === id)?.name || id)
+        .join(', ')}. Generating references before story images continue. Lookup inputs: ${attemptedLookup.join(', ') || 'none'}.`,
+      data: { contextLabel, attemptedLookup, resolvedCharacterIds: characterIds, missing: stillMissing },
+    });
+
+    for (const id of stillMissing) {
+      const char = characterBible.characters.find((c) => c.id === id);
+      if (!char) continue;
+      await this.generateCharacterReferenceSheet(char, brief);
+      const fingerprint = computeCharacterIdentityFingerprint(char);
+      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
+      if (!this.imageAgentTeam.hasReferenceSheet(char.id)) {
+        const msg = `Character continuity refs still missing for ${char.name} after reference generation (${contextLabel}).`;
+        this.emit({ type: 'error', phase: 'images', message: msg });
+        if (this.config.imageGen?.allowTextOnlyCharacterImages !== true) {
+          throw new PipelineError(msg, 'images', {
+            agent: 'ImageAgentTeam',
+            context: { characterId: char.id, characterName: char.name, contextLabel, failureKind: 'missing_character_reference' },
+          });
         }
       }
     }
 
-    let attemptPrompt = prompt;
-    let lastResult: GeneratedImage | null = null;
-    let lastIdentifier = identifier;
-
-    for (let attempt = 0; attempt <= maxTextArtifactRetries; attempt++) {
-      const attemptIdentifier = attempt === 0 ? identifier : `${identifier}-textfix${attempt}`;
-      lastIdentifier = attemptIdentifier;
-      const result = await withTimeout(this.imageService.generateImage(
-        attemptPrompt,
-        attemptIdentifier,
-        {
-          ...metadata,
-          baseIdentifier: encounterGenOptions?.resumeBaseIdentifier || identifier,
-          resolvedIdentifier: attemptIdentifier,
-          regeneration: attempt > 0 ? attempt : undefined,
-          preferAtlasFirst: !!encounterGenOptions?.preferAtlasFirst && attempt === 0,
-        },
-        referenceImages
-      ), PIPELINE_TIMEOUTS.imageGeneration, `encounterImage(${attemptIdentifier})`);
-      lastResult = result;
-
-      if (!result.imageUrl) continue;
-      const qa = await this.validateEncounterImage(result, `${qaIdentifier}:attempt-${attempt + 1}`, attemptPrompt, metadata, true);
-      if (qa.passed) {
-        return {
-          result,
-          artifactStatus: attempt === 0 ? 'accepted_clean' : 'accepted_after_retry',
-          attempts: attempt + 1,
-          resolvedIdentifier: attemptIdentifier,
-        };
-      }
-
-      if (attempt < maxTextArtifactRetries) {
-        attemptPrompt = this.strengthenPromptForTextArtifacts(prompt, attempt);
-      }
-    }
-
-    if (!lastResult) {
-      throw new Error(`Encounter image generation failed for ${qaIdentifier}`);
-    }
-
-    return {
-      result: lastResult,
-      artifactStatus: 'accepted_with_artifact',
-      attempts: maxTextArtifactRetries + 1,
-      resolvedIdentifier: lastIdentifier,
-    };
-  }
-
-  private makeEncounterVisualSceneDescription(narrativeText: string): string {
-    const cleaned = (narrativeText || '').trim();
-    if (!cleaned) return 'A high-stakes encounter moment with visible action and reaction.';
-    return `${cleaned} Show the exact moment of action and reaction, with clear body language and cause/effect in frame.`;
+    return characterIds;
   }
 
   /**
@@ -9178,6 +8686,22 @@ ${clothingRule}
     return this.scrubPromptArtifacts(resolved);
   }
 
+  private resolveGeneratedStoryPlayerTemplates(story: Story, brief: FullCreativeBrief): Story {
+    const resolution = resolvePlayerTemplatesInObject(story, {
+      name: brief.protagonist.name,
+      pronouns: brief.protagonist.pronouns,
+    });
+    if (resolution.replacements > 0) {
+      this.emit({
+        type: 'warning',
+        phase: 'assembly',
+        message: `Resolved ${resolution.replacements} protagonist template token(s) before saving story output.`,
+      });
+      console.warn(`[Pipeline] Resolved ${resolution.replacements} protagonist template token(s) before saving story output.`);
+    }
+    return resolution.value;
+  }
+
   private sanitizeImagePrompt(prompt: ImagePrompt, brief: FullCreativeBrief): ImagePrompt {
     const sanitize = (value: unknown) => this.sanitizePromptText(value, brief, '');
     return {
@@ -9190,6 +8714,56 @@ ${clothingRule}
       keyBodyLanguage: sanitize(prompt.keyBodyLanguage),
       keyGesture: sanitize(prompt.keyGesture),
       poseSpec: sanitize(prompt.poseSpec),
+    };
+  }
+
+  private applyThirdPersonRenderContract(
+    prompt: ImagePrompt,
+    storyboardShot?: VisualStoryboardPacket['shots'][number],
+    options?: { isEnvironmentShot?: boolean },
+  ): ImagePrompt {
+    const thirdPersonContract = 'CAMERA POV CONTRACT: Render this as a third-person observer shot outside every character. Never use first-person/player-eye POV, disembodied hands, "your hand" framing, or a camera inside the protagonist body.';
+    const environmentStyleContract = options?.isEnvironmentShot
+      ? 'ENVIRONMENT STYLE LOCK: Render all backgrounds and architecture as stylized cartoon/graphic environment design matching the character finish: simplified designed shapes, clean illustrated edges, curated flat/cel color, non-photographic lighting, no real-estate photo look, no architectural visualization, no HDR interior realism, no live-action location still.'
+      : '';
+    const storyboardContract = storyboardShot ? [
+      'VISUAL STORYBOARD PACKET:',
+      `Sequence role: ${storyboardShot.sequenceRole}.`,
+      `Shot: ${storyboardShot.shotSize}, ${storyboardShot.cameraAngle}, ${storyboardShot.cameraHeight} height, ${storyboardShot.cameraSide} side.`,
+      `POV mode: ${storyboardShot.thirdPersonPov}.`,
+      `Required visible cast: ${(storyboardShot.requiredVisibleCharacterIds || []).join(', ') || 'none'}.`,
+      `Optional/background cast: ${(storyboardShot.optionalBackgroundCharacterIds || []).join(', ') || 'none'}.`,
+      `Explicitly offscreen: ${(storyboardShot.offscreenCharacterIds || []).join(', ') || 'none'}.`,
+      `Shot action: ${storyboardShot.promptFields?.action || ''}`,
+      storyboardShot.promptFields?.emotionalRead ? `Emotional read: ${storyboardShot.promptFields.emotionalRead}` : '',
+      storyboardShot.promptFields?.keyDetail ? `Key detail: ${storyboardShot.promptFields.keyDetail}` : '',
+      storyboardShot.continuityFrom ? `Continuity from previous shot: ${storyboardShot.continuityFrom}` : '',
+      `Dramatic reason: ${storyboardShot.dramaticReason || 'story beat progression'}.`,
+    ].filter(Boolean).join(' ') : '';
+    const environmentNegatives = options?.isEnvironmentShot
+      ? 'environment style drift, unapproved location renderer, background finish that contradicts the style contract'
+      : '';
+    const negativeAdditions = ['first-person POV, player-eye view, POV hands, disembodied hands, your hand, your hands, selfie angle, style drift, unapproved renderer', environmentNegatives].filter(Boolean).join(', ');
+    return {
+      ...prompt,
+      prompt: [prompt.prompt, thirdPersonContract, environmentStyleContract, storyboardContract].filter(Boolean).join('\n\n'),
+      composition: [prompt.composition, thirdPersonContract, environmentStyleContract].filter(Boolean).join(' '),
+      negativePrompt: [prompt.negativePrompt, negativeAdditions].filter(Boolean).join(', '),
+    };
+  }
+
+  private createSlotReferencePack(slotId: string, references: unknown[] | undefined): SlotReferencePack | undefined {
+    const refs = Array.isArray(references) ? references.filter(Boolean) as any[] : [];
+    if (refs.length === 0) return undefined;
+    return {
+      slotId,
+      totalCount: refs.length,
+      references: refs,
+      summary: refs.map((ref) => ({
+        role: ref.role || 'reference',
+        characterName: ref.characterName,
+        viewType: ref.viewType,
+      })),
     };
   }
 
@@ -9270,102 +8844,10 @@ ${clothingRule}
    * Image generation happens outside runtime text rendering, so these must be concretized.
    */
   private resolvePlayerTemplates(text: string, brief: FullCreativeBrief): string {
-    const name = brief.protagonist?.name || 'Protagonist';
-    const pronounsRaw = (brief.protagonist?.pronouns || 'he/him').toLowerCase();
-    const pronounMap: Record<string, { they: string; them: string; their: string; theirs: string; themselves: string }> = {
-      'he/him': { they: 'he', them: 'him', their: 'his', theirs: 'his', themselves: 'himself' },
-      'she/her': { they: 'she', them: 'her', their: 'her', theirs: 'hers', themselves: 'herself' },
-      'they/them': { they: 'they', them: 'them', their: 'their', theirs: 'theirs', themselves: 'themselves' },
-    };
-    const pronouns = pronounMap[pronounsRaw] || pronounMap['he/him'];
-    return (text || '')
-      .replace(/\{\{player\.name\}\}/gi, name)
-      .replace(/\{\{player\.they\}\}/gi, pronouns.they)
-      .replace(/\{\{player\.them\}\}/gi, pronouns.them)
-      .replace(/\{\{player\.their\}\}/gi, pronouns.their)
-      .replace(/\{\{player\.theirs\}\}/gi, pronouns.theirs)
-      .replace(/\{\{player\.themselves\}\}/gi, pronouns.themselves);
-  }
-
-  private inferEncounterCameraAngle(
-    text: string,
-    phase: 'setup' | 'rising' | 'peak' | 'resolution'
-  ): 'wide_establishing' | 'medium_action' | 'close_dramatic' | 'low_heroic' | 'high_vulnerability' | 'dutch_chaos' | 'over_shoulder' | 'reaction_shot' {
-    const lowered = (text || '').toLowerCase();
-    if (phase === 'setup') return 'wide_establishing';
-    if (/(strikes?|lunges?|explodes?|impact|collides?)/.test(lowered)) return 'close_dramatic';
-    if (/(stagger|retreat|falls?|wounded|defeat|recoil)/.test(lowered)) return 'high_vulnerability';
-    if (phase === 'peak') return 'low_heroic';
-    if (phase === 'resolution') return 'reaction_shot';
-    return 'medium_action';
-  }
-
-  private inferEncounterMood(
-    text: string,
-    phase: 'setup' | 'rising' | 'peak' | 'resolution'
-  ): 'anticipation' | 'dynamic_action' | 'triumphant' | 'desperate' | 'tense_uncertainty' | 'relief' | 'dread' {
-    const lowered = (text || '').toLowerCase();
-    if (phase === 'setup') return 'anticipation';
-    if (/(victory|wins?|overpower|breakthrough)/.test(lowered)) return 'triumphant';
-    if (/(fail|wound|desperate|panic|collapse|overwhelmed)/.test(lowered)) return 'desperate';
-    if (phase === 'peak') return 'dynamic_action';
-    if (phase === 'resolution') return 'relief';
-    return 'tense_uncertainty';
-  }
-
-  private buildEncounterVisualContract(
-    text: string,
-    phase: 'setup' | 'rising' | 'peak' | 'resolution'
-  ): EncounterVisualContract {
-    const cleaned = (text || '').trim();
-    const action = cleaned.match(/\b(grabs?|reaches?|recoils?|steps?|stumbles?|lunges?|turns?|pushes?|pulls?|raises?|lowers?|clenches?|releases?|strikes?|dodges?|embraces?|confronts?|retreats?|advances?)\b/i)?.[0];
-    const detail = cleaned.match(/\b(key|blade|blood|door|map|weapon|wound|fist|hands?|letter|ring|gun|knife|tear|glance)\b/i)?.[0];
-    const shotDescription = phase === 'setup'
-      ? 'establishing medium-wide frame with relational spacing'
-      : phase === 'peak'
-        ? 'tight dramatic frame at the decisive instant'
-        : phase === 'resolution'
-          ? 'reaction-driven medium close shot with aftermath readable in posture'
-          : 'medium shot that keeps bodies, faces, and pressure readable';
-    return {
-      visualMoment: cleaned || 'A tense encounter moment frozen at the decisive instant.',
-      primaryAction: action ? `protagonist ${action}` : `protagonist reacts under ${phase} pressure`,
-      emotionalRead: phase === 'peak'
-        ? 'faces and posture show maximum strain and commitment'
-        : phase === 'resolution'
-          ? 'visible aftermath in breathing, gaze, and shoulder release/tension'
-          : 'emotion reads through eyes, jaw, and weight shift',
-      relationshipDynamic: phase === 'setup'
-        ? 'opponents sizing each other up with contested space'
-        : 'clear pressure exchange between protagonist and opposition',
-      mustShowDetail: detail
-        ? `the ${detail} as the decisive visual clue`
-        : 'one concrete prop or body cue that proves the outcome',
-      keyExpression: phase === 'resolution'
-        ? 'aftermath visible in the eyes and mouth'
-        : phase === 'peak'
-          ? 'strain, focus, and emotional commitment readable at a glance'
-          : 'emotion clear in the face before the next move lands',
-      keyGesture: action ? `hands and body clearly readable during "${action}"` : 'one decisive hand or body gesture carries the scene',
-      keyBodyLanguage: phase === 'setup'
-        ? 'stance and spacing define the power balance'
-        : 'posture and weight shift show who is pressing and who is yielding',
-      shotDescription,
-      emotionalCore: phase === 'resolution' ? 'aftermath and cost' : phase === 'peak' ? 'decision under pressure' : 'rising interpersonal tension',
-      visualNarrative: cleaned || 'The image should clearly communicate the encounter turn without needing caption text.',
-      includeExpressionRefs: phase !== 'setup',
-    };
-  }
-
-  private shouldUseExpressionReferencesForEncounter(
-    encounter: Pick<EncounterStructure, 'encounterType' | 'encounterStyle'>,
-    visualContract?: EncounterVisualContract
-  ): boolean {
-    if (visualContract?.includeExpressionRefs) return true;
-    const type = (encounter.encounterType || '').toLowerCase();
-    const style = (encounter.encounterStyle || '').toLowerCase();
-    return ['social', 'romantic', 'dramatic', 'negotiation', 'investigation', 'mixed'].includes(type)
-      || ['social', 'romantic', 'dramatic', 'mystery'].includes(style);
+    return resolvePlayerTemplatesInObject(text || '', {
+      name: brief.protagonist?.name || 'Protagonist',
+      pronouns: brief.protagonist?.pronouns || 'they/them',
+    }).value;
   }
 
   /**
@@ -9559,244 +9041,12 @@ ${clothingRule}
     return { setupCount, outcomeCount };
   }
 
-  /**
-   * Retry pass: walk the encounter choice tree and retry generation for any
-   * outcome or situation image still missing from the maps after the initial pass.
-   * Uses simplified prompts but preserves reference images for character identity.
-   */
-  private async retryMissingEncounterTreeImages(
-    choices: Array<{ id: string; text?: string; outcomes?: Record<string, any> }>,
-    pathPrefix: string,
-    sceneId: string,
-    encounterId: string,
-    beatId: string,
-    context: {
-      referenceImages: ReferenceImage[];
-      characterIds: string[];
-      characterNames: string[];
-      characterDescriptions: Array<{ name: string; appearance: string }>;
-      brief: FullCreativeBrief;
-      encounter: EncounterStructure;
-      settingContext?: SceneSettingContext;
-    },
-    maps: {
-      setupImages: Map<string, string>;
-      outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }>;
-    },
-    counters: { imagesGenerated: number; imagesAttempted: number; globalIndex: number; total: number },
-    encounterPolicy: EncounterProviderPolicy,
-    resumeSet: Set<string>,
-    markResumeDone: (baseId: string) => Promise<void>,
-    onEncounterSlotFailure: (err: unknown) => Promise<void>,
-    depth: number = 0,
-  ): Promise<{ retried: number; recovered: number }> {
-    let retried = 0;
-    let recovered = 0;
-    if (depth > ENCOUNTER_TREE_MAX_DEPTH) return { retried, recovered };
-
-    const { referenceImages, characterIds, characterNames, characterDescriptions, brief, encounter, settingContext } = context;
-    const scopedSceneId = this.getEpisodeScopedSceneId(brief, sceneId);
-    const hasRefs = referenceImages.length > 0;
-
-    for (const choice of choices) {
-      if (!choice.outcomes) continue;
-      const choiceMapKey = pathPrefix ? `${pathPrefix}::${choice.id}` : choice.id;
-      const existingOutcomes = maps.outcomeImages.get(choiceMapKey) || {};
-
-      for (const tier of ['success', 'complicated', 'failure'] as const) {
-        await this.checkCancellation();
-        const outcomeData = choice.outcomes[tier];
-        if (!outcomeData) continue;
-        if (existingOutcomes[tier]) continue;
-
-        retried++;
-        const retryOutcomeId = encounterOutcomeRetryIdentifier(scopedSceneId, beatId, choiceMapKey, tier);
-        const outcomeBaseId = encounterOutcomeIdentifier(scopedSceneId, beatId, choiceMapKey, tier);
-        const narrativeText = this.resolvePlayerTemplates(
-          this.normalizeNarrativeText(outcomeData.narrativeText, `${tier} outcome`),
-          brief,
-        );
-
-        const moodMap = { success: 'triumphant' as const, complicated: 'tense_uncertainty' as const, failure: 'desperate' as const };
-        const simpleCinematic = {
-          sceneDescription: narrativeText || `${encounter.encounterType || 'dramatic'} encounter - ${tier} outcome`,
-          focusSubject: 'protagonist',
-          secondaryElements: [] as string[],
-          cameraAngle: 'medium_action' as const,
-          shotType: 'consequence' as const,
-          mood: moodMap[tier],
-          lightingDirection: tier === 'success' ? 'warm front lighting' : tier === 'failure' ? 'harsh side lighting' : 'neutral fill',
-          colorPalette: tier === 'success' ? 'warm tones' : tier === 'failure' ? 'cold desaturated' : 'muted mixed',
-          characterStates: [
-            { characterId: brief.protagonist.id || 'protagonist', pose: 'center frame', expression: 'determined', position: 'center' },
-          ],
-        };
-
-        try {
-          console.log(`[Pipeline] RETRY: Generating ${tier} image for ${choiceMapKey} (simplified prompt, ${hasRefs ? referenceImages.length + ' refs' : 'no refs'})`);
-          const retryPrompt = this.encounterImageAgent.cinematicDescriptionToPrompt({
-            encounterId,
-            beatId,
-            choiceId: choiceMapKey,
-            outcomeTier: tier,
-            cinematicDescription: simpleCinematic,
-            encounterPhase: tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising',
-            visualContract: outcomeData.visualContract || this.buildEncounterVisualContract(narrativeText, tier === 'success' ? 'peak' : tier === 'failure' ? 'resolution' : 'rising'),
-            genre: brief.story.genre,
-            artStyle: this.config.artStyle,
-            settingContext,
-          });
-
-          const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-            retryPrompt,
-            retryOutcomeId,
-            { sceneId: scopedSceneId, beatId, choiceId: choiceMapKey, type: 'encounter-outcome', tier, characters: characterIds, characterNames, characterDescriptions },
-            hasRefs ? referenceImages : undefined,
-            `retry:${tier}:${beatId}:${choiceMapKey}`,
-            1,
-            {
-              preferAtlasFirst: encounterPolicy.consumePreferAtlasFirst(),
-              resumeCompleted: resumeSet,
-              resumeBaseIdentifier: outcomeBaseId,
-              resumeAlternateBaseIdentifiers: [retryOutcomeId],
-            },
-          );
-
-          if (generated.result.imageUrl) {
-            const current = maps.outcomeImages.get(choiceMapKey) || {};
-            current[tier] = generated.result.imageUrl;
-            maps.outcomeImages.set(choiceMapKey, current);
-            counters.imagesGenerated++;
-            counters.globalIndex++;
-            recovered++;
-            encounterPolicy.onSlotSuccess();
-            await markResumeDone(outcomeBaseId);
-            console.log(`[Pipeline] RETRY SUCCESS: ${tier} image for ${choiceMapKey} recovered`);
-          } else {
-            console.warn(`[Pipeline] RETRY FAILED: ${tier} image for ${choiceMapKey} returned no URL`);
-            await onEncounterSlotFailure(new Error('no_image_url'));
-          }
-        } catch (retryErr) {
-          const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          console.error(`[Pipeline] RETRY FAILED: ${tier} image for ${choiceMapKey}: ${msg}`);
-          if (retryErr instanceof PipelineError) throw retryErr;
-          await onEncounterSlotFailure(retryErr);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-      }
-
-      for (const tier of ['success', 'complicated', 'failure'] as const) {
-        const outcomeData = choice.outcomes[tier];
-        if (!outcomeData?.nextSituation) continue;
-        const nextSituation = outcomeData.nextSituation;
-        if (!nextSituation.choices || nextSituation.choices.length === 0) continue;
-
-        const situationKey = encounterSituationKey(beatId, choiceMapKey, tier);
-        const legacySituationKey = legacyEncounterSituationKey(choiceMapKey, tier);
-        if (!maps.setupImages.has(situationKey) && !maps.setupImages.has(legacySituationKey)) {
-          retried++;
-          const sitRetryId = encounterSituationRetryIdentifier(scopedSceneId, beatId, choiceMapKey, tier);
-          const sitBaseId = encounterSituationIdentifier(scopedSceneId, beatId, choiceMapKey, tier);
-          const legacySitRetryId = legacyEncounterSituationRetryIdentifier(scopedSceneId, choiceMapKey, tier);
-          const legacySitBaseId = legacyEncounterSituationIdentifier(scopedSceneId, choiceMapKey, tier);
-          const sitText = this.resolvePlayerTemplates(
-            this.normalizeNarrativeText(nextSituation.setupText, `Next situation after ${tier}`),
-            brief,
-          );
-
-          try {
-            console.log(`[Pipeline] RETRY: Generating situation image for ${situationKey} (${hasRefs ? referenceImages.length + ' refs' : 'no refs'})`);
-            const sitPrompt = this.encounterImageAgent.cinematicDescriptionToPrompt({
-              encounterId,
-              beatId,
-              cinematicDescription: {
-                sceneDescription: sitText || `Continuation of ${encounter.encounterType || 'dramatic'} encounter`,
-                focusSubject: 'protagonist',
-                secondaryElements: [],
-                cameraAngle: 'medium_action' as const,
-                shotType: 'tension_hold' as const,
-                mood: 'tense_uncertainty' as const,
-                lightingDirection: 'dramatic side lighting',
-                colorPalette: 'contextual to genre',
-                characterStates: [
-                  { characterId: brief.protagonist.id || 'protagonist', pose: 'ready stance', expression: 'determined', position: 'center frame' },
-                ],
-              },
-              encounterPhase: 'setup',
-              visualContract: nextSituation.visualContract || this.buildEncounterVisualContract(sitText, 'setup'),
-              genre: brief.story.genre,
-              artStyle: this.config.artStyle,
-              settingContext,
-            });
-
-            const generated = await this.generateEncounterImageWithTextArtifactPolicy(
-              sitPrompt,
-              sitRetryId,
-              { sceneId: scopedSceneId, beatId, type: 'encounter-setup', characters: characterIds, characterNames, characterDescriptions },
-              hasRefs ? referenceImages : undefined,
-              `retry:situation:${choiceMapKey}::${tier}`,
-              1,
-              {
-                preferAtlasFirst: encounterPolicy.consumePreferAtlasFirst(),
-                resumeCompleted: resumeSet,
-                resumeBaseIdentifier: sitBaseId,
-                resumeAlternateBaseIdentifiers: [sitRetryId, legacySitRetryId, legacySitBaseId],
-              },
-            );
-
-            if (generated.result.imageUrl) {
-              maps.setupImages.set(situationKey, generated.result.imageUrl);
-              maps.setupImages.set(legacySituationKey, generated.result.imageUrl);
-              counters.imagesGenerated++;
-              counters.globalIndex++;
-              recovered++;
-              encounterPolicy.onSlotSuccess();
-              await markResumeDone(sitBaseId);
-              console.log(`[Pipeline] RETRY SUCCESS: Situation image for ${situationKey} recovered`);
-            } else {
-              await onEncounterSlotFailure(new Error('no_image_url'));
-            }
-          } catch (retryErr) {
-            const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            console.error(`[Pipeline] RETRY FAILED: Situation image for ${situationKey}: ${msg}`);
-            if (retryErr instanceof PipelineError) throw retryErr;
-            await onEncounterSlotFailure(retryErr);
-          }
-
-          await new Promise(resolve => setTimeout(resolve, TIMING_DEFAULTS.rateLimitDelayMs));
-        }
-
-        const nestedPrefix = `${choiceMapKey}::${tier}`;
-        const nestedResult = await this.retryMissingEncounterTreeImages(
-          nextSituation.choices,
-          nestedPrefix,
-          sceneId,
-          encounterId,
-          beatId,
-          context,
-          maps,
-          counters,
-          encounterPolicy,
-          resumeSet,
-          markResumeDone,
-          onEncounterSlotFailure,
-          depth + 1,
-        );
-        retried += nestedResult.retried;
-        recovered += nestedResult.recovered;
-      }
-    }
-
-    return { retried, recovered };
-  }
-
   private buildCharacterDescriptions(
     characterIds: string[],
     characterBible: CharacterBible
-  ): Array<{ name: string; appearance: string }> {
-    const descs: Array<{ name: string; appearance: string }> = [];
-    for (const charId of characterIds) {
+  ): CharacterAppearanceDescription[] {
+    const descs: CharacterAppearanceDescription[] = [];
+    for (const charId of this.normalizeCharacterIds(characterIds, characterBible)) {
       const c = characterBible.characters.find(ch => ch.id === charId);
       if (!c) continue;
 
@@ -9806,28 +9056,117 @@ ${clothingRule}
       // exist, silhouette hooks take precedence as the primary description.
       const silhouette = this.imageAgentTeam.getCharacterSilhouetteProfile(c.id);
       const hasSilhouette = silhouette?.silhouetteHooks && silhouette.silhouetteHooks.length > 0;
+      const consistencyInfo = this.imageAgentTeam.getCharacterConsistencyInfo(c.id);
 
       const parts: string[] = [];
-
-      if (hasSilhouette) {
-        // Visual design is the source of truth — use silhouette hooks as the
-        // primary appearance description to avoid contradictions.
-        parts.push(silhouette!.silhouetteHooks!.join(', '));
+      if (consistencyInfo?.visualAnchors?.length) {
+        parts.push(consistencyInfo.visualAnchors.map(anchor => sanitizeStyleContaminationText(anchor).text).join(', '));
+      } else if (hasSilhouette) {
+        parts.push(silhouette!.silhouetteHooks!.map(hook => sanitizeStyleContaminationText(hook).text).join(', '));
       } else if (c.physicalDescription) {
-        // No visual design data — fall back to the character bible description.
-        parts.push(c.physicalDescription);
+        parts.push(sanitizeStyleContaminationText(c.physicalDescription).text);
       }
-
       if (c.distinctiveFeatures && c.distinctiveFeatures.length > 0) {
-        parts.push(`Distinctive features: ${c.distinctiveFeatures.join(', ')}`);
+        parts.push(`Distinctive features: ${c.distinctiveFeatures.map(feature => sanitizeStyleContaminationText(feature).text).join(', ')}`);
       }
-      if (c.typicalAttire) parts.push(`Attire: ${c.typicalAttire}`);
+      if (c.typicalAttire) parts.push(`Attire: ${sanitizeStyleContaminationText(c.typicalAttire).text}`);
+      const fashionSummary = buildFashionStyleSummary(c.fashionStyle);
+      if (fashionSummary) parts.push(`Fashion details: ${sanitizeStyleContaminationText(fashionSummary).text}`);
 
-      if (parts.length > 0) {
-        descs.push({ name: c.name, appearance: parts.join('. ') });
+      // Build a structured canonicalAppearance by extracting semantic slots
+      // from the free-form description sources. Each slot becomes its own
+      // labeled line in the identity block, which dramatically reduces the
+      // LLM's tendency to drop or paraphrase critical attributes (hair color,
+      // eye color, distinguishing marks).
+      const sources: string[] = [
+        ...(consistencyInfo?.visualAnchors || []),
+        ...(silhouette?.silhouetteHooks || []),
+        c.physicalDescription || '',
+      ].filter(Boolean);
+      const canonicalAppearance = this.extractCanonicalAppearance(
+        sources,
+        c.distinctiveFeatures,
+        [c.typicalAttire, fashionSummary].filter(Boolean).join('; ') || undefined,
+      );
+
+      if (parts.length > 0 || canonicalAppearance) {
+        descs.push({
+          name: c.name,
+          appearance: parts.join('. '),
+          canonicalAppearance,
+        });
       }
     }
     return descs;
+  }
+
+  /**
+   * Extract structured identity slots (hair, eyes, skin, build, height, face)
+   * from free-form character description text. Each slot scans the merged
+   * source text for phrases that match the slot's keyword set and captures the
+   * surrounding words as the slot value.
+   *
+   * The extractor is deliberately conservative — it returns undefined for any
+   * slot it can't confidently populate, leaving the fallback appearance prose
+   * to cover the gap. distinctiveFeatures and typicalAttire are passed through
+   * directly since they are already structured.
+   */
+  private extractCanonicalAppearance(
+    sources: string[],
+    distinctiveFeatures: string[] | undefined,
+    typicalAttire: string | undefined,
+  ): CanonicalAppearance | undefined {
+    const text = sources.join('. ');
+    if (!text && (!distinctiveFeatures || distinctiveFeatures.length === 0) && !typicalAttire) {
+      return undefined;
+    }
+
+    const splitPhrases = (raw: string): string[] =>
+      raw
+        .split(/[.,;]|\s-\s|\s—\s/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
+    const phrases = splitPhrases(text);
+
+    const findPhrase = (keywords: RegExp): string | undefined => {
+      for (const p of phrases) {
+        if (keywords.test(p)) return p;
+      }
+      return undefined;
+    };
+
+    const ca: CanonicalAppearance = {};
+
+    const hairPhrase = findPhrase(/\b(hair|hairstyle|braid|ponytail|locks|mane|curls|dreadlocks)\b/i);
+    if (hairPhrase) ca.hair = hairPhrase;
+
+    const eyesPhrase = findPhrase(/\b(eyes|eye|iris|gaze)\b/i);
+    if (eyesPhrase) ca.eyes = eyesPhrase;
+
+    const skinPhrase = findPhrase(/\b(skin|complexion|tan|pale|sunburn(?:t|ed)?|freckl(?:e|ed|es))\b/i);
+    if (skinPhrase) ca.skinTone = skinPhrase;
+
+    const buildPhrase = findPhrase(/\b(build|physique|stature|frame|muscled|slender|broad|lean|stocky|wiry|sinewy)\b/i);
+    if (buildPhrase) ca.build = buildPhrase;
+
+    const heightPhrase = findPhrase(/\b(tall|short|height|petite|towering|diminutive)\b/i);
+    if (heightPhrase) ca.height = heightPhrase;
+
+    const facePhrase = findPhrase(/\b(face|jaw|jawline|cheekbones?|nose|chin|brow|forehead)\b/i);
+    if (facePhrase) ca.face = facePhrase;
+
+    if (distinctiveFeatures && distinctiveFeatures.length > 0) {
+      ca.distinguishingMarks = distinctiveFeatures.slice(0, 6);
+    }
+    if (typicalAttire) {
+      ca.defaultAttire = typicalAttire;
+    }
+
+    const hasAny = Object.values(ca).some((v) =>
+      Array.isArray(v) ? v.length > 0 : typeof v === 'string' && v.length > 0
+    );
+    return hasAny ? ca : undefined;
   }
 
   private gatherCharacterReferenceImages(
@@ -9842,9 +9181,15 @@ ${clothingRule}
     const gemSettings = this.imageService.getGeminiSettings();
     const mjSettings = this.imageService.getMidjourneySettings();
     const maxPerChar = gemSettings.maxRefImagesPerCharacter || mjSettings.maxRefImagesPerCharacter || 2;
-    const preferIndividualViews = gemSettings.useIndividualCharacterViews ?? false;
+    // Dual-artifact routing: always request the individual views here. The
+    // composite sheet is added separately below with a canonical
+    // `composite-sheet` role so the per-provider filter can route it
+    // correctly (Midjourney --cref, Gemini style-anchor).
+    const preferIndividualViews = true;
     
-    for (const charId of characterIds) {
+    const normalizedCharacterIds = this.normalizeCharacterIds(characterIds, characterBible);
+
+    for (const charId of normalizedCharacterIds) {
       if (references.length >= MAX_TOTAL_REFS) break;
       const remaining = MAX_TOTAL_REFS - references.length;
       const charRefs = this.imageAgentTeam.getCharacterReferenceImages(
@@ -9864,17 +9209,47 @@ ${clothingRule}
       for (const ref of charRefs) {
         const nameParts = ref.name.split('-');
         const viewType = nameParts.length > 1 ? nameParts[nameParts.length - 1] : 'front';
-        
+
+        // Canonical role tagging so the per-provider filter can route by
+        // artifact shape. `character-reference-face` keeps the face-crop
+        // elevated in rolePriority; expression views keep the 'expression'
+        // token so rolePriority routes them correctly.
+        let role: string;
+        if (viewType === 'face') {
+          role = 'character-reference-face';
+        } else if (ref.name.includes('expression')) {
+          role = `character-reference-expression-${viewType}`;
+        } else {
+          role = 'character-reference';
+        }
+
         references.push({
           data: ref.data,
           mimeType: ref.mimeType,
-          role: `character-reference-${ref.name}`,
+          role,
           characterName,
           viewType,
           visualAnchors,
         });
       }
-      
+
+      // Emit the composite model sheet only for providers that explicitly use
+      // it as the scene identity anchor. In particular, GPT Image 2 should not
+      // receive or even collect cached multi-view/composite sheets.
+      if (this.shouldAttachCompositeCharacterRefs() && references.length < MAX_TOTAL_REFS) {
+        const composite = this.imageAgentTeam.getCompositeReferenceImage(charId);
+        if (composite) {
+          references.push({
+            data: composite.data,
+            mimeType: composite.mimeType,
+            role: 'composite-sheet',
+            characterName,
+            viewType: 'composite',
+            visualAnchors,
+          });
+        }
+      }
+
       if (consistencyInfo) {
         this.emit({ type: 'debug', phase: 'images', message: `Using ${charRefs.length} ref image(s) for ${characterName}: ${consistencyInfo.visualAnchors.join(', ')}` });
       }
@@ -9893,12 +9268,63 @@ ${clothingRule}
         });
       }
     }
+
+    const styleAnchorPaths = [
+      { role: 'style-anchor-character', imagePath: this._styleAnchorPaths.character },
+      { role: 'style-anchor-arc-strip', imagePath: this._styleAnchorPaths.arcStrip },
+      { role: 'style-anchor-environment', imagePath: this._styleAnchorPaths.environment },
+    ].filter((entry) => !!entry.imagePath);
+    for (const anchor of styleAnchorPaths) {
+      if (references.length >= MAX_TOTAL_REFS) break;
+      try {
+        const fs = require('fs');
+        if (!fs.existsSync(anchor.imagePath)) continue;
+        const ext = String(anchor.imagePath).split('.').pop()?.toLowerCase();
+        const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+        references.push({
+          data: fs.readFileSync(anchor.imagePath).toString('base64'),
+          mimeType,
+          role: anchor.role,
+          characterName: '',
+          viewType: 'style',
+        });
+      } catch { /* style anchors are helpful but non-fatal */ }
+    }
+
+    for (const styleRef of this._uploadedStyleReferenceImages) {
+      if (references.length >= MAX_TOTAL_REFS) break;
+      references.push(styleRef as any);
+    }
     
     const family = options?.family;
     if (!family) {
       return references;
     }
-    return buildReferencePack(options.slotId || `${family}:${characterIds.join(',')}`, family, references).references;
+
+    // D3: derive per-character weights from their bible importance. Weights
+    // are multiplied against the profile's maxPerCharacter so major characters
+    // get more ref-pack slots than supporting/minor ones.
+    const characterWeights: Record<string, number> = {};
+    for (const charId of normalizedCharacterIds) {
+      const entry = characterBible.characters.find((c) => c.id === charId);
+      if (!entry) continue;
+      const name = entry.name || charId;
+      const importance = (entry.importance || '').toLowerCase();
+      if (entry.role?.toLowerCase() === 'protagonist' || importance === 'major') {
+        characterWeights[name] = 1.5;
+      } else if (importance === 'supporting') {
+        characterWeights[name] = 1.0;
+      } else if (importance === 'minor') {
+        characterWeights[name] = 0.75;
+      }
+    }
+
+    return buildReferencePack(
+      options.slotId || `${family}:${characterIds.join(',')}`,
+      family,
+      references,
+      { characterWeights },
+    ).references as unknown as Awaited<ReturnType<FullStoryPipeline['gatherCharacterReferenceImages']>>;
   }
 
   /**
@@ -10037,106 +9463,33 @@ ${clothingRule}
   }
 
   /**
-   * Synthesize specific action directions when primaryAction is missing or generic.
-   * Analyzes beat text to extract physical manifestations of the story moment.
+   * Shape the unresolved callback hooks for SceneWriter/ChoiceAuthor prompts.
+   * Returns `undefined` when there are no hooks, so the prompt section is
+   * skipped cleanly.
    */
-  private synthesizeActionFromBeat(beatText: string, emotionalRead: string, characterNames: string[]): {
-    synthesizedAction: string;
-    synthesizedGesture: string;
-    synthesizedBodyLanguage: string;
-  } {
-    const text = (beatText || '').toLowerCase();
-    const charName = characterNames.length > 0 ? characterNames[0] : 'Character';
-    const secondChar = characterNames.length > 1 ? characterNames[1] : '';
-
-    // Check for dialogue patterns - derive gesture from speaking
-    const isDialogue = text.includes('"') || text.includes('says') || text.includes('speaks') ||
-                       text.includes('tells') || text.includes('asks') || text.includes('replies');
-
-    // Check for emotional patterns
-    const isAngry = /\b(angry|furious|rage|seething|snaps?|shouts?|yells?)\b/.test(text);
-    const isSad = /\b(sad|tears?|crying|weeping|grief|mourning|heartbroken)\b/.test(text);
-    const isFearful = /\b(fear|afraid|terrified|scared|trembl|shaking)\b/.test(text);
-    const isLoving = /\b(love|tender|gentle|embrace|caress|soft)\b/.test(text);
-    const isShocked = /\b(shock|gasp|surprise|stun|disbelief|realiz)\b/.test(text);
-    const isThreatening = /\b(threat|menac|intimi|warn|danger|loom)\b/.test(text);
-    const isDefensive = /\b(defend|protect|shield|guard|back away|retreat)\b/.test(text);
-    const isConfronting = /\b(confront|accus|demand|challeng|face)\b/.test(text);
-
-    // Check for action verbs
-    const hasMovement = /\b(walks?|steps?|moves?|runs?|rushes?|approaches?|enters?|leaves?)\b/.test(text);
-    const hasTurning = /\b(turns?|spins?|whirls?|faces?|looks? away)\b/.test(text);
-    const hasReaching = /\b(reaches?|grabs?|takes?|holds?|touches?|grips?)\b/.test(text);
-    const hasPushing = /\b(pushes?|shoves?|pulls?|drags?)\b/.test(text);
-
-    let synthesizedAction = '';
-    let synthesizedGesture = '';
-    let synthesizedBodyLanguage = '';
-
-    // Synthesize based on detected patterns
-    if (isAngry) {
-      synthesizedAction = `${charName} confronts with visible tension — jaw set, shoulders squared`;
-      synthesizedGesture = 'Hands clenched into fists or gesturing sharply, finger pointing or palm-out stop gesture';
-      synthesizedBodyLanguage = `Weight forward aggressively, chin down, chest expanded, body angled toward ${secondChar || 'target'}`;
-    } else if (isFearful) {
-      synthesizedAction = `${charName} recoils or shrinks back — protective posture`;
-      synthesizedGesture = 'Hands raised defensively near chest, palms out, or arms wrapped around self';
-      synthesizedBodyLanguage = 'Weight on back foot, shoulders hunched, body angled away, ready to flee';
-    } else if (isSad) {
-      synthesizedAction = `${charName} shows visible grief — head bowed, shoulders dropped`;
-      synthesizedGesture = 'Hand covering mouth, pressing against chest, or wiping at face';
-      synthesizedBodyLanguage = 'Weight collapsed inward, spine curved, gaze downward';
-    } else if (isShocked) {
-      synthesizedAction = `${charName} freezes mid-motion in visible shock — eyes wide, body rigid`;
-      synthesizedGesture = 'Hand flying to mouth or chest, fingers spread in surprise';
-      synthesizedBodyLanguage = 'Weight suddenly shifted back, body frozen mid-action, spine straightened with tension';
-    } else if (isLoving) {
-      synthesizedAction = `${charName} leans toward ${secondChar || 'other'} with tender vulnerability`;
-      synthesizedGesture = 'Hand reaching out gently, fingertips grazing or about to touch';
-      synthesizedBodyLanguage = 'Weight forward, shoulders soft and open, head tilted with care';
-    } else if (isThreatening) {
-      synthesizedAction = `${charName} looms or advances with menacing intent`;
-      synthesizedGesture = 'Hands open but tense at sides, or one hand raised in warning';
-      synthesizedBodyLanguage = 'Weight forward, expanded posture, chin lowered, eyes fixed and intense';
-    } else if (isDefensive) {
-      synthesizedAction = `${charName} backs away or shields themselves`;
-      synthesizedGesture = 'Arms crossed or raised protectively, hands between self and threat';
-      synthesizedBodyLanguage = 'Weight shifting backward, shoulders rotating away, creating distance';
-    } else if (isConfronting) {
-      synthesizedAction = `${charName} faces ${secondChar || 'other'} directly with challenging stance`;
-      synthesizedGesture = 'Hands on hips, or gesturing emphatically, pointing or palm-up demanding';
-      synthesizedBodyLanguage = 'Weight centered but leaning forward, squared shoulders, direct eye contact';
-    } else if (isDialogue) {
-      synthesizedAction = `${charName} speaks with emotional weight — body reflects words`;
-      synthesizedGesture = 'Hands gesturing to emphasize points, or fidgeting with nearby object';
-      synthesizedBodyLanguage = emotionalRead
-        ? `Body showing: ${emotionalRead}. Weight shifted, posture reflecting emotional state`
-        : 'Natural conversational stance with weight on one foot, hands active';
-    } else if (hasMovement) {
-      synthesizedAction = `${charName} in motion — mid-stride or transitioning between positions`;
-      synthesizedGesture = 'Arms swinging naturally or reaching toward destination';
-      synthesizedBodyLanguage = 'Weight clearly distributed in motion, one foot leading, body angled in direction of travel';
-    } else if (hasTurning) {
-      synthesizedAction = `${charName} turns or pivots — caught in moment of change`;
-      synthesizedGesture = 'Arms adjusting balance, or hand trailing behind the turn';
-      synthesizedBodyLanguage = 'Weight shifting mid-rotation, shoulders and hips at different angles, torso twisted';
-    } else if (hasReaching) {
-      synthesizedAction = `${charName} reaches out — arm extended toward goal`;
-      synthesizedGesture = 'Fingers spread or closing around target, other hand bracing or balancing';
-      synthesizedBodyLanguage = 'Weight shifted toward reach, body stretched, clear intention in posture';
-    } else if (hasPushing) {
-      synthesizedAction = `${charName} exerts force — body engaged in push or pull`;
-      synthesizedGesture = 'Hands pressed against surface or gripping firmly';
-      synthesizedBodyLanguage = 'Weight committed to the action, legs braced, core engaged';
-    } else {
-      // Default fallback - still better than nothing
-      synthesizedAction = `${charName} caught in a moment of dramatic tension — body reveals inner state`;
-      synthesizedGesture = 'Hands engaged in meaningful activity — gripping, gesturing, or pressing against something';
-      synthesizedBodyLanguage = `Weight shifted to one side, asymmetric stance, ${emotionalRead ? `body showing: ${emotionalRead}` : 'posture reflecting emotional intensity'}`;
-    }
-
-    return { synthesizedAction, synthesizedGesture, synthesizedBodyLanguage };
+  private getUnresolvedCallbacksForPrompt(
+    episodeNumber: number | undefined,
+  ): UnresolvedCallbackForPrompt[] | undefined {
+    return getUnresolvedCallbacksForPromptImpl(this.callbackLedger, episodeNumber);
   }
+
+  /**
+   * Harvest callback state from a just-generated episode: seed new hooks
+   * from `memorableMoment` choice fields, and record payoffs for any
+   * TextVariants that reference an existing hook id.
+   */
+  private harvestEpisodeCallbacks(
+    params: HarvestEpisodeCallbacksParams,
+  ): { newHooks: number; payoffs: number } {
+    return harvestEpisodeCallbacksImpl(this.callbackLedger, params);
+  }
+
+  private injectFallbackCallbacks(
+    params: InjectFallbackCallbacksParams,
+  ): { injected: number } {
+    return injectFallbackCallbacksImpl(this.callbackLedger, params);
+  }
+
 
   /**
    * Validate a generated image and return guidance for regeneration if needed.
@@ -10163,7 +9516,7 @@ ${clothingRule}
           this.imageService.updateGeminiSettings({ ...currentSettings, sceneResolution: '512px' });
           try {
             const previewResult = await this.imageService.generateImage(
-              prompt, `${identifier}_preview_${attempt}`, metadata, referenceImages
+              prompt, `${identifier}_preview_${attempt}`, metadata as unknown as Parameters<ImageGenerationService['generateImage']>[2], referenceImages as unknown as Parameters<ImageGenerationService['generateImage']>[3]
             );
             if (!previewResult.imageData || !previewResult.mimeType) {
               console.warn(`[Pipeline] Preview generation failed for ${metadata.beatId}, proceeding to full resolution`);
@@ -10178,8 +9531,8 @@ ${clothingRule}
         const result = await this.imageService.generateImage(
           prompt,
           identifier,
-          metadata,
-          referenceImages
+          metadata as unknown as Parameters<ImageGenerationService['generateImage']>[2],
+          referenceImages as unknown as Parameters<ImageGenerationService['generateImage']>[3]
         );
 
         if (!result.imageUrl || !result.imageData || !result.mimeType) {
@@ -10348,97 +9701,298 @@ ${clothingRule}
     }
   }
 
+  private _imageSupport?: ImageSupport;
+
   /**
-   * Generate a dedicated episode style bible before scene renders begin.
-   * This becomes the primary style anchor, replacing the old
-   * "first successful scene decides the style" behavior whenever possible.
+   * Memoized image-support cluster (defect-retry rendering, style-bible
+   * anchors, LoRA training, opening-beat prefetch) — see pipeline/imageSupport.ts.
+   * Run-scoped state stays on this instance and is shared by reference.
    */
+  private imageSupport(): ImageSupport {
+    if (!this._imageSupport) {
+      this._imageSupport = new ImageSupport({
+        config: this.config,
+        emit: this.emit.bind(this),
+        imageService: this.imageService,
+        imageAgentTeam: this.imageAgentTeam,
+        assetRegistry: this.assetRegistry,
+        totalEpisodes: () => this.totalEpisodes,
+        styleAnchorPaths: this._styleAnchorPaths,
+        openingBeatPrefetch: this._openingBeatPrefetch,
+        setUploadedStyleReferenceImages: (refs) => { this._uploadedStyleReferenceImages = refs; },
+        setGeneratedStyleReferencesAllowed: (allowed) => { this._generatedStyleReferencesAllowed = allowed; },
+        resolveProtagonistCharacterId: this.resolveProtagonistCharacterId.bind(this),
+        resolveCharacterIdWithBrief: this.resolveCharacterIdWithBrief.bind(this),
+        gatherCharacterReferenceImages: this.gatherCharacterReferenceImages.bind(this),
+        buildCharacterDescriptions: this.buildCharacterDescriptions.bind(this),
+        ensureCharacterReferencesForVisibleCharacters: this.ensureCharacterReferencesForVisibleCharacters.bind(this),
+        getCharacterIdsInScene: this.getCharacterIdsInScene.bind(this),
+        extractSceneContext: this.extractSceneContext.bind(this),
+        analyzeBeatCharacters: this.analyzeBeatCharacters.bind(this),
+        isEstablishingBeat: this.isEstablishingBeat.bind(this),
+        sanitizePromptText: this.sanitizePromptText.bind(this),
+        sanitizeImagePrompt: this.sanitizeImagePrompt.bind(this),
+        getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
+      });
+    }
+    return this._imageSupport;
+  }
+
+  private _assembly?: Assembly;
+
+  /**
+   * Memoized story/episode assembly cluster — see pipeline/assembly.ts. The
+   * run-scoped style anchor paths are shared by reference; all other helpers
+   * (fidelity text, choice-bridge beats, reader sanitization, episode-scoped
+   * keys and encounter-tree image wiring are bound.
+   */
+  private assembly(): Assembly {
+    if (!this._assembly) {
+      this._assembly = new Assembly({
+        config: this.config,
+        emit: this.emit.bind(this),
+        throwIfFailFast: this.throwIfFailFast.bind(this),
+        imageAgentTeam: this.imageAgentTeam,
+        styleAnchorPaths: this._styleAnchorPaths,
+        buildPersistedNpc: this.buildPersistedNpc.bind(this),
+        ensureBlueprintFidelityText: this.ensureBlueprintFidelityText.bind(this),
+        ensureChoiceBridgeBeats: this.ensureChoiceBridgeBeats.bind(this),
+        getEpisodeScopedBeatKey: this.getEpisodeScopedBeatKey.bind(this),
+        getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
+        sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
+        sanitizeSceneContentForReader: this.sanitizeSceneContentForReader.bind(this),
+        wireEncounterTreeImages: this.wireEncounterTreeImages.bind(this),
+      });
+    }
+    return this._assembly;
+  }
+
+  private _finalContract?: FinalContract;
+
+  /**
+   * Memoized final-contract cluster (enforceFinalStoryContract,
+   * prepareValidationInput, runFlagChronologyScan) — see
+   * pipeline/finalContract.ts. Run-scoped accumulators (scene-validation
+   * results, season plans, encounter telemetry, remediation budget) are read
+   * lazily via Object.defineProperties so the contract sees current values.
+   */
+  private finalContract(): FinalContract {
+    if (!this._finalContract) {
+      const deps = {
+        config: this.config,
+	        emit: this.emit.bind(this),
+	        recordRemediationSafe: this.recordRemediationSafe.bind(this),
+	        recordFinalContractShadow: this.recordFinalContractShadow.bind(this),
+	        writeValidatorMemory: this.writeValidatorMemory.bind(this),
+	        saveFailedContractArtifacts: async (story, report) => {
+          const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
+          if (!rawOutputDirectory) return;
+          const outputDirectory = rawOutputDirectory.endsWith('/') ? rawOutputDirectory : `${rawOutputDirectory}/`;
+          await saveFinalStoryContractFailure(outputDirectory, story, report);
+        },
+        disambiguateProtagonistPronouns: this.disambiguateProtagonistPronouns.bind(this),
+        authorEncounterOutcomeVariants: this.authorEncounterOutcomeVariants.bind(this),
+        relationshipDimensionsForNpc: this.relationshipDimensionsForNpc.bind(this),
+      } satisfies Partial<FinalContractDeps> as unknown as FinalContractDeps;
+      Object.defineProperties(deps, {
+        allSceneValidationResults: { get: () => this.allSceneValidationResults },
+        sceneValidationResults: { get: () => this.sceneValidationResults },
+        seasonChoicePlan: { get: () => this.seasonChoicePlan },
+        plannedChoiceTypesByScene: { get: () => this.plannedChoiceTypesByScene },
+        seasonSkillPlan: { get: () => this.seasonSkillPlan },
+        callbackLedger: { get: () => this.callbackLedger },
+        allEncounterTelemetry: { get: () => this.allEncounterTelemetry },
+        remediationBudget: { get: () => this.remediationBudget },
+        planTimeFidelityFindings: { get: () => this.planTimeFidelityFindings },
+        planTimeFidelityBaseline: { get: () => this.planTimeFidelityBaseline },
+        sceneCritic: { get: () => this.sceneCritic ?? null },
+      });
+      this._finalContract = new FinalContract(deps);
+    }
+    return this._finalContract;
+  }
+
+  private _sceneCriticContinuity?: SceneCriticContinuity;
+
+  /**
+   * Memoized SceneCritic rewrite + continuity-repair cluster — see
+   * pipeline/sceneCriticContinuity.ts. sceneCritic is read lazily (it may be
+   * constructed after this accessor first runs).
+   */
+  private sceneCriticContinuity(): SceneCriticContinuity {
+    if (!this._sceneCriticContinuity) {
+      const deps = {
+        config: this.config,
+        emit: this.emit.bind(this),
+        buildContinuityCharacterKnowledge: this.buildContinuityCharacterKnowledge.bind(this),
+        buildContinuityTimeline: this.buildContinuityTimeline.bind(this),
+      } satisfies Partial<SceneCriticContinuityDeps> as unknown as SceneCriticContinuityDeps;
+      Object.defineProperties(deps, {
+        sceneCritic: { get: () => this.sceneCritic ?? null },
+      });
+      this._sceneCriticContinuity = new SceneCriticContinuity(deps);
+    }
+    return this._sceneCriticContinuity;
+  }
+
+  private _sceneGraphValidation?: SceneGraphValidation;
+
+  /**
+   * Memoized scene-graph branching validation + repair cluster — see
+   * pipeline/sceneGraphValidation.ts. Validator/agent instances and run-scoped
+   * reads are injected so config/telemetry stay shared with the run.
+   */
+  private sceneGraphValidation(): SceneGraphValidation {
+    if (!this._sceneGraphValidation) {
+      const deps = {
+        config: this.config,
+        emit: this.emit.bind(this),
+        recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
+        throwIfFailFast: this.throwIfFailFast.bind(this),
+        sceneGraphBranchValidator: this.sceneGraphBranchValidator,
+        duplicateEstablishingBeatValidator: this.duplicateEstablishingBeatValidator,
+        treatmentSeedOnPageValidator: this.treatmentSeedOnPageValidator,
+        endingReachabilityValidator: this.endingReachabilityValidator,
+        choiceAuthor: this.choiceAuthor,
+        assembleEpisode: this.assembleEpisode.bind(this),
+        buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
+        buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
+        deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
+        getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
+        getUnresolvedCallbacksForPrompt: this.getUnresolvedCallbacksForPrompt.bind(this),
+        resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
+      } satisfies Partial<SceneGraphValidationDeps> as unknown as SceneGraphValidationDeps;
+      // sceneCritic may be constructed after this accessor first runs, and
+      // cachedPipelineMemory is set once memory loads — read both lazily.
+      Object.defineProperties(deps, {
+        sceneCritic: { get: () => this.sceneCritic ?? null },
+        cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
+      });
+      this._sceneGraphValidation = new SceneGraphValidation(deps);
+    }
+    return this._sceneGraphValidation;
+  }
+
+  private _draftImageEntry?: DraftImageEntry;
+
+  /**
+   * Memoized draft-image entry helpers (resume scan, manifest builder, bound-
+   * reference repair) — see pipeline/draftImageEntry.ts. Deterministic; the
+   * image-resume internals it leans on stay on this instance.
+   */
+  private draftImageEntry(): DraftImageEntry {
+    if (!this._draftImageEntry) {
+      this._draftImageEntry = new DraftImageEntry({
+        config: this.config,
+        assetRegistry: this.assetRegistry,
+        setActiveImageResumeOutputDirectory: (dir) => { this._activeImageResumeOutputDirectory = dir; },
+        loadAssetRegistryForImageResume: this.loadAssetRegistryForImageResume.bind(this),
+        hydrateReferenceSheetsFromExistingImages: this.hydrateReferenceSheetsFromExistingImages.bind(this),
+        preflightResumeReferenceSheets: this.preflightResumeReferenceSheets.bind(this),
+        hydrateStyleAnchorsFromExistingImages: this.hydrateStyleAnchorsFromExistingImages.bind(this),
+        sceneContentFromStoryScene: this.sceneContentFromStoryScene.bind(this),
+        createEncounterRegistrySlot: this.createEncounterRegistrySlot.bind(this),
+        markSlotFromExistingArtifact: this.markSlotFromExistingArtifact.bind(this),
+      });
+    }
+    return this._draftImageEntry;
+  }
+
+  private _draftImageGeneration?: DraftImageGeneration;
+
+  /**
+   * Memoized draft-image generation cluster (generateImagesForDraft,
+   * generateTargetedBeatImagesForDraft) — see pipeline/draftImageGeneration.ts.
+   * Run-scoped state (config, services, asset registry) is read lazily via
+   * Object.defineProperties; the fields these entry points reset (events,
+   * checkpoints, telemetry, pipelineStartedAtMs, completedPhases) carry live
+   * setters so the cluster writes back to the run.
+   */
+  private draftImageGeneration(): DraftImageGeneration {
+    if (!this._draftImageGeneration) {
+      const deps = {
+        emit: this.emit.bind(this),
+        resetCollectedVisualPlanning: this.resetCollectedVisualPlanning.bind(this),
+        hydrateSeasonImageStyleFromStoryPackage: this.hydrateSeasonImageStyleFromStoryPackage.bind(this),
+        applyActiveImageStyleToRuntime: this.applyActiveImageStyleToRuntime.bind(this),
+        loadContinuationStory: this.loadContinuationStory.bind(this),
+        saveDraftImageManifest: this.saveDraftImageManifest.bind(this),
+        scanExistingImagesForResume: this.scanExistingImagesForResume.bind(this),
+        checkCancellation: this.checkCancellation.bind(this),
+        sceneContentFromStoryScene: this.sceneContentFromStoryScene.bind(this),
+        useStoryboardV2ImagePipeline: this.useStoryboardV2ImagePipeline.bind(this),
+        measurePhase: this.measurePhase.bind(this),
+        runStoryboardV2ImageGeneration: this.runStoryboardV2ImageGeneration.bind(this),
+        runEpisodeImageGeneration: this.runEpisodeImageGeneration.bind(this),
+        runEncounterProviderPreflight: this.runEncounterProviderPreflight.bind(this),
+        generateEncounterImages: this.generateEncounterImages.bind(this),
+        toEncounterRunDiagnostics: this.toEncounterRunDiagnostics.bind(this),
+        seedAssetRegistryFromResults: this.seedAssetRegistryFromResults.bind(this),
+        generateStoryCoverArt: this.generateStoryCoverArt.bind(this),
+        resolveGeneratedStoryPlayerTemplates: this.resolveGeneratedStoryPlayerTemplates.bind(this),
+        auditStoryVisualContractPersistence: this.auditStoryVisualContractPersistence.bind(this),
+        repairBoundImageReferences: this.repairBoundImageReferences.bind(this),
+        buildImageManifestFromStory: this.buildImageManifestFromStory.bind(this),
+        getCollectedVisualPlanningForSave: this.getCollectedVisualPlanningForSave.bind(this),
+        buildStoryGeneratorMetadata: this.buildStoryGeneratorMetadata.bind(this),
+        getRemediationSummary: this.getRemediationSummary.bind(this),
+        finalizeImageRunFromRegistry: this.finalizeImageRunFromRegistry.bind(this),
+        servedUrlForGeneratedImagePath: this.servedUrlForGeneratedImagePath.bind(this),
+      } satisfies Partial<DraftImageGenerationDeps> as unknown as DraftImageGenerationDeps;
+      Object.defineProperties(deps, {
+        config: { get: () => this.config },
+        imageService: { get: () => this.imageService },
+        imageWorkerQueue: { get: () => this.imageWorkerQueue },
+        assetRegistry: { get: () => this.assetRegistry },
+        events: { get: () => this.events, set: (value: PipelineEvent[]) => { this.events = value; } },
+        checkpoints: { get: () => this.checkpoints, set: (value: CheckpointData[]) => { this.checkpoints = value; } },
+        telemetry: { get: () => this.telemetry, set: (value: PipelineTelemetry) => { this.telemetry = value; } },
+        pipelineStartedAtMs: { get: () => this.pipelineStartedAtMs, set: (value: number) => { this.pipelineStartedAtMs = value; } },
+        completedPhases: { get: () => this.completedPhases, set: (value: Set<string>) => { this.completedPhases = value; } },
+      });
+      this._draftImageGeneration = new DraftImageGeneration(deps);
+    }
+    return this._draftImageGeneration;
+  }
+
   private async generateEpisodeStyleBible(
     brief: FullCreativeBrief,
     colorScript: ColorScript,
-    characterBible: CharacterBible
+    characterBible: CharacterBible,
+    outputDirectory?: string
   ): Promise<boolean> {
-    this.emit({ type: 'agent_start', agent: 'ColorScriptAgent', message: 'Generating episode style bible...' });
+    return this.imageSupport().generateEpisodeStyleBible(brief, colorScript, characterBible, outputDirectory);
+  }
 
-    try {
-      const thumbsResult = await withTimeout(
-        this.imageAgentTeam.generateColorScriptThumbnails(colorScript),
-        PIPELINE_TIMEOUTS.colorScript,
-        'ColorScriptThumbnails'
-      );
+  private async generateImageWithDefectRetries(
+    prompt: ImagePrompt,
+    identifier: string,
+    metadata: any,
+    referenceImages: any[] | undefined,
+    label: string,
+    outputDirectory?: string,
+    renderImage?: (activePrompt: ImagePrompt, attemptIdentifier: string, attemptMetadata: any, attemptReferences: any[] | undefined) => Promise<GeneratedImage>,
+  ): Promise<GeneratedImage> {
+    return this.imageSupport().generateImageWithDefectRetries(prompt, identifier, metadata, referenceImages, label, outputDirectory, renderImage);
+  }
 
-      if (!thumbsResult.success || !thumbsResult.data) {
-        this.emit({ type: 'warning', phase: 'images', message: `Style bible prompt generation failed: ${thumbsResult.error || 'unknown error'}` });
-        return false;
-      }
+  private async runLoraTrainingIfEligible(
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    outputDirectory?: string,
+  ): Promise<void> {
+    return this.imageSupport().runLoraTrainingIfEligible(brief, characterBible, outputDirectory);
+  }
 
-      const stripPrompt: ImagePrompt = {
-        prompt: thumbsResult.data.stripPrompt,
-        style: this.config.artStyle || undefined,
-        aspectRatio: '4:1',
-        composition: 'Horizontal color script strip showing the episode look bible. Abstract mood panels only, no text, no characters, no people, no figures.',
-        negativePrompt: 'text, letters, numbers, captions, labels, collage, split-screen, multi-image grid, photorealistic, photography, person, people, character, figure, face, body, silhouette of person, human, man, woman, portrait',
-        visualNarrative: `Episode style bible for ${brief.story.title}: abstract color-and-light arc strip. NO characters, NO people, NO figures — purely abstract color mood panels.`,
-      };
-
-      const stripIdentifier = `style-bible-${idSlugify(brief.story.title)}-arc-strip`;
-      const stripImage = await withTimeout(
-        this.imageService.generateImage(stripPrompt, stripIdentifier, { type: 'master' }),
-        PIPELINE_TIMEOUTS.imageGeneration,
-        'EpisodeStyleBibleStrip'
-      );
-
-      const protagonistRefImages = this.gatherCharacterReferenceImages([brief.protagonist.id], characterBible);
-      const protagonistName = characterBible.characters.find(c => c.id === brief.protagonist.id)?.name || brief.protagonist.name;
-      const colorTerms = colorScript.colorDictionary.slice(0, 3).map(entry => entry.color).join(', ');
-      const anchorPrompt: ImagePrompt = {
-        prompt: `single character portrait of ${protagonistName}, one person only, three-quarter standing pose, readable face and costume, cinematic story frame, the episode palette expressed through ${colorTerms || 'the planned color script'}, designed as a visual style bible anchor, unified single image`,
-        style: this.config.artStyle || undefined,
-        aspectRatio: '3:4',
-        composition: 'One single unified image of one character, no splits, no panels, no divisions, clear silhouette, polished rendering, no text.',
-        negativePrompt: 'text, letters, numbers, collage, split-screen, multi-panel, split image, diptych, triptych, side by side, multiple views, duplicate character, two people, two figures, multiple characters, reference sheet, turnaround, photorealistic, photography, neutral mannequin pose',
-        visualNarrative: `${protagonistName} rendered as the canonical in-style anchor for the episode. One single unified image, not split or divided.`,
-        keyExpression: 'Readable calm but alert expression, neutral enough for reuse, never blank.',
-        keyBodyLanguage: 'Relaxed but purposeful three-quarter stance, asymmetric weight shift, clear silhouette.',
-      };
-
-      const anchorIdentifier = `style-bible-${idSlugify(brief.story.title)}-character-anchor`;
-      const anchorImage = await withTimeout(
-        this.imageService.generateImage(
-          anchorPrompt,
-          anchorIdentifier,
-          { type: 'master', characters: [brief.protagonist.id], characterNames: [protagonistName], characterDescriptions: this.buildCharacterDescriptions([brief.protagonist.id], characterBible) },
-          protagonistRefImages.length > 0 ? protagonistRefImages : undefined
-        ),
-        PIPELINE_TIMEOUTS.imageGeneration,
-        'EpisodeStyleBibleCharacterAnchor'
-      );
-
-      const preferredAnchor = (anchorImage.imageData && anchorImage.mimeType)
-        ? anchorImage
-        : (stripImage.imageData && stripImage.mimeType ? stripImage : undefined);
-
-      if (!preferredAnchor?.imageData || !preferredAnchor?.mimeType) {
-        this.emit({ type: 'warning', phase: 'images', message: 'Episode style bible did not produce a reusable image anchor. Falling back to first scene anchor.' });
-        return false;
-      }
-
-      this.imageService.setGeminiStyleReference(preferredAnchor.imageData, preferredAnchor.mimeType);
-      this.emit({
-        type: 'agent_complete',
-        agent: 'ColorScriptAgent',
-        message: 'Episode style bible ready and stored as the primary style anchor.',
-        data: {
-          stripGenerated: !!stripImage.imageUrl,
-          characterAnchorGenerated: !!anchorImage.imageUrl,
-        }
-      });
-      return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.emit({ type: 'warning', phase: 'images', message: `Episode style bible generation failed: ${message}` });
-      return false;
-    }
+  private async prefetchSceneOpeningBeats(
+    sceneContents: SceneContent[],
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    colorScript: ColorScript | undefined,
+    worldBible: WorldBible,
+    outputDirectory?: string,
+  ): Promise<void> {
+    return this.imageSupport().prefetchSceneOpeningBeats(sceneContents, brief, characterBible, colorScript, worldBible, outputDirectory);
   }
 
   /**
@@ -10642,6 +10196,144 @@ ${clothingRule}
     return heuristicMatch || worldBible.locations[0];
   }
 
+  private ensureChoiceBridgeBeats(
+    blueprint: EpisodeBlueprint,
+    sceneBlueprint: SceneBlueprint,
+    content: SceneContent,
+    choiceMap: Map<string, ChoiceSet>,
+  ): void {
+    for (const beat of content.beats || []) {
+      if (!beat.isChoicePoint) continue;
+      const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${beat.id}`) || choiceMap.get(beat.id);
+      if (!choiceSet) continue;
+
+      for (const choice of choiceSet.choices || []) {
+        const targetSceneId = choice.nextSceneId;
+        if (!targetSceneId) continue;
+
+        const targetScene = blueprint.scenes.find(scene => scene.id === targetSceneId);
+        const bridgeId = `${beat.id}-bridge-${String(choice.id || 'choice')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '') || 'choice'}`;
+
+        const readerTargetName = this.sanitizeReaderFacingSceneName(targetScene?.name || targetSceneId, targetSceneId);
+        const originalTargetBeat = choice.nextBeatId
+          ? content.beats.find(candidate => candidate.id === choice.nextBeatId)
+          : undefined;
+        const originalTargetBeatId = originalTargetBeat?.isChoiceBridge ? undefined : choice.nextBeatId;
+
+        const routeContext = {
+          sourceSceneId: sceneBlueprint.id,
+          sourceBeatId: beat.id,
+          sourceChoiceId: choice.id,
+          choiceSummary: choice.feedbackCue?.echoSummary || choice.text,
+          originalTargetSceneId: targetSceneId,
+          originalTargetBeatId,
+          transitionIntent: `Bridge from "${this.sanitizeReaderFacingSceneName(sceneBlueprint.name)}" to "${readerTargetName}" without teleporting the player.`,
+          bridgePurpose: 'choice_transition',
+        };
+
+        choice.routeContext = routeContext;
+        choice.nextBeatId = bridgeId;
+
+        const existingBridge = content.beats.find(candidate => candidate.id === bridgeId);
+        if (existingBridge) {
+          existingBridge.nextSceneId = targetSceneId;
+          existingBridge.nextBeatId = originalTargetBeatId;
+          existingBridge.isChoiceBridge = true;
+          existingBridge.routeContext = routeContext;
+          continue;
+        }
+
+        const bridgeText = this.buildChoiceBridgeBeatText(choice);
+        content.beats.push({
+          id: bridgeId,
+          text: bridgeText,
+          nextSceneId: targetSceneId,
+          nextBeatId: originalTargetBeatId,
+          isChoiceBridge: true,
+          routeContext,
+          visualMoment: bridgeText,
+          primaryAction: bridgeText,
+          emotionalRead: 'the chosen decision visibly turns into motion',
+          relationshipDynamic: 'the decision changes posture, pace, or distance before the moment moves on',
+          mustShowDetail: targetScene?.location
+            ? `a concrete transition toward ${targetScene.location}`
+            : 'a concrete transition from decision into action',
+          intensityTier: 'supporting',
+          sequenceIntent: {
+            objective: 'Let the decision become visible movement without a jump in place or relationship.',
+            activity: 'decision, movement, and arrival',
+            obstacle: 'the decision needs a visible breath before the moment moves on',
+            startState: choice.feedbackCue?.echoSummary || choice.text,
+            endState: targetScene ? `The decision has enough momentum to carry the moment onward.` : 'The decision has enough momentum to carry forward.',
+            beatRole: 'handoff',
+            mechanicThread: choice.consequenceDomain || choice.choiceIntent,
+          },
+        } as GeneratedBeat);
+      }
+    }
+  }
+
+  private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number]): string {
+    const rawImmediate = this.cleanChoiceBridgeFragment(
+      choice.outcomeTexts?.partial
+      || choice.reactionText
+      || choice.feedbackCue?.progressSummary
+      || choice.reminderPlan?.immediate
+    );
+    // The lead fragment is sourced from planning fields; reject any meta/design-note
+    // register ("In the next scene…", raw flag ids) rather than leak it to readers.
+    const immediate = rawImmediate && !isUnsafeCallbackProse(rawImmediate) && !this.isGenericChoiceBridgeFragment(rawImmediate)
+      ? rawImmediate
+      : '';
+    // Prefer the authored in-fiction fragment ALONE. The generic line was previously
+    // APPENDED to every bridge, producing robotic structural closers ("The path forward
+    // is set.") on top of real prose (gen-5 audit) — it is now a last-resort fallback.
+    const lead = immediate || this.genericBridgeDestination(choice.id);
+    const trimmed = lead.trim();
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
+  private isGenericChoiceBridgeFragment(text: string): boolean {
+    const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
+    return [
+      'the choice leaves a visible pressure in the next moment.',
+      'the choice leaves a visible pressure in the next moment',
+      'in the next room, access, trust, and pressure have already shifted.',
+      'in the next room, access, trust, and pressure have already shifted',
+      'people remember what the protagonist risked, and they treat the next ask differently.',
+      'people remember what the protagonist risked, and they treat the next ask differently',
+      'what comes next is already in motion.',
+      'what comes next is already in motion',
+      'there is no stepping back from here.',
+      'there is no stepping back from here',
+      'the decision settles into your chest and stays there.',
+      'the decision settles into your chest and stays there',
+      'the choice changes the air around you.',
+      'the choice changes the air around you',
+    ].includes(normalized);
+  }
+
+  /**
+   * Deterministic generic in-fiction line for a choice bridge with no authored
+   * fragment. In-world register (no "path/threshold/forward is set" scaffolding, no
+   * scene names); rotation keyed on the choice id avoids identical consecutive lines.
+   */
+  private genericBridgeDestination(choiceId: string | undefined): string {
+    const options = [
+      'What comes next is already in motion.',
+      'There is no stepping back from here.',
+      'The decision settles into your chest and stays there.',
+      'The choice changes the air around you.',
+    ];
+    const key = String(choiceId || '');
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    return options[hash % options.length];
+  }
+
   private assembleEpisode(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -10657,191 +10349,38 @@ ${clothingRule}
     },
     videoResults?: Map<string, string>
   ): Episode {
-    const contentMap = new Map(sceneContents.map(sc => [sc.sceneId, sc]));
-    const choiceMap = new Map(choiceSets.map(cs => [cs.sceneId ? `${cs.sceneId}::${cs.beatId}` : cs.beatId, cs]));
-    const beatImages = imageResults?.beatImages || new Map<string, string>();
-    const sceneImages = imageResults?.sceneImages || new Map<string, string>();
-    const beatVideos = videoResults || new Map<string, string>();
-    const encounterImages = encounterImageResults?.encounterImages || new Map();
-    const storyletImages = encounterImageResults?.storyletImages || new Map<string, Map<string, Map<string, string>>>();
+    return this.assembly().assembleEpisode(
+      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets,
+      imageResults, encounters, encounterImageResults, videoResults,
+    );
+  }
 
-    const scenes: Scene[] = [];
-    const assemblyWarnings: string[] = [];
-    
-    for (const sb of blueprint.scenes) {
-      let content = contentMap.get(sb.id);
-      if (!content) {
-        console.error(`[Pipeline] Missing content for scene ${sb.id} — inserting placeholder`);
-        this.emit({ type: 'error', phase: 'assembly', message: `Missing content for scene ${sb.id} — inserting placeholder` });
-        assemblyWarnings.push(`Missing content for scene ${sb.id}`);
-        content = {
-          sceneId: sb.id,
-          sceneName: sb.name,
-          beats: [{ id: `${sb.id}-missing-beat`, text: '[Scene content was not generated]', nextBeatId: undefined }],
-          startingBeatId: `${sb.id}-missing-beat`,
-          moodProgression: [sb.mood],
-          charactersInvolved: sb.npcsPresent,
-          keyMoments: [sb.description],
-          continuityNotes: ['Content generation did not produce this scene'],
-        } as SceneContent;
-      }
+  private async repairWeakCliffhangerBeforeImages(
+    brief: FullCreativeBrief,
+    worldBible: WorldBible,
+    characterBible: CharacterBible,
+    blueprint: EpisodeBlueprint,
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    encounters?: Map<string, EncounterStructure>,
+  ): Promise<void> {
+    return repairWeakCliffhangerBeforeImagesImpl(
+      {
+        sceneWriterConfig: this.config.agents.sceneWriter,
+        emit: (event) => this.emit(event),
+        recordRemediationSafe: (record) => this.recordRemediationSafe(record),
+        assembleEpisode: this.assembleEpisode.bind(this),
+      },
+      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters,
+    );
+  }
 
-      // Check if this scene has an encounter (wrapped in try/catch for resilience)
-      const encounterStructure = encounters?.get(sb.id);
-      const sceneEncounterImages = encounterImages.get(sb.id);
-      let encounter: ReturnType<typeof convertEncounterStructureToEncounter> | undefined;
-      
-      try {
-        encounter = encounterStructure 
-          ? convertEncounterStructureToEncounter(encounterStructure, sb)
-          : undefined;
-      } catch (convError) {
-        const convMsg = convError instanceof Error ? convError.message : String(convError);
-        console.error(`[Pipeline] Failed to convert encounter for scene ${sb.id} (non-fatal): ${convMsg}`);
-        assemblyWarnings.push(`Encounter conversion failed for ${sb.id}: ${convMsg}`);
-        encounter = undefined; // Continue without the encounter
-      }
-      
-      // Map encounter images to the encounter structure (including recursive nextSituation trees)
-      if (encounter && sceneEncounterImages) {
-        let epMappedSetup = 0;
-        let epMappedOutcome = 0;
-        encounter.phases.forEach(phase => {
-          phase.beats.forEach(beat => {
-            const isEncounterBeat = 'setupText' in beat;
-            
-            const setupImage = sceneEncounterImages.setupImages.get(beat.id);
-            if (setupImage && isEncounterBeat) {
-              (beat as TypeEncounterBeat).situationImage = setupImage;
-              epMappedSetup++;
-            }
-            
-            if (isEncounterBeat) {
-              const encounterBeat = beat as TypeEncounterBeat;
-              if (encounterBeat.choices) {
-                const treeResult = this.wireEncounterTreeImages(
-                  encounterBeat.choices,
-                  encounterBeat.id,
-                  '',
-                  sceneEncounterImages.setupImages,
-                  sceneEncounterImages.outcomeImages,
-                  encounterBeat.situationImage,
-                );
-                epMappedSetup += treeResult.setupCount;
-                epMappedOutcome += treeResult.outcomeCount;
-              }
-            }
-          });
-        });
-        console.log(`[Pipeline] assembleEpisode: Encounter image mapping for ${sb.id}: ${epMappedSetup} setup, ${epMappedOutcome} outcome images`);
-      } else if (encounter && !sceneEncounterImages) {
-        console.warn(`[Pipeline] assembleEpisode: Scene ${sb.id} has encounter but NO encounter images were generated`);
-      }
-
-      // Wire storylet aftermath images into each storylet beat's image field.
-      if (encounter) {
-        const sceneStoryletImages = storyletImages.get(sb.id);
-        if (sceneStoryletImages && encounter.storylets) {
-          const outcomes: Array<[string, TypeGeneratedStorylet | undefined]> = [
-            ['victory', encounter.storylets.victory],
-            ['partialVictory', encounter.storylets.partialVictory],
-            ['defeat', encounter.storylets.defeat],
-            ['escape', encounter.storylets.escape],
-          ];
-          for (const [outcomeName, storylet] of outcomes) {
-            if (!storylet) continue;
-            const beatImageMap = sceneStoryletImages.get(outcomeName);
-            if (beatImageMap) {
-              storylet.beats.forEach(beat => {
-                const url = beatImageMap.get(beat.id);
-                if (url) beat.image = url;
-              });
-            }
-          }
-        }
-      }
-
-      // Determine if this is a bottleneck scene
-      const isBottleneck = blueprint.bottleneckScenes?.includes(sb.id) || sb.purpose === 'bottleneck';
-      
-      // Determine if this is a convergence point (multiple scenes lead to it)
-      const incomingScenes = blueprint.scenes.filter(s => s.leadsTo?.includes(sb.id));
-      const isConvergencePoint = incomingScenes.length > 1;
-
-      scenes.push({
-        id: sb.id,
-        name: sb.name,
-        startingBeatId: content.startingBeatId,
-        backgroundImage: sceneImages.get(this.getEpisodeScopedSceneId(brief, sb.id)),
-        beats: content.beats.map(gb => ({
-          id: gb.id,
-          text: gb.text,
-          speaker: gb.speaker,
-          speakerMood: gb.speakerMood,
-          nextBeatId: gb.nextBeatId,
-          image: beatImages.get(this.getEpisodeScopedBeatKey(brief, sb.id, gb.id)),
-          video: beatVideos.get(this.getEpisodeScopedBeatKey(brief, sb.id, gb.id)),
-          choices: gb.isChoicePoint ? choiceMap.get(`${sb.id}::${gb.id}`)?.choices.map(c => ({
-            id: c.id,
-            text: c.text,
-            nextSceneId: c.nextSceneId,
-            nextBeatId: c.nextBeatId,
-            consequences: normalizeConsequences(c.consequences),
-            consequenceDomain: c.consequenceDomain,
-            reminderPlan: c.reminderPlan,
-            feedbackCue: c.feedbackCue,
-          })) : undefined
-        })),
-        encounter,
-        // Branch navigation metadata
-        leadsTo: sb.leadsTo,
-        isBottleneck,
-        isConvergencePoint,
-      });
+  private isEpisodeFinalScene(scene: SceneBlueprint, blueprint: EpisodeBlueprint): boolean {
+    const terminalScenes = (blueprint.scenes || []).filter(s => !s.leadsTo || s.leadsTo.length === 0);
+    if (terminalScenes.length > 0) {
+      return terminalScenes.some(s => s.id === scene.id);
     }
-
-    if (assemblyWarnings.length > 0) {
-      console.warn(`[Pipeline] Episode assembly completed with ${assemblyWarnings.length} warning(s): ${assemblyWarnings.join('; ')}`);
-    }
-
-    // Post-assembly encounter verification: the final episode must contain encounters
-    // when the blueprint flagged scenes as encounters.
-    const blueprintEncounterSceneIds = blueprint.scenes.filter(s => s.isEncounter).map(s => s.id);
-    const assembledEncounterSceneIds = scenes.filter(s => s.encounter).map(s => s.id);
-    if (blueprintEncounterSceneIds.length > 0 && assembledEncounterSceneIds.length === 0) {
-      console.error(
-        `[Pipeline] ENCOUNTER VERIFICATION FAILED: Blueprint expected encounters in [${blueprintEncounterSceneIds.join(', ')}] ` +
-        `but assembled episode has zero encounters. This means encounters were silently lost during generation or assembly.`
-      );
-      this.emit({
-        type: 'error',
-        phase: 'assembly',
-        message: `Episode assembly lost all encounters! Blueprint expected ${blueprintEncounterSceneIds.length} encounter scene(s) but 0 made it to final output.`,
-      });
-    } else if (blueprintEncounterSceneIds.length > assembledEncounterSceneIds.length) {
-      const missing = blueprintEncounterSceneIds.filter(id => !assembledEncounterSceneIds.includes(id));
-      console.warn(
-        `[Pipeline] Encounter verification: ${missing.length} encounter scene(s) lost during assembly: [${missing.join(', ')}]`
-      );
-      this.emit({
-        type: 'warning',
-        phase: 'assembly',
-        message: `${missing.length} encounter scene(s) lost during assembly: ${missing.join(', ')}`,
-      });
-    }
-
-    // Use first scene's background as episode cover
-    const episodeCover = scenes.length > 0 ? sceneImages.get(this.getEpisodeScopedSceneId(brief, scenes[0].id)) || '' : '';
-
-    return {
-      id: generateEpisodeId(brief.episode.number, brief.episode.title),
-      number: brief.episode.number,
-      title: brief.episode.title,
-      synopsis: brief.episode.synopsis,
-      scenes,
-      startingSceneId: blueprint.startingSceneId,
-      coverImage: episodeCover
-    };
+    return (blueprint.scenes || [])[blueprint.scenes.length - 1]?.id === scene.id;
   }
 
   /**
@@ -10861,108 +10400,15 @@ ${clothingRule}
     npcsInvolved: Array<{ id: string; name: string }>,
     flagsAlreadySet?: ReadonlySet<string>
   ): EncounterArchitectInput['priorStateContext'] {
-    const relevantFlags: Array<{ name: string; description: string; alreadySet?: boolean }> = [];
-    const relevantRelationships: Array<{
-      npcId: string; npcName: string;
-      dimension: 'trust' | 'affection' | 'respect' | 'fear';
-      operator: '==' | '!=' | '>' | '<' | '>=' | '<=';
-      threshold: number; description: string;
-      authored?: boolean;
-    }> = [];
-    const significantChoices: string[] = [];
-
-    // Parse encounterSetupContext directives authored by the StoryArchitect.
-    // Format: "flag:<name> — <description>" or "relationship:<id>.<dim> <op> <n> — <description>"
-    if (encounterScene.encounterSetupContext?.length) {
-      for (const directive of encounterScene.encounterSetupContext) {
-        if (directive.startsWith('flag:')) {
-          const rest = directive.slice('flag:'.length);
-          const dashIdx = rest.indexOf(' — ');
-          const flagName = dashIdx !== -1 ? rest.slice(0, dashIdx).trim() : rest.trim();
-          const flagDesc = dashIdx !== -1 ? rest.slice(dashIdx + 3).trim() : directive;
-          relevantFlags.push({
-            name: flagName,
-            description: flagDesc,
-            alreadySet: flagsAlreadySet?.has(flagName) ?? false,
-          });
-        } else if (directive.startsWith('relationship:')) {
-          // e.g. "relationship:hindley.trust < -20 — description"
-          const rest = directive.slice('relationship:'.length);
-          const dashIdx = rest.indexOf(' — ');
-          const expr = dashIdx !== -1 ? rest.slice(0, dashIdx).trim() : rest.trim();
-          const desc = dashIdx !== -1 ? rest.slice(dashIdx + 3).trim() : directive;
-          // Parse "npcId.dimension operator threshold"
-          const match = expr.match(/^([^.]+)\.(\w+)\s*([<>=!]+)\s*(-?\d+)/);
-          if (match) {
-            const [, npcId, dimension, operator, thresholdStr] = match;
-            const npc = npcsInvolved.find(n => n.id === npcId);
-            const dims = ['trust', 'affection', 'respect', 'fear'] as const;
-            const dim = dims.find(d => d === dimension);
-            if (dim) {
-              relevantRelationships.push({
-                npcId,
-                npcName: npc?.name || npcId,
-                dimension: dim,
-                operator: operator as '==' | '!=' | '>' | '<' | '>=' | '<=',
-                threshold: parseInt(thresholdStr, 10),
-                description: desc,
-                authored: true,
-              });
-            }
-          }
-        }
-        // Any directive not matching flag:/relationship: becomes a significant choice hint
-        else {
-          significantChoices.push(directive);
-        }
-      }
-    }
-
-    // Always include all blueprint-level suggestedFlags as potential payoff context
-    // (the StoryArchitect defines these as flags the episode tracks).
-    for (const flag of blueprint.suggestedFlags || []) {
-      if (!relevantFlags.some(f => f.name === flag.name)) {
-        relevantFlags.push({
-          name: flag.name,
-          description: flag.description,
-          alreadySet: flagsAlreadySet?.has(flag.name) ?? false,
-        });
-      }
-    }
-
-    // Only synthesize default relationship thresholds when the blueprint provided none at all.
-    // This keeps relationship payoffs feeling authored instead of boilerplate.
-    const RELATIONSHIP_DIMS = ['trust', 'affection', 'respect', 'fear'] as const;
-    if (relevantRelationships.length === 0) {
-      for (const npc of npcsInvolved) {
-        for (const dim of RELATIONSHIP_DIMS) {
-          const maxVal = this.incrementalValidator?.getRelationshipUpperBound(npc.id, dim) ?? 0;
-          relevantRelationships.push({
-            npcId: npc.id,
-            npcName: npc.name,
-            dimension: dim,
-            operator: '>=',
-            threshold: dim === 'fear' ? 40 : 20, // Sensible defaults
-            description: `${npc.name}'s ${dim} level — consider authoring a variant when this value is high enough to matter`,
-            authored: false,
-            currentMaxValue: maxVal,
-          });
-        }
-      }
-    } else {
-      // Annotate authored relationships with current achievable values
-      for (const rel of relevantRelationships) {
-        if (rel.currentMaxValue === undefined) {
-          rel.currentMaxValue = this.incrementalValidator?.getRelationshipUpperBound(rel.npcId, rel.dimension) ?? 0;
-        }
-      }
-    }
-
-    if (!relevantFlags.length && !relevantRelationships.length && !significantChoices.length) {
-      return undefined;
-    }
-
-    return { relevantFlags, relevantRelationships, significantChoices };
+    return buildEncounterPriorStateContext(
+      encounterScene,
+      blueprint,
+      npcsInvolved,
+      flagsAlreadySet,
+      this.incrementalValidator
+        ? (npcId, dimension) => this.incrementalValidator!.getRelationshipUpperBound(npcId, dimension)
+        : undefined,
+    );
   }
 
   /**
@@ -10972,182 +10418,7 @@ ${clothingRule}
    * accumulated set.  Returns human-readable issue strings.
    */
   private runFlagChronologyScan(story: Story): string[] {
-    const issues: string[] = [];
-    const accumulatedFlags = new Set<string>();
-
-    // Relationship upper-bound tracking: initial values + sum of positive changes
-    const relBaselines = new Map<string, number>(); // "npcId:dim" -> initial value
-    const relGains = new Map<string, number>();     // "npcId:dim" -> accumulated positive changes
-
-    // Initialize relationship baselines from story NPCs
-    for (const npc of story.npcs || []) {
-      for (const dim of ['trust', 'affection', 'respect', 'fear'] as const) {
-        const key = `${npc.id}:${dim}`;
-        relBaselines.set(key, (npc as any).initialRelationship?.[dim] ?? 0);
-      }
-    }
-
-    const getRelUpperBound = (npcId: string, dim: string): number => {
-      const key = `${npcId}:${dim}`;
-      return (relBaselines.get(key) ?? 0) + (relGains.get(key) ?? 0);
-    };
-
-    const isComparisonUnreachable = (upperBound: number, operator: string, threshold: number): boolean => {
-      switch (operator) {
-        case '>':  return upperBound <= threshold;
-        case '>=': return upperBound < threshold;
-        case '==': return upperBound < threshold;
-        default:   return false;
-      }
-    };
-
-    // Collect flags from initialState
-    if (story.initialState?.flags) {
-      for (const [k, v] of Object.entries(story.initialState.flags)) {
-        if (v) accumulatedFlags.add(k);
-      }
-    }
-
-    const collectConsequences = (consequences?: Consequence[]) => {
-      if (!consequences) return;
-      for (const c of consequences) {
-        if (c.type === 'setFlag' && (c as any).flag) {
-          accumulatedFlags.add((c as any).flag);
-        }
-        const rel = c as any;
-        if ((rel.type === 'relationship' || rel.type === 'changeRelationship') &&
-            (rel.characterId || rel.npcId) && rel.dimension && typeof rel.change === 'number' && rel.change > 0) {
-          const key = `${rel.characterId || rel.npcId}:${rel.dimension}`;
-          relGains.set(key, (relGains.get(key) ?? 0) + rel.change);
-        }
-      }
-    };
-
-    const checkExpr = (expr: any, location: string) => {
-      if (!expr || typeof expr !== 'object') return;
-      const type = expr.type as string | undefined;
-      if (type === 'flag') {
-        const flag = expr.flag as string;
-        if (flag && !accumulatedFlags.has(flag)) {
-          issues.push(
-            `Forward-reference: "${flag}" used in condition at ${location} but not set by any prior scene`
-          );
-        }
-      } else if (type === 'relationship') {
-        const npcId = expr.npcId as string;
-        const dim = expr.dimension as string;
-        const op = expr.operator as string;
-        const val = expr.value as number;
-        if (npcId && dim && op && typeof val === 'number') {
-          const ub = getRelUpperBound(npcId, dim);
-          if (isComparisonUnreachable(ub, op, val)) {
-            issues.push(
-              `Unreachable relationship condition: "${npcId}.${dim} ${op} ${val}" at ${location} (max achievable: ${ub})`
-            );
-          }
-        }
-      } else if (type === 'and' || type === 'or') {
-        if (Array.isArray(expr.conditions)) {
-          for (const child of expr.conditions) checkExpr(child, location);
-        }
-      } else if (type === 'not') {
-        if (expr.condition) checkExpr(expr.condition, location);
-      } else if (!type) {
-        const keys = Object.keys(expr);
-        if (keys.length === 1 && typeof expr[keys[0]] === 'boolean') {
-          if (!accumulatedFlags.has(keys[0])) {
-            issues.push(
-              `Forward-reference: "${keys[0]}" used in condition at ${location} but not set by any prior scene`
-            );
-          }
-        }
-      }
-    };
-
-    const walkEncounterChoiceOutcomes = (outcomes: any, loc: string) => {
-      if (!outcomes) return;
-      for (const tier of ['success', 'complicated', 'failure']) {
-        const outcome = outcomes[tier];
-        if (!outcome) continue;
-        collectConsequences(outcome.consequences);
-        if (outcome.nextSituation?.choices) {
-          for (const c of outcome.nextSituation.choices) {
-            if (c.conditions) checkExpr(c.conditions, `${loc}:${c.id}`);
-            if (c.statBonus?.condition) checkExpr(c.statBonus.condition, `${loc}:${c.id}:statBonus`);
-            walkEncounterChoiceOutcomes(c.outcomes, `${loc}:${c.id}`);
-          }
-        }
-      }
-    };
-
-    for (const episode of story.episodes || []) {
-      for (const scene of episode.scenes || []) {
-        // 1. Check narrative beat choice conditions
-        for (const beat of scene.beats || []) {
-          if (beat.choices) {
-            for (const choice of beat.choices) {
-              if (choice.conditions) {
-                checkExpr(choice.conditions, `${scene.id}:${beat.id}:${choice.id}`);
-              }
-            }
-          }
-        }
-
-        // 2. Check encounter choice conditions
-        if (scene.encounter?.phases) {
-          for (const phase of scene.encounter.phases) {
-            for (const beat of phase.beats || []) {
-              const encBeat = beat as any;
-              if (encBeat.choices) {
-                for (const choice of encBeat.choices) {
-                  const loc = `encounter:${scene.id}:${encBeat.id}:${choice.id}`;
-                  if (choice.conditions) checkExpr(choice.conditions, loc);
-                  if (choice.statBonus?.condition) checkExpr(choice.statBonus.condition, `${loc}:statBonus`);
-                  walkEncounterChoiceOutcomes(choice.outcomes, loc);
-                }
-              }
-            }
-          }
-        }
-
-        // 3. Accumulate flags from narrative choices (consequences)
-        for (const beat of scene.beats || []) {
-          if (beat.choices) {
-            for (const choice of beat.choices) {
-              collectConsequences(choice.consequences);
-              if (choice.delayedConsequences) {
-                for (const dc of choice.delayedConsequences) {
-                  collectConsequences(dc.consequence ? [dc.consequence] : undefined);
-                }
-              }
-            }
-          }
-        }
-
-        // 4. Accumulate flags from encounter choice outcomes
-        if (scene.encounter?.phases) {
-          for (const phase of scene.encounter.phases) {
-            for (const beat of phase.beats || []) {
-              const encBeat = beat as any;
-              if (encBeat.choices) {
-                for (const choice of encBeat.choices) {
-                  walkEncounterChoiceOutcomes(choice.outcomes, `${scene.id}:${encBeat.id}:${choice.id}`);
-                }
-              }
-            }
-          }
-          // Encounter overall outcomes
-          if (scene.encounter.outcomes) {
-            for (const key of Object.keys(scene.encounter.outcomes)) {
-              const outcome = (scene.encounter.outcomes as any)[key];
-              collectConsequences(outcome?.consequences);
-            }
-          }
-        }
-      }
-    }
-
-    return issues;
+    return this.finalContract().runFlagChronologyScan(story);
   }
 
   /**
@@ -11209,178 +10480,26 @@ ${clothingRule}
     }
   }
 
-  private bindGeneratedAudioToStory(story: Story, audioResults: Array<{ beatId: string; audioUrl?: string }>): number {
-    const audioByBeatId = new Map<string, string>();
-    for (const result of audioResults) {
-      if (result?.beatId && result?.audioUrl) {
-        audioByBeatId.set(result.beatId, result.audioUrl);
-      }
-    }
-    if (audioByBeatId.size === 0) return 0;
-
-    let mapped = 0;
-    for (const episode of story.episodes || []) {
-      for (const scene of episode.scenes || []) {
-        for (const beat of scene.beats || []) {
-          const audioUrl = audioByBeatId.get(beat.id);
-          if (audioUrl) {
-            beat.audio = audioUrl;
-            mapped++;
-          }
-        }
-
-        const encounterAny = scene.encounter as any;
-        if (encounterAny?.phases) {
-          for (const phase of encounterAny.phases) {
-            for (const beat of phase?.beats || []) {
-              const audioUrl = audioByBeatId.get(beat.id);
-              if (audioUrl) {
-                beat.audio = audioUrl;
-                mapped++;
-              }
-            }
-          }
-        }
-        if (encounterAny?.beats) {
-          for (const beat of encounterAny.beats) {
-            const audioUrl = audioByBeatId.get(beat.id);
-            if (audioUrl) {
-              beat.audio = audioUrl;
-              mapped++;
-            }
-          }
-        }
-      }
-    }
-    return mapped;
-  }
-
-  /**
-   * Bind generated video URLs to beats in the assembled story.
-   * Uses the same composite key pattern as images (sceneId::beatId).
-   */
-  private bindGeneratedVideoToStory(story: Story, videoResults: Map<string, string>): number {
-    if (!videoResults || videoResults.size === 0) return 0;
-
-    let mapped = 0;
-    for (const episode of story.episodes || []) {
-      for (const scene of episode.scenes || []) {
-        for (const beat of scene.beats || []) {
-          const videoUrl = videoResults.get(`${scene.id}::${beat.id}`);
-          if (videoUrl) {
-            beat.video = videoUrl;
-            mapped++;
-          }
-        }
-      }
-    }
-    return mapped;
-  }
-
-  /**
-   * Build enriched NPC descriptions for ChoiceAuthor with voice and physical details.
-   */
   private buildChoiceAuthorNpcs(
     npcIds: string[],
     characterBible: CharacterBible
   ): Array<{ id: string; name: string; pronouns: 'he/him' | 'she/her' | 'they/them'; description: string; voiceNotes?: string; physicalDescription?: string }> {
-    return npcIds.map(npcId => {
-      const profile = characterBible.characters.find(c => c.id === npcId);
-      return {
-        id: npcId,
-        name: profile?.name || npcId,
-        pronouns: (profile?.pronouns || 'he/him') as 'he/him' | 'she/her' | 'they/them',
-        description: profile?.overview || '',
-        voiceNotes: profile?.voiceProfile?.writingGuidance,
-        physicalDescription: profile?.physicalDescription,
-      };
-    });
+    return buildChoiceAuthorNpcs(npcIds, characterBible);
   }
 
-  /**
-   * Build a compact world brief for agents that need broader world context.
-   * Keeps token cost low by summarizing rather than dumping full bible.
-   */
+  private deriveStoryVerbsForBrief(brief: FullCreativeBrief, worldBible?: WorldBible) {
+    return deriveStoryVerbsForBrief(brief, worldBible);
+  }
+
   private buildCompactWorldContext(worldBible: WorldBible, locationDescription?: string): string {
-    const parts: string[] = [];
-    if (locationDescription) parts.push(locationDescription);
-    if (worldBible.worldRules.length > 0) {
-      parts.push(`World rules: ${worldBible.worldRules.slice(0, 5).join('. ')}`);
-    }
-    if (worldBible.tensions.length > 0) {
-      parts.push(`Tensions: ${worldBible.tensions.slice(0, 3).join('. ')}`);
-    }
-    if (worldBible.factions && worldBible.factions.length > 0) {
-      parts.push(`Factions: ${worldBible.factions.slice(0, 4).map(f => f.name + (f.overview ? ` (${f.overview.substring(0, 60)})` : '')).join('; ')}`);
-    }
-    if (worldBible.customs && worldBible.customs.length > 0) {
-      parts.push(`Customs: ${worldBible.customs.slice(0, 3).join('. ')}`);
-    }
-    return parts.join('\n');
+    return buildCompactWorldContext(worldBible, locationDescription);
   }
 
-  /**
-   * Infer branch type from scene blueprint context
-   * Used for visual differentiation (lighting, color, mood)
-   */
   private inferBranchType(
     sceneBlueprint: SceneBlueprint,
     blueprint: EpisodeBlueprint
   ): 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption' {
-    // Check mood keywords
-    const moodLower = sceneBlueprint.mood.toLowerCase();
-    
-    // Dark indicators
-    if (moodLower.includes('dark') || moodLower.includes('grim') || 
-        moodLower.includes('ominous') || moodLower.includes('dread') ||
-        moodLower.includes('desperate') || moodLower.includes('bleak')) {
-      return 'dark';
-    }
-    
-    // Hopeful indicators
-    if (moodLower.includes('hopeful') || moodLower.includes('bright') ||
-        moodLower.includes('warm') || moodLower.includes('optimistic') ||
-        moodLower.includes('triumphant') || moodLower.includes('joyful')) {
-      return 'hopeful';
-    }
-    
-    // Tragic indicators
-    if (moodLower.includes('tragic') || moodLower.includes('mournful') ||
-        moodLower.includes('grief') || moodLower.includes('loss') ||
-        moodLower.includes('funeral') || moodLower.includes('death')) {
-      return 'tragic';
-    }
-    
-    // Redemption indicators
-    if (moodLower.includes('redemption') || moodLower.includes('forgiveness') ||
-        moodLower.includes('reconciliation') || moodLower.includes('second chance') ||
-        moodLower.includes('healing')) {
-      return 'redemption';
-    }
-    
-    // Check scene purpose for additional context
-    if (sceneBlueprint.purpose === 'bottleneck') {
-      // Bottlenecks tend to be more intense/darker
-      if (moodLower.includes('tense') || moodLower.includes('conflict')) {
-        return 'dark';
-      }
-    }
-    
-    // Check if this is on a branch path (not a bottleneck)
-    // Non-bottleneck scenes after choices might have stronger tonal variation
-    const isOnBranch = sceneBlueprint.purpose === 'branch' || 
-      (!blueprint.bottleneckScenes?.includes(sceneBlueprint.id) && 
-       blueprint.scenes.some(s => s.leadsTo?.includes(sceneBlueprint.id) && s.choicePoint));
-    
-    if (isOnBranch) {
-      // Branch scenes should have more distinct tones
-      // Default to slightly darker for tension
-      if (moodLower.includes('tense') || moodLower.includes('suspense')) {
-        return 'dark';
-      }
-    }
-    
-    return 'neutral';
+    return inferBranchType(sceneBlueprint, blueprint);
   }
 
   /**
@@ -11391,117 +10510,42 @@ ${clothingRule}
     episodeRange: { start: number; end: number; specific?: number[] },
     episodesToGenerate?: number[]
   ): SourceMaterialAnalysis {
-    // Determine which episodes to include
-    const specificEpisodes = episodesToGenerate || episodeRange.specific;
-    
-    // Get the episode outlines for the selected episodes (specific list or range)
-    const selectedEpisodes = specificEpisodes
-      ? analysis.episodeBreakdown.filter(ep => specificEpisodes.includes(ep.episodeNumber))
-      : analysis.episodeBreakdown.filter(
-          ep => ep.episodeNumber >= episodeRange.start && ep.episodeNumber <= episodeRange.end
-        );
+    return filterAnalysisForEpisodeRange(analysis, episodeRange, episodesToGenerate, this.emit.bind(this));
+  }
 
-    // Collect all unique location references mentioned in selected episodes
-    const neededLocationRefs = new Set<string>();
-    for (const episode of selectedEpisodes) {
-      const episodeLocs = episode.locations || [];
-      for (const locRef of episodeLocs) {
-        neededLocationRefs.add(locRef.toLowerCase());
-      }
+  private refreshAnalysisFromTreatmentDocument(
+    analysis: SourceMaterialAnalysis,
+    sourceText?: string
+  ): SourceMaterialAnalysis {
+    return refreshAnalysisFromTreatmentDocument(analysis, sourceText, this.emit.bind(this));
+  }
+
+  private refreshBriefSeasonPlanFromAnalysis(
+    baseBrief: FullCreativeBrief,
+    analysis: SourceMaterialAnalysis
+  ): FullCreativeBrief {
+    return refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis, this.emit.bind(this));
+  }
+
+  /**
+   * Reconcile the brief's top-level story metadata (genre / tone / synopsis /
+   * themes) with the canonical season plan. Thin wrapper over the pure
+   * {@link reconcileBriefStoryMetadata} helper (extracted to keep this monolith
+   * from growing); see that module for the rationale.
+   */
+  private reconcileBriefStoryMetadataFromPlan(
+    baseBrief: FullCreativeBrief,
+    analysis: SourceMaterialAnalysis
+  ): FullCreativeBrief {
+    const result = reconcileBriefStoryMetadata(baseBrief, analysis);
+    if (result.changed) {
+      this.emit({
+        type: 'debug',
+        phase: 'season_plan_refresh',
+        message: `Reconciled brief story metadata from season plan (genre="${result.genre}").`,
+      });
     }
-
-    // Also include locations from the starting location of episode 1 if generating from start
-    if (episodeRange.start === 1 && analysis.keyLocations.length > 0) {
-      // Always include the first location as it's likely the starting point
-      neededLocationRefs.add(analysis.keyLocations[0].id.toLowerCase());
-      neededLocationRefs.add(analysis.keyLocations[0].name.toLowerCase());
-    }
-
-    // Filter locations - match by ID or by name (fuzzy matching)
-    const filteredLocations = analysis.keyLocations.filter(loc => {
-      const locIdLower = loc.id.toLowerCase();
-      const locNameLower = loc.name.toLowerCase();
-
-      // Direct match by ID or name
-      if (neededLocationRefs.has(locIdLower) || neededLocationRefs.has(locNameLower)) {
-        return true;
-      }
-
-      // Partial match - check if any reference contains or is contained in location name
-      for (const ref of neededLocationRefs) {
-        if (locNameLower.includes(ref) || ref.includes(locNameLower)) {
-          return true;
-        }
-      }
-
-      return false;
-    });
-
-    // If no locations were matched (perhaps location IDs don't match), include first few
-    // based on selected episode count
-    const locationsToUse = filteredLocations.length > 0
-      ? filteredLocations
-      : analysis.keyLocations.slice(0, Math.min(selectedEpisodes.length + 1, analysis.keyLocations.length));
-
-    this.emit({ type: 'debug', phase: 'filtering', message: `Episode locations needed: ${Array.from(neededLocationRefs).join(', ')}` });
-    this.emit({ type: 'debug', phase: 'filtering', message: `Filtered locations: ${locationsToUse.map(l => l.id).join(', ')}` });
-
-    // Collect all unique character references mentioned in selected episodes
-    const neededCharacterRefs = new Set<string>();
-    for (const episode of selectedEpisodes) {
-      const mainChars = episode.mainCharacters || [];
-      const supportChars = episode.supportingCharacters || [];
-      for (const charRef of [...mainChars, ...supportChars]) {
-        neededCharacterRefs.add(charRef.toLowerCase());
-      }
-    }
-
-    // Filter characters - match by name (with fuzzy matching) or always include core
-    const filteredCharacters = analysis.majorCharacters.filter(char => {
-      const charNameLower = char.name.toLowerCase();
-
-      // Always include core characters - they're central to the story
-      if (char.importance === 'core') {
-        return true;
-      }
-
-      // Direct match by name
-      if (neededCharacterRefs.has(charNameLower)) {
-        return true;
-      }
-
-      // Partial match - check if any reference contains or is contained in character name
-      for (const ref of neededCharacterRefs) {
-        // Check both directions - "Rose" matches "Rose the Healer" and vice versa
-        const refParts = ref.split(/\s+/);
-        const nameParts = charNameLower.split(/\s+/);
-
-        // Match if first name matches or full name contains reference
-        if (refParts.some(part => nameParts.includes(part)) ||
-            charNameLower.includes(ref) ||
-            ref.includes(charNameLower)) {
-          return true;
-        }
-      }
-
-      return false;
-    });
-
-    // If no characters were matched, include all core/supporting ones
-    const charactersToUse = filteredCharacters.length > 0
-      ? filteredCharacters
-      : analysis.majorCharacters.filter(c => c.importance === 'core' || c.importance === 'supporting');
-
-    this.emit({ type: 'debug', phase: 'filtering', message: `Episode characters needed: ${Array.from(neededCharacterRefs).join(', ')}` });
-    this.emit({ type: 'debug', phase: 'filtering', message: `Filtered characters: ${charactersToUse.map(c => c.name).join(', ')}` });
-
-    return {
-      ...analysis,
-      keyLocations: locationsToUse,
-      majorCharacters: charactersToUse,
-      totalEstimatedEpisodes: selectedEpisodes.length,
-      episodeBreakdown: selectedEpisodes,
-    };
+    return result.brief;
   }
 
   /**
@@ -11540,239 +10584,245 @@ ${clothingRule}
     };
   }
 
-  // ── Memory persistence (Claude memory tool) ───────────────────────
-
-  private get memoryEnabled(): boolean {
-    return !!this.config.memory?.enabled && this.config.agents.storyArchitect.provider === 'anthropic';
-  }
-
-  private getMemoryStoreInstance(): MemoryStore {
-    if (this.config.memory?.directory) {
-      return new NodeMemoryStore(this.config.memory.directory);
-    }
-    return getMemoryStore();
-  }
+  // ── S3: remediation budget + ledger plumbing ──────────────────────
 
   /**
-   * Write pipeline self-optimization data after a generation run.
-   * Appends a timestamped entry with QA score, failures, and timing.
+   * (Re)create the per-run remediation budget and zero the per-run counters.
+   * Called at each run entry point alongside the other per-run state resets.
+   * The ceiling defaults HIGH (config.remediationBudgetTotal, default 1000) so
+   * existing always-on scene/encounter/choice regeneration is never constrained.
    */
-  async writeGenerationMemory(opts: {
-    success: boolean;
-    qaScore?: number;
-    qaPassed?: boolean;
-    bestPracticesScore?: number;
-    duration: number;
-    artStyle?: string;
-    failedAgents?: string[];
-    timeoutAgents?: string[];
-    error?: string;
-    episodeTitle?: string;
-  }): Promise<void> {
-    if (!this.memoryEnabled || !this.config.memory?.pipelineOptimization) return;
-    try {
-      const store = this.getMemoryStoreInstance();
-      const ts = new Date().toISOString();
-      const entry = [
-        `\n## ${ts} — ${opts.episodeTitle || 'Generation'}`,
-        `- Result: ${opts.success ? 'SUCCESS' : 'FAILED'}`,
-        opts.qaScore != null ? `- QA Score: ${opts.qaScore}/100 (${opts.qaPassed ? 'passed' : 'needs revision'})` : null,
-        opts.bestPracticesScore != null ? `- Best Practices Score: ${opts.bestPracticesScore}/100` : null,
-        `- Duration: ${Math.round(opts.duration / 1000)}s`,
-        opts.artStyle ? `- Art Style: ${opts.artStyle}` : null,
-        opts.failedAgents?.length ? `- Failed Agents: ${opts.failedAgents.join(', ')}` : null,
-        opts.timeoutAgents?.length ? `- Timeout Agents: ${opts.timeoutAgents.join(', ')}` : null,
-        opts.error ? `- Error: ${opts.error.substring(0, 200)}` : null,
-      ].filter(Boolean).join('\n');
-
-      const path = '/memories/pipeline/generation-log.md';
-      const existing = await store.execute({ command: 'view', path });
-      if (existing.includes('does not exist')) {
-        await store.execute({ command: 'create', path, file_text: `# Pipeline Generation Log\n\nAutomated log of generation results for self-optimization.\n${entry}\n` });
-      } else {
-        await store.execute({ command: 'insert', path, insert_line: 999999, insert_text: entry + '\n' });
-      }
-      console.log(`[Pipeline] Memory: wrote generation log entry (QA: ${opts.qaScore ?? 'n/a'})`);
-    } catch (err) {
-      console.warn('[Pipeline] Memory: failed to write generation log:', err);
-    }
+  private resetRemediationBudget(): void {
+    this.remediationBudget = createRemediationBudget(this.config.generation?.remediationBudgetTotal ?? 1000);
+    this.runLedger().resetCounters();
   }
 
-  /**
-   * Write detailed QA learnings that can guide future generations.
-   * Extracts recurring patterns from voice, continuity, and stakes reports.
-   */
-  async writeQALearnings(qaReport: {
-    continuity?: { issues: Array<{ description: string; severity: string; suggestedFix?: string }> };
-    voice?: { characterScores: Array<{ characterName: string; score: number; weaknesses: string[] }>; recommendations: string[] };
-    stakes?: { choiceSetAnalysis: Array<{ stakesScore: number; analysis: string; improvements: string[] }> };
-    overallScore: number;
-    criticalIssues: string[];
-  }, episodeTitle?: string): Promise<void> {
-    if (!this.memoryEnabled || !this.config.memory?.pipelineOptimization) return;
-    try {
-      const store = this.getMemoryStoreInstance();
-      const ts = new Date().toISOString();
-      const lines: string[] = [`\n## ${ts} — ${episodeTitle || 'Generation'} (QA: ${qaReport.overallScore}/100)`];
+  private _runLedger?: RunLedger;
 
-      if (qaReport.voice?.characterScores) {
-        const weakVoices = qaReport.voice.characterScores.filter(c => c.score < 70 && c.weaknesses.length > 0);
-        if (weakVoices.length > 0) {
-          lines.push('### Voice Issues');
-          for (const v of weakVoices) {
-            lines.push(`- ${v.characterName} (${v.score}/100): ${v.weaknesses.slice(0, 3).join('; ')}`);
-          }
-        }
-        if (qaReport.voice.recommendations.length > 0) {
-          lines.push(`- Recommendations: ${qaReport.voice.recommendations.slice(0, 3).join('; ')}`);
-        }
-      }
-
-      if (qaReport.continuity?.issues) {
-        const errors = qaReport.continuity.issues.filter(i => i.severity === 'error');
-        if (errors.length > 0) {
-          lines.push('### Continuity Errors');
-          for (const e of errors.slice(0, 5)) {
-            lines.push(`- ${e.description}${e.suggestedFix ? ` → ${e.suggestedFix}` : ''}`);
-          }
-        }
-      }
-
-      if (qaReport.stakes?.choiceSetAnalysis) {
-        const weakStakes = qaReport.stakes.choiceSetAnalysis.filter(cs => cs.stakesScore < 50);
-        if (weakStakes.length > 0) {
-          lines.push('### Weak Stakes');
-          for (const s of weakStakes.slice(0, 3)) {
-            lines.push(`- Score ${s.stakesScore}: ${s.analysis.substring(0, 120)}`);
-            if (s.improvements.length > 0) {
-              lines.push(`  Fix: ${s.improvements.slice(0, 2).join('; ')}`);
-            }
-          }
-        }
-      }
-
-      if (qaReport.criticalIssues.length > 0) {
-        lines.push('### Critical Issues');
-        for (const ci of qaReport.criticalIssues.slice(0, 5)) {
-          lines.push(`- ${ci}`);
-        }
-      }
-
-      if (lines.length <= 1) return;
-
-      const entry = lines.join('\n');
-      const path = '/memories/pipeline/qa-learnings.md';
-      const existing = await store.execute({ command: 'view', path });
-      if (existing.includes('does not exist')) {
-        await store.execute({
-          command: 'create',
-          path,
-          file_text: `# QA Learnings\n\nRecurring quality patterns extracted from generation QA reports.\nThese learnings are injected into agent prompts to prevent repeat issues.\n${entry}\n`,
-        });
-      } else {
-        await store.execute({ command: 'insert', path, insert_line: 999999, insert_text: entry + '\n' });
-      }
-      console.log(`[Pipeline] Memory: wrote QA learnings (${lines.length - 1} pattern(s))`);
-    } catch (err) {
-      console.warn('[Pipeline] Memory: failed to write QA learnings:', err);
+  /** Cross-run quality-ledger plumbing — see pipeline/runLedger.ts. */
+  private runLedger(): RunLedger {
+    if (!this._runLedger) {
+      this._runLedger = new RunLedger({
+        currentOutputDirectory: () => this._currentOutputDirectory,
+        serializeCallbackLedger: () => this.callbackLedger?.serialize?.(),
+      });
     }
+    return this._runLedger;
   }
 
-  /**
-   * Write character knowledge after a character reference sheet is generated.
-   * Stores vision analysis results, physical traits, and whether ref images matched.
-   */
-  async writeCharacterMemory(opts: {
-    characterName: string;
-    characterId: string;
-    visionAnalysisSucceeded: boolean;
-    physicalTraits: Record<string, any>;
-    hadUserReferenceImages: boolean;
-    userRefCount: number;
-    generationSucceeded: boolean;
-    artStyle?: string;
-  }): Promise<void> {
-    if (!this.memoryEnabled || !this.config.memory?.characterKnowledge) return;
-    try {
-      const store = this.getMemoryStoreInstance();
-      const safeName = opts.characterName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const path = `/memories/characters/${safeName}.md`;
-      const ts = new Date().toISOString();
-
-      const traits = opts.physicalTraits;
-      const traitLines = Object.entries(traits)
-        .filter(([_, v]) => v != null)
-        .map(([k, v]) => `  - ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-        .join('\n');
-
-      const entry = [
-        `\n## ${ts}`,
-        `- Character: ${opts.characterName} (${opts.characterId})`,
-        `- User Reference Images: ${opts.hadUserReferenceImages ? `yes (${opts.userRefCount})` : 'none'}`,
-        `- Vision Analysis: ${opts.visionAnalysisSucceeded ? 'succeeded' : 'FAILED'}`,
-        `- Generation: ${opts.generationSucceeded ? 'succeeded' : 'failed'}`,
-        opts.artStyle ? `- Art Style: ${opts.artStyle}` : null,
-        `- Physical Traits Used:\n${traitLines || '  (none)'}`,
-      ].filter(Boolean).join('\n');
-
-      const existing = await store.execute({ command: 'view', path });
-      if (existing.includes('does not exist')) {
-        await store.execute({
-          command: 'create',
-          path,
-          file_text: `# Character Knowledge: ${opts.characterName}\n\nPersisted across generations for improved reference matching.\n${entry}\n`,
-        });
-      } else {
-        await store.execute({ command: 'insert', path, insert_line: 999999, insert_text: entry + '\n' });
-      }
-      console.log(`[Pipeline] Memory: wrote character knowledge for ${opts.characterName}`);
-    } catch (err) {
-      console.warn(`[Pipeline] Memory: failed to write character knowledge for ${opts.characterName}:`, err);
-    }
+  /** S3: per-run remediation counters for the success quality-ledger row. */
+  private getRemediationSummary(): { attempted: number; succeeded: number; degraded: number } {
+    return this.runLedger().getRemediationSummary();
   }
 
-  /**
-   * Read character knowledge from memory for a given character.
-   * Returns the memory content or null if none exists.
-   */
+  private async recordRemediationSafe(
+    record: Omit<RemediationLedgerRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string },
+  ): Promise<void> {
+    return this.runLedger().recordRemediationSafe(record);
+  }
+
+  private async recordArcPressureShadowSafe(seasonPlan: SeasonPlan | undefined, storyId?: string): Promise<void> {
+    if (!seasonPlan) return;
+    const result = new ArcPressureArchitectureValidator().validate(seasonPlan, {
+      treatmentSourced: (seasonPlan.arcPressureContracts ?? []).some((contract) => contract.source === 'treatment'),
+      arcPressureContracts: seasonPlan.arcPressureContracts,
+    });
+    const blockingCount = result.issues.filter((issue) => issue.severity === 'error').length;
+    await this.recordGateShadowSafe(buildValidatorPromotionRecord({
+      gate: PLAN_GATE_FLAGS.arcPressure,
+      validator: 'ArcPressureArchitectureValidator',
+      scope: 'season',
+      placement: 'plan',
+      enabled: isGateEnabled(PLAN_GATE_FLAGS.arcPressure),
+      blockingCount,
+      repairAttempted: true,
+      repairSucceeded: blockingCount === 0,
+      residualBlockingCount: blockingCount,
+      storyId,
+      issues: result.issues,
+      details:
+        `arcs=${seasonPlan.arcs?.length ?? 0}; contracts=${seasonPlan.arcPressureContracts?.length ?? 0}; ` +
+        `metrics=${JSON.stringify(result.metrics)}`,
+    }));
+  }
+
+  private async recordGateShadowSafe(
+    record: Omit<GateShadowRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string },
+  ): Promise<void> {
+    return this.runLedger().recordGateShadowSafe(record);
+  }
+
+  private async recordFinalContractShadow(
+    input: { story: Story; brief: FullCreativeBrief },
+    treatmentSourced: boolean,
+    designNoteLeaks: number,
+  ): Promise<void> {
+    return this.runLedger().recordFinalContractShadow(input, treatmentSourced, designNoteLeaks);
+  }
+
+  private async recordPlanGateShadow(
+    gate: string, validator: string, blockingCount: number,
+    issues: Array<{ severity: string; message?: string }>, storyId?: string,
+  ): Promise<void> {
+    return this.runLedger().recordPlanGateShadow(gate, validator, blockingCount, issues, storyId);
+  }
+
+  // ── Memory persistence (Claude memory tool) — see pipeline/pipelineMemory.ts ──
+
+  private _pipelineMemory?: PipelineMemory;
+
+  private pipelineMemory(): PipelineMemory {
+    if (!this._pipelineMemory) {
+      this._pipelineMemory = new PipelineMemory({ config: this.config });
+    }
+    return this._pipelineMemory;
+  }
+
+  private get renderedPipelineMemory(): string | null {
+    return renderPipelineMemoryPacket(this.cachedPipelineMemory, this.config.memory?.maxPromptChars);
+  }
+
+  private agentMemoryContextBuilder(): AgentMemoryContextBuilder {
+    if (!this._agentMemoryContextBuilder) {
+      this._agentMemoryContextBuilder = new AgentMemoryContextBuilder(this.pipelineMemory());
+    }
+    return this._agentMemoryContextBuilder;
+  }
+
+  private validatorEvidenceService(): ValidatorEvidenceService {
+    if (!this._validatorEvidenceService) {
+      this._validatorEvidenceService = new ValidatorEvidenceService(this.pipelineMemory());
+    }
+    return this._validatorEvidenceService;
+  }
+
+  private artifactMemoryService(): ArtifactMemoryService {
+    if (!this._artifactMemoryService) {
+      this._artifactMemoryService = new ArtifactMemoryService(this.pipelineMemory());
+    }
+    return this._artifactMemoryService;
+  }
+
+  private factMemoryService(): FactMemoryService {
+    if (!this._factMemoryService) {
+      this._factMemoryService = new FactMemoryService(this.pipelineMemory());
+    }
+    return this._factMemoryService;
+  }
+
+  private artifactContextResolver(): ArtifactContextResolver {
+    if (!this._artifactContextResolver) {
+      this._artifactContextResolver = new ArtifactContextResolver({
+        memory: this.pipelineMemory(),
+        artifactMemory: this.artifactMemoryService(),
+      });
+    }
+    return this._artifactContextResolver;
+  }
+
+  private async getAgentMemoryContext(request: AgentMemoryRequest): Promise<string | null> {
+    const [memoryBlock, artifactPack] = await Promise.all([
+      this.agentMemoryContextBuilder().renderedPromptBlock(request),
+      this.artifactContextResolver().resolveForAgent({
+        agentRole: request.agentRole,
+        lifecycle: request.lifecycle,
+        storyId: request.storyId,
+        episodeNumber: request.episodeNumber,
+        sceneId: request.sceneId,
+        characterIds: request.characterIds,
+        artifactKinds: request.artifactKinds,
+        artifactIds: request.artifactIds,
+        factKinds: request.factKinds,
+        factIds: request.factIds,
+        sourceFingerprint: request.sourceFingerprint || request.treatmentId,
+        recallMode: request.recallMode || 'artifact-projection',
+        topK: request.topK,
+        maxPromptChars: request.maxPromptChars,
+      }),
+    ]);
+    return [memoryBlock, artifactPack.renderedPromptBlock].filter(Boolean).join('\n\n') || null;
+  }
+
+  private async getScopedAgentMemoryContext(
+    agentRole: AgentMemoryRole,
+    lifecycle: string,
+    brief: FullCreativeBrief,
+    extra: Partial<AgentMemoryRequest> = {},
+  ): Promise<string | null> {
+    return this.getAgentMemoryContext({
+      agentRole,
+      lifecycle,
+      storyId: brief.story.title,
+      episodeNumber: brief.episode?.number,
+      treatmentId: brief.multiEpisode?.sourceAnalysis?.sourceTitle,
+      ...extra,
+    });
+  }
+
+  private async recallValidatorEvidence(
+    validator: string,
+    lifecycle: string,
+    briefOrStoryId?: FullCreativeBrief | string,
+    extra: Partial<Parameters<ValidatorEvidenceService['recall']>[0]> = {},
+  ): Promise<ValidatorEvidenceBundle> {
+    const storyId = typeof briefOrStoryId === 'string' ? briefOrStoryId : briefOrStoryId?.story.title;
+    const episodeNumber = typeof briefOrStoryId === 'string' ? undefined : briefOrStoryId?.episode?.number;
+    const sourceFingerprint = typeof briefOrStoryId === 'string'
+      ? undefined
+      : briefOrStoryId?.multiEpisode?.sourceAnalysis?.sourceTitle;
+    return this.validatorEvidenceService().recall({
+      validator,
+      lifecycle,
+      storyId,
+      episodeNumber,
+      sourceFingerprint,
+      ...extra,
+    });
+  }
+
+  private async writeArtifactMemory<T>(input: WritePipelineArtifactInput<T>): Promise<void> {
+    await this.artifactMemoryService().writeArtifact(input).then((envelope) =>
+      this.factMemoryService().writeFactsForArtifact(envelope),
+    ).catch((err) => {
+      if (this.config.debug) {
+        console.warn(`[Pipeline] Artifact memory write failed for ${input.artifactKind}:`, err);
+      }
+    });
+  }
+
+  async writeGenerationMemory(opts: Parameters<PipelineMemory['writeGenerationMemory']>[0]): Promise<void> {
+    return this.pipelineMemory().writeGenerationMemory(opts);
+  }
+
+  async writeQALearnings(
+    qaReport: Parameters<PipelineMemory['writeQALearnings']>[0],
+    episodeTitle?: string,
+  ): Promise<void> {
+    return this.pipelineMemory().writeQALearnings(qaReport, episodeTitle);
+  }
+
+  async writeCharacterMemory(opts: Parameters<PipelineMemory['writeCharacterMemory']>[0]): Promise<void> {
+    return this.pipelineMemory().writeCharacterMemory(opts);
+  }
+
   async readCharacterMemory(characterName: string): Promise<string | null> {
-    if (!this.memoryEnabled || !this.config.memory?.characterKnowledge) return null;
-    try {
-      const store = this.getMemoryStoreInstance();
-      const safeName = characterName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const path = `/memories/characters/${safeName}.md`;
-      const result = await store.execute({ command: 'view', path });
-      if (result.includes('does not exist')) return null;
-      return result;
-    } catch {
-      return null;
-    }
+    return this.pipelineMemory().readCharacterMemory(characterName);
   }
 
-  /**
-   * Read pipeline optimization memories.
-   * Returns the generation log content or null if none exists.
-   */
   async readPipelineMemory(): Promise<string | null> {
-    if (!this.memoryEnabled || !this.config.memory?.pipelineOptimization) return null;
-    try {
-      const store = this.getMemoryStoreInstance();
-      const parts: string[] = [];
+    return this.pipelineMemory().readPipelineMemory();
+  }
 
-      const genLog = await store.execute({ command: 'view', path: '/memories/pipeline/generation-log.md' });
-      if (!genLog.includes('does not exist')) {
-        parts.push(genLog);
-      }
+  async recallPipelineMemory(): Promise<PipelineMemoryPacket | null> {
+    return this.pipelineMemory().recallPacket();
+  }
 
-      const qaLearnings = await store.execute({ command: 'view', path: '/memories/pipeline/qa-learnings.md' });
-      if (!qaLearnings.includes('does not exist')) {
-        parts.push(qaLearnings);
-      }
+  async writeValidatorMemory(opts: Parameters<PipelineMemory['writeValidatorMemory']>[0]): Promise<void> {
+    return this.pipelineMemory().writeValidatorMemory(opts);
+  }
 
-      return parts.length > 0 ? parts.join('\n\n---\n\n') : null;
-    } catch {
-      return null;
-    }
+  async writePipelineMemoryRecord(opts: Parameters<PipelineMemory['writeRecord']>[0]): Promise<void> {
+    return this.pipelineMemory().writeRecord(opts);
   }
 
   /**
@@ -11780,7 +10830,7 @@ ${clothingRule}
    * Reconstructs the data structures the video pipeline needs from the story JSON
    * and the original generation artifacts (brief, world bible) on disk.
    */
-  async runVideoOnly(story: Story): Promise<{ videosGenerated: number; story: Story }> {
+  async runVideoOnly(story: Story, options: { targetEpisodeNumber?: number } = {}): Promise<{ videosGenerated: number; story: Story }> {
     const outputDir = story.outputDir;
     if (!outputDir) throw new Error('Story has no outputDir — cannot locate generation artifacts');
 
@@ -11806,13 +10856,20 @@ ${clothingRule}
     const sceneImages = new Map<string, string>();
     const sceneContents: SceneContent[] = [];
 
-    for (const episode of story.episodes || []) {
+    const targetEpisodes = (story.episodes || []).filter((episode) => (
+      options.targetEpisodeNumber == null || episode.number === options.targetEpisodeNumber
+    ));
+    if (options.targetEpisodeNumber != null && targetEpisodes.length === 0) {
+      throw new Error(`Episode ${options.targetEpisodeNumber} was not found in story — cannot generate video`);
+    }
+
+    for (const episode of targetEpisodes) {
       for (const scene of episode.scenes || []) {
         if (scene.encounter) continue;
 
         const beats: GeneratedBeat[] = (scene.beats || []).map(beat => {
           if (beat.image) {
-            beatImages.set(`${scene.id}::${beat.id}`, beat.image);
+            beatImages.set(`episode-${episode.number}-${scene.id}::${beat.id}`, beat.image as unknown as string);
           }
           return {
             id: beat.id,
@@ -11824,12 +10881,18 @@ ${clothingRule}
             visualMoment: (beat as any).visualMoment,
             primaryAction: (beat as any).primaryAction,
             emotionalRead: (beat as any).emotionalRead,
+            relationshipDynamic: (beat as any).relationshipDynamic,
+            mustShowDetail: (beat as any).mustShowDetail,
             shotType: (beat as any).shotType,
+            visualCast: (beat as any).visualCast,
+            coveragePlan: (beat as any).coveragePlan,
+            dramaticIntent: (beat as any).dramaticIntent,
+            sequenceIntent: (beat as any).sequenceIntent || (scene as any).sequenceIntent,
           };
         });
 
         if (scene.backgroundImage) {
-          sceneImages.set(scene.id, scene.backgroundImage);
+          sceneImages.set(scene.id, scene.backgroundImage as unknown as string);
         }
 
         sceneContents.push({
@@ -11838,21 +10901,24 @@ ${clothingRule}
           beats,
           startingBeatId: scene.startingBeatId || beats[0]?.id || '',
           moodProgression: (scene as any).moodProgression || [],
-          charactersInvolved: (scene as any).charactersPresent || [],
+          charactersInvolved: (scene as any).charactersInvolved || (scene as any).charactersPresent || [],
           keyMoments: [],
           continuityNotes: [],
+          sequenceIntent: (scene as any).sequenceIntent,
         });
       }
     }
 
     if (beatImages.size === 0) {
-      throw new Error('No beat images found in story — video generation requires existing images');
+      throw new Error(options.targetEpisodeNumber != null
+        ? `No beat images found for episode ${options.targetEpisodeNumber} — video generation requires existing images`
+        : 'No beat images found in story — video generation requires existing images');
     }
 
     this.emit({
       type: 'agent_start',
       phase: 'video_generation',
-      message: `Found ${beatImages.size} beat images across ${sceneContents.length} scenes. Starting video generation...`,
+      message: `Found ${beatImages.size} beat images across ${sceneContents.length} scenes${options.targetEpisodeNumber != null ? ` for episode ${options.targetEpisodeNumber}` : ''}. Starting video generation...`,
     });
 
     const videosDir = `${outputDir}videos/`;
@@ -11861,12 +10927,22 @@ ${clothingRule}
     const videoRunResult = await this.runVideoGeneration(
       sceneContents,
       { beatImages, sceneImages },
-      brief,
+      {
+        ...brief,
+        episode: options.targetEpisodeNumber != null && targetEpisodes[0]
+          ? ({
+              ...(brief.episode || {}),
+              number: targetEpisodes[0].number,
+              title: targetEpisodes[0].title,
+              synopsis: targetEpisodes[0].synopsis,
+            } as FullCreativeBrief['episode'])
+          : brief.episode,
+      },
       worldBible
     );
     const videoResults = videoRunResult.videoResults;
 
-    const videosGenerated = this.bindGeneratedVideoToStory(story, videoResults);
+    const videosGenerated = bindGeneratedVideoToStory(story, videoResults, options);
     await saveVideoDiagnosticsLog(outputDir, videoRunResult.diagnostics);
 
     this.emit({
@@ -11875,19 +10951,11 @@ ${clothingRule}
       message: `Video-only generation complete: ${videosGenerated} clips generated`,
     });
 
-    const storyJsonUrl = PROXY_CONFIG.writeFile;
-    const storyFilePath = `${outputDir}08-final-story.json`;
-    await fetch(storyJsonUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filePath: storyFilePath,
-        content: JSON.stringify(story, null, 2),
-        isBase64: false,
-      }),
+    await writeFinalStoryPackage(outputDir, story, {
+      generator: { pipeline: 'FullStoryPipeline.video-only' },
     });
 
-    console.log(`[Pipeline] Video-only run complete: ${videosGenerated} videos for "${story.title}"`);
+    console.log(`[Pipeline] Video-only run complete: ${videosGenerated} videos for "${story.title}"${options.targetEpisodeNumber != null ? ` episode ${options.targetEpisodeNumber}` : ''}`);
     return { videosGenerated, story };
   }
 }

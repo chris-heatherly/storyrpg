@@ -3,12 +3,10 @@
  */
 
 export {
-  EpisodePipeline,
-  type CreativeBrief,
   type PipelineEvent,
   type PipelineEventHandler,
-  type PipelineResult,
-} from './EpisodePipeline';
+  type PipelineProgressTelemetry,
+} from './events';
 
 export {
   FullStoryPipeline,
@@ -20,3 +18,7 @@ export {
 export {
   type OutputManifest,
 } from '../utils/pipelineOutputWriter';
+
+export * from './artifacts';
+export * from './episodeCompiler';
+export * from './phases/RunArtifactPhase';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -8,102 +8,356 @@ import {
   SafeAreaView,
   Platform,
   Image,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import {
   Play,
   Sword,
   BookOpen,
   Settings,
-  ChevronRight,
   LogOut,
   RotateCcw,
   Sparkles,
+  Cpu,
+  LogIn,
 } from 'lucide-react-native';
 import { useGameActions, useGamePlayerState, useGameStoryState } from '../stores/gameStore';
 import { StoryCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
 import { useSettingsStore } from '../stores/settingsStore';
+import { APP_FOOTER_LINE_1, APP_FOOTER_LINE_2 } from '../config/version';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const { width } = Dimensions.get('window');
+import { ConfirmDialog } from '../components/ui';
+import { track } from '../services/analyticsService';
 
 interface HomeScreenProps {
   stories: StoryCatalogEntry[];
   onStartStory: (storyId: string) => void;
   onContinueStory: () => void;
   onOpenSettings: () => void;
+  /** Web: opens dedicated sign-in screen (proxy OAuth). */
+  onOpenLogin?: () => void;
   onOpenGenerator?: () => void;
+  activeGenerationJob?: {
+    id: string;
+    progress?: number;
+  } | null;
+  onOpenActiveGeneration?: (jobId: string) => void;
 }
+
+const STORY_CARD_GAP = 16;
+const PLACEHOLDER_IMAGE = 'https://placehold.co/400x600/1a1a2e/94a3b8?text=Story';
+const WEB_STORY_CARD_SIZE =
+  Platform.OS === 'web'
+    ? ({ width: `calc((100% - ${STORY_CARD_GAP}px) / 2)` } as any)
+    : undefined;
+
+interface HomeHeaderProps {
+  activeGenerationJob?: HomeScreenProps['activeGenerationJob'];
+  onOpenActiveGeneration?: HomeScreenProps['onOpenActiveGeneration'];
+  onOpenGenerator?: HomeScreenProps['onOpenGenerator'];
+  onOpenLogin?: HomeScreenProps['onOpenLogin'];
+  onOpenSettings: HomeScreenProps['onOpenSettings'];
+}
+
+const HomeHeader: React.FC<HomeHeaderProps> = ({
+  activeGenerationJob,
+  onOpenActiveGeneration,
+  onOpenGenerator,
+  onOpenLogin,
+  onOpenSettings,
+}) => {
+  const { width } = useWindowDimensions();
+  const compactHeader = width < 390;
+  const activeGenerationProgress = Math.max(0, Math.min(100, Math.round(activeGenerationJob?.progress || 0)));
+
+  return (
+    <View style={styles.header}>
+      <View style={styles.logoRow}>
+        <View style={styles.logoIcon}>
+          <Sword size={20} color="white" />
+        </View>
+        <Text style={styles.logoText}>STORY<Text style={{ color: TERMINAL.colors.primary }}>RPG</Text></Text>
+      </View>
+      <View style={styles.headerActions}>
+        {activeGenerationJob && onOpenActiveGeneration && (
+          <TouchableOpacity
+            style={[styles.headerActionButton, styles.pipelineActionButton, compactHeader && styles.pipelineActionButtonCompact]}
+            onPress={() => onOpenActiveGeneration(activeGenerationJob.id)}
+            activeOpacity={0.82}
+          >
+            <View style={styles.headerActionContent}>
+              <Cpu size={16} color={TERMINAL.colors.primary} />
+              <Text style={styles.headerActionButtonText} numberOfLines={1}>
+                {compactHeader ? `PIPE ${activeGenerationProgress}%` : `PIPELINE ${activeGenerationProgress}%`}
+              </Text>
+            </View>
+            <View style={styles.pipelineProgressTrack}>
+              <View style={[styles.pipelineProgressFill, { width: `${activeGenerationProgress}%` }]} />
+            </View>
+          </TouchableOpacity>
+        )}
+        {Platform.OS === 'web' && onOpenLogin ? (
+          <TouchableOpacity
+            style={[styles.headerIconButton, { flexDirection: 'row', gap: 6, paddingHorizontal: 10 }]}
+            onPress={onOpenLogin}
+          >
+            <LogIn size={16} color={TERMINAL.colors.muted} />
+            <Text style={{ color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 1 }}>
+              SIGN IN
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+        {onOpenGenerator && (
+          <TouchableOpacity
+            style={styles.headerActionButton}
+            onPress={onOpenGenerator}
+          >
+            <Sparkles size={16} color={TERMINAL.colors.primary} />
+            {!compactHeader && <Text style={styles.headerActionButtonText}>GENERATE</Text>}
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={styles.headerIconButton} onPress={onOpenSettings}>
+          <Settings size={20} color={TERMINAL.colors.muted} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+interface StoryCardProps {
+  cardStyle?: object;
+  failed: boolean;
+  fonts: {
+    small: number;
+    large: number;
+  };
+  onImageError: (storyId: string) => void;
+  onSelect: (story: StoryCatalogEntry) => void;
+  placeholderImage: string;
+  story: StoryCatalogEntry;
+}
+
+const getStoryCoverUri = (story: StoryCatalogEntry, failed: boolean, placeholderImage: string) => {
+  if (failed) return placeholderImage;
+  if (story.coverImage && !story.coverImage.endsWith('.prompt.txt') && !story.coverImage.endsWith('.txt')) {
+    return story.coverImage;
+  }
+  return placeholderImage;
+};
+
+const StoryCard = memo<StoryCardProps>(({
+  cardStyle,
+  failed,
+  fonts,
+  onImageError,
+  onSelect,
+  placeholderImage,
+  story,
+}) => {
+  const coverUri = getStoryCoverUri(story, failed, placeholderImage);
+  const imageSource = useMemo(() => ({
+    uri: coverUri,
+    headers: { Accept: 'image/*' },
+  }), [coverUri]);
+
+  return (
+    <TouchableOpacity
+      style={[styles.storyCard, cardStyle]}
+      onPress={() => onSelect(story)}
+      activeOpacity={0.8}
+    >
+      <Image
+        source={imageSource}
+        style={styles.storyImage}
+        resizeMode="cover"
+        crossOrigin="anonymous"
+        onError={() => {
+          console.warn(`[HomeScreen] Story image failed, using placeholder: ${story.coverImage}`);
+          onImageError(story.id);
+        }}
+      />
+      <View style={styles.storyBadge}>
+        <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
+      </View>
+      <View pointerEvents="none" style={styles.storyOverlayFadeFaint} />
+      <View pointerEvents="none" style={styles.storyOverlayFadeMid} />
+      <View pointerEvents="none" style={styles.storyOverlayFadeStrong} />
+      <View style={styles.storyOverlay}>
+        <Text style={[styles.storyCardTitle, { fontSize: fonts.large }]}>{(story.title || 'Untitled').toUpperCase()}</Text>
+        <Text style={[styles.storyCardMeta, { fontSize: fonts.small }]}>{story.episodeCount} EPISODES</Text>
+        <View style={styles.playButtonMini}>
+          <Play size={12} color="white" fill="white" />
+          <Text style={styles.playButtonMiniText}>START</Text>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+interface StoryGridProps {
+  failedImages: Set<string>;
+  fonts: {
+    small: number;
+    large: number;
+  };
+  onImageError: (storyId: string) => void;
+  onStorySelect: (story: StoryCatalogEntry) => void;
+  placeholderImage: string;
+  stories: StoryCatalogEntry[];
+}
+
+const StoryGridWeb = memo<StoryGridProps>(({
+  failedImages,
+  fonts,
+  onImageError,
+  onStorySelect,
+  placeholderImage,
+  stories,
+}) => (
+  <View style={styles.storiesGrid}>
+    {stories.map((story) => (
+      <StoryCard
+        key={story.id}
+        cardStyle={WEB_STORY_CARD_SIZE}
+        failed={failedImages.has(story.id)}
+        fonts={fonts}
+        onImageError={onImageError}
+        onSelect={onStorySelect}
+        placeholderImage={placeholderImage}
+        story={story}
+      />
+    ))}
+    <LockedStoryCard cardStyle={WEB_STORY_CARD_SIZE} />
+  </View>
+));
+
+const StoryGridNative = memo<StoryGridProps>(({
+  failedImages,
+  fonts,
+  onImageError,
+  onStorySelect,
+  placeholderImage,
+  stories,
+}) => {
+  const { width } = useWindowDimensions();
+  const storyPosterWidth = (width - 56) / 2;
+  const cardStyle = useMemo(() => ({ width: storyPosterWidth }), [storyPosterWidth]);
+
+  return (
+    <View style={styles.storiesGrid}>
+      {stories.map((story) => (
+        <StoryCard
+          key={story.id}
+          cardStyle={cardStyle}
+          failed={failedImages.has(story.id)}
+          fonts={fonts}
+          onImageError={onImageError}
+          onSelect={onStorySelect}
+          placeholderImage={placeholderImage}
+          story={story}
+        />
+      ))}
+      <LockedStoryCard cardStyle={cardStyle} />
+    </View>
+  );
+});
+
+const StoryGrid = Platform.OS === 'web' ? StoryGridWeb : StoryGridNative;
+
+const LockedStoryCard = memo(({ cardStyle }: { cardStyle?: object }) => (
+  <View style={[styles.lockedCard, cardStyle]}>
+    <BookOpen size={24} color={TERMINAL.colors.bgHighlight} />
+    <Text style={styles.lockedText}>LOCKED CHRONICLE</Text>
+    <Text style={styles.lockedSubtext}>EXPANSION PENDING</Text>
+  </View>
+));
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   stories,
   onStartStory,
   onContinueStory,
   onOpenSettings,
+  onOpenLogin,
   onOpenGenerator,
+  activeGenerationJob,
+  onOpenActiveGeneration,
 }) => {
   const { player } = useGamePlayerState();
   const { currentStory } = useGameStoryState();
   const { resetGame } = useGameActions();
   const fonts = useSettingsStore((state) => state.getFontSizes());
   const [isWiping, setIsWiping] = useState(false);
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
-
-  // Placeholder image for when cover images fail to load
-  const PLACEHOLDER_IMAGE = 'https://placehold.co/400x600/1a1a2e/94a3b8?text=Story';
 
   const hasSavedGame = currentStory !== null && player.currentEpisodeId !== null;
 
-  const handleWipeCache = async () => {
-    if (confirm('WIPE ALL CACHE? This will clear all generated stories and save data from browser storage.')) {
-      setIsWiping(true);
-      try {
-        await AsyncStorage.clear();
-        alert('Cache wiped. Restarting...');
+  useEffect(() => {
+    track('home viewed', {
+      story_count: stories.length,
+      has_saved_game: hasSavedGame,
+    });
+  }, [stories.length, hasSavedGame]);
+
+  useEffect(() => {
+    for (const story of stories) {
+      track('story card viewed', {
+        story_id: story.id,
+        story_genre: story.genre,
+        episode_count: story.episodeCount,
+        is_generated_story: story.isBuiltIn === false || Boolean(story.outputDir),
+      });
+    }
+  }, [stories]);
+
+  const handleWipeCache = () => {
+    setConfirmWipe(true);
+  };
+
+  const performWipeCache = async () => {
+    setConfirmWipe(false);
+    setIsWiping(true);
+    try {
+      await AsyncStorage.clear();
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.location.reload();
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setIsWiping(false);
       }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsWiping(false);
     }
   };
 
-  const handleStorySelect = (story: StoryCatalogEntry) => {
+  const handleStorySelect = useCallback((story: StoryCatalogEntry) => {
     // Stories have established protagonists — skip character creation, start directly
     onStartStory(story.id);
-  };
+  }, [onStartStory]);
 
   const handleNewGame = () => {
     resetGame();
   };
 
+  const handleImageError = useCallback((storyId: string) => {
+    setFailedImages((prev) => {
+      if (prev.has(storyId)) return prev;
+      const next = new Set(prev);
+      next.add(storyId);
+      return next;
+    });
+  }, []);
+
   // Main Home Screen
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.logoRow}>
-          <View style={styles.logoIcon}>
-            <Sword size={20} color="white" />
-          </View>
-          <Text style={styles.logoText}>STORY<Text style={{ color: TERMINAL.colors.primary }}>RPG</Text></Text>
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          {onOpenGenerator && (
-            <TouchableOpacity 
-              style={[styles.headerIconButton, { flexDirection: 'row', gap: 6, backgroundColor: 'rgba(59, 130, 246, 0.15)', paddingHorizontal: 12, borderRadius: 8 }]} 
-              onPress={onOpenGenerator}
-            >
-              <Sparkles size={16} color={TERMINAL.colors.primary} />
-              <Text style={{ color: TERMINAL.colors.primary, fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>GENERATE</Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity style={styles.headerIconButton} onPress={onOpenSettings}>
-            <Settings size={20} color={TERMINAL.colors.muted} />
-          </TouchableOpacity>
-        </View>
-      </View>
+      <HomeHeader
+        activeGenerationJob={activeGenerationJob}
+        onOpenActiveGeneration={onOpenActiveGeneration}
+        onOpenGenerator={onOpenGenerator}
+        onOpenLogin={onOpenLogin}
+        onOpenSettings={onOpenSettings}
+      />
 
       <ScrollView
         style={styles.content}
@@ -135,63 +389,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         )}
 
         {/* Stories Grid */}
-        <View style={styles.storiesGrid}>
-          {stories.map((story, index) => (
-            <TouchableOpacity
-              key={story.id}
-              style={styles.storyCard}
-              onPress={() => handleStorySelect(story)}
-              activeOpacity={0.8}
-            >
-              <Image
-                source={{ 
-                  uri: failedImages.has(story.id) 
-                    ? PLACEHOLDER_IMAGE
-                    : (story.coverImage && !story.coverImage.endsWith('.prompt.txt') && !story.coverImage.endsWith('.txt')) 
-                      ? story.coverImage 
-                      : PLACEHOLDER_IMAGE,
-                  headers: { 'Accept': 'image/*' }
-                }}
-                style={styles.storyImage}
-                resizeMode="cover"
-                crossOrigin="anonymous"
-                onLoad={() => console.log(`[HomeScreen] Story image loaded: ${story.coverImage}`)}
-                onError={() => {
-                  console.warn(`[HomeScreen] Story image failed, using placeholder: ${story.coverImage}`);
-                  setFailedImages(prev => new Set(prev).add(story.id));
-                }}
-              />
-              <View style={styles.storyOverlay}>
-                <View style={styles.storyBadge}>
-                  <Text style={styles.storyBadgeText}>{(story.genre || 'unknown').toUpperCase()}</Text>
-                </View>
-                <Text style={styles.storyCardTitle}>{(story.title || 'Untitled').toUpperCase()}</Text>
-                <Text style={styles.storyCardMeta}>{story.episodeCount} EPISODES</Text>
-                <View style={styles.playButtonMini}>
-                  <Play size={12} color="white" fill="white" />
-                  <Text style={styles.playButtonMiniText}>START</Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-          ))}
-
-          {/* Locked Slots */}
-          <View style={styles.lockedCard}>
-            <BookOpen size={24} color={TERMINAL.colors.bgHighlight} />
-            <Text style={styles.lockedText}>LOCKED CHRONICLE</Text>
-            <Text style={styles.lockedSubtext}>EXPANSION PENDING</Text>
-          </View>
-        </View>
+        <StoryGrid
+          failedImages={failedImages}
+          fonts={fonts}
+          onImageError={handleImageError}
+          onStorySelect={handleStorySelect}
+          placeholderImage={PLACEHOLDER_IMAGE}
+          stories={stories}
+        />
 
         <Text style={styles.footerText}>
-          STORYRPG MOBILE • ALPHA VER 1.0.0{'\n'}
-          © 2024 STORYRPG SYSTEMS
+          {APP_FOOTER_LINE_1}{'\n'}
+          {APP_FOOTER_LINE_2}
         </Text>
 
         <TouchableOpacity 
           style={styles.wipeButton} 
           onPress={handleWipeCache}
           disabled={isWiping}
+          accessibilityRole="button"
+          accessibilityLabel="Wipe storage cache"
+          accessibilityState={{ disabled: isWiping }}
         >
           <RotateCcw size={12} color={TERMINAL.colors.error} />
           <Text style={styles.wipeButtonText}>
@@ -199,6 +417,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      <ConfirmDialog
+        visible={confirmWipe}
+        title="Wipe all cache?"
+        message="This clears all generated stories and save data from browser storage. This action cannot be undone."
+        confirmLabel="Wipe"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={performWipeCache}
+        onCancel={() => setConfirmWipe(false)}
+        testID="home-wipe-dialog"
+      />
     </SafeAreaView>
   );
 };
@@ -221,6 +451,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flexShrink: 1,
   },
   logoIcon: {
     width: 32,
@@ -235,12 +466,63 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: 'white',
     letterSpacing: -0.5,
+    flexShrink: 1,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
   },
   headerIconButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     padding: 8,
+  },
+  headerActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    height: 36,
+    maxWidth: 128,
+    overflow: 'hidden',
+  },
+  pipelineActionButton: {
+    width: 172,
+    maxWidth: 172,
+  },
+  pipelineActionButtonCompact: {
+    width: 132,
+    maxWidth: 132,
+    paddingHorizontal: 10,
+  },
+  headerActionContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    zIndex: 1,
+  },
+  headerActionButtonText: {
+    color: TERMINAL.colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  pipelineProgressTrack: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+    backgroundColor: 'rgba(59, 130, 246, 0.16)',
+  },
+  pipelineProgressFill: {
+    height: '100%',
+    backgroundColor: TERMINAL.colors.primary,
   },
   headerButtonText: {
     fontSize: 10,
@@ -326,8 +608,7 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   storyCard: {
-    width: (width - 56) / 2,
-    height: 240,
+    aspectRatio: 2 / 3,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#1e2229',
@@ -335,13 +616,38 @@ const styles = StyleSheet.create({
   storyImage: {
     width: '100%',
     height: '100%',
-    opacity: 0.6,
   },
   storyOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     padding: 16,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(15, 17, 21, 0.4)',
+  },
+  storyOverlayFadeFaint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 140,
+    backgroundColor: 'rgba(15, 17, 21, 0.25)',
+  },
+  storyOverlayFadeMid: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 90,
+    backgroundColor: 'rgba(15, 17, 21, 0.45)',
+  },
+  storyOverlayFadeStrong: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 50,
+    backgroundColor: 'rgba(15, 17, 21, 0.6)',
   },
   storyBadge: {
     position: 'absolute',
@@ -351,6 +657,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
+    zIndex: 2,
   },
   storyBadgeText: {
     fontSize: 8,
@@ -383,8 +690,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   lockedCard: {
-    width: (width - 56) / 2,
-    height: 240,
+    aspectRatio: 2 / 3,
     borderRadius: 24,
     borderWidth: 2,
     borderStyle: 'dashed',

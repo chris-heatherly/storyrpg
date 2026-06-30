@@ -1526,7 +1526,7 @@ export function suggestImpactSpec(context: {
     return undefined;
   }
 
-  const foreshorten = context.beatType === 'action' || context.isClimax;
+  const foreshorten: boolean = context.beatType === 'action' || context.isClimax === true;
   
   let punchAction = context.focalGesture || '';
   let punchTarget: ImpactTarget = 'camera';

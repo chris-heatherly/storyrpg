@@ -1,0 +1,125 @@
+{
+  "id": "fixture-bite-me-g22-compact",
+  "title": "Fixture: Bite Me G22 compact defects",
+  "genre": "romantic vampire thriller",
+  "synopsis": "A compact fixture preserving the G22 failure class.",
+  "coverImage": "",
+  "initialState": {
+    "attributes": {},
+    "skills": {},
+    "tags": [],
+    "inventory": []
+  },
+  "npcs": [],
+  "episodes": [
+    {
+      "id": "episode-1",
+      "number": 1,
+      "title": "Friday Night",
+      "synopsis": "The setup must not be skipped.",
+      "coverImage": "",
+      "startingSceneId": "s1-1",
+      "scenes": [
+        {
+          "id": "s1-1",
+          "name": "Opening Offer",
+          "startingBeatId": "s1-1-b1",
+          "leadsTo": ["s1-2", "treatment-enc-1-1"],
+          "beats": [
+            {
+              "id": "s1-1-b1",
+              "text": "Sadie offers you a keycard and a warning about the roof.",
+              "choices": [
+                {
+                  "id": "s1-1-b4b-bridge-choice-decline-keycard",
+                  "text": "Decline the keycard and head straight upstairs.",
+                  "nextBeatId": "s1-1-b4b-bridge",
+                  "consequences": [
+                    { "type": "setFlag", "flag": "declined_keycard", "value": true }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "s1-1-b4b-bridge",
+              "text": "You cut around the conversation before it can tell you what matters.",
+              "isChoiceBridge": true,
+              "sourceSceneId": "s1-1",
+              "sourceChoiceId": "s1-1-b4b-bridge-choice-decline-keycard",
+              "nextSceneId": "treatment-enc-1-1"
+            }
+          ]
+        },
+        {
+          "id": "s1-2",
+          "name": "Required Setup",
+          "startingBeatId": "s1-2-b1",
+          "leadsTo": ["treatment-enc-1-1"],
+          "beats": [
+            {
+              "id": "s1-2-b1",
+              "text": "Sadie explains the roof rules and the ward consent that keeps the meeting survivable.",
+              "choices": [
+                {
+                  "id": "accept-ward-consent",
+                  "text": "Accept the ward consent.",
+                  "nextBeatId": "s1-2-bridge",
+                  "consequences": [
+                    { "type": "setFlag", "flag": "ward_consent_understood", "value": true }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "s1-2-bridge",
+              "text": "Only then does the stairwell feel like a choice instead of a trap.",
+              "isChoiceBridge": true,
+              "sourceSceneId": "s1-2",
+              "sourceChoiceId": "accept-ward-consent",
+              "nextSceneId": "treatment-enc-1-1"
+            }
+          ]
+        },
+        {
+          "id": "treatment-enc-1-1",
+          "name": "Rooftop Encounter",
+          "startingBeatId": "",
+          "beats": [],
+          "encounter": {
+            "id": "treatment-enc-1-1",
+            "type": "dramatic",
+            "goalClock": { "segments": 3, "filled": 0 },
+            "threatClock": { "segments": 2, "filled": 0 },
+            "phases": [
+              {
+                "id": "phase-1",
+                "beats": [
+                  {
+                    "id": "enc-b1",
+                    "setupText": "Night three. You're on you rooftop as You Dusk Club hums across you bar.",
+                    "choices": [
+                      {
+                        "id": "hold-charcoal-gaze",
+                        "text": "Hold you charcoal stranger's gaze and walk over",
+                        "primarySkill": "persuasion",
+                        "outcomes": {
+                          "success": {
+                            "narrativeText": "You kiss takes, and the maze folds around you maze' exit.",
+                            "goalTicks": 1,
+                            "isTerminal": true
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "outcomes": {},
+            "storylets": {}
+          }
+        }
+      ]
+    }
+  ]
+}

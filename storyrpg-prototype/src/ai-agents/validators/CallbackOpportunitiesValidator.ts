@@ -17,6 +17,12 @@ import {
   ValidationConfig,
 } from '../../types/validation';
 import { Consequence, ReminderPlan } from '../../types';
+import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import {
+  classifyLedgerFlag,
+  extractConditionKeys,
+  isReferentialChoiceFlag,
+} from '../pipeline/choiceMemoryDebt';
 
 export interface CallbackInput {
   // Scenes with their beats
@@ -47,6 +53,12 @@ export interface CallbackInput {
 
   // Known scores that could be referenced
   knownScores?: string[];
+
+  /** Optional callback ledger for future-window / resolved-hook classification. */
+  callbackLedger?: SerializedCallbackLedger;
+
+  /** Highest generated episode number in this run. */
+  generatedThroughEpisode?: number;
 }
 
 export interface CallbackValidationResult {
@@ -80,6 +92,7 @@ export class CallbackOpportunitiesValidator {
    */
   async validate(input: CallbackInput): Promise<CallbackValidationResult> {
     const issues: ValidationIssue[] = [];
+    const generatedThrough = input.generatedThroughEpisode ?? 0;
 
     // Extract all flags set by choices
     const flagsSet = new Set<string>();
@@ -90,7 +103,7 @@ export class CallbackOpportunitiesValidator {
     for (const choice of input.choices) {
       if (choice.consequences) {
         for (const consequence of choice.consequences) {
-          if (consequence.type === 'setFlag') {
+          if (consequence.type === 'setFlag' && isReferentialChoiceFlag(consequence.flag)) {
             flagsSet.add(consequence.flag);
           }
           if (consequence.type === 'changeScore') {
@@ -111,7 +124,7 @@ export class CallbackOpportunitiesValidator {
 
     // Add known flags/scores
     if (input.knownFlags) {
-      input.knownFlags.forEach(f => flagsSet.add(f));
+      input.knownFlags.filter(isReferentialChoiceFlag).forEach(f => flagsSet.add(f));
     }
     if (input.knownScores) {
       input.knownScores.forEach(s => scoresSet.add(s));
@@ -129,13 +142,13 @@ export class CallbackOpportunitiesValidator {
           textVariantsCount += beat.textVariants.length;
           conditionalContentCount++;
 
-          // Try to extract flag references from conditions
+          // Extract flag references by walking the condition tree (exact flag-name
+          // matches), not substring-matching a JSON blob — substring matching
+          // false-positives when one flag name is contained in another
+          // (e.g. `andrei` inside `met_andrei_before_attack`).
           for (const variant of beat.textVariants) {
-            const conditionStr = JSON.stringify(variant.condition);
-            for (const flag of flagsSet) {
-              if (conditionStr.includes(flag)) {
-                flagsReferenced.add(flag);
-              }
+            for (const flag of extractConditionKeys(variant.condition)) {
+              if (flagsSet.has(flag)) flagsReferenced.add(flag);
             }
           }
         }
@@ -176,7 +189,11 @@ export class CallbackOpportunitiesValidator {
     }
 
     // Issue: Flags set but never referenced
-    const unreferencedFlags = Array.from(flagsSet).filter(f => !flagsReferenced.has(f));
+    const unreferencedFlags = Array.from(flagsSet).filter((f) => {
+      if (flagsReferenced.has(f)) return false;
+      const ledgerClass = classifyLedgerFlag(f, input.callbackLedger, generatedThrough);
+      return ledgerClass !== 'future-window' && ledgerClass !== 'resolved-or-abandoned';
+    });
     if (unreferencedFlags.length > 0 && flagsSet.size > 0) {
       issues.push({
         category: 'callback_opportunities',

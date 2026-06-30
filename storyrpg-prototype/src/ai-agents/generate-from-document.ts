@@ -149,10 +149,26 @@ Synopsis: Strange lights in the forest lead to a life-changing find.
     process.exit(1);
   }
 
-  // Parse document
+  // Parse document. Phase 0 / RC1: an optional expected treatment fingerprint
+  // (a bare `signature` string from computeTreatmentFingerprint) can be supplied
+  // via STORYRPG_EXPECTED_TREATMENT_FINGERPRINT; when set and the ingested
+  // document does not match, parsing throws a "treatment version mismatch" error
+  // before any planning. Default-off (unset) — the fingerprint is always computed
+  // and logged regardless.
   log('\nParsing document...', 'cyan');
   const fileName = path.basename(documentPath);
-  const parseResult = parseDocument(content, fileName);
+  const expectedTreatmentFingerprint = process.env.STORYRPG_EXPECTED_TREATMENT_FINGERPRINT;
+  let parseResult;
+  try {
+    parseResult = parseDocument(
+      content,
+      fileName,
+      expectedTreatmentFingerprint ? { expectedTreatmentFingerprint } : undefined,
+    );
+  } catch (err) {
+    log(`\nError: ${err instanceof Error ? err.message : String(err)}`, 'red');
+    process.exit(1);
+  }
 
   if (!parseResult.success || !parseResult.brief) {
     log(`\nError: Failed to parse document`, 'red');

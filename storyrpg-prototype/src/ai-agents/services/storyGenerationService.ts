@@ -61,8 +61,22 @@ export interface StoryGenerationResponse {
   result: FullPipelineResult;
 }
 
+export interface ImageGenerationBatchRequest extends PipelineHookOptions {
+  config?: PipelineConfig;
+  outputDirectory: string;
+  targetEpisodeNumber?: number;
+  mode?: 'full' | 'spot';
+  targetSlots?: Array<{ episodeNumber: number; sceneId: string; beatId: string }>;
+  skipEncounterImages?: boolean;
+  skipCover?: boolean;
+  skipCharacterRefs?: boolean;
+  skipVisualContractValidation?: boolean;
+  resumeCheckpoint?: ResumeCheckpoint;
+  externalJobId?: string;
+}
+
 const DEFAULT_ANALYSIS_PREFERENCES: StoryAnalysisPreferences = {
-  targetScenesPerEpisode: 8,
+  targetScenesPerEpisode: 6,
   targetChoicesPerEpisode: 4,
   pacing: 'moderate',
 };
@@ -74,8 +88,8 @@ function getSeasonPlannerConfig(config?: PipelineConfig): AgentConfig {
   }
 
   return {
-    provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
+    provider: 'gemini',
+    model: 'gemini-2.5-pro',
     apiKey: '',
     maxTokens: 32768,
     temperature: 0.7,
@@ -120,6 +134,7 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
     : await seasonPlanner.execute({
         sourceAnalysis: analysisResult.analysis,
         preferences,
+        storyCircleBlocking: request.config?.generation?.storyCircleBlocking,
       });
 
   return {
@@ -132,7 +147,14 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
 }
 
 export async function runStoryGeneration(request: StoryGenerationRequest): Promise<StoryGenerationResponse> {
-  const pipeline = new FullStoryPipeline(request.config);
+  const effectiveConfig = request.config?.generation?.assetGenerationMode === 'story-only'
+    ? {
+        ...request.config,
+        imageGen: request.config.imageGen ? { ...request.config.imageGen, enabled: false } : { enabled: false },
+        videoGen: request.config.videoGen ? { ...request.config.videoGen, enabled: false } : request.config.videoGen,
+      }
+    : request.config;
+  const pipeline = new FullStoryPipeline(effectiveConfig);
   if (request.externalJobId) {
     pipeline.setExternalJobId(request.externalJobId);
   }
@@ -146,6 +168,43 @@ export async function runStoryGeneration(request: StoryGenerationRequest): Promi
         request.resumeCheckpoint,
       )
     : await pipeline.generate(request.brief, request.resumeCheckpoint);
+
+  return {
+    pipeline,
+    result,
+  };
+}
+
+export async function runImageGenerationBatch(request: ImageGenerationBatchRequest): Promise<StoryGenerationResponse> {
+  const isSpotMode = request.mode === 'spot' || Boolean(request.targetSlots?.length);
+  const effectiveConfig = request.config
+    ? {
+        ...request.config,
+        generation: {
+          ...request.config.generation,
+          assetGenerationMode: 'image-only' as const,
+        },
+        imageGen: request.config.imageGen
+          ? { ...request.config.imageGen, enabled: true, strategy: 'all-beats' as const }
+          : { enabled: true, strategy: 'all-beats' as const },
+      }
+    : request.config;
+  const pipeline = new FullStoryPipeline(effectiveConfig);
+  if (request.externalJobId) {
+    pipeline.setExternalJobId(request.externalJobId);
+  }
+  wirePipeline(pipeline, request);
+
+  const result = isSpotMode
+    ? await pipeline.generateTargetedBeatImagesForDraft(request.outputDirectory, request.targetSlots || [], {
+        skipEncounterImages: request.skipEncounterImages ?? true,
+        skipCover: request.skipCover ?? true,
+        skipCharacterRefs: request.skipCharacterRefs ?? true,
+        skipVisualContractValidation: request.skipVisualContractValidation ?? true,
+      })
+    : await pipeline.generateImagesForDraft(request.outputDirectory, request.resumeCheckpoint, {
+        targetEpisodeNumber: request.targetEpisodeNumber,
+      });
 
   return {
     pipeline,

@@ -161,8 +161,8 @@ function deriveEncounterCost(
     domain,
     severity: inferCostSeverity(fallbackText, seed.consequences || [], seed.cost),
     whoPays: inferCostBearer(fallbackText, domain, seed.cost),
-    immediateEffect: seed.cost?.immediateEffect || seed.complication || seed.outcomeText || 'The objective is achieved, but the cost is immediate.',
-    visibleComplication: seed.cost?.visibleComplication || seed.complication || seed.narrativeFunction || 'The cost of success is visible in the aftermath.',
+    immediateEffect: seed.cost?.immediateEffect || seed.complication || seed.outcomeText || 'The win leaves something unsettled that follows the protagonist forward.',
+    visibleComplication: seed.cost?.visibleComplication || seed.complication || seed.narrativeFunction || 'Relief arrives with a complication still attached.',
     lingeringEffect: seed.cost?.lingeringEffect || seed.narrativeFunction,
     consequences: seed.cost?.consequences || seed.consequences,
   };
@@ -304,6 +304,9 @@ function convertOutcome(
     outcomeImage: llmOutcome.outcomeImage,
     cinematicDescription: llmOutcome.cinematicDescription,
     visualContract: (llmOutcome as any).visualContract,
+    storyboardFrameId: (llmOutcome as any).storyboardFrameId,
+    nextStoryboardFrameId: (llmOutcome as any).nextStoryboardFrameId,
+    tacticalEffect: (llmOutcome as any).tacticalEffect,
     isTerminal: llmOutcome.isTerminal,
     encounterOutcome: normalizedOutcome,
     consequences: convertedConsequences,
@@ -340,7 +343,9 @@ function convertEmbeddedChoice(llmChoice: LLMEmbeddedEncounterChoice): EmbeddedE
     text: llmChoice.text,
     approach: llmChoice.approach,
     primarySkill: llmChoice.primarySkill,
-    skillAdvantage: llmChoice.skillAdvantage,
+    consequenceDomain: (llmChoice as any).consequenceDomain,
+    reminderPlan: (llmChoice as any).reminderPlan,
+    feedbackCue: (llmChoice as any).feedbackCue,
     outcomes: {
       success: convertOutcome(llmChoice.outcomes?.success, 'success', { goalTicks: 2, threatTicks: 0, narrativeText: 'Success!' }),
       complicated: convertOutcome(llmChoice.outcomes?.complicated, 'complicated', { goalTicks: 1, threatTicks: 1, narrativeText: 'Partial success...' }),
@@ -397,6 +402,9 @@ export function convertEncounterStructureToEncounter(
       approach: choice.approach,
       primarySkill: choice.primarySkill,
       impliedApproach: choice.impliedApproach,
+      consequenceDomain: (choice as any).consequenceDomain,
+      reminderPlan: (choice as any).reminderPlan,
+      feedbackCue: (choice as any).feedbackCue,
       skillAdvantage: choice.skillAdvantage,
       specialChoiceType: choice.specialChoiceType,
       outcomes: {
@@ -416,6 +424,7 @@ export function convertEncounterStructureToEncounter(
       phase: beat.phase,
       name: beat.name,
       setupText: beat.setupText,
+      onShow: (beat as any).onShow,
       // Pre-encounter state payoff: conditional situation text
       setupTextVariants: (beat as any).setupTextVariants,
       visualContract: (beat as any).visualContract,
@@ -423,6 +432,8 @@ export function convertEncounterStructureToEncounter(
       escalationText: beat.escalationText,
       escalationImage: beat.escalationImage,
       cinematicSetup: beat.cinematicSetup,
+      storyboardFrameId: (beat as any).storyboardFrameId,
+      storyboardRole: (beat as any).storyboardRole,
     };
   });
 
@@ -497,24 +508,24 @@ export function convertEncounterStructureToEncounter(
     outcomes: {
       victory: {
         nextSceneId: structure.storylets?.victory?.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets?.victory?.beats?.[0]?.text || 'Victory! You overcame the challenge.',
+        outcomeText: structure.storylets?.victory?.beats?.[0]?.text || 'The pressure eases, and the protagonist carries the moment forward.',
         consequences: victoryConsequences.length > 0 ? victoryConsequences : undefined,
       },
       partialVictory: {
         nextSceneId: structure.storylets?.partialVictory?.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets?.partialVictory?.beats?.[0]?.text || 'You succeeded, but at a cost.',
-        complication: structure.storylets?.partialVictory?.narrativeFunction || 'The situation is more complicated than expected.',
+        outcomeText: structure.storylets?.partialVictory?.beats?.[0]?.text || 'The protagonist gets through, but relief arrives with a complication still attached.',
+        complication: structure.storylets?.partialVictory?.narrativeFunction || 'The aftermath stays complicated in a way the next scene will remember.',
         consequences: partialVictoryConsequences.length > 0 ? partialVictoryConsequences : undefined,
         cost: partialVictoryCost,
       },
       defeat: {
         nextSceneId: structure.storylets?.defeat?.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets?.defeat?.beats?.[0]?.text || 'You were unable to achieve your goal.',
+        outcomeText: structure.storylets?.defeat?.beats?.[0]?.text || 'The moment slips away, leaving the protagonist to carry what it taught them.',
         consequences: defeatConsequences.length > 0 ? defeatConsequences : undefined,
       },
       escape: structure.storylets?.escape ? {
         nextSceneId: structure.storylets.escape.nextSceneId || nextSceneId,
-        outcomeText: structure.storylets.escape.beats?.[0]?.text || 'You managed to escape.',
+        outcomeText: structure.storylets.escape.beats?.[0]?.text || 'The protagonist gets clear, but the fear follows close behind.',
         consequences: escapeConsequences.length > 0 ? escapeConsequences : undefined,
       } : undefined,
     },
@@ -525,10 +536,13 @@ export function convertEncounterStructureToEncounter(
     escalationTriggers,
     informationVisibility: structure.informationVisibility,
     pixarStakes: structure.pixarStakes,
+    pixarSurprise: structure.pixarSurprise,
     // Preserve design metadata
     tensionCurve: structure.tensionCurve,
     estimatedDuration: structure.estimatedDuration,
     replayability: structure.replayability,
     designNotes: structure.designNotes,
+    storyboard: (structure as any).storyboard,
+    payoffContext: (structure as any).payoffContext,
   };
 }

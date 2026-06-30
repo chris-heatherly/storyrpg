@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Reader / Generator Safety"
+  short_description: "Keep the public reader free of generator code and provider keys"
+  default_prompt: "Use $storyrpg-reader-generator-safety before any change that could affect the public reader bundle, the reader/generator boundary, or provider secrets."
+policy:
+  allow_implicit_invocation: true

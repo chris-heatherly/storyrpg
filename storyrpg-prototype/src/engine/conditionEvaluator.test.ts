@@ -31,8 +31,8 @@ function createPlayer(overrides?: Partial<PlayerState>): PlayerState {
     },
     pendingConsequences: [],
     inventory: [
-      { itemId: 'sword', quantity: 1 },
-      { itemId: 'potion', quantity: 3 },
+      { itemId: 'sword', name: 'Sword', description: 'A blade.', quantity: 1 },
+      { itemId: 'potion', name: 'Potion', description: 'A vial.', quantity: 3 },
     ],
     currentStoryId: null,
     currentEpisodeId: null,
@@ -71,6 +71,35 @@ describe('evaluateCondition — string condition', () => {
 
   it('returns false when flag is explicitly false', () => {
     expect(evaluateCondition('secret_found' as any, createPlayer())).toBe(false);
+  });
+});
+
+describe('evaluateCondition — relationshipRung condition', () => {
+  it('matches a derived relationship value rung', () => {
+    const condition: ConditionExpression = {
+      type: 'relationshipRung',
+      npcId: 'mara',
+      axis: 'love',
+      rung: 'negationOfNegation',
+    };
+    const player = createPlayer({
+      relationships: {
+        mara: { npcId: 'mara', trust: 25, affection: 80, respect: 20, fear: 70 },
+      },
+      relationshipValueStates: {
+        'mara:love': {
+          npcId: 'mara',
+          axis: 'love',
+          rung: 'contrary',
+          meaning: 'emotional absence',
+          confidence: 'low',
+          evidenceTags: ['protective_control'],
+          allowedSurfaces: ['absence'],
+        },
+      },
+    });
+
+    expect(evaluateCondition(condition, player)).toBe(true);
   });
 });
 

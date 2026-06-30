@@ -11,7 +11,14 @@
     },
     "strict": false,
     "skipLibCheck": true,
-    "resolveJsonModule": true
-  }
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/ai-agents/server/**/*.ts"
+  ],
+  "exclude": [
+    "src/ai-agents/server/**/*.test.ts"
+  ]
 }
 

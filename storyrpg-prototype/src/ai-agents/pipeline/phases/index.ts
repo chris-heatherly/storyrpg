@@ -1,11 +1,38 @@
 /**
  * Pipeline Phases
- * 
+ *
  * Each phase handles a distinct stage of story generation.
  * Phases are orchestrated by FullStoryPipeline.
+ *
+ * MIGRATION STATUS (see phases/README.md for full tracker):
+ *   [x] SavingPhase         (this package)
+ *   [x] WorldBuildingPhase  (wired — delegated from runWorldBuilding)
+ *   [x] CharacterDesignPhase, NPCDepthValidationPhase (wired — designer
+ *                          call + dedup, depth gate + Karpathy retry)
+ *   [x] EpisodeArchitecturePhase, BranchAnalysisPhase (wired — blueprint
+ *                          generation + retry, branch analysis + topology)
+ *   [x] ContentGenerationPhase (wired — the scene/choice/encounter
+ *                          authoring loop, both call sites delegated)
+ *   [x] QuickValidationPhase (wired — fast validator gate, escalation,
+ *                          targeted repair, blocking ValidationError)
+ *   [x] QAPhase           (wired — QA + best practices parallel block,
+ *                          repair loop, runQualityAssurance)
+ *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +
+ *                            EncounterImagePhase wired)
+ *   [x] VideoPhase          (wired — beat selection, direction, clip generation)
+ *   [x] CoverArtPhase       (wired — poster-concept distillation + cover render)
+ *   [x] AssemblyPhase     (wired — assembly, auto-fixes, completeness gate,
+ *                          asset verification, deterministic scans)
+ *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
+ *   [x] BrowserQAPhase      (wired — Playwright QA retry/remediation loop)
+ *   [x] RunArtifactPhase    (wired — output directory + episode artifact
+ *                            completion runtime for season generation)
+ *
+ * The monolithic `FullStoryPipeline` keeps `@ts-nocheck` until all phases
+ * have moved out. New phases should type cleanly without `@ts-nocheck`.
  */
 
-import { PipelineEvent } from '../EpisodePipeline';
+import { PipelineEvent } from '../events';
 import { PipelineConfig } from '../../config';
 import { WorldBible } from '../../agents/WorldBuilder';
 import { CharacterBible } from '../../agents/CharacterDesigner';
@@ -23,11 +50,29 @@ import { Story, Episode } from '../../../types';
 
 /**
  * Shared context passed between phases.
+ *
+ * The monolith wires up `emit`, `emitPhaseProgress`, `addCheckpoint`, and
+ * `checkCancellation` from its own methods so phases behave identically to
+ * inline code during migration.
  */
 export interface PipelineContext {
   config: PipelineConfig;
   emit: (event: Omit<PipelineEvent, 'timestamp'>) => void;
+  /** Granular progress emitter (percent within a phase). */
+  emitPhaseProgress?: (
+    phase: string,
+    done: number,
+    total: number,
+    source: string,
+    message?: string
+  ) => void;
+  /**
+   * Add a named checkpoint. `optional` toggles whether resume logic should
+   * treat the checkpoint as resumable.
+   */
   addCheckpoint: (name: string, data: unknown, optional?: boolean) => void;
+  /** Throws `OperationCancelledError` if the job was cancelled. */
+  checkCancellation?: () => Promise<void>;
 }
 
 /**
@@ -127,5 +172,5 @@ export interface PipelinePhase<TInput, TResult> {
 }
 
 // Re-export for convenience
-export type { PipelineEvent } from '../EpisodePipeline';
+export type { PipelineEvent } from '../events';
 export type { PipelineConfig } from '../../config';

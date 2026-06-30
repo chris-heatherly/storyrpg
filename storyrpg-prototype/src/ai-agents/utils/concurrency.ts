@@ -99,6 +99,42 @@ export async function mapWithConcurrency<I, O>(
   };
 }
 
+/**
+ * Ordered, fail-fast bounded-concurrency map that resolves to a plain `R[]`.
+ *
+ * This is the shared replacement for the per-agent `mapWithConcurrency<T,R>`
+ * copies that have grown up inside individual agents (e.g. EncounterArchitect's
+ * Phase 2 branch fan-out and SourceMaterialAnalyzer's per-episode breakdown).
+ * Unlike {@link mapWithConcurrency} above — which collects errors and returns a
+ * `{ values, errors }` envelope — this variant preserves input order and
+ * rejects on the first rejected `fn` call, matching the simpler fail-fast
+ * contract those agents rely on.
+ *
+ * A worker pool of size `min(limit, items.length)` pulls indices off a shared
+ * cursor, so one slow call only blocks its own slot while the other workers
+ * keep draining the queue. When an AbortSignal is threaded through `fn` (the
+ * agents fall back to BaseAgent.activeAbortSignal), an abort surfaces as that
+ * rejection.
+ */
+export async function mapOrderedWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const poolSize = Math.min(Math.max(1, limit), items.length);
+  const workers = new Array(poolSize).fill(0).map(async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export class LocalWorkerQueue {
   private readonly semaphore: AsyncSemaphore;
 

@@ -7,10 +7,74 @@ import {
   Animated,
   Platform,
 } from 'react-native';
-import { Sword, ChevronRight, Lock, Star } from 'lucide-react-native';
+import {
+  Activity,
+  Brain,
+  ChevronRight,
+  Clover,
+  Compass,
+  Drama,
+  Eye,
+  Flame,
+  Footprints,
+  HandHeart,
+  Handshake,
+  Heart,
+  Lightbulb,
+  Lock,
+  MessageCircle,
+  Move,
+  Pickaxe,
+  ScanEye,
+  Search,
+  Shield,
+  Sparkles,
+  Star,
+  Sword,
+  Target,
+  Telescope,
+  UserCheck,
+  Users,
+  VenetianMask,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react-native';
 import { ProcessedChoice } from '../engine/storyEngine';
 import { TERMINAL, RADIUS, TIMING, SPACING, withAlpha } from '../theme';
 import { useSettingsStore } from '../stores/settingsStore';
+import {
+  getSkillIconName,
+  shouldShowChoiceSkillReadout,
+  type ChoiceSkillIconName,
+} from '../utils/choiceSkillDisplay';
+
+const SKILL_ICONS: Record<ChoiceSkillIconName, LucideIcon> = {
+  activity: Activity,
+  brain: Brain,
+  clover: Clover,
+  compass: Compass,
+  drama: Drama,
+  eye: Eye,
+  flame: Flame,
+  footprints: Footprints,
+  'hand-heart': HandHeart,
+  handshake: Handshake,
+  heart: Heart,
+  lightbulb: Lightbulb,
+  'message-circle': MessageCircle,
+  move: Move,
+  pickaxe: Pickaxe,
+  'scan-eye': ScanEye,
+  search: Search,
+  shield: Shield,
+  sparkles: Sparkles,
+  target: Target,
+  telescope: Telescope,
+  'user-check': UserCheck,
+  users: Users,
+  'venetian-mask': VenetianMask,
+  zap: Zap,
+};
 
 interface ChoiceButtonProps {
   choice: ProcessedChoice;
@@ -41,6 +105,14 @@ export const ChoiceButton: React.FC<ChoiceButtonProps> = ({
 
   const isDisabled = disabled || choice.isLocked;
   const useNative = Platform.OS !== 'web';
+  const showSkillReadout = shouldShowChoiceSkillReadout(choice);
+  const skillIconName = getSkillIconName(choice.primarySkillKey);
+  const SkillIcon = SKILL_ICONS[skillIconName] ?? Activity;
+  const accessibilityHint = choice.isLocked && choice.lockedReason
+    ? `Locked: ${choice.lockedReason}`
+    : showSkillReadout
+      ? 'This option draws on what your character can read from the moment.'
+      : undefined;
 
   useEffect(() => {
     if (isSelected) {
@@ -67,6 +139,15 @@ export const ChoiceButton: React.FC<ChoiceButtonProps> = ({
 
   const getIcon = () => {
     if (choice.isLocked) return <Lock size={14} color={TERMINAL.colors.muted} />;
+    if (showSkillReadout) {
+      return (
+        <View style={styles.skillReadout}>
+          <View style={styles.skillValueRow}>
+            <SkillIcon size={26} color={TERMINAL.colors.primary} />
+          </View>
+        </View>
+      );
+    }
     return <Sword size={14} color={TERMINAL.colors.primary} />;
   };
 
@@ -92,6 +173,11 @@ export const ChoiceButton: React.FC<ChoiceButtonProps> = ({
         onPressOut={handlePressOut}
         activeOpacity={0.85}
         disabled={isDisabled || isSelected || isDeselected}
+        accessibilityRole="button"
+        accessibilityLabel={choice.text}
+        accessibilityHint={accessibilityHint}
+        accessibilityState={{ disabled: isDisabled, selected: isSelected }}
+        testID={`choice-${choice.id}`}
       >
         <Animated.View style={[
           StyleSheet.absoluteFill,
@@ -119,13 +205,6 @@ export const ChoiceButton: React.FC<ChoiceButtonProps> = ({
             <Text style={[styles.lockedReason, { fontSize: fonts.small }]}>
               {choice.lockedReason.toUpperCase()}
             </Text>
-          )}
-          {!isMinimal && choice.primarySkillLabel && (
-            <View style={[styles.skillPill, isDisabled && styles.skillPillDisabled]}>
-              <Text style={[styles.skillPillText, { fontSize: fonts.small }, isDisabled && styles.skillPillTextDisabled]}>
-                {choice.primarySkillLabel.toUpperCase()}
-              </Text>
-            </View>
           )}
           {!isMinimal && !isDisabled && choice.hasAdvantage && choice.advantageText && (
             <View style={styles.advantagePill}>
@@ -155,6 +234,7 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.choice,
     gap: 16,
     overflow: 'hidden',
+    minHeight: 44,
   },
   glowOverlay: {
     borderWidth: 2,
@@ -170,14 +250,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
   iconContainer: {
-    width: 36,
-    height: 36,
+    width: 62,
+    minHeight: 46,
     borderRadius: RADIUS.badge,
     backgroundColor: withAlpha(TERMINAL.colors.primary, 0.1),
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: withAlpha(TERMINAL.colors.primary, 0.2),
+    paddingHorizontal: 4,
+    paddingVertical: 5,
   },
   iconContainerDisabled: {
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
@@ -211,28 +293,16 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginTop: 4,
   },
-  skillPill: {
-    backgroundColor: withAlpha(TERMINAL.colors.primary, 0.15),
-    borderWidth: 1,
-    borderColor: withAlpha(TERMINAL.colors.primary, 0.3),
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: RADIUS.pill,
-    alignSelf: 'flex-start',
-    marginTop: 5,
+  skillReadout: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
   },
-  skillPillText: {
-    color: TERMINAL.colors.primaryLight,
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  skillPillDisabled: {
-    backgroundColor: withAlpha(TERMINAL.colors.muted, 0.1),
-    borderColor: withAlpha(TERMINAL.colors.muted, 0.2),
-  },
-  skillPillTextDisabled: {
-    color: TERMINAL.colors.muted,
+  skillValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
   },
   advantagePill: {
     flexDirection: 'row',

@@ -1,0 +1,586 @@
+{
+  "events": [
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Generation plan: 1 episode"
+    },
+    {
+      "type": "phase_start",
+      "phase": "world",
+      "message": "Phase 1: Building world"
+    },
+    {
+      "type": "agent_start",
+      "agent": "WorldBuilder",
+      "message": "Creating world bible"
+    },
+    {
+      "type": "debug",
+      "phase": "world",
+      "message": "Sending 2 locations to WorldBuilder"
+    },
+    {
+      "type": "debug",
+      "phase": "world",
+      "message": "Starting location ID: loc-1"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "WorldBuilder",
+      "message": "Created 2 locations, 1 factions"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "world_bible",
+      "message": "Checkpoint committed: World Bible"
+    },
+    {
+      "type": "phase_start",
+      "phase": "characters",
+      "message": "Phase 2: Designing characters"
+    },
+    {
+      "type": "agent_start",
+      "agent": "CharacterDesigner",
+      "message": "Designing characters"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "CharacterDesigner",
+      "message": "Created 2 character profiles"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "character_bible",
+      "message": "Checkpoint committed: Character Bible"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "characters",
+      "message": "Character bible validation: 100/100 (valid)"
+    },
+    {
+      "type": "phase_start",
+      "phase": "npc_validation",
+      "message": "Validating NPC relationship depth"
+    },
+    {
+      "type": "phase_complete",
+      "phase": "npc_validation",
+      "message": "NPC depth validation passed"
+    },
+    {
+      "type": "phase_start",
+      "phase": "architecture",
+      "message": "Phase 3: Creating episode blueprint"
+    },
+    {
+      "type": "agent_start",
+      "agent": "StoryArchitect",
+      "message": "Creating episode blueprint"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "StoryArchitect",
+      "message": "Created blueprint with 4 scenes"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Episode 1 blueprint: 4 scenes"
+    },
+    {
+      "type": "warning",
+      "phase": "episode_architecture",
+      "message": "StoryArchitect proceeded with 2 unresolved advisory issue(s) (story still generated): [DramaticStructure] Scene scene-1 (The Hidden Door) is missing a stakes ladder in keyBeats. (scene-1) Suggestion: Key beats should raise risk, reveal cost, narrow options, shift leverage, or deepen consequence until the pressure peak. | [DramaticStructure] Scene scene-1 (The Hidden Door) has no residue. (scene-1) Suggestion: Every scene must leave changed information, leverage, relationship, identity, resource, danger, promise, wound, reputation, access, or future option."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "episode_blueprint",
+      "message": "Checkpoint committed: Episode Blueprint"
+    },
+    {
+      "type": "phase_start",
+      "phase": "branch_analysis",
+      "message": "Phase 3.5: Analyzing branch structure"
+    },
+    {
+      "type": "agent_start",
+      "agent": "BranchManager",
+      "message": "Analyzing branch structure"
+    },
+    {
+      "type": "warning",
+      "phase": "branch_validation",
+      "message": "[deterministic] Scene scene-3 dead-ends before the ending scene"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "BranchManager",
+      "message": "Found 2 paths, 1 reconvergence points, 0 issues"
+    },
+    {
+      "type": "debug",
+      "phase": "branch_recommendations",
+      "message": "Open scene-3 with path-conditional residue so the reconvergence does not erase the choice."
+    },
+    {
+      "type": "phase_start",
+      "phase": "content",
+      "message": "Phase 4: Writing scene content"
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_validation",
+      "message": "Initialized incremental validation with 3 flags, 0 scores, 1 NPC relationship baselines"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Preparing scene generation queue..."
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Writing scene scene-1"
+    },
+    {
+      "type": "agent_start",
+      "agent": "SceneWriter",
+      "message": "Writing scene 1/4: The Hidden Door"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "SceneWriter input compacted for scene-1: 5594 -> 4989 bytes"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Best-of-2 for critical scene scene-1 (transition)"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Best-of-2 winner for scene-1: score 100 vs 100"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "SceneWriter",
+      "message": "Wrote 6 beats for scene-1"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene scene-1 written (6 beats)"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene written for scene-1"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Scene scene-1 choicePoint: YES (relationship)"
+    },
+    {
+      "type": "debug",
+      "phase": "choices",
+      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+    },
+    {
+      "type": "agent_start",
+      "agent": "ChoiceAuthor",
+      "message": "Creating choices for The Hidden Door"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "ChoiceAuthor",
+      "message": "Created 3 choices"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Choice pass complete for scene-1"
+    },
+    {
+      "type": "incremental_validation",
+      "phase": "scene_complete",
+      "message": "Scene scene-1: PASSED"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Writing scene scene-2a"
+    },
+    {
+      "type": "agent_start",
+      "agent": "SceneWriter",
+      "message": "Writing scene 2/4: The Steward's Answer"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "SceneWriter input compacted for scene-2a: 3457 -> 3394 bytes"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "SceneWriter",
+      "message": "Wrote 6 beats for scene-2a"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene scene-2a written (6 beats)"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene written for scene-2a"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Scene scene-2a choicePoint: YES (expression)"
+    },
+    {
+      "type": "debug",
+      "phase": "choices",
+      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+    },
+    {
+      "type": "agent_start",
+      "agent": "ChoiceAuthor",
+      "message": "Creating choices for The Steward's Answer"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "ChoiceAuthor",
+      "message": "Created 3 choices"
+    },
+    {
+      "type": "debug",
+      "phase": "choices",
+      "message": "Created 3 payoff beats for expression choices in scene-2a"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Choice pass complete for scene-2a"
+    },
+    {
+      "type": "incremental_validation",
+      "phase": "scene_complete",
+      "message": "Scene scene-2a: PASSED"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Writing scene scene-2b"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Skipping SceneWriter for encounter scene scene-2b - EncounterArchitect will provide content"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Designing encounter scene-2b"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene scaffold ready for scene-2b"
+    },
+    {
+      "type": "agent_start",
+      "agent": "EncounterArchitect",
+      "message": "Designing stealth encounter for The Rotten Gallery"
+    },
+    {
+      "type": "debug",
+      "phase": "encounters",
+      "message": "Encounter prior-state context for scene-2b: 3 flag(s), 0 authored relationship check(s), 4 fallback relationship check(s), 0 significant choice hint(s)"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "EncounterArchitect",
+      "message": "Designed 1-beat moderate encounter with 4 storylets for scene-2b"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Encounter scene-2b complete"
+    },
+    {
+      "type": "incremental_validation",
+      "phase": "encounter",
+      "message": "Encounter scene-2b: PASSED (1 beats)"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Encounter pass complete for scene-2b"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Writing scene scene-3"
+    },
+    {
+      "type": "agent_start",
+      "agent": "SceneWriter",
+      "message": "Writing scene 4/4: The East Garden"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "SceneWriter input compacted for scene-3: 3931 -> 3680 bytes"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Best-of-2 for critical scene scene-3 (bottleneck)"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Best-of-2 winner for scene-3: score 100 vs 100"
+    },
+    {
+      "type": "agent_complete",
+      "agent": "SceneWriter",
+      "message": "Wrote 3 beats for scene-3"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene scene-3 written (3 beats)"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Scene written for scene-3"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Scene scene-3 choicePoint: NO"
+    },
+    {
+      "type": "incremental_validation",
+      "phase": "scene_complete",
+      "message": "Scene scene-3: PASSED"
+    },
+    {
+      "type": "validation_aggregated",
+      "phase": "incremental_validation",
+      "message": "Incremental validation complete: 4/4 scenes passed"
+    },
+    {
+      "type": "phase_complete",
+      "phase": "content",
+      "message": "Content complete: 4 scenes, 2 choice sets, 6 choices, 1 encounters"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Episode content complete"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "scene_content",
+      "message": "Checkpoint committed: Scene Content"
+    },
+    {
+      "type": "phase_start",
+      "phase": "quick_validation",
+      "message": "Running quick validation"
+    },
+    {
+      "type": "phase_complete",
+      "phase": "quick_validation",
+      "message": "Quick validation passed (12 warnings)"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "output_directory",
+      "message": "Checkpoint committed: Output Directory"
+    },
+    {
+      "type": "warning",
+      "phase": "branch_repair",
+      "message": "Repaired 2 blueprint branch target(s) that skipped required setup before choice repair; retargeted 1 authored choice(s)."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "branch_validation",
+      "message": "SceneGraphBranchValidator: 6 choices, 6 scene branches, 1 encounters, 3 encounter choices, 4 storylets"
+    },
+    {
+      "type": "phase_start",
+      "phase": "assembly",
+      "message": "Phase 6: Assembling final story"
+    },
+    {
+      "type": "pipeline_event",
+      "message": ""
+    },
+    {
+      "type": "pipeline_event",
+      "message": ""
+    },
+    {
+      "type": "debug",
+      "phase": "encounter_outcome_variants",
+      "message": "Encounter outcome variants: 1 desync(s), 0 variant(s) authored."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "final_story_contract",
+      "message": "Final story contract passed (1 episode(s), 4 scene(s))"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "final_story",
+      "message": "Checkpoint committed: Final Story"
+    },
+    {
+      "type": "phase_start",
+      "phase": "saving",
+      "message": "Phase 7: Saving all outputs to files"
+    },
+    {
+      "type": "phase_complete",
+      "phase": "saving",
+      "message": "Saved 19 files to generated-stories/the-locked-wing_<ts>/"
+    },
+    {
+      "type": "phase_complete",
+      "phase": "complete",
+      "message": "Story generation complete!"
+    },
+    {
+      "type": "debug",
+      "phase": "observability",
+      "message": "{\"imageCoverage\":{\"totalBeats\":21,\"beatsWithImages\":0,\"encounterBeatsTotal\":1,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
+    }
+  ],
+  "checkpoints": [
+    {
+      "phase": "World Bible",
+      "requiresApproval": true,
+      "dataKeys": [
+        "beliefs",
+        "customs",
+        "doNotForget",
+        "factions",
+        "locations",
+        "majorEvents",
+        "taboos",
+        "tensions",
+        "worldRules"
+      ]
+    },
+    {
+      "phase": "Character Bible",
+      "requiresApproval": true,
+      "dataKeys": [
+        "characters",
+        "doNotForget",
+        "ensembleBalance",
+        "gaps",
+        "keyDynamics",
+        "relationshipSummary",
+        "voiceDistinctions"
+      ]
+    },
+    {
+      "phase": "Episode Blueprint",
+      "requiresApproval": true,
+      "dataKeys": [
+        "arc",
+        "bottleneckScenes",
+        "dramaticAudit",
+        "episodeCircle",
+        "episodeId",
+        "narrativePromises",
+        "scenes",
+        "startingSceneId",
+        "storyCircleRole",
+        "suggestedFlags",
+        "suggestedScores",
+        "suggestedTags",
+        "synopsis",
+        "themes",
+        "title"
+      ]
+    },
+    {
+      "phase": "Branch Analysis",
+      "requiresApproval": false,
+      "dataKeys": [
+        "branchPaths",
+        "episodeId",
+        "recommendations",
+        "reconvergencePoints",
+        "stateTrackingMap",
+        "validationIssues"
+      ]
+    },
+    {
+      "phase": "Scene Content",
+      "requiresApproval": true,
+      "dataKeys": [
+        "choiceSets",
+        "encounterCount",
+        "encounters",
+        "sceneContents"
+      ]
+    },
+    {
+      "phase": "Output Directory",
+      "requiresApproval": false,
+      "dataKeys": [
+        "outputDirectory"
+      ]
+    },
+    {
+      "phase": "structural_autofix",
+      "requiresApproval": false,
+      "dataKeys": [
+        "fixedCount",
+        "fixes"
+      ]
+    },
+    {
+      "phase": "craft_autofix",
+      "requiresApproval": false,
+      "dataKeys": [
+        "fixedCount",
+        "records"
+      ]
+    },
+    {
+      "phase": "Final Story",
+      "requiresApproval": false,
+      "dataKeys": [
+        "author",
+        "coverImage",
+        "episodes",
+        "genre",
+        "id",
+        "imagesStatus",
+        "initialState",
+        "npcs",
+        "outputDir",
+        "synopsis",
+        "tags",
+        "title"
+      ]
+    }
+  ]
+}

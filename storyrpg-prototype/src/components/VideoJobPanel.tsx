@@ -23,7 +23,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import { useVideoJobStore, VideoJob } from '../stores/videoJobStore';
 
 const GRID_GAP = 10;

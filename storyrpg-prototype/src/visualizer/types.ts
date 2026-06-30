@@ -1,16 +1,196 @@
 import { Story, Episode, Scene, Beat, Encounter, EncounterPhase, Choice } from '../types';
 import { TERMINAL } from '../theme';
 
-export type NodeType = 'episode' | 'scene' | 'beat' | 'encounter' | 'phase';
+export type NodeType =
+  | 'episode'
+  | 'scene'
+  | 'beat'
+  | 'encounter'
+  | 'phase'
+  | 'encounter-choice'
+  | 'encounter-outcome'
+  | 'encounter-situation'
+  | 'tint'
+  | 'tint-payoff'
+  | 'branchlet'
+  | 'storylet'
+  | 'storylet-beat'
+  | 'callback-source'
+  | 'callback-payoff';
 
-export type EdgeType = 'next' | 'choice' | 'scene-transition' | 'fallback' | 'outcome' | 'phase-success' | 'phase-failure';
+export type EdgeType =
+  | 'next'
+  | 'choice'
+  | 'scene-transition'
+  | 'fallback'
+  | 'outcome'
+  | 'phase-success'
+  | 'phase-failure'
+  | 'tint'
+  | 'tint-payoff'
+  | 'branchlet'
+  | 'storylet'
+  | 'callback';
+
+export type VisualizerMode = 'author' | 'player';
+
+export type ChoiceSystemFacet =
+  | 'routing'
+  | 'relationship'
+  | 'stat'
+  | 'identity'
+  | 'delayed'
+  | 'affordance'
+  | 'witness'
+  | 'failure-residue'
+  | 'story-verb'
+  | 'branching';
+
+export interface ChoiceSystemFilterState {
+  showRouting: boolean;
+  showRelationships: boolean;
+  showStats: boolean;
+  showLockedPaths: boolean;
+  showDelayedCallbacks: boolean;
+  showOnlyMeaningfulBranches: boolean;
+  showTints: boolean;
+  showTintPayoffs: boolean;
+  showBranchlets: boolean;
+  showStorylets: boolean;
+  showCallbacks: boolean;
+}
+
+export interface ChoiceSystemConditionSummary {
+  kind: 'relationship' | 'attribute' | 'skill' | 'flag' | 'score' | 'tag' | 'item' | 'identity' | 'compound' | 'unknown';
+  authorLabel: string;
+  playerLabel: string;
+  npcId?: string;
+  dimension?: string;
+}
+
+export interface ChoiceSystemEffectSummary {
+  kind: 'relationship' | 'attribute' | 'skill' | 'flag' | 'score' | 'tag' | 'item' | 'identity' | 'delayed' | 'memory' | 'residue' | 'witness' | 'failure-residue' | 'story-verb' | 'affordance' | 'unknown';
+  authorLabel: string;
+  playerLabel: string;
+  npcId?: string;
+  dimension?: string;
+  direction?: 'up' | 'down' | 'neutral';
+}
+
+export interface ChoiceSystemCheckSummary {
+  kind: 'attribute' | 'skill' | 'weighted';
+  authorLabel: string;
+  playerLabel: string;
+}
+
+export interface ChoiceSystemRouteSummary {
+  kind: 'nextBeat' | 'nextScene' | 'implicit';
+  authorLabel: string;
+  playerLabel: string;
+  isMeaningfulBranch: boolean;
+}
+
+export interface ChoiceSystemChoiceSummary {
+  id: string;
+  text: string;
+  choiceType: NonNullable<Choice['choiceType']> | 'standard';
+  route: ChoiceSystemRouteSummary;
+  conditions: ChoiceSystemConditionSummary[];
+  effects: ChoiceSystemEffectSummary[];
+  check?: ChoiceSystemCheckSummary;
+  hasDelayedCallback: boolean;
+  hasLockedGate: boolean;
+  storyVerb?: string;
+  affordanceSource?: NonNullable<Choice['affordanceSource']>;
+  witnessReactionCount: number;
+  failureResidueKind?: NonNullable<Choice['failureResidue']>['kind'];
+  relationshipNpcIds: string[];
+  facets: ChoiceSystemFacet[];
+  authorSummary: string;
+  playerSummary: string;
+}
+
+export interface ChoiceSystemNodeMetadata {
+  choices: ChoiceSystemChoiceSummary[];
+  npcIds: string[];
+  facets: ChoiceSystemFacet[];
+  badges: Array<{
+    facet: ChoiceSystemFacet;
+    authorLabel: string;
+    playerLabel: string;
+  }>;
+}
+
+export interface ChoiceSystemEdgeMetadata {
+  choiceId?: string;
+  choiceType?: ChoiceSystemChoiceSummary['choiceType'];
+  facets: ChoiceSystemFacet[];
+  route?: ChoiceSystemRouteSummary;
+  conditions: ChoiceSystemConditionSummary[];
+  effects: ChoiceSystemEffectSummary[];
+  check?: ChoiceSystemCheckSummary;
+  hasDelayedCallback: boolean;
+  hasLockedGate: boolean;
+  relationshipNpcIds: string[];
+  authorLabel?: string;
+  playerLabel?: string;
+}
+
+export interface ChoiceSystemNpcSummary {
+  npcId: string;
+  dimensions: Record<'trust' | 'affection' | 'respect' | 'fear', {
+    gates: number;
+    effects: number;
+  }>;
+}
+
+export type SyntheticGraphKind =
+  | 'encounter-choice'
+  | 'encounter-outcome'
+  | 'encounter-situation'
+  | 'tint'
+  | 'tint-payoff'
+  | 'branchlet'
+  | 'storylet'
+  | 'storylet-beat'
+  | 'callback-source'
+  | 'callback-payoff';
+
+export interface SyntheticGraphNodeData {
+  id: string;
+  kind: SyntheticGraphKind;
+  sourceId?: string;
+  sourceChoiceId?: string;
+  sourceBeatId?: string;
+  targetBeatId?: string;
+  targetSceneId?: string;
+  flag?: string;
+  hookId?: string;
+  outcome?: string;
+  tier?: string;
+  authorLabel: string;
+  playerLabel: string;
+  text?: string;
+  details?: string[];
+}
+
+export interface SyntheticGraphEdgeData {
+  kind: SyntheticGraphKind | 'storylet-route';
+  flag?: string;
+  hookId?: string;
+  choiceId?: string;
+  outcome?: string;
+  tier?: string;
+  authorLabel: string;
+  playerLabel: string;
+}
 
 export interface GraphNode {
   id: string;
   type: NodeType;
   label: string;
   sublabel?: string;
-  data: Episode | Scene | Beat | Encounter | EncounterPhase;
+  data: Episode | Scene | Beat | Encounter | EncounterPhase | SyntheticGraphNodeData;
   x: number;
   y: number;
   width: number;
@@ -24,6 +204,12 @@ export interface GraphNode {
   hasStatCheck: boolean;
   hasChoices: boolean;
   choiceCount: number;
+  image?: string;
+  fullText?: string;
+  sceneTitle?: string;
+  beatNumber?: number;
+  choiceSystem?: ChoiceSystemNodeMetadata;
+  synthetic?: SyntheticGraphNodeData;
 }
 
 export interface GraphEdge {
@@ -33,6 +219,8 @@ export interface GraphEdge {
   type: EdgeType;
   label?: string;
   conditioned: boolean;
+  choiceSystem?: ChoiceSystemEdgeMetadata;
+  synthetic?: SyntheticGraphEdgeData;
 }
 
 export interface StoryGraph {
@@ -41,6 +229,16 @@ export interface StoryGraph {
   bounds: { width: number; height: number };
   episodeGroups: Map<string, string[]>;
   sceneGroups: Map<string, string[]>;
+  choiceSystem?: {
+    npcs: ChoiceSystemNpcSummary[];
+  };
+}
+
+export interface MapJumpShortcut {
+  id: string;
+  label: string;
+  kind: 'scene' | 'encounter' | 'storylet' | 'branchlet';
+  nodeId: string;
 }
 
 export interface ViewState {
@@ -80,6 +278,16 @@ export const VISUALIZER_COLORS = {
     episode: '#0f1a0f',
     encounter: '#1a0a1a',
     phase: '#0f0a1a',
+    'encounter-choice': '#101526',
+    'encounter-outcome': '#101820',
+    'encounter-situation': '#0d1620',
+    tint: '#1a1020',
+    'tint-payoff': '#1a1510',
+    branchlet: '#20120a',
+    storylet: '#101526',
+    'storylet-beat': '#0d1620',
+    'callback-source': '#20151a',
+    'callback-payoff': '#20151a',
   },
 
   nodeBorders: {
@@ -88,6 +296,16 @@ export const VISUALIZER_COLORS = {
     episode: TERMINAL.colors.primaryBright,
     encounter: '#9966ff',
     phase: '#6666ff',
+    'encounter-choice': TERMINAL.colors.amber,
+    'encounter-outcome': '#66ccff',
+    'encounter-situation': '#3399ff',
+    tint: '#ff66cc',
+    'tint-payoff': '#facc15',
+    branchlet: '#ff6633',
+    storylet: '#66ccff',
+    'storylet-beat': '#3399ff',
+    'callback-source': '#ff99cc',
+    'callback-payoff': '#ff99cc',
   },
 
   edges: {
@@ -98,6 +316,18 @@ export const VISUALIZER_COLORS = {
     outcome: '#33cc33',
     'phase-success': '#33cc33',
     'phase-failure': '#cc3333',
+    tint: '#ff66cc',
+    'tint-payoff': '#facc15',
+    branchlet: '#ff6633',
+    storylet: '#66ccff',
+    callback: '#ff99cc',
+  },
+
+  outcomes: {
+    victory: '#45d94a',
+    partialVictory: '#facc15',
+    defeat: '#ef4444',
+    escape: TERMINAL.colors.cyan,
   },
 
   selection: TERMINAL.colors.cyan,
@@ -107,5 +337,19 @@ export const VISUALIZER_COLORS = {
     condition: '#ff9933',
     consequence: '#33cc33',
     statCheck: '#9966ff',
+    relationship: '#33ccff',
+    identity: '#ff66cc',
+    delayed: '#facc15',
+    branching: '#ff6633',
+    storylet: '#66ccff',
+    callback: '#ff99cc',
+  },
+
+  choiceTypes: {
+    standard: TERMINAL.colors.amber,
+    expression: '#7dd3fc',
+    relationship: '#33ccff',
+    strategic: '#9966ff',
+    dilemma: '#ff6633',
   },
 };

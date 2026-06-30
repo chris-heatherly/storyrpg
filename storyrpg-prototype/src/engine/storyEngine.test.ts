@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getNextScene, processBeat, executeChoice, getResolutionTracker } from './storyEngine';
+import { getNextScene, processBeat, executeChoice, getResolutionTracker, isTerminalSceneTarget } from './storyEngine';
 import type { Episode, PlayerState, Story, EncounterBeat, Choice } from '../types';
 
 function createPlayer(): PlayerState {
@@ -96,6 +96,98 @@ describe('storyEngine.getNextScene', () => {
 });
 
 describe('storyEngine.processBeat encounter gating', () => {
+  it('returns passive skill insights when hidden coverage meets threshold', () => {
+    const player = createPlayer();
+    player.attributes.wit = 80;
+    player.skills.investigation = 70;
+
+    const story: Story = {
+      id: 'story-1',
+      title: 'Story',
+      synopsis: 'Test',
+      genre: 'Mystery',
+      coverImage: '',
+      initialState: { attributes: player.attributes, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [],
+    };
+
+    const beat = {
+      id: 'beat-1',
+      text: 'The office is dark.',
+      skillInsights: [
+        {
+          id: 'scrape-marks',
+          skillWeights: { investigation: 1 },
+          threshold: 55,
+          text: 'The scrape marks beneath the desk point toward the window.',
+          priority: 1,
+        },
+        {
+          id: 'locked-safe',
+          skillWeights: { survival: 1 },
+          threshold: 90,
+          text: 'This should stay hidden.',
+        },
+      ],
+      choices: [],
+    };
+
+    const processed = processBeat(beat as any, player, story);
+    expect(processed.skillInsights).toEqual(['The scrape marks beneath the desk point toward the window.']);
+  });
+
+  it('uses fiction-first fallback when unsafe planning text is stripped', () => {
+    const player = createPlayer();
+    const story: Story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      synopsis: 'Test',
+      genre: 'Paranormal romance',
+      coverImage: '',
+      initialState: { attributes: player.attributes, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [],
+    };
+    const beat = {
+      id: 's1-5__beat-5',
+      text: 'PEAK: In the park when the shadow appears: scream, run, freeze, or fight — And next morning, what name do you give him: Mr. Midnight (canonical), The Stranger, The Velvet, or The Suit.',
+      primaryAction: 'Kylie claws at the wet bark and fights for breath.',
+      choices: [],
+    };
+
+    const processed = processBeat(beat as any, player, story);
+
+    expect(processed.text).toBe('Kylie claws at the wet bark and fights for breath.');
+    expect(processed.text).not.toMatch(/PEAK|canonical|what name do you give him|journey|challenges|decisions/i);
+  });
+
+  it('does not render visual-contract fallback prose as player-facing beat text', () => {
+    const player = createPlayer();
+    const story: Story = {
+      id: 'bite-me',
+      title: 'Bite Me',
+      synopsis: 'Test',
+      genre: 'Paranormal romance',
+      coverImage: '',
+      initialState: { attributes: player.attributes, skills: {}, tags: [], inventory: [] },
+      npcs: [],
+      episodes: [],
+    };
+    const beat = {
+      id: 's1-arrival-cold-open__beat-1',
+      text: "Kylie Marinescu's composed surface slips through a small evasive movement as her hands and attention lock onto the window.",
+      visualMoment: "Kylie Marinescu's composed surface slips through a small evasive movement.",
+      primaryAction: 'the character reacts through a visible gesture, object cue, or shift in distance',
+      choices: [],
+    };
+
+    const processed = processBeat(beat as any, player, story);
+
+    expect(processed.text).toBe('The moment tightens. You take the next breath and move before fear can close around you.');
+    expect(processed.text).not.toMatch(/composed surface|small evasive movement|subtext visible|visible gesture/i);
+  });
+
   it('shows relationship-gated encounter choices as locked when configured to showWhenLocked', () => {
     const player = createPlayer();
     player.relationships.mara = {
@@ -212,7 +304,7 @@ describe('storyEngine.executeChoice', () => {
     expect(typeof result.resolution!.target).toBe('number');
   });
 
-  it('applies use-based growth after stat check', () => {
+  it('emits use-based growth as skill consequences after stat check', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.1);
     const player = createPlayer();
     expect(player.skills.persuasion ?? 0).toBe(0);
@@ -220,8 +312,40 @@ describe('storyEngine.executeChoice', () => {
     const choice = makeChoice({
       statCheck: { skillWeights: { persuasion: 1.0 }, difficulty: 50 },
     });
-    executeChoice(choice, player);
-    expect(player.skills.persuasion).toBeGreaterThan(0);
+    const result = executeChoice(choice, player);
+    expect(player.skills.persuasion ?? 0).toBe(0);
+    expect(result.consequences).toContainEqual({ type: 'skill', skill: 'persuasion', change: 2 });
+  });
+
+  it('applies prepared stat-check modifiers only when their conditions pass', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.35);
+    const player = createPlayer();
+    player.flags.kept_promise = true;
+
+    const baseline = executeChoice(makeChoice({
+      statCheck: { skillWeights: { persuasion: 1.0 }, difficulty: 65 },
+    }), createPlayer()).resolution!;
+
+    getResolutionTracker().reset();
+    vi.spyOn(Math, 'random').mockReturnValue(0.35);
+    const prepared = executeChoice(makeChoice({
+      statCheck: {
+        skillWeights: { persuasion: 1.0 },
+        difficulty: 65,
+        modifiers: [
+          {
+            id: 'kept-promise',
+            condition: { type: 'flag', flag: 'kept_promise', value: true },
+            delta: 25,
+            reason: 'Promise creates leverage.',
+            hint: 'The promise still gives you a way in.',
+          },
+        ],
+      },
+    }), player).resolution!;
+
+    expect(prepared.tier).toBe('success');
+    expect(baseline.tier).not.toBe('success');
   });
 
   it('injects outcome tier flags as consequences', () => {
@@ -279,5 +403,18 @@ describe('storyEngine.executeChoice', () => {
     const result = executeChoice(choice, createPlayer());
     expect(result.nextSceneId).toBe('scene-next');
     expect(result.nextBeatId).toBe('beat-next');
+  });
+});
+
+describe('isTerminalSceneTarget', () => {
+  it('recognizes terminal sentinels (so the reader finishes instead of loading a missing scene)', () => {
+    for (const t of ['episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending', 'EPISODE-END', 'episode-2']) {
+      expect(isTerminalSceneTarget(t)).toBe(true);
+    }
+  });
+  it('does not flag real scene ids or empty values', () => {
+    for (const s of ['scene-1', 'scene-2b', 'scene-3', '', undefined, null]) {
+      expect(isTerminalSceneTarget(s as any)).toBe(false);
+    }
   });
 });

@@ -394,13 +394,13 @@ const CINEMATIC_TEMPLATES: Record<BeatType, Omit<CinematicAnalysis, 'beatType'>>
       focus: 'Both in focus to show dynamic'
     },
     bodyLanguageDirectives: {
-      asymmetry: 'Victor expanded, submitting one collapsed',
+      asymmetry: 'Dominant figure expanded, submitting one collapsed',
       momentOfChange: 'Knees buckling, head bowing, shoulders falling',
       environmentInteraction: 'Falling to knees, hand reaching for support',
-      spatialRelationship: 'Victor looming, submitting one diminished'
+      spatialRelationship: 'Dominant figure looming, submitting one diminished'
     },
-    lightingSuggestion: 'Victor in light, submitting one in shadow',
-    compositionNote: 'Victor dominant in frame, submitting one low'
+    lightingSuggestion: 'Dominant figure in light, submitting one in shadow',
+    compositionNote: 'Dominant figure high in frame, submitting one low'
   },
 
   triumph: {
@@ -413,13 +413,13 @@ const CINEMATIC_TEMPLATES: Record<BeatType, Omit<CinematicAnalysis, 'beatType'>>
       focus: 'Sharp on triumphant figure'
     },
     bodyLanguageDirectives: {
-      asymmetry: 'Victor expanded maximally, others smaller/lower',
+      asymmetry: 'Triumphant figure expanded maximally, others smaller/lower',
       momentOfChange: 'Arms rising, body expanding, face transforming',
       environmentInteraction: 'Standing on height, arms spread, taking in world',
-      spatialRelationship: 'Victor elevated literally or figuratively'
+      spatialRelationship: 'Triumphant figure elevated literally or figuratively'
     },
     lightingSuggestion: 'Bright, golden, heroic lighting',
-    compositionNote: 'Victor central, elevated, world beneath'
+    compositionNote: 'Triumphant figure central, elevated, world beneath'
   },
 
   defeat: {

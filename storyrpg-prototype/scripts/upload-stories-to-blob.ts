@@ -1,7 +1,7 @@
 /**
  * Upload generated stories to Vercel Blob Storage.
  *
- * For each story directory containing 08-final-story.json:
+ * For each story directory containing story.json:
  *   1. Extracts all base64 data-URL images from the story JSON
  *   2. Uploads each image as a separate blob on the CDN
  *   3. Rewrites image fields in the story to use CDN URLs
@@ -12,6 +12,7 @@
  *
  * Usage:
  *   BLOB_READ_WRITE_TOKEN=... npx ts-node --project tsconfig.worker.json scripts/upload-stories-to-blob.ts
+ *   BLOB_READ_WRITE_TOKEN=... npx ts-node --project tsconfig.worker.json scripts/upload-stories-to-blob.ts thrones-of-the-two-moons_2026-05-02T15-40-55
  *
  * Supports incremental uploads -- re-running skips images already in blob.
  */
@@ -19,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { put, list } from '@vercel/blob';
+import { decodeStory } from '../src/ai-agents/codec/storyCodec';
 
 const STORIES_DIR = path.resolve(__dirname, '..', 'generated-stories');
 const BLOB_PREFIX = 'stories';
@@ -66,6 +68,24 @@ async function listExistingBlobs(): Promise<Map<string, string>> {
     cursor = result.hasMore ? result.cursor : undefined;
   } while (cursor);
   return existing;
+}
+
+async function loadExistingManifestEntries(): Promise<StoryManifestEntry[]> {
+  const manifestUrl = process.env.EXPO_PUBLIC_BLOB_MANIFEST_URL;
+  if (!manifestUrl) return [];
+
+  try {
+    const response = await fetch(manifestUrl);
+    if (!response.ok) {
+      console.warn(`[WARN] Existing manifest fetch failed: ${response.status}`);
+      return [];
+    }
+    const manifest = await response.json() as StoriesManifest;
+    return Array.isArray(manifest.stories) ? manifest.stories : [];
+  } catch (err) {
+    console.warn('[WARN] Existing manifest fetch failed:', err);
+    return [];
+  }
 }
 
 async function uploadImageBlob(
@@ -162,7 +182,9 @@ async function rewriteImageField(
   return null;
 }
 
-const IMAGE_KEYS = new Set(['image', 'situationImage', 'backgroundImage', 'coverImage']);
+function isMediaImageKey(key: string): boolean {
+  return key === 'portrait' || /image$/i.test(key);
+}
 
 async function processStoryImages(
   story: any,
@@ -185,7 +207,7 @@ async function processStoryImages(
     for (const key of Object.keys(obj)) {
       const val = obj[key];
 
-      if (IMAGE_KEYS.has(key) && typeof val === 'string' && val.length > 10) {
+      if (isMediaImageKey(key) && typeof val === 'string' && val.length > 10) {
         const label = `img-${labelSeq++}`;
         const url = await rewriteImageField(val, storyDir, label, existingBlobs);
         if (url) {
@@ -212,7 +234,7 @@ async function uploadStory(
   const raw = fs.readFileSync(storyFilePath, 'utf8');
   let story: any;
   try {
-    story = JSON.parse(raw);
+    story = decodeStory(JSON.parse(raw)).story;
   } catch {
     console.error(`  [SKIP] Invalid JSON: ${storyFilePath}`);
     return null;
@@ -271,20 +293,29 @@ async function main() {
   }
 
   console.log('Scanning for stories...');
+  const requestedDirs = new Set(process.argv.slice(2).filter(Boolean));
   const dirs = fs.readdirSync(STORIES_DIR, { withFileTypes: true })
     .filter(d => d.isDirectory())
     .map(d => d.name)
+    .filter(name => requestedDirs.size === 0 || requestedDirs.has(name))
     .sort();
 
   const storyDirs: { dirName: string; filePath: string }[] = [];
   for (const dir of dirs) {
-    const fp = path.join(STORIES_DIR, dir, '08-final-story.json');
+    const fp = path.join(STORIES_DIR, dir, 'story.json');
     if (fs.existsSync(fp)) {
       storyDirs.push({ dirName: dir, filePath: fp });
     }
   }
 
-  console.log(`Found ${storyDirs.length} stories with 08-final-story.json\n`);
+  if (requestedDirs.size > 0) {
+    const found = new Set(storyDirs.map(s => s.dirName));
+    for (const requested of requestedDirs) {
+      if (!found.has(requested)) console.warn(`[WARN] Requested story dir not found or missing story.json: ${requested}`);
+    }
+  }
+
+  console.log(`Found ${storyDirs.length} stories with story.json\n`);
   if (storyDirs.length === 0) { console.log('Nothing to upload.'); return; }
 
   console.log('Indexing existing blobs...');
@@ -301,8 +332,13 @@ async function main() {
     if (entry) manifestEntries.push(entry);
   }
 
-  // Deduplicate by story ID (keep the latest)
+  const existingManifestEntries = requestedDirs.size > 0
+    ? await loadExistingManifestEntries()
+    : [];
+
+  // Deduplicate by story ID (keep the latest upload)
   const seen = new Map<string, StoryManifestEntry>();
+  for (const entry of existingManifestEntries) seen.set(entry.id, entry);
   for (const entry of manifestEntries) seen.set(entry.id, entry);
   const dedupedEntries = Array.from(seen.values());
 

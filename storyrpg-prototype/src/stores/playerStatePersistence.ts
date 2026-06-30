@@ -27,7 +27,10 @@ export function deserializePlayerState(json: string): PlayerState | null {
       ...parsed,
       tags: new Set(parsed.tags || []),
       identityProfile: parsed.identityProfile ?? { ...DEFAULT_IDENTITY_PROFILE },
+      relationshipValueStates: parsed.relationshipValueStates ?? {},
       pendingConsequences: parsed.pendingConsequences ?? [],
+      visitLog: Array.isArray(parsed.visitLog) ? parsed.visitLog : [],
+      episodeCompletions: Array.isArray(parsed.episodeCompletions) ? parsed.episodeCompletions : [],
     };
   } catch (e) {
     console.error('[GameStore] Failed to deserialize player state:', e);
@@ -42,6 +45,7 @@ export function createInitialPlayerState(): PlayerState {
     attributes: { ...DEFAULT_ATTRIBUTES },
     skills: {},
     relationships: {},
+    relationshipValueStates: {},
     flags: {},
     scores: {},
     tags: new Set(),
@@ -52,5 +56,7 @@ export function createInitialPlayerState(): PlayerState {
     currentEpisodeId: null,
     currentSceneId: null,
     completedEpisodes: [],
+    visitLog: [],
+    episodeCompletions: [],
   };
 }

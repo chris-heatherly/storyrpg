@@ -1,26 +1,20 @@
 import React from 'react';
 import { Story } from '../types';
-import { StoryBrowser } from '../components/StoryBrowser';
+import { StoryVisualizer } from '../visualizer';
 
 interface VisualizerScreenProps {
   story: Story;
   onBack: () => void;
   onJumpToNode?: (nodeId: string) => void;
+  onStoryUpdated?: (story: Story) => void;
 }
 
 export const VisualizerScreen: React.FC<VisualizerScreenProps> = ({
   story,
   onBack,
-  onJumpToNode,
+  onStoryUpdated,
 }) => {
-  // StoryBrowser now handles both columns and flow map views internally
-  return (
-    <StoryBrowser 
-      story={story} 
-      onClose={onBack} 
-      onJumpToNode={onJumpToNode}
-    />
-  );
+  return <StoryVisualizer story={story} onBack={onBack} onStoryUpdated={onStoryUpdated} />;
 };
 
 export default VisualizerScreen;

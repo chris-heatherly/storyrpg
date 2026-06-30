@@ -1,0 +1,288 @@
+/**
+ * Model-family presets and per-task model assignments.
+ *
+ * The generator pipeline runs several distinct LLM roles ("tasks"). Rather than
+ * forcing the user to pick one model for everything, they pick a **family**
+ * (Anthropic / OpenAI / Gemini) and get a cost/benefit-tuned preset that assigns
+ * the best model to each task. Power users can then override individual tasks.
+ *
+ * Narrative tasks (architect, scene, choice, qa) default to the selected
+ * family's provider, but each task may be individually overridden to a different
+ * provider+model. This lets the heavy structured agents (architect / scene /
+ * choice — which also drive the Season Planner and Encounter Architect) run on a
+ * more reliable provider (e.g. Claude) while a cheaper, decorrelated grader (QA)
+ * stays on another (e.g. Gemini). The image and video prompt-planning tasks have
+ * always had this cross-provider freedom.
+ *
+ * Generator-only. Never imported by the public reader.
+ */
+import {
+  FALLBACK_MODEL_OPTIONS,
+  GeneratorLlmProvider,
+} from './generatorLlmOptions';
+
+export type PipelineTask =
+  | 'architect'
+  | 'scene'
+  | 'choice'
+  | 'qa'
+  | 'image'
+  | 'video'
+  | 'councilPlan'
+  | 'councilChoice'
+  | 'councilPlaytest'
+  | 'councilFinal'
+  | 'councilFusion';
+
+export interface PipelineTaskMeta {
+  id: PipelineTask;
+  label: string;
+  /** One-line description of what the task does, shown in the per-task sheet. */
+  description: string;
+  /** Whether the task may use a provider different from the chosen family. */
+  crossProvider: boolean;
+}
+
+/** Display order + metadata for the per-task UI. */
+export const PIPELINE_TASKS: readonly PipelineTaskMeta[] = [
+  {
+    id: 'architect',
+    label: 'Planning / Architecture',
+    description: 'Season Story Circle, arc pressure, treatment. Highest-stakes reasoning — quality here cascades through the whole run.',
+    crossProvider: false,
+  },
+  {
+    id: 'scene',
+    label: 'Scene Writing',
+    description: 'High-volume prose generation. The bulk of token spend.',
+    crossProvider: false,
+  },
+  {
+    id: 'choice',
+    label: 'Choice Authoring',
+    description: 'Short but tonally sensitive branch and choice text.',
+    crossProvider: false,
+  },
+  {
+    id: 'qa',
+    label: 'QA Grading',
+    description: 'Structured scoring and continuity checks. Benefits from a cheaper model decorrelated from the author.',
+    crossProvider: false,
+  },
+  {
+    id: 'image',
+    label: 'Image Prompting',
+    description: 'Plans image prompts from scene metadata (mechanical). Separate from the image-generation provider.',
+    crossProvider: true,
+  },
+  {
+    id: 'video',
+    label: 'Video Prompting',
+    description: 'Plans video prompts (experimental). Separate from the video-generation backend.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilPlan',
+    label: 'Council: Plan',
+    description: 'Optional Quality Council review of season structure, Story Circle spine, promises, and arc pressure.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilChoice',
+    label: 'Council: Choices',
+    description: 'Optional Quality Council review of choice agency, stakes, consequence memory, and fiction-first wording.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilPlaytest',
+    label: 'Council: Route Playtest',
+    description: 'Optional route-simulation critic for cosmetic branching, residue loss, and impossible state.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilFinal',
+    label: 'Council: Final Audit',
+    description: 'Optional regression-oriented final audit over story, validators, and quality evidence.',
+    crossProvider: true,
+  },
+  {
+    id: 'councilFusion',
+    label: 'Council: Fusion',
+    description: 'Optional OpenRouter Fusion deep-review panel for high-cost-of-being-wrong audits.',
+    crossProvider: true,
+  },
+] as const;
+
+/** Narrative tasks are locked to the family provider. */
+export const NARRATIVE_TASKS: readonly PipelineTask[] = ['architect', 'scene', 'choice', 'qa'];
+
+export interface TaskModelAssignment {
+  provider: GeneratorLlmProvider;
+  model: string;
+}
+
+export interface ModelFamilyPreset {
+  id: GeneratorLlmProvider;
+  label: string;
+  /** One-line summary of the family's cost/benefit posture. */
+  tagline: string;
+  assignments: Record<PipelineTask, TaskModelAssignment>;
+}
+
+const anthropic = (model: string): TaskModelAssignment => ({ provider: 'anthropic', model });
+const openai = (model: string): TaskModelAssignment => ({ provider: 'openai', model });
+const gemini = (model: string): TaskModelAssignment => ({ provider: 'gemini', model });
+const openrouter = (model: string): TaskModelAssignment => ({ provider: 'openrouter', model });
+
+/**
+ * Cost/benefit-optimal model per task, per family. The expensive flagship goes
+ * to planning (where it pays off), a balanced mid-tier to prose/choices, and the
+ * cheapest tier to QA/image/video prompting.
+ */
+export const MODEL_FAMILY_PRESETS: Record<GeneratorLlmProvider, ModelFamilyPreset> = {
+  anthropic: {
+    id: 'anthropic',
+    label: 'Claude',
+    tagline: 'Opus plans, Sonnet writes, Haiku grades.',
+    assignments: {
+      architect: anthropic('claude-opus-4-8'),
+      scene: anthropic('claude-sonnet-4-6'),
+      choice: anthropic('claude-sonnet-4-6'),
+      qa: anthropic('claude-haiku-4-5'),
+      image: anthropic('claude-haiku-4-5'),
+      video: anthropic('claude-haiku-4-5'),
+      councilPlan: anthropic('claude-haiku-4-5'),
+      councilChoice: anthropic('claude-haiku-4-5'),
+      councilPlaytest: anthropic('claude-haiku-4-5'),
+      councilFinal: anthropic('claude-haiku-4-5'),
+      councilFusion: openrouter('openrouter/fusion'),
+    },
+  },
+  openai: {
+    id: 'openai',
+    label: 'OpenAI',
+    tagline: 'GPT-5 plans, GPT-5 mini writes, 4o-mini grades.',
+    assignments: {
+      architect: openai('gpt-5'),
+      scene: openai('gpt-5-mini'),
+      choice: openai('gpt-5-mini'),
+      qa: openai('gpt-4o-mini'),
+      image: openai('gpt-4o-mini'),
+      video: openai('gpt-4o-mini'),
+      councilPlan: openai('gpt-4o-mini'),
+      councilChoice: openai('gpt-4o-mini'),
+      councilPlaytest: openai('gpt-4o-mini'),
+      councilFinal: openai('gpt-4o-mini'),
+      councilFusion: openrouter('openrouter/fusion'),
+    },
+  },
+  gemini: {
+    id: 'gemini',
+    label: 'Gemini',
+    tagline: '3.1 Pro plans, 2.5 Pro writes, 2.5 Flash grades.',
+    assignments: {
+      architect: gemini('gemini-3.1-pro-preview'),
+      scene: gemini('gemini-2.5-pro'),
+      choice: gemini('gemini-2.5-pro'),
+      qa: gemini('gemini-2.5-flash'),
+      image: gemini('gemini-2.5-flash'),
+      video: gemini('gemini-2.5-flash'),
+      councilPlan: gemini('gemini-2.5-flash'),
+      councilChoice: gemini('gemini-2.5-flash'),
+      councilPlaytest: gemini('gemini-2.5-flash'),
+      councilFinal: gemini('gemini-2.5-flash'),
+      councilFusion: openrouter('openrouter/fusion'),
+    },
+  },
+  // Cross-vendor "best-of" via OpenRouter — deliberately avoids the
+  // Anthropic / OpenAI / Gemini families (those have their own presets) so the
+  // QA judge is fully decorrelated from the author. Model ids are OpenRouter
+  // `vendor/model` slugs.
+  openrouter: {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    tagline: 'DeepSeek plans, Grok writes, Mistral picks, Qwen grades.',
+    assignments: {
+      architect: openrouter('deepseek/deepseek-v4-pro'),
+      scene: openrouter('x-ai/grok-4.3'),
+      choice: openrouter('mistralai/mistral-medium-3.5'),
+      qa: openrouter('qwen/qwen3.6-flash'),
+      image: openrouter('deepseek/deepseek-v4-flash'),
+      video: openrouter('deepseek/deepseek-v4-flash'),
+      councilPlan: openrouter('qwen/qwen3.6-flash'),
+      councilChoice: openrouter('qwen/qwen3.6-flash'),
+      councilPlaytest: openrouter('qwen/qwen3.6-flash'),
+      councilFinal: openrouter('qwen/qwen3.6-flash'),
+      councilFusion: openrouter('openrouter/fusion'),
+    },
+  },
+};
+
+export const DEFAULT_MODEL_FAMILY: GeneratorLlmProvider = 'gemini';
+
+/**
+ * Per-task model overrides. Narrative tasks store a model only (provider is
+ * always the family); image/video may store a full provider+model assignment.
+ */
+export type TaskModelOverrides = Partial<Record<PipelineTask, TaskModelAssignment>>;
+
+export function isPipelineTask(value: unknown): value is PipelineTask {
+  return (
+    value === 'architect' ||
+    value === 'scene' ||
+    value === 'choice' ||
+    value === 'qa' ||
+    value === 'image' ||
+    value === 'video' ||
+    value === 'councilPlan' ||
+    value === 'councilChoice' ||
+    value === 'councilPlaytest' ||
+    value === 'councilFinal' ||
+    value === 'councilFusion'
+  );
+}
+
+function isNarrativeTask(task: PipelineTask): boolean {
+  return NARRATIVE_TASKS.includes(task);
+}
+
+/**
+ * Resolve the effective per-task model assignments for a family + overrides.
+ *
+ * Starts from the family preset, then applies overrides. Every task — narrative
+ * or image/video — honors an override's provider (defaulting to the family
+ * provider when the override omits one), so a heavy narrative task can be routed
+ * to a different, more reliable provider than the QA grader.
+ */
+export function resolveTaskAssignments(
+  family: GeneratorLlmProvider,
+  overrides: TaskModelOverrides | undefined,
+): Record<PipelineTask, TaskModelAssignment> {
+  const preset = MODEL_FAMILY_PRESETS[family] ?? MODEL_FAMILY_PRESETS[DEFAULT_MODEL_FAMILY];
+  const result = {} as Record<PipelineTask, TaskModelAssignment>;
+  for (const meta of PIPELINE_TASKS) {
+    const task = meta.id;
+    const base = preset.assignments[task];
+    const override = overrides?.[task];
+    if (!override) {
+      result[task] = { ...base };
+      continue;
+    }
+    // Every task honors an explicit provider override; narrative tasks fall back
+    // to the family provider when the override only changes the model, image/video
+    // fall back to their preset provider. isNarrativeTask is retained for callers
+    // that still want the family as the narrative default.
+    const fallbackProvider = isNarrativeTask(task) ? family : base.provider;
+    result[task] = {
+      provider: override.provider || fallbackProvider,
+      model: override.model || base.model,
+    };
+  }
+  return result;
+}
+
+/** Human-readable label for a model id, falling back to the raw id. */
+export function modelLabel(provider: GeneratorLlmProvider, model: string): string {
+  const option = FALLBACK_MODEL_OPTIONS[provider]?.find((o) => o.value === model);
+  return option?.label ?? model;
+}

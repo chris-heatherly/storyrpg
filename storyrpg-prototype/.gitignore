@@ -6,6 +6,8 @@ node_modules/
 # Expo
 .expo/
 dist/
+dist-reader/
+dist-generator-internal/
 web-build/
 expo-env.d.ts
 
@@ -25,6 +27,7 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+.codex-*.png
 
 # macOS
 .DS_Store
@@ -38,11 +41,16 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# test coverage output
+coverage/
+
 # generated native folders
 /ios
 /android
 
 # proxy temp files
+.auth-users.json
+# legacy file-based auth (replaced by Postgres users table)
 .ref-images/
 .generation-jobs.json
 .image-feedback.json
@@ -53,8 +61,21 @@ yarn-error.*
 .worker-results/
 .vercel
 
+# runtime state backups and caches (never commit — see L2 in docs/PROJECT_AUDIT_2026-05-28.md)
+*.backup-*
+.model-cache.json
+.generator-settings.json
+.codex-expo-web.*
+
 # Generated story content (large binary + JSON assets, not source code)
 generated-stories/
 
 # Pipeline runtime artifacts
 pipeline-memories/
+
+# E2E test artifacts
+test/e2e/screenshots/
+test/e2e/report/
+test/e2e/results/
+test-results/
+playwright-report/

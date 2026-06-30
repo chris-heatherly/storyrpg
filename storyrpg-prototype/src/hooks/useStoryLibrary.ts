@@ -7,7 +7,7 @@ import {
   fetchDeletedStoryIds,
   fetchStoryByCatalogEntry,
   fetchStoryCatalog,
-  normalizeStoryMediaUrls,
+  resolveStoryMedia,
 } from '../services/storyLibrary';
 
 type CachedStoryRecord = {
@@ -17,7 +17,20 @@ type CachedStoryRecord = {
 
 function getCatalogSourceKey(entry: StoryCatalogEntry): string {
   if (entry.isBuiltIn) return `builtin:${entry.id}`;
-  return entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`;
+  const artifactState = entry.imageArtifacts
+    ? `refs:${entry.imageArtifacts.hasSeasonReferences ? 1 : 0}:art:${entry.imageArtifacts.hasEpisodeArt ? 1 : 0}`
+    : 'refs:?:art:?';
+  const episodeState = [
+    entry.episodeCount ?? entry.episodes.length,
+    ...entry.episodes.map((episode) => `${episode.number}:${episode.id}:${episode.title}`),
+  ].join(',');
+  return [
+    entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`,
+    entry.updatedAt || '',
+    entry.imagesStatus || '',
+    artifactState,
+    episodeState,
+  ].join('|');
 }
 
 function getStorySourceKey(story: Story): string {
@@ -75,7 +88,7 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const builtInCacheEntries = builtInStories
         .filter((story) => !currentDeletedIds.has(story.id))
         .map((story) => {
-          const normalizedStory = normalizeStoryMediaUrls(story);
+          const normalizedStory = resolveStoryMedia(story);
           return [
             story.id,
             {
@@ -98,7 +111,7 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const fallbackStories = builtInStories.map((story) => createStoryCatalogEntry(story));
       storyCacheRef.current = new Map(
         builtInStories.map((story) => {
-          const normalizedStory = normalizeStoryMediaUrls(story);
+          const normalizedStory = resolveStoryMedia(story);
           return [
             story.id,
             {
@@ -141,7 +154,7 @@ export function useStoryLibrary(builtInStories: Story[]) {
   }, [builtInStories, stories]);
 
   const upsertStory = useCallback((story: Story) => {
-    const normalizedStory = normalizeStoryMediaUrls(story);
+    const normalizedStory = resolveStoryMedia(story);
     storyCacheRef.current.set(normalizedStory.id, {
       story: normalizedStory,
       sourceKey: getStorySourceKey(normalizedStory),
@@ -154,10 +167,10 @@ export function useStoryLibrary(builtInStories: Story[]) {
       const existingIndex = prev.findIndex((candidate) => candidate.id === normalizedStory.id);
       if (existingIndex >= 0) {
         const updated = [...prev];
-        updated[existingIndex] = { ...updated[existingIndex], ...catalogEntry };
-        return updated;
+        updated.splice(existingIndex, 1);
+        return [{ ...prev[existingIndex], ...catalogEntry }, ...updated];
       }
-      return [...prev, catalogEntry];
+      return [catalogEntry, ...prev];
     });
 
     setFileLoadedStoryIds((prev) => new Set([...prev, normalizedStory.id]));
@@ -172,7 +185,6 @@ export function useStoryLibrary(builtInStories: Story[]) {
       return next;
     });
   }, []);
-
   return {
     stories,
     setStories,

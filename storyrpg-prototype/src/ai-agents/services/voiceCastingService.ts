@@ -1,7 +1,7 @@
 /**
  * Voice Casting Service
  * 
- * Automatically matches ElevenLabs voices to story characters based on:
+ * Automatically matches provider voices to story characters based on:
  * - Gender (from pronouns)
  * - Age (young, middle, old)
  * - Personality traits
@@ -10,11 +10,16 @@
  */
 
 import { CharacterBible } from '../agents/CharacterDesigner';
+import { PROXY_CONFIG } from '../../config/endpoints';
 
-// Voice metadata from ElevenLabs
+export type NarrationProvider = 'elevenlabs' | 'gemini';
+
+// Provider voice metadata. ElevenLabs fills this from its API; Gemini uses a
+// local catalog of prebuilt Gemini TTS voices.
 export interface ElevenLabsVoice {
   id: string;
   name: string;
+  provider?: NarrationProvider;
   category?: string;
   description?: string;
   previewUrl?: string;
@@ -34,6 +39,7 @@ export interface VoiceAssignment {
   characterName: string;
   voiceId: string;
   voiceName: string;
+  provider?: NarrationProvider;
   matchScore: number;
   matchReasons: string[];
   isNarrator?: boolean;
@@ -41,6 +47,7 @@ export interface VoiceAssignment {
 
 // Voice cast result for a story
 export interface VoiceCast {
+  provider?: NarrationProvider;
   narrator: VoiceAssignment;
   characters: VoiceAssignment[];
   generatedAt: string;
@@ -64,6 +71,23 @@ const DEFAULT_VOICES = {
   elderly_male: 'VR6AewLTigWG4xSOukaG', // Arnold - older male
   elderly_female: 'ThT5KcBeYPX3keUQqHPh', // Dorothy - older female
 };
+
+export const DEFAULT_GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+
+export const GEMINI_TTS_VOICES: ElevenLabsVoice[] = [
+  { id: 'Kore', name: 'Kore', provider: 'gemini', description: 'clear, steady, composed narrator', labels: { gender: 'female', age: 'middle', description: 'clear, measured, professional, calm', use_case: 'narration' } },
+  { id: 'Puck', name: 'Puck', provider: 'gemini', description: 'bright, playful, youthful', labels: { gender: 'neutral', age: 'young', description: 'playful, energetic, quick, mischievous' } },
+  { id: 'Charon', name: 'Charon', provider: 'gemini', description: 'low, grave, ominous', labels: { gender: 'male', age: 'old', description: 'deep, ominous, measured, grave, authoritative' } },
+  { id: 'Fenrir', name: 'Fenrir', provider: 'gemini', description: 'rough, intense, forceful', labels: { gender: 'male', age: 'middle', description: 'intense, fierce, powerful, commanding' } },
+  { id: 'Aoede', name: 'Aoede', provider: 'gemini', description: 'warm, lyrical, expressive', labels: { gender: 'female', age: 'young', description: 'warm, friendly, lyrical, tender' } },
+  { id: 'Leda', name: 'Leda', provider: 'gemini', description: 'soft, young, open', labels: { gender: 'female', age: 'young', description: 'soft, gentle, youthful, open' } },
+  { id: 'Orus', name: 'Orus', provider: 'gemini', description: 'formal, decisive, senior', labels: { gender: 'male', age: 'middle', description: 'authoritative, clear, confident, formal' } },
+  { id: 'Callirrhoe', name: 'Callirrhoe', provider: 'gemini', description: 'smooth, elegant, mysterious', labels: { gender: 'female', age: 'middle', description: 'smooth, mysterious, poised, controlled' } },
+  { id: 'Iapetus', name: 'Iapetus', provider: 'gemini', description: 'elderly, wise, weathered', labels: { gender: 'male', age: 'old', description: 'wise, weathered, calm, thoughtful' } },
+  { id: 'Despina', name: 'Despina', provider: 'gemini', description: 'older, warm, grounded', labels: { gender: 'female', age: 'old', description: 'warm, grounded, grandmotherly, measured' } },
+  { id: 'Zephyr', name: 'Zephyr', provider: 'gemini', description: 'light, airy, gentle', labels: { gender: 'neutral', age: 'young', description: 'gentle, soft, bright, calm' } },
+  { id: 'Umbriel', name: 'Umbriel', provider: 'gemini', description: 'shadowed, restrained, cool', labels: { gender: 'neutral', age: 'middle', description: 'guarded, cool, mysterious, restrained' } },
+];
 
 // Personality to voice characteristic mappings
 const PERSONALITY_VOICE_HINTS: Record<string, string[]> = {
@@ -89,36 +113,37 @@ const PERSONALITY_VOICE_HINTS: Record<string, string[]> = {
 
 class VoiceCastingService {
   private apiKey: string | null = null;
-  private cachedVoices: ElevenLabsVoice[] | null = null;
+  private provider: NarrationProvider = 'elevenlabs';
+  private cachedVoices: Partial<Record<NarrationProvider, ElevenLabsVoice[]>> = {};
   private cacheTimestamp: number = 0;
   private cacheDurationMs: number = 5 * 60 * 1000; // 5 minutes
   
-  // Get proxy URL dynamically
   private get proxyUrl(): string {
-    try {
-      const { PROXY_CONFIG } = require('../../config/endpoints');
-      return PROXY_CONFIG.getProxyUrl();
-    } catch {
-      return 'http://localhost:3001';
-    }
+    return PROXY_CONFIG.getProxyUrl();
   }
 
   /**
-   * Set the ElevenLabs API key
+   * Set the provider API key
    */
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
   }
 
+  setProvider(provider: NarrationProvider): void {
+    this.provider = provider;
+  }
+
   /**
-   * Fetch available voices from ElevenLabs (with caching)
+   * Fetch available voices from the active provider (with caching)
    */
-  async getAvailableVoices(forceRefresh = false): Promise<ElevenLabsVoice[]> {
+  async getAvailableVoices(forceRefresh = false, provider: NarrationProvider = this.provider): Promise<ElevenLabsVoice[]> {
+    if (provider === 'gemini') return GEMINI_TTS_VOICES;
+
     const now = Date.now();
     
     // Return cached voices if still valid
-    if (!forceRefresh && this.cachedVoices && (now - this.cacheTimestamp) < this.cacheDurationMs) {
-      return this.cachedVoices;
+    if (!forceRefresh && this.cachedVoices[provider] && (now - this.cacheTimestamp) < this.cacheDurationMs) {
+      return this.cachedVoices[provider]!;
     }
 
     try {
@@ -134,11 +159,12 @@ class VoiceCastingService {
       }
 
       const data = await response.json();
-      this.cachedVoices = data.voices || [];
+      const voices: ElevenLabsVoice[] = (data.voices || []).map((voice: ElevenLabsVoice) => ({ ...voice, provider: 'elevenlabs' }));
+      this.cachedVoices[provider] = voices;
       this.cacheTimestamp = now;
-      
-      console.log(`[VoiceCasting] Loaded ${this.cachedVoices.length} voices from ElevenLabs`);
-      return this.cachedVoices;
+
+      console.log(`[VoiceCasting] Loaded ${voices.length} voices from ElevenLabs`);
+      return voices;
     } catch (error) {
       console.warn('[VoiceCasting] Error fetching voices:', error);
       return this.getDefaultVoicesList();
@@ -162,8 +188,8 @@ class VoiceCastingService {
   /**
    * Cast voices for all characters in a story
    */
-  async castVoices(characterBible: CharacterBible): Promise<VoiceCast> {
-    const voices = await this.getAvailableVoices();
+  async castVoices(characterBible: CharacterBible, provider: NarrationProvider = this.provider): Promise<VoiceCast> {
+    const voices = await this.getAvailableVoices(false, provider);
     const assignments: VoiceAssignment[] = [];
     const usedVoiceIds = new Set<string>();
 
@@ -176,8 +202,9 @@ class VoiceCastingService {
       characterName: 'Narrator',
       voiceId: narratorVoice.id,
       voiceName: narratorVoice.name,
+      provider,
       matchScore: 100,
-      matchReasons: ['Default narrator voice - professional, clear'],
+      matchReasons: [`Default ${provider} narrator voice - professional, clear`],
       isNarrator: true,
     };
 
@@ -197,6 +224,7 @@ class VoiceCastingService {
           characterName: character.name,
           voiceId: fallbackVoice.id,
           voiceName: fallbackVoice.name,
+          provider,
           matchScore: 50,
           matchReasons: ['Fallback - no unique voice available'],
         });
@@ -211,6 +239,7 @@ class VoiceCastingService {
         characterName: character.name,
         voiceId: voice.id,
         voiceName: voice.name,
+        provider,
         matchScore: score,
         matchReasons: reasons,
       });
@@ -219,6 +248,7 @@ class VoiceCastingService {
     }
 
     return {
+      provider,
       narrator: narratorAssignment,
       characters: assignments,
       generatedAt: new Date().toISOString(),

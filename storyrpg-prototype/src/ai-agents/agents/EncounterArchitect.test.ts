@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { EncounterArchitect, type EncounterArchitectInput, type Phase1Result, type Phase2Result, type Phase3Result, type Phase4Result } from './EncounterArchitect';
+import { describe, expect, it, vi } from 'vitest';
+import { EncounterArchitect, ENCOUNTER_PROSE_DISCIPLINE, enforceStoryletConvergence, type EncounterArchitectInput, type Phase1Result, type Phase2Result, type Phase3Result, type Phase4Result } from './EncounterArchitect';
 import { analyzeRelationshipDynamics, type RelationshipSnapshot, type NPCInfo } from '../utils/relationshipDynamics';
 import type { Relationship } from '../../types';
 
@@ -25,6 +25,14 @@ const input: EncounterArchitectInput = {
   encounterType: 'dramatic',
   encounterStyle: 'dramatic',
   encounterDescription: 'The protagonist must survive a charged confrontation.',
+  encounterStoryCircleTarget: 'take',
+  encounterStoryCircleTargetRationale: 'The confrontation demands a relationship cost for pursuing the truth.',
+  encounterStoryCircleTargetEvidence: {
+    episodeStoryCircleRole: ['take'],
+    episodeQuestion: 'Will Alex pay the cost of naming the truth?',
+    protagonistChange: 'Alex leaves with changed trust and a clearer self-concept.',
+    cliffhangerHandoff: 'next_need',
+  },
   encounterStakes: 'A key relationship and the protagonist identity are on the line.',
   encounterRequiredNpcIds: ['eros'],
   encounterRelevantSkills: ['persuasion', 'resolve'],
@@ -51,6 +59,35 @@ const input: EncounterArchitectInput = {
   targetBeatCount: 4,
 };
 
+const makeAuthoredStorylets = (): Phase4Result => ({
+  victory: { id: 'sv', name: 'Custom Victory', triggerOutcome: 'victory', tone: 'triumphant', narrativeFunction: 'test', sequenceIntent: { objective: 'Show the win landing.', activity: 'victory aftermath', obstacle: 'The pressure still has residue.', startState: 'The room is tense.', turningPoint: 'The opposition gives ground.', endState: 'The protagonist stands steadier.', visualThread: 'changed posture' }, beats: [{ id: 'sv-1', text: 'The room changes because the choice landed, and the opposition gives ground.', isTerminal: true }], startingBeatId: 'sv-1', consequences: [] },
+  partialVictory: { id: 'sp', name: 'Custom Partial', triggerOutcome: 'partialVictory', tone: 'bittersweet', narrativeFunction: 'test', sequenceIntent: { objective: 'Show relief with cost.', activity: 'costly victory aftermath', obstacle: 'The cost remains visible.', startState: 'The goal is close.', turningPoint: 'The complication remains.', endState: 'The next scene carries both success and cost.', visualThread: 'visible complication' }, beats: [{ id: 'sp-1', text: 'The goal is within reach, but the cost stays visible in the room.', isTerminal: true }], startingBeatId: 'sp-1', consequences: [] },
+  defeat: { id: 'sd', name: 'Custom Defeat', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: 'test', sequenceIntent: { objective: 'Make the loss usable.', activity: 'defeat aftermath', obstacle: 'The loss has consequences.', startState: 'The effort fails.', turningPoint: 'The lesson becomes clear.', endState: 'Resolve points forward.', visualThread: 'recovery posture' }, beats: [{ id: 'sd-1', text: 'The loss lands plainly, leaving a specific lesson to carry forward.', isTerminal: true }], startingBeatId: 'sd-1', consequences: [] },
+  escape: { id: 'se', name: 'Custom Escape', triggerOutcome: 'escape', tone: 'relieved', narrativeFunction: 'test', sequenceIntent: { objective: 'Show temporary safety.', activity: 'escape aftermath', obstacle: 'The danger remains unresolved.', startState: 'The threat is close.', turningPoint: 'Distance opens.', endState: 'There is room to breathe but not closure.', visualThread: 'distance from danger' }, beats: [{ id: 'se-1', text: 'Distance opens at last, but the danger keeps its shape behind you.', isTerminal: true }], startingBeatId: 'se-1', consequences: [] },
+});
+
+const withAuthoredStorylets = <T extends { storylets?: any }>(structure: T): T => {
+  structure.storylets = makeAuthoredStorylets();
+  return structure;
+};
+
+describe('execute() refuses the template fallback (no-boilerplate mandate)', () => {
+  it('returns success:false when phased AND both lean attempts fail — never ships deterministic template prose', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    vi.spyOn(architect, 'executePhased').mockRejectedValue(new Error('phase 1 exhausted'));
+    vi.spyOn(architect, 'callLLM').mockRejectedValue(new Error('provider unavailable'));
+
+    const res = await architect.execute(input);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/All LLM attempts failed/);
+    expect(res.data).toBeUndefined();
+  });
+});
+
+// buildDeterministicFallback is NOT called in production anymore (no-boilerplate
+// mandate 2026-06-11) — it is retained only as the TEMPLATE_SIGNATURES reference
+// corpus. These tests keep it structurally valid so the signature sync test
+// stays meaningful.
 describe('EncounterArchitect deterministic fallback', () => {
   it('builds a valid, normalizable encounter from input data alone', () => {
     const architect = new EncounterArchitect(config);
@@ -71,10 +108,19 @@ describe('EncounterArchitect deterministic fallback', () => {
     }
 
     // Should pass normalization and validation
+    withAuthoredStorylets(fallback);
     const normalized = (architect as any).normalizeStructure(fallback, input);
     expect(() => (architect as any).validateStructure(normalized, input)).not.toThrow();
     expect(normalized.storylets?.victory).toBeDefined();
     expect(normalized.storylets?.defeat).toBeDefined();
+    expect(normalized.storyboard?.spine.length).toBeGreaterThanOrEqual(7);
+    expect(normalized.storyboard?.mechanicsVisibility).toBe('current_clocks_only');
+    expect(normalized.storyboard?.sequenceIntent?.objective).toContain('charged confrontation');
+    expect(normalized.storyboard?.sequenceIntent?.visualThread).toBeTruthy();
+    expect(normalized.storylets?.victory.sequenceIntent?.endState).toBeTruthy();
+    expect(normalized.storylets?.defeat.sequenceIntent?.turningPoint).toBeTruthy();
+    expect(normalized.payoffContext?.skillPayoffs?.some((p: any) => p.skill === 'persuasion')).toBe(true);
+    expect(normalized.beats[0].storyboardFrameId).toBeDefined();
   });
 
   it('uses NPC names and skills from input in fallback narrative', () => {
@@ -83,7 +129,148 @@ describe('EncounterArchitect deterministic fallback', () => {
 
     const allText = JSON.stringify(fallback);
     expect(allText).toContain('Eros');
-    expect(allText).toContain('{{player.name}}');
+    expect(allText).toContain('Alex');
+  });
+
+  it('drops unnameable score consequence stubs from normalized storylets', () => {
+    const architect = new EncounterArchitect(config);
+    const fallback = (architect as any).buildDeterministicFallback(input);
+    withAuthoredStorylets(fallback);
+    fallback.storylets.victory.consequences = [
+      { type: 'score', value: '2' },
+      { type: 'score', flag: 'cismigiu_bruised', value: '2', description: 'The trauma forces you to become more resilient.' },
+      { type: 'score', name: 'resolve', change: 2 },
+    ];
+
+    const normalized = (architect as any).normalizeStructure(fallback, input);
+    expect(normalized.storylets.victory.consequences).toEqual([
+      { type: 'score', name: 'cismigiu_bruised', change: '2' },
+      { type: 'score', name: 'resolve', change: 2 },
+    ]);
+  });
+
+  it('drops invalid generated encounter conditions instead of shipping dead fields', () => {
+    const architect = new EncounterArchitect(config);
+    const fallback = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
+    const openingChoice = fallback.beats[0].choices[0] as any;
+
+    fallback.beats[0].setupTextVariants = [
+      { condition: { type: 'flag', value: 'true' }, text: 'This invalid variant should not survive.' },
+      { condition: { type: 'flag', flag: 'kept_quartz', value: true }, text: 'The quartz warms against Alex’s palm.' },
+    ];
+    openingChoice.conditions = { type: 'flag', value: 'true' };
+    openingChoice.showWhenLocked = true;
+    openingChoice.lockedText = 'Dead locked text';
+    openingChoice.statBonus = {
+      condition: { type: 'flag', value: 'true' },
+      difficultyReduction: 10,
+      flavorText: 'Dead bonus',
+    };
+
+    const normalized = (architect as any).normalizeStructure(fallback, input);
+    const normalizedChoice = normalized.beats[0].choices[0] as any;
+
+    expect(normalized.beats[0].setupTextVariants).toEqual([
+      { condition: { type: 'flag', flag: 'kept_quartz', value: true }, text: 'The quartz warms against Alex’s palm.' },
+    ]);
+    expect(normalizedChoice.conditions).toBeUndefined();
+    expect(normalizedChoice.showWhenLocked).toBeUndefined();
+    expect(normalizedChoice.lockedText).toBeUndefined();
+    expect(normalizedChoice.statBonus).toBeUndefined();
+  });
+
+  it('normalizes score stubs in nested encounter outcomes and costs', () => {
+    const architect = new EncounterArchitect(config);
+    const fallback = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
+    const openingChoice = fallback.beats[0].choices[0] as any;
+
+    openingChoice.outcomes.success.consequences = [
+      { type: 'score', description: 'Alex gains confidence under pressure.', value: '2' },
+    ];
+    openingChoice.outcomes.complicated.cost = {
+      domain: 'self',
+      severity: 'minor',
+      whoPays: 'protagonist',
+      immediateEffect: 'Alex hesitates.',
+      visibleComplication: 'Their hesitation remains visible.',
+      consequences: [
+        { type: 'score', description: 'Alex learns to observe the room.', value: 1 },
+      ],
+    };
+
+    const normalized = (architect as any).normalizeStructure(fallback, input);
+    const normalizedChoice = normalized.beats[0].choices[0] as any;
+
+    expect(normalizedChoice.outcomes.success.consequences).toEqual([
+      { type: 'score', name: 'alex_gains_confidence_under', change: '2' },
+    ]);
+    expect(normalizedChoice.outcomes.complicated.cost.consequences).toEqual([
+      { type: 'changeScore', score: 'alex_learns_observe_room', change: 1 },
+    ]);
+  });
+
+  it('rebalances encounter skill monoculture during normalization', () => {
+    const architect = new EncounterArchitect(config);
+    const fallback = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
+    const choices = fallback.beats.flatMap((beat: any) => beat.choices);
+    choices[0].primarySkill = 'perception';
+    choices[1].primarySkill = 'perception';
+    choices[2].primarySkill = 'perception';
+    choices[3].primarySkill = 'perception';
+    choices[4].primarySkill = 'persuasion';
+    choices[5].primarySkill = 'deception';
+
+    const normalized = (architect as any).normalizeStructure(fallback, input);
+    const normalizedSkills = normalized.beats
+      .flatMap((beat: any) => beat.choices)
+      .map((choice: any) => choice.primarySkill);
+    const perceptionCount = normalizedSkills.filter((skill: string) => skill === 'perception').length;
+
+    expect(perceptionCount / normalizedSkills.length).toBeLessThanOrEqual(0.4);
+  });
+
+  it('uses concrete phase-aware visual fallback actions instead of generic pressure reactions', () => {
+    const architect = new EncounterArchitect(config);
+
+    for (const phase of ['setup', 'rising', 'peak', 'resolution'] as const) {
+      const contract = (architect as any).buildDefaultVisualContract(
+        'The room tightens as everyone waits for the next move.',
+        phase,
+      );
+
+      expect(contract.primaryAction).toBeTruthy();
+      expect(contract.primaryAction).not.toContain('reacts under');
+      expect(contract.keyGesture).not.toBe('one decisive hand or body gesture carries the scene');
+    expect(contract.mustShowDetail).toMatch(/stance|distance|object|body|outcome|turn|released|tension/i);
+    }
+  });
+
+  it('Phase-4 fallback emits all four outcome storylets including partialVictory', () => {
+    // Regression: buildDefaultStorylets omitted partialVictory, so a defaulted
+    // encounter shipped with no costly-victory path and the partialVictory
+    // collision check could never fire. The fallback must author all four
+    // slots, and partialVictory must carry structured cost data.
+    const architect = new EncounterArchitect(config);
+    const storylets = (architect as any).buildDefaultStorylets(input);
+
+    expect(storylets.victory).toBeDefined();
+    expect(storylets.partialVictory).toBeDefined();
+    expect(storylets.defeat).toBeDefined();
+    expect(storylets.escape).toBeDefined();
+
+    // partialVictory must satisfy IncrementalEncounterValidator's cost check.
+    expect(storylets.partialVictory.cost?.visibleComplication).toBeTruthy();
+    expect(storylets.partialVictory.cost?.immediateEffect).toBeTruthy();
+  });
+
+  it('prompts for encounter and storylet sequence intent without adding a new mechanics layer', () => {
+    const architect = new EncounterArchitect(config);
+    const prompt = (architect as any).buildPrompt(input);
+
+    expect(prompt).toContain('sequenceIntent');
+    expect(prompt).toContain('required-by-process');
+    expect(prompt).toContain('storyboard panels read as one cinematic sequence');
+    expect(prompt).toContain('aftermath panels have a narrative objective');
   });
 });
 
@@ -98,6 +285,10 @@ describe('EncounterArchitect reliable prompt', () => {
     expect(reliable).toContain(input.sceneId);
     expect(reliable).toContain('beat-1');
     expect(reliable).toContain('beat-2');
+    expect(reliable).toContain('storyboard');
+    expect(reliable).toContain('current_clocks_only');
+    expect(reliable).toContain('position, leverage, information');
+    expect(reliable).toContain('opening setupText MUST anchor');
     // Should NOT contain the heavy structural fields
     expect(reliable).not.toContain('pixarStakes');
     expect(reliable).not.toContain('cinematicSetup');
@@ -371,7 +562,7 @@ describe('assemblePhasedEncounter', () => {
     const phase1 = makePhase1();
     const phase2Results = phase1.openingBeat.choices.map(c => makePhase2(c.id));
 
-    const structure = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, makeAuthoredStorylets(), emptyBrief);
 
     expect(structure.beats).toHaveLength(1);
     const beat1 = structure.beats[0];
@@ -398,7 +589,7 @@ describe('assemblePhasedEncounter', () => {
   it('produces unique setupText for each of the 9 branch situations', () => {
     const phase1 = makePhase1();
     const phase2Results = phase1.openingBeat.choices.map(c => makePhase2(c.id));
-    const structure = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, makeAuthoredStorylets(), emptyBrief);
 
     const setupTexts = new Set<string>();
     for (const choice of structure.beats[0].choices!) {
@@ -412,7 +603,7 @@ describe('assemblePhasedEncounter', () => {
   it('handles partial Phase 2 failure gracefully', () => {
     const phase1 = makePhase1();
     const phase2Results: (Phase2Result | null)[] = [makePhase2('c1'), null, makePhase2('c3')];
-    const structure = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, makeAuthoredStorylets(), emptyBrief);
 
     expect(structure.beats[0].choices![0].outcomes.success.nextSituation).toBeDefined();
     expect(structure.beats[0].choices![1].outcomes.success.nextSituation).toBeUndefined();
@@ -423,7 +614,9 @@ describe('assemblePhasedEncounter', () => {
     const phase1 = makePhase1();
     const phase4: Phase4Result = {
       victory: { id: 'sv', name: 'Custom Victory', triggerOutcome: 'victory', tone: 'triumphant', narrativeFunction: 'test', beats: [{ id: 'sv-1', text: 'Custom victory text.', isTerminal: true }], startingBeatId: 'sv-1', consequences: [] },
+      partialVictory: { id: 'sp', name: 'Custom Partial', triggerOutcome: 'partialVictory', tone: 'bittersweet', narrativeFunction: 'test', beats: [{ id: 'sp-1', text: 'Custom partial text.', isTerminal: true }], startingBeatId: 'sp-1', consequences: [] },
       defeat: { id: 'sd', name: 'Custom Defeat', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: 'test', beats: [{ id: 'sd-1', text: 'Custom defeat text.', isTerminal: true }], startingBeatId: 'sd-1', consequences: [] },
+      escape: { id: 'se', name: 'Custom Escape', triggerOutcome: 'escape', tone: 'relieved', narrativeFunction: 'test', beats: [{ id: 'se-1', text: 'Custom escape text.', isTerminal: true }], startingBeatId: 'se-1', consequences: [] },
     };
 
     const structure = architect.assemblePhasedEncounter(input, phase1, [], null, phase4, emptyBrief);
@@ -431,11 +624,69 @@ describe('assemblePhasedEncounter', () => {
     expect(structure.storylets.defeat.name).toBe('Custom Defeat');
   });
 
-  it('uses default storylets when Phase 4 fails', () => {
+  it('hydrates compact Phase 4 drafts into full runtime storylets', () => {
+    const storylet = (architect as any).hydratePhase4StoryletDraft(input, 'defeat', {
+      beats: [
+        { text: 'The loss lands before Alex can soften it.' },
+        { text: 'Eros leaves just enough silence for the lesson to become specific.' },
+        { text: 'Alex steadies around what has to change next.' },
+      ],
+    });
+
+    expect(storylet).toMatchObject({
+      id: 'scene-3-sdefeat',
+      name: 'Defeat',
+      triggerOutcome: 'defeat',
+      tone: 'somber',
+      startingBeatId: 'scene-3-sdefeat-beat-1',
+      consequences: [],
+      nextSceneId: 'next-scene',
+    });
+    expect(storylet.beats.map((beat: any) => beat.id)).toEqual([
+      'scene-3-sdefeat-beat-1',
+      'scene-3-sdefeat-beat-2',
+      'scene-3-sdefeat-beat-3',
+    ]);
+    expect(storylet.beats[0].nextBeatId).toBe('scene-3-sdefeat-beat-2');
+    expect(storylet.beats[2].isTerminal).toBe(true);
+  });
+
+  it('rejects Phase 4 drafts that omit required authored prose structure', () => {
+    expect(() => (architect as any).hydratePhase4StoryletDraft(input, 'defeat', {
+      beats: [{ text: 'Only one defeat beat.' }],
+    })).toThrow(/expected 3/);
+
+    expect(() => (architect as any).hydratePhase4StoryletDraft(input, 'partialVictory', {
+      beats: [{ text: 'A cost is visible.' }, { text: 'The next moment will remember it.' }],
+    })).toThrow(/no cost object/);
+  });
+
+  it('recovers nameless generated storylet flags with deterministic encounter outcome names', () => {
     const phase1 = makePhase1();
-    const structure = architect.assemblePhasedEncounter(input, phase1, [], null, null, emptyBrief);
-    expect(structure.storylets.victory).toBeDefined();
-    expect(structure.storylets.defeat).toBeDefined();
+    const phase4 = makeAuthoredStorylets();
+    phase4.victory.consequences = [
+      { type: 'flag', value: 'true' } as never,
+    ];
+    phase4.defeat.consequences = [
+      { type: 'flag', value: false } as never,
+    ];
+
+    const phase2Results = phase1.openingBeat.choices.map(c => makePhase2(c.id));
+    const assembled = architect.assemblePhasedEncounter(input, phase1, phase2Results, null, phase4, emptyBrief);
+    const structure = (architect as any).normalizeStructure(assembled, input);
+
+    expect(structure.storylets.victory.consequences).toEqual([
+      { type: 'flag', name: 'encounter_scene-3_victory', change: true },
+    ]);
+    expect(structure.storylets.defeat.consequences).toEqual([
+      { type: 'flag', name: 'encounter_scene-3_defeat', change: false },
+    ]);
+  });
+
+  it('refuses default storylets when Phase 4 fails', () => {
+    const phase1 = makePhase1();
+    expect(() => architect.assemblePhasedEncounter(input, phase1, [], null, null, emptyBrief))
+      .toThrow(/Phase 4 failed to generate authored storylets/);
   });
 });
 
@@ -455,7 +706,7 @@ describe('applyEnrichment', () => {
       ],
     };
 
-    const structure = architect.assemblePhasedEncounter(input, phase1, [], enrichment, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, [], enrichment, makeAuthoredStorylets(), emptyBrief);
     const c1 = structure.beats[0].choices!.find(c => c.id === 'c1');
     expect(c1!.statBonus).toBeDefined();
     expect(c1!.statBonus!.difficultyReduction).toBe(15);
@@ -476,7 +727,7 @@ describe('applyEnrichment', () => {
       }],
     };
 
-    const structure = architect.assemblePhasedEncounter(input, phase1, [], enrichment, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, [], enrichment, makeAuthoredStorylets(), emptyBrief);
     expect(structure.beats[0].choices!).toHaveLength(4);
     const c4 = structure.beats[0].choices!.find(c => c.id === 'c4');
     expect(c4).toBeDefined();
@@ -491,7 +742,7 @@ describe('applyEnrichment', () => {
       ],
     };
 
-    const structure = architect.assemblePhasedEncounter(input, phase1, [], enrichment, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, [], enrichment, makeAuthoredStorylets(), emptyBrief);
     expect(structure.beats[0].setupTextVariants).toHaveLength(1);
   });
 });
@@ -512,7 +763,7 @@ describe('relationship consequence wiring', () => {
       { npcId: 'hera', dimension: 'affection', change: -5, reason: 'Hera feels sidelined' },
     ];
 
-    const structure = architect.assemblePhasedEncounter(input, phase1, [phase2, null, null], null, null, emptyBrief);
+    const structure = architect.assemblePhasedEncounter(input, phase1, [phase2, null, null], null, makeAuthoredStorylets(), emptyBrief);
     const c1SuccessBranch = structure.beats[0].choices![0].outcomes.success.nextSituation!;
     const firstChoiceSuccess = c1SuccessBranch.choices[0].outcomes.success;
     expect(firstChoiceSuccess.consequences).toBeDefined();
@@ -680,6 +931,7 @@ describe('EncounterArchitect tree validation', () => {
         victory: { id: 'sv', name: 'Victory', triggerOutcome: 'victory', tone: 'triumphant', narrativeFunction: 'Aftermath', beats: [{ id: 'sv-1', text: 'Victory.', isTerminal: true }], startingBeatId: 'sv-1', consequences: [] },
         defeat: { id: 'sd', name: 'Defeat', triggerOutcome: 'defeat', tone: 'somber', narrativeFunction: 'Aftermath', beats: [{ id: 'sd-1', text: 'Defeat.', isTerminal: true }], startingBeatId: 'sd-1', consequences: [] },
         partialVictory: { id: 'sp', name: 'Partial', triggerOutcome: 'partialVictory', tone: 'bittersweet', narrativeFunction: 'Aftermath', beats: [{ id: 'sp-1', text: 'Partial.', isTerminal: true }], startingBeatId: 'sp-1', consequences: [] },
+        escape: { id: 'se', name: 'Escape', triggerOutcome: 'escape', tone: 'relieved', narrativeFunction: 'Aftermath', beats: [{ id: 'se-1', text: 'Escape.', isTerminal: true }], startingBeatId: 'se-1', consequences: [] },
       },
       environmentalElements: [],
       npcStates: [],
@@ -721,5 +973,245 @@ describe('EncounterArchitect competenceArc', () => {
     const prompt = (architect as any).buildReliablePrompt(inputWithArc);
     expect(typeof prompt).toBe('string');
     expect(prompt.length).toBeGreaterThan(100);
+  });
+});
+
+// ========================================================================
+// Blueprint branch discipline: storylet convergence guard
+// ========================================================================
+
+describe('enforceStoryletConvergence', () => {
+  const makeStorylets = () => ({
+    victory: { id: 'sv', nextSceneId: 'scene-4' } as any,
+    partialVictory: { id: 'sp', nextSceneId: 'invented-scene' } as any,
+    defeat: { id: 'sd', nextSceneId: 'scene-99' } as any,
+    escape: undefined,
+  });
+
+  it('rewrites unplanned routes to the planned next scene when isBranchPoint is false', () => {
+    const storylets = makeStorylets();
+    const corrections = enforceStoryletConvergence(storylets, {
+      isBranchPoint: false,
+      victoryNextSceneId: 'scene-4',
+      defeatNextSceneId: 'scene-4',
+    });
+    expect(corrections).toEqual([
+      { slot: 'partialVictory', from: 'invented-scene', to: 'scene-4' },
+      { slot: 'defeat', from: 'scene-99', to: 'scene-4' },
+    ]);
+    expect(storylets.partialVictory.nextSceneId).toBe('scene-4');
+    expect(storylets.defeat.nextSceneId).toBe('scene-4');
+    expect(storylets.victory.nextSceneId).toBe('scene-4');
+  });
+
+  it('leaves storylets untouched when isBranchPoint is true', () => {
+    const storylets = makeStorylets();
+    const corrections = enforceStoryletConvergence(storylets, {
+      isBranchPoint: true,
+      victoryNextSceneId: 'scene-4',
+      defeatNextSceneId: 'scene-5',
+    });
+    expect(corrections).toEqual([]);
+    expect(storylets.partialVictory.nextSceneId).toBe('invented-scene');
+    expect(storylets.defeat.nextSceneId).toBe('scene-99');
+  });
+
+  it('leaves storylets untouched when isBranchPoint is undefined (unknown)', () => {
+    const storylets = makeStorylets();
+    const corrections = enforceStoryletConvergence(storylets, {
+      victoryNextSceneId: 'scene-4',
+      defeatNextSceneId: 'scene-4',
+    });
+    expect(corrections).toEqual([]);
+    expect(storylets.partialVictory.nextSceneId).toBe('invented-scene');
+  });
+
+  it('no-ops when there is no planned next scene id or no storylets', () => {
+    const storylets = makeStorylets();
+    expect(enforceStoryletConvergence(storylets, { isBranchPoint: false })).toEqual([]);
+    expect(storylets.defeat.nextSceneId).toBe('scene-99');
+    expect(enforceStoryletConvergence(undefined, {
+      isBranchPoint: false,
+      victoryNextSceneId: 'scene-4',
+    })).toEqual([]);
+  });
+});
+
+// ========================================================================
+// Prose discipline + NPC voice injection into the phase/lean prompts
+// ========================================================================
+
+describe('prose discipline and NPC voice injection', () => {
+  const architect = new EncounterArchitect(config);
+  const brief = { npcDynamics: [], knockOnEffects: [], briefText: '' };
+  const voiceNotes = 'Speaks in clipped, archaic threats; never raises his voice.';
+  const voicedInput: EncounterArchitectInput = {
+    ...input,
+    npcsInvolved: [{ ...input.npcsInvolved[0], voiceNotes }],
+  };
+  const phase2Choice = {
+    id: 'c1', text: 'Grab the dagger', approach: 'bold', primarySkill: 'athletics',
+    outcomes: {
+      success: { narrativeText: 'You grab it.', goalTicks: 2, threatTicks: 0 },
+      complicated: { narrativeText: 'You cut yourself.', goalTicks: 1, threatTicks: 1 },
+      failure: { narrativeText: 'He slashes.', goalTicks: 0, threatTicks: 2 },
+    },
+  };
+  const phase3Input: EncounterArchitectInput = {
+    ...voicedInput,
+    priorStateContext: {
+      relevantFlags: [{ name: 'saved_eros', description: 'Player saved Eros earlier' }],
+      relevantRelationships: [],
+      significantChoices: [],
+    },
+  };
+
+  const buildAllPrompts = (forInput: EncounterArchitectInput): string[] => [
+    (architect as any).buildPhase1Prompt(forInput, brief),
+    (architect as any).buildPhase2Prompt(forInput, brief, phase2Choice),
+    (architect as any).buildPhase3Prompt({ ...phase3Input, npcsInvolved: forInput.npcsInvolved }, makePhase1()),
+    (architect as any).buildPhase4Prompt(forInput, brief),
+    (architect as any).buildReliablePrompt(forInput),
+  ];
+
+  it('includes ENCOUNTER_PROSE_DISCIPLINE exactly once in every phase prompt and the lean prompt', () => {
+    for (const prompt of buildAllPrompts(voicedInput)) {
+      expect(prompt).toContain(ENCOUNTER_PROSE_DISCIPLINE);
+      expect(prompt.split('## PROSE DISCIPLINE').length - 1).toBe(1);
+    }
+  });
+
+  it('renders the planned encounter Story Circle target in every generation prompt', () => {
+    for (const prompt of buildAllPrompts(voicedInput)) {
+      expect(prompt).toContain('Story Circle Target: take');
+      expect(prompt).toContain('demands a relationship cost');
+    }
+  });
+
+  it('renders an NPC Voice line in Phase 1, Phase 2, Phase 4, and lean prompts when voiceNotes is present', () => {
+    const [p1, p2, , p4, lean] = buildAllPrompts(voicedInput);
+    for (const prompt of [p1, p2, p4, lean]) {
+      expect(prompt).toContain(`Voice: ${voiceNotes}`);
+    }
+  });
+
+  it('omits the Voice line when voiceNotes is absent or empty', () => {
+    const emptyVoiceInput: EncounterArchitectInput = {
+      ...input,
+      npcsInvolved: [{ ...input.npcsInvolved[0], voiceNotes: '' }],
+    };
+    for (const forInput of [input, emptyVoiceInput]) {
+      const [p1, p2, , p4, lean] = buildAllPrompts(forInput);
+      for (const prompt of [p1, p2, p4, lean]) {
+        expect(prompt).not.toContain('Voice: ');
+      }
+    }
+  });
+});
+
+describe('authored anchor (G12)', () => {
+  const anchoredInput: EncounterArchitectInput = {
+    ...input,
+    centralConflict: "Aethavyr's flawless-protector image is eroded by an unwinnable situation.",
+    signatureMoment: 'Cordial shared on the battlements as the wall fires gutter.',
+    requiredBeats: [
+      { id: 'rb1', mustDepict: 'On the battlements, the two confess fears and doubts.', tier: 'authored' },
+      { id: 'rb2', mustDepict: "Darian's quiet maneuvering positions the poison; evacuation under truce is forced.", tier: 'authored' },
+      { id: 'rb3', mustDepict: 'A connective transition the model may invent.', tier: 'connective' },
+    ],
+  };
+
+  it('renders the anchor section with central conflict, signature, and non-connective beats', () => {
+    const architect = new EncounterArchitect(config);
+    const section = (architect as any).buildAuthoredAnchorSection(anchoredInput) as string;
+
+    expect(section).toContain('AUTHORED ANCHOR');
+    expect(section).toContain("Aethavyr's flawless-protector image");
+    expect(section).toContain('Cordial shared on the battlements');
+    expect(section).toContain("Darian's quiet maneuvering positions the poison");
+    // connective-tier beats are the model's invention band — never pinned.
+    expect(section).not.toContain('connective transition the model may invent');
+  });
+
+  it('returns an empty section for unanchored encounters', () => {
+    const architect = new EncounterArchitect(config);
+    expect((architect as any).buildAuthoredAnchorSection(input)).toBe('');
+  });
+
+  it('feeds the anchor into the lean prompt', () => {
+    const architect = new EncounterArchitect(config);
+    const prompt = (architect as any).buildReliablePrompt(anchoredInput) as string;
+    expect(prompt).toContain('AUTHORED ANCHOR');
+    expect(prompt).toContain('positions the poison');
+  });
+
+  it('detects a sustained set piece from the authored anchor fields', () => {
+    const architect = new EncounterArchitect(config);
+    const sustained: EncounterArchitectInput = {
+      ...input,
+      centralConflict: 'A sustained defensive set piece — wall breach and repulse.',
+    };
+    expect((architect as any).isSustainedSetPieceInput(sustained)).toBe(true);
+    expect((architect as any).isSustainedSetPieceInput(input)).toBe(false);
+  });
+
+  it('rejects a sustained set piece that collapsed below 3 top-level beats', () => {
+    const architect = new EncounterArchitect(config);
+    const sustained: EncounterArchitectInput = {
+      ...input,
+      encounterDescription: 'The siege itself — a sustained defensive set piece (wall breach + repulse).',
+    };
+    // A collapsed structure: the non-sustained 2-beat fallback shape truncated
+    // to a single beat stands in for tree-collapsed output.
+    const collapsed = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
+    collapsed.beats = collapsed.beats.slice(0, 1);
+    expect(() => (architect as any).validateStructure(collapsed, sustained))
+      .toThrow(/sustained set piece.*top-level beat/i);
+    // The 2-beat fallback passes for a non-sustained encounter.
+    let plain = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
+    plain = (architect as any).normalizeStructure(plain, input);
+    expect(() => (architect as any).validateStructure(plain, input)).not.toThrow();
+  });
+
+  it('sustained set piece survives the full fallback → normalize → validate path', () => {
+    // endsong-g13 ep3 regression: normalizeStructure's flat→tree conversion
+    // pruned every beat but the first, so validateStructure rejected EVERY
+    // attempt including the deterministic fallback and the episode aborted.
+    const architect = new EncounterArchitect(config);
+    const sustained: EncounterArchitectInput = {
+      ...input,
+      encounterDescription: 'The siege itself — a sustained defensive set piece (wall breach + repulse).',
+    };
+    // The fallback ships the 3-beat floor for sustained pieces…
+    let structure = withAuthoredStorylets((architect as any).buildDeterministicFallback(sustained));
+    expect(structure.beats.length).toBeGreaterThanOrEqual(3);
+    // …and normalizeStructure must NOT collapse it back to one top-level beat.
+    structure = (architect as any).normalizeStructure(structure, sustained);
+    expect(structure.beats.length).toBeGreaterThanOrEqual(3);
+    expect(() => (architect as any).validateStructure(structure, sustained)).not.toThrow();
+    // The opening beat routes through the escalation beat, which routes to the
+    // resolution — the spine stays connected.
+    const beatIds = structure.beats.map((b: any) => b.id);
+    expect(beatIds).toContain('beat-escalation');
+    for (const choice of structure.beats[0].choices) {
+      for (const tier of ['success', 'complicated', 'failure']) {
+        const outcome = choice.outcomes?.[tier];
+        if (outcome && !outcome.isTerminal && !outcome.nextSituation) {
+          expect(outcome.nextBeatId).toBe('beat-escalation');
+        }
+      }
+    }
+  });
+
+  it('keeps flat→tree conversion for non-sustained encounters', () => {
+    const architect = new EncounterArchitect(config);
+    let plain = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
+    plain = (architect as any).normalizeStructure(plain, input);
+    // Non-sustained flat encounters still convert to the single-beat tree form.
+    expect(plain.beats).toHaveLength(1);
+    const hasEmbeddedBranch = plain.beats[0].choices.some((c: any) =>
+      ['success', 'complicated', 'failure'].some(t => c.outcomes?.[t]?.nextSituation)
+    );
+    expect(hasEmbeddedBranch).toBe(true);
   });
 });

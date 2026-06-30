@@ -1,0 +1,45 @@
+{
+  "id": "fixture-clean-residue",
+  "title": "Fixture: clean residue (set and read)",
+  "episodes": [
+    {
+      "id": "ep1",
+      "number": 1,
+      "scenes": [
+        {
+          "id": "s1",
+          "beats": [
+            {
+              "id": "s1-b1",
+              "text": "She offers you the key card.",
+              "choices": [
+                {
+                  "id": "c1",
+                  "text": "Take the card.",
+                  "consequences": [
+                    { "type": "setFlag", "flag": "took_the_card", "value": true }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "beats": [
+            {
+              "id": "s2-b1",
+              "text": "You reach the side entrance.",
+              "textVariants": [
+                {
+                  "condition": { "type": "flag", "flag": "took_the_card", "value": true },
+                  "text": "The card is warm in your pocket as the door clicks open."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

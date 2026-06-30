@@ -10,6 +10,7 @@
  * - IncrementalStakesValidator: Checks choice quality and false choices
  * - IncrementalSensitivityChecker: Flags content rating concerns
  * - IncrementalContinuityChecker: Catches undefined flags/scores
+ * - PovClarityValidator: Ensures scenes open from the player character's POV
  * - IncrementalValidationRunner: Orchestrates all validators per scene
  */
 
@@ -19,6 +20,17 @@ import { ChoiceSet, GeneratedChoice } from '../agents/ChoiceAuthor';
 import { VoiceProfile } from '../agents/CharacterDesigner';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { getEncounterBeats } from '../utils/encounterImageCoverage';
+import { PovClarityValidator, PovClarityResult } from './PovClarityValidator';
+import { SceneCraftValidator, SceneCraftResult } from './SceneCraftValidator';
+import {
+  IntensityDistributionValidator,
+  IntensityDistributionInput,
+  IntensityDistributionMetrics,
+} from './IntensityDistributionValidator';
+import {
+  MechanicsLeakageValidator,
+  MechanicsLeakageInput,
+} from './MechanicsLeakageValidator';
 
 // ============================================
 // TYPES AND INTERFACES
@@ -101,11 +113,28 @@ export interface IncrementalEncounterResult {
 }
 
 export interface IncrementalValidationConfig {
+  povClarityValidation: boolean;
   voiceValidation: boolean;
   stakesValidation: boolean;
   sensitivityCheck: boolean;
   continuityCheck: boolean;
   encounterValidation: boolean;
+  craftValidation: boolean;
+  /**
+   * Opt-in scene-local detectors (Bucket B1). Each is additionally gated by an
+   * env var (see validateScene) so the config flag alone is not enough to run
+   * them — both the flag and the env gate must be set. Default off.
+   */
+  intensityDistributionCheck: boolean;
+  mechanicsLeakageSceneCheck: boolean;
+  /**
+   * PropIntroduction is intentionally NOT wired into per-scene validation: it
+   * needs the cross-scene known-entity set (cast bible + seeded props) and
+   * per-scene structured entity references, neither of which a single
+   * SceneContent carries. Flag retained for config-shape symmetry / future
+   * season-level wiring, but validateScene does not consume it.
+   */
+  propIntroductionCheck: boolean;
   voiceRegenerationThreshold: number;
   stakesRegenerationThreshold: number;
   maxRegenerationAttempts: number;
@@ -113,11 +142,17 @@ export interface IncrementalValidationConfig {
 }
 
 export const DEFAULT_INCREMENTAL_CONFIG: IncrementalValidationConfig = {
+  povClarityValidation: true,
   voiceValidation: true,
   stakesValidation: true,
   sensitivityCheck: true,
   continuityCheck: true,
   encounterValidation: true,
+  craftValidation: true,
+  // Scene-local detectors (Bucket B1) — opt-in, default off.
+  intensityDistributionCheck: false,
+  mechanicsLeakageSceneCheck: false,
+  propIntroductionCheck: false,
   voiceRegenerationThreshold: 50,
   stakesRegenerationThreshold: 60,
   maxRegenerationAttempts: 2,
@@ -130,14 +165,35 @@ export interface CharacterVoiceProfile {
   voiceProfile: VoiceProfile;
 }
 
+/**
+ * Result shape recorded on SceneValidationResult for the opt-in scene-local
+ * detectors (Bucket B1). `passed`/`score`/`issues` come straight from the
+ * underlying standalone validator; `metrics` is the validator-specific metric
+ * block. Only error-severity issues escalate regenerationRequested to 'scene'.
+ */
+export interface SceneDetectorResult {
+  passed: boolean;
+  score: number;
+  issues: ValidationIssue[];
+}
+
 export interface SceneValidationResult {
   sceneId: string;
+  episodeNumber?: number;
   sceneName: string;
+  povClarity?: PovClarityResult;
   voice?: IncrementalVoiceResult;
   stakes?: IncrementalStakesResult;
   sensitivity?: IncrementalSensitivityResult;
   continuity?: IncrementalContinuityResult;
   encounter?: IncrementalEncounterResult;
+  craft?: SceneCraftResult;
+  /** Scene-local intensity-distribution detector (Bucket B1, opt-in). */
+  intensityDistribution?: SceneDetectorResult & { metrics: IntensityDistributionMetrics };
+  /** Scene-local mechanics-leakage detector (Bucket B1, opt-in). */
+  mechanicsLeakage?: SceneDetectorResult & { metrics: { textsChecked: number; leaksFound: number } };
+  /** True when the scene had no authored beats and no runtime encounter (unplayable). */
+  emptyScene?: boolean;
   overallPassed: boolean;
   regenerationRequested: 'scene' | 'choices' | 'encounter' | 'none';
   validationTimeMs: number;
@@ -554,7 +610,11 @@ export class IncrementalSensitivityChecker extends BaseValidator {
     trauma: {
       mild: /\b(worried|scared|afraid|anxious|nightmare)\b/gi,
       moderate: /\b(panic|terror|flashback|trigger|trauma|abuse)\b/gi,
-      strong: /\b(suicide|self-harm|assault|rape|molest)\b/gi,
+      // The strong trauma tier is PERSONAL/sexual trauma (grouped with suicide/self-harm/
+      // rape/molest). Bare "assault" was matching military assault ("the assault resumes",
+      // "assault waves") in war/siege fiction, forcing an M rating that exceeds the default
+      // T target and HARD-BLOCKING the contract. Require the sexual qualifier instead.
+      strong: /\b(suicide|self-harm|sexual assault|rape|molest)\b/gi,
     },
   };
 
@@ -765,7 +825,7 @@ export class IncrementalContinuityChecker extends BaseValidator {
               this.setFlags.add(flagName);
             }
 
-            if (consequence.type === 'modifyScore') {
+            if ((consequence.type as string) === 'modifyScore' || consequence.type === 'changeScore' || consequence.type === 'setScore') {
               const scoreName = (consequence as { score: string }).score;
               if (!this.knownScores.has(scoreName)) {
                 issues.push({
@@ -1071,18 +1131,43 @@ export class IncrementalEncounterValidator extends BaseValidator {
 
     const encounterBeats = getEncounterBeats(encounter as any);
 
-    // Check beat count
-    if (encounterBeats.length === 0) {
+    // Tree-format encounters (EncounterArchitect.convertFlatToTree) deliberately
+    // collapse to a single top-level beat whose progression lives in nested
+    // `outcome.nextSituation` trees. Count those nested situations as playable
+    // units so a deep, fully-authored tree isn't rejected for "only 1 beat".
+    // A genuinely truncated single-beat encounter (no nested situations) still
+    // fails, which is the case this check exists to catch.
+    const countNestedSituations = (choices: any[] | undefined): number => {
+      let count = 0;
+      for (const choice of choices || []) {
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const next = choice?.outcomes?.[tier]?.nextSituation;
+          if (next) {
+            count += 1;
+            count += countNestedSituations(next.choices);
+          }
+        }
+      }
+      return count;
+    };
+    const nestedSituations = encounterBeats.reduce(
+      (sum, beat: any) => sum + countNestedSituations(beat.choices),
+      0
+    );
+    const playableUnits = encounterBeats.length + nestedSituations;
+
+    // Check playable unit count (top-level beats + nested situations)
+    if (playableUnits === 0) {
       issues.push({
         type: 'missing_beats',
         detail: 'Encounter has no beats defined',
         severity: 'error',
       });
-    } else if (encounterBeats.length < 2) {
+    } else if (playableUnits < 2) {
       issues.push({
         type: 'missing_beats',
-        detail: `Encounter has only ${encounterBeats.length} beat(s) - minimum 2 recommended`,
-        severity: 'warning',
+        detail: `Encounter has only ${playableUnits} playable situation(s) - minimum 2 required for a playable encounter`,
+        severity: 'error',
       });
     }
 
@@ -1097,7 +1182,7 @@ export class IncrementalEncounterValidator extends BaseValidator {
           issues.push({
             type: 'invalid_skill',
             detail: `Choice "${choice.text}" uses undefined skill: ${choice.primarySkill}`,
-            severity: 'warning',
+            severity: 'error',
           });
         }
 
@@ -1181,7 +1266,7 @@ export class IncrementalEncounterValidator extends BaseValidator {
             issues.push({
               type: 'missing_outcome',
               detail: `Outcome ${tier} for "${choice.text}" at ${path} has neither nextSituation, nextBeatId, nor terminal ending`,
-              severity: 'warning',
+              severity: 'error',
             });
           }
         }
@@ -1189,7 +1274,7 @@ export class IncrementalEncounterValidator extends BaseValidator {
     };
 
     for (const beat of encounterBeats) {
-      if ((beat.setupTextVariants || []).some((variant: any) => conditionUsesRelationship(variant?.condition))) {
+      if (((beat as { setupTextVariants?: Array<{ condition?: unknown }> }).setupTextVariants || []).some((variant: { condition?: unknown }) => conditionUsesRelationship(variant?.condition))) {
         hasRelationshipPayoff = true;
       }
       if (!beat.choices || beat.choices.length === 0) {
@@ -1228,6 +1313,22 @@ export class IncrementalEncounterValidator extends BaseValidator {
       });
     }
 
+    if (!hasVictoryPath && !hasPartialVictoryPath) {
+      issues.push({
+        type: 'missing_outcome',
+        detail: 'Encounter has no authored victory or partialVictory path',
+        severity: 'error',
+      });
+    }
+
+    if (!hasDefeatPath) {
+      issues.push({
+        type: 'missing_outcome',
+        detail: 'Encounter has no authored defeat path',
+        severity: 'error',
+      });
+    }
+
     return {
       passed: !issues.some(i => i.severity === 'error'),
       issues,
@@ -1249,7 +1350,13 @@ export class IncrementalValidationRunner {
   private sensitivityChecker: IncrementalSensitivityChecker;
   private continuityChecker: IncrementalContinuityChecker;
   private encounterValidator: IncrementalEncounterValidator;
+  private povClarityValidator: PovClarityValidator;
+  private craftValidator: SceneCraftValidator;
+  private intensityDistributionValidator: IntensityDistributionValidator;
+  private mechanicsLeakageValidator: MechanicsLeakageValidator;
   private config: IncrementalValidationConfig;
+  /** Protagonist display name, used by the beat-level POV-consistency check. */
+  private protagonistName?: string;
 
   constructor(
     knownFlags: string[],
@@ -1259,6 +1366,10 @@ export class IncrementalValidationRunner {
   ) {
     this.config = { ...DEFAULT_INCREMENTAL_CONFIG, ...config };
 
+    this.povClarityValidator = new PovClarityValidator();
+    this.craftValidator = new SceneCraftValidator();
+    this.intensityDistributionValidator = new IntensityDistributionValidator();
+    this.mechanicsLeakageValidator = new MechanicsLeakageValidator();
     this.voiceValidator = new IncrementalVoiceValidator(
       this.config.voiceRegenerationThreshold
     );
@@ -1275,9 +1386,48 @@ export class IncrementalValidationRunner {
     this.encounterValidator = new IncrementalEncounterValidator(validSkills);
   }
 
+  /** Set the protagonist display name so beat-level POV checks can detect third-person drift. */
+  setProtagonistName(name: string | undefined): void {
+    this.protagonistName = name && name.trim().length > 0 ? name.trim() : undefined;
+  }
+
   /**
    * Run all enabled incremental validations for a scene.
    */
+  /**
+   * Collect every reader-facing prose fragment from an encounter structure so the
+   * incremental prose scans can see it. Encounter prose lives OUTSIDE the flat
+   * `sceneContent.beats` array (in phase beats, storylet beats, and the goal/threat
+   * clock labels that surface in the encounter UI), so without this it is invisible
+   * to POV/voice/mechanics-leak validation. Pure; returns `{id, text}` pairs.
+   */
+  private collectEncounterProseTexts(
+    encounter: EncounterStructure
+  ): Array<{ id: string; text: string }> {
+    const out: Array<{ id: string; text: string }> = [];
+    const push = (id: string, text: string | undefined): void => {
+      if (typeof text === 'string' && text.trim().length > 0) out.push({ id, text });
+    };
+    for (const beat of encounter.beats ?? []) {
+      push(`${beat.id}:setup`, beat.setupText);
+      push(`${beat.id}:escalation`, beat.escalationText);
+      for (const variant of beat.setupTextVariants ?? []) push(`${beat.id}:variant`, variant.text);
+    }
+    const storylets = encounter.storylets ?? ({} as EncounterStructure['storylets']);
+    for (const key of ['victory', 'partialVictory', 'defeat', 'escape'] as const) {
+      const storylet = storylets[key];
+      if (!storylet) continue;
+      for (const beat of storylet.beats ?? []) push(`${storylet.id}:${beat.id}`, beat.text);
+    }
+    // Clock name/description surface as UI labels — scan them for meta and
+    // wrong-gender-pronoun leaks (e.g. the "Kylie allows himself" goalClock bug).
+    push('goalClock:name', encounter.goalClock?.name);
+    push('goalClock:description', encounter.goalClock?.description);
+    push('threatClock:name', encounter.threatClock?.name);
+    push('threatClock:description', encounter.threatClock?.description);
+    return out;
+  }
+
   async validateScene(
     sceneContent: SceneContent,
     choiceSet: ChoiceSet | undefined,
@@ -1293,6 +1443,20 @@ export class IncrementalValidationRunner {
       regenerationRequested: 'none',
       validationTimeMs: 0,
     };
+
+    // POV clarity validation
+    if (this.config.povClarityValidation) {
+      results.povClarity = this.povClarityValidator.validateScene(sceneContent, {
+        characterNames: characterProfiles.map(profile => profile.name),
+        protagonistName: this.protagonistName,
+      });
+      if (results.povClarity.shouldRegenerate) {
+        results.regenerationRequested = 'scene';
+        results.overallPassed = false;
+      } else if (!results.povClarity.passed) {
+        results.overallPassed = false;
+      }
+    }
 
     // Voice validation
     if (this.config.voiceValidation) {
@@ -1316,13 +1480,14 @@ export class IncrementalValidationRunner {
       }
     }
 
-    // Sensitivity check
+    // Sensitivity check — ADVISORY. This is a crude keyword scan ("quick content scan...
+    // flags potential rating issues early") with no regeneration path, so letting it set
+    // overallPassed=false made a single ambiguous word (e.g. military "assault") silently
+    // HARD-BLOCK the whole multi-episode contract with "Regeneration requested: none" and no
+    // recourse. Record the flags so nothing is hidden, but do not block on them — rating
+    // enforcement, if wanted, belongs in a deliberate context-aware gate, not this regex.
     if (this.config.sensitivityCheck) {
       results.sensitivity = this.sensitivityChecker.checkScene(sceneContent);
-      if (!results.sensitivity.passed) {
-        // Don't auto-regenerate for sensitivity, just flag
-        results.overallPassed = false;
-      }
     }
 
     // Continuity check
@@ -1341,6 +1506,136 @@ export class IncrementalValidationRunner {
         results.overallPassed = false;
       }
     }
+
+    // Encounter PROSE scan (0.1) — the default-on POV/voice/continuity checks above
+    // read `sceneContent.beats`, which is EMPTY for encounter scenes (their reader
+    // prose lives in the EncounterStructure: storylets, phase beats, clock labels).
+    // Without this, encounter scenes validated in ~0ms with 0 issues — the no-op that
+    // let the meta-leak (branch-residue), combat-boilerplate, and clock-pronoun defects
+    // ship invisibly. Scan the encounter's reader-facing prose for mechanics/meta leaks
+    // so they surface in the per-scene result (and the 06b aggregate). Advisory by
+    // default (records the finding); escalates to encounter-regen only under the same
+    // gate as the scene-level mechanics scan, so default behavior cannot destabilize a run.
+    if (encounter) {
+      const encounterTexts = this.collectEncounterProseTexts(encounter).map(t => ({
+        id: t.id,
+        text: t.text,
+        sceneId: sceneContent.sceneId,
+        beatId: t.id,
+      }));
+      if (encounterTexts.length > 0) {
+        const strict = process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1';
+        const r = this.mechanicsLeakageValidator.validate({ texts: encounterTexts, strict });
+        results.mechanicsLeakage = {
+          passed: r.valid,
+          score: r.score,
+          issues: r.issues,
+          metrics: r.metrics,
+        };
+        if (strict && r.issues.some(i => i.severity === 'error')) {
+          results.regenerationRequested =
+            results.regenerationRequested === 'none' ? 'encounter' : results.regenerationRequested;
+          results.overallPassed = false;
+        }
+      }
+    }
+
+    // Hard guard: a scene with no authored beats and no runtime encounter is
+    // not playable and must fail — the per-validator checks above can all pass
+    // vacuously on empty content, which previously let zero-beat scenes slip
+    // through as "passed, 0 issues". Encounter scenes legitimately carry empty
+    // placeholder beats and are validated via the dedicated encounter path
+    // (with `encounter` supplied), so they are exempt here.
+    if (!encounter && (sceneContent.beats?.length ?? 0) === 0) {
+      results.emptyScene = true;
+      results.overallPassed = false;
+      if (results.regenerationRequested === 'none') {
+        results.regenerationRequested = 'scene';
+      }
+    }
+
+    // Craft validation is advisory. It should surface quality drift without
+    // forcing regeneration or rejecting genre-appropriate quiet/rest scenes.
+    if (this.config.craftValidation) {
+      results.craft = this.craftValidator.validateScene(sceneContent);
+    }
+
+    // ===== Scene-local detectors (Bucket B1) — opt-in =====
+    // Each runs ONLY when both (a) its config flag is set AND (b) its env gate
+    // is '1'. They are advisory backstops: they record their issues on the
+    // result, and escalate regenerationRequested to 'scene' ONLY if they emit
+    // an error-severity issue. With flags/env unset, none run and validateScene
+    // behavior is unchanged.
+    //
+    // Escalate-only: 'scene' is the strongest regen request, so promoting to it
+    // from any of 'none' | 'choices' | 'encounter' never downgrades a stronger
+    // request (there is none stronger than 'scene').
+    const escalateToSceneRegen = () => {
+      results.regenerationRequested = 'scene';
+      results.overallPassed = false;
+    };
+
+    // Intensity distribution: pure single-scene check over beats[].intensityTier.
+    if (this.config.intensityDistributionCheck && process.env.GATE_INTENSITY_DISTRIBUTION === '1') {
+      const input: IntensityDistributionInput = {
+        sceneContents: [
+          {
+            sceneId: sceneContent.sceneId,
+            sceneName: sceneContent.sceneName,
+            isEncounter: Boolean(encounter),
+            beats: sceneContent.beats.map(b => ({ id: b.id, intensityTier: b.intensityTier })),
+          },
+        ],
+      };
+      // Gated path only (env flag set): run strict so the all-dominant
+      // structural failure emits 'error' and trips the escalate-to-scene logic
+      // below. The default (flag-unset) path never reaches here, so behavior is
+      // unchanged when the gate is off.
+      const r = this.intensityDistributionValidator.validate(input, { strict: true });
+      results.intensityDistribution = {
+        passed: r.valid,
+        score: r.score,
+        issues: r.issues,
+        metrics: r.metrics,
+      };
+      if (r.issues.some(i => i.severity === 'error')) {
+        escalateToSceneRegen();
+      }
+    }
+
+    // Mechanics leakage: pure single-scene scan over rendered beat text.
+    if (this.config.mechanicsLeakageSceneCheck && process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1') {
+      // Gated path only (env flag set): run strict so the safe isolated
+      // stat-delta leak class emits 'error' and trips escalate-to-scene below.
+      // The `strict` flag lives on this local input only — the final-contract
+      // path builds its own MechanicsLeakageInput (without strict), so what it
+      // sees is unaffected by this scene-detector escalation.
+      const input: MechanicsLeakageInput = {
+        texts: sceneContent.beats.map(b => ({
+          id: b.id,
+          text: b.text || b.content || '',
+          sceneId: sceneContent.sceneId,
+          beatId: b.id,
+        })),
+        strict: true,
+      };
+      const r = this.mechanicsLeakageValidator.validate(input);
+      results.mechanicsLeakage = {
+        passed: r.valid,
+        score: r.score,
+        issues: r.issues,
+        metrics: r.metrics,
+      };
+      if (r.issues.some(i => i.severity === 'error')) {
+        escalateToSceneRegen();
+      }
+    }
+
+    // NOTE: PropIntroduction (propIntroductionCheck) is deliberately NOT run
+    // here. It requires the cross-scene known-entity set and per-scene
+    // structured entity references, which a single SceneContent does not carry.
+    // Wiring it would mean fabricating inputs, so it is left for season-level
+    // validation. See the interface comment on propIntroductionCheck.
 
     results.validationTimeMs = Date.now() - startTime;
     return results;
@@ -1452,6 +1747,8 @@ export class IncrementalValidationRunner {
       sensitivity: this.sensitivityChecker,
       continuity: this.continuityChecker,
       encounter: this.encounterValidator,
+      povClarity: this.povClarityValidator,
+      craft: this.craftValidator,
     };
   }
 }
@@ -1485,6 +1782,9 @@ export function formatValidationResult(result: SceneValidationResult): string {
   if (result.encounter) {
     lines.push(`  Encounter: ${result.encounter.passed ? 'OK' : 'ISSUES'} (${result.encounter.beatCount} beats)`);
   }
+  if (result.craft) {
+    lines.push(`  Craft: ${result.craft.passed ? 'OK' : 'ADVISORY'} (${result.craft.issues.length} issues)`);
+  }
 
   return lines.join('\n');
 }
@@ -1499,11 +1799,14 @@ export function aggregateValidationResults(
   passedScenes: number;
   failedScenes: number;
   regenerationRequests: { scene: number; choices: number; encounter: number };
-  totalIssues: { voice: number; stakes: number; sensitivity: number; continuity: number; encounter: number };
+  totalIssues: { voice: number; stakes: number; sensitivity: number; continuity: number; encounter: number; craft: number };
   averageValidationTime: number;
+  /** Honesty label (G12): these are heuristic per-scene checks, NOT the LLM QA pass. */
+  mode: 'heuristic-incremental';
+  caveat: string;
 } {
   const regenerationRequests = { scene: 0, choices: 0, encounter: 0 };
-  const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0 };
+  const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0, craft: 0 };
 
   for (const result of results) {
     if (result.regenerationRequested === 'scene') regenerationRequests.scene++;
@@ -1515,6 +1818,7 @@ export function aggregateValidationResults(
     if (result.sensitivity) totalIssues.sensitivity += result.sensitivity.flags.length;
     if (result.continuity) totalIssues.continuity += result.continuity.issues.length;
     if (result.encounter) totalIssues.encounter += result.encounter.issues.length;
+    if (result.craft) totalIssues.craft += result.craft.issues.length;
   }
 
   return {
@@ -1526,5 +1830,10 @@ export function aggregateValidationResults(
     averageValidationTime: results.length > 0
       ? results.reduce((sum, r) => sum + r.validationTimeMs, 0) / results.length
       : 0,
+    mode: 'heuristic-incremental',
+    caveat:
+      'Per-scene heuristic checks only (no LLM): a clean aggregate does NOT certify prose quality, '
+      + 'pronoun/POV integrity in encounter JSON, or canon — those run at the final-story contract. '
+      + 'G12 shipped a broken encounter through an all-green incremental aggregate.',
   };
 }

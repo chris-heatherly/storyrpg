@@ -1,4 +1,4 @@
-import type { GeneratedImage, ImagePrompt } from '../agents/ImageGenerator';
+import type { GeneratedImage, ImagePrompt } from '../images/imageTypes';
 import type { AssetRecord, AssetRegistrySnapshot, ImageSlot, ImageSlotStatus, RenderAttemptRecord, SlotReferencePack } from './slotTypes';
 
 let nodeFs: any;
@@ -8,8 +8,17 @@ try {
   nodePath = require('path');
 } catch { /* browser/Expo runtime — no node fs */ }
 
+const MAX_JSONL_LOAD_BYTES = 200 * 1024 * 1024;
+const MAX_PERSISTED_URL_CHARS = 2048;
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function compactPersistedUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  if (url.length <= MAX_PERSISTED_URL_CHARS && !url.startsWith('data:')) return url;
+  return undefined;
 }
 
 export class AssetRegistry {
@@ -44,6 +53,11 @@ export class AssetRegistry {
     const records: AssetRecord[] = [];
     if (nodeFs && typeof nodeFs.existsSync === 'function' && nodeFs.existsSync(filePath)) {
       try {
+        const stats = typeof nodeFs.statSync === 'function' ? nodeFs.statSync(filePath) : undefined;
+        if (stats?.size > MAX_JSONL_LOAD_BYTES) {
+          console.warn(`[AssetRegistry] Skipping oversized JSONL registry (${stats.size} bytes): ${filePath}`);
+          return new AssetRegistry(storyId, [], filePath);
+        }
         const content = nodeFs.readFileSync(filePath, 'utf-8') as string;
         for (const line of content.split('\n')) {
           const trimmed = line.trim();
@@ -113,7 +127,7 @@ export class AssetRegistry {
   ): void {
     const record = this.requireRecord(slotId);
     record.status = 'succeeded';
-    record.latestUrl = result.imageUrl;
+    record.latestUrl = compactPersistedUrl(result.imageUrl);
     record.latestPath = result.imagePath;
     record.provider = extras?.provider || result.provider || result.metadata?.provider;
     record.model = extras?.model || result.model || result.metadata?.model;
@@ -135,7 +149,7 @@ export class AssetRegistry {
     if (last && last.status === 'started') {
       last.status = 'succeeded';
       last.completedAt = nowIso();
-      last.imageUrl = result.imageUrl;
+      last.imageUrl = compactPersistedUrl(result.imageUrl);
       last.imagePath = result.imagePath;
       last.provider = record.provider;
       last.model = record.model;

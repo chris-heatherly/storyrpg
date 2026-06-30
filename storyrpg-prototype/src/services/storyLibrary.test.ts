@@ -10,7 +10,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-const { createStoryCatalogEntry, normalizeStoryMediaUrls } = await import('./storyLibrary');
+const { createStoryCatalogEntry, resolveStoryMedia } = await import('./storyLibrary');
 
 function createStory(): Story {
   return {
@@ -155,7 +155,7 @@ describe('storyLibrary', () => {
 
   it('normalizes generated story media urls through the proxy host', () => {
     const story = createStory();
-    const normalized = normalizeStoryMediaUrls(story);
+    const normalized = resolveStoryMedia(story);
 
     expect(normalized.coverImage).toBe('http://localhost:3001/generated-stories/story-1/cover.jpg');
     expect(normalized.episodes[0].coverImage).toBe('http://localhost:3001/generated-stories/story-1/episode-1.jpg');

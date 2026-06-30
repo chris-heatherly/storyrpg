@@ -11,6 +11,7 @@
 
 import { AgentConfig } from '../config';
 import { isWebRuntime } from '../../utils/runtimeEnv';
+import { PROXY_CONFIG } from '../../config/endpoints';
 import {
   ValidationIssue,
   StakesQualityScore,
@@ -19,10 +20,11 @@ import {
   ValidationConfig,
 } from '../../types/validation';
 import { STAKES_TRIANGLE } from '../prompts/storytellingPrinciples';
+import { isPlaceholderStake } from '../constants/placeholderStakes';
 
 // API URL handling for web proxy
 const ANTHROPIC_API_URL = isWebRuntime()
-  ? 'http://localhost:3001/v1/messages'
+  ? `${PROXY_CONFIG.getProxyUrl()}/v1/messages`
   : 'https://api.anthropic.com/v1/messages';
 
 interface StakesAnalysisResponse {
@@ -103,8 +105,12 @@ export class StakesTriangleValidator {
       }
     }
 
-    // If no LLM config, do basic structural check only
-    if (!this.agentConfig.apiKey) {
+    // The LLM analysis path below is Anthropic-only (hardcoded endpoint/headers).
+    // With no key, OR when the pipeline is configured for a non-Anthropic
+    // provider (gemini/openai), fall back to heuristic scoring instead of POSTing
+    // the wrong provider's key to Anthropic (which returns 401). See callLLM in
+    // BaseAgent for the provider-aware path the rest of the pipeline uses.
+    if (!this.agentConfig.apiKey || this.agentConfig.provider !== 'anthropic') {
       const basicScore = this.calculateBasicScore(input);
       return {
         passed: basicScore.overall >= (this.config.threshold || 60),
@@ -190,6 +196,9 @@ export class StakesTriangleValidator {
   private calculateBasicScore(input: StakesTriangleInput): StakesQualityScore {
     const scoreComponent = (text: string | undefined): number => {
       if (!text || text.trim().length === 0) return 0;
+      // Un-authored placeholder stakes (StoryArchitect fallback) must fail so the
+      // choice is regenerated with real stakes — never let the length heuristic pass them.
+      if (isPlaceholderStake(text)) return 0;
       const length = text.trim().length;
       if (length < 10) return 30;
       if (length < 30) return 60;

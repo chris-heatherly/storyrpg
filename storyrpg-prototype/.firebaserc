@@ -1,0 +1,17 @@
+{
+  "projects": {
+    "default": "sd-mvp"
+  },
+  "targets": {
+    "sd-mvp": {
+      "hosting": {
+        "creator": [
+          "sd-story-rpg"
+        ],
+        "reader": [
+          "sd-story-rpg-reader"
+        ]
+      }
+    }
+  }
+}

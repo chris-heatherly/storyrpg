@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Proxy Worker"
+  short_description: "Work on StoryRPG proxy routes and worker jobs"
+  default_prompt: "Use $storyrpg-proxy-worker to debug a StoryRPG proxy route or worker job issue."
+policy:
+  allow_implicit_invocation: true

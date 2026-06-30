@@ -2,13 +2,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DEFAULT_GEMINI_SETTINGS,
+  DEFAULT_OPENAI_SETTINGS,
+  DEFAULT_LORA_TRAINING_SETTINGS,
   DEFAULT_MIDJOURNEY_SETTINGS,
+  DEFAULT_STABLE_DIFFUSION_SETTINGS,
   DEFAULT_VIDEO_SETTINGS,
+  DEFAULT_GEMINI_TTS_MODEL,
   GeminiSettings,
+  LoraTrainingSettings,
   MidjourneySettings,
+  OpenAISettings,
+  StableDiffusionSettings,
 } from '../ai-agents/config';
 import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
 import { PROXY_CONFIG } from '../config/endpoints';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('GeneratorSettings');
 import {
   DEFAULT_LLM_MODELS,
   DEFAULT_LLM_PROVIDER,
@@ -17,12 +27,25 @@ import {
   GeneratorImageProvider,
   GeneratorLlmProvider,
 } from '../config/generatorLlmOptions';
+import {
+  DEFAULT_MODEL_FAMILY,
+  MODEL_FAMILY_PRESETS,
+  PipelineTask,
+  TaskModelAssignment,
+  TaskModelOverrides,
+  isPipelineTask,
+  resolveTaskAssignments,
+} from '../config/modelFamilies';
 
 export interface GeneratorNarrationSettings {
   enabled: boolean;
+  provider?: 'elevenlabs' | 'gemini';
   autoPlay: boolean;
   preGenerateAudio: boolean;
   voiceId: string;
+  geminiModel?: string;
+  voiceCastingEnabled?: boolean;
+  performanceTagsEnabled?: boolean;
   highlightMode: 'none' | 'word' | 'sentence';
 }
 
@@ -37,10 +60,14 @@ export interface GeneratorVideoSettings {
 
 export const GENERATOR_STORAGE_KEYS = {
   anthropicApiKey: '@storyrpg_anthropic_api_key',
+  openaiApiKey: '@storyrpg_openai_api_key',
+  openRouterApiKey: '@storyrpg_openrouter_api_key',
   llmGeminiApiKey: '@storyrpg_llm_gemini_api_key',
   elevenLabsApiKey: '@storyrpg_elevenlabs_api_key',
   llmProvider: '@storyrpg_llm_provider',
   llmModel: '@storyrpg_llm_model',
+  modelFamily: '@storyrpg_model_family',
+  taskModelOverrides: '@storyrpg_task_model_overrides',
   imageLlmProvider: '@storyrpg_image_llm_provider',
   imageLlmModel: '@storyrpg_image_llm_model',
   videoLlmProvider: '@storyrpg_video_llm_provider',
@@ -57,32 +84,81 @@ export const GENERATOR_STORAGE_KEYS = {
   narrationSettings: '@storyrpg_narration_settings',
   midjourneySettings: '@storyrpg_midjourney_settings',
   geminiSettings: '@storyrpg_gemini_settings',
+  openaiSettings: '@storyrpg_openai_settings',
   videoSettings: '@storyrpg_video_settings',
+  stableDiffusionSettings: '@storyrpg_stable_diffusion_settings',
+  loraTrainingSettings: '@storyrpg_lora_training_settings',
 } as const;
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
-  return value === 'anthropic' || value === 'gemini';
+  return value === 'anthropic' || value === 'openai' || value === 'gemini' || value === 'openrouter';
 }
+
+/**
+ * Per-task override map. Image/video assignments live in their own dedicated
+ * image/video state, so we keep every text/council task except image/video here.
+ * An override may carry its own provider (to route a heavy task to a different,
+ * more reliable provider than the family); when it omits one we default to the
+ * supplied family so legacy model-only overrides keep working.
+ */
+function sanitizeNarrativeOverrides(
+  raw: unknown,
+  family: GeneratorLlmProvider,
+): TaskModelOverrides {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: TaskModelOverrides = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isPipelineTask(key) || key === 'image' || key === 'video') continue;
+    const model = (value as { model?: unknown })?.model;
+    const rawProvider = (value as { provider?: unknown })?.provider;
+    const provider = isGeneratorLlmProvider(rawProvider as string) ? rawProvider as GeneratorLlmProvider : family;
+    if (typeof model === 'string' && model.trim()) {
+      out[key] = { provider, model: model.trim() };
+    }
+  }
+  return out;
+}
+
+const INVALID_OPENAI_MODEL_SLUGS = new Set<string>([
+  // Internal Cursor/agent routing slugs that were accidentally seeded as OpenAI API
+  // model IDs. OpenAI's /v1/chat/completions rejects these with 404 model_not_found.
+  'gpt-5.4-medium',
+  'gpt-5.3-codex',
+  'composer-1.5',
+  'composer-2-fast',
+]);
 
 function resolveModelForProvider(provider: GeneratorLlmProvider, model: string | null | undefined): string {
   const trimmed = model?.trim();
-  if (trimmed) return trimmed;
+  if (trimmed) {
+    if (provider === 'openai' && INVALID_OPENAI_MODEL_SLUGS.has(trimmed)) {
+      return DEFAULT_LLM_MODELS[provider];
+    }
+    return trimmed;
+  }
   return DEFAULT_LLM_MODELS[provider];
 }
 
 function getDefaultNarrationSettings(): GeneratorNarrationSettings {
   return {
     enabled: false,
+    provider: 'elevenlabs',
     autoPlay: false,
     preGenerateAudio: false,
     voiceId: '',
+    geminiModel: DEFAULT_GEMINI_TTS_MODEL,
+    voiceCastingEnabled: true,
+    performanceTagsEnabled: false,
     highlightMode: 'word',
   };
 }
 
 function getDefaultVideoSettings(): GeneratorVideoSettings {
+  // Video generation defaults to OFF. The user must explicitly opt in, and
+  // that preference is then persisted to AsyncStorage and honored on reload
+  // regardless of the legacy EXPO_PUBLIC_VIDEO_GENERATION_ENABLED env flag.
   return {
-    enabled: process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true',
+    enabled: false,
     model: process.env.EXPO_PUBLIC_VIDEO_MODEL || DEFAULT_VIDEO_SETTINGS.model,
     durationSeconds: parseInt(process.env.EXPO_PUBLIC_VIDEO_DURATION || '', 10) || DEFAULT_VIDEO_SETTINGS.durationSeconds,
     resolution: process.env.EXPO_PUBLIC_VIDEO_RESOLUTION || DEFAULT_VIDEO_SETTINGS.resolution,
@@ -102,6 +178,8 @@ async function saveValue(key: string, value: string | null): Promise<void> {
 interface ProxySettingsShape {
   llmProvider?: string;
   llmModel?: string;
+  modelFamily?: string;
+  taskModelOverrides?: TaskModelOverrides;
   imageLlmProvider?: string;
   imageLlmModel?: string;
   videoLlmProvider?: string;
@@ -114,8 +192,19 @@ interface ProxySettingsShape {
   narrationSettings?: GeneratorNarrationSettings;
   videoSettings?: GeneratorVideoSettings;
   geminiSettings?: GeminiSettings;
+  openaiSettings?: OpenAISettings;
   midjourneySettings?: MidjourneySettings;
+  stableDiffusionSettings?: StableDiffusionSettings;
+  loraTrainingSettings?: LoraTrainingSettings;
   atlasCloudModel?: string;
+}
+
+function normalizeOpenAiSettings(settings?: Partial<OpenAISettings>): OpenAISettings {
+  return {
+    ...DEFAULT_OPENAI_SETTINGS,
+    ...(settings || {}),
+    imageModeration: 'low',
+  };
 }
 
 async function loadProxySettings(): Promise<ProxySettingsShape | null> {
@@ -142,18 +231,22 @@ function patchProxySettings(patch: Partial<ProxySettingsShape>): void {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).catch(err => console.log('[GeneratorSettings] Proxy patch failed:', err.message));
+    }).catch(err => log.debug('[GeneratorSettings] Proxy patch failed:', err.message));
   }, 500);
 }
 
 export function useGeneratorSettings() {
   const [llmProvider, setLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [llmModel, setLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
+  const [modelFamily, setModelFamily] = useState<GeneratorLlmProvider>(DEFAULT_MODEL_FAMILY);
+  const [taskModelOverrides, setTaskModelOverrides] = useState<TaskModelOverrides>({});
   const [imageLlmProvider, setImageLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [imageLlmModel, setImageLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
   const [videoLlmProvider, setVideoLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [videoLlmModel, setVideoLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
   const [apiKey, setApiKey] = useState('');
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [openRouterApiKey, setOpenRouterApiKey] = useState('');
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
   const [atlasCloudApiKey, setAtlasCloudApiKey] = useState('');
@@ -161,6 +254,9 @@ export function useGeneratorSettings() {
   const [midapiToken, setMidapiToken] = useState('');
   const [midjourneySettings, setMidjourneySettings] = useState<MidjourneySettings>({ ...DEFAULT_MIDJOURNEY_SETTINGS });
   const [geminiSettings, setGeminiSettings] = useState<GeminiSettings>({ ...DEFAULT_GEMINI_SETTINGS });
+  const [openaiSettings, setOpenaiSettings] = useState<OpenAISettings>({ ...DEFAULT_OPENAI_SETTINGS });
+  const [stableDiffusionSettings, setStableDiffusionSettings] = useState<StableDiffusionSettings>({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS });
+  const [loraTrainingSettings, setLoraTrainingSettings] = useState<LoraTrainingSettings>({ ...DEFAULT_LORA_TRAINING_SETTINGS });
   const [imageProvider, setImageProvider] = useState<GeneratorImageProvider>('nano-banana');
   const [artStyle, setArtStyle] = useState('');
   const [imageStrategy, setImageStrategy] = useState<'selective' | 'all-beats'>('all-beats');
@@ -180,6 +276,10 @@ export function useGeneratorSettings() {
       const p: GeneratorLlmProvider = isGeneratorLlmProvider(ps.llmProvider) ? ps.llmProvider : DEFAULT_LLM_PROVIDER;
       setLlmProvider(p);
       setLlmModel(ps.llmModel || DEFAULT_LLM_MODELS[p]);
+
+      const family: GeneratorLlmProvider = isGeneratorLlmProvider(ps.modelFamily) ? ps.modelFamily : p;
+      setModelFamily(family);
+      setTaskModelOverrides(sanitizeNarrativeOverrides(ps.taskModelOverrides, family));
 
       const ip: GeneratorLlmProvider = isGeneratorLlmProvider(ps.imageLlmProvider) ? ps.imageLlmProvider : p;
       setImageLlmProvider(ip);
@@ -205,15 +305,25 @@ export function useGeneratorSettings() {
         setNarrationSettings(prev => ({ ...prev, ...ps.narrationSettings }));
       }
       if (ps.videoSettings) {
-        const vs = { ...ps.videoSettings };
-        if (process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true') delete (vs as any).enabled;
-        setVideoSettings(prev => ({ ...prev, ...vs }));
+        // The user's saved `enabled` preference always wins. We intentionally
+        // do not let the EXPO_PUBLIC_VIDEO_GENERATION_ENABLED env flag override
+        // a persisted choice so toggling video off stays off across reloads.
+        setVideoSettings(prev => ({ ...prev, ...ps.videoSettings }));
       }
       if (ps.geminiSettings) {
         setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...ps.geminiSettings });
       }
+      if (ps.openaiSettings) {
+        setOpenaiSettings(normalizeOpenAiSettings(ps.openaiSettings));
+      }
       if (ps.midjourneySettings) {
         setMidjourneySettings({ ...DEFAULT_MIDJOURNEY_SETTINGS, ...ps.midjourneySettings });
+      }
+      if (ps.stableDiffusionSettings) {
+        setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...ps.stableDiffusionSettings });
+      }
+      if (ps.loraTrainingSettings) {
+        setLoraTrainingSettings({ ...DEFAULT_LORA_TRAINING_SETTINGS, ...ps.loraTrainingSettings });
       }
     };
 
@@ -228,7 +338,7 @@ export function useGeneratorSettings() {
       try {
         const storedLlmProvider = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmProvider);
         const resolvedProvider: GeneratorLlmProvider =
-          storedLlmProvider === 'anthropic' || storedLlmProvider === 'gemini'
+          isGeneratorLlmProvider(storedLlmProvider)
             ? storedLlmProvider
             : DEFAULT_LLM_PROVIDER;
 
@@ -244,6 +354,27 @@ export function useGeneratorSettings() {
             setLlmModel(resolvedLlmModel);
           }
 
+          // Model family + per-task narrative overrides. Migrate from the legacy
+          // single-provider when no family was persisted (existing users adopt
+          // the family preset for their current provider).
+          const [storedModelFamily, storedTaskOverrides] = await Promise.all([
+            AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.modelFamily),
+            AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.taskModelOverrides),
+          ]);
+          const resolvedFamily = isGeneratorLlmProvider(storedModelFamily)
+            ? storedModelFamily
+            : resolvedProvider;
+          let parsedOverrides: unknown = undefined;
+          if (storedTaskOverrides) {
+            try {
+              parsedOverrides = JSON.parse(storedTaskOverrides);
+            } catch (_) {}
+          }
+          if (isMounted) {
+            setModelFamily(resolvedFamily);
+            setTaskModelOverrides(sanitizeNarrativeOverrides(parsedOverrides, resolvedFamily));
+          }
+
           const storedGenerationMode = await AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationMode);
           if (isMounted && (storedGenerationMode === 'strict' || storedGenerationMode === 'advisory' || storedGenerationMode === 'disabled')) {
             setGenerationMode(storedGenerationMode);
@@ -255,6 +386,8 @@ export function useGeneratorSettings() {
 
         const [
           storedAnthropicKey,
+          storedOpenaiApiKey,
+          storedOpenRouterApiKey,
           storedLlmGeminiKey,
           storedElevenLabsApiKey,
           storedImageLlmProvider,
@@ -266,14 +399,19 @@ export function useGeneratorSettings() {
           storedAtlasModel,
           storedMidapiToken,
           storedGeminiSettings,
+          storedOpenaiSettings,
           storedMidjourneySettings,
           storedImageProvider,
           storedArtStyle,
           storedGenerationSettings,
           storedNarrationSettings,
           storedVideoSettings,
+          storedStableDiffusionSettings,
+          storedLoraTrainingSettings,
         ] = await Promise.all([
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.anthropicApiKey),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openaiApiKey),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openRouterApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.llmGeminiApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.elevenLabsApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.imageLlmProvider),
@@ -285,18 +423,23 @@ export function useGeneratorSettings() {
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.atlasCloudModel),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.midapiToken),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.geminiSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.openaiSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.midjourneySettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.imageProvider),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.artStyle),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.generationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.narrationSettings),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.videoSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.loraTrainingSettings),
         ]);
 
         if (!isMounted) return;
 
         // API keys always come from AsyncStorage (never stored on proxy for security)
         if (storedAnthropicKey) setApiKey(storedAnthropicKey);
+        if (storedOpenaiApiKey) setOpenaiApiKey(storedOpenaiApiKey);
+        if (storedOpenRouterApiKey) setOpenRouterApiKey(storedOpenRouterApiKey);
         if (storedGeminiKey || storedLlmGeminiKey) {
           setGeminiApiKey(storedGeminiKey || storedLlmGeminiKey || '');
         }
@@ -339,6 +482,11 @@ export function useGeneratorSettings() {
               setGeminiSettings({ ...DEFAULT_GEMINI_SETTINGS, ...JSON.parse(storedGeminiSettings) });
             } catch (_) {}
           }
+          if (storedOpenaiSettings) {
+            try {
+              setOpenaiSettings(normalizeOpenAiSettings(JSON.parse(storedOpenaiSettings)));
+            } catch (_) {}
+          }
 
           if (storedMidjourneySettings) {
             try {
@@ -378,14 +526,26 @@ export function useGeneratorSettings() {
           if (storedVideoSettings) {
             try {
               const parsedVideoSettings = JSON.parse(storedVideoSettings);
-              const envEnabled = process.env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true';
-              if (envEnabled) delete parsedVideoSettings.enabled;
+              // Always honor the persisted `enabled` flag; the env var is not
+              // allowed to flip a user-chosen off state back on at load time.
               setVideoSettings((current) => ({ ...current, ...parsedVideoSettings }));
+            } catch (_) {}
+          }
+
+          if (storedStableDiffusionSettings) {
+            try {
+              setStableDiffusionSettings({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS, ...JSON.parse(storedStableDiffusionSettings) });
+            } catch (_) {}
+          }
+
+          if (storedLoraTrainingSettings) {
+            try {
+              setLoraTrainingSettings({ ...DEFAULT_LORA_TRAINING_SETTINGS, ...JSON.parse(storedLoraTrainingSettings) });
             } catch (_) {}
           }
         }
       } catch (error) {
-        console.log('Failed to load generator settings from AsyncStorage:', error);
+        log.debug('Failed to load generator settings from AsyncStorage:', error);
       }
     };
 
@@ -411,7 +571,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.llmModel, newModel);
       }
     } catch (error) {
-      console.log('Failed to save LLM provider:', error);
+      log.debug('Failed to save LLM provider:', error);
     }
   }, [llmModel]);
 
@@ -421,7 +581,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.llmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save LLM model:', error);
+      log.debug('Failed to save LLM model:', error);
     }
   }, []);
 
@@ -439,7 +599,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageLlmModel, nextModel);
       }
     } catch (error) {
-      console.log('Failed to save image LLM provider:', error);
+      log.debug('Failed to save image LLM provider:', error);
     }
   }, [imageLlmModel]);
 
@@ -449,7 +609,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save image LLM model:', error);
+      log.debug('Failed to save image LLM model:', error);
     }
   }, []);
 
@@ -467,7 +627,7 @@ export function useGeneratorSettings() {
         await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoLlmModel, nextModel);
       }
     } catch (error) {
-      console.log('Failed to save video LLM provider:', error);
+      log.debug('Failed to save video LLM provider:', error);
     }
   }, [videoLlmModel]);
 
@@ -477,9 +637,134 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.videoLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
-      console.log('Failed to save video LLM model:', error);
+      log.debug('Failed to save video LLM model:', error);
     }
   }, []);
+
+  const persistTaskOverrides = useCallback(async (next: TaskModelOverrides) => {
+    patchProxySettings({ taskModelOverrides: next });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.taskModelOverrides, JSON.stringify(next));
+    } catch (error) {
+      log.debug('Failed to save task model overrides:', error);
+    }
+  }, []);
+
+  // Switching the model family resets all per-task overrides to the family's
+  // preset, and seeds the legacy narrative + image/video fields so existing
+  // consumers (StyleArchitect, source analysis, image/video dropdowns) stay
+  // coherent. Narrative tasks are locked to the family provider downstream.
+  const handleModelFamilyChange = useCallback(async (family: GeneratorLlmProvider) => {
+    const preset = MODEL_FAMILY_PRESETS[family];
+    const headlineModel = preset.assignments.architect.model;
+    const img = preset.assignments.image;
+    const vid = preset.assignments.video;
+    setModelFamily(family);
+    setTaskModelOverrides({});
+    setLlmProvider(family);
+    setLlmModel(headlineModel);
+    setImageLlmProvider(img.provider);
+    setImageLlmModel(img.model);
+    setVideoLlmProvider(vid.provider);
+    setVideoLlmModel(vid.model);
+    patchProxySettings({
+      modelFamily: family,
+      taskModelOverrides: {},
+      llmProvider: family,
+      llmModel: headlineModel,
+      imageLlmProvider: img.provider,
+      imageLlmModel: img.model,
+      videoLlmProvider: vid.provider,
+      videoLlmModel: vid.model,
+    });
+    try {
+      await AsyncStorage.multiSet([
+        [GENERATOR_STORAGE_KEYS.modelFamily, family],
+        [GENERATOR_STORAGE_KEYS.taskModelOverrides, JSON.stringify({})],
+        [GENERATOR_STORAGE_KEYS.llmProvider, family],
+        [GENERATOR_STORAGE_KEYS.llmModel, headlineModel],
+        [GENERATOR_STORAGE_KEYS.imageLlmProvider, img.provider],
+        [GENERATOR_STORAGE_KEYS.imageLlmModel, img.model],
+        [GENERATOR_STORAGE_KEYS.videoLlmProvider, vid.provider],
+        [GENERATOR_STORAGE_KEYS.videoLlmModel, vid.model],
+      ]);
+    } catch (error) {
+      log.debug('Failed to save model family:', error);
+    }
+  }, []);
+
+  // Change the model for a single task. Image/video delegate to their existing
+  // dedicated handlers (cross-provider, own persistence); narrative tasks store
+  // an override, preserving any per-task provider the user already chose (so
+  // editing the model of a Claude-routed task doesn't snap it back to the family).
+  const handleTaskModelChange = useCallback(async (task: PipelineTask, model: string) => {
+    if (task === 'image') {
+      await handleImageLlmModelChange(model);
+      return;
+    }
+    if (task === 'video') {
+      await handleVideoLlmModelChange(model);
+      return;
+    }
+    setTaskModelOverrides((prev) => {
+      const provider = prev[task]?.provider ?? modelFamily;
+      const next: TaskModelOverrides = { ...prev, [task]: { provider, model } };
+      void persistTaskOverrides(next);
+      return next;
+    });
+  }, [modelFamily, handleImageLlmModelChange, handleVideoLlmModelChange, persistTaskOverrides]);
+
+  // Route a single task to a specific provider. Image/video delegate to their
+  // dedicated cross-provider handlers; narrative tasks store a provider override
+  // seeded with that provider's preset model so the model id is always valid.
+  // This is what lets the heavy structured agents (architect / scene / choice —
+  // which also drive the Season Planner and Encounter Architect) run on a more
+  // reliable provider (e.g. Claude) while QA stays on a cheaper one.
+  const handleTaskProviderChange = useCallback(async (task: PipelineTask, provider: GeneratorLlmProvider) => {
+    if (task === 'image') {
+      await handleImageLlmProviderChange(provider);
+      return;
+    }
+    if (task === 'video') {
+      await handleVideoLlmProviderChange(provider);
+      return;
+    }
+    const presetModel =
+      MODEL_FAMILY_PRESETS[provider]?.assignments[task]?.model || DEFAULT_LLM_MODELS[provider];
+    setTaskModelOverrides((prev) => {
+      const next: TaskModelOverrides = { ...prev, [task]: { provider, model: presetModel } };
+      void persistTaskOverrides(next);
+      return next;
+    });
+  }, [handleImageLlmProviderChange, handleVideoLlmProviderChange, persistTaskOverrides]);
+
+  // Reset a single task back to its family preset.
+  const resetTaskModel = useCallback(async (task: PipelineTask) => {
+    const preset = MODEL_FAMILY_PRESETS[modelFamily];
+    if (task === 'image') {
+      await handleImageLlmProviderChange(preset.assignments.image.provider);
+      await handleImageLlmModelChange(preset.assignments.image.model);
+      return;
+    }
+    if (task === 'video') {
+      await handleVideoLlmProviderChange(preset.assignments.video.provider);
+      await handleVideoLlmModelChange(preset.assignments.video.model);
+      return;
+    }
+    setTaskModelOverrides((prev) => {
+      const next: TaskModelOverrides = { ...prev };
+      delete next[task];
+      void persistTaskOverrides(next);
+      return next;
+    });
+  }, [
+    modelFamily,
+    handleImageLlmProviderChange,
+    handleImageLlmModelChange,
+    handleVideoLlmProviderChange,
+    handleVideoLlmModelChange,
+    persistTaskOverrides,
+  ]);
 
   const handleGenerationModeChange = useCallback(async (mode: GenerationMode) => {
     setGenerationMode(mode);
@@ -487,7 +772,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationMode, mode);
     } catch (error) {
-      console.log('Failed to save generation mode:', error);
+      log.debug('Failed to save generation mode:', error);
     }
   }, []);
 
@@ -496,7 +781,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.anthropicApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save API key:', error);
+      log.debug('Failed to save API key:', error);
     }
   }, []);
 
@@ -505,7 +790,25 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.geminiApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save Gemini API key:', error);
+      log.debug('Failed to save Gemini API key:', error);
+    }
+  }, []);
+
+  const handleOpenaiApiKeyChange = useCallback(async (key: string) => {
+    setOpenaiApiKey(key);
+    try {
+      await saveValue(GENERATOR_STORAGE_KEYS.openaiApiKey, key.trim() ? key : null);
+    } catch (error) {
+      log.debug('Failed to save OpenAI API key:', error);
+    }
+  }, []);
+
+  const handleOpenRouterApiKeyChange = useCallback(async (key: string) => {
+    setOpenRouterApiKey(key);
+    try {
+      await saveValue(GENERATOR_STORAGE_KEYS.openRouterApiKey, key.trim() ? key : null);
+    } catch (error) {
+      log.debug('Failed to save OpenRouter API key:', error);
     }
   }, []);
 
@@ -514,7 +817,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.elevenLabsApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save ElevenLabs API key:', error);
+      log.debug('Failed to save ElevenLabs API key:', error);
     }
   }, []);
 
@@ -523,7 +826,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.atlasCloudApiKey, key.trim() ? key : null);
     } catch (error) {
-      console.log('Failed to save Atlas Cloud API key:', error);
+      log.debug('Failed to save Atlas Cloud API key:', error);
     }
   }, []);
 
@@ -533,7 +836,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.atlasCloudModel, modelId);
     } catch (error) {
-      console.log('Failed to save Atlas Cloud model:', error);
+      log.debug('Failed to save Atlas Cloud model:', error);
     }
   }, []);
 
@@ -542,7 +845,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.midapiToken, token.trim() ? token : null);
     } catch (error) {
-      console.log('Failed to save MidAPI token:', error);
+      log.debug('Failed to save MidAPI token:', error);
     }
   }, []);
 
@@ -553,9 +856,20 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.geminiSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Gemini settings:', error);
+      log.debug('Failed to save Gemini settings:', error);
     }
   }, [geminiSettings]);
+
+  const handleOpenaiSettingsChange = useCallback(async (newSettings: Partial<OpenAISettings>) => {
+    const updated = normalizeOpenAiSettings({ ...openaiSettings, ...newSettings });
+    setOpenaiSettings(updated);
+    patchProxySettings({ openaiSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.openaiSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save OpenAI settings:', error);
+    }
+  }, [openaiSettings]);
 
   const handleMidjourneySettingsChange = useCallback(async (newSettings: Partial<MidjourneySettings>) => {
     const updated = { ...midjourneySettings, ...newSettings };
@@ -564,9 +878,49 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.midjourneySettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save Midjourney settings:', error);
+      log.debug('Failed to save Midjourney settings:', error);
     }
   }, [midjourneySettings]);
+
+  const handleStableDiffusionSettingsChange = useCallback(async (newSettings: Partial<StableDiffusionSettings>) => {
+    const updated = { ...stableDiffusionSettings, ...newSettings };
+    setStableDiffusionSettings(updated);
+    patchProxySettings({ stableDiffusionSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.stableDiffusionSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save Stable Diffusion settings:', error);
+    }
+  }, [stableDiffusionSettings]);
+
+  // Deep-merges partial LoRA training settings (supports nested `training`
+  // and `characterThresholds` / `styleThresholds` patches). Persists to
+  // both AsyncStorage and the proxy disk cache.
+  const handleLoraTrainingSettingsChange = useCallback(async (newSettings: Partial<LoraTrainingSettings>) => {
+    const updated: LoraTrainingSettings = {
+      ...loraTrainingSettings,
+      ...newSettings,
+      characterThresholds: {
+        ...loraTrainingSettings.characterThresholds,
+        ...(newSettings.characterThresholds || {}),
+      },
+      styleThresholds: {
+        ...loraTrainingSettings.styleThresholds,
+        ...(newSettings.styleThresholds || {}),
+      },
+      training: {
+        ...loraTrainingSettings.training,
+        ...(newSettings.training || {}),
+      },
+    };
+    setLoraTrainingSettings(updated);
+    patchProxySettings({ loraTrainingSettings: updated });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.loraTrainingSettings, JSON.stringify(updated));
+    } catch (error) {
+      log.debug('Failed to save LoRA training settings:', error);
+    }
+  }, [loraTrainingSettings]);
 
   const handleImageProviderChange = useCallback(async (provider: GeneratorImageProvider) => {
     setImageProvider(provider);
@@ -574,7 +928,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.imageProvider, provider);
     } catch (error) {
-      console.log('Failed to save image provider:', error);
+      log.debug('Failed to save image provider:', error);
     }
   }, []);
 
@@ -584,7 +938,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.artStyle, style.trim() ? style : null);
     } catch (error) {
-      console.log('Failed to save art style:', error);
+      log.debug('Failed to save art style:', error);
     }
   }, []);
 
@@ -594,7 +948,7 @@ export function useGeneratorSettings() {
     try {
       await saveValue(GENERATOR_STORAGE_KEYS.imageStrategy, strategy);
     } catch (error) {
-      console.log('Failed to save image strategy:', error);
+      log.debug('Failed to save image strategy:', error);
     }
   }, []);
 
@@ -604,7 +958,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationSettings, JSON.stringify(settings));
     } catch (error) {
-      console.log('Failed to save generation settings:', error);
+      log.debug('Failed to save generation settings:', error);
     }
   }, []);
 
@@ -618,7 +972,7 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.narrationSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save narration settings:', error);
+      log.debug('Failed to save narration settings:', error);
     }
   }, [narrationSettings]);
 
@@ -632,18 +986,33 @@ export function useGeneratorSettings() {
     try {
       await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.videoSettings, JSON.stringify(updated));
     } catch (error) {
-      console.log('Failed to save video settings:', error);
+      log.debug('Failed to save video settings:', error);
     }
   }, [videoSettings]);
+
+  // The single source of truth handed to buildPipelineConfig. Narrative tasks
+  // come from the family preset merged with overrides (provider locked to the
+  // family); image/video reflect their dedicated cross-provider state.
+  const narrativeAssignments = resolveTaskAssignments(modelFamily, taskModelOverrides);
+  const effectiveTaskAssignments: Record<PipelineTask, TaskModelAssignment> = {
+    ...narrativeAssignments,
+    image: { provider: imageLlmProvider, model: imageLlmModel },
+    video: { provider: videoLlmProvider, model: videoLlmModel },
+  };
 
   return {
     llmProvider,
     llmModel,
+    modelFamily,
+    taskModelOverrides,
+    effectiveTaskAssignments,
     imageLlmProvider,
     imageLlmModel,
     videoLlmProvider,
     videoLlmModel,
     apiKey,
+    openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -651,6 +1020,9 @@ export function useGeneratorSettings() {
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    openaiSettings,
+    stableDiffusionSettings,
+    loraTrainingSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -660,19 +1032,28 @@ export function useGeneratorSettings() {
     videoSettings,
     handleLlmProviderChange,
     handleLlmModelChange,
+    handleModelFamilyChange,
+    handleTaskModelChange,
+    handleTaskProviderChange,
+    resetTaskModel,
     handleImageLlmProviderChange,
     handleImageLlmModelChange,
     handleVideoLlmProviderChange,
     handleVideoLlmModelChange,
     handleGenerationModeChange,
     handleApiKeyChange,
+    handleOpenaiApiKeyChange,
+    handleOpenRouterApiKeyChange,
     handleGeminiApiKeyChange,
     handleElevenLabsApiKeyChange,
     handleAtlasCloudApiKeyChange,
     handleAtlasCloudModelChange,
     handleMidapiTokenChange,
     handleGeminiSettingsChange,
+    handleOpenaiSettingsChange,
     handleMidjourneySettingsChange,
+    handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleImageStrategyChange,

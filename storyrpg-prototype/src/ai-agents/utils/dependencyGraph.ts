@@ -38,6 +38,7 @@ export function buildSceneDependencyGraph(blueprint: EpisodeBlueprint): SceneDep
   for (const scene of blueprint.scenes) {
     for (const toId of scene.leadsTo || []) {
       if (!sceneById.has(toId)) continue;
+      if (toId === scene.id) continue;
       const fromNode = nodes.get(scene.id);
       const toNode = nodes.get(toId);
       if (!fromNode || !toNode) continue;
@@ -51,6 +52,7 @@ export function buildSceneDependencyGraph(blueprint: EpisodeBlueprint): SceneDep
   for (const scene of blueprint.scenes) {
     for (const reqId of scene.requires || []) {
       if (!sceneById.has(reqId)) continue;
+      if (reqId === scene.id) continue;
       const reqNode = nodes.get(reqId);
       const sceneNode = nodes.get(scene.id);
       if (!reqNode || !sceneNode) continue;
@@ -130,4 +132,3 @@ export function buildTopologicalWaves(blueprint: EpisodeBlueprint): SceneWave[] 
 
   return waves;
 }
-

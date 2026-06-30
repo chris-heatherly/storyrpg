@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "_doc": "Labeled recurring-defect corpus (WS0.1). Each label asserts a gate's verdict over a run: expect 'flag' (a confirmed defect must be caught) or 'no-flag' (a confirmed false-positive must NOT fire). status 'enforced' gates CI; 'pending' documents a target for a not-yet-built gate (skipped, never fails). corpus 'fixtures' = committed hermetic dirs (always enforced); corpus 'generated-stories' = live archived runs (enforced when present, skipped when gitignored-absent). gate = a name from scripts/replay-gates.ts REGISTRY.",
+  "labels": [
+    {
+      "class": "flag_mismatch",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "flag-mismatch",
+      "gate": "FLAG_CONTRACT",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "dead condition accepted_victor_invitation vs setter received_victor_invitation + write-only residue (mirrors g17 s3-2)"
+    },
+    {
+      "class": "clean_baseline",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "clean-residue",
+      "gate": "FLAG_CONTRACT",
+      "expect": "no-flag",
+      "status": "enforced",
+      "note": "FP guard: a flag set AND read must not trip the contract validator"
+    },
+    {
+      "class": "clean_outcome_text",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "clean-residue",
+      "gate": "OUTCOME_TEXT_QUALITY",
+      "expect": "no-flag",
+      "status": "enforced",
+      "note": "FP guard: clean prose must not trip the scaffold/duplication detector"
+    },
+    {
+      "class": "clean_encounter_quality",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "clean-residue",
+      "gate": "ENCOUNTER_QUALITY",
+      "expect": "no-flag",
+      "status": "enforced",
+      "note": "FP guard: stories without malformed/template encounter prose must not trip the encounter-quality replay gate"
+    },
+    {
+      "class": "g22_malformed_encounter_prose",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "bite-me-g22-compact",
+      "gate": "ENCOUNTER_QUALITY",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "G22 compact fixture preserves malformed strings: you rooftop, Hold you charcoal, You kiss takes"
+    },
+    {
+      "class": "g22_bridge_skips_required_setup",
+      "corpus": "scripts/defect-corpus/fixtures",
+      "runMatch": "bite-me-g22-compact",
+      "gate": "SCENE_GRAPH_BRANCH",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "G22 compact fixture preserves a choice bridge that jumps over required setup into a treatment encounter"
+    },
+    {
+      "class": "dropped_plant",
+      "corpus": "generated-stories",
+      "runMatch": "bite-me-g17",
+      "gate": "REQUIRED_BEAT_REALIZATION",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "g17 dropped the s1-1 Sadie cold-open + climbing blog-counter plants"
+    },
+    {
+      "class": "flag_mismatch",
+      "corpus": "generated-stories",
+      "runMatch": "bite-me-g17",
+      "gate": "FLAG_CONTRACT",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "g17 accepted_victor_invitation read but never set; 49 write-only residue flags"
+    },
+    {
+      "class": "clean_outcome_text",
+      "corpus": "generated-stories",
+      "runMatch": "bite-me-g17",
+      "gate": "OUTCOME_TEXT_QUALITY",
+      "expect": "no-flag",
+      "status": "enforced",
+      "note": "documents that the deterministic detector does NOT catch g17's verbatim payoff-beat duplication (gap WS1.7 closes via a dedicated dedup pass)"
+    },
+    {
+      "class": "encounter_pov",
+      "corpus": "generated-stories",
+      "runMatch": "bite-me-g17",
+      "gate": "ENCOUNTER_POV",
+      "expect": "flag",
+      "status": "enforced",
+      "note": "WS0.3: encounter outcome storylets narrate the protagonist in 3rd person (detected; deterministic backstop coerces to 2nd person, residue routes to regen)"
+    },
+    {
+      "class": "npc_pronoun_FP",
+      "corpus": "generated-stories",
+      "runMatch": "bite-me-g17",
+      "gate": "NPC_PRONOUN",
+      "expect": "no-flag",
+      "status": "pending",
+      "note": "WS1.8: g17 pronoun warnings are false positives (oblique pronoun = a different person). Deterministic guards (protagonist-referent, two-actor) cut them 17->15 but the residue is coreference-hard — zeroing needs the LLM coreference judge. Stays advisory/pending until that lands."
+    },
+    {
+      "class": "numeric_regression",
+      "corpus": "generated-stories",
+      "runMatch": "bite-me-g17",
+      "gate": "CANON_NUMERIC",
+      "expect": "flag",
+      "status": "pending",
+      "note": "WS1.2 target: blog counter regressed 91,428 -> 50,001 and was never caught"
+    }
+  ]
+}

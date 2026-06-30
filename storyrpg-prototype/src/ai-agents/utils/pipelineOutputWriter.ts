@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 4 client/pipeline decoupling will split
+// this writer and address expo-file-system API drift.
 /**
  * Pipeline Output Writer
  *
@@ -14,6 +16,20 @@ import { SceneContent } from '../agents/SceneWriter';
 import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { QAReport } from '../agents/QAAgents';
 import { EncounterStructure } from '../agents/EncounterArchitect';
+import type { EncounterTelemetry } from '../agents/EncounterArchitect';
+import type { SceneValidationResult } from '../validators/IncrementalValidators';
+import type { FinalStoryContractReport } from '../validators/FinalStoryContractValidator';
+import type { QualityCouncilReport } from '../quality-council/types';
+import type { LlmLedger } from './pipelineTelemetry';
+import type { BranchShadowDiff } from './branchShadowDiff';
+import { appendQualityLedger } from './qualityLedger';
+import { analyzeStory as analyzeSentenceOpeners } from './sentenceOpenerStats';
+import {
+  deriveStoryCircleQualityScore,
+  type StoryCircleQualityScoreBasis,
+  type StoryCircleQualityScoreOptions,
+  type StoryCircleQualityScoreReport,
+} from './qualityScoring';
 import { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { 
   ColorScript,
@@ -38,6 +54,290 @@ import {
   listCachedOutputManifests,
   readCachedOutputFile,
 } from './webOutputCache';
+import { encodeStory, STORY_SCHEMA_VERSION } from '../codec/storyCodec';
+
+function hasNodeFs(): boolean {
+  return typeof process !== 'undefined'
+    && !!(process as unknown as { versions?: { node?: string } })?.versions?.node
+    && !isWebRuntime();
+}
+
+function nodeRequire<T>(name: string): T {
+  const getBuiltinModule = (typeof process !== 'undefined'
+    ? (process as unknown as { getBuiltinModule?: (mod: string) => unknown }).getBuiltinModule
+    : undefined);
+  if (typeof getBuiltinModule === 'function') {
+    const builtin = getBuiltinModule(name);
+    if (builtin) return builtin as T;
+  }
+
+  // Hidden from Metro's static analyzer. Metro rejects `require(variable)`
+  // because it can't bundle an unknown module; we only call this from Node
+  // branches (hasNodeFs() === true), so indirecting through Function lets
+  // the web bundle build while Node still resolves at runtime.
+  const req = (Function('return typeof require !== "undefined" ? require : null'))() as
+    | ((mod: string) => unknown)
+    | null;
+  if (!req) throw new Error(`nodeRequire called in non-Node runtime for: ${name}`);
+  return req(name) as T;
+}
+
+function atomicWriteNodeSync(absPath: string, content: string | Buffer): { sha256: string; bytes: number } {
+  const fs = nodeRequire<typeof import('fs')>('fs');
+  const path = nodeRequire<typeof import('path')>('path');
+  const crypto = nodeRequire<typeof import('crypto')>('crypto');
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
+  const dir = path.dirname(absPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${absPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, buffer);
+      try { fs.fsyncSync(fd); } catch { /* best-effort */ }
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, absPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+  return { sha256: crypto.createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length };
+}
+
+type BoundImagePromptRecord = {
+  image: string;
+  identifier: string;
+  expectedPromptPath: string;
+  fieldPaths: string[];
+  contexts: Array<Record<string, unknown>>;
+};
+
+function boundImagePromptIdentifier(image: unknown): string | null {
+  if (typeof image !== 'string') return null;
+  const clean = image.trim().split(/[?#]/)[0];
+  if (!clean || !/\.(png|jpe?g|webp)$/i.test(clean)) return null;
+  if (!/(^|\/)generated-stories\/[^/]+\/images\//i.test(clean) && !/(^|\/)images\//i.test(clean)) return null;
+  if (/(^|\/)images\/prompts\//i.test(clean)) return null;
+  const match = clean.match(/(?:^|\/)images\/(?:.*\/)?([^/]+)\.(png|jpe?g|webp)$/i);
+  return match?.[1] || null;
+}
+
+function addBoundImagePromptRecord(
+  records: Map<string, BoundImagePromptRecord>,
+  outputDir: string,
+  image: unknown,
+  fieldPath: string,
+  context: Record<string, unknown>,
+): void {
+  if (typeof image !== 'string') return;
+  const identifier = boundImagePromptIdentifier(image);
+  if (!identifier) return;
+  const expectedPromptPath = `${outputDir}images/prompts/${identifier}.json`;
+  const existing = records.get(expectedPromptPath);
+  if (existing) {
+    if (!existing.fieldPaths.includes(fieldPath)) existing.fieldPaths.push(fieldPath);
+    existing.contexts.push(context);
+    return;
+  }
+  records.set(expectedPromptPath, {
+    image,
+    identifier,
+    expectedPromptPath,
+    fieldPaths: [fieldPath],
+    contexts: [context],
+  });
+}
+
+function collectBoundImagePromptRecords(story: Story, outputDir: string): BoundImagePromptRecord[] {
+  const records = new Map<string, BoundImagePromptRecord>();
+  addBoundImagePromptRecord(records, outputDir, story.coverImage, 'coverImage', {
+    storyId: story.id,
+    storyTitle: story.title,
+    type: 'story-cover',
+  });
+
+  for (const [episodeIndex, episode] of (story.episodes || []).entries()) {
+    const episodeNumber = episode.number ?? episodeIndex + 1;
+    addBoundImagePromptRecord(records, outputDir, episode.coverImage, `episodes[${episodeIndex}].coverImage`, {
+      storyId: story.id,
+      storyTitle: story.title,
+      episodeNumber,
+      episodeId: episode.id,
+      episodeTitle: episode.title,
+      type: 'episode-cover',
+    });
+
+    for (const [sceneIndex, scene] of (episode.scenes || []).entries()) {
+      const sceneContext = {
+        storyId: story.id,
+        storyTitle: story.title,
+        episodeNumber,
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+        sceneId: scene.id,
+        sceneName: scene.name,
+      };
+      addBoundImagePromptRecord(
+        records,
+        outputDir,
+        scene.backgroundImage,
+        `episodes[${episodeIndex}].scenes[${sceneIndex}].backgroundImage`,
+        { ...sceneContext, type: 'scene-background' },
+      );
+
+      for (const [beatIndex, beat] of (scene.beats || []).entries()) {
+        const beatContext = {
+          ...sceneContext,
+          type: 'story-beat',
+          beatId: beat.id,
+          beatIndex,
+          beatText: beat.text,
+          speaker: (beat as any).speaker,
+        };
+        addBoundImagePromptRecord(
+          records,
+          outputDir,
+          beat.image,
+          `episodes[${episodeIndex}].scenes[${sceneIndex}].beats[${beatIndex}].image`,
+          beatContext,
+        );
+        if (Array.isArray((beat as any).panelImages)) {
+          for (const [panelIndex, panelImage] of (beat as any).panelImages.entries()) {
+            addBoundImagePromptRecord(
+              records,
+              outputDir,
+              panelImage,
+              `episodes[${episodeIndex}].scenes[${sceneIndex}].beats[${beatIndex}].panelImages[${panelIndex}]`,
+              { ...beatContext, type: 'story-beat-panel', panelIndex },
+            );
+          }
+        }
+      }
+
+      const visit = (value: unknown, fieldPath: string): void => {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) {
+          value.forEach((item, index) => visit(item, `${fieldPath}[${index}]`));
+          return;
+        }
+        const obj = value as Record<string, unknown>;
+        for (const [key, child] of Object.entries(obj)) {
+          const childPath = `${fieldPath}.${key}`;
+          if (typeof child === 'string' && /(image|cover|portrait)$/i.test(key)) {
+            addBoundImagePromptRecord(records, outputDir, child, childPath, {
+              ...sceneContext,
+              type: 'nested-image',
+              id: obj.id,
+              beatId: obj.beatId,
+              text: obj.text,
+              fieldKey: key,
+            });
+          } else {
+            visit(child, childPath);
+          }
+        }
+      };
+      visit((scene as any).encounter, `episodes[${episodeIndex}].scenes[${sceneIndex}].encounter`);
+      visit((scene as any).storylets, `episodes[${episodeIndex}].scenes[${sceneIndex}].storylets`);
+    }
+  }
+
+  return Array.from(records.values());
+}
+
+function buildRecoveredPromptArtifact(record: BoundImagePromptRecord, story: Story, generator?: Record<string, unknown>) {
+  const primaryContext = record.contexts[0] || {};
+  const prompt = [
+    'RECOVERED PROMPT ARTIFACT: the exact original prompt JSON for this bound image was missing when the final story package was written.',
+    'This file was created by the image prompt binding guard so dev tooling can inspect the local image provenance instead of failing silently.',
+    '',
+    `Story: ${story.title || story.id || 'Untitled story'}`,
+    primaryContext.episodeNumber ? `Episode: ${primaryContext.episodeNumber}${primaryContext.episodeTitle ? ` - ${primaryContext.episodeTitle}` : ''}` : undefined,
+    primaryContext.sceneId ? `Scene: ${primaryContext.sceneId}${primaryContext.sceneName ? ` - ${primaryContext.sceneName}` : ''}` : undefined,
+    primaryContext.beatId ? `Beat: ${primaryContext.beatId}` : undefined,
+    primaryContext.speaker ? `Speaker: ${primaryContext.speaker}` : undefined,
+    primaryContext.beatText || primaryContext.text ? '' : undefined,
+    primaryContext.beatText || primaryContext.text ? 'Story text:' : undefined,
+    (primaryContext.beatText || primaryContext.text) as string | undefined,
+    '',
+    generator?.artStyle || generator?.canonicalArtStyle || story.artStyleProfile
+      ? `Style/source metadata: ${JSON.stringify(generator?.artStyle || generator?.canonicalArtStyle || story.artStyleProfile)}`
+      : undefined,
+  ].filter(Boolean).join('\n');
+
+  return {
+    identifier: record.identifier,
+    metadata: {
+      type: 'recovered-bound-image-prompt',
+      storyId: story.id,
+      image: record.image,
+      source: 'writeFinalStoryPackage prompt binding guard',
+      exactOriginalPromptMissing: true,
+      fieldPaths: record.fieldPaths,
+      contexts: record.contexts,
+      recoveredAt: new Date().toISOString(),
+    },
+    prompt,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function ensureBoundImagePromptArtifactsNode(
+  outputDir: string,
+  story: Story,
+  generator?: Record<string, unknown>,
+): { checked: number; alreadyPresent: number; recovered: number; records: Array<Record<string, unknown>> } {
+  const fs = nodeRequire<typeof import('fs')>('fs');
+  const path = nodeRequire<typeof import('path')>('path');
+  const normalizedOutputDir = outputDir.endsWith('/') ? outputDir : `${outputDir}/`;
+  const promptDir = `${normalizedOutputDir}images/prompts`;
+  fs.mkdirSync(promptDir, { recursive: true });
+
+  const records = collectBoundImagePromptRecords(story, normalizedOutputDir);
+  let alreadyPresent = 0;
+  let recovered = 0;
+  const reportRecords: Array<Record<string, unknown>> = [];
+
+  for (const record of records) {
+    if (fs.existsSync(record.expectedPromptPath)) {
+      alreadyPresent += 1;
+      reportRecords.push({
+        status: 'present',
+        image: record.image,
+        promptPath: path.relative(normalizedOutputDir, record.expectedPromptPath),
+        fieldPaths: record.fieldPaths,
+      });
+      continue;
+    }
+
+    const artifact = buildRecoveredPromptArtifact(record, story, generator);
+    atomicWriteNodeSync(record.expectedPromptPath, JSON.stringify(artifact, null, 2));
+    recovered += 1;
+    reportRecords.push({
+      status: 'recovered',
+      image: record.image,
+      promptPath: path.relative(normalizedOutputDir, record.expectedPromptPath),
+      fieldPaths: record.fieldPaths,
+    });
+  }
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    storyId: story.id,
+    checked: records.length,
+    alreadyPresent,
+    recovered,
+    records: reportRecords,
+  };
+  atomicWriteNodeSync(
+    `${normalizedOutputDir}image-prompt-binding-report.json`,
+    JSON.stringify(report, null, 2),
+  );
+
+  return { checked: records.length, alreadyPresent, recovered, records: reportRecords };
+}
 
 export interface AgentWorkingFile {
   agentName: string;
@@ -100,6 +400,10 @@ export interface AudioGenerationDiagnostic {
   stage: 'gate' | 'voice_cast' | 'batch_generation' | 'binding';
   status: 'completed' | 'failed' | 'skipped';
   message: string;
+  provider?: 'elevenlabs' | 'gemini' | string;
+  model?: string;
+  voiceId?: string;
+  performanceTagsEnabled?: boolean;
   beatId?: string;
   sceneId?: string;
   speaker?: string;
@@ -132,6 +436,11 @@ export interface EncounterImageRunDiagnostic {
   promptChars: number;
   negativeChars: number;
   refCount: number;
+  visibleCharacters?: string[];
+  expectedCharacterRefs?: Record<string, number>;
+  effectiveCharacterRefs?: Record<string, number>;
+  missingReferenceCharacters?: string[];
+  referenceRoute?: 'text-only' | 'inline-refs' | 'url-refs' | 'edit-with-refs' | 'lora';
   effectivePromptChars?: number;
   effectiveNegativeChars?: number;
   effectiveRefCount?: number;
@@ -156,7 +465,37 @@ export interface PipelineOutputs {
   choiceSets?: ChoiceSet[];
   encounters?: EncounterStructure[];
   qaReport?: QAReport;
+  /**
+   * Raw per-scene results from the IncrementalValidators run. When present,
+   * `savePipelineOutputs` writes an aggregated sidecar (`06b-incremental-aggregate.json`)
+   * so QA vs incremental overlap is measurable from saved artifacts.
+   * I1 from the determinism/LLM instrumentation plan.
+   */
+  incrementalValidationResults?: SceneValidationResult[];
+  /**
+   * Per-encounter telemetry (I2 instrumentation). When present,
+   * `savePipelineOutputs` writes a sidecar (`06c-encounter-telemetry.json`)
+   * capturing per-phase success, LLM call counts, and wall-clock times
+   * for each encounter generated in the run.
+   */
+  encounterTelemetry?: EncounterTelemetry[];
+  /**
+   * Run-level LLM call ledger (I4 instrumentation). When present,
+   * `savePipelineOutputs` writes a sidecar (`09-llm-ledger.json`) summarising
+   * per-agent call counts, token usage, and wall-clock time so future
+   * rebalance decisions can be grounded in measured cost rather than guesses.
+   */
+  llmLedger?: LlmLedger;
+  /**
+   * Per-episode branch shadow diffs (I5 instrumentation). Only populated
+   * when `config.generation.branchShadowModeEnabled` is true. When present,
+   * `savePipelineOutputs` writes a sidecar (`06d-branch-shadow-diff.json`)
+   * so the LLM-vs-deterministic branch analysis overlap is measurable.
+   */
+  branchShadowDiffs?: Array<{ episodeId: string; diff: BranchShadowDiff }>;
   bestPracticesReport?: ComprehensiveValidationReport;
+  finalStoryContractReport?: FinalStoryContractReport;
+  qualityCouncilReport?: QualityCouncilReport;
   finalStory?: Story;
   // Visual planning assets
   visualPlanning?: VisualPlanningOutputs;
@@ -173,7 +512,21 @@ export interface PipelineOutputs {
     data: unknown;
     requiresApproval: boolean;
   }>;
+  generator?: Record<string, unknown>;
+  /**
+   * S3: per-run remediation summary (scene/encounter/choice regeneration + autofix).
+   * When present, the counts are folded into the success quality-ledger row so
+   * remediation frequency / success / degradation is trackable cross-run.
+   */
+  remediationSummary?: {
+    attempted: number;
+    succeeded: number;
+    degraded: number;
+  };
 }
+
+export type QualityScoreBasis = StoryCircleQualityScoreBasis;
+export type QualityScoreReport = StoryCircleQualityScoreReport;
 
 export interface OutputManifest {
   storyTitle: string;
@@ -194,7 +547,14 @@ export interface OutputManifest {
     choices: number;
     qaScore?: number;
     validationScore?: number;
+    qualityScore?: number;
+    qualityScoreBasis?: QualityScoreBasis;
     validationPassed?: boolean;
+    finalStoryContractPassed?: boolean;
+    finalStoryContractBlockingIssues?: number;
+    qualityCouncilEnabled?: boolean;
+    qualityCouncilFindings?: number;
+    qualityCouncilFusionUsed?: boolean;
     // Visual planning stats
     hasColorScript?: boolean;
     characterReferencesCount?: number;
@@ -239,7 +599,7 @@ function getTimestamp(): string {
 /**
  * Ensure the output directory exists
  */
-async function ensureDirectory(path: string): Promise<void> {
+export async function ensureDirectory(path: string): Promise<void> {
   if (isWebRuntime()) {
     // On web, we'll handle this differently (download or IndexedDB)
     return;
@@ -251,132 +611,11 @@ async function ensureDirectory(path: string): Promise<void> {
   }
 }
 
-function getFileExtensionForMimeType(mimeType: string): string {
-  if (mimeType.includes('png')) return 'png';
-  if (mimeType.includes('webp')) return 'webp';
-  if (mimeType.includes('gif')) return 'gif';
-  return 'jpg';
-}
-
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
-  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(dataUrl);
-  if (!match) return null;
-  return {
-    mimeType: match[1],
-    base64: match[2],
-  };
-}
-
-async function writeBinaryFile(path: string, base64Data: string): Promise<void> {
-  if (isWebRuntime()) {
-    const response = await fetch(PROXY_CONFIG.writeFile, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        filePath: path,
-        content: base64Data,
-        isBase64: true,
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to write binary file: ${response.status}`);
-    }
-    return;
-  }
-
-  await ExpoFileSystem.writeAsStringAsync(path, base64Data, {
-    encoding: ExpoFileSystem.EncodingType.Base64,
-  });
-}
-
-async function persistInlineStoryMedia(storyPath: string, story: Story): Promise<Story> {
-  const storyDir = storyPath.replace(/08-final-story\.json$/, '');
-  const mediaDir = `${storyDir}embedded-media/`;
-  let mediaIndex = 0;
-
-  const persistImage = async (value: string | undefined, label: string): Promise<string | undefined> => {
-    if (!value || !value.startsWith('data:image')) return value;
-    const parsed = parseDataUrl(value);
-    if (!parsed) return '';
-
-    const ext = getFileExtensionForMimeType(parsed.mimeType);
-    const fileName = `${label}-${mediaIndex++}.${ext}`;
-    const filePath = `${mediaDir}${fileName}`;
-    await writeBinaryFile(filePath, parsed.base64);
-    return filePath;
-  };
-
-  const cleanedStory = JSON.parse(JSON.stringify(story)) as Story;
-  cleanedStory.coverImage = (await persistImage(cleanedStory.coverImage, 'story-cover')) || '';
-
-  for (const episode of cleanedStory.episodes || []) {
-    episode.coverImage = (await persistImage(episode.coverImage, `episode-${episode.id}-cover`)) || '';
-    for (const scene of episode.scenes || []) {
-      const episodeSceneKey = `episode-${episode.number ?? episode.id}-${scene.id}`;
-      scene.backgroundImage = await persistImage(scene.backgroundImage, `scene-${episodeSceneKey}-bg`);
-      for (const beat of scene.beats || []) {
-        beat.image = await persistImage(beat.image, `beat-${episodeSceneKey}-${beat.id}`);
-      }
-    }
-  }
-
-  return cleanedStory;
-}
-
 /**
  * Write a JSON file
  */
 async function writeJsonFile(path: string, data: unknown): Promise<number> {
-  // If this is the final story, we want to strip out the massive imageData base64 strings
-  // but keep the imageUrls for the UI to load from the proxy server.
-  let cleanData = data;
-  if (path.endsWith('08-final-story.json') && typeof data === 'object' && data !== null) {
-    try {
-      const story = await persistInlineStoryMedia(path, data as Story);
-      
-      // Strip from episodes -> scenes -> beats -> images
-      if (story.episodes) {
-        for (const ep of story.episodes) {
-          if (ep.coverImage) {
-            // @ts-ignore - GeneratedImage structure
-            if (typeof ep.coverImage === 'object') delete (ep.coverImage as any).imageData;
-          }
-          if (ep.scenes) {
-            for (const scene of ep.scenes) {
-              if (scene.backgroundImage) {
-                // @ts-ignore
-                if (typeof scene.backgroundImage === 'object') delete (scene.backgroundImage as any).imageData;
-              }
-              if (scene.beats) {
-                for (const beat of scene.beats) {
-                  if (beat.image) {
-                    // @ts-ignore
-                    if (typeof beat.image === 'object') delete (beat.image as any).imageData;
-                  }
-                  if (beat.encounterSequence && Array.isArray(beat.encounterSequence)) {
-                    for (const img of beat.encounterSequence) {
-                      if (typeof img === 'object') delete (img as any).imageData;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      // Strip from cover image
-      if (story.coverImage && typeof story.coverImage === 'object') {
-        delete (story.coverImage as any).imageData;
-      }
-      
-      cleanData = story;
-    } catch (e) {
-      console.warn('[OutputWriter] Failed to clean final story data:', e);
-    }
-  }
+  const cleanData = data;
 
   const content = JSON.stringify(cleanData, null, 2);
 
@@ -416,11 +655,130 @@ async function writeJsonFile(path: string, data: unknown): Promise<number> {
     return content.length;
   }
 
+  if (hasNodeFs()) {
+    atomicWriteNodeSync(path, content);
+    return content.length;
+  }
+
   await ExpoFileSystem.writeAsStringAsync(path, content, {
     encoding: 'utf8',
   });
 
   return content.length;
+}
+
+function withPersistedStoryVisualMetadata(story: Story, generator?: Record<string, unknown>): Story {
+  const next = { ...story } as Story;
+  if (!next.artStyleProfile && generator?.artStyleProfile) {
+    next.artStyleProfile = generator.artStyleProfile;
+  }
+  if (!next.styleAnchors && generator?.styleAnchors && typeof generator.styleAnchors === 'object') {
+    next.styleAnchors = generator.styleAnchors as Story['styleAnchors'];
+  }
+  return next;
+}
+
+function withGeneratedOutputScope(story: Story, brief: FullCreativeBrief): Story {
+  const generatedEpisodeNumbers = (story.episodes || [])
+    .map(episode => episode.number)
+    .filter((episodeNumber): episodeNumber is number => typeof episodeNumber === 'number')
+    .sort((a, b) => a - b);
+  const startEpisode = generatedEpisodeNumbers[0] ?? brief.episode?.number ?? 1;
+  const endEpisode = generatedEpisodeNumbers[generatedEpisodeNumbers.length - 1] ?? startEpisode;
+  const requestedEpisodeCount = brief.multiEpisode?.episodeRange
+    ? Math.max(0, brief.multiEpisode.episodeRange.end - brief.multiEpisode.episodeRange.start + 1)
+    : generatedEpisodeNumbers.length || 1;
+  const sourceEpisodeCount =
+    brief.seasonPlan?.totalEpisodes
+    || brief.multiEpisode?.sourceAnalysis?.totalEstimatedEpisodes
+    || Math.max(requestedEpisodeCount, generatedEpisodeNumbers.length || 1);
+  const isPartialSeason = generatedEpisodeNumbers.length < sourceEpisodeCount;
+
+  return {
+    ...story,
+    generatedOutputScope: {
+      sourceEpisodeCount,
+      requestedEpisodeCount,
+      generatedEpisodeRange: { startEpisode, endEpisode },
+      isPartialSeason,
+      sourceTreatmentTitle: brief.seasonPlan?.sourceTitle || brief.story?.title,
+      treatmentCompleteness: isPartialSeason ? 'partial-slice' : 'full-season',
+    },
+  };
+}
+
+/**
+ * Write a v3 `story.json` package plus a small `manifest.json` next to
+ * it. The manifest records the sha256 of story.json so the catalog
+ * can detect partial writes and the migration tool can verify
+ * integrity.
+ */
+export async function writeFinalStoryPackage(
+  outputDir: string,
+  story: Story,
+  options?: { generator?: Record<string, unknown> },
+): Promise<{ storyJsonPath: string; manifestPath: string; storySize: number }> {
+  const storyJsonPath = outputDir + 'story.json';
+  const manifestPath = outputDir + 'manifest.json';
+  const storyForPackage = withPersistedStoryVisualMetadata(story, options?.generator);
+  const generator = storyForPackage.generatedOutputScope
+    ? { ...(options?.generator ?? {}), generatedOutputScope: storyForPackage.generatedOutputScope }
+    : options?.generator;
+
+  const pkg = encodeStory(storyForPackage, {
+    targetVersion: STORY_SCHEMA_VERSION,
+    generator,
+  });
+
+  const storyJson = JSON.stringify(pkg, null, 2);
+
+  let sha256 = '';
+  let bytes = storyJson.length;
+
+  if (hasNodeFs()) {
+    ensureBoundImagePromptArtifactsNode(outputDir, storyForPackage, options?.generator);
+    const result = atomicWriteNodeSync(storyJsonPath, storyJson);
+    sha256 = result.sha256;
+    bytes = result.bytes;
+  } else if (isWebRuntime()) {
+    await fetch(PROXY_CONFIG.writeFile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: storyJsonPath, content: storyJson }),
+    });
+    // For web we cannot compute sha256 cheaply here; manifest sha will be empty
+    // but the catalog tolerates missing manifest and falls back to the plain
+    // file read.
+  } else {
+    await ExpoFileSystem.writeAsStringAsync(storyJsonPath, storyJson, { encoding: 'utf8' });
+  }
+
+  const manifest = {
+    schemaVersion: 1,
+    storyId: storyForPackage.id,
+    storySchemaVersion: STORY_SCHEMA_VERSION,
+    primaryStoryFile: 'story.json',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    generator: generator ?? {},
+    files: {
+      'story.json': { sha256, bytes },
+    },
+  };
+  const manifestContent = JSON.stringify(manifest, null, 2);
+  if (hasNodeFs()) {
+    atomicWriteNodeSync(manifestPath, manifestContent);
+  } else if (isWebRuntime()) {
+    await fetch(PROXY_CONFIG.writeFile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: manifestPath, content: manifestContent }),
+    });
+  } else {
+    await ExpoFileSystem.writeAsStringAsync(manifestPath, manifestContent, { encoding: 'utf8' });
+  }
+
+  return { storyJsonPath, manifestPath, storySize: bytes };
 }
 
 /**
@@ -435,10 +793,14 @@ export async function savePipelineErrorLog(
     message: string;
     stack?: string;
     episodeNumber?: number;
+    // Structured failure context (e.g. the specific blocking issues from the
+    // final story contract) so a failed run is inspectable on disk and the
+    // generator can be fixed — not just the top-line message.
+    details?: Record<string, unknown>;
   }>
 ): Promise<void> {
   if (!outputDir || errors.length === 0) return;
-  
+
   try {
     const errorLogPath = outputDir + '99-pipeline-errors.json';
     await writeJsonFile(errorLogPath, {
@@ -449,6 +811,213 @@ export async function savePipelineErrorLog(
     console.log(`[OutputWriter] Saved ${errors.length} error(s) to ${errorLogPath}`);
   } catch (e) {
     console.warn('[OutputWriter] Failed to save error log:', e);
+  }
+  // Note: the failed-run quality-ledger row is written by appendFailedRunLedger
+  // at the true terminal abort (F4), NOT here — savePipelineErrorLog is also
+  // called for non-fatal diagnostics and must not mark a run failed.
+}
+
+// The cross-run quality ledger lives in the PARENT of a run's output dir
+// (e.g. generated-stories/quality-ledger.jsonl). Deriving the base dir from the
+// run dir (rather than a global) keeps test runs writing to their own temp
+// dirs instead of polluting the real ledger (F4).
+function ledgerBaseDir(outputDir: string): string {
+  const trimmed = outputDir.replace(/\/+$/, '');
+  const slash = trimmed.lastIndexOf('/');
+  return slash >= 0 ? trimmed.slice(0, slash + 1) : './';
+}
+function runNameFromDir(outputDir: string): string {
+  const trimmed = outputDir.replace(/\/+$/, '');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
+export function reconcileBestPracticesReportForFinalStory(
+  report: ComprehensiveValidationReport | undefined,
+  story: Story | undefined,
+): ComprehensiveValidationReport | undefined {
+  if (!report || !story || !Array.isArray(report.blockingIssues)) return report;
+  const blockingIssues = report.blockingIssues.filter((issue) => {
+    return !isStaleRelationshipIdBestPracticeIssue(story, issue)
+      && !isStaleStatCheckBalanceIssue(story, issue);
+  });
+  if (blockingIssues.length === report.blockingIssues.length) return report;
+  return {
+    ...report,
+    blockingIssues,
+    overallPassed: blockingIssues.length === 0 ? true : report.overallPassed,
+  };
+}
+
+function isStaleRelationshipIdBestPracticeIssue(story: Story, issue: { message?: string }): boolean {
+  const match = (issue.message || '').match(
+    /Relationship consequence on choice "([^"]+)" targets unknown NPC "([^"]+)"/i,
+  );
+  if (!match) return false;
+  const choice = findChoiceInStory(story, match[1]);
+  if (!choice) return false;
+  return !(choice.consequences || []).some((consequence: any) => {
+    if (!consequence || consequence.type !== 'relationship') return false;
+    return consequence.npcId === match[2] || consequence.target === match[2];
+  });
+}
+
+function isStaleStatCheckBalanceIssue(story: Story, issue: { message?: string }): boolean {
+  const match = (issue.message || '').match(/Stat check "([^"]+)" has skillWeights totaling/i);
+  if (!match) return false;
+  const choice = findChoiceInStory(story, match[1]);
+  const weights = choice?.statCheck?.skillWeights;
+  if (!weights || typeof weights !== 'object' || Array.isArray(weights)) return false;
+  const values = Object.values(weights);
+  if (values.length === 0 || values.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+    return false;
+  }
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Math.abs(total - 1) <= 0.01;
+}
+
+function findChoiceInStory(story: Story, choiceId: string): any | undefined {
+  for (const episode of story.episodes || []) {
+    for (const scene of episode.scenes || []) {
+      for (const beat of scene.beats || []) {
+        const choice = (beat.choices || []).find((candidate: any) => candidate?.id === choiceId);
+        if (choice) return choice;
+      }
+    }
+  }
+  return undefined;
+}
+
+export function deriveRunQualityScore(
+  outputs: {
+    brief?: Record<string, any>;
+    finalStory?: Story | null;
+    qaReport?: QAReport | null;
+    bestPracticesReport?: any;
+    finalStoryContractReport?: FinalStoryContractReport | null;
+    qualityCouncilReport?: QualityCouncilReport | null;
+    incrementalValidationResults?: any;
+  },
+  options: StoryCircleQualityScoreOptions = {},
+): {
+  score: number;
+  basis: QualityScoreBasis;
+  report: QualityScoreReport;
+} {
+  return deriveStoryCircleQualityScore(outputs, options);
+}
+
+/**
+ * Append a 'failed' row to the cross-run quality ledger at a genuine terminal
+ * abort (F4). Best-effort; never throws.
+ */
+export async function appendFailedRunLedger(
+  outputDir: string,
+  errorCount = 1,
+  details?: { blocked?: boolean; failureKind?: string; validatorId?: string },
+): Promise<void> {
+  if (!outputDir) return;
+  try {
+    await appendQualityLedger(ledgerBaseDir(outputDir), {
+      timestamp: new Date().toISOString(),
+      runDir: runNameFromDir(outputDir),
+      outcome: 'failed',
+      errorCount,
+      blocked: details?.blocked,
+      failureKind: details?.failureKind,
+      validatorId: details?.validatorId,
+    });
+  } catch { /* ledger is best-effort */ }
+}
+
+/**
+ * B2: write a recovery snapshot of the assembled story to `partial-story.json`
+ * BEFORE the final gates (treatment fidelity, story contract) that can abort
+ * the run. If a later phase throws, the completed episodes survive on disk
+ * instead of being discarded. Distinct filename so it never shadows the real
+ * `story.json` / catalog. Best-effort: never throws.
+ * See docs/PROJECT_AUDIT_2026-05-28.md (Track B2).
+ */
+export async function savePartialStory(
+  outputDir: string,
+  story: Story,
+  options?: { note?: string; diagnostic?: boolean },
+): Promise<void> {
+  if (!outputDir || !story) return;
+  try {
+    await ensureDirectory(outputDir);
+    await writeJsonFile(outputDir + 'partial-story.json', {
+      _partial: true,
+      _diagnostic: options?.diagnostic === true,
+      _note: options?.note || 'Recovery snapshot written before final validation gates. The completed episodes are playable; later phases may not have run.',
+      savedAt: new Date().toISOString(),
+      episodeCount: Array.isArray(story.episodes) ? story.episodes.length : 0,
+      story,
+    });
+    console.info(`[OutputWriter] Wrote partial-story.json recovery snapshot (${Array.isArray(story.episodes) ? story.episodes.length : 0} episode(s))`);
+  } catch (e) {
+    console.warn('[OutputWriter] Failed to write partial story snapshot (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * Persist the exact final-contract failure report plus the last assembled/repaired
+ * candidate. These are diagnostic artifacts only; they never write story.json
+ * or manifest.json, so failed runs stay out of the catalog.
+ */
+export async function saveFinalStoryContractFailure(
+  outputDir: string,
+  story: Story,
+  report: FinalStoryContractReport,
+): Promise<void> {
+  if (!outputDir || !story || !report) return;
+  try {
+    await ensureDirectory(outputDir);
+    await writeJsonFile(outputDir + '07b-final-story-contract.failed.json', report);
+    await savePartialStory(outputDir, story, {
+      diagnostic: true,
+      note: 'Diagnostic snapshot of the last assembled/repaired candidate after final-story contract failure. Not a playable package; inspect with the failed contract report.',
+    });
+    console.info('[OutputWriter] Wrote final-contract failure report and repaired partial snapshot');
+  } catch (e) {
+    console.warn('[OutputWriter] Failed to write final-contract failure artifacts (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function supersedeFailureArtifactsOnSuccessfulPackage(outputDir: string): Promise<void> {
+  if (!outputDir || !hasNodeFs()) return;
+  const fs = nodeRequire<typeof import('fs')>('fs');
+  const path = nodeRequire<typeof import('path')>('path');
+  const candidates = [
+    '07b-final-story-contract.failed.json',
+    '99-pipeline-errors.json',
+  ];
+  const existing = candidates.filter((name) => fs.existsSync(path.join(outputDir, name)));
+  if (existing.length === 0) return;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const supersededDir = path.join(outputDir, 'superseded-failures', stamp);
+  fs.mkdirSync(supersededDir, { recursive: true });
+  const moved: Array<{ from: string; to: string }> = [];
+  for (const name of existing) {
+    const from = path.join(outputDir, name);
+    const to = path.join(supersededDir, name);
+    try {
+      fs.renameSync(from, to);
+      moved.push({ from: name, to: path.relative(outputDir, to) });
+    } catch (error) {
+      console.warn(`[OutputWriter] Failed to supersede stale failure artifact ${name}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  if (moved.length > 0) {
+    atomicWriteNodeSync(
+      path.join(supersededDir, 'superseded-by-success.json'),
+      JSON.stringify({
+        supersededAt: new Date().toISOString(),
+        reason: 'A later successful final package was written for this run directory.',
+        moved,
+      }, null, 2),
+    );
+    console.info(`[OutputWriter] Superseded ${moved.length} stale failure artifact(s) after successful package save`);
   }
 }
 
@@ -614,6 +1183,26 @@ export async function saveEarlyDiagnostic(
   }
 }
 
+export function loadEarlyDiagnosticSync<T = unknown>(
+  outputDir: string,
+  filename: string,
+): T | null {
+  let nodeFs: { existsSync: (p: string) => boolean; readFileSync: (p: string, enc: BufferEncoding) => string } | undefined;
+  try {
+    nodeFs = nodeRequire<typeof import('fs')>('fs');
+  } catch {
+    /* non-Node */
+  }
+  if (!nodeFs?.existsSync || !nodeFs.readFileSync) return null;
+  const fullPath = outputDir + filename;
+  try {
+    if (!nodeFs.existsSync(fullPath)) return null;
+    return JSON.parse(nodeFs.readFileSync(fullPath, 'utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
 /** Persisted list of completed encounter slot base identifiers for resume across pipeline runs. */
 export interface EncounterResumeStateV1 {
   version: 1;
@@ -702,6 +1291,10 @@ export async function savePipelineOutputs(
   const files: OutputManifest['files'] = [];
   const storyTitle = outputs.brief.story.title;
   const storyId = slugify(storyTitle);
+  outputs.bestPracticesReport = reconcileBestPracticesReportForFinalStory(
+    outputs.bestPracticesReport,
+    outputs.finalStory,
+  );
 
   console.log(`[OutputWriter] Saving pipeline outputs for "${storyTitle}"...`);
 
@@ -782,12 +1375,187 @@ export async function savePipelineOutputs(
     files.push({ name: 'QA Report', path: qaPath, type: 'qa', size: qaSize });
   }
 
+  // 7b. Save IncrementalValidators aggregate (for I1 instrumentation).
+  //
+  // This sidecar lets us measure overlap between what the incremental
+  // validators caught during generation and what end-of-pipeline QA
+  // surfaces. It is written whenever incremental validation actually ran
+  // (i.e. we have at least one SceneValidationResult).
+  if (outputs.incrementalValidationResults && outputs.incrementalValidationResults.length > 0) {
+    const rawResults = outputs.incrementalValidationResults;
+    const totalIssues = { voice: 0, stakes: 0, sensitivity: 0, continuity: 0, encounter: 0 };
+    const regenerationRequests = { scene: 0, choices: 0, encounter: 0, none: 0 };
+    let passedScenes = 0;
+    let failedScenes = 0;
+    let totalValidationMs = 0;
+
+    for (const r of rawResults) {
+      totalIssues.voice += r.voice?.issues?.length ?? 0;
+      totalIssues.stakes += r.stakes?.issues?.length ?? 0;
+      totalIssues.sensitivity += r.sensitivity?.issues?.length ?? 0;
+      totalIssues.continuity += r.continuity?.issues?.length ?? 0;
+      totalIssues.encounter += r.encounter?.issues?.length ?? 0;
+      if (r.overallPassed) passedScenes++; else failedScenes++;
+      if (r.regenerationRequested === 'scene') regenerationRequests.scene++;
+      else if (r.regenerationRequested === 'choices') regenerationRequests.choices++;
+      else if (r.regenerationRequested === 'encounter') regenerationRequests.encounter++;
+      else regenerationRequests.none++;
+      totalValidationMs += r.validationTimeMs ?? 0;
+    }
+
+    const aggregate = {
+      generatedAt: new Date().toISOString(),
+      totalScenes: rawResults.length,
+      passedScenes,
+      failedScenes,
+      totalIssues,
+      regenerationRequests,
+      averageValidationTimeMs: rawResults.length > 0
+        ? Math.round(totalValidationMs / rawResults.length)
+        : 0,
+      perScene: rawResults.map(r => ({
+        sceneId: r.sceneId,
+        sceneName: r.sceneName,
+        overallPassed: r.overallPassed,
+        regenerationRequested: r.regenerationRequested,
+        validationTimeMs: r.validationTimeMs,
+        counts: {
+          voice: r.voice?.issues?.length ?? 0,
+          stakes: r.stakes?.issues?.length ?? 0,
+          sensitivity: r.sensitivity?.issues?.length ?? 0,
+          continuity: r.continuity?.issues?.length ?? 0,
+          encounter: r.encounter?.issues?.length ?? 0,
+        },
+        issues: {
+          voice: r.voice?.issues ?? [],
+          stakes: r.stakes?.issues ?? [],
+          sensitivity: r.sensitivity?.issues ?? [],
+          continuity: r.continuity?.issues ?? [],
+          encounter: r.encounter?.issues ?? [],
+        },
+      })),
+    };
+
+    const aggregatePath = outputDir + '06b-incremental-aggregate.json';
+    const aggregateSize = await writeJsonFile(aggregatePath, aggregate);
+    files.push({
+      name: 'Incremental Validation Aggregate',
+      path: aggregatePath,
+      type: 'incremental-aggregate',
+      size: aggregateSize,
+    });
+  }
+
+  // 7c. Save per-encounter telemetry (I2 instrumentation).
+  if (outputs.encounterTelemetry && outputs.encounterTelemetry.length > 0) {
+    const telemetry = outputs.encounterTelemetry;
+    const modeCounts: Record<string, number> = {};
+    let totalLlmCalls = 0;
+    let totalMs = 0;
+    let phase4FailCount = 0;
+    let phase3RanCount = 0;
+    for (const t of telemetry) {
+      modeCounts[t.mode] = (modeCounts[t.mode] ?? 0) + 1;
+      totalLlmCalls += t.llmCallCount ?? 0;
+      totalMs += t.msElapsed ?? 0;
+      if (!t.phase4Ok) phase4FailCount++;
+      if (t.phase3Ran) phase3RanCount++;
+    }
+    const telemetryDoc = {
+      generatedAt: new Date().toISOString(),
+      totalEncounters: telemetry.length,
+      modeCounts,
+      phase3RanCount,
+      phase4FailCount,
+      totalLlmCalls,
+      totalMs,
+      averageMs: telemetry.length > 0 ? Math.round(totalMs / telemetry.length) : 0,
+      encounters: telemetry,
+    };
+    const telemetryPath = outputDir + '06c-encounter-telemetry.json';
+    const telemetrySize = await writeJsonFile(telemetryPath, telemetryDoc);
+    files.push({
+      name: 'Encounter Telemetry',
+      path: telemetryPath,
+      type: 'encounter-telemetry',
+      size: telemetrySize,
+    });
+  }
+
+  // 7d. Save branch shadow diffs (I5 instrumentation).
+  //
+  // Off by default; only written when shadow mode was enabled in config.
+  // Each episode contributes one diff entry. Aggregated totals are
+  // recomputed here from the per-episode diffs so consumers don't have to.
+  if (outputs.branchShadowDiffs && outputs.branchShadowDiffs.length > 0) {
+    const perEpisode = outputs.branchShadowDiffs;
+    const totals = perEpisode.reduce(
+      (acc, { diff }) => {
+        acc.agreed += diff.agreedScenes.length;
+        acc.llmOnly += diff.llmOnlyScenes.length;
+        acc.deterministicOnly += diff.deterministicOnlyScenes.length;
+        acc.llmValidationIssues += diff.counts.llmValidationIssues;
+        acc.deterministicUnreachable += diff.counts.deterministicUnreachable;
+        acc.deterministicDeadEnds += diff.counts.deterministicDeadEnds;
+        acc.deterministicReconvergence += diff.counts.deterministicReconvergence;
+        return acc;
+      },
+      {
+        agreed: 0,
+        llmOnly: 0,
+        deterministicOnly: 0,
+        llmValidationIssues: 0,
+        deterministicUnreachable: 0,
+        deterministicDeadEnds: 0,
+        deterministicReconvergence: 0,
+      },
+    );
+    const shadowDoc = {
+      generatedAt: new Date().toISOString(),
+      episodeCount: perEpisode.length,
+      totals,
+      episodes: perEpisode,
+    };
+    const shadowPath = outputDir + '06d-branch-shadow-diff.json';
+    const shadowSize = await writeJsonFile(shadowPath, shadowDoc);
+    files.push({
+      name: 'Branch Shadow Diff',
+      path: shadowPath,
+      type: 'branch-shadow-diff',
+      size: shadowSize,
+    });
+  }
+
+  // 7e. Save LLM ledger (I4 instrumentation).
+  //
+  // Run-level aggregation of every LLM call observed via BaseAgent's
+  // observer. Token totals are populated from anthropic + gemini transports;
+  // `totals.usageReported` surfaces how many calls actually reported usage so
+  // gaps (e.g. openai, error paths) remain visible instead of silently
+  // counting as zero tokens.
+  if (outputs.llmLedger) {
+    const ledgerDoc = {
+      generatedAt: new Date().toISOString(),
+      ...outputs.llmLedger,
+    };
+    const ledgerPath = outputDir + '09-llm-ledger.json';
+    const ledgerSize = await writeJsonFile(ledgerPath, ledgerDoc);
+    files.push({
+      name: 'LLM Call Ledger',
+      path: ledgerPath,
+      type: 'llm-ledger',
+      size: ledgerSize,
+    });
+  }
+
   // 8. Save Best Practices Validation Metrics
   if (outputs.bestPracticesReport) {
     const validationPath = outputDir + '07-validation-metrics.json';
     const validationSize = await writeJsonFile(validationPath, {
       overallPassed: outputs.bestPracticesReport.overallPassed,
       overallScore: outputs.bestPracticesReport.overallScore,
+      validationScore: outputs.bestPracticesReport.overallScore,
+      legacyValidationQualityScore: outputs.bestPracticesReport.qualityScore,
       metrics: outputs.bestPracticesReport.metrics,
       issuesSummary: {
         blocking: outputs.bestPracticesReport.blockingIssues.length,
@@ -803,11 +1571,52 @@ export async function savePipelineOutputs(
     files.push({ name: 'Validation Metrics', path: validationPath, type: 'validation', size: validationSize });
   }
 
-  // 9. Save Final Story
+  // 8b. Save final story publish contract
+  if (outputs.finalStoryContractReport) {
+    const contractPath = outputDir + '07b-final-story-contract.json';
+    const contractSize = await writeJsonFile(contractPath, outputs.finalStoryContractReport);
+    files.push({ name: 'Final Story Contract', path: contractPath, type: 'final-story-contract', size: contractSize });
+  }
+
+  if (outputs.qualityCouncilReport) {
+    const councilPath = outputDir + '07d-quality-council-report.json';
+    const councilSize = await writeJsonFile(councilPath, outputs.qualityCouncilReport);
+    files.push({ name: 'Quality Council Report', path: councilPath, type: 'quality-council', size: councilSize });
+
+    const choiceReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.checkpoint === 'choice');
+    if (choiceReports.length > 0) {
+      const choicePath = outputDir + '07e-quality-council-choice-reports.json';
+      const choiceSize = await writeJsonFile(choicePath, choiceReports);
+      files.push({ name: 'Quality Council Choice Reports', path: choicePath, type: 'quality-council-choice', size: choiceSize });
+    }
+
+    const routeReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.checkpoint === 'route-playtest');
+    if (routeReports.length > 0) {
+      const routePath = outputDir + '07f-quality-council-route-playtest.json';
+      const routeSize = await writeJsonFile(routePath, routeReports);
+      files.push({ name: 'Quality Council Route Playtest', path: routePath, type: 'quality-council-route-playtest', size: routeSize });
+    }
+
+    const fusionReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.fusionUsed);
+    if (fusionReports.length > 0) {
+      const fusionPath = outputDir + '07g-quality-council-fusion-audit.json';
+      const fusionSize = await writeJsonFile(fusionPath, fusionReports);
+      files.push({ name: 'Quality Council Fusion Audit', path: fusionPath, type: 'quality-council-fusion', size: fusionSize });
+    }
+  }
+
+  // 9. Save Final Story — atomic write + manifest.json + v3 story.json
   if (outputs.finalStory) {
-    const storyPath = outputDir + '08-final-story.json';
-    const storySize = await writeJsonFile(storyPath, outputs.finalStory);
-    files.push({ name: 'Final Story', path: storyPath, type: 'story', size: storySize });
+    outputs.finalStory = withGeneratedOutputScope(outputs.finalStory, outputs.brief);
+    const { storyJsonPath, manifestPath: mPath, storySize } =
+      await writeFinalStoryPackage(outputDir, outputs.finalStory, {
+        generator: outputs.generator || { pipeline: 'FullStoryPipeline' },
+      });
+    files.push({ name: 'Final Story (v3 package)', path: storyJsonPath, type: 'story', size: storySize });
+    files.push({ name: 'Story Manifest', path: mPath, type: 'manifest', size: 0 });
+    if (outputs.finalStoryContractReport?.passed === true) {
+      await supersedeFailureArtifactsOnSuccessfulPackage(outputDir);
+    }
     
     // 9b. Save beat images as separate files
     if (!isWebRuntime()) {
@@ -1267,16 +2076,48 @@ export async function savePipelineOutputs(
   }
 
   // 11. Save Checkpoints
+  // Primary sink: append to the per-story `checkpoints.jsonl` log. The
+  // legacy `09-checkpoints.json` is still written for back-compat with
+  // external tooling that reads it; the JSONL file is the source of
+  // truth for resume logic going forward.
   if (outputs.checkpoints && outputs.checkpoints.length > 0) {
+    if (hasNodeFs()) {
+      try {
+        // Strip the trailing slash; checkpointLog expects a dir path.
+        const storyDirAbs = outputDir.replace(/\/+$/, '');
+        const ckLog = nodeRequire<typeof import('./checkpointLog')>('./checkpointLog');
+        for (const cp of outputs.checkpoints as Array<Record<string, unknown>>) {
+          ckLog.appendCheckpoint(storyDirAbs, {
+            kind: 'phase',
+            jobId: String(cp.jobId ?? storyId),
+            phase: String(cp.phase ?? cp.stepId ?? 'unknown'),
+            status: cp.status === 'failed' ? 'failed' : 'completed',
+            detail: typeof cp.detail === 'string' ? cp.detail : undefined,
+          } as unknown as import('./checkpointLog').Checkpoint);
+        }
+      } catch (e) {
+        console.warn('[OutputWriter] checkpoints.jsonl append failed:', e instanceof Error ? e.message : e);
+      }
+    }
     const checkpointsPath = outputDir + '09-checkpoints.json';
     const checkpointsSize = await writeJsonFile(checkpointsPath, outputs.checkpoints);
-    files.push({ name: 'Checkpoints', path: checkpointsPath, type: 'checkpoints', size: checkpointsSize });
+    files.push({ name: 'Checkpoints (legacy)', path: checkpointsPath, type: 'checkpoints', size: checkpointsSize });
   }
 
   // Fallback: extract counts from the assembled story when intermediate pipeline data isn't provided
   const storyEpisodes = outputs.finalStory?.episodes || [];
   const storyScenes = storyEpisodes.flatMap(ep => ep.scenes || []);
   const storyEncounters = storyScenes.map(s => s.encounter).filter(Boolean);
+
+  const quality = deriveRunQualityScore(outputs, { outputDir });
+  const qualityReportPath = outputDir + '07c-quality-score-report.json';
+  const qualityReportSize = await writeJsonFile(qualityReportPath, quality.report);
+  files.push({
+    name: 'Quality Score Report',
+    path: qualityReportPath,
+    type: 'quality-score',
+    size: qualityReportSize,
+  });
 
   // Create manifest
   const manifest: OutputManifest = {
@@ -1317,7 +2158,17 @@ export async function savePipelineOutputs(
         || 0,
       qaScore: outputs.qaReport?.overallScore,
       validationScore: outputs.bestPracticesReport?.overallScore,
+      qualityScore: quality.score,
+      qualityScoreBasis: quality.basis,
       validationPassed: outputs.bestPracticesReport?.overallPassed,
+      finalStoryContractPassed: outputs.finalStoryContractReport?.passed,
+      finalStoryContractBlockingIssues: outputs.finalStoryContractReport?.blockingIssues.length,
+      ...(outputs.qualityCouncilReport ? {
+        qualityCouncilEnabled: true,
+        qualityCouncilFindings: outputs.qualityCouncilReport.summary.highConfidenceFindings.length
+          + outputs.qualityCouncilReport.summary.advisoryFindings.length,
+        qualityCouncilFusionUsed: outputs.qualityCouncilReport.summary.fusionUsed,
+      } : {}),
       // Visual planning stats
       hasColorScript: !!outputs.visualPlanning?.colorScript,
       characterReferencesCount: outputs.visualPlanning?.characterReferences?.length || 0,
@@ -1339,6 +2190,38 @@ export async function savePipelineOutputs(
 
   console.log(`[OutputWriter] ✓ Saved ${files.length} files to ${outputDir}`);
   console.log(`[OutputWriter] Summary:`, manifest.summary);
+
+  // Record the successful run in the cross-run quality ledger (B3). Base dir is
+  // derived from the run dir's parent so test runs don't pollute the real
+  // ledger (F4).
+  try {
+    let openerRatio: number | undefined;
+    let openerMonotony: number | undefined;
+    try {
+      if (outputs.finalStory) {
+        const opener = analyzeSentenceOpeners(outputs.finalStory);
+        openerRatio = opener.secondPersonRatio;
+        openerMonotony = opener.monotonyPassages.length;
+      }
+    } catch { /* opener stats are best-effort telemetry */ }
+    await appendQualityLedger(ledgerBaseDir(outputDir), {
+      timestamp: manifest.generatedAt || new Date().toISOString(),
+      runDir: runNameFromDir(outputDir),
+      storyId: manifest.storyId,
+      storyTitle: manifest.storyTitle,
+      outcome: 'success',
+      overallScore: manifest.summary?.qualityScore,
+      qaScore: manifest.summary?.qaScore,
+      validationScore: manifest.summary?.validationScore,
+      validationPassed: manifest.summary?.validationPassed,
+      finalStoryContractPassed: manifest.summary?.finalStoryContractPassed,
+      remediationsAttempted: outputs.remediationSummary?.attempted,
+      remediationsSucceeded: outputs.remediationSummary?.succeeded,
+      remediationsDegraded: outputs.remediationSummary?.degraded,
+      secondPersonOpenerRatio: openerRatio,
+      openerMonotonyPassages: openerMonotony,
+    });
+  } catch { /* ledger is best-effort */ }
 
   return manifest;
 }
@@ -1465,12 +2348,16 @@ export async function renameStory(storyId: string, oldOutputDir: string, newTitl
     manifest.storyTitle = newTitle;
     await ExpoFileSystem.writeAsStringAsync(manifestPath, JSON.stringify(manifest, null, 2));
 
-    // 2. Load final story to update it
-    const storyPath = oldOutputDir + '08-final-story.json';
+    // 2. Load final story package to update it
+    const storyPath = oldOutputDir + 'story.json';
     const storyContent = await ExpoFileSystem.readAsStringAsync(storyPath);
-    const story = JSON.parse(storyContent) as Story;
-    story.title = newTitle;
-    await ExpoFileSystem.writeAsStringAsync(storyPath, JSON.stringify(story, null, 2));
+    const storyPackage = JSON.parse(storyContent) as { story?: Story; title?: string };
+    if (storyPackage.story) {
+      storyPackage.story.title = newTitle;
+    } else {
+      storyPackage.title = newTitle;
+    }
+    await ExpoFileSystem.writeAsStringAsync(storyPath, JSON.stringify(storyPackage, null, 2));
 
     // 3. Rename directory
     const baseDir = getOutputBaseDir();

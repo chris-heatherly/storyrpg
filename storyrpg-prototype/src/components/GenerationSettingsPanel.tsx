@@ -26,11 +26,10 @@ import {
   ChevronRight,
   RotateCcw,
   Save,
-  MessageSquare,
   Zap,
   FileText,
 } from 'lucide-react-native';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import {
   SCENE_DEFAULTS,
   CONCURRENCY_DEFAULTS,
@@ -65,6 +64,8 @@ export interface GenerationSettings {
   generateImages: boolean;
   imageGenerationLimit: number;
   panelMode: 'single' | 'special-beats' | 'all-beats';
+  imagePlanningMode: 'text' | 'visual-storyboard';
+  storyboardMaxPanelsPerSheet: number;
   
   // Validation
   blockingThreshold: number;
@@ -111,6 +112,18 @@ export interface GenerationSettings {
 
   // Failure handling
   failFastMode: boolean;
+
+  // Optional Quality Council (generator-only, default off)
+  qualityCouncilEnabled: boolean;
+  qualityCouncilMode: 'advisory' | 'repair-routing' | 'strict';
+  qualityCouncilRunPlan: boolean;
+  qualityCouncilRunChoice: boolean;
+  qualityCouncilRunRoutePlaytest: boolean;
+  qualityCouncilRunFinal: boolean;
+  qualityCouncilFusionEnabled: boolean;
+  qualityCouncilFusionOnlyWhen: 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
+  qualityCouncilMaxCalls: number;
+  qualityCouncilMaxChoiceCandidates: number;
   
   // === CHOICE DESIGN SETTINGS ===
   // Choice type distribution targets (percentages, should sum to 100)
@@ -143,6 +156,8 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   generateImages: true,
   imageGenerationLimit: CONCURRENCY_DEFAULTS.imageGenerationLimit,
   panelMode: 'single' as const,
+  imagePlanningMode: 'text' as const,
+  storyboardMaxPanelsPerSheet: 6,
   
   // Validation
   blockingThreshold: PHASE_VALIDATION_DEFAULTS.blockingThreshold,
@@ -189,6 +204,18 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
 
   // Failure handling
   failFastMode: true,
+
+  // Quality Council
+  qualityCouncilEnabled: false,
+  qualityCouncilMode: 'advisory',
+  qualityCouncilRunPlan: true,
+  qualityCouncilRunChoice: true,
+  qualityCouncilRunRoutePlaytest: true,
+  qualityCouncilRunFinal: true,
+  qualityCouncilFusionEnabled: false,
+  qualityCouncilFusionOnlyWhen: 'borderline-quality',
+  qualityCouncilMaxCalls: 24,
+  qualityCouncilMaxChoiceCandidates: 3,
   
   // === CHOICE DESIGN SETTINGS ===
   // Choice type distribution targets (percentages, should sum to 100)
@@ -384,6 +411,7 @@ interface SettingsSectionConfig {
   icon: React.ReactNode;
   defaultExpanded?: boolean;
   description?: string;
+  condition?: (settings: GenerationSettings) => boolean;
   fields: SettingFieldConfig[];
   footer?: (settings: GenerationSettings) => React.ReactNode;
 }
@@ -417,6 +445,26 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
     condition: (settings) => settings.generateImages,
   },
   {
+    type: 'select',
+    key: 'imagePlanningMode',
+    label: 'Image Planning',
+    description: 'Current text planning, or scene-level visual storyboard planning with continuity maps.',
+    options: [
+      { value: 'text', label: 'Text Plan' },
+      { value: 'visual-storyboard', label: 'Visual Storyboard' },
+    ],
+    condition: (settings) => settings.generateImages,
+  },
+  {
+    type: 'number',
+    key: 'storyboardMaxPanelsPerSheet',
+    label: 'Panels per Storyboard Sheet',
+    description: 'Maximum storyboard panels generated together on one sheet.',
+    min: 1,
+    max: 12,
+    condition: (settings) => settings.generateImages,
+  },
+  {
     type: 'toggle',
     key: 'failFastMode',
     label: 'Fail Fast Pipeline',
@@ -425,12 +473,12 @@ const PERFORMANCE_FIELDS: SettingFieldConfig[] = [
 ];
 
 const STORY_STRUCTURE_FIELDS: SettingFieldConfig[] = [
-  { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Cap scenes per episode; the engine may use fewer.', min: 3, max: 12 },
+  { type: 'number', key: 'targetSceneCount', label: 'Scenes per Episode', description: 'Hard range: each episode should contain 3-6 scenes.', min: 3, max: 6 },
   { type: 'number', key: 'majorChoiceCount', label: 'Major Choice Points', description: 'How many big decisions an episode should contain.', min: 1, max: 6 },
-  { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Minimum beats required for each scene.', min: 1, max: 6 },
-  { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Upper cap before the engine merges excess beats.', min: 6, max: 20 },
-  { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Cap for standard scenes.', min: 4, max: 15 },
-  { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Cap for key bottleneck scenes.', min: 4, max: 15 },
+  { type: 'number', key: 'minBeatsPerScene', label: 'Min Beats per Scene', description: 'Default lower bound for generated scene beats. 3 is recommended.', min: 1, max: 6 },
+  { type: 'number', key: 'maxBeatsPerScene', label: 'Max Beats per Scene', description: 'Default upper bound for generated scene beats. 8 is recommended; increase only for unusually dense scenes.', min: 4, max: 12 },
+  { type: 'number', key: 'standardBeatCount', label: 'Standard Scene Beats', description: 'Target cap for standard prose scenes.', min: 3, max: 10 },
+  { type: 'number', key: 'bottleneckBeatCount', label: 'Bottleneck Scene Beats', description: 'Target cap for key bottleneck scenes; use higher values sparingly.', min: 4, max: 12 },
   { type: 'number', key: 'encounterBeatCount', label: 'Encounter Beats', description: 'Target beats for encounter scenes.', min: 2, max: 8 },
 ];
 
@@ -462,17 +510,57 @@ const CHOICE_AND_ENCOUNTER_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'choiceDistStrategic', label: 'Strategic', description: 'Skill and stat-based choices that may branch.', min: 0, max: 50, step: 5, unit: '%' },
   { type: 'number', key: 'choiceDistDilemma', label: 'Dilemma', description: 'High-stakes value tests that may branch.', min: 0, max: 30, step: 5, unit: '%' },
   { type: 'number', key: 'maxBranchingChoicesPerEpisode', label: 'Max Branching Choices', description: 'Any non-expression choice may route to a different scene.', min: 0, max: 4 },
-  { type: 'number', key: 'minEncountersShort', label: 'Short Episode Encounters', description: 'Minimum encounters for 3-4 scene episodes.', min: 0, max: 3 },
-  { type: 'number', key: 'minEncountersMedium', label: 'Medium Episode Encounters', description: 'Minimum encounters for 5-7 scene episodes.', min: 0, max: 4 },
-  { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for 8+ scene episodes.', min: 0, max: 5 },
+  { type: 'number', key: 'minEncountersShort', label: 'Short Episode Encounters', description: 'Minimum encounters for episodes with 3-4 scenes.', min: 0, max: 3 },
+  { type: 'number', key: 'minEncountersMedium', label: 'Medium Episode Encounters', description: 'Minimum encounters for episodes with 5-7 scenes.', min: 0, max: 4 },
+  { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for episodes with 8+ scenes.', min: 0, max: 5 },
 ];
 
-const CHARACTER_ASSET_FIELDS: SettingFieldConfig[] = [
-  { type: 'toggle', key: 'generateCharacterRefs', label: 'Generate Character Sheets', description: 'Create baseline character reference sheets.' },
-  { type: 'toggle', key: 'generateExpressionSheets', label: 'Generate Expression Sheets', description: 'Create alternate emotion and expression references.' },
-  { type: 'toggle', key: 'generateBodyVocabulary', label: 'Generate Body Vocabulary', description: 'Generate pose and silhouette references for characters.' },
-  { type: 'toggle', key: 'preGenerateAudio', label: 'Pre-generate Audio', description: 'Prepare narration assets during generation.' },
+const QUALITY_COUNCIL_FIELDS: SettingFieldConfig[] = [
+  {
+    type: 'toggle',
+    key: 'qualityCouncilEnabled',
+    label: 'Quality Council',
+    description: 'Run optional specialist review agents. Off preserves normal generation.',
+  },
+  {
+    type: 'select',
+    key: 'qualityCouncilMode',
+    label: 'Council Mode',
+    description: 'Advisory writes reports; repair routing recommends existing repairs; strict may only block through existing validator mappings.',
+    options: [
+      { value: 'advisory', label: 'Advisory' },
+      { value: 'repair-routing', label: 'Repair Routing' },
+      { value: 'strict', label: 'Strict' },
+    ],
+    condition: (settings) => settings.qualityCouncilEnabled,
+  },
+  { type: 'toggle', key: 'qualityCouncilRunPlan', label: 'Plan Review', description: 'Review season plan, Story Circle spine, promises, and arc pressure.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilRunChoice', label: 'Choice Review', description: 'Review choice agency, stakes, consequence memory, and fiction-first wording.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilRunRoutePlaytest', label: 'Route Playtest', description: 'Simulate branch routes for cosmetic branching and lost residue.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilRunFinal', label: 'Final Audit', description: 'Run a final regression-oriented council pass after deterministic validators.', condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'toggle', key: 'qualityCouncilFusionEnabled', label: 'OpenRouter Fusion Audit', description: 'Use OpenRouter Fusion as an optional deep review panel at final audit.', condition: (settings) => settings.qualityCouncilEnabled },
+  {
+    type: 'select',
+    key: 'qualityCouncilFusionOnlyWhen',
+    label: 'Fusion Trigger',
+    description: 'Controls when the expensive Fusion panel runs.',
+    options: [
+      { value: 'borderline-quality', label: 'Borderline' },
+      { value: 'validator-disagreement', label: 'Disagreement' },
+      { value: 'always-final', label: 'Always Final' },
+      { value: 'manual', label: 'Manual' },
+    ],
+    condition: (settings) => settings.qualityCouncilEnabled && settings.qualityCouncilFusionEnabled,
+  },
+  { type: 'number', key: 'qualityCouncilMaxCalls', label: 'Max Council Calls', description: 'Hard cap on Quality Council LLM calls per run.', min: 1, max: 96, condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'number', key: 'qualityCouncilMaxChoiceCandidates', label: 'Choice Candidate Cap', description: 'Maximum choice sets sent to the choice council per checkpoint.', min: 1, max: 8, condition: (settings) => settings.qualityCouncilEnabled },
 ];
+
+// NOTE: Character asset toggles (generateCharacterRefs, generateExpressionSheets,
+// generateBodyVocabulary) are owned by the IMAGES bucket in GeneratorScreen, and
+// preGenerateAudio is owned by the NARRATION bucket. They were previously
+// duplicated here under an "ASSETS AND CHARACTER SUPPORT" section and have been
+// removed to keep a single source of truth.
 
 const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
   {
@@ -533,11 +621,11 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
     },
   },
   {
-    id: 'assets',
-    title: 'ASSETS AND CHARACTER SUPPORT',
-    icon: <MessageSquare size={16} color={TERMINAL.colors.primary} />,
-    description: 'Optional supporting assets for stronger presentation and continuity.',
-    fields: CHARACTER_ASSET_FIELDS,
+    id: 'quality-council',
+    title: 'QUALITY COUNCIL',
+    icon: <Shield size={16} color={TERMINAL.colors.primary} />,
+    description: 'Optional generator-only expert review layer. Disabled runs keep the normal pipeline.',
+    fields: QUALITY_COUNCIL_FIELDS,
   },
 ];
 
@@ -638,7 +726,7 @@ export const GenerationSettingsPanel: React.FC<GenerationSettingsPanelProps> = (
   return (
     <View style={styles.container}>
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {SETTINGS_SECTIONS.map((section) => (
+        {SETTINGS_SECTIONS.filter((section) => !section.condition || section.condition(settings)).map((section) => (
           <Section
             key={section.id}
             title={section.title}

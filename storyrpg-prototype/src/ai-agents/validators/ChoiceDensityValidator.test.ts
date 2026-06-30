@@ -1,0 +1,159 @@
+import { describe, it, expect } from 'vitest';
+import { ChoiceDensityValidator } from './ChoiceDensityValidator';
+
+function makeBeat(id: string, wordCount: number, isChoicePoint = false) {
+  return {
+    id,
+    text: Array.from({ length: wordCount }, (_, i) => `w${i}`).join(' '),
+    isChoicePoint,
+  };
+}
+
+describe('ChoiceDensityValidator', () => {
+  it('flags an episode with zero choice points as an error', async () => {
+    const validator = new ChoiceDensityValidator();
+    const result = await validator.validate({
+      beats: [],
+      scenes: [{ id: 's1', beats: [makeBeat('b1', 200), makeBeat('b2', 200)] }],
+    });
+
+    expect(result.metrics.choiceCount).toBe(0);
+    expect(result.issues.some((i) => i.level === 'error')).toBe(true);
+    expect(result.passed).toBe(false);
+  });
+
+  it('computes cumulative timing across scenes at 200 WPM', async () => {
+    const validator = new ChoiceDensityValidator();
+    const scenes = validator.annotateScenesWithTiming([
+      { id: 's1', beats: [makeBeat('b1', 200)] },
+      { id: 's2', beats: [makeBeat('b2', 100, true)] },
+    ]);
+
+    expect(scenes[0].beats[0].timing.estimatedReadingTimeSeconds).toBeCloseTo(60, 1);
+    expect(scenes[1].beats[0].timing.cumulativeSeconds).toBeCloseTo(90, 1);
+  });
+
+  it('flags slow first choice when the opening narration is too long', async () => {
+    const validator = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 60 });
+    const result = await validator.validate({
+      beats: [],
+      scenes: [
+        {
+          id: 's1',
+          beats: [makeBeat('long-intro', 400), makeBeat('choice', 10, true)],
+        },
+      ],
+    });
+
+    expect(result.metrics.firstChoiceSeconds).toBeGreaterThan(60);
+    const firstChoiceIssue = result.issues.find((i) =>
+      i.message.includes('First choice appears')
+    );
+    expect(firstChoiceIssue).toBeDefined();
+  });
+
+  it('passes when choices are frequent and opening is fast', async () => {
+    const validator = new ChoiceDensityValidator({
+      firstChoiceMaxSeconds: 60,
+      averageGapMaxSeconds: 90,
+    });
+    const result = await validator.validate({
+      beats: [],
+      scenes: [
+        {
+          id: 's1',
+          beats: [
+            makeBeat('b1', 50),
+            makeBeat('c1', 10, true),
+            makeBeat('b2', 50),
+            makeBeat('c2', 10, true),
+          ],
+        },
+      ],
+    });
+
+    expect(result.metrics.choiceCount).toBe(2);
+    expect(result.issues.filter((i) => i.level === 'error')).toHaveLength(0);
+  });
+});
+
+describe('ChoiceDensityValidator structural density (D4)', () => {
+  const mk = (id: string, choice: boolean) => ({ id, beats: [{ id: `${id}-b`, text: 'word '.repeat(20), isChoicePoint: choice }] });
+  it('warns when <50% of scenes have a choice point', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate({ scenes: [mk('s1', true), mk('s2', false), mk('s3', false), mk('s4', false)] } as any);
+    expect(r.issues.some((i) => i.message.includes('<50%'))).toBe(true);
+  });
+  it('passes a well-distributed episode', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate({ scenes: [mk('s1', true), mk('s2', true), mk('s3', false), mk('s4', true)] } as any);
+    expect(r.issues.some((i) => i.message.includes('<50%') || i.message.includes('consecutive') || i.message.includes('first scene'))).toBe(false);
+  });
+});
+
+describe('ChoiceDensityValidator strict mode', () => {
+  const mk = (id: string, choice: boolean) => ({ id, beats: [{ id: `${id}-b`, text: 'word '.repeat(20), isChoicePoint: choice }] });
+
+  it('emits the <50% structural violation as warning by default', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate({ scenes: [mk('s1', true), mk('s2', false), mk('s3', false), mk('s4', false)] } as any);
+    const issue = r.issues.find((i) => i.message.includes('<50%'));
+    expect(issue?.level).toBe('warning');
+  });
+
+  it('escalates clear structural violations to error when strict=true', async () => {
+    const v = new ChoiceDensityValidator();
+    const r = await v.validate(
+      { scenes: [mk('s1', true), mk('s2', false), mk('s3', false), mk('s4', false)] } as any,
+      { strict: true },
+    );
+    const issue = r.issues.find((i) => i.message.includes('<50%'));
+    expect(issue?.level).toBe('error');
+    expect(r.passed).toBe(false);
+  });
+
+  it('escalates the first-choice timing-cap violation to error when strict=true', async () => {
+    const v = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 60 });
+    const r = await v.validate(
+      {
+        beats: [],
+        scenes: [
+          { id: 's1', beats: [makeBeat('long-intro', 400), makeBeat('choice', 10, true)] },
+        ],
+      },
+      { strict: true },
+    );
+    const issue = r.issues.find((i) => i.message.includes('First choice appears'));
+    expect(issue?.level).toBe('error');
+  });
+
+  it('leaves first-choice timing-cap violation at warning by default', async () => {
+    const v = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 60 });
+    const r = await v.validate({
+      beats: [],
+      scenes: [
+        { id: 's1', beats: [makeBeat('long-intro', 400), makeBeat('choice', 10, true)] },
+      ],
+    });
+    const issue = r.issues.find((i) => i.message.includes('First choice appears'));
+    expect(issue?.level).toBe('warning');
+  });
+
+  it('keeps soft long-gap items at suggestion level even in strict mode', async () => {
+    const v = new ChoiceDensityValidator({ firstChoiceMaxSeconds: 600, averageGapMaxSeconds: 90 });
+    const r = await v.validate(
+      {
+        beats: [],
+        scenes: [
+          {
+            id: 's1',
+            beats: [makeBeat('c1', 10, true), makeBeat('filler', 600), makeBeat('c2', 10, true)],
+          },
+        ],
+      },
+      { strict: true },
+    );
+    const longGap = r.issues.find((i) => i.message.includes('Long gap'));
+    expect(longGap?.level).toBe('suggestion');
+  });
+});

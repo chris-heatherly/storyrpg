@@ -5,6 +5,8 @@ import type { FullCreativeBrief, SourceAnalysisResult } from './FullStoryPipelin
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
 import { resolveSceneSettingContext } from '../utils/styleAdaptation';
+import { edgesForEpisode } from './seasonScenePlanBuilder';
+import { residueObligationsForEpisode } from './residueObligations';
 
 export function buildSeasonPlanDirectives(
   brief: FullCreativeBrief,
@@ -29,6 +31,11 @@ export function buildSeasonPlanDirectives(
     difficulty: enc.difficulty,
     npcsInvolved: enc.npcsInvolved,
     stakes: enc.stakes,
+    centralConflict: enc.centralConflict,
+    storyCircleTarget: enc.storyCircleTarget,
+    storyCircleTargetRationale: enc.storyCircleTargetRationale,
+    storyCircleTargetEvidence: enc.storyCircleTargetEvidence,
+    aftermathConsequence: enc.aftermathConsequence,
     relevantSkills: enc.relevantSkills,
     encounterBuildup: enc.encounterBuildup,
     encounterSetupContext: enc.encounterSetupContext,
@@ -66,8 +73,8 @@ export function buildSeasonPlanDirectives(
     }
   }
 
-  const growthCurveEntry = (plan as Record<string, unknown>).growthCurve
-    ? ((plan as Record<string, unknown>).growthCurve as Array<Record<string, unknown>>)
+  const growthCurveEntry = (plan as unknown as Record<string, unknown>).growthCurve
+    ? ((plan as unknown as Record<string, unknown>).growthCurve as Array<Record<string, unknown>>)
         .find((g: Record<string, unknown>) => g.episodeNumber === epNum)
     : undefined;
 
@@ -83,6 +90,65 @@ export function buildSeasonPlanDirectives(
     } | null | undefined,
   } : undefined;
 
+  const activeArc = plan.arcs?.find((arc) =>
+    epNum >= arc.episodeRange.start && epNum <= arc.episodeRange.end
+  );
+  const arcPressure = activeArc ? {
+    arcId: activeArc.id,
+    arcName: activeArc.name,
+    arcQuestion: activeArc.arcQuestion,
+    seasonQuestionRelation: activeArc.seasonQuestionRelation,
+    identityPressureFacet: activeArc.identityPressureFacet,
+    midpointRecontextualization: activeArc.midpointRecontextualization,
+    lateArcCrisis: activeArc.lateArcCrisis,
+    finaleAnswer: activeArc.finaleAnswer,
+    handoffPressure: activeArc.handoffPressure,
+    episodeTurnout: activeArc.episodeTurnouts?.find((turnout) => turnout.episodeNumber === epNum),
+  } : undefined;
+  const informationLedgerEntries = (plan.informationLedger || []).filter((entry) =>
+    entry.introducedEpisode === epNum ||
+    entry.plannedRevealEpisode === epNum ||
+    entry.plannedPayoffEpisode === epNum ||
+    entry.setupTouchEpisodes?.includes(epNum)
+  );
+  const seasonPromiseContracts = (plan.seasonPromiseContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const characterTreatmentContracts = (plan.characterTreatmentContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const worldTreatmentContracts = (plan.worldTreatmentContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const stakesArchitectureContracts = (plan.stakesArchitectureContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const storyCircleBeatContracts = (plan.storyCircleBeatContracts || []).filter((contract) =>
+    contract.targetEpisodeNumber === epNum
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const arcPressureContracts = (plan.arcPressureContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const branchConsequenceContracts = (plan.branchConsequenceContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const endingRealizationContracts = (plan.endingRealizationContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const failureModeAuditContracts = (plan.failureModeAuditContracts || []).filter((contract) =>
+    (contract.targetEpisodeNumbers ?? []).includes(epNum)
+    || (contract.targetSceneIds ?? []).some((sceneId) => (seasonEp.plannedScenes ?? []).some((scene) => scene.id === sceneId))
+  );
+  const residueDirectives = residueObligationsForEpisode(plan.residuePlan, epNum);
+
   return {
     endingMode: plan.endingMode,
     resolvedEndings: plan.resolvedEndings,
@@ -93,7 +159,32 @@ export function buildSeasonPlanDirectives(
     flagsToCheck: seasonEp.checksFlags?.length ? seasonEp.checksFlags : undefined,
     consequenceEffects: consequenceEffects.length > 0 ? consequenceEffects : undefined,
     endingRoutes: seasonEp.endingRoutes?.length ? seasonEp.endingRoutes : undefined,
+    treatmentGuidance: seasonEp.treatmentGuidance,
     growthContext,
+    arcPressure,
+    characterArchitecture: plan.characterArchitecture,
+    characterTreatmentContracts: characterTreatmentContracts.length > 0 ? characterTreatmentContracts : undefined,
+    worldTreatmentContracts: worldTreatmentContracts.length > 0 ? worldTreatmentContracts : undefined,
+    stakesArchitectureContracts: stakesArchitectureContracts.length > 0 ? stakesArchitectureContracts : undefined,
+    storyCircleBeatContracts: storyCircleBeatContracts.length > 0 ? storyCircleBeatContracts : undefined,
+    arcPressureContracts: arcPressureContracts.length > 0 ? arcPressureContracts : undefined,
+    branchConsequenceContracts: branchConsequenceContracts.length > 0 ? branchConsequenceContracts : undefined,
+    endingRealizationContracts: endingRealizationContracts.length > 0 ? endingRealizationContracts : undefined,
+    failureModeAuditContracts: failureModeAuditContracts.length > 0 ? failureModeAuditContracts : undefined,
+    incomingResidue: residueDirectives.incomingResidue.length > 0 ? residueDirectives.incomingResidue : undefined,
+    outgoingResidue: residueDirectives.outgoingResidue.length > 0 ? residueDirectives.outgoingResidue : undefined,
+    dueResidue: residueDirectives.dueResidue.length > 0 ? residueDirectives.dueResidue : undefined,
+    themeArgument: plan.themeArgument,
+    seasonPromiseArchitecture: plan.seasonPromiseArchitecture,
+    seasonPromiseContracts: seasonPromiseContracts.length > 0 ? seasonPromiseContracts : undefined,
+    informationLedgerEntries: informationLedgerEntries.length > 0 ? informationLedgerEntries : undefined,
+    // Scene-first planning: this episode's scenes + the setup/payoff edges that
+    // touch it. When present, StoryArchitect elaborates these instead of
+    // inventing a scene graph. Read from the season-level scene plan slice.
+    plannedScenes: seasonEp.plannedScenes?.length ? seasonEp.plannedScenes : undefined,
+    setupPayoffEdges: plan.scenePlan
+      ? edgesForEpisode(plan.scenePlan, epNum)
+      : undefined,
   };
 }
 
@@ -169,6 +260,7 @@ export function createCharacterBriefFromAnalysis(
       id: protagonistId,
       name: analysis.protagonist.name,
       description: analysis.protagonist.description,
+      fashionStyle: analysis.protagonist.fashionStyle,
     },
     npcs: analysis.majorCharacters
       .filter((char) => char.id !== protagonistId && char.name?.toLowerCase() !== protagonistName)
@@ -176,12 +268,16 @@ export function createCharacterBriefFromAnalysis(
         id: char.id,
         name: char.name,
         role:
-          char.role === 'antagonist'
-            ? 'antagonist'
-            : char.role === 'ally' || char.role === 'love_interest' || char.role === 'mentor'
-              ? 'ally'
-              : 'neutral',
+          char.role === 'antagonist' ||
+          char.role === 'ally' ||
+          char.role === 'love_interest' ||
+          char.role === 'mentor' ||
+          char.role === 'rival' ||
+          char.role === 'neutral'
+            ? char.role
+            : 'neutral',
         description: char.description,
+        fashionStyle: char.fashionStyle,
         importance:
           char.importance === 'core'
             ? 'major'

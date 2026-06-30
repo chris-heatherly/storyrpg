@@ -13,6 +13,8 @@ import { SceneContent, GeneratedBeat } from './SceneWriter';
 import { ChoiceSet } from './ChoiceAuthor';
 import { CharacterProfile, VoiceProfile } from './CharacterDesigner';
 import { Beat, Choice } from '../../types';
+import { buildContinuityReportJsonSchema } from '../schemas/continuityReportSchema';
+import { buildStakesReportJsonSchema, buildVoiceReportJsonSchema } from '../schemas/qaReportSchemas';
 
 // ============================================
 // CONTINUITY CHECKER
@@ -40,6 +42,11 @@ export interface ContinuityCheckerInput {
     event: string;
     when: string;
   }>;
+
+  // When true, the prompt instructs the checker to focus on cross-scene
+  // inconsistencies (because local/intra-scene checks have already been
+  // performed incrementally during generation).
+  focusCrossScene?: boolean;
 }
 
 export interface ContinuityIssue {
@@ -67,9 +74,65 @@ export interface ContinuityReport {
   recommendations: string[];
 }
 
+export function normalizeContinuitySeverity(severity: unknown): ContinuityIssue['severity'] {
+  const normalized = typeof severity === 'string' ? severity.toLowerCase() : '';
+  if (normalized === 'error' || normalized === 'warning' || normalized === 'suggestion') {
+    return normalized;
+  }
+  return 'warning';
+}
+
+export function recomputeContinuityIssueCount(issues: ContinuityIssue[]): ContinuityReport['issueCount'] {
+  return issues.reduce(
+    (counts, issue) => {
+      const severity = normalizeContinuitySeverity((issue as unknown as { severity?: unknown }).severity);
+      if (severity === 'error') counts.errors += 1;
+      else if (severity === 'warning') counts.warnings += 1;
+      else counts.suggestions += 1;
+      return counts;
+    },
+    { errors: 0, warnings: 0, suggestions: 0 },
+  );
+}
+
+/**
+ * Derive a continuity overallScore from the report's own signal when the model
+ * omitted the numeric field. Returns null when the report carries no signal at
+ * all (issues, passed checks, recommendations) — a true non-response that should
+ * fail closed (C3) rather than be scored. Otherwise scores from issue severity.
+ */
+export function deriveContinuityScore(
+  report: Pick<ContinuityReport, 'issues' | 'passedChecks' | 'recommendations' | 'issueCount'>,
+): number | null {
+  const issues = Array.isArray(report.issues) ? report.issues : [];
+  const hasSignal =
+    issues.length > 0
+    || (Array.isArray(report.passedChecks) && report.passedChecks.length > 0)
+    || (Array.isArray(report.recommendations) && report.recommendations.length > 0);
+  if (!hasSignal) return null;
+  const counts = report.issueCount && typeof report.issueCount.errors === 'number'
+    ? report.issueCount
+    : recomputeContinuityIssueCount(issues);
+  return Math.max(0, Math.min(100, 100 - counts.errors * 25 - counts.warnings * 8 - counts.suggestions * 2));
+}
+
+/**
+ * SECOND-OPINION LLM audit, NOT the primary continuity gate (WS6,
+ * AGENT_ARCHITECTURE_PLAN_2026-06-12). The deterministic validators
+ * (FlagContract, ReferencedEventPresence, SceneTransitionContinuity,
+ * ChoiceCoverage, the scene-graph checks, …) run automatically and
+ * incrementally and are the enforcement surface for continuity defects.
+ * This agent re-judges the same territory via LLM as a confirmation pass —
+ * use it when debugging validator findings or hunting defect classes the
+ * deterministic checks don't model (cross-scene knowledge, cause-effect
+ * plausibility). Its findings feed QA reports; it should never be the only
+ * thing standing between a continuity defect and a shipped story.
+ */
 export class ContinuityChecker extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Continuity Checker', config);
+    // Phase 3.4: QA agents should judge against the shared storytelling principles
+    this.includeSystemPrompt = true;
   }
 
   protected getAgentSpecificPrompt(): string {
@@ -126,7 +189,7 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildContinuityReportJsonSchema() });
 
       console.log(`[ContinuityChecker] Received response (${response.length} chars)`);
 
@@ -157,32 +220,17 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
   }
 
   private normalizeReport(report: ContinuityReport): ContinuityReport {
-    // Ensure overallScore is a number
-    if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
-    }
-
-    // Ensure issueCount exists with all fields
-    if (!report.issueCount) {
-      report.issueCount = { errors: 0, warnings: 0, suggestions: 0 };
-    } else {
-      if (typeof report.issueCount.errors !== 'number') {
-        report.issueCount.errors = 0;
-      }
-      if (typeof report.issueCount.warnings !== 'number') {
-        report.issueCount.warnings = 0;
-      }
-      if (typeof report.issueCount.suggestions !== 'number') {
-        report.issueCount.suggestions = 0;
-      }
-    }
-
     // Ensure arrays are arrays
     if (!report.issues) {
       report.issues = [];
     } else if (!Array.isArray(report.issues)) {
       report.issues = [report.issues as unknown as ContinuityIssue];
     }
+    report.issues = report.issues.map(issue => ({
+      ...issue,
+      severity: normalizeContinuitySeverity((issue as unknown as { severity?: unknown }).severity),
+    }));
+    report.issueCount = recomputeContinuityIssueCount(report.issues);
 
     if (!report.passedChecks) {
       report.passedChecks = [];
@@ -194,6 +242,23 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
       report.recommendations = [];
     } else if (!Array.isArray(report.recommendations)) {
       report.recommendations = [report.recommendations as unknown as string];
+    }
+
+    // Derive overallScore when the model omitted the numeric field instead of
+    // blindly failing closed (C3). A parsed report that lists issues, passed
+    // checks, or recommendations is a real assessment that merely dropped the
+    // top-level number — score it from issue severity so a clean check isn't
+    // treated as a 0 "fail". Only fail closed (0) when the report carries no
+    // signal at all (a non-response). See docs/PROJECT_AUDIT_2026-05-28.md.
+    if (typeof report.overallScore !== 'number') {
+      const derived = deriveContinuityScore(report);
+      if (derived !== null) {
+        report.overallScore = derived;
+        console.warn(`[${this.name}] QA report missing overallScore — derived ${derived} from issue severity.`);
+      } else {
+        console.warn(`[${this.name}] QA report had no overallScore and no usable signal — failing closed (0).`);
+        report.overallScore = 0;
+      }
     }
 
     return report;
@@ -215,6 +280,44 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
       .map(f => `- ${f}`)
       .join('\n');
 
+    const focusCrossScene = input.focusCrossScene === true;
+    const taskHeader = focusCrossScene
+      ? `## Your Task (Cross-Scene Focus)
+
+Per-scene / local continuity has already been checked incrementally during
+generation. Focus your review on CROSS-SCENE issues that only become visible
+when looking at multiple scenes together:
+
+1. Contradictions between scenes (facts, character behavior, world state)
+2. Characters knowing things they could not have learned yet given scene order
+3. Timeline impossibilities across the episode
+4. State references that rely on setup in a later scene
+5. Cause-effect chains that break across scene boundaries
+6. Unacknowledged time/place jumps: a scene that opens at a clearly different
+   time of day or location than the previous scene ended, with no transition
+   prose telling the reader time passed or how the protagonist got there
+   (report as "timeline_error")
+7. Characters appearing or being named before the reader has met them on-page.
+   Ask literally: "would a reader at this point know who this is?" — being
+   listed in metadata or known to the writers does NOT count; only an earlier
+   on-page introduction does (report as "missing_setup")
+
+Do NOT spend effort re-auditing issues that live inside a single scene; the
+incremental validators have already surfaced those.`
+      : `## Your Task
+
+Analyze this content for:
+1. Contradictions between scenes or within scenes
+2. Characters knowing things they shouldn't
+3. Timeline impossibilities
+4. State references without proper setup
+5. Missing cause-effect relationships
+6. Unacknowledged time/place jumps: a scene opening at a different time of day
+   or location than the previous scene ended, with no transition prose
+   (report as "timeline_error")
+7. Characters named or appearing before any on-page introduction — would a
+   reader at this point know who this is? (report as "missing_setup")`;
+
     return `
 Check the following content for continuity issues:
 
@@ -231,27 +334,35 @@ ${factsList || 'None established'}
 ### Character Knowledge
 ${input.characterKnowledge.map(ck =>
   `${ck.characterId}:\n  Knows: ${ck.knows.join(', ')}\n  Doesn't Know: ${ck.doesNotKnow.join(', ')}`
-).join('\n')}
+).join('\n') || 'No character knowledge tracked'}
 
 ## Timeline
 ${input.timelineEvents?.map(e => `- ${e.when}: ${e.event}`).join('\n') || 'No timeline established'}
 
-## Your Task
+${taskHeader}
 
-Analyze this content for:
-1. Contradictions between scenes or within scenes
-2. Characters knowing things they shouldn't
-3. Timeline impossibilities
-4. State references without proper setup
-5. Missing cause-effect relationships
+Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY this shape:
+{
+  "overallScore": 87,
+  "issueCount": { "errors": 0, "warnings": 0, "suggestions": 0 },
+  "issues": [
+    {
+      "severity": "error" | "warning" | "suggestion",
+      "type": "contradiction" | "impossible_knowledge" | "timeline_error" | "state_conflict" | "missing_setup",
+      "location": { "sceneId": "scene-id", "beatId": "optional-beat-id", "choiceId": "optional-choice-id" },
+      "description": "what is inconsistent",
+      "conflictsWith": "optional: what it conflicts with",
+      "suggestedFix": "a specific fix"
+    }
+  ],
+  "passedChecks": ["consistency checks you verified pass"],
+  "recommendations": ["how to improve consistency"]
+}
 
-Provide a ContinuityReport with:
-- Overall consistency score (0-100)
-- All issues found with severity, location, and suggested fixes
-- List of passed checks (things you verified are consistent)
-- Recommendations for improving consistency
-
-Respond with valid JSON matching the ContinuityReport type.
+Rules:
+- "overallScore" is REQUIRED and must be a number 0-100 (higher = more consistent).
+- "issues" must be an array; use [] when the story is consistent.
+- Always include "issueCount", "passedChecks", and "recommendations" (use [] / zeros when empty).
 `;
   }
 }
@@ -300,9 +411,47 @@ export interface VoiceReport {
   recommendations: string[];
 }
 
+/**
+ * Derive a voice overallScore from per-character scores (lightly blended with
+ * distinction) when the model omitted the numeric field; fall back to issue
+ * count. Returns null on a true non-response (no scores, issues, or recs) so it
+ * fails closed (C3) rather than being scored.
+ */
+export function deriveVoiceScore(
+  report: Pick<VoiceReport, 'characterScores' | 'issues' | 'recommendations' | 'distinctionScore'>,
+): number | null {
+  const scored = (Array.isArray(report.characterScores) ? report.characterScores : []).filter(
+    (c) => typeof c?.score === 'number',
+  );
+  if (scored.length > 0) {
+    const avg = scored.reduce((sum, c) => sum + c.score, 0) / scored.length;
+    const dist = typeof report.distinctionScore === 'number' ? report.distinctionScore : 50;
+    return Math.max(0, Math.min(100, Math.round(avg * 0.75 + dist * 0.25)));
+  }
+  const issues = Array.isArray(report.issues) ? report.issues : [];
+  const recs = Array.isArray(report.recommendations) ? report.recommendations : [];
+  if (issues.length > 0 || recs.length > 0) {
+    return Math.max(0, Math.min(100, 100 - issues.length * 8));
+  }
+  return null;
+}
+
+export function extractQuotedDialogueLines(text: string): string[] {
+  const source = String(text || '');
+  const lines: string[] = [];
+  const quotePattern = /["“]([^"”]{2,})["”]/g;
+  let match: RegExpExecArray | null;
+  while ((match = quotePattern.exec(source)) !== null) {
+    const line = match[1].replace(/\s+/g, ' ').trim();
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
 export class VoiceValidator extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Voice Validator', config);
+    this.includeSystemPrompt = true;
   }
 
   protected getAgentSpecificPrompt(): string {
@@ -354,7 +503,7 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildVoiceReportJsonSchema() });
 
       console.log(`[VoiceValidator] Received response (${response.length} chars)`);
 
@@ -385,11 +534,6 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
   }
 
   private normalizeReport(report: VoiceReport): VoiceReport {
-    // Ensure overallScore is a number
-    if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
-    }
-
     // Ensure distinctionScore is a number
     if (typeof report.distinctionScore !== 'number') {
       report.distinctionScore = 50;
@@ -414,24 +558,46 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
       report.recommendations = [report.recommendations as unknown as string];
     }
 
+    // Derive overallScore when the model omitted it (see ContinuityChecker). A
+    // voice report with per-character scores is a real assessment that dropped
+    // the top-level number — average them (lightly blended with distinction).
+    // Fall back to issue count, then fail closed (0) only on a true non-response.
+    if (typeof report.overallScore !== 'number') {
+      const derived = deriveVoiceScore(report);
+      if (derived !== null) {
+        report.overallScore = derived;
+        console.warn(`[${this.name}] QA report missing overallScore — derived ${derived} from character/issue signal.`);
+      } else {
+        console.warn(`[${this.name}] QA report had no overallScore and no usable signal — failing closed (0).`);
+        report.overallScore = 0;
+      }
+    }
+
     return report;
   }
 
   private buildPrompt(input: VoiceValidatorInput): string {
-    // Extract all dialogue
+    // Extract actual quoted dialogue only. Generated beats often carry a
+    // speaker/focal-character field even when the text is narration or a
+    // treatment instruction; validating those as "dialogue" creates false
+    // critical voice failures.
     const dialogueByCharacter: Record<string, Array<{ sceneId: string; beatId: string; line: string }>> = {};
 
     for (const scene of input.sceneContents) {
       for (const beat of scene.beats) {
         if (beat.speaker) {
+          const dialogueLines = extractQuotedDialogueLines(beat.text);
+          if (dialogueLines.length === 0) continue;
           if (!dialogueByCharacter[beat.speaker]) {
             dialogueByCharacter[beat.speaker] = [];
           }
-          dialogueByCharacter[beat.speaker].push({
-            sceneId: scene.sceneId,
-            beatId: beat.id,
-            line: beat.text,
-          });
+          for (const line of dialogueLines) {
+            dialogueByCharacter[beat.speaker].push({
+              sceneId: scene.sceneId,
+              beatId: beat.id,
+              line,
+            });
+          }
         }
       }
     }
@@ -441,7 +607,7 @@ You ensure every character sounds like themselves and nobody else. Distinct voic
         const lineList = lines.map(l => `    "${l.line.slice(0, 150)}..." (${l.sceneId}/${l.beatId})`).join('\n');
         return `  ${speaker}:\n${lineList}`;
       })
-      .join('\n\n');
+      .join('\n\n') || 'No quoted character dialogue found in the provided scenes.';
 
     const profileSummary = input.characterProfiles
       .map(cp => `
@@ -479,14 +645,23 @@ Also evaluate:
 - Could you identify speakers without tags?
 - Are there any voice "collisions"?
 
-Provide a VoiceReport with:
-- Overall voice quality score
-- Per-character scores with strengths and weaknesses
-- Specific issues with suggested corrections
-- Voice distinction score
-- Recommendations for improvement
+Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY this shape:
+{
+  "overallScore": 84,
+  "characterScores": [
+    { "characterId": "npc-id", "characterName": "Name", "score": 80, "strengths": ["..."], "weaknesses": ["..."] }
+  ],
+  "issues": [
+    { "location": { "sceneId": "scene-id", "beatId": "beat-id" }, "dialogueLine": "the line", "issue": "what's off", "suggestion": "fix", "exampleCorrection": "optional rewrite" }
+  ],
+  "distinctionScore": 75,
+  "recommendations": ["how to improve voice"]
+}
 
-Respond with valid JSON matching the VoiceReport type.
+Rules:
+- "overallScore" and "distinctionScore" are REQUIRED numbers 0-100.
+- "characterScores", "issues", and "recommendations" must be arrays (use [] when empty).
+- Keep the report compact: at most 2 strengths and 2 weaknesses per character, at most 8 total issues, at most 3 recommendations, one short sentence per string.
 `;
   }
 }
@@ -551,6 +726,7 @@ export interface StakesReport {
 export class StakesAnalyzer extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Stakes Analyzer', config);
+    this.includeSystemPrompt = true;
   }
 
   protected getAgentSpecificPrompt(): string {
@@ -611,7 +787,7 @@ Every significant choice needs:
     try {
       const response = await this.callLLM([
         { role: 'user', content: prompt }
-      ]);
+      ], 4, { jsonSchema: buildStakesReportJsonSchema() });
 
       console.log(`[StakesAnalyzer] Received response (${response.length} chars)`);
 
@@ -642,9 +818,13 @@ Every significant choice needs:
   }
 
   private normalizeReport(report: StakesReport): StakesReport {
-    // Ensure overallScore is a number
+    // Ensure overallScore is a number. Fail CLOSED (C3): an unparseable QA
+    // response must not masquerade as a neutral 50 "pass". Score it 0 so it
+    // fails the QA threshold and triggers a (bounded) repair pass instead of
+    // silently shipping unverified content. See docs/PROJECT_AUDIT_2026-05-28.md.
     if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
+      console.warn(`[${this.name}] QA report had no numeric overallScore — failing closed (0), not defaulting to 50.`);
+      report.overallScore = 0;
     }
 
     // Ensure metrics exists with all fields
@@ -765,6 +945,7 @@ export interface QAInput {
   }>;
   knownFlags: Array<{ name: string; description: string }>;
   knownScores: Array<{ name: string; description: string }>;
+  knownTags?: Array<{ name: string; description: string }>;
   establishedFacts: string[];
   storyThemes: string[];
   targetTone: string;
@@ -773,6 +954,19 @@ export interface QAInput {
     sceneName: string;
     mood: string;
     narrativeFunction: string;
+  }>;
+  // Optional knowledge / timeline feeds for ContinuityChecker.
+  // When omitted, ContinuityChecker falls back to "no character knowledge
+  // tracked" / "no timeline established" prompt stanzas, which is the
+  // previous behaviour.
+  characterKnowledge?: Array<{
+    characterId: string;
+    knows: string[];
+    doesNotKnow: string[];
+  }>;
+  timelineEvents?: Array<{
+    event: string;
+    when: string;
   }>;
 }
 
@@ -785,6 +979,94 @@ export interface QAReport {
   criticalIssues: string[];
   summary: string;
   skippedChecks?: string[]; // Which checks were skipped due to incremental validation
+}
+
+export function deriveEvidenceLimitedScore(input: {
+  scores?: number[];
+  evidenceCount: number;
+  errorCount?: number;
+  warningCount?: number;
+}): number {
+  if (input.evidenceCount <= 0) return 0;
+  const scores = (input.scores ?? []).filter((score) => typeof score === 'number' && Number.isFinite(score));
+  const baseScore = scores.length > 0
+    ? scores.reduce((sum, score) => sum + score, 0) / scores.length
+    : 100;
+  const penalty = (input.errorCount ?? 0) * 20 + (input.warningCount ?? 0) * 8;
+  return Math.max(0, Math.min(100, Math.round(baseScore - penalty)));
+}
+
+/**
+ * Derive the QA-level outcome (overall score, critical-issue list, pass/fail) purely
+ * from the three sub-reports. The single source of truth for QA aggregation: used both
+ * when the report is first assembled (QARunner.runFullQA) and when it is RECOMPUTED
+ * after a repair refreshes a sub-report (e.g. continuity re-validation), so the
+ * GATE_QA_CRITICAL_BLOCK gate reflects post-repair residue, not stale findings. Pure.
+ */
+export function deriveQAOutcome(
+  continuity: Pick<ContinuityReport, 'overallScore' | 'issueCount'>,
+  voice: Pick<VoiceReport, 'overallScore' | 'issues'>,
+  stakes: Pick<StakesReport, 'overallScore' | 'metrics'> & Partial<Pick<StakesReport, 'issues'>>,
+): { overallScore: number; criticalIssues: string[]; passesQA: boolean } {
+  const overallScore = Math.round(
+    (continuity.overallScore * 0.35) +
+    (voice.overallScore * 0.30) +
+    (stakes.overallScore * 0.35)
+  );
+  const criticalIssues: string[] = [];
+  if (continuity.issueCount.errors > 0) {
+    criticalIssues.push(`${continuity.issueCount.errors} continuity error(s)`);
+  }
+  if (voice.issues.filter((i) => i.severity === 'error').length > 0) {
+    criticalIssues.push('Voice consistency errors');
+  }
+  if ((stakes.issues ?? []).filter((i) => i.severity === 'error').length > 0) {
+    criticalIssues.push('Stakes analysis errors');
+  }
+  if (stakes.metrics.falseChoiceCount > 0) {
+    criticalIssues.push(`${stakes.metrics.falseChoiceCount} false choice(s)`);
+  }
+  return { overallScore, criticalIssues, passesQA: overallScore >= 70 && criticalIssues.length === 0 };
+}
+
+/**
+ * Recompute a QAReport's derived fields (overallScore / criticalIssues / passesQA) in
+ * place from its current sub-reports. Call after a repair mutates a sub-report so the
+ * QA-critical gate and the aggregated season report see the residue. Pure (mutates the
+ * passed report only).
+ */
+export function recomputeQAReportDerived(report: QAReport): void {
+  const { overallScore, criticalIssues, passesQA } = deriveQAOutcome(report.continuity, report.voice, report.stakes);
+  report.overallScore = overallScore;
+  report.criticalIssues = criticalIssues;
+  report.passesQA = passesQA;
+  report.summary = buildQAReportSummary(report.continuity, report.voice, report.stakes, overallScore);
+}
+
+export function buildQAReportSummary(
+  continuity: ContinuityReport,
+  voice: VoiceReport,
+  stakes: StakesReport,
+  overall: number
+): string {
+  const parts: string[] = [];
+
+  parts.push(`Overall QA Score: ${overall}/100`);
+  parts.push(`- Continuity: ${continuity.overallScore}/100 (${continuity.issueCount.errors} errors, ${continuity.issueCount.warnings} warnings)`);
+  parts.push(`- Voice: ${voice.overallScore}/100 (${voice.distinctionScore}/100 distinction)`);
+  parts.push(`- Stakes: ${stakes.overallScore}/100 (${stakes.metrics.falseChoiceCount} false choices)`);
+
+  if (overall >= 80) {
+    parts.push('\nContent quality is good. Minor polish recommended.');
+  } else if (overall >= 70) {
+    parts.push('\nContent passes QA. Revision notes should be treated as polish unless a critical issue is present.');
+  } else if (overall >= 60) {
+    parts.push('\nContent needs revision before publishing.');
+  } else {
+    parts.push('\nSignificant issues found. Major revision required.');
+  }
+
+  return parts.join('\n');
 }
 
 /**
@@ -802,6 +1084,42 @@ export interface QARunnerOptions {
     voiceIssueCount?: number;
     stakesIssueCount?: number;
     continuityIssueCount?: number;
+    /**
+     * Actual aggregated voice issues from incremental validators, each
+     * tagged with the scene they came from. Consumed by the skip stub so
+     * `skippedVoiceReport.issues` reflects real findings rather than an
+     * empty array.
+     */
+    voiceIssues?: Array<{
+      sceneId: string;
+      beatId: string;
+      characterId: string;
+      characterName: string;
+      severity: 'error' | 'warning';
+      issue: string;
+      suggestion?: string;
+    }>;
+    /**
+     * Actual aggregated stakes issues from incremental validators.
+     * Consumed by the skip stub so `skippedStakesReport.issues` reflects
+     * real findings rather than an empty array.
+     */
+    stakesIssues?: Array<{
+      sceneId: string;
+      choiceSetId: string;
+      severity: 'error' | 'warning';
+      issue: string;
+      suggestion?: string;
+    }>;
+    voiceScores?: number[];
+    stakesScores?: number[];
+    voiceEvidenceCount?: number;
+    stakesEvidenceCount?: number;
+    voiceErrorCount?: number;
+    voiceWarningCount?: number;
+    stakesErrorCount?: number;
+    stakesWarningCount?: number;
+    falseChoiceCount?: number;
   };
 }
 
@@ -832,9 +1150,11 @@ export class QARunner {
         sceneContents: input.sceneContents,
         knownFlags: input.knownFlags,
         knownScores: input.knownScores,
-        knownTags: [],
+        knownTags: input.knownTags ?? [],
         establishedFacts: input.establishedFacts,
-        characterKnowledge: [],
+        characterKnowledge: input.characterKnowledge ?? [],
+        timelineEvents: input.timelineEvents,
+        focusCrossScene: options.continuityFocusCrossScene === true,
       })
     );
     if (options.continuityFocusCrossScene) {
@@ -881,40 +1201,32 @@ export class QARunner {
     let voice: VoiceReport;
     if (options.skipVoiceValidation) {
       // Use a passing default if skipped (incremental caught issues)
-      voice = this.getSkippedVoiceReport(options.incrementalResults?.voiceIssueCount || 0);
+      voice = this.getSkippedVoiceReport(
+        options.incrementalResults?.voiceIssueCount || 0,
+        options.incrementalResults?.voiceIssues,
+        options.incrementalResults,
+      );
     } else {
       const voiceResult = results[voiceIdx] as Awaited<ReturnType<VoiceValidator['execute']>>;
-      voice = voiceResult?.data || this.getDefaultVoiceReport();
+      voice = voiceResult?.data || this.getDefaultVoiceReport(voiceResult?.error);
     }
     
     let stakes: StakesReport;
     if (options.skipStakesAnalysis) {
       // Use a passing default if skipped (incremental caught issues)
-      stakes = this.getSkippedStakesReport(options.incrementalResults?.stakesIssueCount || 0);
+      stakes = this.getSkippedStakesReport(
+        options.incrementalResults?.stakesIssueCount || 0,
+        options.incrementalResults?.stakesIssues,
+        options.incrementalResults,
+      );
     } else {
       const stakesResult = results[stakesIdx] as Awaited<ReturnType<StakesAnalyzer['execute']>>;
       stakes = stakesResult?.data || this.getDefaultStakesReport();
     }
 
-    // Calculate overall score
-    const overallScore = Math.round(
-      (continuity.overallScore * 0.35) +
-      (voice.overallScore * 0.30) +
-      (stakes.overallScore * 0.35)
-    );
-
-    // Collect critical issues
-    const criticalIssues: string[] = [];
-
-    if (continuity.issueCount.errors > 0) {
-      criticalIssues.push(`${continuity.issueCount.errors} continuity error(s)`);
-    }
-    if (voice.issues.filter(i => i.severity === 'error').length > 0) {
-      criticalIssues.push('Voice consistency errors');
-    }
-    if (stakes.metrics.falseChoiceCount > 0) {
-      criticalIssues.push(`${stakes.metrics.falseChoiceCount} false choice(s)`);
-    }
+    // Score + critical-issue derivation lives in the pure deriveQAOutcome (so the
+    // post-repair recompute uses the EXACT same formula — no drift).
+    const { overallScore, criticalIssues, passesQA } = deriveQAOutcome(continuity, voice, stakes);
 
     // Generate summary
     const summary = this.generateSummary(continuity, voice, stakes, overallScore);
@@ -924,7 +1236,7 @@ export class QARunner {
       voice,
       stakes,
       overallScore,
-      passesQA: overallScore >= 70 && criticalIssues.length === 0,
+      passesQA,
       criticalIssues,
       summary,
       skippedChecks: skippedChecks.length > 0 ? skippedChecks : undefined,
@@ -934,36 +1246,108 @@ export class QARunner {
   /**
    * Generate a voice report for when validation was skipped (done incrementally)
    */
-  private getSkippedVoiceReport(incrementalIssueCount: number): VoiceReport {
+  private getSkippedVoiceReport(
+    incrementalIssueCount: number,
+    incrementalIssues?: NonNullable<QARunnerOptions['incrementalResults']>['voiceIssues'],
+    incrementalResults?: NonNullable<QARunnerOptions['incrementalResults']>,
+  ): VoiceReport {
+    const issues: VoiceIssue[] = (incrementalIssues ?? []).map(iss => ({
+      severity: iss.severity,
+      characterId: iss.characterId,
+      characterName: iss.characterName,
+      location: {
+        sceneId: iss.sceneId,
+        beatId: iss.beatId,
+      },
+      dialogueLine: '',
+      issue: iss.issue,
+      suggestion: iss.suggestion ?? '',
+    }));
+    const evidenceCount = incrementalResults?.voiceEvidenceCount ?? 0;
+    if (evidenceCount <= 0) {
+      issues.push({
+        severity: 'error',
+        characterId: 'unknown',
+        characterName: 'Unknown',
+        location: { sceneId: 'qa', beatId: 'skipped-voice-validation' },
+        dialogueLine: '',
+        issue: 'Voice validation was skipped but no incremental voice evidence was available',
+        suggestion: 'Run voice validation or provide incremental voice results before assigning a QA score',
+      });
+    }
+    const errorCount = incrementalResults?.voiceErrorCount ?? issues.filter(issue => issue.severity === 'error').length;
+    const warningCount = incrementalResults?.voiceWarningCount ?? issues.filter(issue => issue.severity === 'warning').length;
+
     return {
-      overallScore: incrementalIssueCount === 0 ? 95 : Math.max(60, 95 - incrementalIssueCount * 5),
+      overallScore: deriveEvidenceLimitedScore({
+        scores: incrementalResults?.voiceScores,
+        evidenceCount,
+        errorCount,
+        warningCount,
+      }),
       characterScores: [],
-      issues: [],
+      issues,
       distinctionScore: 85,
       recommendations: incrementalIssueCount > 0 
         ? [`${incrementalIssueCount} voice issue(s) were caught and addressed during incremental validation`]
-        : ['Voice validation was performed incrementally during content generation'],
+        : [
+          evidenceCount > 0
+            ? 'Voice validation was performed incrementally during content generation; score reflects collected incremental evidence because full voice QA was skipped'
+            : 'Voice validation has no evidence and is scored as failed',
+        ],
     };
   }
 
   /**
    * Generate a stakes report for when analysis was skipped (done incrementally)
    */
-  private getSkippedStakesReport(incrementalIssueCount: number): StakesReport {
+  private getSkippedStakesReport(
+    incrementalIssueCount: number,
+    incrementalIssues?: NonNullable<QARunnerOptions['incrementalResults']>['stakesIssues'],
+    incrementalResults?: NonNullable<QARunnerOptions['incrementalResults']>,
+  ): StakesReport {
+    const issues: StakesIssue[] = (incrementalIssues ?? []).map(iss => ({
+      severity: iss.severity,
+      choiceSetId: iss.choiceSetId,
+      issue: iss.issue,
+      suggestion: iss.suggestion ?? '',
+    }));
+    const evidenceCount = incrementalResults?.stakesEvidenceCount ?? 0;
+    if (evidenceCount <= 0) {
+      issues.push({
+        severity: 'error',
+        choiceSetId: 'skipped-stakes-validation',
+        issue: 'Stakes validation was skipped but no incremental stakes evidence was available',
+        suggestion: 'Run stakes validation or provide incremental stakes results before assigning a QA score',
+      });
+    }
+    const errorCount = incrementalResults?.stakesErrorCount ?? issues.filter(issue => issue.severity === 'error').length;
+    const warningCount = incrementalResults?.stakesWarningCount ?? issues.filter(issue => issue.severity === 'warning').length;
+    const falseChoiceCount = incrementalResults?.falseChoiceCount ?? 0;
+
     return {
-      overallScore: incrementalIssueCount === 0 ? 95 : Math.max(60, 95 - incrementalIssueCount * 5),
+      overallScore: deriveEvidenceLimitedScore({
+        scores: incrementalResults?.stakesScores,
+        evidenceCount,
+        errorCount,
+        warningCount,
+      }),
       choiceSetAnalysis: [],
       metrics: {
         averageStakesScore: 85,
-        falseChoiceCount: 0, // False choices would have been caught incrementally
+        falseChoiceCount,
         dilemmaQuality: 75,
         varietyScore: 80,
       },
-      issues: [],
+      issues,
       strengths: ['Stakes were validated incrementally during content generation'],
       recommendations: incrementalIssueCount > 0
         ? [`${incrementalIssueCount} stakes issue(s) were caught and addressed during incremental validation`]
-        : [],
+        : [
+          evidenceCount > 0
+            ? 'Stakes validation was performed incrementally during content generation; score reflects collected incremental evidence because full stakes QA was skipped'
+            : 'Stakes validation has no evidence and is scored as failed',
+        ],
     };
   }
 
@@ -973,22 +1357,7 @@ export class QARunner {
     stakes: StakesReport,
     overall: number
   ): string {
-    const parts: string[] = [];
-
-    parts.push(`Overall QA Score: ${overall}/100`);
-    parts.push(`- Continuity: ${continuity.overallScore}/100 (${continuity.issueCount.errors} errors, ${continuity.issueCount.warnings} warnings)`);
-    parts.push(`- Voice: ${voice.overallScore}/100 (${voice.distinctionScore}/100 distinction)`);
-    parts.push(`- Stakes: ${stakes.overallScore}/100 (${stakes.metrics.falseChoiceCount} false choices)`);
-
-    if (overall >= 80) {
-      parts.push('\nContent quality is good. Minor polish recommended.');
-    } else if (overall >= 60) {
-      parts.push('\nContent needs revision before publishing.');
-    } else {
-      parts.push('\nSignificant issues found. Major revision required.');
-    }
-
-    return parts.join('\n');
+    return buildQAReportSummary(continuity, voice, stakes, overall);
   }
 
   private getDefaultContinuityReport(): ContinuityReport {
@@ -1001,13 +1370,28 @@ export class QARunner {
     };
   }
 
-  private getDefaultVoiceReport(): VoiceReport {
+  private getDefaultVoiceReport(errorMessage?: string): VoiceReport {
+    const failureIssue = errorMessage
+      ? {
+          severity: 'error' as const,
+          characterId: 'unknown',
+          characterName: 'Unknown',
+          location: { sceneId: 'qa', beatId: 'voice-validator-failure' },
+          dialogueLine: '',
+          issue: `Voice validator failed: ${errorMessage}`,
+          suggestion: 'Retry voice validation after simplifying the voice QA prompt or regenerating the episode prose.',
+        }
+      : undefined;
     return {
       overallScore: 0,
       characterScores: [],
-      issues: [],
+      issues: failureIssue ? [failureIssue] : [],
       distinctionScore: 0,
-      recommendations: ['Voice check failed - manual review required'],
+      recommendations: [
+        errorMessage
+          ? `Voice check failed - manual review required: ${errorMessage}`
+          : 'Voice check failed - manual review required',
+      ],
     };
   }
 
@@ -1020,1202 +1404,5 @@ export class QARunner {
       strengths: [],
       recommendations: ['Stakes analysis failed - manual review required'],
     };
-  }
-}
-
-// ============================================
-// PLOT HOLE DETECTOR
-// ============================================
-
-export interface PlotHoleDetectorInput {
-  // Episode content
-  episodeSummary: string;
-  sceneContents: SceneContent[];
-
-  // Story context
-  storyContext: {
-    title: string;
-    genre: string;
-    synopsis: string;
-  };
-
-  // Previous episode context
-  previousEpisodeSummary?: string;
-  establishedRules: string[]; // World rules that must be followed
-
-  // Character information
-  characterCapabilities: Array<{
-    characterId: string;
-    characterName: string;
-    canDo: string[];
-    cannotDo: string[];
-  }>;
-
-  // Unresolved threads from before
-  openPlotThreads: Array<{
-    description: string;
-    introducedIn: string;
-    importance: 'minor' | 'moderate' | 'major';
-  }>;
-}
-
-export interface PlotHole {
-  severity: 'minor' | 'moderate' | 'major' | 'critical';
-  type: 'logical_inconsistency' | 'character_capability' | 'world_rule_violation' | 'unresolved_thread' | 'deus_ex_machina' | 'missing_motivation';
-  location: {
-    sceneId: string;
-    beatId?: string;
-    description: string;
-  };
-  description: string;
-  whyItMatters: string;
-  suggestedFix: string;
-}
-
-export interface PlotHoleReport {
-  overallScore: number; // 0-100 (higher = fewer holes)
-  plotHoles: PlotHole[];
-  unresolvedThreads: Array<{
-    thread: string;
-    status: 'resolved' | 'advanced' | 'ignored' | 'contradicted';
-    notes: string;
-  }>;
-  logicalFlowScore: number;
-  worldConsistencyScore: number;
-  characterConsistencyScore: number;
-  recommendations: string[];
-}
-
-export class PlotHoleDetector extends BaseAgent {
-  constructor(config: AgentConfig) {
-    super('Plot Hole Detector', config);
-  }
-
-  protected getAgentSpecificPrompt(): string {
-    return `
-## Your Role: Plot Hole Detector
-
-You are the logic guardian who catches story problems before players do. A single plot hole can break immersion and undermine an otherwise great story.
-
-## What You Detect
-
-### Logical Inconsistencies
-- Events that contradict earlier events
-- Characters knowing things they shouldn't
-- Timelines that don't add up
-- Cause without effect or effect without cause
-
-### Character Capability Violations
-- Characters doing things they can't do
-- Characters not using abilities when they obviously should
-- Sudden skill gains without explanation
-- Forgotten limitations
-
-### World Rule Violations
-- Breaking established physics/magic rules
-- Inconsistent technology/power levels
-- Geography/distance impossibilities
-- Social rules broken without consequences
-
-### Unresolved Threads
-- Chekhov's guns that never fire
-- Promises made and not kept
-- Setup without payoff
-- Introduced elements that disappear
-
-### Deus Ex Machina
-- Solutions that appear from nowhere
-- Convenient coincidences that solve problems
-- Previously unknown abilities/items saving the day
-- External forces resolving internal conflicts
-
-### Missing Motivation
-- Characters acting without clear reasons
-- Villain plans that make no sense
-- Hero choices that seem random
-- NPCs helping/hindering for no reason
-
-## Severity Levels
-
-- **CRITICAL**: Breaks the story, players WILL notice
-- **MAJOR**: Significant issue, many players will notice
-- **MODERATE**: Noticeable on reflection
-- **MINOR**: Only careful readers will catch
-
-## What's NOT a Plot Hole
-
-- Unrealistic but genre-appropriate events
-- Character mistakes (characters can be wrong)
-- Deliberately mysterious elements
-- Things explained later in the story
-`;
-  }
-
-  async execute(input: PlotHoleDetectorInput): Promise<AgentResponse<PlotHoleReport>> {
-    const prompt = this.buildPrompt(input);
-
-    console.log(`[PlotHoleDetector] Scanning for plot holes...`);
-
-    try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
-
-      console.log(`[PlotHoleDetector] Received response (${response.length} chars)`);
-
-      let report: PlotHoleReport;
-      try {
-        report = this.parseJSON<PlotHoleReport>(response);
-      } catch (parseError) {
-        console.error(`[PlotHoleDetector] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
-
-      // Normalize the report
-      report = this.normalizeReport(report);
-
-      return {
-        success: true,
-        data: report,
-        rawResponse: response,
-      };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[PlotHoleDetector] Error:`, errorMsg);
-      return {
-        success: false,
-        error: errorMsg,
-      };
-    }
-  }
-
-  private normalizeReport(report: PlotHoleReport): PlotHoleReport {
-    if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
-    }
-    if (typeof report.logicalFlowScore !== 'number') {
-      report.logicalFlowScore = 50;
-    }
-    if (typeof report.worldConsistencyScore !== 'number') {
-      report.worldConsistencyScore = 50;
-    }
-    if (typeof report.characterConsistencyScore !== 'number') {
-      report.characterConsistencyScore = 50;
-    }
-
-    if (!report.plotHoles) {
-      report.plotHoles = [];
-    } else if (!Array.isArray(report.plotHoles)) {
-      report.plotHoles = [report.plotHoles as unknown as PlotHole];
-    }
-
-    if (!report.unresolvedThreads) {
-      report.unresolvedThreads = [];
-    } else if (!Array.isArray(report.unresolvedThreads)) {
-      report.unresolvedThreads = [report.unresolvedThreads as unknown as PlotHoleReport['unresolvedThreads'][0]];
-    }
-
-    if (!report.recommendations) {
-      report.recommendations = [];
-    } else if (!Array.isArray(report.recommendations)) {
-      report.recommendations = [report.recommendations as unknown as string];
-    }
-
-    return report;
-  }
-
-  private buildPrompt(input: PlotHoleDetectorInput): string {
-    const scenesSummary = input.sceneContents.map(sc => {
-      const beatSummary = sc.beats.map(b => `    - ${b.id}: "${b.text.slice(0, 150)}..."`).join('\n');
-      return `  Scene: ${sc.sceneId} (${sc.sceneName})\n${beatSummary}`;
-    }).join('\n\n');
-
-    const capabilitiesList = input.characterCapabilities
-      .map(cc => `  ${cc.characterName}: Can do: [${cc.canDo.join(', ')}] | Cannot do: [${cc.cannotDo.join(', ')}]`)
-      .join('\n');
-
-    const threadsList = input.openPlotThreads
-      .map(t => `  - [${t.importance}] ${t.description} (from: ${t.introducedIn})`)
-      .join('\n');
-
-    return `
-Scan for plot holes in the following content:
-
-## Story Context
-- **Title**: ${input.storyContext.title}
-- **Genre**: ${input.storyContext.genre}
-- **Synopsis**: ${input.storyContext.synopsis}
-
-${input.previousEpisodeSummary ? `## Previous Episode\n${input.previousEpisodeSummary}` : ''}
-
-## Episode Summary
-${input.episodeSummary}
-
-## Scene Content
-${scenesSummary}
-
-## Established World Rules
-${input.establishedRules.map(r => `- ${r}`).join('\n') || 'None specified'}
-
-## Character Capabilities
-${capabilitiesList || 'None specified'}
-
-## Open Plot Threads
-${threadsList || 'None'}
-
-## Your Task
-
-Scan for:
-1. Logical inconsistencies between scenes or with previous content
-2. Characters doing things outside their capabilities
-3. World rules being violated
-4. Plot threads that should be addressed
-5. Deus ex machina moments
-6. Characters acting without clear motivation
-
-Provide a PlotHoleReport with JSON.
-`;
-  }
-}
-
-// ============================================
-// TONE ANALYZER
-// ============================================
-
-export interface ToneAnalyzerInput {
-  // Content to analyze
-  sceneContents: SceneContent[];
-
-  // Target tone
-  targetTone: {
-    primary: string; // e.g., "dark", "whimsical", "serious"
-    secondary?: string;
-    avoid: string[]; // Tones to avoid
-  };
-
-  // Genre expectations
-  genre: string;
-
-  // Specific tone moments requested
-  requestedMoments?: Array<{
-    sceneId: string;
-    intendedTone: string;
-    purpose: string;
-  }>;
-}
-
-export interface ToneIssue {
-  severity: 'minor' | 'moderate' | 'major';
-  sceneId: string;
-  beatId?: string;
-  detectedTone: string;
-  expectedTone: string;
-  excerpt: string;
-  issue: string;
-  suggestion: string;
-}
-
-export interface ToneReport {
-  overallScore: number; // 0-100
-  toneConsistency: number; // How consistent is the tone?
-  genreAlignment: number; // Does it match genre expectations?
-
-  dominantTones: Array<{
-    tone: string;
-    percentage: number;
-  }>;
-
-  toneByScene: Array<{
-    sceneId: string;
-    primaryTone: string;
-    secondaryTones: string[];
-    matchesTarget: boolean;
-    notes: string;
-  }>;
-
-  issues: ToneIssue[];
-
-  toneShifts: Array<{
-    fromScene: string;
-    toScene: string;
-    fromTone: string;
-    toTone: string;
-    jarring: boolean;
-    notes: string;
-  }>;
-
-  recommendations: string[];
-}
-
-export class ToneAnalyzer extends BaseAgent {
-  constructor(config: AgentConfig) {
-    super('Tone Analyzer', config);
-  }
-
-  protected getAgentSpecificPrompt(): string {
-    return `
-## Your Role: Tone Analyzer
-
-You ensure the emotional texture of the story matches its intended feel. Tone is the difference between a thriller and a comedy with the same plot.
-
-## What You Analyze
-
-### Tone Consistency
-- Does the writing maintain its intended tone?
-- Are there jarring shifts without purpose?
-- Does word choice support the mood?
-
-### Genre Alignment
-- Does the tone match genre expectations?
-- Are genre tropes used appropriately?
-- Does it subvert expectations intentionally or accidentally?
-
-### Emotional Texture
-- Does the prose evoke the right feelings?
-- Are tense moments actually tense?
-- Are emotional beats landing?
-
-### Tone Transitions
-- Are shifts between tones smooth?
-- Is comic relief timed well?
-- Do tonal shifts serve the story?
-
-## Common Tone Words
-
-**Dark/Grim**: bleak, ominous, foreboding, haunting, gritty
-**Light/Whimsical**: playful, cheerful, bubbly, quirky, warm
-**Serious/Dramatic**: weighty, intense, solemn, grave, momentous
-**Humorous**: witty, sardonic, absurd, ironic, playful
-**Mysterious**: enigmatic, suspenseful, eerie, cryptic
-**Romantic**: tender, passionate, longing, intimate, yearning
-**Action-packed**: kinetic, urgent, breathless, explosive
-
-## Tone Mismatches to Watch For
-
-- Jokes in serious moments (unless intentional)
-- Overly dark content in light stories
-- Purple prose in fast-paced action
-- Casual language in epic moments
-- Tonal whiplash between scenes
-`;
-  }
-
-  async execute(input: ToneAnalyzerInput): Promise<AgentResponse<ToneReport>> {
-    const prompt = this.buildPrompt(input);
-
-    console.log(`[ToneAnalyzer] Analyzing tone...`);
-
-    try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
-
-      console.log(`[ToneAnalyzer] Received response (${response.length} chars)`);
-
-      let report: ToneReport;
-      try {
-        report = this.parseJSON<ToneReport>(response);
-      } catch (parseError) {
-        console.error(`[ToneAnalyzer] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
-
-      // Normalize the report
-      report = this.normalizeReport(report);
-
-      return {
-        success: true,
-        data: report,
-        rawResponse: response,
-      };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[ToneAnalyzer] Error:`, errorMsg);
-      return {
-        success: false,
-        error: errorMsg,
-      };
-    }
-  }
-
-  private normalizeReport(report: ToneReport): ToneReport {
-    if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
-    }
-    if (typeof report.toneConsistency !== 'number') {
-      report.toneConsistency = 50;
-    }
-    if (typeof report.genreAlignment !== 'number') {
-      report.genreAlignment = 50;
-    }
-
-    if (!report.dominantTones) {
-      report.dominantTones = [];
-    } else if (!Array.isArray(report.dominantTones)) {
-      report.dominantTones = [report.dominantTones as unknown as ToneReport['dominantTones'][0]];
-    }
-
-    if (!report.toneByScene) {
-      report.toneByScene = [];
-    } else if (!Array.isArray(report.toneByScene)) {
-      report.toneByScene = [report.toneByScene as unknown as ToneReport['toneByScene'][0]];
-    }
-
-    if (!report.issues) {
-      report.issues = [];
-    } else if (!Array.isArray(report.issues)) {
-      report.issues = [report.issues as unknown as ToneIssue];
-    }
-
-    if (!report.toneShifts) {
-      report.toneShifts = [];
-    } else if (!Array.isArray(report.toneShifts)) {
-      report.toneShifts = [report.toneShifts as unknown as ToneReport['toneShifts'][0]];
-    }
-
-    if (!report.recommendations) {
-      report.recommendations = [];
-    } else if (!Array.isArray(report.recommendations)) {
-      report.recommendations = [report.recommendations as unknown as string];
-    }
-
-    return report;
-  }
-
-  private buildPrompt(input: ToneAnalyzerInput): string {
-    const scenesSummary = input.sceneContents.map(sc => {
-      const beatSummary = sc.beats.map(b => `    "${b.text.slice(0, 200)}..."`).join('\n');
-      return `  Scene: ${sc.sceneId} (${sc.sceneName})\n${beatSummary}`;
-    }).join('\n\n');
-
-    return `
-Analyze the tone of the following content:
-
-## Target Tone
-- **Primary**: ${input.targetTone.primary}
-${input.targetTone.secondary ? `- **Secondary**: ${input.targetTone.secondary}` : ''}
-- **Avoid**: ${input.targetTone.avoid.join(', ') || 'None specified'}
-
-## Genre
-${input.genre}
-
-${input.requestedMoments ? `## Requested Tone Moments
-${input.requestedMoments.map(m => `- ${m.sceneId}: ${m.intendedTone} (${m.purpose})`).join('\n')}` : ''}
-
-## Content to Analyze
-${scenesSummary}
-
-## Your Task
-
-Analyze:
-1. What tones are actually present in the content?
-2. How well do they match the target tone?
-3. Are there any jarring tone shifts?
-4. Does the genre alignment hold?
-
-Provide a ToneReport with JSON.
-`;
-  }
-}
-
-// ============================================
-// PACING AUDITOR
-// ============================================
-
-export interface PacingAuditorInput {
-  // Episode structure
-  episodeTitle: string;
-  sceneContents: SceneContent[];
-  choiceSets: ChoiceSet[];
-
-  // Pacing targets
-  targetPacing: {
-    overall: 'slow' | 'moderate' | 'fast' | 'variable';
-    actionToReflectionRatio: number; // e.g., 0.6 means 60% action
-  };
-
-  // Scene metadata
-  sceneMetadata: Array<{
-    sceneId: string;
-    purpose: 'bottleneck' | 'branch' | 'transition';
-    intendedTension: 'low' | 'medium' | 'high' | 'climax';
-  }>;
-}
-
-export interface PacingIssue {
-  severity: 'minor' | 'moderate' | 'major';
-  type: 'too_slow' | 'too_fast' | 'unearned_climax' | 'missing_breather' | 'flat_tension' | 'anticlimactic';
-  location: {
-    sceneId: string;
-    beatIds?: string[];
-  };
-  description: string;
-  suggestion: string;
-}
-
-export interface PacingReport {
-  overallScore: number; // 0-100
-  pacingMatchesTarget: boolean;
-
-  tensionCurve: Array<{
-    sceneId: string;
-    averageTension: number; // 1-10
-    peakTension: number;
-    beatCount: number;
-    estimatedDuration: string;
-  }>;
-
-  rhythmAnalysis: {
-    actionPercentage: number;
-    reflectionPercentage: number;
-    dialoguePercentage: number;
-    transitionPercentage: number;
-    matchesTarget: boolean;
-  };
-
-  criticalMoments: Array<{
-    sceneId: string;
-    type: 'climax' | 'turning_point' | 'revelation' | 'choice';
-    tensionLevel: number;
-    isWellPaced: boolean;
-    notes: string;
-  }>;
-
-  issues: PacingIssue[];
-  recommendations: string[];
-}
-
-export class PacingAuditor extends BaseAgent {
-  constructor(config: AgentConfig) {
-    super('Pacing Auditor', config);
-  }
-
-  protected getAgentSpecificPrompt(): string {
-    return `
-## Your Role: Pacing Auditor
-
-You ensure the story moves at the right speed - fast enough to be exciting, slow enough to be meaningful. Good pacing is the heartbeat of narrative.
-
-## What You Audit
-
-### Tension Curve
-- Does tension build appropriately?
-- Are climaxes earned through buildup?
-- Are there breather moments?
-- Does the curve match the episode's purpose?
-
-### Scene Rhythm
-- How long does each scene feel?
-- Are action scenes too long/short?
-- Do reflection moments drag?
-- Is dialogue well-paced?
-
-### Beat Density
-- How much happens per scene?
-- Are beats too dense or sparse?
-- Is information delivered at readable pace?
-
-### Critical Moments
-- Are turning points given proper weight?
-- Do climaxes feel climactic?
-- Are choices given time to breathe?
-
-## Pacing Principles
-
-### The Rule of Escalation
-Tension should generally rise through an episode, with valleys for contrast.
-
-### The Breather Rule
-After high-tension sequences, players need a moment to process.
-
-### The Weight Rule
-Important moments need more time. Don't rush revelations.
-
-### The Momentum Rule
-Once action starts, maintain it. Don't break flow unnecessarily.
-
-## Common Pacing Issues
-
-- **Too Fast**: Important moments feel rushed
-- **Too Slow**: Player gets bored, loses engagement
-- **Unearned Climax**: Big moment without proper buildup
-- **Missing Breather**: Relentless intensity exhausts
-- **Flat Tension**: No sense of rising stakes
-- **Anticlimactic**: Buildup without satisfying payoff
-`;
-  }
-
-  async execute(input: PacingAuditorInput): Promise<AgentResponse<PacingReport>> {
-    const prompt = this.buildPrompt(input);
-
-    console.log(`[PacingAuditor] Auditing pacing...`);
-
-    try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
-
-      console.log(`[PacingAuditor] Received response (${response.length} chars)`);
-
-      let report: PacingReport;
-      try {
-        report = this.parseJSON<PacingReport>(response);
-      } catch (parseError) {
-        console.error(`[PacingAuditor] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
-
-      // Normalize the report
-      report = this.normalizeReport(report);
-
-      return {
-        success: true,
-        data: report,
-        rawResponse: response,
-      };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[PacingAuditor] Error:`, errorMsg);
-      return {
-        success: false,
-        error: errorMsg,
-      };
-    }
-  }
-
-  private normalizeReport(report: PacingReport): PacingReport {
-    if (typeof report.overallScore !== 'number') {
-      report.overallScore = 50;
-    }
-    if (typeof report.pacingMatchesTarget !== 'boolean') {
-      report.pacingMatchesTarget = false;
-    }
-
-    if (!report.tensionCurve) {
-      report.tensionCurve = [];
-    } else if (!Array.isArray(report.tensionCurve)) {
-      report.tensionCurve = [report.tensionCurve as unknown as PacingReport['tensionCurve'][0]];
-    }
-
-    if (!report.rhythmAnalysis) {
-      report.rhythmAnalysis = {
-        actionPercentage: 0,
-        reflectionPercentage: 0,
-        dialoguePercentage: 0,
-        transitionPercentage: 0,
-        matchesTarget: false
-      };
-    }
-
-    if (!report.criticalMoments) {
-      report.criticalMoments = [];
-    } else if (!Array.isArray(report.criticalMoments)) {
-      report.criticalMoments = [report.criticalMoments as unknown as PacingReport['criticalMoments'][0]];
-    }
-
-    if (!report.issues) {
-      report.issues = [];
-    } else if (!Array.isArray(report.issues)) {
-      report.issues = [report.issues as unknown as PacingIssue];
-    }
-
-    if (!report.recommendations) {
-      report.recommendations = [];
-    } else if (!Array.isArray(report.recommendations)) {
-      report.recommendations = [report.recommendations as unknown as string];
-    }
-
-    return report;
-  }
-
-  private buildPrompt(input: PacingAuditorInput): string {
-    const scenesSummary = input.sceneContents.map(sc => {
-      const metadata = input.sceneMetadata.find(m => m.sceneId === sc.sceneId);
-      const beatSummary = sc.beats.map(b => `    - ${b.id}: ${b.text.slice(0, 100)}...`).join('\n');
-      return `  Scene: ${sc.sceneId} (${sc.sceneName}) [${metadata?.purpose || 'unknown'}, intended: ${metadata?.intendedTension || 'unknown'}]
-    Beats (${sc.beats.length}):
-${beatSummary}`;
-    }).join('\n\n');
-
-    const choicesSummary = input.choiceSets.map(cs =>
-      `  ${cs.beatId}: ${cs.choiceType} choice with ${cs.choices.length} options`
-    ).join('\n');
-
-    return `
-Audit the pacing of the following episode:
-
-## Episode: ${input.episodeTitle}
-
-## Target Pacing
-- Overall: ${input.targetPacing.overall}
-- Action/Reflection Ratio: ${input.targetPacing.actionToReflectionRatio * 100}% action
-
-## Scene Content
-${scenesSummary}
-
-## Choice Points
-${choicesSummary}
-
-## Your Task
-
-Analyze:
-1. Map the tension curve across all scenes
-2. Calculate the rhythm balance (action/reflection/dialogue/transition)
-3. Identify critical moments and evaluate their pacing
-4. Find any pacing issues
-
-Provide a PacingReport with JSON.
-`;
-  }
-}
-
-// ============================================
-// SENSITIVITY REVIEWER
-// ============================================
-
-export interface SensitivityReviewerInput {
-  // Content to review
-  sceneContents: SceneContent[];
-  choiceSets: ChoiceSet[];
-
-  // Content guidelines
-  contentRating: 'E' | 'T' | 'M'; // Everyone, Teen, Mature
-  sensitivityFlags: string[]; // Topics to be careful with
-
-  // Story context
-  storyContext: {
-    genre: string;
-    themes: string[];
-    intendedAudience: string;
-  };
-}
-
-export interface SensitivityIssue {
-  severity: 'flag' | 'warning' | 'concern';
-  category: 'violence' | 'sexual_content' | 'substance_use' | 'discrimination' | 'mental_health' | 'trauma' | 'other';
-  location: {
-    sceneId: string;
-    beatId?: string;
-    choiceId?: string;
-  };
-  content: string;
-  concern: string;
-  recommendation: string;
-  ratingImplication?: string; // Does this push the rating?
-}
-
-export interface SensitivityReport {
-  overallRating: 'E' | 'T' | 'M' | 'AO'; // Assessed rating
-  matchesTarget: boolean;
-
-  contentFlags: Array<{
-    category: string;
-    present: boolean;
-    severity: 'none' | 'mild' | 'moderate' | 'strong';
-    notes: string;
-  }>;
-
-  issues: SensitivityIssue[];
-
-  positiveRepresentation: Array<{
-    category: string;
-    description: string;
-    sceneId: string;
-  }>;
-
-  recommendations: string[];
-  contentWarnings: string[]; // Suggested content warnings for players
-}
-
-export class SensitivityReviewer extends BaseAgent {
-  constructor(config: AgentConfig) {
-    super('Sensitivity Reviewer', config);
-  }
-
-  protected getAgentSpecificPrompt(): string {
-    return `
-## Your Role: Sensitivity Reviewer
-
-You help ensure content is appropriate for its intended audience and handles sensitive topics responsibly. You balance creative freedom with thoughtful representation.
-
-## What You Review
-
-### Age Appropriateness
-- Violence levels (cartoon vs. graphic)
-- Sexual content (none vs. implied vs. explicit)
-- Language (clean vs. mild vs. strong)
-- Mature themes (how deeply explored)
-
-### Sensitive Topics
-- Mental health representation
-- Trauma and its effects
-- Discrimination and prejudice
-- Substance use and addiction
-- Grief and loss
-- Abuse (physical, emotional, etc.)
-
-### Representation
-- How are diverse groups portrayed?
-- Are stereotypes reinforced or challenged?
-- Is there positive representation?
-- Are harmful tropes present?
-
-## Rating Guidelines
-
-### E (Everyone)
-- No violence beyond cartoon slapstick
-- No sexual content
-- No strong language
-- Themes appropriate for all ages
-
-### T (Teen)
-- Action violence, no gore
-- Romantic content, no explicit
-- Mild language
-- Teen-appropriate themes
-
-### M (Mature)
-- Violence with consequences
-- Sexual themes (non-explicit)
-- Strong language
-- Adult themes explored
-
-## Important Principles
-
-1. **Context Matters**: Violence in war stories differs from gratuitous violence
-2. **Purpose Matters**: Is difficult content serving the story or just shock?
-3. **Handling Matters**: Are sensitive topics treated with care?
-4. **Balance Matters**: Don't censor legitimate storytelling, but flag genuine concerns
-
-## What's NOT an Issue
-
-- Conflict and tension (stories need these)
-- Villains being villainous (they're supposed to be)
-- Characters facing hardship (this builds character)
-- Difficult themes handled well (this is good storytelling)
-`;
-  }
-
-  async execute(input: SensitivityReviewerInput): Promise<AgentResponse<SensitivityReport>> {
-    const prompt = this.buildPrompt(input);
-
-    console.log(`[SensitivityReviewer] Reviewing content sensitivity...`);
-
-    try {
-      const response = await this.callLLM([
-        { role: 'user', content: prompt }
-      ]);
-
-      console.log(`[SensitivityReviewer] Received response (${response.length} chars)`);
-
-      let report: SensitivityReport;
-      try {
-        report = this.parseJSON<SensitivityReport>(response);
-      } catch (parseError) {
-        console.error(`[SensitivityReviewer] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        throw parseError;
-      }
-
-      // Normalize the report
-      report = this.normalizeReport(report);
-
-      return {
-        success: true,
-        data: report,
-        rawResponse: response,
-      };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[SensitivityReviewer] Error:`, errorMsg);
-      return {
-        success: false,
-        error: errorMsg,
-      };
-    }
-  }
-
-  private normalizeReport(report: SensitivityReport): SensitivityReport {
-    if (!report.overallRating) {
-      report.overallRating = 'T';
-    }
-    if (typeof report.matchesTarget !== 'boolean') {
-      report.matchesTarget = true;
-    }
-
-    if (!report.contentFlags) {
-      report.contentFlags = [];
-    } else if (!Array.isArray(report.contentFlags)) {
-      report.contentFlags = [report.contentFlags as unknown as SensitivityReport['contentFlags'][0]];
-    }
-
-    if (!report.issues) {
-      report.issues = [];
-    } else if (!Array.isArray(report.issues)) {
-      report.issues = [report.issues as unknown as SensitivityIssue];
-    }
-
-    if (!report.positiveRepresentation) {
-      report.positiveRepresentation = [];
-    } else if (!Array.isArray(report.positiveRepresentation)) {
-      report.positiveRepresentation = [report.positiveRepresentation as unknown as SensitivityReport['positiveRepresentation'][0]];
-    }
-
-    if (!report.recommendations) {
-      report.recommendations = [];
-    } else if (!Array.isArray(report.recommendations)) {
-      report.recommendations = [report.recommendations as unknown as string];
-    }
-
-    if (!report.contentWarnings) {
-      report.contentWarnings = [];
-    } else if (!Array.isArray(report.contentWarnings)) {
-      report.contentWarnings = [report.contentWarnings as unknown as string];
-    }
-
-    return report;
-  }
-
-  private buildPrompt(input: SensitivityReviewerInput): string {
-    const scenesSummary = input.sceneContents.map(sc => {
-      const beatSummary = sc.beats.map(b => `    "${b.text}"`).join('\n');
-      return `  Scene: ${sc.sceneId} (${sc.sceneName})\n${beatSummary}`;
-    }).join('\n\n');
-
-    const choicesSummary = input.choiceSets.map(cs => {
-      const optionsList = cs.choices.map(c => `      - "${c.text}"`).join('\n');
-      return `    ${cs.beatId}:\n${optionsList}`;
-    }).join('\n');
-
-    return `
-Review the following content for sensitivity concerns:
-
-## Content Guidelines
-- **Target Rating**: ${input.contentRating}
-- **Sensitivity Flags**: ${input.sensitivityFlags.join(', ') || 'None specified'}
-
-## Story Context
-- **Genre**: ${input.storyContext.genre}
-- **Themes**: ${input.storyContext.themes.join(', ')}
-- **Intended Audience**: ${input.storyContext.intendedAudience}
-
-## Scene Content
-${scenesSummary}
-
-## Player Choices
-${choicesSummary}
-
-## Your Task
-
-Review for:
-1. Age-appropriateness matching the target rating
-2. Sensitive topics and how they're handled
-3. Representation of diverse groups
-4. Potentially triggering content
-
-Provide a SensitivityReport with JSON including:
-- Assessed overall rating
-- Content flags by category
-- Specific issues with recommendations
-- Positive representation highlights
-- Suggested content warnings
-`;
-  }
-}
-
-// ============================================
-// EXTENDED QA RUNNER
-// ============================================
-
-export interface ExtendedQAInput extends Omit<QAInput, 'targetTone'> {
-  // Override targetTone to allow extended structure
-  targetTone: string | {
-    primary: string;
-    secondary?: string;
-    avoid: string[];
-  };
-
-  // Additional inputs for new agents
-  episodeSummary?: string;
-  establishedRules?: string[];
-  characterCapabilities?: Array<{
-    characterId: string;
-    characterName: string;
-    canDo: string[];
-    cannotDo: string[];
-  }>;
-  openPlotThreads?: Array<{
-    description: string;
-    introducedIn: string;
-    importance: 'minor' | 'moderate' | 'major';
-  }>;
-  targetPacing?: {
-    overall: 'slow' | 'moderate' | 'fast' | 'variable';
-    actionToReflectionRatio: number;
-  };
-  sceneMetadata?: Array<{
-    sceneId: string;
-    purpose: 'bottleneck' | 'branch' | 'transition';
-    intendedTension: 'low' | 'medium' | 'high' | 'climax';
-  }>;
-  contentRating?: 'E' | 'T' | 'M';
-  sensitivityFlags?: string[];
-}
-
-export interface ExtendedQAReport extends QAReport {
-  plotHoles?: PlotHoleReport;
-  tone?: ToneReport;
-  pacing?: PacingReport;
-  sensitivity?: SensitivityReport;
-}
-
-export class ExtendedQARunner extends QARunner {
-  private plotHoleDetector: PlotHoleDetector;
-  private toneAnalyzer: ToneAnalyzer;
-  private pacingAuditor: PacingAuditor;
-  private sensitivityReviewer: SensitivityReviewer;
-
-  constructor(config: AgentConfig) {
-    super(config);
-    this.plotHoleDetector = new PlotHoleDetector(config);
-    this.toneAnalyzer = new ToneAnalyzer(config);
-    this.pacingAuditor = new PacingAuditor(config);
-    this.sensitivityReviewer = new SensitivityReviewer(config);
-  }
-
-  async runExtendedQA(input: ExtendedQAInput): Promise<ExtendedQAReport> {
-    // Convert to base QAInput format
-    const baseInput: QAInput = {
-      ...input,
-      targetTone: typeof input.targetTone === 'string'
-        ? input.targetTone
-        : input.targetTone.primary,
-    };
-
-    // Run base QA first
-    const baseReport = await this.runFullQA(baseInput);
-
-    // Prepare extended checks
-    const extendedPromises: Promise<AgentResponse<unknown>>[] = [];
-
-    // Plot Hole Detection
-    if (input.episodeSummary) {
-      extendedPromises.push(
-        this.plotHoleDetector.execute({
-          episodeSummary: input.episodeSummary,
-          sceneContents: input.sceneContents,
-          storyContext: {
-            title: '',
-            genre: '',
-            synopsis: input.episodeSummary,
-          },
-          previousEpisodeSummary: undefined,
-          establishedRules: input.establishedRules || [],
-          characterCapabilities: input.characterCapabilities || [],
-          openPlotThreads: input.openPlotThreads || [],
-        })
-      );
-    }
-
-    // Tone Analysis - need extended targetTone format
-    if (typeof input.targetTone === 'object') {
-      extendedPromises.push(
-        this.toneAnalyzer.execute({
-          sceneContents: input.sceneContents,
-          targetTone: input.targetTone,
-          genre: input.storyThemes[0] || 'general',
-        })
-      );
-    }
-
-    // Pacing Audit
-    if (input.targetPacing && input.sceneMetadata) {
-      extendedPromises.push(
-        this.pacingAuditor.execute({
-          episodeTitle: '',
-          sceneContents: input.sceneContents,
-          choiceSets: input.choiceSets,
-          targetPacing: input.targetPacing,
-          sceneMetadata: input.sceneMetadata,
-        })
-      );
-    }
-
-    // Sensitivity Review
-    if (input.contentRating) {
-      extendedPromises.push(
-        this.sensitivityReviewer.execute({
-          sceneContents: input.sceneContents,
-          choiceSets: input.choiceSets,
-          contentRating: input.contentRating,
-          sensitivityFlags: input.sensitivityFlags || [],
-          storyContext: {
-            genre: input.storyThemes[0] || 'general',
-            themes: input.storyThemes,
-            intendedAudience: input.contentRating === 'E' ? 'all ages' : input.contentRating === 'T' ? 'teens and up' : 'mature audiences',
-          },
-        })
-      );
-    }
-
-    // Wait for all extended checks
-    const extendedResults = await Promise.all(extendedPromises);
-
-    // Build extended report
-    const extendedReport: ExtendedQAReport = {
-      ...baseReport,
-    };
-
-    // Add results based on what was run
-    let resultIndex = 0;
-    if (input.episodeSummary) {
-      extendedReport.plotHoles = extendedResults[resultIndex]?.data as PlotHoleReport;
-      resultIndex++;
-    }
-    if (input.targetTone) {
-      extendedReport.tone = extendedResults[resultIndex]?.data as ToneReport;
-      resultIndex++;
-    }
-    if (input.targetPacing && input.sceneMetadata) {
-      extendedReport.pacing = extendedResults[resultIndex]?.data as PacingReport;
-      resultIndex++;
-    }
-    if (input.contentRating) {
-      extendedReport.sensitivity = extendedResults[resultIndex]?.data as SensitivityReport;
-    }
-
-    // Recalculate overall score including new agents
-    const scores: number[] = [
-      baseReport.continuity.overallScore,
-      baseReport.voice.overallScore,
-      baseReport.stakes.overallScore,
-    ];
-
-    if (extendedReport.plotHoles) {
-      scores.push(extendedReport.plotHoles.overallScore);
-    }
-    if (extendedReport.tone) {
-      scores.push(extendedReport.tone.overallScore);
-    }
-    if (extendedReport.pacing) {
-      scores.push(extendedReport.pacing.overallScore);
-    }
-    // Sensitivity doesn't have a simple score, so we skip it for average
-
-    extendedReport.overallScore = Math.round(
-      scores.reduce((sum, s) => sum + s, 0) / scores.length
-    );
-
-    // Update passesQA
-    extendedReport.passesQA = extendedReport.overallScore >= 70 && extendedReport.criticalIssues.length === 0;
-
-    // Add critical issues from new agents
-    if (extendedReport.plotHoles?.plotHoles.some(h => h.severity === 'critical')) {
-      extendedReport.criticalIssues.push('Critical plot holes detected');
-    }
-    if (extendedReport.sensitivity?.issues.some(i => i.severity === 'concern')) {
-      extendedReport.criticalIssues.push('Sensitivity concerns flagged');
-    }
-
-    return extendedReport;
   }
 }

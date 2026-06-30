@@ -1,0 +1,324 @@
+import { concreteSeedDepicted, concreteSeedRuleFor, normalizeSeedText } from '../utils/concreteSeedRealization';
+
+/** Shared base both validators use, before their per-validator extras. */
+const BASE_STOPWORDS = [
+  'about', 'after', 'again', 'against', 'also', 'and', 'because', 'become', 'before', 'being', 'between',
+  'choice', 'chooses', 'could', 'during', 'episode', 'every', 'from', 'have', 'into', 'keeps', 'later',
+  'leave', 'leaves', 'major', 'make', 'makes', 'must', 'opens', 'paths', 'player', 'pressure', 'scene',
+  'should', 'that', 'their', 'them', 'then', 'there', 'this', 'through', 'when', 'where', 'with', 'without',
+];
+
+const STOPWORDS_BY_VALIDATOR: Record<string, Set<string>> = {
+  RequiredBeatRealizationValidator: new Set([
+    ...BASE_STOPWORDS,
+    'staged', 'moment', 'beat', 'depict', 'depicts', 'show', 'shows',
+  ]),
+  SignatureDevicePresenceValidator: new Set([
+    ...BASE_STOPWORDS,
+    'staged', 'moment', 'signature', 'device', 'image', 'show', 'shows', 'depict', 'depicts',
+  ]),
+};
+
+export const PRESENCE_MIN_SCORE = 0.5;
+
+export type RealizationMode =
+  | 'empty'
+  | 'action-requirements'
+  | 'concrete-seed'
+  | 'normalized-substring'
+  | 'compound-clauses'
+  | 'emphasized-spans'
+  | 'token-overlap';
+
+export interface RealizationAssessment {
+  depicted: boolean;
+  mode: RealizationMode;
+  score: number;
+  missingTokens: string[];
+  missingClauses: string[];
+  matchedClauses: string[];
+}
+
+export function normalizeRealizationText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function stopwordsForRealization(validator: string | undefined): Set<string> {
+  return STOPWORDS_BY_VALIDATOR[validator ?? ''] ?? STOPWORDS_BY_VALIDATOR.RequiredBeatRealizationValidator;
+}
+
+export function contentTokensForRealization(value: string | undefined, stopwords: Set<string>): string[] {
+  if (!value) return [];
+  return normalizeRealizationText(value)
+    .split(' ')
+    .filter((token) => token.length >= 4 && !stopwords.has(token));
+}
+
+function tokenPresent(token: string, hayTokens: string[], haySet: Set<string>): boolean {
+  if (haySet.has(token)) return true;
+  for (const h of hayTokens) {
+    if (h.startsWith(token) || token.startsWith(h)) return true;
+  }
+  return false;
+}
+
+function overlapScore(moment: string, prose: string, stopwords: Set<string>): number {
+  const needed = [...new Set(contentTokensForRealization(moment, stopwords))];
+  if (needed.length === 0) return 1;
+  const hayTokens = [...new Set(contentTokensForRealization(prose, stopwords))];
+  const haySet = new Set(hayTokens);
+  const hits = needed.filter((token) => tokenPresent(token, hayTokens, haySet)).length;
+  return hits / needed.length;
+}
+
+function missingOverlapTokens(moment: string, prose: string, stopwords: Set<string>): string[] {
+  const needed = [...new Set(contentTokensForRealization(moment, stopwords))];
+  const hayTokens = [...new Set(contentTokensForRealization(prose, stopwords))];
+  const haySet = new Set(hayTokens);
+  return needed.filter((token) => !tokenPresent(token, hayTokens, haySet));
+}
+
+interface ActionRequirement {
+  token: string;
+  present: boolean;
+}
+
+function anyPatternPresent(prose: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(prose));
+}
+
+function actionRequirementsFor(moment: string, prose: string): ActionRequirement[] {
+  const needle = normalizeRealizationText(moment);
+  const hay = normalizeRealizationText(prose);
+  const requirements: ActionRequirement[] = [];
+  const add = (token: string, present: boolean) => requirements.push({ token, present });
+
+  if (/\b(?:walk|walks|walked|walking)\s+(?:her|him|them|you)?\s*home\b/.test(needle)) {
+    const rescuerWalkHome = /\b(?:second|figure|charcoal|suit)\b/.test(needle);
+    add('walk-home', rescuerWalkHome
+      ? anyPatternPresent(hay, [
+        /\b(?:victor|he|man|figure|rescuer|charcoal|suit)\b[\s\S]{0,100}\bwalk(?:s|ed|ing)?\b[\s\S]{0,80}\bhome\b/,
+        /\bwalk(?:s|ed|ing)?\s+(?:you|her|him|them)\s+home\b/,
+      ])
+      : /\bwalk(?:s|ed|ing)?\b[\s\S]{0,80}\bhome\b|\bhome\b[\s\S]{0,80}\bwalk(?:s|ed|ing)?\b/.test(hay));
+  }
+  if (/\b(?:swap|swaps|swapped|swapping|switch|switches|switched|replace|replaces|replaced|trade|trades|traded)\b[\s\S]{0,80}\b(?:shoe|shoes|heels|boots)\b|\b(?:shoe|shoes|heels|boots)\b[\s\S]{0,80}\b(?:swap|swaps|swapped|swapping|switch|switches|switched|replace|replaces|replaced|trade|trades|traded)\b/.test(needle)) {
+    add('swap-shoes', anyPatternPresent(hay, [
+      /\b(?:swap|swaps|swapped|swapping|switch|switches|switched|replace|replaces|replaced|trade|trades|traded)\b[\s\S]{0,100}\b(?:shoe|shoes|heels|boots)\b/,
+      /\b(?:shoe|shoes|heels|boots)\b[\s\S]{0,100}\b(?:swap|swaps|swapped|swapping|switch|switches|switched|replace|replaces|replaced|trade|trades|traded)\b/,
+      /\b(?:take|takes|took|pulls?|pulled|kick(?:s|ed)?|slip(?:s|ped)?|unlace(?:s|d)?|remove(?:s|d)?)\s+(?:off|out\s+of)?\b[\s\S]{0,100}\b(?:shoe|shoes|sneaker|sneakers|heels|boots)\b[\s\S]{0,140}\b(?:put|puts|slides?|slid|steps?)\b[\s\S]{0,60}\b(?:on|into)\b/,
+    ]));
+    if (/\bamerican\b/.test(needle)) {
+      add('american-shoes', /\bamerican\b[\s\S]{0,140}\b(?:shoe|shoes|sneaker|sneakers|heels|boots)\b|\b(?:shoe|shoes|sneaker|sneakers|heels|boots)\b[\s\S]{0,140}\bamerican\b/.test(hay));
+    }
+  }
+  if (/\bkiss(?:es|ed|ing)?\b[\s\S]{0,80}\bhand\b|\bhand\b[\s\S]{0,80}\bkiss(?:es|ed|ing)?\b/.test(needle)) {
+    add('kiss-hand', /\bkiss(?:es|ed|ing)?\b[\s\S]{0,80}\b(?:hand|knuckles|fingers)\b|\b(?:hand|knuckles|fingers)\b[\s\S]{0,80}\bkiss(?:es|ed|ing)?\b/.test(hay));
+    if (/\bthreshold\b/.test(needle)) {
+      add('threshold', /\b(?:threshold|doorway|door|stoop|entrance)\b/.test(hay));
+    }
+  }
+  if (/\bdeclin(?:e|es|ed|ing)\s+to\s+come\s+in\b|\brefus(?:e|es|ed|ing)\s+to\s+(?:come\s+in|enter)\b/.test(needle)) {
+    add('decline-entry', anyPatternPresent(hay, [
+      /\bdeclin(?:e|es|ed|ing)\b[\s\S]{0,80}\b(?:come\s+in|enter|inside)\b/,
+      /\brefus(?:e|es|ed|ing)\b[\s\S]{0,80}\b(?:come\s+in|enter|inside|cross)\b/,
+      /\b(?:will\s+not|won t|doesn t|does\s+not)\b[\s\S]{0,80}\b(?:come\s+in|enter|inside|cross)\b/,
+    ]));
+  }
+  if (/\bvanish(?:es|ed|ing)?\b|\bdisappear(?:s|ed|ing)?\b/.test(needle)) {
+    add('vanish', /\b(?:vanish(?:es|ed|ing)?|disappear(?:s|ed|ing)?|gone|melts?\s+into|dissolv(?:e|es|ed|ing)\s+into|reced(?:e|es|ed|ing)\s+into\s+(?:the\s+)?(?:shadow|shadows|dark|darkness|fog|mist|smoke)|lost\s+to)\b/.test(hay));
+  }
+  if (/\bdrops?\s+(?:the\s+)?attacker\b|\bdispatch(?:es|ed)?\s+(?:the\s+)?attacker\b/.test(needle)) {
+    add('drop-attacker', anyPatternPresent(hay, [
+      /\b(?:drop|drops|dropped|dispatch(?:es|ed)?|knock(?:s|ed)?|throw(?:s|n)?|slam(?:s|med)?)\b[\s\S]{0,80}\b(?:attacker|shadow|figure)\b/,
+      /\b(?:attacker|shadow|figure)\b[\s\S]{0,80}\b(?:drop|drops|dropped|dispatch(?:es|ed)?|knock(?:s|ed)?|throw(?:s|n)?|slam(?:s|med)?)\b/,
+    ]));
+  }
+  if (/\bpinn(?:ed|s)?\b[\s\S]{0,80}\b(?:willow|tree|bark)\b|\b(?:willow|tree|bark)\b[\s\S]{0,80}\bpinn(?:ed|s)?\b/.test(needle)) {
+    add('pinned-tree', anyPatternPresent(hay, [
+      /\b(?:pin|pins|pinned|slam(?:s|med)?|press(?:es|ed)?)\b[\s\S]{0,100}\b(?:willow|tree|bark)\b/,
+      /\b(?:willow|tree|bark)\b[\s\S]{0,100}\b(?:pin|pins|pinned|slam(?:s|med)?|press(?:es|ed)?)\b/,
+    ]));
+  }
+
+  return requirements;
+}
+
+function shortQuotedRequirement(moment: string): string | undefined {
+  const trimmed = moment.trim();
+  if (!/^["'“”‘’]+[\s\S]+["'“”‘’]+$/.test(trimmed)) return undefined;
+  const inner = trimmed
+    .replace(/^["'“”‘’]+/, '')
+    .replace(/["'“”‘’]+$/, '')
+    .trim();
+  if (!inner) return undefined;
+  const words = contentTokensForRealization(inner, new Set()).length;
+  if (words < 2 || words > 14) return undefined;
+  if (/[;—]|\b(?:by\s+\d|at\s+\d|walks?|pins?|drops?|kisses?|declines?|vanishes?)\b/i.test(inner)) return undefined;
+  return inner;
+}
+
+function emphasizedSpans(moment: string): string[] {
+  const spans = [...moment.matchAll(/\*+([^*]+?)\*+/g)]
+    .map((m) => m[1].trim())
+    .filter((span) => span.length > 0);
+  return spans.length >= 2 ? spans : [];
+}
+
+function spanPresent(span: string, prose: string, stopwords: Set<string>): boolean {
+  if (normalizeRealizationText(prose).includes(normalizeRealizationText(span))) return true;
+  return overlapScore(span, prose, stopwords) >= 1;
+}
+
+export function extractCompoundClauses(moment: string, stopwords: Set<string>): string[] {
+  const sanitizedMoment = moment
+    .replace(/\([^)]*\b(?:INFO-[A-Z0-9_-]+|planted live|paid off|payoff|payoffs|validator|gate)\b[^)]*\)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const colonList = /:\s*([\s\S]+)$/.exec(sanitizedMoment)?.[1];
+  const commaCount = (sanitizedMoment.match(/,/g) || []).length;
+  const semicolonCount = (sanitizedMoment.match(/;/g) || []).length;
+  const listSource = colonList || (semicolonCount > 0 ? sanitizedMoment : (commaCount >= 2 && /\b(?:and|or)\b/i.test(sanitizedMoment) ? sanitizedMoment : ''));
+  if (!listSource) return [];
+
+  const splitPattern = semicolonCount > 0
+    ? /\s*;\s*/i
+    : /\s*(?:;|,|\band\b)\s*/i;
+
+  const clauses = listSource
+    .replace(/([.!?])\s+(?=(?:She|He|They|The|A|An|By|[A-Z][a-z]+)\b)/g, '$1|CLAUSE|')
+    .replace(/,\s+and\s+(?=(?:the|a|an|[A-Z][a-z]+)\b)/gi, '|CLAUSE|')
+    .split(splitPattern)
+    .flatMap((clause) => clause.split('|CLAUSE|'))
+    .map((clause) => clause
+      .replace(/^\s*(?:and|or|including|include|includes|collects?|shows?|depicts?)\s+/i, '')
+      .replace(/^\s*[^—:]{2,60}\s+—\s+(?=\b(?:the|a|an|[a-z][a-z]+)\b)/i, '')
+      .replace(/^[\s:—-]+|[\s.]+$/g, '')
+      .trim())
+    .filter((clause) => contentTokensForRealization(clause, stopwords).length >= 2);
+
+  return clauses.length >= (semicolonCount > 0 ? 2 : 3) ? clauses : [];
+}
+
+function simpleMomentDepicted(moment: string, prose: string, stopwords: Set<string>): boolean {
+  if (normalizeRealizationText(prose).includes(normalizeRealizationText(moment))) return true;
+  const spans = emphasizedSpans(moment);
+  if (spans.length >= 2 && spans.every((span) => spanPresent(span, prose, stopwords))) return true;
+  return overlapScore(moment, prose, stopwords) >= PRESENCE_MIN_SCORE;
+}
+
+export function evaluateMomentRealization(
+  validator: string | undefined,
+  moment: string,
+  prose: string,
+): RealizationAssessment {
+  const normalizedMoment = normalizeRealizationText(moment);
+  if (normalizedMoment.length === 0) {
+    return {
+      depicted: true,
+      mode: 'empty',
+      score: 1,
+      missingTokens: [],
+      missingClauses: [],
+      matchedClauses: [],
+    };
+  }
+
+  const validatorName = validator ?? 'RequiredBeatRealizationValidator';
+  const stopwords = stopwordsForRealization(validatorName);
+
+  if (validatorName === 'RequiredBeatRealizationValidator') {
+    const concreteDepicted = concreteSeedDepicted(normalizedMoment, prose);
+    if (typeof concreteDepicted === 'boolean') {
+      const rule = concreteSeedRuleFor(normalizeSeedText(moment));
+      return {
+        depicted: concreteDepicted,
+        mode: 'concrete-seed',
+        score: concreteDepicted ? 1 : 0,
+        missingTokens: concreteDepicted ? [] : rule?.missingTokens ?? missingOverlapTokens(moment, prose, stopwords),
+        missingClauses: [],
+        matchedClauses: [],
+      };
+    }
+
+    const clauses = extractCompoundClauses(moment, stopwords);
+    if (clauses.length > 0) {
+      const matchedClauses = clauses.filter((clause) => simpleMomentDepicted(clause, prose, stopwords));
+      const missingClauses = clauses.filter((clause) => !matchedClauses.includes(clause));
+      return {
+        depicted: missingClauses.length === 0,
+        mode: 'compound-clauses',
+        score: matchedClauses.length / clauses.length,
+        missingTokens: [...new Set(missingClauses.flatMap((clause) => contentTokensForRealization(clause, stopwords)))],
+        missingClauses,
+        matchedClauses,
+      };
+    }
+
+    const quoted = shortQuotedRequirement(moment);
+    if (quoted) {
+      const depicted = normalizeRealizationText(prose).includes(normalizeRealizationText(quoted))
+        || overlapScore(quoted, prose, stopwords) >= 1;
+      return {
+        depicted,
+        mode: 'normalized-substring',
+        score: depicted ? 1 : 0,
+        missingTokens: depicted ? [] : contentTokensForRealization(quoted, stopwords),
+        missingClauses: depicted ? [] : [quoted],
+        matchedClauses: depicted ? [quoted] : [],
+      };
+    }
+
+    const actionRequirements = actionRequirementsFor(moment, prose);
+    if (actionRequirements.length > 0) {
+      const missing = actionRequirements.filter((requirement) => !requirement.present).map((requirement) => requirement.token);
+      return {
+        depicted: missing.length === 0,
+        mode: 'action-requirements',
+        score: (actionRequirements.length - missing.length) / actionRequirements.length,
+        missingTokens: missing,
+        missingClauses: [],
+        matchedClauses: actionRequirements.filter((requirement) => requirement.present).map((requirement) => requirement.token),
+      };
+    }
+  }
+
+  if (normalizeRealizationText(prose).includes(normalizedMoment)) {
+    return {
+      depicted: true,
+      mode: 'normalized-substring',
+      score: 1,
+      missingTokens: [],
+      missingClauses: [],
+      matchedClauses: [],
+    };
+  }
+
+  const spans = emphasizedSpans(moment);
+  if (spans.length >= 2 && spans.every((span) => spanPresent(span, prose, stopwords))) {
+    return {
+      depicted: true,
+      mode: 'emphasized-spans',
+      score: 1,
+      missingTokens: [],
+      missingClauses: [],
+      matchedClauses: spans,
+    };
+  }
+
+  const score = overlapScore(moment, prose, stopwords);
+  return {
+    depicted: score >= PRESENCE_MIN_SCORE,
+    mode: 'token-overlap',
+    score,
+    missingTokens: missingOverlapTokens(moment, prose, stopwords),
+    missingClauses: [],
+    matchedClauses: [],
+  };
+}

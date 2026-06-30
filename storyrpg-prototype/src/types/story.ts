@@ -1,0 +1,552 @@
+// ========================================
+// SCENE & EPISODE TYPES
+// ========================================
+
+import type { ConditionExpression } from './conditions';
+import type { Consequence } from './consequences';
+import type {
+  PlayerAttributes,
+  PlayerSkills,
+  PlayerState,
+  InventoryItem,
+  Relationship,
+} from './player';
+import type { Beat, MediaRef, NarrativeSequenceIntent, SceneVisualSequencePlan } from './content';
+import type { Encounter, EncounterType } from './encounter';
+import type { ResolutionTier } from './choice';
+import type {
+  ArcPressureTreatmentContract,
+  AuthoredTreatmentFieldContract,
+  BranchConsequenceRealizationContract,
+  CharacterTreatmentRealizationContract,
+  EndingRealizationContract,
+  FailureModeAuditContract,
+  MechanicPressureContract,
+  RelationshipPacingContract,
+  SceneTurnContract,
+  SeasonPromiseRealizationContract,
+  StoryCircleBeatRealizationContract,
+  StakesArchitectureContract,
+  WorldTreatmentRealizationContract,
+} from './scenePlan';
+import type { StoryCircleStructure } from './sourceAnalysis';
+
+export interface Scene {
+  id: string;
+  name: string;
+  charactersInvolved?: string[];
+
+  backgroundImage?: MediaRef;
+  ambientSound?: string;
+
+  beats: Beat[];
+  startingBeatId: string;
+
+  encounter?: Encounter;
+  sequenceIntent?: NarrativeSequenceIntent;
+  sceneVisualSequencePlan?: SceneVisualSequencePlan;
+
+  conditions?: ConditionExpression;
+
+  fallbackSceneId?: string;
+
+  leadsTo?: string[];
+
+  isBottleneck?: boolean;
+  isConvergencePoint?: boolean;
+  branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
+
+  /**
+   * Generator-authored diegetic timeline metadata (planned location/time-of-day
+   * and the writer's transition phrase). Persisted at assembly so continuity
+   * validators and audits can compare the PLANNED time/place against prose.
+   * Never rendered to the player.
+   */
+  timeline?: {
+    location?: string;
+    timeOfDay?: string;
+    timeJumpFromPrevious?: string;
+    transitionIn?: string;
+  };
+
+  /**
+   * Generator-only dramatic-turn metadata. Playback ignores this; validators use
+   * it to verify the scene actually earns its central turn with setup,
+   * event/reveal/choice, and aftermath/handoff.
+   */
+  turnContract?: SceneTurnContract;
+
+  /**
+   * Generator-only relationship pacing metadata. Playback ignores this; final
+   * validators and repair passes use it to prevent premature friendship,
+   * trust, romance, or group-membership declarations.
+   */
+  relationshipPacing?: RelationshipPacingContract[];
+
+  /**
+   * Generator-only hidden mechanics pressure metadata. Playback ignores this;
+   * validators and repair use it to ensure flags, items, scores, relationships,
+   * skills, routes, and information states have visible story evidence and
+   * earned payoffs.
+   */
+  mechanicPressure?: MechanicPressureContract[];
+
+  /**
+   * Generator-only treatment-field obligations assigned to this scene. Playback
+   * ignores this; final validators use it to verify authored treatment fields
+   * became reader-facing scene/choice/encounter/ending pressure.
+   */
+  authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
+
+  /**
+   * Generator-only top-level season promise obligations assigned to this
+   * scene. Playback ignores this; final validators use it to ensure the
+   * promised show is staged on-page rather than only stored in metadata.
+   */
+  seasonPromiseContracts?: SeasonPromiseRealizationContract[];
+
+  /**
+   * Generator-only stakes architecture obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure Section 5 stakes
+   * are staged on-page rather than only stored in treatment metadata.
+   */
+  stakesArchitectureContracts?: StakesArchitectureContract[];
+
+  /**
+   * Generator-only legacy-structure beat realization obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored Hook /
+   * Midpoint / Climax / Resolution content was staged on-page.
+   */
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
+
+  /**
+   * Generator-only arc-pressure treatment obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored arc
+   * pressure lands as reader-facing story movement.
+   */
+  arcPressureContracts?: ArcPressureTreatmentContract[];
+
+  /**
+   * Generator-only cross-episode branch / consequence-chain obligations
+   * assigned to this scene. Playback ignores this; final validators use it to
+   * ensure authored Section 11 branch state and reconvergence residue survive.
+   */
+  branchConsequenceContracts?: BranchConsequenceRealizationContract[];
+
+  /**
+   * Generator-only alternate-ending obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure Section 14 ending
+   * drivers, route conditions, and finale payoff land on-page.
+   */
+  endingRealizationContracts?: EndingRealizationContract[];
+
+  /**
+   * Generator-only failure-mode audit obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure Section 15
+   * mitigations become staged story material rather than prompt-only QA notes.
+   */
+  failureModeAuditContracts?: FailureModeAuditContract[];
+
+  /**
+   * Generator-only character treatment obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored
+   * protagonist/core-character fields become staged story material.
+   */
+  characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
+
+  /**
+   * Generator-only world/location treatment obligations assigned to this scene.
+   * Playback ignores this; final validators use it to ensure authored setting
+   * rules and location purpose/choice pressure become staged story material.
+   */
+  worldTreatmentContracts?: WorldTreatmentRealizationContract[];
+}
+
+export interface Episode {
+  id: string;
+  number: number;
+  title: string;
+  synopsis: string;
+  coverImage: MediaRef;
+
+  scenes: Scene[];
+  startingSceneId: string;
+  episodeCircle?: Partial<StoryCircleStructure>;
+
+  unlockConditions?: ConditionExpression;
+
+  onComplete?: Consequence[];
+}
+
+export interface Story {
+  id: string;
+  title: string;
+  genre: string;
+  synopsis: string;
+  coverImage: string;
+
+  author?: string;
+  tags?: string[];
+
+  initialState: {
+    attributes: PlayerAttributes;
+    skills: PlayerSkills;
+    tags: string[];
+    inventory: InventoryItem[];
+  };
+
+  npcs: {
+    id: string;
+    name: string;
+    description: string;
+    role?: string;
+    portrait?: string;
+    pronouns?: string;
+    initialRelationship?: Partial<Relationship>;
+    relationshipDimensions?: RelationshipDimension[];
+    /**
+     * First-class NPC tier (Phase 1.3). Authored by CharacterDesigner and
+     * persisted here so the runtime, validators, and UI can read it without
+     * re-inferring from `role`.
+     */
+    tier?: NPCTier;
+    /**
+     * Richer NPC fields persisted from CharacterBible (Phase 1.6). Optional
+     * so existing stories remain valid; present for newly generated stories.
+     */
+    want?: string;
+    fear?: string;
+    flaw?: string;
+    voiceProfile?: {
+      writingGuidance?: string;
+      speechPatterns?: string[];
+      vocabularyLevel?: string;
+      whenNervous?: string;
+      whenAngry?: string;
+      whenConfident?: string;
+    };
+    secrets?: string[];
+    arc?: {
+      startState?: string;
+      endState?: string;
+      keyBeats?: string[];
+    };
+  }[];
+
+  episodes: Episode[];
+
+  outputDir?: string;
+
+  generatedOutputScope?: {
+    sourceEpisodeCount: number;
+    requestedEpisodeCount: number;
+    generatedEpisodeRange: {
+      startEpisode: number;
+      endEpisode: number;
+    };
+    isPartialSeason: boolean;
+    sourceTreatmentTitle?: string;
+    treatmentCompleteness: 'full-season' | 'partial-slice';
+  };
+
+  /**
+   * Generation lifecycle for stories whose narrative content is complete before
+   * their image batch has finished. `pending` stories are valid drafts but
+   * should not be treated as fully illustrated catalog entries yet.
+   */
+  imagesStatus?: 'pending' | 'running' | 'partial' | 'complete' | 'failed';
+
+  /**
+   * Structured art-style profile the generation pipeline used. Persisted so
+   * single-image regenerations, resumes, and downstream playback can read
+   * back the same style contract without re-running StyleArchitect.
+   *
+   * Typed loosely as `unknown` here to avoid a circular dependency on the
+   * `ai-agents/images` module; the pipeline stores an `ArtStyleProfile`
+   * and the reader casts back at consumption time.
+   */
+  artStyleProfile?: unknown;
+
+  /**
+   * Paths to the three style-bible anchor images the user approved in
+   * the Style Setup UI (or the pipeline generated in-flight). Any slot
+   * may be absent; playback only cares about `character` for
+   * season style-reference hand-off on resume.
+   */
+  styleAnchors?: {
+    character?: { imagePath: string };
+    arcStrip?: { imagePath: string };
+    environment?: { imagePath: string };
+  };
+}
+
+export interface StoryCatalogEpisode {
+  id: string;
+  number: number;
+  title: string;
+  synopsis: string;
+  coverImage: string;
+  imageArtifacts?: {
+    hasEpisodeArt?: boolean;
+  };
+  videoArtifacts?: {
+    hasVideo?: boolean;
+  };
+}
+
+export interface StoryCatalogEntry {
+  id: string;
+  title: string;
+  genre: string;
+  synopsis: string;
+  coverImage: string;
+  author?: string;
+  tags?: string[];
+  outputDir?: string;
+  imagesStatus?: Story['imagesStatus'];
+  imageArtifacts?: {
+    hasSeasonReferences?: boolean;
+    hasEpisodeArt?: boolean;
+  };
+  isBuiltIn?: boolean;
+  updatedAt?: string;
+  fullStoryUrl?: string;
+  episodeCount: number;
+  episodes: StoryCatalogEpisode[];
+}
+
+export interface StorySetupCatalogEntry {
+  setupId: string;
+  planId: string;
+  title: string;
+  genre: string;
+  tone?: string;
+  synopsis: string;
+  totalEpisodes: number;
+  selectedEpisodes: number[];
+  approvedStepCount: number;
+  status: 'draft' | 'approved' | 'needs_review';
+  updatedAt?: string;
+}
+
+export interface MediaSetupTarget {
+  kind: 'images' | 'video';
+  storyId: string;
+  outputDir: string;
+  episodeId: string;
+  episodeNumber: number;
+  episodeTitle: string;
+}
+
+// ========================================
+// GAME STATE TYPES
+// ========================================
+
+export interface GameSession {
+  id: string;
+  storyId: string;
+  playerState: PlayerState;
+  startedAt: Date;
+  lastPlayedAt: Date;
+
+  sceneHistory: string[];
+
+  encounterState?: {
+    encounterId: string;
+    currentPhaseId: string;
+    phaseScore: number;
+    totalScore: number;
+  };
+}
+
+// ========================================
+// RESOLUTION TYPES (Fiction-First)
+// ========================================
+
+export interface ResolutionResult {
+  tier: ResolutionTier;
+  roll: number;
+  target: number;
+  margin: number;
+  narrativeText: string;
+  weakestContributor?: { skill: string; effective: number; ceiling: number };
+}
+
+// ========================================
+// CONSEQUENCE BUDGET TYPES
+// ========================================
+
+export type ConsequenceBudgetCategory = 'callback' | 'tint' | 'branchlet' | 'branch';
+
+export type BudgetedConsequence = Consequence & {
+  budgetCategory: ConsequenceBudgetCategory;
+};
+
+// ========================================
+// NPC TIER TYPES
+// ========================================
+
+export type NPCTier = 'core' | 'supporting' | 'background';
+
+export type RelationshipDimension = 'trust' | 'affection' | 'respect' | 'fear';
+
+export interface TieredNPC {
+  id: string;
+  name: string;
+  tier: NPCTier;
+  relationshipDimensions: RelationshipDimension[];
+}
+
+// ========================================
+// FIVE-FACTOR IMPACT TYPES
+// ========================================
+
+export interface FiveFactorImpact {
+  outcome: boolean;
+  process: boolean;
+  information: boolean;
+  relationship: boolean;
+  identity: boolean;
+}
+
+// ========================================
+// TIMING METADATA TYPES
+// ========================================
+
+export interface TimingMetadata {
+  estimatedReadingTimeSeconds: number;
+  wordCount: number;
+  isChoicePoint: boolean;
+  cumulativeSeconds: number;
+}
+
+// ========================================
+// SEASON PLANNING TYPES
+// ========================================
+
+export type CliffhangerType =
+  | 'revelation'
+  | 'danger'
+  | 'mystery'
+  | 'betrayal'
+  | 'arrival'
+  | 'departure'
+  | 'decision'
+  | 'transformation'
+  | 'shock'
+  | 'emotional_hook'
+  | 'reframe'
+  | 'loss';
+
+export type StorySpinePosition =
+  | 'setup'
+  | 'routine'
+  | 'inciting'
+  | 'consequence'
+  | 'climax'
+  | 'resolution';
+
+export interface EpisodePlan {
+  episodeNumber: number;
+  title: string;
+  logline: string;
+  seasonAct: 1 | 2 | 3;
+  isTentpole: boolean;
+  isMidseasonPivot: boolean;
+  isFinale: boolean;
+  storySpinePosition: StorySpinePosition;
+  mustAccomplish: string[];
+  cliffhangerType: CliffhangerType;
+  cliffhangerHook: string;
+  cliffhangerSetup: string;
+  primaryCharacterFocus: string[];
+  arcProgressions: Array<{
+    characterId: string;
+    fromState: string;
+    toState: string;
+  }>;
+  subplotsActive: string[];
+  subplotBeats: Array<{
+    subplotId: string;
+    beatDescription: string;
+  }>;
+  promisesMade: string[];
+  promisesFulfilled: string[];
+  revelationsDelivered: string[];
+  previousEpisodeThreads: string[];
+  nextEpisodeSetup: string[];
+  plannedEncounters: Array<{
+    type: EncounterType;
+    description: string;
+    stakes: string;
+    position: 'opening' | 'midpoint' | 'climax';
+  }>;
+  estimatedSceneCount: number;
+  estimatedBeatCount: number;
+}
+
+export interface SeasonBible {
+  seasonId: string;
+  storyTitle: string;
+  seasonNumber: number;
+  totalEpisodes: number;
+  suggestedEpisodeCount?: number;
+  userSelectedEpisodeCount: number;
+  episodeLengthTarget: 'short' | 'medium' | 'long';
+  centralQuestion: string;
+  thematicQuestion: string;
+  centralQuestionAnswer: string;
+  nextSeasonHook: {
+    cliffhangerType: CliffhangerType;
+    hook: string;
+    newQuestion: string;
+    setup: string;
+  };
+  seasonStructure: {
+    act1Episodes: number[];
+    act2Episodes: number[];
+    act3Episodes: number[];
+    midseasonPivotEpisode: number;
+    tentpoleEpisodes: number[];
+    finaleEpisode: number;
+    pacingNotes: string;
+  };
+  episodePlans: EpisodePlan[];
+  characterArcs: Array<{
+    characterId: string;
+    arcType: string;
+    startState: string;
+    endState: string;
+    keyBeats: string[];
+  }>;
+  subplots: Array<{
+    id: string;
+    name: string;
+    description: string;
+    characters: string[];
+    startEpisode: number;
+    endEpisode: number;
+  }>;
+  promiseLedger: {
+    questionsRaised: string[];
+    characterTrajectories: string[];
+    relationshipTensions: string[];
+    themesIntroduced: string[];
+  };
+  revelationSchedule: Array<{
+    episodeNumber: number;
+    revelation: string;
+    impact: string;
+  }>;
+  condensationRules: {
+    subplotsToOmit: string[];
+    charactersToMergeOrReduce: string[];
+    beatsToCondense: string[];
+    pacing: 'tight' | 'moderate' | 'expansive';
+  };
+  generatedEpisodes: Episode[];
+  lastGeneratedEpisode: number;
+  generationComplete: boolean;
+  createdAt: string;
+  lastModified: string;
+}

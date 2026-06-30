@@ -35,16 +35,10 @@ export function layoutGraph(
   let maxWidth = 0;
 
   for (const [episodeId, nodeIds] of graph.episodeGroups) {
-    // Get unique scenes in this episode
-    const scenesInEpisode = new Set<string>();
-    for (const nodeId of nodeIds) {
-      const node = graph.nodes.find((n) => n.id === nodeId);
-      if (node?.sceneId) {
-        scenesInEpisode.add(node.sceneId);
-      }
-    }
-
-    let episodeStartY = currentY;
+    const episodeNodeIds = new Set(nodeIds);
+    const scenesInEpisode = Array.from(graph.sceneGroups.entries())
+      .filter(([, sceneNodeIds]) => sceneNodeIds.some((nodeId) => episodeNodeIds.has(nodeId)))
+      .map(([sceneGraphKey]) => sceneGraphKey);
 
     for (const sceneId of scenesInEpisode) {
       const layout = sceneLayouts.get(sceneId);
@@ -67,12 +61,93 @@ export function layoutGraph(
     currentY += config.episodePadding;
   }
 
+  alignSceneEntryMerges(graph.nodes, graph.edges, graph.sceneGroups);
+  const minX = Math.min(...graph.nodes.map((node) => node.x));
+  if (minX < config.scenePadding) {
+    const shiftX = config.scenePadding - minX;
+    for (const node of graph.nodes) node.x += shiftX;
+  }
+
+  const maxX = Math.max(...graph.nodes.map((node) => node.x + node.width));
+  const maxY = Math.max(...graph.nodes.map((node) => node.y + node.height));
   const bounds = {
-    width: maxWidth + config.episodePadding * 2,
-    height: currentY,
+    width: Math.max(maxWidth + config.episodePadding * 2, maxX + config.episodePadding),
+    height: Math.max(currentY, maxY + config.episodePadding),
   };
 
   return { ...graph, bounds };
+}
+
+function alignSceneEntryMerges(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  sceneGroups: Map<string, string[]>,
+) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+  const sceneByNodeId = new Map<string, string>();
+  for (const [sceneId, nodeIds] of sceneGroups) {
+    for (const nodeId of nodeIds) sceneByNodeId.set(nodeId, sceneId);
+  }
+
+  const scenesByY = Array.from(sceneGroups.keys()).sort((a, b) => {
+    const aTop = getSceneTop(sceneGroups.get(a) ?? [], nodeById);
+    const bTop = getSceneTop(sceneGroups.get(b) ?? [], nodeById);
+    return aTop - bTop;
+  });
+
+  for (const sceneId of scenesByY) {
+    const externalIncoming = edges.filter((edge) => (
+      sceneByNodeId.get(edge.target) === sceneId &&
+      sceneByNodeId.get(edge.source) &&
+      sceneByNodeId.get(edge.source) !== sceneId
+    ));
+    if (externalIncoming.length === 0) continue;
+
+    const edgesByTarget = new Map<string, GraphEdge[]>();
+    for (const edge of externalIncoming) {
+      const targetEdges = edgesByTarget.get(edge.target) ?? [];
+      targetEdges.push(edge);
+      edgesByTarget.set(edge.target, targetEdges);
+    }
+
+    const merge = Array.from(edgesByTarget.entries())
+      .sort(([, a], [, b]) => b.length - a.length)[0];
+    if (!merge) continue;
+
+    const target = nodeById.get(merge[0]);
+    if (!target) continue;
+
+    const sourceCenters = merge[1]
+      .map((edge) => nodeById.get(edge.source))
+      .filter((node): node is GraphNode => Boolean(node))
+      .map((node) => node.x + node.width / 2)
+      .sort((a, b) => a - b);
+    if (sourceCenters.length === 0) continue;
+
+    const targetCenter = target.x + target.width / 2;
+    const desiredCenter = median(sourceCenters);
+    const shiftX = desiredCenter - targetCenter;
+    if (Math.abs(shiftX) < 1) continue;
+
+    const nodeIds = sceneGroups.get(sceneId) ?? [];
+    for (const nodeId of nodeIds) {
+      const node = nodeById.get(nodeId);
+      if (node) node.x += shiftX;
+    }
+  }
+}
+
+function getSceneTop(nodeIds: string[], nodeById: Map<string, GraphNode>): number {
+  const yValues = nodeIds
+    .map((nodeId) => nodeById.get(nodeId)?.y)
+    .filter((value): value is number => typeof value === 'number');
+  return yValues.length ? Math.min(...yValues) : 0;
+}
+
+function median(values: number[]): number {
+  const middle = Math.floor(values.length / 2);
+  if (values.length % 2 === 1) return values[middle];
+  return (values[middle - 1] + values[middle]) / 2;
 }
 
 function layoutScene(
@@ -129,21 +204,18 @@ function layoutScene(
   let currentY = config.scenePadding;
   for (const layer of sortedLayers) {
     layerYPositions[layer] = currentY;
-    currentY += config.nodeHeight + config.verticalSpacing;
-
     const layerNodes = layerGroups.get(layer) || [];
-    const layerWidth =
-      layerNodes.length * config.nodeWidth +
-      (layerNodes.length - 1) * config.horizontalSpacing;
+    const layerHeight = Math.max(...layerNodes.map((node) => node.height), config.nodeHeight);
+    currentY += layerHeight + config.verticalSpacing;
+
+    const layerWidth = getLayerWidth(layerNodes, config);
     maxLayerWidth = Math.max(maxLayerWidth, layerWidth);
   }
 
   // Position nodes within each layer
   for (const layer of sortedLayers) {
     const layerNodes = layerGroups.get(layer) || [];
-    const layerWidth =
-      layerNodes.length * config.nodeWidth +
-      (layerNodes.length - 1) * config.horizontalSpacing;
+    const layerWidth = getLayerWidth(layerNodes, config);
 
     // Center the layer
     const startX = (maxLayerWidth - layerWidth) / 2 + config.scenePadding;
@@ -151,17 +223,209 @@ function layoutScene(
     // Order nodes to minimize crossings (simple heuristic)
     orderNodesInLayer(layerNodes, layer, layers, outgoing, incoming);
 
+    let currentX = startX;
     for (let i = 0; i < layerNodes.length; i++) {
       const node = layerNodes[i];
-      node.x = startX + i * (config.nodeWidth + config.horizontalSpacing);
+      node.x = currentX;
       node.y = layerYPositions[layer];
+      currentX += node.width + config.horizontalSpacing;
     }
   }
 
-  const height = currentY - config.verticalSpacing + config.scenePadding;
-  const width = maxLayerWidth + config.scenePadding * 2;
+  alignEncounterChoiceChips(nodes, edges, config);
+  alignStoryletBeatChains(nodes, edges);
+  resolveSceneCollisions(nodes, edges);
+  const minX = Math.min(...nodes.map((node) => node.x));
+  if (minX < config.scenePadding) {
+    const shiftX = config.scenePadding - minX;
+    for (const node of nodes) node.x += shiftX;
+  }
+
+  const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+  const maxY = Math.max(...nodes.map((node) => node.y + node.height));
+  const height = maxY + config.scenePadding;
+  const width = maxX + config.scenePadding;
 
   return { nodes, x: 0, y: 0, width, height };
+}
+
+function alignEncounterChoiceChips(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  config: LayoutConfig,
+) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+  const originalY = new Map(nodes.map((node) => [node.id, node.y] as const));
+  const choicesByParent = new Map<string, GraphNode[]>();
+
+  for (const edge of edges) {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || target?.type !== 'encounter-choice') continue;
+    const choices = choicesByParent.get(source.id) ?? [];
+    choices.push(target);
+    choicesByParent.set(source.id, choices);
+  }
+
+  const verticalGap = 8;
+  const rowShifts = new Map<number, number>();
+  const groups = Array.from(choicesByParent.entries()).map(([parentId, choices]) => {
+    const parent = nodeById.get(parentId);
+    const originalChoiceY = Math.min(...choices.map((choice) => originalY.get(choice.id) ?? choice.y));
+    const choiceHeight = Math.max(...choices.map((choice) => choice.height));
+    const stackHeight = choices.reduce((sum, choice) => sum + choice.height, 0) + (choices.length - 1) * verticalGap;
+    if (stackHeight > choiceHeight) {
+      rowShifts.set(originalChoiceY, Math.max(rowShifts.get(originalChoiceY) ?? 0, stackHeight - choiceHeight));
+    }
+    return { parent, choices, originalChoiceY };
+  }).filter((group): group is { parent: GraphNode; choices: GraphNode[]; originalChoiceY: number } => (
+    Boolean(group.parent) && group.choices.length > 0
+  ));
+
+  const sortedShiftRows = Array.from(rowShifts.entries()).sort(([a], [b]) => a - b);
+  const getShiftBefore = (y: number) => sortedShiftRows.reduce((sum, [rowY, shift]) => rowY < y ? sum + shift : sum, 0);
+
+  for (const node of nodes) {
+    if (node.type === 'encounter-choice') continue;
+    const y = originalY.get(node.id) ?? node.y;
+    node.y = y + getShiftBefore(y);
+  }
+
+  for (const { parent, choices, originalChoiceY } of groups) {
+    choices.sort((a, b) => a.x - b.x);
+    let currentY = Math.max(
+      originalChoiceY + getShiftBefore(originalChoiceY),
+      parent.y + parent.height + 24,
+    );
+    for (const choice of choices) {
+      choice.x = parent.x + parent.width / 2 - choice.width / 2;
+      choice.y = currentY;
+      currentY += choice.height + verticalGap;
+    }
+  }
+}
+
+function alignStoryletBeatChains(nodes: GraphNode[], edges: GraphEdge[]) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+  const storyletEdges = edges.filter((edge) => edge.type === 'storylet');
+
+  const incomingStoryletSource = new Map<string, GraphNode>();
+  for (const edge of storyletEdges) {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || target?.type !== 'storylet-beat') continue;
+    incomingStoryletSource.set(target.id, source);
+  }
+
+  const storyletBeats = nodes
+    .filter((node) => node.type === 'storylet-beat')
+    .sort((a, b) => a.y - b.y);
+
+  for (const beat of storyletBeats) {
+    const source = incomingStoryletSource.get(beat.id);
+    if (!source) continue;
+    beat.x = source.x + source.width / 2 - beat.width / 2;
+  }
+
+  preventSameRowStoryletOverlap(storyletBeats);
+}
+
+function preventSameRowStoryletOverlap(storyletBeats: GraphNode[]) {
+  const rows = new Map<number, GraphNode[]>();
+  for (const beat of storyletBeats) {
+    const row = Math.round(beat.y);
+    const rowNodes = rows.get(row) ?? [];
+    rowNodes.push(beat);
+    rows.set(row, rowNodes);
+  }
+
+  for (const rowNodes of rows.values()) {
+    rowNodes.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < rowNodes.length; i++) {
+      const previous = rowNodes[i - 1];
+      const current = rowNodes[i];
+      const minX = previous.x + previous.width + 24;
+      if (current.x < minX) current.x = minX;
+    }
+  }
+}
+
+function resolveSceneCollisions(nodes: GraphNode[], edges: GraphEdge[]) {
+  const choiceParentById = buildEncounterChoiceParentMap(nodes, edges);
+  const placed: GraphNode[] = [];
+  const ordered = [...nodes].sort((a, b) => {
+    const aOrderY = getCollisionOrderY(a, choiceParentById);
+    const bOrderY = getCollisionOrderY(b, choiceParentById);
+    if (Math.abs(aOrderY - bOrderY) > 1) return aOrderY - bOrderY;
+    const priorityDelta = getCollisionPriority(a) - getCollisionPriority(b);
+    if (priorityDelta !== 0) return priorityDelta;
+    return a.x - b.x;
+  });
+
+  for (const node of ordered) {
+    let guard = 0;
+    while (true) {
+      const collision = placed.find((other) => rectanglesOverlap(node, other, 18));
+      if (!collision) break;
+      moveNodeBelow(node, collision);
+      guard += 1;
+      if (guard > placed.length + 4) break;
+    }
+    placed.push(node);
+  }
+}
+
+function buildEncounterChoiceParentMap(nodes: GraphNode[], edges: GraphEdge[]): Map<string, GraphNode> {
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+  const parentByChoiceId = new Map<string, GraphNode>();
+  for (const edge of edges) {
+    const target = nodeById.get(edge.target);
+    if (target?.type !== 'encounter-choice') continue;
+    const source = nodeById.get(edge.source);
+    if (source) parentByChoiceId.set(target.id, source);
+  }
+  return parentByChoiceId;
+}
+
+function getCollisionOrderY(node: GraphNode, choiceParentById: Map<string, GraphNode>): number {
+  const parent = choiceParentById.get(node.id);
+  if (node.type === 'encounter-choice' && parent) return parent.y + parent.height + 1;
+  return node.y;
+}
+
+function getCollisionPriority(node: GraphNode): number {
+  switch (node.type) {
+    case 'beat':
+    case 'phase':
+    case 'encounter-situation':
+      return 0;
+    case 'encounter-choice':
+      return 0.5;
+    case 'encounter-outcome':
+      return 2;
+    case 'storylet-beat':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function moveNodeBelow(node: GraphNode, blocker: GraphNode) {
+  node.y = blocker.y + blocker.height + 28;
+}
+
+function rectanglesOverlap(a: GraphNode, b: GraphNode, gap: number): boolean {
+  return !(
+    a.x + a.width + gap <= b.x ||
+    b.x + b.width + gap <= a.x ||
+    a.y + a.height + gap <= b.y ||
+    b.y + b.height + gap <= a.y
+  );
+}
+
+function getLayerWidth(nodes: GraphNode[], config: LayoutConfig): number {
+  if (nodes.length === 0) return 0;
+  return nodes.reduce((sum, node) => sum + node.width, 0) + (nodes.length - 1) * config.horizontalSpacing;
 }
 
 function assignLayers(

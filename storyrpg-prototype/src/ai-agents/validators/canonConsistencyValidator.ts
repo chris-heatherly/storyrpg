@@ -1,0 +1,94 @@
+/**
+ * Canon-consistency validator (Season Canon, Phase 3).
+ *
+ * Catches the recurring impossible-knowledge bug: an episode has a character act
+ * on a fact they could not yet know. It checks STRUCTURED knowledge claims (the
+ * LLM-extracted "in episode N, character C references fact F") against the frozen
+ * SeasonCanon's who-knows-what-when ledger — deterministically, by factId.
+ *
+ * State-scoped, so it never false-alarms: a claim is impossible ONLY when the
+ * canon says the character learns that fact in a LATER episode. A fact the
+ * character genuinely learns THIS episode is fine; an unknown factId is treated
+ * as newly introduced this episode (advisory, not blocking) rather than an error,
+ * because not every reference is a canon fact.
+ *
+ * Pure functions over a SeasonCanon — unit-testable, no I/O. Wiring into the
+ * per-episode seal is Phase 4.
+ */
+
+import type { SeasonCanon } from '../pipeline/seasonCanon';
+import type { ValidationIssue, ValidationResult } from './BaseValidator';
+
+/** "In `episode`, `characterId` references/acts on fact `factId`." */
+export interface KnowledgeClaim {
+  characterId: string;
+  factId: string;
+  summary?: string;
+  episode: number;
+}
+
+/**
+ * Flag impossible knowledge: a claim where the canon establishes the fact for the
+ * character only in a LATER episode. Returns blocking issues.
+ */
+export function validateKnowledgeConsistency(
+  claims: KnowledgeClaim[],
+  canon: SeasonCanon,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  for (const claim of claims) {
+    const establishedAt = canon.knowledgeEstablishedEpisode(claim.characterId, claim.factId);
+    // Unknown fact: not yet in canon → treated as introduced this episode (the
+    // seal will freeze it). Not an error here.
+    if (establishedAt === undefined) continue;
+    if (establishedAt > claim.episode) {
+      issues.push({
+        severity: 'error',
+        message: `Impossible knowledge: in episode ${claim.episode}, ${claim.characterId} acts on "${claim.summary ?? claim.factId}", but they don't learn it until episode ${establishedAt}.`,
+        location: `knowledge:${claim.characterId}:${claim.factId}`,
+        suggestion: `Either move the establishing reveal to episode ${claim.episode} or earlier, or remove this reference until episode ${establishedAt}.`,
+      });
+    }
+  }
+  return issues;
+}
+
+/**
+ * Flag a numeric fact that regressed across episodes — a tracked monotonic metric
+ * (e.g. a blog view count) that a later episode declared moving the wrong way. The
+ * SeasonCanon already kept the constraint-respecting value and logged the breach;
+ * here we surface it. ADVISORY (warning, not error): a number going the wrong way is
+ * a craft/continuity smell worth surfacing, but the canon self-heals by keeping the
+ * correct value, so it must not hard-block a season.
+ */
+export function validateNumericMonotonicity(canon: SeasonCanon): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  for (const v of canon.numericViolationsLog()) {
+    const dir = v.monotonic === 'increasing' ? 'must not decrease' : 'must not increase';
+    issues.push({
+      severity: 'warning',
+      message: `Numeric regression: episode ${v.episode} set "${v.statement}" to ${v.incomingValue.toLocaleString('en-US')}, but it ${dir} (already established at ${v.keptValue.toLocaleString('en-US')}). Canon kept ${v.keptValue.toLocaleString('en-US')}.`,
+      location: `numeric:${v.id}`,
+      suggestion: `Restate the figure as ${v.keptValue.toLocaleString('en-US')} or higher to stay consistent with prior episodes.`,
+    });
+  }
+  return issues;
+}
+
+export interface CanonConsistencyInput {
+  canon: SeasonCanon;
+  claims: KnowledgeClaim[];
+}
+
+export function validateCanonConsistency(input: CanonConsistencyInput): ValidationResult {
+  const issues = [
+    ...validateKnowledgeConsistency(input.claims, input.canon),
+    ...validateNumericMonotonicity(input.canon),
+  ];
+  return {
+    valid: issues.every((i) => i.severity !== 'error'),
+    score: issues.length === 0 ? 100 : Math.max(0, 100 - issues.length * 20),
+    issues,
+    suggestions: issues.map((i) => i.suggestion).filter((s): s is string => !!s),
+  };
+}

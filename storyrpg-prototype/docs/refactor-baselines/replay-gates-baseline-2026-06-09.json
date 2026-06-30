@@ -1,0 +1,288 @@
+{
+  "generatedAt": "2026-06-10T02:55:33.762Z",
+  "corpus": "/Users/chrisheatherly/StoryRPG_fork/storyrpg-prototype/generated-stories",
+  "runsFilter": null,
+  "gates": [
+    {
+      "name": "OUTCOME_TEXT_QUALITY",
+      "validator": "OutcomeTextQualityValidator",
+      "gateFlag": "GATE_OUTCOME_TEXT_QUALITY",
+      "blocking": "errors",
+      "gateDefaultOn": false
+    },
+    {
+      "name": "SENTENCE_OPENER_VARIETY",
+      "validator": "SentenceOpenerVarietyValidator",
+      "gateFlag": "GATE_SENTENCE_OPENER_VARIETY",
+      "blocking": "any",
+      "gateDefaultOn": false
+    },
+    {
+      "name": "REQUIRED_BEAT_REALIZATION",
+      "validator": "RequiredBeatRealizationValidator",
+      "gateFlag": "GATE_REQUIRED_BEAT_REALIZATION",
+      "blocking": "errors",
+      "gateDefaultOn": false
+    },
+    {
+      "name": "DUPLICATE_ESTABLISHING_BEAT",
+      "validator": "DuplicateEstablishingBeatValidator",
+      "gateFlag": "GATE_DUPLICATE_ESTABLISHING_BEAT",
+      "blocking": "any",
+      "gateDefaultOn": false
+    }
+  ],
+  "runCount": 5,
+  "skippedRuns": [],
+  "results": [
+    {
+      "run": "bite-me-g10_2026-06-09T04-07-00",
+      "validator": "OutcomeTextQualityValidator",
+      "gateFlag": "GATE_OUTCOME_TEXT_QUALITY",
+      "gateDefaultOn": false,
+      "findingCount": 15,
+      "errorCount": 15,
+      "warningCount": 0,
+      "wouldBlock": true,
+      "firstFindings": [
+        "[error] Choice \"choice-3\" outcomeTexts.success leaks an authoring-scaffold stub: \"It works — you get what you reached for: build the blog on her own terms — her e\".",
+        "[error] Choice \"choice-3\" outcomeTexts.partial leaks an authoring-scaffold stub: \"You get part of what you wanted, but it costs you: the most urgent and magnetic \".",
+        "[error] Choice \"choice-3\" outcomeTexts.failure leaks an authoring-scaffold stub: \"It slips away from you, and the most urgent and magnetic thing about the night —\"."
+      ]
+    },
+    {
+      "run": "bite-me-g10_2026-06-09T04-07-00",
+      "validator": "SentenceOpenerVarietyValidator",
+      "gateFlag": "GATE_SENTENCE_OPENER_VARIETY",
+      "gateDefaultOn": false,
+      "findingCount": 14,
+      "errorCount": 0,
+      "warningCount": 14,
+      "wouldBlock": true,
+      "firstFindings": [
+        "[warning] Beat \"s1-1-beat-5\" opens 3 consecutive sentences with \"You…\" — monotonous second-person cadence: \"You save the file, close the laptop, and put on the wrong shoes — low block heels, America…\".",
+        "[warning] Choice \"choice-mika-key-card-accept:partial\" opens 3 consecutive sentences with \"You…\" — monotonous second-person cadence: \"You take the card and Mika squeezes your hand once, fast, before releasing it. You clock t…\".",
+        "[warning] Choice \"choice-mika-key-card-decline:partial\" opens 3 consecutive sentences with \"You…\" — monotonous second-person cadence: \"You thank her and step back, and Mika's smile holds but her eyes don't quite follow. You f…\"."
+      ]
+    },
+    {
+      "run": "bite-me-g10_2026-06-09T04-07-00",
+      "validator": "RequiredBeatRealizationValidator",
+      "gateFlag": "GATE_REQUIRED_BEAT_REALIZATION",
+      "gateDefaultOn": false,
+      "findingCount": 7,
+      "errorCount": 7,
+      "warningCount": 0,
+      "wouldBlock": true,
+      "firstFindings": [
+        "[error] Authored required beat is missing from the final prose of episode 1 scene \"s1-1\": \"Mika adopts Kylie at the door of Vâlcescu Club on night two, swaps out her \"American shoes,\" and hands her a key card to the side entrance.\". The authored turn must be dramatized on-page, not dropped or truncated.",
+        "[error] Authored required beat is missing from the final prose of episode 1 scene \"s1-2\": \"At a Lipscani bookshop, Stela presses a chunk of rose quartz into Kylie's hand — \"this one wants to be with you, love\" — and the Dusk Club is now three.\". The authored turn must be dramatized on-page, not dropped or truncated.",
+        "[error] Authored required beat is missing from the final prose of episode 1 scene \"s1-3\": \"On night three at a rooftop bar at sunset, the friends trade worst-date stories and vow never to date a man with a podcast; Kylie locks eyes with Victor across the room while Mika murmurs \"let's eat first.\"\". The authored turn must be dramatized on-page, not dropped or truncated."
+      ]
+    },
+    {
+      "run": "bite-me-g10_2026-06-09T04-07-00",
+      "validator": "DuplicateEstablishingBeatValidator",
+      "gateFlag": "GATE_DUPLICATE_ESTABLISHING_BEAT",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "blade-runner-the-defected_2026-04-16T00-28-52",
+      "validator": "OutcomeTextQualityValidator",
+      "gateFlag": "GATE_OUTCOME_TEXT_QUALITY",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "blade-runner-the-defected_2026-04-16T00-28-52",
+      "validator": "SentenceOpenerVarietyValidator",
+      "gateFlag": "GATE_SENTENCE_OPENER_VARIETY",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "blade-runner-the-defected_2026-04-16T00-28-52",
+      "validator": "RequiredBeatRealizationValidator",
+      "gateFlag": "GATE_REQUIRED_BEAT_REALIZATION",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": [
+        "[info] skipped: no seasonPlan.scenePlan in 00-input-brief.json"
+      ]
+    },
+    {
+      "run": "blade-runner-the-defected_2026-04-16T00-28-52",
+      "validator": "DuplicateEstablishingBeatValidator",
+      "gateFlag": "GATE_DUPLICATE_ESTABLISHING_BEAT",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "clue-the-missing-boddy_2026-04-27T22-22-30",
+      "validator": "OutcomeTextQualityValidator",
+      "gateFlag": "GATE_OUTCOME_TEXT_QUALITY",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "clue-the-missing-boddy_2026-04-27T22-22-30",
+      "validator": "SentenceOpenerVarietyValidator",
+      "gateFlag": "GATE_SENTENCE_OPENER_VARIETY",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "clue-the-missing-boddy_2026-04-27T22-22-30",
+      "validator": "RequiredBeatRealizationValidator",
+      "gateFlag": "GATE_REQUIRED_BEAT_REALIZATION",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": [
+        "[info] skipped: no seasonPlan.scenePlan in 00-input-brief.json"
+      ]
+    },
+    {
+      "run": "clue-the-missing-boddy_2026-04-27T22-22-30",
+      "validator": "DuplicateEstablishingBeatValidator",
+      "gateFlag": "GATE_DUPLICATE_ESTABLISHING_BEAT",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "clue-weekend-at-boddy-manor_2026-04-17T22-33-28",
+      "validator": "OutcomeTextQualityValidator",
+      "gateFlag": "GATE_OUTCOME_TEXT_QUALITY",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "clue-weekend-at-boddy-manor_2026-04-17T22-33-28",
+      "validator": "SentenceOpenerVarietyValidator",
+      "gateFlag": "GATE_SENTENCE_OPENER_VARIETY",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "clue-weekend-at-boddy-manor_2026-04-17T22-33-28",
+      "validator": "RequiredBeatRealizationValidator",
+      "gateFlag": "GATE_REQUIRED_BEAT_REALIZATION",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": [
+        "[info] skipped: no seasonPlan.scenePlan in 00-input-brief.json"
+      ]
+    },
+    {
+      "run": "clue-weekend-at-boddy-manor_2026-04-17T22-33-28",
+      "validator": "DuplicateEstablishingBeatValidator",
+      "gateFlag": "GATE_DUPLICATE_ESTABLISHING_BEAT",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    },
+    {
+      "run": "endsong-g10_2026-06-09T04-08-57",
+      "validator": "OutcomeTextQualityValidator",
+      "gateFlag": "GATE_OUTCOME_TEXT_QUALITY",
+      "gateDefaultOn": false,
+      "findingCount": 3,
+      "errorCount": 3,
+      "warningCount": 0,
+      "wouldBlock": true,
+      "firstFindings": [
+        "[error] Choice \"choice-3\" outcomeTexts.success leaks an authoring-scaffold stub: \"It works — you get what you reached for: secure the perimeter and get the carava\".",
+        "[error] Choice \"choice-3\" outcomeTexts.partial leaks an authoring-scaffold stub: \"You get part of what you wanted, but it costs you: reducing her act to a liabili\".",
+        "[error] Choice \"choice-3\" outcomeTexts.failure leaks an authoring-scaffold stub: \"It slips away from you, and reducing her act to a liability rather than an asset\"."
+      ]
+    },
+    {
+      "run": "endsong-g10_2026-06-09T04-08-57",
+      "validator": "SentenceOpenerVarietyValidator",
+      "gateFlag": "GATE_SENTENCE_OPENER_VARIETY",
+      "gateDefaultOn": false,
+      "findingCount": 2,
+      "errorCount": 0,
+      "warningCount": 2,
+      "wouldBlock": true,
+      "firstFindings": [
+        "[warning] Choice \"choice-1:failure\" opens 3 consecutive sentences with \"You…\" — monotonous second-person cadence: \"You hold position. You watch her go. And for three whole heartbeats — an eternity, for a L…\".",
+        "[warning] Choice \"choice-formal-brace:success\" opens 3 consecutive sentences with \"You…\" — monotonous second-person cadence: \"You read the collapse in the same breath you read the angle — your arm extends and your ba…\"."
+      ]
+    },
+    {
+      "run": "endsong-g10_2026-06-09T04-08-57",
+      "validator": "RequiredBeatRealizationValidator",
+      "gateFlag": "GATE_REQUIRED_BEAT_REALIZATION",
+      "gateDefaultOn": false,
+      "findingCount": 7,
+      "errorCount": 7,
+      "warningCount": 0,
+      "wouldBlock": true,
+      "firstFindings": [
+        "[error] Authored required beat is missing from the final prose of episode 1 scene \"s1-2\": \"Aethavyr forbids Lysandra's wish to ride ahead, and they clash.\". The authored turn must be dramatized on-page, not dropped or truncated.",
+        "[error] Authored required beat is missing from the final prose of episode 1 scene \"s1-6\": \"Vraxxan materializes, names Aethavyr \"old friend,\" reaches for Lysandra, and declares her blood the key to the Codex before withdrawing wounded.\". The authored turn must be dramatized on-page, not dropped or truncated.",
+        "[error] Authored required beat is missing from the final prose of episode 2 scene \"s2-1\": \"A strategy argument over the route sharpens the old hostility.\". The authored turn must be dramatized on-page, not dropped or truncated."
+      ]
+    },
+    {
+      "run": "endsong-g10_2026-06-09T04-08-57",
+      "validator": "DuplicateEstablishingBeatValidator",
+      "gateFlag": "GATE_DUPLICATE_ESTABLISHING_BEAT",
+      "gateDefaultOn": false,
+      "findingCount": 0,
+      "errorCount": 0,
+      "warningCount": 0,
+      "wouldBlock": false,
+      "firstFindings": []
+    }
+  ]
+}

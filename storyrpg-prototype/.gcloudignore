@@ -1,0 +1,18 @@
+# Cloud Run source upload — proxy server only needs app + proxy; skip heavy dev/test artifacts.
+.git/
+.expo/
+dist/
+web-build/
+node_modules/
+generated-stories/
+pipeline-memories/
+test-results/
+playwright-report/
+test/e2e/screenshots/
+test/e2e/report/
+test/e2e/results/
+.worker-checkpoint-outputs/
+.ref-images/
+.env
+.env.*
+!.env.example

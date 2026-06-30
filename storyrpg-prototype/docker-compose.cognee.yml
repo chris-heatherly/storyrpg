@@ -1,0 +1,15 @@
+services:
+  cognee:
+    image: cognee/cognee:main
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY:-}
+    volumes:
+      - cognee-data:/app/.cognee
+
+volumes:
+  cognee-data:

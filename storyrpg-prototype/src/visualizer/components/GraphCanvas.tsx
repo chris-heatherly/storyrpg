@@ -1,19 +1,31 @@
 import React, { useRef, useCallback, useEffect } from 'react';
-import { View, StyleSheet, Dimensions, Platform } from 'react-native';
+import { View, StyleSheet, Platform, TouchableOpacity, useWindowDimensions } from 'react-native';
 import Svg, { G, Defs, Pattern, Line, Rect } from 'react-native-svg';
-import { StoryGraph, GraphNode as GraphNodeType, ViewState, VISUALIZER_COLORS } from '../types';
+import { ChevronDown, ChevronUp, ThumbsDown } from 'lucide-react-native';
+import {
+  StoryGraph,
+  GraphEdge as GraphEdgeType,
+  GraphNode as GraphNodeType,
+  ViewState,
+  VISUALIZER_COLORS,
+  VisualizerMode,
+} from '../types';
 import { TERMINAL } from '../../theme';
 import { GraphNode } from './GraphNode';
 import { GraphEdge } from './GraphEdge';
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface GraphCanvasProps {
   graph: StoryGraph;
   viewState: ViewState;
   onViewStateChange: (state: ViewState) => void;
   onNodePress: (node: GraphNodeType) => void;
+  onEdgePress: (edge: GraphEdgeType) => void;
+  onCanvasPress?: () => void;
   selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  mode: VisualizerMode;
+  selectedNpcId: string | null;
+  onRejectImage?: (node: GraphNodeType) => void;
 }
 
 export const GraphCanvas: React.FC<GraphCanvasProps> = ({
@@ -21,26 +33,73 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   viewState,
   onViewStateChange,
   onNodePress,
+  onEdgePress,
+  onCanvasPress,
   selectedNodeId,
+  selectedEdgeId,
+  mode,
+  selectedNpcId,
+  onRejectImage,
 }) => {
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const canvasHeight = Math.max(320, viewportHeight - 180);
   const containerRef = useRef<View>(null);
   const isMouseDownRef = useRef(false);
   const isDraggingRef = useRef(false);
   const lastMousePosRef = useRef({ x: 0, y: 0 });
   const dragStartPosRef = useRef({ x: 0, y: 0 });
   const viewStateRef = useRef(viewState);
+  const pendingViewStateRef = useRef<ViewState | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const didDragOnLastGestureRef = useRef(false);
 
   // Keep viewStateRef in sync
   useEffect(() => {
     viewStateRef.current = viewState;
   }, [viewState]);
 
+  const scheduleViewStateChange = useCallback((nextViewState: ViewState) => {
+    viewStateRef.current = nextViewState;
+    pendingViewStateRef.current = nextViewState;
+
+    if (animationFrameRef.current !== null) return;
+
+    animationFrameRef.current = requestAnimationFrame(() => {
+      animationFrameRef.current = null;
+      const pendingViewState = pendingViewStateRef.current;
+      pendingViewStateRef.current = null;
+
+      if (pendingViewState) {
+        onViewStateChange(pendingViewState);
+      }
+    });
+  }, [onViewStateChange]);
+
+  useEffect(() => () => {
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+  }, []);
+
+  const getCanvasPoint = useCallback((clientX: number, clientY: number) => {
+    const element = containerRef.current as unknown as HTMLElement | null;
+    const rect = element?.getBoundingClientRect?.();
+
+    if (!rect) {
+      return { x: clientX, y: clientY };
+    }
+
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    };
+  }, []);
+
   // Find node at position
   const findNodeAtPosition = useCallback((x: number, y: number): GraphNodeType | null => {
-    // Account for potential header height (approx 140px)
-    const headerOffset = 140;
-    const transformedX = (x - viewStateRef.current.translateX) / viewStateRef.current.scale;
-    const transformedY = (y - headerOffset - viewStateRef.current.translateY) / viewStateRef.current.scale;
+    const canvasPoint = getCanvasPoint(x, y);
+    const transformedX = (canvasPoint.x - viewStateRef.current.translateX) / viewStateRef.current.scale;
+    const transformedY = (canvasPoint.y - viewStateRef.current.translateY) / viewStateRef.current.scale;
 
     for (let i = graph.nodes.length - 1; i >= 0; i--) {
       const node = graph.nodes[i];
@@ -54,15 +113,17 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       }
     }
     return null;
-  }, [graph.nodes]);
+  }, [getCanvasPoint, graph.nodes]);
 
   // Mouse/touch handlers for web
   const handlePointerDown = useCallback((e: React.PointerEvent | any) => {
     const clientX = e.clientX ?? e.nativeEvent?.pageX ?? 0;
     const clientY = e.clientY ?? e.nativeEvent?.pageY ?? 0;
+    e.currentTarget?.setPointerCapture?.(e.pointerId);
 
     isMouseDownRef.current = true;
     isDraggingRef.current = false;
+    didDragOnLastGestureRef.current = false;
     dragStartPosRef.current = { x: clientX, y: clientY };
     lastMousePosRef.current = { x: clientX, y: clientY };
   }, []);
@@ -85,7 +146,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     }
 
     if (isDraggingRef.current) {
-      onViewStateChange({
+      scheduleViewStateChange({
         ...viewStateRef.current,
         translateX: viewStateRef.current.translateX + dx,
         translateY: viewStateRef.current.translateY + dy,
@@ -93,26 +154,39 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     }
 
     lastMousePosRef.current = { x: clientX, y: clientY };
-  }, [onViewStateChange]);
+  }, [scheduleViewStateChange]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent | any) => {
     if (!isMouseDownRef.current) return;
 
     const clientX = e.clientX ?? e.nativeEvent?.pageX ?? 0;
     const clientY = e.clientY ?? e.nativeEvent?.pageY ?? 0;
+    e.currentTarget?.releasePointerCapture?.(e.pointerId);
 
     // If we didn't drag, check for node click
     if (!isDraggingRef.current) {
       const node = findNodeAtPosition(clientX, clientY);
       if (node) {
         onNodePress(node);
+      } else {
+        onCanvasPress?.();
       }
+    } else {
+      didDragOnLastGestureRef.current = true;
     }
 
     isMouseDownRef.current = false;
     isDraggingRef.current = false;
     dragStartPosRef.current = { x: 0, y: 0 };
-  }, [findNodeAtPosition, onNodePress]);
+  }, [findNodeAtPosition, onCanvasPress, onNodePress]);
+
+  const handleCanvasPress = useCallback(() => {
+    if (didDragOnLastGestureRef.current) {
+      didDragOnLastGestureRef.current = false;
+      return;
+    }
+    onCanvasPress?.();
+  }, [onCanvasPress]);
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
@@ -123,18 +197,46 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
     const zoomFactor = delta > 0 ? 0.9 : 1.1;
     const newScale = Math.max(0.1, Math.min(3, viewStateRef.current.scale * zoomFactor));
+    const selectedNode = selectedNodeId
+      ? graph.nodes.find((node) => node.id === selectedNodeId)
+      : null;
+
+    if (selectedNode) {
+      const nodeCenterX = selectedNode.x + selectedNode.width / 2;
+      const nodeCenterY = selectedNode.y + selectedNode.height / 2;
+
+      scheduleViewStateChange({
+        scale: newScale,
+        translateX: viewportWidth / 2 - nodeCenterX * newScale,
+        translateY: canvasHeight / 2 - nodeCenterY * newScale,
+      });
+      return;
+    }
 
     // Zoom toward mouse position
+    const canvasPoint = getCanvasPoint(clientX, clientY);
     const scaleChange = newScale / viewStateRef.current.scale;
-    const newTranslateX = clientX - (clientX - viewStateRef.current.translateX) * scaleChange;
-    const newTranslateY = clientY - (clientY - viewStateRef.current.translateY) * scaleChange;
+    const newTranslateX = canvasPoint.x - (canvasPoint.x - viewStateRef.current.translateX) * scaleChange;
+    const newTranslateY = canvasPoint.y - (canvasPoint.y - viewStateRef.current.translateY) * scaleChange;
 
-    onViewStateChange({
+    scheduleViewStateChange({
       scale: newScale,
       translateX: newTranslateX,
       translateY: newTranslateY,
     });
-  }, [onViewStateChange]);
+  }, [canvasHeight, getCanvasPoint, graph.nodes, scheduleViewStateChange, selectedNodeId, viewportWidth]);
+
+  const pageView = useCallback((direction: 'up' | 'down') => {
+    const screenDelta = canvasHeight * 0.92;
+    scheduleViewStateChange({
+      ...viewStateRef.current,
+      translateY: viewStateRef.current.translateY + (direction === 'up' ? screenDelta : -screenDelta),
+    });
+  }, [canvasHeight, scheduleViewStateChange]);
+
+  const stopCanvasGesture = useCallback((event: React.PointerEvent | any) => {
+    event.stopPropagation?.();
+  }, []);
 
   // Attach wheel event listener with passive: false to allow preventDefault
   useEffect(() => {
@@ -158,16 +260,58 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   for (const node of graph.nodes) {
     nodeMap.set(node.id, node);
   }
+  const outgoingEdgeGroups = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    const group = outgoingEdgeGroups.get(edge.source) ?? [];
+    group.push(edge.id);
+    outgoingEdgeGroups.set(edge.source, group);
+  }
 
-  // Find highlighted edges (connected to selected node)
+  // Find highlighted edges (connected to selected node or selected choice/route)
   const highlightedEdgeIds = new Set<string>();
+  const hasFocusedSelection = Boolean(selectedNodeId || selectedEdgeId);
   if (selectedNodeId) {
     for (const edge of graph.edges) {
       if (edge.source === selectedNodeId || edge.target === selectedNodeId) {
         highlightedEdgeIds.add(edge.id);
       }
     }
+    addEncounterOutcomeHighlights(selectedNodeId, graph.edges, nodeMap, highlightedEdgeIds);
   }
+  if (selectedEdgeId) {
+    highlightedEdgeIds.add(selectedEdgeId);
+  }
+  if (selectedNpcId) {
+    for (const edge of graph.edges) {
+      if (edge.choiceSystem?.relationshipNpcIds.includes(selectedNpcId)) {
+        highlightedEdgeIds.add(edge.id);
+      }
+    }
+  }
+  const hiddenLabelEdgeIds = aggregateDuplicateEdgeLabels({
+    edges: graph.edges,
+    nodeMap,
+    outgoingEdgeGroups,
+    mode,
+    highlightedEdgeIds,
+  });
+  const directChoiceEdgeIds = getDirectChoiceEdgeIds(graph.edges, nodeMap, outgoingEdgeGroups);
+  const targetLabelStacks = getTargetLabelStacks(graph.edges, nodeMap, mode);
+  const selectedImageBeatNode = selectedNodeId
+    ? graph.nodes.find((node) => node.id === selectedNodeId && node.type === 'beat' && Boolean(node.image))
+    : null;
+  const rejectButtonPosition = selectedImageBeatNode
+    ? {
+      left: Math.max(12, Math.min(
+        viewportWidth - 60,
+        viewState.translateX + (selectedImageBeatNode.x + selectedImageBeatNode.width - 52) * viewState.scale,
+      )),
+      top: Math.max(76, Math.min(
+        canvasHeight - 60,
+        viewState.translateY + (selectedImageBeatNode.y + 12) * viewState.scale,
+      )),
+    }
+    : null;
 
   // Build event handlers based on platform
   const eventHandlers = Platform.OS === 'web' ? {
@@ -190,8 +334,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       {...eventHandlers as any}
     >
       <Svg
-        width={SCREEN_WIDTH}
-        height={SCREEN_HEIGHT - 180}
+        width={viewportWidth}
+        height={canvasHeight}
+        viewBox={`0 0 ${viewportWidth} ${canvasHeight}`}
+        preserveAspectRatio="none"
         style={styles.svg}
       >
         <Defs>
@@ -223,7 +369,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         </Defs>
 
         {/* Background Grid */}
-        <Rect width="100%" height="100%" fill="url(#grid)" />
+        <Rect width="100%" height="100%" fill="url(#grid)" onPress={handleCanvasPress} />
 
         <G
           transform={`translate(${viewState.translateX}, ${viewState.translateY}) scale(${viewState.scale})`}
@@ -232,8 +378,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
           {graph.edges.map((edge) => {
             const sourceNode = nodeMap.get(edge.source);
             const targetNode = nodeMap.get(edge.target);
+            const targetLabelStack = targetLabelStacks.get(edge.id);
 
             if (!sourceNode || !targetNode) return null;
+            const outgoingSiblings = outgoingEdgeGroups.get(edge.source) ?? [edge.id];
 
             return (
               <GraphEdge
@@ -241,7 +389,17 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 edge={edge}
                 sourceNode={sourceNode}
                 targetNode={targetNode}
+                sourceSiblingIndex={outgoingSiblings.indexOf(edge.id)}
+                sourceSiblingCount={outgoingSiblings.length}
+                targetLabelIndex={targetLabelStack?.index}
+                targetLabelCount={targetLabelStack?.count}
                 isHighlighted={highlightedEdgeIds.has(edge.id)}
+                isDimmed={hasFocusedSelection && !highlightedEdgeIds.has(edge.id)}
+                hideLabel={hiddenLabelEdgeIds.has(edge.id)}
+                useChoiceLane={isLaneChoiceEdge(edge, directChoiceEdgeIds, outgoingSiblings)}
+                mode={mode}
+                selectedNpcId={selectedNpcId}
+                onPress={onEdgePress}
               />
             );
           })}
@@ -252,18 +410,82 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
               key={node.id}
               node={node}
               isSelected={node.id === selectedNodeId}
+              mode={mode}
+              selectedNpcId={selectedNpcId}
             />
           ))}
         </G>
 
         {/* Scanlines overlay */}
-        <Rect
-          width="100%"
-          height="100%"
-          fill="rgba(0,0,0,0.05)"
-          style={{ pointerEvents: 'none' }}
-        />
+        {(() => {
+          const RectAny = Rect as unknown as React.ComponentType<Record<string, unknown>>;
+          return (
+            <RectAny
+              width="100%"
+              height="100%"
+              fill="rgba(0,0,0,0.05)"
+              style={{ pointerEvents: 'none' }}
+            />
+          );
+        })()}
       </Svg>
+      {selectedImageBeatNode && rejectButtonPosition && onRejectImage && (
+        <View
+          style={[styles.rejectImageControl, rejectButtonPosition]}
+          {...(Platform.OS === 'web'
+            ? {
+              onPointerDown: stopCanvasGesture,
+              onPointerMove: stopCanvasGesture,
+              onPointerUp: stopCanvasGesture,
+            }
+            : {
+              onTouchStart: stopCanvasGesture,
+              onTouchMove: stopCanvasGesture,
+              onTouchEnd: stopCanvasGesture,
+            }) as any}
+        >
+          <TouchableOpacity
+            accessibilityLabel="Regenerate selected image"
+            onPress={() => onRejectImage(selectedImageBeatNode)}
+            style={styles.rejectImageButton}
+            activeOpacity={0.78}
+          >
+            <ThumbsDown size={20} color="#fff" strokeWidth={2.4} />
+          </TouchableOpacity>
+        </View>
+      )}
+      <View
+        style={styles.pageControls}
+        pointerEvents="box-none"
+        {...(Platform.OS === 'web'
+          ? {
+            onPointerDown: stopCanvasGesture,
+            onPointerMove: stopCanvasGesture,
+            onPointerUp: stopCanvasGesture,
+          }
+          : {
+            onTouchStart: stopCanvasGesture,
+            onTouchMove: stopCanvasGesture,
+            onTouchEnd: stopCanvasGesture,
+          }) as any}
+      >
+        <TouchableOpacity
+          accessibilityLabel="Skip up one screen"
+          onPress={() => pageView('up')}
+          style={styles.pageButton}
+          activeOpacity={0.75}
+        >
+          <ChevronUp size={24} color={TERMINAL.colors.primary} strokeWidth={2.4} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          accessibilityLabel="Skip down one screen"
+          onPress={() => pageView('down')}
+          style={styles.pageButton}
+          activeOpacity={0.75}
+        >
+          <ChevronDown size={24} color={TERMINAL.colors.primary} strokeWidth={2.4} />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 };
@@ -272,10 +494,285 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: VISUALIZER_COLORS.background,
+    ...(Platform.OS === 'web'
+      ? ({
+        cursor: 'grab',
+        touchAction: 'none',
+        userSelect: 'none',
+      } as Record<string, string>)
+      : null),
   },
   svg: {
+    width: '100%',
+    height: '100%',
     backgroundColor: VISUALIZER_COLORS.background,
   },
+  pageControls: {
+    position: 'absolute',
+    right: 18,
+    gap: 10,
+    zIndex: 30,
+    elevation: 30,
+  },
+  pageButton: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(5, 7, 12, 0.88)',
+    borderColor: VISUALIZER_COLORS.nodeBorders.beat,
+    borderWidth: 1,
+  },
+  rejectImageControl: {
+    position: 'absolute',
+    zIndex: 35,
+    elevation: 35,
+  },
+  rejectImageButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(185, 28, 28, 0.92)',
+    borderColor: 'rgba(255,255,255,0.72)',
+    borderWidth: 1,
+  },
 });
+
+function addEncounterOutcomeHighlights(
+  selectedNodeId: string,
+  edges: GraphEdgeType[],
+  nodeMap: Map<string, GraphNodeType>,
+  highlightedEdgeIds: Set<string>,
+) {
+  const selectedNode = nodeMap.get(selectedNodeId);
+  if (!selectedNode || !isEncounterBeatNode(selectedNode)) return;
+
+  const localChoiceIds = new Set<string>();
+  for (const edge of edges) {
+    if (edge.source !== selectedNodeId) continue;
+    const target = nodeMap.get(edge.target);
+    if (target?.type === 'encounter-choice') {
+      localChoiceIds.add(target.id);
+      highlightedEdgeIds.add(edge.id);
+    }
+  }
+
+  if (localChoiceIds.size === 0) return;
+
+  for (const edge of edges) {
+    if (!localChoiceIds.has(edge.source)) continue;
+    if (isEncounterOutcomeEdge(edge)) {
+      highlightedEdgeIds.add(edge.id);
+    }
+  }
+}
+
+function isEncounterBeatNode(node: GraphNodeType): boolean {
+  return node.type === 'phase' || node.type === 'encounter-situation';
+}
+
+function isEncounterOutcomeEdge(edge: GraphEdgeType): boolean {
+  return Boolean(edge.synthetic?.kind === 'encounter-outcome' || edge.synthetic?.outcome);
+}
+
+function aggregateDuplicateEdgeLabels(input: {
+  edges: GraphEdgeType[];
+  nodeMap: Map<string, GraphNodeType>;
+  outgoingEdgeGroups: Map<string, string[]>;
+  mode: VisualizerMode;
+  highlightedEdgeIds: Set<string>;
+}): Set<string> {
+  const hidden = new Set<string>();
+  const keptByLabel = new Map<string, Array<{ x: number; y: number; highlighted: boolean }>>();
+  const sortedEdges = [...input.edges].sort((a, b) => {
+    const aHighlighted = input.highlightedEdgeIds.has(a.id) ? 0 : 1;
+    const bHighlighted = input.highlightedEdgeIds.has(b.id) ? 0 : 1;
+    return aHighlighted - bHighlighted;
+  });
+
+  for (const edge of sortedEdges) {
+    if (!shouldAggregateLabel(edge)) continue;
+    const sourceNode = input.nodeMap.get(edge.source);
+    const targetNode = input.nodeMap.get(edge.target);
+    if (!sourceNode || !targetNode) continue;
+
+    const label = getCanvasEdgeLabel(edge, input.mode).toUpperCase();
+    if (!label) continue;
+
+    const siblings = input.outgoingEdgeGroups.get(edge.source) ?? [edge.id];
+    const position = getCanvasEdgeLabelPosition(
+      edge,
+      sourceNode,
+      targetNode,
+      siblings.indexOf(edge.id),
+      siblings.length,
+    );
+    const labelKey = `${label}:${edge.synthetic?.outcome ?? edge.synthetic?.tier ?? edge.type}`;
+    const kept = keptByLabel.get(labelKey) ?? [];
+    const highlighted = input.highlightedEdgeIds.has(edge.id);
+    const nearby = kept.find((item) => Math.abs(item.x - position.x) < 190 && Math.abs(item.y - position.y) < 88);
+
+    if (nearby && !highlighted) {
+      hidden.add(edge.id);
+      continue;
+    }
+
+    if (nearby && highlighted && !nearby.highlighted) {
+      hidden.add(edge.id);
+      continue;
+    }
+
+    kept.push({ ...position, highlighted });
+    keptByLabel.set(labelKey, kept);
+  }
+
+  return hidden;
+}
+
+function getDirectChoiceEdgeIds(
+  edges: GraphEdgeType[],
+  nodeMap: Map<string, GraphNodeType>,
+  outgoingEdgeGroups: Map<string, string[]>,
+): Set<string> {
+  const edgeById = new Map(edges.map((edge) => [edge.id, edge] as const));
+  const directIds = new Set<string>();
+
+  for (const edgeIds of outgoingEdgeGroups.values()) {
+    const choiceEdges = edgeIds
+      .map((edgeId) => edgeById.get(edgeId))
+      .filter((edge): edge is GraphEdgeType => Boolean(edge?.choiceSystem?.route?.isMeaningfulBranch))
+      .filter((edge) => Boolean(nodeMap.get(edge.source) && nodeMap.get(edge.target)));
+
+    if (choiceEdges.length < 2) continue;
+
+    const directEdge = [...choiceEdges].sort((a, b) => {
+      const sourceA = nodeMap.get(a.source);
+      const targetA = nodeMap.get(a.target);
+      const sourceB = nodeMap.get(b.source);
+      const targetB = nodeMap.get(b.target);
+      const distanceA = sourceA && targetA ? Math.abs(targetA.y - (sourceA.y + sourceA.height)) : Number.MAX_SAFE_INTEGER;
+      const distanceB = sourceB && targetB ? Math.abs(targetB.y - (sourceB.y + sourceB.height)) : Number.MAX_SAFE_INTEGER;
+      return distanceA - distanceB;
+    })[0];
+
+    if (directEdge) directIds.add(directEdge.id);
+  }
+
+  return directIds;
+}
+
+function isLaneChoiceEdge(
+  edge: GraphEdgeType,
+  directChoiceEdgeIds: Set<string>,
+  outgoingSiblings: string[],
+): boolean {
+  return Boolean(
+    edge.choiceSystem?.choiceId &&
+    edge.choiceSystem.route?.isMeaningfulBranch &&
+    outgoingSiblings.length > 1 &&
+    !directChoiceEdgeIds.has(edge.id),
+  );
+}
+
+function getTargetLabelStacks(
+  edges: GraphEdgeType[],
+  nodeMap: Map<string, GraphNodeType>,
+  mode: VisualizerMode,
+): Map<string, { index: number; count: number }> {
+  const groups = new Map<string, GraphEdgeType[]>();
+  for (const edge of edges) {
+    if (!shouldStackTargetLabel(edge)) continue;
+    if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target)) continue;
+    if (!getCanvasEdgeLabel(edge, mode).trim()) continue;
+    const group = groups.get(edge.target) ?? [];
+    group.push(edge);
+    groups.set(edge.target, group);
+  }
+
+  const stacks = new Map<string, { index: number; count: number }>();
+  for (const group of groups.values()) {
+    group.sort((a, b) => {
+      const sourceA = nodeMap.get(a.source);
+      const sourceB = nodeMap.get(b.source);
+      const outcomeDelta = getOutcomeLabelPriority(a) - getOutcomeLabelPriority(b);
+      if (outcomeDelta !== 0) return outcomeDelta;
+      return (sourceA?.x ?? 0) - (sourceB?.x ?? 0);
+    });
+
+    group.forEach((edge, index) => {
+      stacks.set(edge.id, { index, count: group.length });
+    });
+  }
+
+  return stacks;
+}
+
+function shouldStackTargetLabel(edge: GraphEdgeType): boolean {
+  return Boolean(edge.synthetic?.outcome || edge.synthetic?.kind === 'encounter-outcome');
+}
+
+function getOutcomeLabelPriority(edge: GraphEdgeType): number {
+  const outcome = edge.synthetic?.outcome ?? edge.synthetic?.tier;
+  switch (outcome) {
+    case 'victory':
+    case 'success':
+      return 0;
+    case 'partialVictory':
+    case 'complicated':
+      return 1;
+    case 'defeat':
+    case 'failure':
+      return 2;
+    case 'escape':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function shouldAggregateLabel(edge: GraphEdgeType): boolean {
+  return Boolean(edge.synthetic?.outcome || edge.synthetic?.kind === 'encounter-outcome');
+}
+
+function getCanvasEdgeLabel(edge: GraphEdgeType, mode: VisualizerMode): string {
+  if (edge.synthetic) {
+    return mode === 'author' ? edge.synthetic.authorLabel : edge.synthetic.playerLabel;
+  }
+  if (mode === 'player' && edge.choiceSystem?.playerLabel) {
+    return edge.choiceSystem.playerLabel;
+  }
+  if (mode === 'author' && edge.choiceSystem?.authorLabel) {
+    return edge.choiceSystem.authorLabel;
+  }
+  return edge.label ?? '';
+}
+
+function getCanvasEdgeLabelPosition(
+  edge: GraphEdgeType,
+  sourceNode: GraphNodeType,
+  targetNode: GraphNodeType,
+  sourceSiblingIndex: number,
+  sourceSiblingCount: number,
+): { x: number; y: number } {
+  const sourceCenterX = sourceNode.x + sourceNode.width / 2;
+  const sourceBottomY = sourceNode.y + sourceNode.height;
+  const targetCenterX = targetNode.x + targetNode.width / 2;
+  const targetTopY = targetNode.y;
+  const siblingOffset = sourceSiblingIndex - (sourceSiblingCount - 1) / 2;
+  const isChoiceEdge = edge.type === 'choice';
+  const isOutcomeLabel = shouldAggregateLabel(edge);
+
+  return {
+    x: isOutcomeLabel
+      ? targetCenterX
+      : isChoiceEdge ? targetCenterX : (sourceCenterX + targetCenterX) / 2,
+    y: isOutcomeLabel
+      ? Math.min(targetTopY - 24, Math.max(sourceBottomY + 24, targetTopY - 48 - Math.abs(siblingOffset) * 4))
+      : isChoiceEdge
+      ? Math.max(sourceBottomY + 18, targetTopY - 54 - Math.abs(siblingOffset) * 6)
+      : (sourceBottomY + targetTopY) / 2,
+  };
+}
 
 export default GraphCanvas;

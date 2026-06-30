@@ -15,7 +15,18 @@ import {
   TextInput,
   Image,
 } from 'react-native';
-import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../theme/terminal';
+import { TERMINAL, createBoxTop, createBoxBottom, createDivider } from '../theme';
+
+const STORY_CIRCLE_LABELS: Record<string, string> = {
+  you: 'You',
+  need: 'Need',
+  go: 'Go',
+  search: 'Search',
+  find: 'Find',
+  take: 'Take',
+  return: 'Return',
+  change: 'Change',
+};
 
 export interface CheckpointData {
   phase: string;
@@ -276,15 +287,24 @@ const BlueprintPreview: React.FC<{ data: Record<string, unknown> }> = ({ data })
     purpose: string;
     choicePoint?: { type: string };
   }>) || [];
-  const arc = data.arc as { hook: string; climax: string } | undefined;
+  const episodeCircle = data.episodeCircle as Record<string, string | undefined> | undefined;
+  const storyCircleRole = data.storyCircleRole as Array<{ beat?: string; roleKind?: string }> | undefined;
 
   return (
     <View>
-      {arc && (
+      {episodeCircle && (
         <>
-          <Text style={styles.sectionTitle}>NARRATIVE ARC</Text>
-          <Text style={styles.listItem}>Hook: {arc.hook}</Text>
-          <Text style={styles.listItem}>Climax: {arc.climax}</Text>
+          <Text style={styles.sectionTitle}>EPISODE STORY CIRCLE</Text>
+          {storyCircleRole && storyCircleRole.length > 0 && (
+            <Text style={styles.listItem}>
+              This episode carries: {storyCircleRole.map((role) =>
+                `${STORY_CIRCLE_LABELS[role.beat || ''] || role.beat}${role.roleKind === 'expansion' ? ' expansion' : ''}`
+              ).join(', ')}
+            </Text>
+          )}
+          {Object.entries(STORY_CIRCLE_LABELS).map(([beat, label]) =>
+            episodeCircle[beat] ? <Text key={beat} style={styles.listItem}>{label}: {episodeCircle[beat]}</Text> : null
+          )}
         </>
       )}
 
@@ -584,7 +604,7 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: '100%',
     aspectRatio: 9 / 19.5,
-    backgroundColor: TERMINAL.colors.bgDark,
+    backgroundColor: TERMINAL.colors.bgHighlight,
   },
   imageLabel: {
     color: TERMINAL.colors.cyan,

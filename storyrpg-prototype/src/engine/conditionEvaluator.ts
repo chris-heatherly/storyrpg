@@ -3,6 +3,7 @@ import {
   Condition,
   PlayerState,
 } from '../types';
+import { deriveRelationshipValueState } from './relationshipValueLadder';
 
 /**
  * Infer condition type from fields present (for LLM-generated conditions without explicit type)
@@ -32,6 +33,9 @@ function inferConditionType(condition: Record<string, unknown>): string | null {
   }
   if ('npcId' in condition && 'dimension' in condition) {
     return 'relationship';
+  }
+  if ('npcId' in condition && 'axis' in condition && 'rung' in condition) {
+    return 'relationshipRung';
   }
   if ('itemId' in condition) {
     return 'item';
@@ -118,6 +122,11 @@ export function evaluateCondition(
         condition.operator,
         condition.value
       );
+
+    case 'relationshipRung': {
+      const state = deriveRelationshipValueState(player, condition.npcId, condition.axis);
+      return state.rung === condition.rung;
+    }
 
     case 'flag':
       const flagName = condition.flag || Object.keys(condition).find(k => k !== 'type');

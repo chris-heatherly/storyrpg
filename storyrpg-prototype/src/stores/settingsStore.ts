@@ -48,7 +48,7 @@ interface SettingsStoreState {
   initialize: () => Promise<void>;
 }
 
-const STORAGE_KEY = 'storyrpg-settings:v2';
+const STORAGE_KEY = 'storyrpg-reader-settings:v1';
 const LEGACY_STORAGE_KEY = 'storyrpg-settings';
 
 type StoredSettings = {

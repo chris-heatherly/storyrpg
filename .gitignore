@@ -8,8 +8,11 @@
 *.swo
 *~
 
-# Cursor agent transcripts (local only)
-.cursor/
+# Cursor agent transcripts + editor settings (local only) — but track shared skills
+.cursor/*
+!.cursor/skills
+**/.cursor/*
+!**/.cursor/skills
 
 # Auto-commit log
 scripts/.auto-commit.log
@@ -18,3 +21,13 @@ scripts/.auto-commit.log
 .env
 .env.*
 !.env.example
+
+# Firebase Hosting local cache
+storyrpg-prototype/.firebase/
+.firebase/
+
+# Guard against re-committing the nested-duplicate dir and codex scratch folders
+storyrpg-prototype/storyrpg-prototype/
+**/.codex-tmp/
+# Runtime log from the update-docs skill (local only)
+**/.cursor/skills/update-docs/scripts/last-auto-update.log

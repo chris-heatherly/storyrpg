@@ -28,6 +28,27 @@ const TARGET_BUDGET: ConsequenceBudgetAllocation = {
   branch: 5,
 };
 
+/**
+ * Opt-in strict-mode flag (validator-gating plan, B0 convention).
+ *
+ * This validator is advisory by construction: every finding is emitted at
+ * 'suggestion' or 'warning' severity, so it can never hard-block. When this
+ * env flag is set to '1', the EXTREME deviations that already qualify as
+ * 'warning' (deviation > tolerance × 2) are promoted to 'error', which makes
+ * `passed` false here and lands the finding in the downstream blocking path
+ * (IntegratedBestPracticesValidator routes 'error' issues into blockingIssues).
+ *
+ * ABSOLUTE INVARIANT: default-OFF. With the flag unset, the promotion below is
+ * skipped and behavior is byte-for-byte identical to before.
+ */
+const GATE_CONSEQUENCE_BUDGET_FLAG = 'GATE_CONSEQUENCE_BUDGET';
+
+function consequenceBudgetStrictEnabled(
+  isEnabled: (flag: string) => boolean = (flag) => process.env[flag] === '1',
+): boolean {
+  return isEnabled(GATE_CONSEQUENCE_BUDGET_FLAG);
+}
+
 export class ConsequenceBudgetValidator {
   private config: ValidationConfig['rules']['consequenceBudget'];
 
@@ -45,6 +66,18 @@ export class ConsequenceBudgetValidator {
    */
   classifyConsequence(consequence: { type: string; [key: string]: unknown }): ConsequenceBudgetCategory {
     const type = consequence.type;
+
+    // Flag-semantics first: the pipeline encodes the budget tier in the flag PREFIX
+    // (see trackableFlagsOf / episodePlantContext / the ledger's tiering). Without
+    // this, every setFlag fell into `callback`, so cosmetic `tint:` flags never
+    // counted as tint (stuck at 0%) and structural routing flags never counted as
+    // branch. Honor the prefix so the budget reflects authored intent.
+    if (type === 'setFlag' && typeof consequence.flag === 'string') {
+      const flag = consequence.flag;
+      if (flag.startsWith('tint:')) return 'tint';
+      if (flag.startsWith('route_') || flag.startsWith('treatment_branch_')) return 'branch';
+      // plain story flag → falls through to the callback bucket below
+    }
 
     // Callback Lines: Small state changes, relationship tweaks, flags
     if (
@@ -98,6 +131,16 @@ export class ConsequenceBudgetValidator {
     choiceType: string,
     hasBranching?: boolean
   ): ConsequenceBudgetCategory {
+    // Flag semantics OVERRIDE the choice-type heuristic: a `tint:` flag is cosmetic
+    // and a `route_`/`treatment_branch_` flag is structural regardless of which choice
+    // type set it. Without this, tint flags on expression choices fell into `callback`
+    // (the `allocation` metric the regen showed at tint 0%). This is the method the
+    // budget allocation actually uses (not classifyConsequence).
+    if (consequence.type === 'setFlag' && typeof consequence.flag === 'string') {
+      if (consequence.flag.startsWith('tint:')) return 'tint';
+      if (consequence.flag.startsWith('route_') || consequence.flag.startsWith('treatment_branch_')) return 'branch';
+    }
+
     // Expression choices should only produce callbacks
     if (choiceType === 'expression') {
       return 'callback';
@@ -171,9 +214,17 @@ export class ConsequenceBudgetValidator {
   /**
    * Validate consequence budget allocation
    */
-  async validate(input: ConsequenceBudgetInput): Promise<ConsequenceBudgetValidationResult> {
+  async validate(
+    input: ConsequenceBudgetInput,
+    options?: { strictMode?: boolean },
+  ): Promise<ConsequenceBudgetValidationResult> {
     const issues: ValidationIssue[] = [];
     const { allocation, byCategory, total } = this.calculateAllocation(input);
+
+    // Default-off: strict mode promotes extreme-deviation 'warning' issues to
+    // 'error'. The override lets callers/tests inject the decision deterministically;
+    // otherwise it falls back to the GATE_CONSEQUENCE_BUDGET env flag.
+    const strictMode = options?.strictMode ?? consequenceBudgetStrictEnabled();
 
     // Skip validation if no consequences
     if (total === 0) {
@@ -197,7 +248,12 @@ export class ConsequenceBudgetValidator {
 
       if (Math.abs(deviation) > tolerance) {
         const direction = deviation > 0 ? 'over' : 'under';
-        const level = Math.abs(deviation) > tolerance * 2 ? 'warning' : 'suggestion';
+        const extreme = Math.abs(deviation) > tolerance * 2;
+        // Extreme deviations are 'warning' by default; strict mode promotes them
+        // to 'error' so they hard-block downstream. Non-extreme stays 'suggestion'.
+        const level: ValidationIssue['level'] = extreme
+          ? (strictMode ? 'error' : 'warning')
+          : 'suggestion';
 
         issues.push({
           category: 'consequence_budget',

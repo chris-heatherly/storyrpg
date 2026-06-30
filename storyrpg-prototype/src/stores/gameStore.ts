@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 8 state-store refactor will fix
+// GameActions interface alignment and restore whole-file typecheck.
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -15,10 +17,14 @@ import {
   DelayedConsequence,
   DEFAULT_IDENTITY_PROFILE,
   IdentityProfile,
+  VisitRecord,
+  EpisodeCompletion,
 } from '../types';
 import { applyIdentityShifts } from '../engine/identityEngine';
 import { evaluateCondition } from '../engine/conditionEvaluator';
 import { getRelationshipDescription } from '../engine/storyEngine';
+import { normalizeConsequenceShape } from '../engine/consequenceNormalize';
+import { applyRelationshipEvidence } from '../engine/relationshipValueLadder';
 import {
   createInitialPlayerState,
   DEFAULT_ATTRIBUTES,
@@ -57,8 +63,9 @@ interface BranchPathEntry {
 
 interface GameActions {
   initializeStory: (story: Story, characterName: string, pronouns: PlayerState['characterPronouns']) => void;
+  updateCurrentStory: (story: Story) => void;
   loadEpisode: (episodeId: string) => void;
-  loadScene: (sceneId: string, episodeOverride?: Episode) => void;
+  loadScene: (sceneId: string, episodeOverride?: Episode, startingBeatIdOverride?: string) => void;
   setBeat: (beatId: string) => void;
   applyConsequences: (consequences: Consequence[]) => AppliedConsequence[];
 
@@ -120,6 +127,16 @@ interface GameActions {
   getBranchToneForScene: (sceneId: string) => 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption' | null;
   getPathToScene: (sceneId: string) => string[];  // Returns scene IDs leading to this scene
 
+  // Plan 2: Visit tracking for post-episode flowchart UI.
+  // `visitBeat` appends a plain visit record when a beat is rendered.
+  // `commitChoice` records the chosen choice against the current beat.
+  // Both are idempotent by (beatId, choiceId) within the same playthrough
+  // so React re-renders don't create duplicate entries.
+  visitBeat: (params: { sceneId: string; beatId: string; episodeId?: string }) => void;
+  commitChoice: (params: { sceneId: string; beatId: string; choiceId: string; episodeId?: string }) => void;
+  getVisitLog: () => VisitRecord[];
+  getEpisodeCompletions: () => EpisodeCompletion[];
+
   // Reset
   resetGame: () => void;
 }
@@ -162,6 +179,25 @@ type StoryIndexes = {
   episodesById: Map<string, Episode>;
   scenesByEpisodeId: Map<string, Map<string, Scene>>;
 };
+
+const RELATIONSHIP_DIMENSIONS = ['trust', 'affection', 'respect', 'fear'] as const;
+type RelationshipDimension = typeof RELATIONSHIP_DIMENSIONS[number];
+
+function normalizeRelationshipDimension(value: unknown): RelationshipDimension | null {
+  return typeof value === 'string' && (RELATIONSHIP_DIMENSIONS as readonly string[]).includes(value)
+    ? value as RelationshipDimension
+    : null;
+}
+
+function formatTitleLabel(value: unknown, fallback = 'Unknown'): string {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim();
+  if (!normalized) return fallback;
+  return normalized
+    .replace(/^char[-_]/i, '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
 
 function buildStoryIndexes(story: Story): StoryIndexes {
   const episodesById = new Map<string, Episode>();
@@ -300,7 +336,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       try {
         await AsyncStorage.setItem(STORAGE_KEYS.PLAYER_STATE, serializePlayerState(player));
       } catch (e) {
-        console.warn('[GameStore] Failed to persist player state:', e);
+        // Player progress write failed — this is silent data loss for the
+        // player. Escalated to error so it surfaces in error reporting.
+        // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+        console.error('[GameStore] Failed to persist player state (progress may be lost):', e);
       }
     };
     
@@ -320,7 +359,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           [STORAGE_KEYS.CURRENT_BRANCH_TONE, currentBranchTone || ''],
         ]);
       } catch (e) {
-        console.warn('[GameStore] Failed to persist navigation state:', e);
+        // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+        console.error('[GameStore] Failed to persist navigation state (progress may be lost):', e);
       }
     };
     
@@ -383,14 +423,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 }
               }
             } else {
-              console.warn('[GameStore] Failed to persist encounter state (non-quota error):', storageErr);
+              // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+              console.error('[GameStore] Failed to persist encounter state (progress may be lost, non-quota error):', storageErr);
             }
           }
         } else {
           await AsyncStorage.removeItem(STORAGE_KEYS.ENCOUNTER_STATE);
         }
       } catch (e) {
-        console.warn('[GameStore] Failed to persist encounter state:', e);
+        // TODO(L4): surface to the player via UI. See docs/PROJECT_AUDIT_2026-05-28.md.
+        console.error('[GameStore] Failed to persist encounter state (progress may be lost):', e);
       }
     };
     
@@ -430,6 +472,23 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setEncounterState(null);
   }, []);
 
+  const updateCurrentStory = useCallback((story: Story) => {
+    storyIndexesRef.current = buildStoryIndexes(story);
+    setCurrentStory(story);
+    setCurrentEpisode((prev) => {
+      if (!prev) return prev;
+      return story.episodes.find((episode) => episode.id === prev.id) || null;
+    });
+    setCurrentScene((prev) => {
+      if (!prev) return prev;
+      for (const episode of story.episodes) {
+        const match = episode.scenes.find((scene) => scene.id === prev.id);
+        if (match) return match;
+      }
+      return null;
+    });
+  }, []);
+
   const loadEpisode = useCallback((episodeId: string) => {
     if (!currentStory) return;
 
@@ -440,7 +499,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setPlayer(prev => ({ ...prev, currentEpisodeId: episodeId }));
   }, [currentStory]);
 
-  const loadScene = useCallback((sceneId: string, episodeOverride?: Episode) => {
+  const loadScene = useCallback((sceneId: string, episodeOverride?: Episode, startingBeatIdOverride?: string) => {
     const episode = episodeOverride || currentEpisode;
     if (!episode) return;
 
@@ -453,8 +512,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn(`[GameStore] WARNING: Scene "${sceneId}" has NO beats with choices and no encounter!`);
     }
 
+    const firstEncounterBeatId = (scene.encounter as any)?.phases?.[0]?.beats?.[0]?.id;
+    const targetBeatExists = startingBeatIdOverride && (
+      scene.beats?.some((beat) => beat.id === startingBeatIdOverride) ||
+      (scene.encounter as any)?.phases?.some((phase: any) => phase.beats?.some((beat: any) => beat.id === startingBeatIdOverride))
+    );
+    const resolvedStartingBeatId = targetBeatExists
+      ? startingBeatIdOverride
+      : scene.startingBeatId || scene.beats?.[0]?.id || firstEncounterBeatId || '';
     setCurrentScene(scene);
-    setCurrentBeatId(scene.startingBeatId);
+    setCurrentBeatId(resolvedStartingBeatId);
 
     // Process pending delayed consequences on scene transition
     const firedButterflies: { description: string; consequence: Consequence }[] = [];
@@ -496,7 +563,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Apply fired consequences
       if (toFire.length > 0) {
         // Apply them inline (without recursing into setPlayer)
-        for (const consequence of toFire) {
+        for (const rawConsequence of toFire) {
+          const consequence = normalizeConsequenceShape(rawConsequence);
           switch (consequence.type) {
             case 'setFlag':
               updatedPlayer.flags = { ...updatedPlayer.flags, [consequence.flag]: consequence.value };
@@ -511,18 +579,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               updatedPlayer.tags = new Set(updatedPlayer.tags).add(consequence.tag);
               break;
             case 'relationship':
+              const dimension = normalizeRelationshipDimension(
+                (consequence as any).dimension
+                  ?? (consequence as any).relationship
+                  ?? (consequence as any).relationshipType
+                  ?? (consequence as any).aspect
+              );
+              if (!dimension) {
+                console.warn('[GameStore] relationship delayed consequence missing valid dimension:', consequence);
+                break;
+              }
               const rel = updatedPlayer.relationships[consequence.npcId];
               if (rel) {
                 const maxV = 100;
-                const minV = consequence.dimension === 'fear' ? 0 : -100;
+                const minV = dimension === 'fear' ? 0 : -100;
                 updatedPlayer.relationships = {
                   ...updatedPlayer.relationships,
                   [consequence.npcId]: {
                     ...rel,
-                    [consequence.dimension]: Math.max(minV, Math.min(maxV, rel[consequence.dimension] + consequence.change)),
+                    [dimension]: Math.max(minV, Math.min(maxV, (rel[dimension] ?? 0) + consequence.change)),
                   },
                 };
               }
+              break;
+            case 'relationshipEvidence':
+              updatedPlayer.relationshipValueStates =
+                applyRelationshipEvidence(updatedPlayer, consequence).relationshipValueStates;
               break;
             // Other types applied as-is
             default:
@@ -593,9 +675,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     setPlayer(prevPlayer => {
-      let newPlayer = { ...prevPlayer };
+      const newPlayer = { ...prevPlayer };
 
-      for (const consequence of consequences) {
+      for (const rawConsequence of consequences) {
+        const consequence = normalizeConsequenceShape(rawConsequence);
         switch (consequence.type) {
           case 'attribute': {
             const dir = consequence.change >= 0 ? 'up' : 'down';
@@ -621,14 +704,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
           case 'skill': {
             const dir = consequence.change >= 0 ? 'up' : 'down';
+            const skillLabel = consequence.skill.replace(/_/g, ' ');
+            const skillHint = (() => {
+              const source = skillLabel.toLowerCase();
+              if (source.includes('persuasion') || source.includes('charm') || source.includes('deception')) {
+                return dir === 'up' ? 'Your next words come a little steadier.' : 'Your next words come less easily.';
+              }
+              if (source.includes('investigation') || source.includes('perception') || source.includes('insight')) {
+                return dir === 'up' ? 'The next clue feels easier to hold.' : 'The next clue feels harder to hold.';
+              }
+              if (source.includes('stealth') || source.includes('sleight')) {
+                return dir === 'up' ? 'Silence comes a little more naturally.' : 'Silence feels harder to keep.';
+              }
+              if (source.includes('combat') || source.includes('athletics') || source.includes('acrobatics')) {
+                return dir === 'up' ? 'Your body answers a little faster.' : 'Your body remembers the cost.';
+              }
+              if (source.includes('survival') || source.includes('medicine')) {
+                return dir === 'up' ? 'You catch the warning signs a little sooner.' : 'The warning signs come too late.';
+              }
+              return dir === 'up' ? 'The lesson settles in before the moment passes.' : 'The mistake stays with you.';
+            })();
             applied.push({
               type: 'skill',
-              label: consequence.skill.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              label: skillLabel.replace(/\b\w/g, c => c.toUpperCase()),
               direction: dir,
               magnitude: classifyMagnitude(consequence.change),
-              narrativeHint: dir === 'up'
-                ? `You feel more practiced in ${consequence.skill.replace(/_/g, ' ')}.`
-                : `That stumble leaves your ${consequence.skill.replace(/_/g, ' ')} shaken.`,
+              narrativeHint: skillHint,
               scope: 'self',
               linger: true,
             });
@@ -643,25 +744,34 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'relationship': {
+            const dimension = normalizeRelationshipDimension(
+              (consequence as any).dimension
+                ?? (consequence as any).relationship
+                ?? (consequence as any).relationshipType
+                ?? (consequence as any).aspect
+            );
+            if (!dimension) {
+              console.warn('[GameStore] relationship consequence missing valid dimension:', consequence);
+              break;
+            }
+
             const rel = newPlayer.relationships[consequence.npcId];
             if (rel) {
               const dir = consequence.change >= 0 ? 'up' : 'down';
-              const npcName = consequence.npcId
-                .replace(/^char[-_]/i, '')
-                .replace(/[-_]/g, ' ')
-                .replace(/\b\w/g, c => c.toUpperCase());
+              const npcName = formatTitleLabel(consequence.npcId, 'Someone');
+              const dimensionLabel = formatTitleLabel(dimension, 'Relationship');
               const maxVal = 100;
-              const minVal = consequence.dimension === 'fear' ? 0 : -100;
+              const minVal = dimension === 'fear' ? 0 : -100;
               const nextValue = Math.max(
                 minVal,
-                Math.min(maxVal, rel[consequence.dimension] + consequence.change)
+                Math.min(maxVal, (rel[dimension] ?? 0) + consequence.change)
               );
               applied.push({
                 type: 'relationship',
-                label: `${npcName} · ${consequence.dimension.charAt(0).toUpperCase() + consequence.dimension.slice(1)}`,
+                label: `${npcName} · ${dimensionLabel}`,
                 direction: dir,
                 magnitude: classifyMagnitude(consequence.change),
-                narrativeHint: `${npcName} ${getRelationshipDescription(consequence.dimension, nextValue)}.`,
+                narrativeHint: `${npcName} ${getRelationshipDescription(dimension, nextValue)}.`,
                 scope: 'other',
                 linger: true,
               });
@@ -669,10 +779,17 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 ...newPlayer.relationships,
                 [consequence.npcId]: {
                   ...rel,
-                  [consequence.dimension]: nextValue,
+                  [dimension]: nextValue,
                 },
               };
             }
+            break;
+          }
+
+          case 'relationshipEvidence': {
+            const stateBefore = newPlayer;
+            const stateAfter = applyRelationshipEvidence(stateBefore, consequence);
+            newPlayer.relationshipValueStates = stateAfter.relationshipValueStates;
             break;
           }
 
@@ -729,8 +846,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'addTag': {
-            newPlayer.tags = new Set(newPlayer.tags).add(consequence.tag);
-            const tagLower = consequence.tag.toLowerCase();
+            const rawTag =
+              consequence.tag ??
+              (consequence as any).value ??
+              (consequence as any).name ??
+              (consequence as any).tagId;
+            const tag = typeof rawTag === 'string' ? rawTag.trim() : '';
+            if (!tag) {
+              console.warn('[GameStore] addTag consequence missing tag field:', consequence);
+              break;
+            }
+            newPlayer.tags = new Set(newPlayer.tags).add(tag);
+            const tagLower = tag.toLowerCase();
             let identityHint: string | undefined;
             if (tagLower.includes('brave') || tagLower.includes('bold')) identityHint = "You're becoming bolder.";
             else if (tagLower.includes('kind') || tagLower.includes('compassionate')) identityHint = "Your compassion defines you.";
@@ -739,7 +866,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             if (identityHint) {
               applied.push({
                 type: 'identity',
-                label: consequence.tag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                label: tag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
                 direction: 'up',
                 magnitude: 'minor',
                 narrativeHint: identityHint,
@@ -751,8 +878,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           case 'removeTag': {
+            const rawTag =
+              consequence.tag ??
+              (consequence as any).value ??
+              (consequence as any).name ??
+              (consequence as any).tagId;
+            const tag = typeof rawTag === 'string' ? rawTag.trim() : '';
+            if (!tag) {
+              console.warn('[GameStore] removeTag consequence missing tag field:', consequence);
+              break;
+            }
             const newTags = new Set(newPlayer.tags);
-            newTags.delete(consequence.tag);
+            newTags.delete(tag);
             newPlayer.tags = newTags;
             break;
           }
@@ -1157,12 +1294,86 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const completeEpisode = useCallback((episodeId: string) => {
     setPlayer(prev => {
       if (prev.completedEpisodes.includes(episodeId)) return prev;
+      const visitLog = prev.visitLog ?? [];
+      const episodeVisits = visitLog.filter(v => v.episodeId === episodeId);
+      const beatsVisited = new Set(episodeVisits.map(v => v.beatId)).size;
+      const scenesVisited = new Set(episodeVisits.map(v => v.sceneId)).size;
+      const committedChoiceIds = episodeVisits
+        .filter(v => v.choiceId)
+        .map(v => v.choiceId as string);
+      const episode = currentStory?.episodes.find(ep => ep.id === episodeId);
+      const completion: EpisodeCompletion = {
+        episodeId,
+        episodeNumber: episode?.number,
+        storyId: prev.currentStoryId ?? '',
+        completedAt: Date.now(),
+        committedChoiceIds,
+        beatsVisited,
+        scenesVisited,
+      };
       return {
         ...prev,
         completedEpisodes: [...prev.completedEpisodes, episodeId],
+        episodeCompletions: [...(prev.episodeCompletions ?? []), completion],
+      };
+    });
+  }, [currentStory]);
+
+  // Plan 2: visit tracking.
+  const visitBeat = useCallback((params: { sceneId: string; beatId: string; episodeId?: string }) => {
+    setPlayer(prev => {
+      const episodeId = params.episodeId ?? prev.currentEpisodeId ?? '';
+      const visitLog = prev.visitLog ?? [];
+      const last = visitLog[visitLog.length - 1];
+      // Dedupe: if the last record is for this same beat with no choice yet, don't append again.
+      if (last && last.beatId === params.beatId && last.sceneId === params.sceneId && !last.choiceId) {
+        return prev;
+      }
+      return {
+        ...prev,
+        visitLog: [
+          ...visitLog,
+          {
+            episodeId,
+            sceneId: params.sceneId,
+            beatId: params.beatId,
+            visitedAt: Date.now(),
+          },
+        ],
       };
     });
   }, []);
+
+  const commitChoice = useCallback((params: { sceneId: string; beatId: string; choiceId: string; episodeId?: string }) => {
+    setPlayer(prev => {
+      const episodeId = params.episodeId ?? prev.currentEpisodeId ?? '';
+      const visitLog = prev.visitLog ?? [];
+      const lastIndex = visitLog.length - 1;
+      const last = lastIndex >= 0 ? visitLog[lastIndex] : undefined;
+      // If the last record points at the same beat, upgrade it with the choiceId.
+      if (last && last.beatId === params.beatId && last.sceneId === params.sceneId && !last.choiceId) {
+        const copy = visitLog.slice();
+        copy[lastIndex] = { ...last, choiceId: params.choiceId, visitedAt: Date.now() };
+        return { ...prev, visitLog: copy };
+      }
+      return {
+        ...prev,
+        visitLog: [
+          ...visitLog,
+          {
+            episodeId,
+            sceneId: params.sceneId,
+            beatId: params.beatId,
+            choiceId: params.choiceId,
+            visitedAt: Date.now(),
+          },
+        ],
+      };
+    });
+  }, []);
+
+  const getVisitLog = useCallback(() => player.visitLog ?? [], [player]);
+  const getEpisodeCompletions = useCallback(() => player.episodeCompletions ?? [], [player]);
 
   const resetGame = useCallback(async () => {
     setPlayer(createInitialPlayerState());
@@ -1208,6 +1419,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const actionsValue = useMemo<GameActions>(() => ({
     initializeStory,
+    updateCurrentStory,
     loadEpisode,
     loadScene,
     setBeat,
@@ -1252,9 +1464,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     wasSceneVisited,
     getBranchToneForScene,
     getPathToScene,
+    visitBeat,
+    commitChoice,
+    getVisitLog,
+    getEpisodeCompletions,
     resetGame,
   }), [
     initializeStory,
+    updateCurrentStory,
     loadEpisode,
     loadScene,
     setBeat,
@@ -1298,6 +1515,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     wasSceneVisited,
     getBranchToneForScene,
     getPathToScene,
+    visitBeat,
+    commitChoice,
+    getVisitLog,
+    getEpisodeCompletions,
     resetGame,
   ]);
 

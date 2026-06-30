@@ -12,6 +12,8 @@
  */
 
 import { Story, Episode, Scene, Beat, Encounter } from '../../types';
+import { collidingSceneIds } from './beatIdCollisions';
+import { isTerminalSceneTarget } from '../../engine/storyEngine';
 
 export interface StructuralIssue {
   severity: 'error' | 'warning';
@@ -24,7 +26,10 @@ export interface StructuralIssue {
     | 'empty_content'
     | 'malformed_data'
     | 'invalid_sequence'
-    | 'navigation_loop';
+    | 'navigation_loop'
+    | 'dead_end_scene'
+    | 'empty_scene'
+    | 'unreachable_scene';
   location: {
     episodeId?: string;
     sceneId?: string;
@@ -113,7 +118,7 @@ export class StructuralValidator {
       if (scene.leadsTo) {
         for (const targetId of scene.leadsTo) {
           if (!sceneIds.has(targetId) && !targetId.startsWith('episode-')) {
-            issues.push(this.createIssue('error', 'broken_reference', 
+            issues.push(this.createIssue('error', 'broken_reference',
               { ...loc, sceneId: scene.id },
               `Scene ${scene.id} leadsTo non-existent scene: ${targetId}`,
               'leadsTo', 'valid scene ID', targetId, true,
@@ -122,10 +127,73 @@ export class StructuralValidator {
         }
       }
     }
-    
+
+    // C3: dead-end-scene gate. A non-terminal scene must route somewhere — empty
+    // `leadsTo` AND no onward `nextSceneId` on any beat/choice (and not a terminal
+    // sentinel) strands the player. The existing dead-end check is per-BEAT; this is
+    // the per-SCENE backstop the audit found missing.
+    for (const scene of episode.scenes || []) {
+      if (isTerminalSceneTarget(scene.id)) continue;
+      if (Array.isArray(scene.leadsTo) && scene.leadsTo.length > 0) continue;
+      const routesOnward = (scene.beats || []).some((b) => {
+        const beatRoutes = !!b.nextSceneId && (isTerminalSceneTarget(b.nextSceneId) || b.nextSceneId !== scene.id);
+        const choiceRoutes = (b.choices || []).some(
+          (c) => !!c.nextSceneId && (isTerminalSceneTarget(c.nextSceneId) || c.nextSceneId !== scene.id),
+        );
+        return beatRoutes || choiceRoutes;
+      });
+      if (!routesOnward) {
+        issues.push(this.createIssue('error', 'dead_end_scene',
+          { ...loc, sceneId: scene.id },
+          `Scene ${scene.id} is non-terminal but has no onward route (empty leadsTo; no beat/choice nextSceneId; not a terminal sentinel)`,
+          'leadsTo', 'a next scene or terminal sentinel', '(none)', false,
+          `Set leadsTo, route a choice/beat onward, or end with a terminal sentinel (episode-end)`));
+      }
+    }
+
+    // E4: empty-scene gate. A non-encounter scene with no beats is unplayable — the
+    // reader has nothing to render. Encounter scenes are exempt: their content lives in
+    // `scene.encounter` (situation + storylets), not in `beats`.
+    for (const scene of episode.scenes || []) {
+      const isEncounter = !!(scene as { encounter?: unknown }).encounter || !!(scene as { isEncounter?: boolean }).isEncounter;
+      if (isEncounter) continue;
+      if ((scene.beats?.length ?? 0) === 0) {
+        issues.push(this.createIssue('error', 'empty_scene',
+          { ...loc, sceneId: scene.id },
+          `Scene ${scene.id} has no beats and is not an encounter — unplayable (nothing to render).`,
+          'beats', 'at least one beat (or an encounter)', '0 beats', false,
+          `Author beats for this scene, or make it an encounter scene with storylets`));
+      }
+    }
+
+    // C3: unreachable-scene gate. Beyond the first (entry) scene, every scene should be
+    // a target of some leadsTo or a beat/choice nextSceneId. A scene nothing routes to is
+    // dead content — authored but never reachable in play. Advisory (warning): the safe fix
+    // is to wire a route in, not to auto-delete authored prose.
+    const scenes = episode.scenes || [];
+    if (scenes.length > 1) {
+      const reachable = new Set<string>([scenes[0].id]);
+      for (const scene of scenes) {
+        for (const t of scene.leadsTo || []) reachable.add(t);
+        for (const b of scene.beats || []) {
+          if (b.nextSceneId) reachable.add(b.nextSceneId);
+          for (const c of b.choices || []) if (c.nextSceneId) reachable.add(c.nextSceneId);
+        }
+      }
+      for (const scene of scenes) {
+        if (!reachable.has(scene.id) && !isTerminalSceneTarget(scene.id)) {
+          issues.push(this.createIssue('warning', 'unreachable_scene',
+            { ...loc, sceneId: scene.id },
+            `Scene ${scene.id} is unreachable — no leadsTo or beat/choice nextSceneId targets it.`,
+            'leadsTo', 'an inbound route from another scene', '(none)', false,
+            `Route a prior scene/choice to ${scene.id}, or remove the orphaned scene`));
+        }
+      }
+    }
+
     return issues;
   }
-  
+
   /**
    * Validate a scene structure
    */
@@ -381,6 +449,20 @@ export class StructuralValidator {
             if (outcome.nextSituation?.choices) {
               validateEncounterChoices(outcome.nextSituation.choices, `${path}/${choice.id}/${tier}`);
             }
+            const outcomeConsequences = outcome.consequences ?? [];
+            const costConsequences = outcome.cost?.consequences ?? [];
+            if (outcomeConsequences.length === 0 && costConsequences.length === 0) {
+              issues.push(this.createIssue('warning', 'missing_required_field',
+                { ...loc, choiceId: choice.id },
+                `Encounter outcome ${path}/${choice.id}/${tier} has no durable consequence hook`,
+                'consequences', 'outcome.consequences or cost.consequences'));
+            }
+            if (outcome.cost && costConsequences.length === 0) {
+              issues.push(this.createIssue('warning', 'missing_required_field',
+                { ...loc, choiceId: choice.id },
+                `Encounter outcome ${path}/${choice.id}/${tier} has a cost without mechanical consequences`,
+                'cost.consequences', 'at least one durable consequence'));
+            }
             if (outcome.encounterOutcome === 'partialVictory') {
               if (!outcome.cost?.visibleComplication || !outcome.cost?.immediateEffect) {
                 issues.push(this.createIssue('error', 'missing_required_field',
@@ -525,12 +607,107 @@ export class StructuralValidator {
   /**
    * Auto-fix common structural issues
    */
+  /**
+   * Prefix every (not-already-prefixed) beat id in a scene with `${scene.id}__`
+   * and update all intra-scene references (beat.nextBeatId, choice.nextBeatId,
+   * scene.startingBeatId). Cross-scene `nextSceneId` and encounter-phase beats
+   * are untouched (different namespace). Returns the number of beats renamed.
+   */
+  private namespaceSceneBeatIds(scene: Scene, fixes: string[]): number {
+    const beats = scene.beats || [];
+    const prefix = `${scene.id}__`;
+    const idMap = new Map<string, string>();
+    for (const beat of beats) {
+      if (!beat.id || beat.id.startsWith(prefix)) continue;
+      idMap.set(beat.id, `${prefix}${beat.id}`);
+    }
+    if (idMap.size === 0) return 0;
+
+    let count = 0;
+    for (const beat of beats) {
+      const b = beat as any;
+      if (b.id && idMap.has(b.id)) { b.id = idMap.get(b.id); count++; }
+      if (b.nextBeatId && idMap.has(b.nextBeatId)) b.nextBeatId = idMap.get(b.nextBeatId);
+      for (const choice of b.choices || []) {
+        const c = choice as any;
+        if (c.nextBeatId && idMap.has(c.nextBeatId)) c.nextBeatId = idMap.get(c.nextBeatId);
+      }
+    }
+    if (scene.startingBeatId && idMap.has(scene.startingBeatId)) {
+      scene.startingBeatId = idMap.get(scene.startingBeatId)!;
+    }
+    fixes.push(`Namespaced ${idMap.size} beat id(s) in scene ${scene.id} to avoid cross-scene collision (e.g. ${[...idMap.values()][0]})`);
+    return count;
+  }
+
   autoFix(story: Story): { story: Story; fixedCount: number; fixes: string[] } {
     const fixes: string[] = [];
     let fixedCount = 0;
     
     for (const episode of story.episodes || []) {
+      // PREVENT CROSS-SCENE BEAT-ID COLLISIONS: namespace the beats of any scene
+      // whose beat ids collide (exact or hierarchical-prefix) with another
+      // scene's. Runs once per episode, before per-scene navigation repair, so
+      // downstream ref fixes see the final ids. Safe at this stage: image assets
+      // were already bound onto beat.image (assembleStoryAssetsFromRegistry runs
+      // before autoFix), and all beat-id references (nextBeatId, choice.nextBeatId,
+      // startingBeatId) are intra-scene, so prefixing per scene + updating local
+      // refs keeps everything consistent.
+      const collidingScenes = collidingSceneIds(episode as Episode);
+      if (collidingScenes.size > 0) {
+        for (const scene of episode.scenes || []) {
+          if (!collidingScenes.has(scene.id)) continue;
+          fixedCount += this.namespaceSceneBeatIds(scene, fixes);
+        }
+      }
+
+      const episodeSceneIds = new Set((episode.scenes || []).map(scene => scene.id));
+      const validSingleForwardTarget = (scene: Scene): string | undefined => {
+        const validTargets = [...new Set([
+          ...((scene as any).leadsTo || []),
+          (scene as any).fallbackSceneId,
+        ].filter((targetId): targetId is string => {
+          return typeof targetId === 'string'
+            && targetId.length > 0
+            && (episodeSceneIds.has(targetId) || isTerminalSceneTarget(targetId));
+        }))];
+        return validTargets.length === 1 ? validTargets[0] : undefined;
+      };
+      const targetIsMissing = (targetId: unknown): targetId is string => {
+        return typeof targetId === 'string'
+          && targetId.length > 0
+          && !episodeSceneIds.has(targetId)
+          && !isTerminalSceneTarget(targetId);
+      };
+
       for (const scene of episode.scenes || []) {
+        const singleForwardTarget = validSingleForwardTarget(scene);
+        if (singleForwardTarget && scene.beats && scene.beats.length > 0) {
+          for (const beat of scene.beats) {
+            if (targetIsMissing(beat.nextSceneId)) {
+              fixes.push(`Repaired missing beat scene target ${scene.id}/${beat.id}: ${beat.nextSceneId} -> ${singleForwardTarget}`);
+              beat.nextSceneId = singleForwardTarget;
+              fixedCount++;
+            }
+            for (const choice of beat.choices || []) {
+              if (targetIsMissing(choice.nextSceneId)) {
+                fixes.push(`Repaired missing choice scene target ${scene.id}/${beat.id}/${choice.id}: ${choice.nextSceneId} -> ${singleForwardTarget}`);
+                choice.nextSceneId = singleForwardTarget;
+                fixedCount++;
+              }
+            }
+          }
+        }
+        if (singleForwardTarget && scene.encounter?.outcomes) {
+          for (const [outcomeName, outcome] of Object.entries(scene.encounter.outcomes)) {
+            if (outcome && targetIsMissing((outcome as any).nextSceneId)) {
+              fixes.push(`Repaired missing encounter outcome target ${scene.id}/${outcomeName}: ${(outcome as any).nextSceneId} -> ${singleForwardTarget}`);
+              (outcome as any).nextSceneId = singleForwardTarget;
+              fixedCount++;
+            }
+          }
+        }
+
         // Fix scene startingBeatId
         if (scene.beats && scene.beats.length > 0) {
           const beatIds = new Set(scene.beats.map(b => b.id));
@@ -540,7 +717,18 @@ export class StructuralValidator {
             fixedCount++;
           }
         }
-        
+
+        // E4: backfill isChoicePoint on beats that carry choices but weren't flagged.
+        // The reader + the choice-density gate key off isChoicePoint; an authored choice
+        // on an unflagged beat is invisible to both.
+        for (const beat of scene.beats || []) {
+          if ((beat.choices?.length ?? 0) > 0 && beat.isChoicePoint !== true) {
+            beat.isChoicePoint = true;
+            fixes.push(`Flagged beat ${beat.id} as isChoicePoint (it carries choices)`);
+            fixedCount++;
+          }
+        }
+
         // Fix beat navigation
         for (let i = 0; i < (scene.beats?.length || 0); i++) {
           const beat = scene.beats![i];
@@ -615,25 +803,124 @@ export class StructuralValidator {
                                  (beat.choices && beat.choices.length > 0);
             
             if (!hasNavigation) {
-              // Find next scene
+              // Find the forward target. PREFER the authored scene-graph target
+              // (scene.leadsTo[0]) over the next-in-array scene: parallel branch
+              // scenes (e.g. scene-2a / scene-2b) are adjacent in the array but
+              // both reconverge to a bottleneck (scene-3). Using the array
+              // neighbour routed scene-2a → scene-2b, replaying the other branch
+              // and setting both mutually-exclusive flags. leadsTo is the design.
               const sceneIndex = episode.scenes.findIndex(s => s.id === scene.id);
               const nextScene = episode.scenes[sceneIndex + 1];
-              const targetSceneId = (scene as any).fallbackSceneId || nextScene?.id || 'episode-end';
+              const targetSceneId = (scene as any).leadsTo?.[0] || (scene as any).fallbackSceneId || nextScene?.id || 'episode-end';
               
-              // Add continue choice to prevent dead end
-              beat.choices = [{
-                id: 'continue',
-                text: 'Continue...',
-                choiceType: 'expression' as any,
-                nextSceneId: targetSceneId,
-              }];
+              // Handoff-only scenes should advance directly. Do not fabricate a
+              // one-option "Continue..." choice: strict choice-surface gates treat
+              // that as a broken reader-facing decision, and it masks the
+              // difference between a real authored choice point and plain scene
+              // navigation.
+              beat.nextSceneId = targetSceneId;
               beat.nextBeatId = undefined;
+              beat.choices = undefined;
+              (beat as any).isChoicePoint = false;
               fixes.push(`Fixed dead-end beat ${scene.id}/${beat.id} -> ${targetSceneId}`);
               fixedCount++;
             }
           }
         }
-        
+
+        // BREAK NAVIGATION LOOPS: a beat whose nextBeatId points back to an
+        // earlier choice point re-presents that choice forever (the classic
+        // choice-payoff → choice-point cycle: choice → payoff beat → back to
+        // the choice point). The single-node self-reference fix above does not
+        // catch this multi-node back-edge. Reroute the offending beat to the
+        // scene's forward target so it advances instead of looping.
+        if (scene.beats && scene.beats.length > 0) {
+          const indexById = new Map(scene.beats.map((b, idx) => [b.id, idx]));
+          const sceneIndex = episode.scenes.findIndex(s => s.id === scene.id);
+          // Prefer the authored scene-graph target over the array neighbour
+          // (see dead-end repair above — array-neighbour routing replays parallel
+          // branches and corrupts mutually-exclusive flag state).
+          const forwardSceneId = (scene as any).leadsTo?.[0]
+            || (scene as any).fallbackSceneId
+            || episode.scenes[sceneIndex + 1]?.id
+            || 'episode-end';
+          for (let i = 0; i < scene.beats.length; i++) {
+            const beat = scene.beats[i];
+            if (!beat.nextBeatId) continue;
+            const targetIdx = indexById.get(beat.nextBeatId);
+            if (targetIdx === undefined) continue;
+            const target = scene.beats[targetIdx];
+            const targetIsChoicePoint = !!(target.choices && target.choices.length > 0);
+            // A back- or self-edge into a choice point is the loop signature.
+            // Forward edges into a choice point are legitimate lead-ins.
+            if (targetIdx <= i && targetIsChoicePoint) {
+              beat.nextBeatId = undefined;
+              if (!beat.nextSceneId) beat.nextSceneId = forwardSceneId;
+              fixes.push(`Broke navigation loop: beat ${scene.id}/${beat.id} pointed back to choice point ${target.id}; routed to ${beat.nextSceneId}`);
+              fixedCount++;
+            }
+          }
+        }
+
+        // REPAIR DANGLING CHOICE NAVIGATION: a choice whose nextBeatId points to
+        // a beat that doesn't exist (e.g. the writer referenced an intra-scene
+        // "payoff" beat it never emitted) dangles and fails the final-story
+        // navigation contract (broken_navigation). Clear the bad intra-scene
+        // target and route the choice to the scene's forward target so it
+        // advances to the next scene instead.
+        if (scene.beats && scene.beats.length > 0) {
+          const sceneBeatIds = new Set(scene.beats.map(b => b.id));
+          const sIdx = episode.scenes.findIndex(s => s.id === scene.id);
+          // Prefer the authored scene-graph target over the array neighbour.
+          const forwardSceneId = (scene as any).leadsTo?.[0]
+            || (scene as any).fallbackSceneId
+            || episode.scenes[sIdx + 1]?.id
+            || 'episode-end';
+          for (const beat of scene.beats) {
+            for (const choice of beat.choices || []) {
+              const c = choice as any;
+              if (c.nextBeatId && !sceneBeatIds.has(c.nextBeatId)) {
+                const hasSceneTarget = !!(c.nextSceneId || (Array.isArray(c.leadsTo) && c.leadsTo.length > 0));
+                c.nextBeatId = undefined;
+                if (!hasSceneTarget) c.nextSceneId = forwardSceneId;
+                fixes.push(`Fixed dangling choice ${scene.id}/${beat.id}/${c.id} -> ${hasSceneTarget ? 'existing scene target' : c.nextSceneId}`);
+                fixedCount++;
+              }
+            }
+          }
+        }
+
+        // REPAIR CONTRADICTORY SYNTHETIC CONTINUE: a linear "continue" choice
+        // (expression, no real branching) whose nextSceneId points at a real
+        // scene NOT in the scene's authored leadsTo is a routing contradiction
+        // — the engine honors the explicit target over leadsTo, so it replays
+        // the wrong branch (scene-2a continue → scene-2b instead of the
+        // scene-3 bottleneck) and corrupts mutually-exclusive flag state.
+        // Rewrite it to the authored bottleneck. Non-continue (real branching)
+        // choices are left alone — those block at the final contract instead.
+        if (scene.beats && scene.beats.length > 0 && Array.isArray((scene as any).leadsTo) && (scene as any).leadsTo.length > 0) {
+          const leadsTo: string[] = (scene as any).leadsTo;
+          const allowed = new Set(leadsTo);
+          const sceneIds = new Set(episode.scenes.map(s => s.id));
+          for (const beat of scene.beats) {
+            for (const choice of beat.choices || []) {
+              const c = choice as any;
+              const isSyntheticContinue = c.id === 'continue' || c.choiceType === 'expression';
+              if (
+                isSyntheticContinue &&
+                c.nextSceneId &&
+                !allowed.has(c.nextSceneId) &&
+                sceneIds.has(c.nextSceneId) // a real scene, not a terminal sentinel
+              ) {
+                const corrected = leadsTo[0];
+                fixes.push(`Corrected contradictory continue ${scene.id}/${beat.id}/${c.id}: ${c.nextSceneId} -> ${corrected} (leadsTo)`);
+                c.nextSceneId = corrected;
+                fixedCount++;
+              }
+            }
+          }
+        }
+
         // Fix encounter beats
         if (scene.encounter) {
           for (const phase of scene.encounter.phases || []) {
@@ -645,7 +932,9 @@ export class StructuralValidator {
                 fixes.push(`Fixed phase ${phase.id} situationImage from first beat success image`);
                 fixedCount++;
               } else if (scene.backgroundImage) {
-                phase.situationImage = scene.backgroundImage;
+                // Both situationImage and backgroundImage are MediaRef;
+                // we can copy the ref directly.
+                phase.situationImage = scene.backgroundImage as typeof phase.situationImage;
                 fixes.push(`Fixed phase ${phase.id} situationImage from scene background`);
                 fixedCount++;
               }

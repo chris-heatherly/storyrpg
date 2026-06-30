@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.storyrpg.doc-update-reminder</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/chrisheatherly/.nvm/versions/node/v22.18.0/bin/node</string>
+		<string>/Users/chrisheatherly/StoryRPG_New/storyrpg-prototype/.cursor/skills/update-docs/scripts/auto-update-docs.mjs</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/chrisheatherly/.nvm/versions/node/v22.18.0/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/chrisheatherly/StoryRPG_New</string>
+
+	<key>StartInterval</key>
+	<integer>86400</integer>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>StandardOutPath</key>
+	<string>/tmp/storyrpg-doc-update.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/tmp/storyrpg-doc-update.log</string>
+</dict>
+</plist>

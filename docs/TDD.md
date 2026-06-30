@@ -1,8 +1,13 @@
 # StoryRPG - Technical Design Document
 
-**Version:** 3.0 (Comprehensive Reference Edition)  
-**Last Updated:** February 26, 2026  
+**Version:** 3.1 (Comprehensive Reference Edition)  
+**Last Updated:** May 25, 2026
 **Status:** Active Development
+
+Read `docs/PROJECT_STATUS.md` first for the current implementation snapshot.
+This TDD is the deeper technical reference; older architecture descriptions in
+this file should be interpreted through the reader/generator split and pipeline
+status documented there.
 
 ---
 
@@ -39,7 +44,15 @@
 
 ## 1) System Overview
 
-StoryRPG is a local-first interactive fiction application built with React Native/Expo, backed by a Node.js/Express proxy server, and powered by a TypeScript AI agent generation pipeline. The system generates, validates, and plays back branching interactive stories with images and optional audio narration.
+StoryRPG is a local-first interactive fiction application built with React Native/Expo, backed by a Node.js/Express proxy server, and powered by a TypeScript AI agent generation pipeline. The system generates, validates, and plays back branching interactive stories with images, optional video, and optional audio narration.
+
+The app now has two target-specific web entries in one package:
+
+- **Reader** (`apps/reader/ReaderApp.tsx`) is the public playback target.
+- **Generator** (`apps/generator/GeneratorApp.tsx`) is the internal creation/operator target.
+
+The old monolithic `App.tsx` shell has been removed. `STORYRPG_APP_TARGET`
+selects the Reader or Generator target used by Metro and Expo config.
 
 The architecture is designed around three core requirements:
 
@@ -71,10 +84,11 @@ The user starts generation from the client app. The client calls the proxy serve
 | React Native | 0.81.5 | Cross-platform mobile framework |
 | Expo | ~54.0.31 | React Native build tooling and dev server |
 | React Native Web | ^0.21.0 | Web platform support for React Native components |
-| Zustand | ^5.0.10 | Lightweight state management (for generation jobs) |
+| Zustand | ^5.0.10 | Lightweight state management for navigation, jobs, and generator state |
 | AsyncStorage | ^2.2.0 | Client-side persistent key-value store |
 | Lucide React Native | ^0.563.0 | Icon library |
 | pdfjs-dist | ^3.11.174 | PDF parsing for source material upload |
+| posthog-js | ^1.372.6 | Optional web analytics |
 
 ### Backend (Proxy/Control Plane)
 
@@ -85,6 +99,9 @@ The user starts generation from the client app. The client calls the proxy serve
 | cors | ^2.8.5 | Cross-origin request handling |
 | dotenv | ^17.2.3 | Environment variable loading |
 | sharp | ^0.34.5 | Server-side image processing |
+| pg | ^8.21.0 | Optional Postgres auth/session persistence |
+| passport + strategies | various | Local, Google, and Discord-style OAuth |
+| @google-cloud/storage | ^7.17.0 | Optional GCS-backed story storage |
 
 ### Build and Development
 
@@ -95,15 +112,20 @@ The user starts generation from the client app. The client calls the proxy serve
 | tsconfig-paths | ^4.2.0 | Path alias resolution |
 | babel-preset-expo | ^54.0.9 | Babel compilation for Expo |
 | Metro | (bundled with Expo) | JavaScript bundler |
+| Vitest | ^4.0.18 | Unit testing (Node env with RN stubs) |
+| Playwright | ^1.59.1 | End-to-end browser tests and Tier 2 in-pipeline story QA |
 
 ### External APIs
 
 | Service | Purpose | Required? |
 |---|---|---|
 | Anthropic (Claude) | Primary LLM for text generation | Yes (for generation) |
-| Google Gemini | Image generation (Nano-Banana provider) | Optional (default image provider) |
+| Google Gemini | Image generation (Nano-Banana provider) and optional Veo video | Optional (default image provider) |
+| OpenAI | Optional text provider and GPT Image provider | Optional |
 | Atlas Cloud | Alternative image generation | Optional |
 | MidAPI (Midjourney) | Premium image generation | Optional |
+| Stable Diffusion A1111/Forge | Self-hosted image generation | Optional |
+| kohya sidecar | Stable Diffusion LoRA auto-training | Optional |
 | ElevenLabs | Voice narration and text-to-speech | Optional |
 | catbox.moe | Public hosting for reference images (MidAPI requirement) | Only with MidAPI |
 
@@ -115,19 +137,19 @@ The system is partitioned into three execution zones that communicate through we
 
 ### Zone 1: Client Runtime
 
-**What it is:** The React Native/Expo application that runs in the user's browser (web) or on their phone (iOS/Android).
+**What it is:** The React Native/Expo application that runs in the user's browser (web) or on their phone (iOS/Android). On web, the current implementation is split into Reader and Generator targets selected by `STORYRPG_APP_TARGET`.
 
 **What it does:**
 - Displays the story catalog and lets users select stories
 - Plays back stories through the reading interface
-- Provides the generation configuration and monitoring UI
+- Provides generation configuration and monitoring UI in the Generator target
 - Manages player state (game progress, settings, identity)
-- Polls the proxy for generation job updates
+- Polls the proxy for generation job updates in the Generator target
 
 **What it does NOT do:**
 - It does not call LLM APIs directly (all API calls go through the proxy)
 - It does not write files to the filesystem (file writes go through proxy endpoints)
-- It does not execute generation pipeline code (that runs in worker processes)
+- The Reader target does not execute or import generation pipeline code. The Generator target imports the pipeline client/config surface but long-running work still runs in worker processes.
 
 ### Zone 2: Proxy/Control Plane
 
@@ -139,6 +161,8 @@ The system is partitioned into three execution zones that communicate through we
 - Provides a filesystem API for reading/writing generated story files
 - Maintains durable job state (generation jobs, worker checkpoints, dead letter queue)
 - Serves generated images and audio files as static assets
+- Persists generator settings, style anchors, reference images, image feedback, auth sessions, and optional Postgres-backed user records
+- Redirects generated-story assets to GCS when `STORY_STORAGE_MODE=gcs`
 
 **Key characteristic:** This is the "durability boundary" — if the client crashes or refreshes, the proxy still knows the state of all running jobs and can resume communication when the client reconnects.
 
@@ -171,12 +195,29 @@ Client ←→ Filesystem: Via proxy HTTP endpoints only
 
 ## 4) Directory Structure
 
+Current layout notes:
+
+- The workspace root in this fork is `StoryRPG_fork/`, though many historical
+  docs and examples still refer to `StoryRPG_New/`.
+- `storyrpg-prototype/apps/reader/ReaderApp.tsx` and
+  `storyrpg-prototype/apps/generator/GeneratorApp.tsx` are the current web
+  target entries.
+- The old monolithic `App.tsx` shell has been removed.
+- `src/story-codec/` is the reader/runtime package codec. `src/ai-agents/codec/`
+  contains pipeline-side codec/event helpers.
+- `src/types/index.ts` is now a barrel over topic-oriented type modules rather
+  than a single monolithic type file.
+- Proxy routes include auth, GCS-aware catalog serving, generated story
+  mutation, style anchors, image feedback, model scanning, Stable Diffusion,
+  LoRA trainer forwarding, and worker lifecycle routes.
+
 ```
 StoryRPG_New/
 ├── AGENTS.md                           # Agent orientation (workspace rule)
 ├── docs/                               # All project documentation
 │   ├── GDD.md                          # Game Design Document
 │   ├── TDD.md                          # Technical Design Document (this file)
+│   ├── CURRENT_PIPELINE_STATUS.md      # Current pipeline and compatibility status
 │   ├── INSTALL.md                      # Installation Guide
 │   ├── IMAGE_PIPELINE_RUNTIME.md       # Image generation pipeline docs
 │   ├── INCREMENTAL_VALIDATION_PLAN.md  # Validation system docs
@@ -185,16 +226,20 @@ StoryRPG_New/
 │   ├── QA_FIXES_SUMMARY.md             # Quality assurance improvements
 │   ├── STORY_AGENT_SYSTEM_DETAIL.md    # Agent system details
 │   ├── STORY_BRANCHING.md              # Branching story design
+│   ├── STORY_PIPELINE_MERMAID.md       # Story pipeline diagrams
 │   ├── STORY_PIPELINE_PROMPTING.md     # LLM prompting strategies
+│   ├── STORY_QUALITY_CONTRACT.md       # Story quality rules and validator contract
 │   ├── sample-story.md                 # Sample story reference
 │   ├── visual_storytelling_guide.md    # Visual direction reference
 │   ├── visual_storytelling_quick_reference.md
 │   └── reference/                      # Original reference materials
 │
 └── storyrpg-prototype/                 # Main application directory
-    ├── App.tsx                         # Application entry point and screen router
+    ├── apps/
+    │   ├── reader/ReaderApp.tsx        # Public Reader target entry
+    │   └── generator/GeneratorApp.tsx  # Internal Generator target entry
     ├── index.ts                        # Expo app registration + polyfills
-    ├── proxy-server.js                 # Express proxy server (~2500 lines)
+    ├── proxy-server.js                 # Express proxy server bootstrap
     ├── package.json                    # Dependencies and scripts
     ├── tsconfig.json                   # TypeScript config (client)
     ├── tsconfig.worker.json            # TypeScript config (worker processes)
@@ -208,17 +253,38 @@ StoryRPG_New/
     ├── .env                            # Environment variables (API keys)
     │
     ├── scripts/                        # Build and utility scripts
-    │   └── clean-runtime-artifacts.mjs # Cleanup script
+    │   ├── clean-runtime-artifacts.mjs # Cleanup script
+    │   ├── upload-stories-to-blob.ts   # Upload story outputs to Vercel Blob
+    │   └── validate-assets.ts          # Standalone asset HTTP verifier (Tier 1 QA CLI)
+    │
+    ├── test/
+    │   ├── e2e/
+    │   │   └── storyPlaythrough.spec.ts # Playwright browser playthrough test (Tier 2 QA)
+    │   └── stubs/                      # Vitest stubs for react-native and async-storage
+    │
+    ├── playwright.config.ts            # Playwright config (port 8081, chromium, 5 min timeouts)
     │
     ├── proxy/                          # Proxy server modules
+    │   ├── authRoutes.js               # Passport/local/OAuth session routes
+    │   ├── authUserStore.js            # Auth user persistence helper
     │   ├── cachedJsonStore.js
     │   ├── catalogRoutes.js
+    │   ├── db/pool.js                  # Optional Postgres pool
     │   ├── fileRoutes.js
-    │   ├── generatorSettingsRoutes.js
-    │   ├── modelScanRoutes.js
+    │   ├── gcsConfig.js                # GCS storage-mode helpers
+    │   ├── generatorSettingsRoutes.js  # Persist/restore full generator UI settings
+    │   ├── imageFeedbackRoutes.js      # Image feedback persistence
+    │   ├── loraTrainingRoutes.js       # LoRA trainer sidecar forwarding
+    │   ├── modelScanRoutes.js          # Discover available LLM/image models (24h cache)
     │   ├── refImageRoutes.js
+    │   ├── runtimePaths.js             # Local/ephemeral runtime path layout
+    │   ├── stableDiffusionRoutes.js    # A1111/Forge proxy route
     │   ├── storyCatalog.js
+    │   ├── storyCodec.js
+    │   ├── storyManifest.js
     │   ├── storyMutationRoutes.js
+    │   ├── styleRoutes.js              # Style-bible anchor persistence
+    │   ├── workerLifecycle.js          # Worker spawn/state/checkpoint lifecycle
     │   ├── workerJobSync.js
     │   └── workerProgress.js
     │
@@ -229,67 +295,102 @@ StoryRPG_New/
     │   │   │   ├── StoryArchitect.ts   # Episode blueprint design
     │   │   │   ├── WorldBuilder.ts     # World bible generation
     │   │   │   ├── CharacterDesigner.ts # NPC profile generation
-    │   │   │   ├── SceneWriter.ts      # Beat/prose generation
+    │   │   │   ├── SceneWriter.ts      # Beat/prose generation (absorbs old BeatWriter/DialogueSpecialist/ScriptCompiler/ResolutionDesigner)
     │   │   │   ├── ChoiceAuthor.ts     # Choice generation with consequences
     │   │   │   ├── EncounterArchitect.ts # Encounter design
     │   │   │   ├── BranchManager.ts    # Branch/reconvergence management
-    │   │   │   ├── BeatWriter.ts       # Beat writing specialization
-    │   │   │   ├── DialogueSpecialist.ts # Dialogue refinement
-    │   │   │   ├── PlaytestSimulator.ts # AI playtesting
-    │   │   │   ├── QAAgents.ts         # Quality assurance agents
-    │   │   │   ├── ResolutionDesigner.ts # Stat check design
-    │   │   │   ├── ScriptCompiler.ts   # Story compilation
-    │   │   │   ├── SeasonArchitect.ts  # Season-level planning
-    │   │   │   ├── SeasonPlannerAgent.ts # Season planning agent
-    │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis
-    │   │   │   ├── VariableTracker.ts  # Variable tracking
-    │   │   │   ├── ImageGenerator.ts   # Image generation coordination
-    │   │   │   └── image-team/         # Image generation agents
-    │   │   │       ├── CharacterReferenceSheetAgent.ts
-    │   │   │       ├── StoryboardAgent.ts
-    │   │   │       ├── VisualIllustratorAgent.ts
-    │   │   │       ├── EncounterImageAgent.ts
-    │   │   │       ├── AssetAuditorAgent.ts
-    │   │   │       ├── BodyLanguageValidator.ts
-    │   │   │       ├── CharacterActionLibrary.ts
-    │   │   │       ├── CinematicBeatAnalyzer.ts
-    │   │   │       ├── ColorScriptAgent.ts
-    │   │   │       ├── CompositionValidatorAgent.ts
-    │   │   │       ├── ConsistencyScorerAgent.ts
-    │   │   │       ├── DramaExtractionAgent.ts
-    │   │   │       ├── ExpressionValidator.ts
-    │   │   │       ├── ImageAgentTeam.ts
-    │   │   │       ├── LightingColorSystem.ts
-    │   │   │       ├── LightingColorValidator.ts
-    │   │   │       ├── PoseDiversityValidator.ts
-    │   │   │       ├── TransitionValidator.ts
-    │   │   │       ├── VideoDirectorAgent.ts
-    │   │   │       ├── VisualNarrativeSystem.ts
-    │   │   │       ├── VisualNarrativeValidator.ts
-    │   │   │       ├── VisualStorytellingSystem.ts
-    │   │   │       └── VisualStorytellingValidator.ts
+    │   │   │   ├── QAAgents.ts         # LLM QA agents (continuity, voice, stakes, pacing, tone, sensitivity)
+    │   │   │   ├── SceneCritic.ts      # Optional Phase-9 subtext/reversals rewrite pass
+    │   │   │   ├── StyleArchitect.ts   # Expands free-form art style strings into ArtStyleProfile
+    │   │   │   ├── ThreadPlanner.ts    # Authors the NarrativeThread ledger for setup/payoff tracking
+    │   │   │   ├── TwistArchitect.ts   # Schedules per-episode reversal + foreshadow
+    │   │   │   ├── CharacterArcTracker.ts # Per-episode identity/relationship milestone targets
+    │   │   │   ├── SeasonPlannerAgent.ts # Season planning (3-act / 7-point structural spine)
+    │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis (anchors, seven-point, episode breakdown)
+    │   │   │   └── image-team/         # Image generation agents (see below)
     │   │   │
     │   │   ├── pipeline/               # Pipeline orchestrators
     │   │   │   ├── FullStoryPipeline.ts # Main pipeline coordinator
-    │   │   │   ├── EpisodePipeline.ts  # Per-episode generation
-    │   │   │   └── phases/             # Phase-specific logic
+    │   │   │   ├── PipelineClient.ts   # Typed client the UI uses to drive the pipeline over the proxy
+    │   │   │   ├── checkpointing.ts    # Extracted checkpoint writer/loader
+    │   │   │   ├── events.ts           # Typed pipeline progress events
+    │   │   │   ├── callbackLedger.ts   # Callback hook ledger for delayed consequence payoffs
+    │   │   │   ├── choiceMemoryDebt.ts # Shared callback/residue evidence + classification helpers
+    │   │   │   ├── residueObligations.ts # Planned residue fulfillment before assembly/QA
+    │   │   │   └── phases/             # Phase-specific logic (WorldBuildingPhase, SavingPhase, …)
+    │   │   │
+    │   │   ├── codec/                  # Pipeline-side codec/event helpers
+    │   │   │   ├── storyCodec.ts       # Encode/decode + version tag
+    │   │   │   ├── storyManifest.ts    # Asset manifest per story
+    │   │   │   ├── assetIndex.ts       # Asset index helper
+    │   │   │   └── workerEvent.ts      # Worker event codec
+    │   │   │
+    │   │   ├── images/                 # Art direction and provider plumbing
+    │   │   │   ├── artStyleProfile.ts  # ArtStyleProfile interface + heuristics (`buildVerbatimProfile`, `composeCanonicalStyleString`)
+    │   │   │   ├── cinematicPromptCore.ts # Shared cinematic prompt builder consumed by every image phase
+    │   │   │   ├── anchorPrompts.ts    # Style-bible anchors (character / arc color / environment)
+    │   │   │   ├── providerCapabilities.ts # Per-provider capability matrix (LoRA, references, video, …)
+    │   │   │   ├── referenceStrategy.ts # Selects which reference images each provider should receive
+    │   │   │   ├── datasetBuilder.ts   # Turn reference sheets + anchors into captioned LoRA training sets
+    │   │   │   └── loraRegistry.ts     # Fingerprint-keyed LoRA cache in generated-stories/<storyId>/loras/
     │   │   │
     │   │   ├── services/               # External service integrations
     │   │   │   ├── imageGenerationService.ts  # Multi-provider image service
+    │   │   │   ├── providerThrottle.ts        # Per-provider concurrency + RPM throttling
+    │   │   │   ├── providers/                 # ImageProviderAdapter + Atlas/Gemini/MidAPI/SD/placeholder adapters
+    │   │   │   ├── stable-diffusion/          # A1111/Forge adapter, buildSDPrompt, seed registry, reference-pack adapter
+    │   │   │   ├── lora-training/             # LoraTrainerAdapter, KohyaAdapter, factory
     │   │   │   ├── audioGenerationService.ts  # ElevenLabs audio service
+    │   │   │   ├── voiceCastingService.ts     # ElevenLabs voice casting
     │   │   │   └── videoGenerationService.ts  # Video generation service
     │   │   │
     │   │   ├── validators/             # Content validation
     │   │   │   ├── StructuralValidator.ts
     │   │   │   ├── IntegratedBestPracticesValidator.ts
-    │   │   │   ├── IncrementalValidationRunner.ts
+    │   │   │   ├── IncrementalValidators.ts      # Per-scene voice/stakes/continuity/sensitivity/encounter
     │   │   │   ├── BaseValidator.ts
+    │   │   │   ├── PhaseValidator.ts             # Structural validation per pipeline phase (e.g. CharacterBible)
+    │   │   │   ├── SeasonValidator.ts            # Full-season structural pass
+    │   │   │   ├── SevenPointCoverageValidator.ts # 3-act / 7-point coverage gate
     │   │   │   ├── CallbackOpportunitiesValidator.ts
+    │   │   │   ├── CallbackCoverageValidator.ts
+    │   │   │   ├── SetupPayoffValidator.ts       # NarrativeThread Chekhov's-gun coverage
+    │   │   │   ├── TwistQualityValidator.ts     # Foreshadow-precedes-reveal per episode
+    │   │   │   ├── ArcDeltaValidator.ts         # Start-vs-end identity/relationship deltas
+    │   │   │   ├── DivergenceValidator.ts       # Cosmetic-branching detector
+    │   │   │   ├── pathSimulator.ts             # Lightweight choice-path simulator used by DivergenceValidator
+    │   │   │   ├── PixarPrinciplesValidator.ts  # Stakes triangle + surprise checks
+    │   │   │   ├── StakesTriangleValidator.ts
     │   │   │   ├── ChoiceDensityValidator.ts
     │   │   │   ├── ChoiceDistributionValidator.ts
     │   │   │   ├── CliffhangerValidator.ts
     │   │   │   ├── ConsequenceBudgetValidator.ts
-    │   │   │   └── [additional validators...]
+    │   │   │   ├── NPCDepthValidator.ts
+    │   │   │   ├── FiveFactorValidator.ts
+    │   │   │   ├── storyAssetWalker.ts           # Tier 1 QA: HTTP-verify every image URL
+    │   │   │   ├── storyPathAnalyzer.ts          # Coverage planner for multi-path browser runs
+    │   │   │   ├── playwrightQARunner.ts         # Tier 2 QA: spawn Playwright, parse results
+    │   │   │   └── qaRemediation.ts              # Auto-fix broken images flagged by Tier 2
+    │   │   │
+    │   │   ├── agents/image-team/       # Image generation agents
+    │   │   │   ├── ImageAgentTeam.ts    # Orchestrator for character / storyboard / illustration / encounter / LoRA phases
+    │   │   │   ├── CharacterReferenceSheetAgent.ts
+    │   │   │   ├── StoryboardAgent.ts
+    │   │   │   ├── VisualIllustratorAgent.ts
+    │   │   │   ├── EncounterImageAgent.ts
+    │   │   │   ├── VideoDirectorAgent.ts
+    │   │   │   ├── LoraTrainingAgent.ts         # Orchestrates auto-train-LoRA (SD only)
+    │   │   │   ├── VisualQualityJudge.ts        # Replaces VisualNarrativeValidator + DramaExtractionAgent
+    │   │   │   ├── visualChecks/                # Modular visual checks (CompositionCheck, …)
+    │   │   │   ├── coordinators/                # Shared coordination helpers
+    │   │   │   ├── CinematicBeatAnalyzer.ts
+    │   │   │   ├── ColorScriptAgent.ts
+    │   │   │   ├── LightingColorSystem.ts, LightingColorValidator.ts
+    │   │   │   ├── CompositionValidatorAgent.ts, ConsistencyScorerAgent.ts
+    │   │   │   ├── BodyLanguageValidator.ts, ExpressionValidator.ts, PoseDiversityValidator.ts
+    │   │   │   ├── TransitionValidator.ts
+    │   │   │   ├── VisualNarrativeSystem.ts, VisualStorytellingSystem.ts, VisualStorytellingValidator.ts
+    │   │   │   └── CharacterActionLibrary.ts
     │   │   │
     │   │   ├── converters/             # Data format converters
     │   │   ├── prompts/                # LLM prompt templates
@@ -305,23 +406,35 @@ StoryRPG_New/
     │   │   ├── config.ts              # Pipeline configuration
     │   │   └── types/                  # Pipeline-specific types
     │   │
-    │   ├── screens/                    # Application screens
+    │   ├── screens/                    # Shared application screens
     │   │   ├── HomeScreen.tsx          # Story catalog
     │   │   ├── EpisodeSelectScreen.tsx # Episode chooser
     │   │   ├── ReadingScreen.tsx       # Story playback
     │   │   ├── GeneratorScreen.tsx     # Generation workflow
     │   │   ├── SettingsScreen.tsx      # Preferences and management
     │   │   ├── VisualizerScreen.tsx    # Story graph visualization
-    │   │   └── generator/              # Generation screen components
-    │   │       └── useEndingModePlanner.ts
+    │   │   ├── reader/                 # Reader-only settings composition
+    │   │   └── generator/              # Generation screen components, steps, hooks
     │   │
     │   ├── components/                 # Reusable UI components
     │   │   ├── StoryReader.tsx         # Core reading interface (~2000 lines)
+    │   │   ├── ReadingShell.tsx        # Shared reader chrome (header, choices, continue)
     │   │   ├── EncounterView.tsx       # Encounter playback
     │   │   ├── ChoiceButton.tsx        # Choice rendering
+    │   │   ├── ContinueButton.tsx      # Canonical CONTINUE / CONCLUDE ENCOUNTER button
+    │   │   ├── ModelDropdown.tsx       # Provider+model selection (uses useAvailableModels)
     │   │   ├── NarrativeText.tsx       # Text display with formatting
     │   │   ├── PipelineProgress.tsx    # Generation progress UI
-    │   │   └── StoryBrowser.tsx        # Story catalog browser
+    │   │   ├── StoryBrowser.tsx        # Story catalog browser
+    │   │   ├── ui/                     # Shared primitives (design system)
+    │   │   │   ├── ScreenHeader.tsx        # Eyebrow + title + back button
+    │   │   │   ├── SectionCard.tsx         # Bordered card with header/description
+    │   │   │   ├── SegmentedControl.tsx    # Segmented value picker
+    │   │   │   ├── Toggle.tsx              # Animated switch with helper text
+    │   │   │   └── ConfirmDialog.tsx       # Modal confirm dialog
+    │   │   └── settings/               # Settings screen building blocks
+    │   │       ├── SettingsSections.tsx    # Section components (display, jobs, library, ...)
+    │   │       └── SettingsModals.tsx      # Cancel/delete/rename modals
     │   │
     │   ├── stores/                     # State management
     │   │   ├── gameStore.ts            # Player/game state (React Context)
@@ -340,14 +453,20 @@ StoryRPG_New/
     │   │   ├── resolutionEngine.ts     # Fiction-first stat check resolution
     │   │   ├── identityEngine.ts       # Identity profile management
     │   │   ├── conditionEvaluator.ts   # Condition tree evaluation
-    │   │   └── templateProcessor.ts    # Text template variable substitution
+    │   │   ├── templateProcessor.ts    # Text template variable substitution
+    │   │   └── growthConsequenceBuilder.ts  # Builds growth/skill consequences for choices
     │   │
     │   ├── services/                   # Client-side services
+    │   │   ├── analyticsService.ts     # Optional PostHog analytics wrapper
+    │   │   ├── authSession.ts          # Proxy session fetch helpers
+    │   │   ├── storyLibrary.ts         # Catalog/package loading + media resolution
     │   │   ├── narrationService.ts     # Audio narration playback
     │   │   └── encounterMemoryService.ts # Encounter state persistence
+    │   ├── story-codec/                # Runtime reader story package codec
+    │   ├── assets/                     # AssetRef and media URL resolver
     │   │
-    │   ├── types/                      # TypeScript type definitions
-    │   │   ├── index.ts                # Core types (~1300 lines)
+    │   ├── types/                      # Topic-oriented TypeScript type definitions
+    │   │   ├── index.ts                # Barrel re-export for compatibility
     │   │   ├── seasonPlan.ts           # Season planning types
     │   │   ├── sourceAnalysis.ts       # Source analysis types
     │   │   └── validation.ts           # Validation types
@@ -359,15 +478,23 @@ StoryRPG_New/
     │   │   └── theVelvetJob.ts
     │   │
     │   ├── theme/                      # Visual theme constants
+    │   │   ├── terminal.ts             # Terminal color palette and shared styles
+    │   │   └── copy.ts                 # Canonical reader UI copy (CONTINUE, eyebrows, ...)
     │   ├── constants/                  # Application constants
     │   ├── config/                     # Runtime configuration
-    │   │   └── endpoints.ts            # API endpoint resolution
+    │   │   ├── endpoints.ts            # API endpoint resolution
+    │   │   ├── generatorLlmOptions.ts  # Generator-screen LLM model catalog
+    │   │   └── version.ts              # App version label (auto-read from package.json)
+    │   ├── hooks/                      # React hooks
+    │   │   ├── useAvailableModels.ts   # Fetch & cache available LLM/image models
+    │   │   └── useGeneratorSettings.ts # Load/save generator settings via proxy
     │   ├── visualizer/                 # Graph visualization components
     │   └── utils/                      # General utilities
     │
     ├── generated-stories/              # Output directory for generated stories
     │   └── {story-slug}_{timestamp}/   # Per-story output directory
-    │       ├── 08-final-story.json     # The complete story data file
+    │       ├── story.json              # Primary versioned story package
+    │       ├── manifest.json           # Primary-file pointer and package checksum
     │       ├── images/                 # Generated images
     │       ├── audio/                  # Generated audio files
     │       │   ├── {beatId}.mp3
@@ -391,20 +518,45 @@ StoryRPG_New/
 
 1. **`index.ts`** — Registers the root component with Expo. Applies Node.js polyfills (Buffer, process, crypto, stream) needed for some libraries to function in the browser/mobile environment.
 
-2. **`App.tsx`** — The root React component. Sets up the provider hierarchy and manages screen navigation.
+2. **`@storyrpg/app-entry`** — Metro resolves this virtual entry to either `apps/reader/ReaderApp.tsx` or `apps/generator/GeneratorApp.tsx` based on `STORYRPG_APP_TARGET`.
+
+3. **`apps/reader/ReaderApp.tsx`** — Public playback shell. Sets up game/settings providers, story library loading, reader navigation, player persistence, and reader analytics.
+
+4. **`apps/generator/GeneratorApp.tsx`** — Internal creator shell. Sets up game/settings/generator providers, story library access, generator runner helpers, media continuation jobs, visualizer routing, and generator analytics.
+
+5. **`App.tsx`** — Legacy monolithic shell retained in the repo. It still reflects many integration patterns but is no longer the cleanest deployment boundary.
 
 ### Provider Hierarchy
 
 ```
 ErrorBoundary
-  └── SettingsProvider (React Context — font size, dev mode, etc.)
-      └── GameProvider (React Context — player state, story progress, etc.)
-          └── AppContent (screen switching logic)
+  └── SettingsProvider / GeneratorSettingsProvider
+      └── GameProvider
+          └── Target-specific app content
 ```
+
+Reader uses `SettingsProvider` and `GameProvider`. Generator uses those plus
+`GeneratorSettingsProvider`. Zustand stores live outside the provider tree for
+navigation and job state where module-level subscriptions are easier to manage.
 
 ### Navigation Model
 
-The app uses state-based navigation (no URL router). A single state variable `currentScreen` determines which screen is displayed:
+The app uses state-based navigation rather than a URL router.
+
+Reader keeps a local screen state:
+
+```typescript
+type ReaderScreen = 'home' | 'episodes' | 'reading' | 'settings';
+```
+
+Generator keeps a smaller internal route state for creator flows:
+
+```typescript
+type GeneratorRoute = 'home' | 'generator' | 'visualizer';
+```
+
+The legacy/monolithic shell and some shared navigation helpers still use
+`appNavigationStore`:
 
 ```typescript
 type Screen = 'home' | 'episodes' | 'reading' | 'settings' | 'visualizer' | 'generator';
@@ -423,7 +575,7 @@ On app start, the story catalog is assembled from three sources:
 
 1. **Built-in stories:** Four pre-authored stories bundled in the app code (`src/data/stories/`). On web platform, these are installed as physical files on the proxy server if not already present.
 
-2. **Generated stories:** The client calls `GET /list-stories` on the proxy server to discover stories in the `generated-stories/` directory. Each story directory is scanned for `08-final-story.json`.
+2. **Generated stories:** The client calls `GET /list-stories` on the proxy server to discover stories in the `generated-stories/` directory. The catalog reads `manifest.json` first, then falls back to `story.json`; legacy-only directories must be migrated before runtime load.
 
 3. **AsyncStorage cache:** A fallback for cases where the proxy is unavailable. Previously loaded stories are cached in AsyncStorage.
 
@@ -486,6 +638,24 @@ The fiction-first resolution system. When a choice has a stat check:
    - Roll ≤ target + 10 → **Complicated** (close to the target)
    - Roll > target + 10 → **Failure** (missed significantly)
 5. **Narrative text:** Each tier has genre-appropriate narrative descriptions (per attribute). These are generic fallbacks; authored outcome texts from the choice take priority.
+
+The current balance model uses a narrative-generous `calculateOutcomeChances`
+helper. It computes hidden `advantageScore = effective skill coverage + active
+prepared modifiers - difficulty`, then resolves weighted success,
+complicated, and failure bands. Higher relevant skill must never worsen
+expected outcomes, and higher difficulty must never improve them.
+
+Prepared advantages live on `Choice.statCheck.modifiers`. Each modifier has a
+condition, hidden delta, internal reason, and optional fiction-first hint.
+Passive insights live on `Beat.skillInsights` and are evaluated during
+`processBeat`; eligible insights are returned on `ProcessedBeat.skillInsights`
+and rendered as prose alongside the beat text.
+
+Dev-only balance inspection is available through:
+
+```bash
+npm run analyze:stat-balance -- --story generated-stories/<id>/story.json
+```
 
 #### Encounter Weight Calculation
 
@@ -612,9 +782,9 @@ export interface IdentityProfile {
 
 State is managed through a three-tier system:
 
-1. **React Context** (gameStore.ts, settingsStore.ts): For UI state and player game state that needs to be accessible across multiple screens.
-2. **Zustand stores**: For complex state with asynchronous operations (generation jobs, image tracking).
-3. **Module stores**: For specialized data (season plans, worker job synchronization).
+1. **React Context** (`gameStore.ts`, `settingsStore.ts`): for UI state and player game state that needs to be accessible across multiple screens. `gameStore` intentionally stays on Context rather than Zustand because it hangs off the React tree via the `GameProvider` wrapper in `App.tsx` and mixes imperative side effects (scene loading, AsyncStorage writes) with React lifecycle. Porting it to Zustand would require teaching the reducer layer about Suspense boundaries and navigation state, which is out of scope for the current refactor pass.
+2. **Zustand stores**: for complex state with asynchronous operations. The simple in-memory job trackers (`imageJobStore`, `videoJobStore`) are produced by the shared `createJobStore<TJob>` factory so their CRUD surface lives in one place. `generationJobStore` keeps its bespoke implementation because it layers AsyncStorage persistence, proxy-server sync, and bounded event retention on top of the CRUD shape; those concerns don't generalize cleanly.
+3. **Module stores**: for specialized data (season plans, worker job synchronization). `seasonPlanStore` is still a hand-rolled pub/sub around AsyncStorage + an async mutex because the plan lifecycle (plan creation → episode generation checkpoints → resume) needs explicit locking. Porting it to Zustand's `persist` middleware is tracked as tech debt — the port is straightforward but risky enough that it should land with dedicated coverage.
 
 ### Persistence Strategy
 
@@ -648,12 +818,22 @@ The proxy server (`proxy-server.js`) is the central coordination hub. It runs as
 
 The proxy is organized into modular route handlers:
 
+- **authRoutes.js:** Passport session, local login/register, Google OAuth, Discord OAuth
 - **catalogRoutes.js:** Story discovery and catalog management
 - **fileRoutes.js:** File read/write operations
 - **refImageRoutes.js:** Reference image upload and management
 - **storyMutationRoutes.js:** Story modification operations
+- **styleRoutes.js:** Style-bible anchor/reference persistence
+- **imageFeedbackRoutes.js:** Image feedback CRUD and image regeneration requests
+- **stableDiffusionRoutes.js:** A1111/Forge Stable Diffusion proxying
+- **loraTrainingRoutes.js:** LoRA trainer sidecar preflight/proxying
+- **anthropicProxyRoutes.js:** Anthropic `/v1/messages` proxy
+- **atlasCloudRoutes.js / midApiRoutes.js / elevenLabsRoutes.js:** Provider-specific proxy surfaces
 - **modelScanRoutes.js:** AI model detection and management
 - **generatorSettingsRoutes.js:** Generation configuration persistence
+- **runtimePaths.js:** Local vs ephemeral runtime layout
+- **gcsConfig.js:** GCS storage-mode mapping and redirects
+- **workerLifecycle.js:** Worker spawn, stream, checkpoint, cancel, resume, export, cleanup
 - **workerJobSync.js:** Worker process synchronization
 - **workerProgress.js:** Progress estimation and telemetry
 
@@ -661,15 +841,27 @@ The proxy is organized into modular route handlers:
 
 | Endpoint | Purpose | Method |
 |---|---|---|
+| `/` | Proxy health check | GET |
 | `/list-stories` | Discover generated stories | GET |
-| `/story/{id}` | Load specific story data | GET |
-| `/generation-jobs` | List/manage generation jobs | GET/POST/DELETE |
-| `/worker-jobs` | Worker process management | GET/POST |
+| `/stories/:storyId` | Load specific story data | GET |
+| `/generated-stories/*` | Static asset serving or GCS redirect | GET |
+| `/generation-jobs` and `/generation-jobs/:jobId` | List/manage generation job mirrors | GET/POST/PATCH/DELETE |
+| `/worker-jobs/start` | Start a worker generation job | POST |
+| `/worker-jobs/:jobId/stream` | Stream worker job events | GET |
+| `/worker-jobs/:jobId/cancel` | Cancel a worker job | POST |
+| `/worker-jobs/:jobId/resume` | Resume a failed/interrupted worker job | POST |
 | `/write-file` | Write arbitrary files | POST |
+| `/generator-settings` | Persist/restore generator UI settings | GET/POST/PATCH |
+| `/models/available`, `/models/scan` | Model availability cache and scan | GET/POST |
+| `/auth/*` | Session, local auth, Google OAuth, Discord OAuth | GET/POST |
+| `/style-anchor/*`, `/style-reference/save` | Style setup image persistence | GET/POST |
+| `/image-feedback/*`, `/regenerate-image` | Feedback CRUD and image regeneration | GET/POST/PATCH/DELETE |
+| `/sd-api/*` | Stable Diffusion WebUI proxy | GET/POST |
+| `/lora-training/*` | LoRA trainer sidecar proxy | GET/POST |
 | `/atlas-cloud-api/*` | Atlas Cloud API proxy | POST |
 | `/midapi/*` | MidAPI proxy | POST |
 | `/elevenlabs/*` | ElevenLabs API proxy | POST |
-| `/generated-stories/*` | Static asset serving | GET |
+| `/v1/messages` | Anthropic messages proxy | POST |
 
 ---
 
@@ -677,28 +869,43 @@ The proxy is organized into modular route handlers:
 
 ### Pipeline Overview
 
-The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The pipeline is orchestrated by `FullStoryPipeline.ts` and executed in worker processes.
+The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creates complete interactive stories from high-level inputs. The active pipeline is `FullStoryPipeline.ts`, executed in worker processes through `proxy/workerLifecycle.js`. `EpisodePipeline.ts` and `ParallelStoryPipeline` have been removed.
 
 ### Agent Hierarchy
 
 ```
 FullStoryPipeline (orchestrator)
-  ├── SourceMaterialAnalyzer (optional: analyze source documents)
-  ├── SeasonPlannerAgent (optional: plan multi-episode arcs)
+  ├── SourceMaterialAnalyzer (optional: analyze source documents; emits anchors + seven-point + episode breakdown)
+  ├── SeasonPlannerAgent (optional: plan multi-episode arcs along the 3-act / 7-point spine)
+  ├── StyleArchitect (optional: expand free-form art style into an ArtStyleProfile)
   ├── WorldBuilder (create world bible and locations)
   ├── CharacterDesigner (create NPCs with rich profiles)
   ├── StoryArchitect (design episode structure and scene blueprints)
-  ├── SceneWriter (write prose content for individual scenes)
+  ├── ThreadPlanner (author the NarrativeThread ledger for setup/payoff tracking)
+  ├── TwistArchitect (schedule per-episode reversal/revelation with foreshadow)
+  ├── CharacterArcTracker (per-episode identity/relationship milestone targets)
+  ├── SceneWriter (write prose content for individual scenes — absorbs the old BeatWriter/DialogueSpecialist/ScriptCompiler/ResolutionDesigner roles)
   ├── ChoiceAuthor (create player choices with consequences)
   ├── EncounterArchitect (design complex multi-phase encounters)
   ├── BranchManager (handle story branching and reconvergence)
+  ├── SceneCritic (optional subtext/reversals rewrite pass; gated by `config.sceneCritic.enabled`)
   ├── ImageAgentTeam (coordinate all visual content generation)
   │   ├── CharacterReferenceSheetAgent
   │   ├── StoryboardAgent
   │   ├── VisualIllustratorAgent
-  │   └── EncounterImageAgent
-  ├── VideoDirectorAgent (generate video content)
-  └── QARunner (validate and refine the complete story)
+  │   ├── EncounterImageAgent
+  │   ├── VideoDirectorAgent
+  │   ├── LoraTrainingAgent (SD-only, gated by providerCapabilities.supportsLoraTraining)
+  │   └── VisualQualityJudge (+ visualChecks/CompositionCheck, …)
+  ├── QAAgents (LLM QA: continuity, voice, stakes, tone, pacing, sensitivity)
+  ├── storyAssetWalker (Tier 1 QA: HTTP-verify every image URL)
+  ├── playwrightQARunner (Tier 2 QA: multi-path browser playthrough)
+  └── qaRemediation (auto-fix broken images and re-save the story)
+
+Consolidations in the April 2026 rewrite:
+
+- **Removed agents** (consolidated into `SceneWriter` or superseded by the new structural agents): `BeatWriter`, `DialogueSpecialist`, `ScriptCompiler`, `ResolutionDesigner`, `VariableTracker`, `PlaytestSimulator`, `BlueprintGrowthCritic`, `GrowthNarrativeCritic`, `SeasonArchitect`. `SeasonPlannerAgent` is the authoritative season planner.
+- **Removed image-team agents**: `AssetAuditorAgent`, `DramaExtractionAgent`, and `VisualNarrativeValidator` were replaced by `VisualQualityJudge` and the modular `visualChecks/` (e.g. `CompositionCheck`).
 ```
 
 ### Agent Communication
@@ -726,25 +933,34 @@ The pipeline uses a sophisticated memory management system:
 
 ```mermaid
 graph TD
-    A[Story Request] --> B[World Building]
+    A[Story Request] --> SA[Source Material Analysis]
+    SA --> SP[Season Planning]
+    SP --> B[World Building]
     B --> C[Character Design]
     C --> D[Story Architecture]
-    D --> E[Scene Writing]
+    D --> TP[Thread Planner + Twist Architect + Character Arc Tracker]
+    TP --> E[Scene Writing]
     E --> F[Choice Authoring]
     F --> G[Encounter Design]
-    G --> H[Image Generation]
+    G --> SC[Scene Critic rewrite pass optional]
+    SC --> H[Image Generation]
     H --> I[Audio Generation]
-    I --> J[QA Validation]
-    J --> K[Story Compilation]
+    I --> J[LLM QA + Structural/Narrative Validators]
+    J --> K[Assembly + Tier 1 Asset HTTP QA]
+    K --> L[Save Outputs]
+    L --> M[Tier 2 Browser Playthrough QA]
+    M -- issues --> N[QA Remediation + Re-save]
+    N --> M
 ```
 
 ### Parallel Processing
 
 Modern versions of the pipeline support parallel processing:
 
-- **Scene-level parallelization:** Multiple scenes within an episode can be written simultaneously
-- **Image generation batching:** Images for an entire episode are generated in parallel batches
-- **Validation pipelining:** QA validation runs concurrently with content generation
+- **Episode parallelism:** Available only when `episodeParallelismEnabled === true` and `episodeDependencyMode === 'independent'`; sequential remains the dependency-safe default.
+- **Scene/image worker queues:** Scene-related image work and audio/video work use `LocalWorkerQueue` plus provider throttles, not a second orchestration pipeline.
+- **LLM concurrency guardrails:** `BaseAgent` enforces global and per-provider in-flight limits with jittered retry/backoff.
+- **Provider throttling:** `providerThrottle.ts` and image adapters enforce provider-specific RPM/concurrency limits.
 
 ### Checkpoint System
 
@@ -797,39 +1013,73 @@ The worker system includes robust error recovery:
 
 ### Multi-Tier Validation
 
-The validation system operates at multiple levels:
+The validation system operates at multiple levels and — for the final playthrough QA — even launches a real browser to exercise the generated story:
 
-1. **Structural validation:** Ensures the generated story conforms to the canonical data model
-2. **Content validation:** Checks for narrative coherence, choice quality, character consistency
-3. **Best practices validation:** Enforces genre conventions and interactive fiction best practices
-4. **Incremental validation:** Continuous validation during generation rather than just at the end
+1. **Structural validation:** Ensures the generated story conforms to the canonical data model.
+2. **Content validation:** Checks narrative coherence, choice quality, character consistency.
+3. **Best practices validation:** Enforces genre conventions and interactive fiction best practices.
+4. **Incremental (per-scene) validation:** Runs during generation (see `IncrementalValidators.ts` — voice, stakes, continuity, sensitivity).
+5. **Tier 1 (asset HTTP) QA:** After assembly, every image URL in the story is HTTP-checked concurrently before the pipeline claims success.
+6. **Tier 2 (browser playthrough) QA:** Playwright drives the actual reader UI across every choice path and flags broken images, placeholders, console errors, and network failures — then auto-remediates and retests.
 
 ### Validator Types
 
 | Validator | Purpose | Phase |
 |---|---|---|
-| StructuralValidator | Data model conformance | Post-generation |
-| ChoiceDensityValidator | Appropriate number of choices per beat | Ongoing |
-| ConsequenceBudgetValidator | Balanced consequence distribution | Ongoing |
-| CallbackOpportunitiesValidator | Narrative coherence across episodes | Post-generation |
-| CliffhangerValidator | Episode ending quality | Episode completion |
-| ChoiceDistributionValidator | Choice type variety | Scene completion |
+| `StructuralValidator` | Data model conformance | Post-generation |
+| `ChoiceDensityValidator` | Appropriate number of choices per beat | Ongoing |
+| `ConsequenceBudgetValidator` | Balanced consequence distribution | Ongoing |
+| `CallbackOpportunitiesValidator` | Advisory callback opportunity/reminder-plan density | Post-generation |
+| `CallbackCoverageValidator` | CallbackLedger hygiene, due windows, stale hooks, exact payoff events when available | Post-generation |
+| `ResidueObligationValidator` | Planned choice-residue obligations; requires player-facing payoff evidence | Episode/final contract |
+| `CliffhangerValidator` | Episode ending quality | Episode completion |
+| `ChoiceDistributionValidator` | Choice type variety | Scene completion |
+| `IncrementalValidators` | Voice / stakes / continuity / sensitivity / encounter structure | Per scene |
+| `PixarPrinciplesValidator` | Stakes triangle, surprise (setup/twist/satisfaction), and story-spine checks | Season + encounter |
+| `SetupPayoffValidator` | Every NarrativeThread plant has a payoff beat (Chekhov's-gun / deus-ex-machina), distinct from choice residue | Post-generation |
+| `TwistQualityValidator` | Episode twist presence + foreshadow-precedes-reveal scheduling | Post-generation |
+| `ArcDeltaValidator` | Start-vs-end identity/relationship deltas match CharacterArcTracker targets | Post-generation |
+| `DivergenceValidator` | Runs a lightweight path simulator; flags cosmetic branching and no-op decision points | Episode-level |
+| `PhaseValidator` | Structural validation of the CharacterBible (and other per-phase artifacts) | Per phase |
+| `SeasonValidator` | Full-season structural pass (episode breakdown, unlock conditions, anchors) | Post season plan |
+| `SevenPointCoverageValidator` | Deterministic gate on 3-act / 7-point beat coverage, anchor integrity, difficulty-tier alignment | Season plan |
+| `storyAssetWalker.walkStoryAssets()` | HTTP `HEAD`/`GET` every image slot in the story | Post-assembly (Tier 1) |
+| `playwrightQARunner.runPlaywrightQAMultiPath()` | Multi-path browser playthrough coverage | Post-save (Tier 2) |
+| `qaRemediation.remediateImageIssues()` | Re-generate broken images and patch story JSON | Between Tier-2 retries |
+
+### Two-Tier Final QA
+
+After the pipeline assembles the runtime story, it writes `story.json` as the primary versioned package and `manifest.json` as the catalog contract. Two deterministic QA passes then run against the real artifacts:
+
+**Tier 1 — Asset HTTP verification**
+- `walkStoryAssets()` recursively visits every image slot (story/episode/scene covers, beat images and panels, encounter phase/beat/outcome/situation images, storylet beats, NPC portraits) and issues a `HEAD` request (falling back to ranged `GET`).
+- The report is logged as `formatAssetWalkReport(...)`. If `validation.assetHttpCheckFailFast` is enabled, missing/broken/unreachable images raise a `PipelineError` of kind `completeness_gate`.
+
+**Tier 2 — Browser playthrough**
+- `storyPathAnalyzer.computeCoveragePlan()` analyses the scene DAG and produces the minimum set of choice paths that visit every scene and choice at least once.
+- `runPlaywrightQAMultiPath()` spawns the Playwright test (`test/e2e/storyPlaythrough.spec.ts`) once per path (up to `maxParallel`, default 3), passing the choice indices via `E2E_CHOICE_PATH`. Each run records broken images, placeholder frames, console errors, network failures, and coverage.
+- If any issue is fixable, `qaRemediation.remediateImageIssues()` looks up the original image prompt, re-calls the image service, patches the in-memory story, and `resaveFinalStory()` re-saves the story package/legacy mirror. The pipeline then re-runs Tier 2 up to `validation.playwrightQAMaxRetries` times.
+- Tier 2 gracefully skips itself if the proxy/app is not reachable, so CLI-only generations never fail because of a missing UI.
 
 ### Validation Configuration
 
-Validation behavior is configurable through the validation config system:
+Validation behaviour is configured via `ValidationConfig` (`src/types/validation.ts`):
 
 ```typescript
 interface ValidationConfig {
   enabled: boolean;
-  strictMode: boolean;
-  autoFix: boolean;
-  thresholds: {
-    choiceMin: number;
-    choiceMax: number;
-    consequenceBalance: number;
-    narrativeCoherence: number;
-  };
+  mode: 'strict' | 'advisory' | 'disabled';
+  /** Tier 1 — HTTP-check every image URL after assembly. Default: true */
+  assetHttpCheck?: boolean;
+  /** Treat Tier 1 failures as a hard error. Default: false */
+  assetHttpCheckFailFast?: boolean;
+  /** Tier 2 — run Playwright playthrough QA. Default: true (auto-skips if proxy/app offline) */
+  playwrightQA?: boolean;
+  /** Max Tier-2 remediation+retest cycles. Default: 1 */
+  playwrightQAMaxRetries?: number;
+  /** Encounter tiers to exercise during Tier-2 retries. Default: ['success','failure'] */
+  playwrightQAEncounterTiers?: ('success' | 'complicated' | 'failure')[];
+  rules: { /* stakesTriangle, fiveFactor, choiceDensity, consequenceBudget, npcDepth */ };
 }
 ```
 
@@ -844,17 +1094,23 @@ The image generation system (`src/ai-agents/services/imageGenerationService.ts`)
 | Provider | Use Case | Quality | Speed | Cost |
 |---|---|---|---|---|
 | Gemini | Default, general purpose | Good | Fast | Low |
-| Atlas Cloud | High quality illustrations | Excellent | Medium | Medium |
+| Atlas Cloud | High-quality illustrations | Excellent | Medium | Medium |
 | MidAPI (Midjourney) | Premium artistic content | Exceptional | Slow | High |
+| Stable Diffusion (A1111/Forge) | Self-hosted; required for auto-train-LoRA, character consistency | Variable (depends on checkpoint/LoRA) | Depends on hardware | Free (self-hosted) |
+
+Provider selection is driven by `EXPO_PUBLIC_IMAGE_PROVIDER` and is gated at runtime by the capability matrix in `src/ai-agents/images/providerCapabilities.ts` (which providers support LoRA training, reference images, video, etc.). Concurrency and RPM are enforced per provider by `src/ai-agents/services/providerThrottle.ts`.
 
 ### Image Agent Team
 
-The Image Agent Team coordinates visual content generation:
+The Image Agent Team (`src/ai-agents/agents/image-team/ImageAgentTeam.ts`) coordinates visual content generation:
 
-1. **CharacterReferenceSheetAgent:** Creates consistent character designs and expression sheets
-2. **StoryboardAgent:** Plans visual sequences for key story moments
-3. **VisualIllustratorAgent:** Generates individual scene and beat images
-4. **EncounterImageAgent:** Creates dynamic images for encounters
+1. **CharacterReferenceSheetAgent:** Creates consistent character designs and expression sheets.
+2. **StoryboardAgent:** Plans visual sequences for key story moments.
+3. **VisualIllustratorAgent:** Generates individual scene and beat images.
+4. **EncounterImageAgent:** Creates dynamic images for encounter phases.
+5. **VideoDirectorAgent:** Plans and emits short video clips for cinematic beats (when video generation is enabled).
+6. **LoraTrainingAgent:** When the configured provider is Stable Diffusion and `LORA_AUTO_TRAIN` is enabled, assembles a caption-aware dataset from reference sheets + style-bible anchors, dispatches a training job via a `LoraTrainerAdapter` (only `kohya` is implemented), caches the resulting artifact in `generated-stories/<storyId>/loras/registry.json`, and merges it into subsequent SD requests.
+7. **VisualQualityJudge (+ visualChecks/):** Multi-lens visual QA — composition, lighting, continuity — replacing the older `VisualNarrativeValidator` / `DramaExtractionAgent` pair. Individual checks live in `image-team/visualChecks/` (e.g. `CompositionCheck.ts`).
 
 ### Visual Consistency System
 
@@ -862,6 +1118,79 @@ The Image Agent Team coordinates visual content generation:
 - **Style guides:** Genre-appropriate visual styles are defined and consistently applied
 - **Lighting and color scripts:** Mood and atmosphere are maintained through consistent lighting/color
 - **Composition validation:** Images are validated for narrative clarity and visual coherence
+
+### ArtStyleProfile + Style Setup (pre-pipeline UI)
+
+- **`ArtStyleProfile`** (`src/ai-agents/images/artStyleProfile.ts`) is the
+  canonical structured representation of an art direction. It carries the
+  rendering technique, color philosophy, lighting approach, line weight,
+  composition style, mood range, positive/inappropriate vocabulary, and a
+  style-family tag (known preset vs. `unknown` for freeform styles).
+- Unknown styles are routed through `buildVerbatimProfile`, which echoes
+  the user's own words back into each DNA field so the pipeline never
+  injects cinematic vocabulary that contradicts the requested style.
+- **`StyleArchitect`** (`src/ai-agents/agents/StyleArchitect.ts`) is an
+  LLM agent that expands any raw art-style string into a full
+  `ArtStyleProfile`. A small in-process cache keyed on the raw string +
+  genre hint makes repeated expansions free for the rest of the session.
+- **Style-bible anchor prompts** live in
+  `src/ai-agents/images/anchorPrompts.ts` so the same builders drive the
+  pipeline anchors and the UI concept previews.
+- **Inline Style Setup section** on the `analysis_complete` screen
+  (`src/screens/generator/StyleSetupSection.tsx`, state in
+  `useStyleSetup`) lets the operator expand the style, edit DNA fields,
+  preview the three style-bible anchors (character portrait, arc color
+  strip, environment vignette), approve the ones they want to lock in,
+  and optionally skip the preview via a *Use defaults* toggle.
+- Approved anchors are persisted via the proxy endpoint
+  `POST /style-anchor/save`, which writes the base64 blob to
+  `generated-stories/<storyId>/style-bible/<role>.<ext>`. The resolved
+  file path is threaded into the pipeline config via
+  `PipelineConfigExtras.preapprovedStyleAnchors` so
+  `FullStoryPipeline.generateEpisodeStyleBible` hydrates the anchor from
+  disk instead of re-generating it.
+- The approved `ArtStyleProfile` and anchor file paths are persisted onto
+  the generated `Story` object (`Story.artStyleProfile`,
+  `Story.styleAnchors`) so replay and analytics always see the exact
+  style contract used during generation.
+
+### LoRA Auto-Training (Stable Diffusion only)
+
+An optional subsystem auto-trains character and episode-style LoRAs and
+merges them into `StableDiffusionSettings` so the existing
+`buildSDPrompt` path emits `<lora:...>` tags unchanged. The entire
+subsystem is gated by `ProviderCapabilities.supportsLoraTraining` and
+is a no-op for every provider except `stable-diffusion`.
+
+Core components:
+
+- `LoraTrainingAgent` (`src/ai-agents/agents/image-team/LoraTrainingAgent.ts`)
+  — owns eligibility, dataset assembly, cache lookups, and dispatch.
+- `datasetBuilder` (`src/ai-agents/images/datasetBuilder.ts`) — pure
+  helpers that turn character reference sheets and style-bible anchors
+  into captioned `LoraTrainingImage[]` sets.
+- `LoraRegistry` (`src/ai-agents/images/loraRegistry.ts`) —
+  fingerprint-keyed cache at `generated-stories/<storyId>/loras/` with
+  a `mergeIntoStableDiffusionSettings` seam.
+- `LoraTrainerAdapter` (`src/ai-agents/services/lora-training/`) —
+  backend abstraction. `KohyaAdapter` talks to a `kohya_ss` sidecar via
+  the `/lora-training/*` proxy mount.
+- `proxy/loraTrainingRoutes.js` — forwards training jobs, status
+  polling, cancellation, artifact downloads, and installation to the
+  configured backend.
+
+The pipeline hook is `FullStoryPipeline.runLoraTrainingIfEligible`,
+invoked once per episode after character reference sheets and the
+style bible exist. It first runs `invalidateStaleLoras` to prune
+artifacts whose fingerprint no longer matches (identity or style
+drift), then calls `trainAll` with the current candidates. Cache hits
+resolve synchronously; cache misses dispatch to the adapter. See
+`docs/LORA_TRAINING.md` for the full sidecar contract and
+`docs/IMAGE_PIPELINE_RUNTIME.md` for the runtime flow.
+
+Configuration lives in `LoraTrainingSettings` on
+`PipelineConfig.imageGen.loraTraining` and is surfaced to the Generator
+UI through `useGeneratorSettings.handleLoraTrainingSettingsChange`.
 
 ### Image Quality Feedback
 
@@ -1049,20 +1378,30 @@ Unresolved templates are handled gracefully:
 
 | File Type | Location | Purpose |
 |---|---|---|
-| Story JSON | `generated-stories/` | Complete story data |
+| Story package | `generated-stories/{run}/story.json` | Primary versioned story package |
+| Story manifest | `generated-stories/{run}/manifest.json` | Primary-file pointer and checksum |
 | Images | `generated-stories/{story}/images/` | Generated artwork |
 | Audio | `generated-stories/{story}/audio/` | Narration files |
+| Content-addressed assets | `generated-stories/{story}/assets/` | AssetRef-backed media |
+| Style anchors | `generated-stories/{story}/style-bible/` | User-approved/generated style anchors |
+| LoRA registry/artifacts | `generated-stories/{story}/loras/` | Stable Diffusion LoRA cache |
 | Reference images | `.ref-images/` | Character reference sheets |
 | Job state | `.generation-jobs.json` | Persistent job tracking |
 | Worker state | `.worker-jobs.json` | Worker process state |
 | Checkpoints | `.worker-checkpoints.json` | Recovery checkpoints |
+| Dead letters | `.worker-dead-letter.json` | Failed job inspection |
+| Image feedback | `.image-feedback.json` | User/operator feedback and remediation metadata |
+
+The proxy can also serve generated-story assets from GCS when
+`STORY_STORAGE_MODE=gcs`. Reader deployments can consume public packages from a
+Blob manifest through `EXPO_PUBLIC_BLOB_MANIFEST_URL`.
 
 ### Cross-Platform Considerations
 
 The same persistence code works across platforms through:
 
 1. **Abstraction layers:** AsyncStorage provides consistent API across platforms
-2. **URL rewriting:** File paths are dynamically rewritten for web deployment
+2. **URL rewriting:** `assetResolver` rewrites legacy paths and `AssetRef` objects for web/native/proxy runtimes
 3. **Fallback strategies:** Graceful degradation when storage is unavailable
 
 ---
@@ -1175,27 +1514,39 @@ API keys are managed through environment variables and secure storage:
 ```bash
 # .env file
 ANTHROPIC_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
 ELEVENLABS_API_KEY=your_key_here
 ATLAS_CLOUD_API_KEY=your_key_here
 MIDAPI_TOKEN=your_key_here
+STABLE_DIFFUSION_BASE_URL=http://localhost:7860
+LORA_TRAINER_BASE_URL=http://localhost:7861
 ```
+
+The current local generator path still supports several `EXPO_PUBLIC_*` key
+fallbacks for Expo compatibility. Do not set provider secrets in the public
+Reader deployment. Reader-safe public variables should be limited to public
+content manifests, analytics configuration, public app links, and logging
+flags.
 
 ### Proxy Security
 
 The proxy server implements several security measures:
 
-1. **Local-only binding:** Only accepts connections from localhost by default
-2. **CORS configuration:** Strict CORS policy for production deployments
-3. **Request validation:** All proxied requests are validated before forwarding
-4. **Rate limiting:** Built-in rate limiting to prevent API abuse
+1. **Session isolation:** Auth/session state is owned by the proxy and signed with `SESSION_SECRET`.
+2. **Provider isolation:** External provider keys are read by the proxy/worker path, not the public Reader bundle.
+3. **CORS configuration:** Local dev allows the Expo app to reach the proxy; production should run behind an intentional origin/proxy setup.
+4. **Reader boundary check:** `npm run check:reader-boundary` blocks generator-only imports and secret strings from the Reader target.
+5. **Provider throttling:** LLM/image concurrency and RPM limits are enforced in the pipeline/provider layers.
 
 ### Client Security
 
 Client-side security considerations:
 
-1. **No API key exposure:** API keys never leave the server environment
+1. **Reader secret boundary:** The public Reader target must not include provider keys.
 2. **Input sanitization:** All user input is sanitized before processing
 3. **Content validation:** Generated content is validated before display
+4. **Package validation:** `decodeStory` validates modern story packages before playback where possible
 
 ---
 
@@ -1209,7 +1560,8 @@ npm run dev
 
 # Individual services
 npm run proxy      # Start proxy server only
-npm run web        # Start Expo web only
+npm run reader:web # Start Reader web on port 8081
+npm run generator:web # Start Generator web on port 8082
 npm run android    # Start Android development
 npm run ios        # Start iOS development
 ```
@@ -1218,18 +1570,38 @@ npm run ios        # Start iOS development
 
 | Script | Purpose | Environment |
 |---|---|---|
-| `npm run dev` | Full development environment | Development |
+| `npm run dev` | Full development environment (proxy + web) | Development |
 | `npm run proxy` | Proxy server only | Development |
-| `npm run web` | Web client only | Development |
-| `npm run typecheck` | Type checking | All |
-| `npm run test` | Run test suite | All |
-| `npm run validate` | Full validation | CI/CD |
+| `npm run web` / `npm run reader:web` | Reader web target | Development |
+| `npm run generator:web` | Generator web target | Development |
+| `npm run reader:export` | Public Reader web export | Deployment |
+| `npm run reader:export:with-content` | Reader export plus reader-safe content copy | Deployment |
+| `npm run generator:export:internal` | Internal Generator export | Internal |
+| `npm run reader:typecheck` | Reader target typecheck | All |
+| `npm run generator:typecheck` | Generator target typecheck | All |
+| `npm run check:reader-boundary` | Reader/generator import and secret boundary check | CI/CD |
+| `npm run validate:reader` | Reader typecheck, boundary check, focused reader tests | CI/CD |
+| `npm run typecheck` | Type checking across app, test, contracts, and worker configs | All |
+| `npm run lint` | ESLint over source TypeScript/TSX | All |
+| `npm test` | Run Vitest test suite | All |
+| `npm run validate` | `typecheck` + `lint` + `test` | CI/CD |
+| `npm run test:e2e` | Run Playwright E2E tests (Tier 2 QA harness) | CI/CD |
+| `npm run test:e2e:story` | Run Playwright tests filtered by `--grep` | Ad-hoc |
+| `npm run validate:assets` | Standalone Tier 1 asset HTTP verification | Maintenance |
+| `npm run generate` | CLI story generation | Generation |
+| `npm run generate:heist`, `generate:fantasy` | Genre-specific CLI generation | Generation |
+| `npm run generate:doc`, `generate:template` | Document-driven generation | Generation |
 | `npm run clean:runtime` | Clean generated artifacts | Maintenance |
+| `npm run proxy:health` | Health-check the running proxy server | CI/CD |
+| `npm run db:proxy`, `db:migrate`, `db:verify` | Optional auth database setup/verification | Auth |
+| `npm run upload:gcs:latest`, `upload:gcs:all` | Upload generated stories to GCS | Deployment |
 
 ### TypeScript Configuration
 
 Multiple TypeScript configurations for different contexts:
 
+- **tsconfig.reader.json:** Reader target subset and public boundary.
+- **tsconfig.generator.json:** Generator target subset.
 - **tsconfig.app.json:** Client application code
 - **tsconfig.test.json:** Test files
 - **tsconfig.contracts.json:** Type contract validation

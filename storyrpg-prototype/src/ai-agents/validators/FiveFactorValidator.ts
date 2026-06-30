@@ -14,16 +14,18 @@
 import { AgentConfig } from '../config';
 import { FiveFactorImpact } from '../../types';
 import { isWebRuntime } from '../../utils/runtimeEnv';
+import { PROXY_CONFIG } from '../../config/endpoints';
 import {
   ValidationIssue,
   FiveFactorValidationResult,
   FiveFactorInput,
   ValidationConfig,
 } from '../../types/validation';
+import { FIVE_FACTOR_TEST } from '../prompts/storytellingPrinciples';
 
 // API URL handling for web proxy
 const ANTHROPIC_API_URL = isWebRuntime()
-  ? 'http://localhost:3001/v1/messages'
+  ? `${PROXY_CONFIG.getProxyUrl()}/v1/messages`
   : 'https://api.anthropic.com/v1/messages';
 
 interface FiveFactorAnalysisResponse {
@@ -143,8 +145,14 @@ export class FiveFactorValidator {
       };
     }
 
-    // First do heuristic analysis based on consequences
+    // First do heuristic analysis based on consequences, then UNION in the factors the
+    // author explicitly declared (E3 — the heuristic underreads, e.g. an INFORMATION or
+    // IDENTITY beat with no mechanical consequence). Declared factors are authoritative
+    // additions, not replacements.
     let impact = this.analyzeConsequencesHeuristic(input.consequences);
+    for (const f of input.impactFactors ?? []) {
+      if (f in impact) impact[f as keyof FiveFactorImpact] = true;
+    }
     let factorCount = this.countFactors(impact);
 
     // If heuristic finds factors, we're likely good
@@ -169,8 +177,11 @@ export class FiveFactorValidator {
       };
     }
 
-    // If no factors found by heuristic, use LLM for deeper analysis
-    if (this.agentConfig.apiKey) {
+    // If no factors found by heuristic, use LLM for deeper analysis. This path is
+    // Anthropic-only (hardcoded endpoint), so skip it for any other configured
+    // provider (gemini/openai) — otherwise it POSTs the wrong provider's key to
+    // Anthropic (401) and falls back to this same heuristic result anyway.
+    if (this.agentConfig.apiKey && this.agentConfig.provider === 'anthropic') {
       try {
         const analysis = await this.analyzeFiveFactorsWithLLM(input);
 
@@ -275,34 +286,7 @@ export class FiveFactorValidator {
   private buildSystemPrompt(): string {
     return `You are an expert interactive fiction analyst evaluating choice impact across five factors.
 
-## Five-Factor Test
-
-Every meaningful choice should affect at least one of these factors:
-
-1. **OUTCOME**: Does this choice change WHAT happens in the story?
-   - Different scenes, events, or endings
-   - Changed character fates
-   - Different story beats
-
-2. **PROCESS**: Does this choice change HOW things happen?
-   - Different approaches to problems
-   - Changed difficulty or method
-   - Alternative paths to same goal
-
-3. **INFORMATION**: Does this choice change what the player LEARNS?
-   - Revealed secrets or lore
-   - Character backstory
-   - World information
-
-4. **RELATIONSHIP**: Does this choice change character BONDS?
-   - Trust, affection, respect, fear with NPCs
-   - Alliance formations
-   - Betrayals or loyalty
-
-5. **IDENTITY**: Does this choice change WHO the protagonist is becoming?
-   - Character development
-   - Moral alignment
-   - Personality expression
+${FIVE_FACTOR_TEST}
 
 Analyze each factor and determine if the choice meaningfully affects it.
 Always respond with valid JSON.`;

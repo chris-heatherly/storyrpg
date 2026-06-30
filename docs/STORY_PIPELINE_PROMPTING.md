@@ -1,6 +1,6 @@
 # Story Pipeline Prompting
 
-**Last Updated:** April 2026
+**Last Updated:** May 2026
 
 This document captures the live prompting logic currently wired into the StoryRPG narrative pipeline.
 
@@ -16,6 +16,11 @@ It is based on the active code paths in:
 
 This covers the stages that actually send prompts to LLMs for story analysis, planning, generation, and LLM-backed validation.
 
+Story and visual quality rules that are shared across prompts are summarized in
+`docs/STORY_QUALITY_CONTRACT.md`. Prompt call sites should import compact
+fragments from `src/ai-agents/prompts/storyQualityContract.ts` instead of
+copying the full rule stack into every agent prompt.
+
 It does not directly document:
 
 - image-generation prompts (see `docs/IMAGE_PIPELINE_RUNTIME.md`)
@@ -30,24 +35,55 @@ and visual QA/regeneration live in `docs/IMAGE_PIPELINE_RUNTIME.md`.
 
 ### Analysis / planning path
 
-1. `SourceMaterialAnalyzer`
-2. `SeasonPlannerAgent`
+1. `SourceMaterialAnalyzer` for source-document/IP analysis.
+2. `SeasonPlannerAgent` for season plans and 3-act / 7-point distribution.
+3. `SevenPointCoverageValidator` as deterministic repair feedback for season plans.
 
 ### Story generation path
 
 1. `WorldBuilder`
-2. `CharacterDesigner`
+2. `CharacterDesigner` — followed by `PhaseValidator.validateCharacterBible` (Phase 2.5); tier requirements shared with `NPCDepthValidator` via `src/ai-agents/config/tierRequirements.ts`.
 3. `StoryArchitect`
 4. `BranchManager`
-5. `SceneWriter` for non-encounter scenes
-6. `ChoiceAuthor` for scene choice points
-7. `EncounterArchitect` for encounter scenes
-8. LLM-backed validation / QA:
-   - `StakesTriangleValidator`
-   - `FiveFactorValidator`
-   - `ContinuityChecker`
-   - `VoiceValidator`
-   - `StakesAnalyzer`
+5. `ThreadPlanner` (Phase 5) — authors the per-episode narrative thread ledger; active threads are handed to `SceneWriter.input.activeThreads` so beats can be marked with `plantsThreadId` / `paysOffThreadId`.
+6. `TwistArchitect` (Phase 6) — schedules one reversal/revelation per episode; emits `twistDirectives` consumed by `SceneWriter` so the reveal beat is marked `plotPointType: 'twist'|'revelation'` and a prior scene plants `plotPointType: 'setup'`.
+7. `CharacterArcTracker` (Phase 7) — produces `CharacterArcTargets` (identity axis deltas, relationship trajectories, arc milestones). Fed into `ChoiceAuthor.input.arcTargets` so consequence design follows the planned arc.
+8. `SceneWriter` for non-encounter scenes (consumes `activeThreads`, `twistDirectives`, `branchContext`; when voice score falls below `voiceRegenerationThreshold` a scoped rewrite runs from the Karpathy repair loop).
+9. `ChoiceAuthor` for scene choice points (receives `growthTemplates` from `GrowthConsequenceBuilder` and `arcTargets` from `CharacterArcTracker`).
+10. `EncounterArchitect` for encounter scenes (now emits `pixarSurprise: { setup, twist, satisfaction }` as required JSON; validated by `PixarPrinciplesValidator`).
+11. LLM-backed validation / QA (all QA agents now set `includeSystemPrompt = true` to share the `CORE_STORYTELLING_PROMPT`, which includes the Branch-and-Bottleneck framework):
+    - `StakesTriangleValidator` (reuses `STAKES_TRIANGLE` principle constant)
+    - `FiveFactorValidator` (reuses `FIVE_FACTOR_TEST` principle constant)
+    - `ContinuityChecker`, `VoiceValidator`, `StakesAnalyzer`
+    - `PixarPrinciplesValidator`, `CliffhangerValidator`, `ChoiceDistributionValidator`
+    - `SetupPayoffValidator`, `TwistQualityValidator`, `ArcDeltaValidator`, `DivergenceValidator` (path-simulator-backed)
+12. Optional rewrite pass: `SceneCritic` — runs only when `config.sceneCritic.enabled === true`; capped by `maxScenesPerEpisode` and (optionally) `voiceScoreThreshold`. Preserves beat ids, speakers, plot-point markers; rewrites only prose text / variants / speakerMood.
+
+`EpisodePipeline.ts` is not part of the active prompt path; all active calls flow
+through `FullStoryPipeline.ts`.
+
+## Fiction-First Skill Surface Prompting
+
+The active prompts should make hidden skills matter through story-facing
+surfaces, not visible math.
+
+- `SeasonPlannerAgent` plans `focusSkills`, development/preparation scenes,
+  mentorship, and expected prepared advantages for later payoffs.
+- `StoryArchitect` marks where skills are tested, where passive insights can
+  reveal usable fiction, which prior state becomes leverage, and what branch
+  residue survives reconvergence.
+- `SceneWriter` may author beat-level `skillInsights` with thresholds 45
+  (easy), 55 (meaningful), 65 (strong build), or 75 (rare expert).
+- `ChoiceAuthor` authors `statCheck.skillWeights`, difficulty bands, prepared
+  `statCheck.modifiers`, failure residue, and outcome texture.
+- `EncounterArchitect` keeps existing `statBonus` support as the encounter-side
+  prepared advantage adapter.
+
+Difficulty bands are easy `35-45`, moderate `45-60`, hard `60-70`, and
+extreme `71-80`. Checks above `60` need at least one support; checks above
+`70` need at least two supports. Banned player-facing terms include skill
+check, threshold, modifier, bonus, success chance, failure chance, percentage,
+level requirement, and build.
 
 ## Prompt Assembly Logic
 
@@ -347,7 +383,7 @@ If the user provides the name of a book, movie, or other story IP (e.g., "The Gr
 ## Interactive Fiction Constraints
 
 Each episode should:
-- Have 5-8 scenes (bottleneck + branch zones)
+- Have 3-6 scenes (bottleneck + branch zones)
 - Include 2-4 meaningful player choices
 - Cover a complete narrative arc (setup → conflict → resolution)
 - Take approximately 15-30 minutes to play
@@ -380,6 +416,18 @@ When breaking down source material:
 3. Third Pass: Chunk into episode-sized narrative units
 4. Final Pass: Verify each episode has proper stakes and structure
 ```
+
+### Story Treatment Ingestion
+
+StoryRPG Markdown treatments are a first-class source format. The analyzer detects treatment markers such as `StoryRPG Structure Model`, `3-Act / 7-Point Season Spine`, `Episode Outline`, `Episode turns`, `How the encounter manifests the central conflict`, `Capability, Growth, And Fail-Forward`, and `Episode Endings`.
+
+When a treatment is detected:
+
+- deterministic extraction preserves authored episode count, order, titles, structural roles, episode turns, encounter anchors, central conflict, aftermath/consequence, ending pressure, branches, and endings
+- the LLM fills gaps in characters, locations, anchors, and style guidance, but should not overwrite explicit treatment structure
+- episode turns remain planning guidance expressed through existing fields such as `keyBeats`, `sequenceIntent`, `encounterBuildup`, `choicePoint`, consequences, callbacks, and cliffhanger plans
+- no new runtime `episodeTurns`, `sceneBeats`, or treatment-specific playback schema is introduced
+- analysis metadata records `sourceFormat: "story_treatment"` plus treatment confidence, version, and parsing warnings
 
 ### User prompt 0A: structure extraction
 

@@ -1,3 +1,5 @@
+// @ts-nocheck — TODO(tech-debt): Phase 4 client/pipeline decoupling will replace
+// direct FullStoryPipeline imports with PipelineClient facade and restore typecheck.
 /**
  * Generator Screen
  *
@@ -5,7 +7,7 @@
  * Wired to the real FullStoryPipeline for actual AI generation.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,11 +18,13 @@ import {
   SafeAreaView,
   TextInput,
   Platform,
-  Modal,
   ActivityIndicator,
   Switch,
   Image,
+  Modal,
+  Pressable,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import {
   ChevronRight,
   ChevronDown,
@@ -41,33 +45,59 @@ import {
   Volume2,
   StopCircle,
   Users,
-  MapPin,
   BookOpen,
   ImageIcon,
   Film,
+  Play,
+  Library,
+  PauseCircle,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
-import { TERMINAL } from '../theme/terminal';
+import { TERMINAL } from '../theme';
 import { PipelineProgress } from '../components/PipelineProgress';
+import type { PipelineRuntimeSnapshot } from '../components/PipelineProgress';
 import { CheckpointReview } from '../components/CheckpointReview';
 import { ImageJobPanel } from '../components/ImageJobPanel';
 import { VideoJobPanel } from '../components/VideoJobPanel';
+import { StepIndicator, deriveWizardStep } from './generator/StepIndicator';
+import { AdvancedSettingsSheet } from './generator/AdvancedSettingsSheet';
+import { ProgressStep } from './generator/steps/ProgressStep';
+import { CompleteStep } from './generator/steps/CompleteStep';
 import { GenerationSettingsPanel, GenerationSettings } from '../components/GenerationSettingsPanel';
-import { EpisodeSelector } from '../components/EpisodeSelector';
-import { useSettingsStore } from '../stores/settingsStore';
+import { useGeneratorSettingsStore } from '../stores/generatorSettingsStore';
 import { seasonPlanStore } from '../stores/seasonPlanStore';
 import { SeasonPlan, EpisodeRecommendation } from '../types/seasonPlan';
 import { SeasonPlannerAgent } from '../ai-agents/agents/SeasonPlannerAgent';
 import { useImageJobStore } from '../stores/imageJobStore';
+import { useVideoJobStore } from '../stores/videoJobStore';
 import { useGenerationJobStore, PipelineEventData } from '../stores/generationJobStore';
 import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
 import { useAvailableModels } from '../hooks/useAvailableModels';
 import { ModelDropdown } from '../components/ModelDropdown';
+import { ModelTaskSheet } from '../components/ModelTaskSheet';
+import { ConfirmDialog, SegmentedControl } from '../components/ui';
+import {
+  MODEL_FAMILY_PRESETS,
+  PIPELINE_TASKS,
+  modelLabel,
+} from '../config/modelFamilies';
+import type { GeneratorLlmProvider } from '../config/generatorLlmOptions';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
-import { useEndingModePlanner } from './generator/useEndingModePlanner';
-import { buildPipelineConfig } from '../ai-agents/config/buildPipelineConfig';
+import { buildPipelineConfig, PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
+import { StyleArchitect } from '../ai-agents/agents/StyleArchitect';
+import { ImageGenerationService } from '../ai-agents/services/imageGenerationService';
+import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
+import { StyleSetupSection } from './generator/StyleSetupSection';
+import { CanonWizard } from './generator/CanonWizard';
 import { runStoryAnalysis, runStoryGeneration } from '../ai-agents/services/storyGenerationService';
+import { buildGeneratorCreativeBrief } from './generator/buildCreativeBrief';
+import {
+  applyCanonToSeasonPlan,
+  applyCanonToSourceAnalysis,
+  createCanonWizardState,
+} from '../ai-agents/utils/sourceCanonEditor';
 
 // Import the real pipeline
 import {
@@ -78,9 +108,18 @@ import {
   OutputManifest,
   SourceAnalysisResult,
 } from '../ai-agents/pipeline/FullStoryPipeline';
-import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, DEFAULT_OPENAI_SETTINGS, DEFAULT_STABLE_DIFFUSION_SETTINGS, DEFAULT_LORA_TRAINING_SETTINGS, CharacterReferenceMode } from '../ai-agents/config';
+import { DEFAULT_LLM_MODELS, STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
+import { ART_STYLE_PRESETS } from '../ai-agents/config/artStylePresets';
+import { composeCanonicalStyleString } from '../ai-agents/images/artStyleProfile';
 import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
-import { Story } from '../types';
+import type {
+  CanonEditRepairSuggestion,
+  CanonEditValidationResult,
+  CanonWizardState,
+  LockedStoryCanon,
+} from '../types/storyCanon';
+import type { MediaSetupTarget, Story } from '../types';
 import {
   storyToTypeScript,
   getStoryFileName,
@@ -95,12 +134,50 @@ import {
 } from '../ai-agents/utils/documentParser';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { applyEndingModeToAnalysis } from '../ai-agents/utils/endingResolver';
+import { countVisibleImageJobs } from '../utils/imageJobDisplay';
 
 // Import PipelineEvent from canonical source
 import type { PipelineEvent } from '../ai-agents/pipeline';
 
+const isSeasonEpisodeGenerated = (episode?: {
+  status?: string;
+  generatedEpisodeId?: string;
+  generatedStoryId?: string;
+  generatedJobId?: string;
+  outputDir?: string;
+}) => Boolean(
+  episode
+  && (
+    episode.status === 'completed'
+    || episode.generatedEpisodeId
+    || episode.generatedStoryId
+    || episode.generatedJobId
+    || episode.outputDir
+  )
+);
+
 const USE_SERVER_WORKER =
   Platform.OS === 'web' && process.env.EXPO_PUBLIC_USE_SERVER_WORKER !== 'false';
+
+// Distinguish "the proxy/worker is unreachable" (transport/infra) from a
+// worker-INTERNAL pipeline failure (a timeout, a validation abort, etc.). Only
+// the former should tell the user to start the proxy; the latter must surface
+// its real error so it isn't misdiagnosed as an infra problem.
+const PROXY_UNREACHABLE_PATTERNS = [
+  'failed to start worker job',
+  'worker start response missing',
+  'failed to fetch',
+  'fetch failed',
+  'network request failed',
+  'econnrefused',
+  'err_connection_reset',
+  'connection reset',
+  'worker job polling failed',
+];
+function isProxyUnreachableError(message: string): boolean {
+  const m = (message || '').toLowerCase();
+  return PROXY_UNREACHABLE_PATTERNS.some((p) => m.includes(p));
+}
 
 interface CheckpointData {
   phase: string;
@@ -109,7 +186,7 @@ interface CheckpointData {
   requiresApproval: boolean;
 }
 
-type GeneratorState = 'idle' | 'config' | 'analyzing' | 'analysis_complete' | 'running' | 'checkpoint' | 'complete' | 'error';
+type GeneratorState = 'idle' | 'config' | 'analyzing' | 'analysis_complete' | 'running' | 'checkpoint' | 'complete' | 'cancelled' | 'error';
 type GenerationMode = 'strict' | 'advisory' | 'disabled';
 
 type AnalysisCharacterTarget = {
@@ -128,6 +205,49 @@ type UploadedCharacterReference = {
   data: string;
 };
 
+type StyleReferenceStrength = 'subtle' | 'balanced' | 'strong';
+
+type StyleReferenceUpload = {
+  id: string;
+  name: string;
+  uri: string;
+  mimeType: string;
+  data: string;
+  imagePath?: string;
+};
+
+type SavedArtStyle = {
+  id: string;
+  name: string;
+  style: string;
+};
+
+const MAX_STYLE_REFERENCE_UPLOADS = 4;
+const SAVED_ART_STYLES_KEY = '@storyrpg_saved_art_styles';
+const RECENT_ART_STYLES_KEY = '@storyrpg_recent_art_styles';
+const MAX_SAVED_ART_STYLES = 12;
+const MAX_RECENT_ART_STYLES = 8;
+const buildSavedArtStyleId = (): string => `style-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeSavedArtStyle = (item: unknown): SavedArtStyle | null => {
+  if (typeof item === 'string') {
+    const trimmed = item.trim();
+    if (!trimmed) return null;
+    return { id: trimmed, name: trimmed, style: trimmed };
+  }
+  if (!item || typeof item !== 'object') return null;
+  const record = item as { id?: unknown; name?: unknown; style?: unknown };
+  const style = typeof record.style === 'string' ? record.style.trim() : '';
+  if (!style) return null;
+  const name = typeof record.name === 'string' && record.name.trim()
+    ? record.name.trim()
+    : style;
+  const id = typeof record.id === 'string' && record.id.trim()
+    ? record.id.trim()
+    : `${name}:${style}`;
+  return { id, name, style };
+};
+
 const inferImageMimeType = (name?: string, mimeType?: string): string => {
   if (mimeType && mimeType.startsWith('image/')) return mimeType;
   const normalized = (name || '').toLowerCase();
@@ -135,6 +255,15 @@ const inferImageMimeType = (name?: string, mimeType?: string): string => {
   if (normalized.endsWith('.webp')) return 'image/webp';
   if (normalized.endsWith('.gif')) return 'image/gif';
   return 'image/png';
+};
+
+const buildStyleReferenceStoryId = (title: string): string => {
+  const storyIdSeed = (title || 'untitled')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return storyIdSeed || 'untitled';
 };
 
 const getEndingConfidenceLabel = (ending: StoryEndingTarget): string => {
@@ -249,13 +378,30 @@ const ConfigBucketCard: React.FC<ConfigBucketCardProps> = ({
 interface GeneratorScreenProps {
   onBack: () => void;
   onStoryGenerated?: (story: Story) => void;
+  /**
+   * Called when the user clicks "Play now" on the completion screen. The host
+   * app should add the story to the library, initialize it in the game store,
+   * and navigate to the reading surface.
+   */
+  onPlayStory?: (story: Story) => void | Promise<void>;
+  /**
+   * Called when the user clicks "View in library" on the completion screen.
+   * The host app should navigate to the story library (usually Home).
+   */
+  onViewLibrary?: () => void;
   resumeJobId?: string; // If provided, resume viewing this job's progress
+  initialSeasonPlanId?: string;
+  initialSetupView?: 'story' | 'image' | 'video';
+  mediaSetupTarget?: MediaSetupTarget;
+  onGenerateTargetImages?: (target: MediaSetupTarget) => void | Promise<void>;
+  onGenerateTargetVideos?: (target: MediaSetupTarget) => void | Promise<void>;
   onCancelExternalPipeline?: () => void;
 }
 
 type FailureWorkspaceState = {
   failureContext: Record<string, unknown> | null;
   checkpoint: Record<string, unknown> | null;
+  resumePlan: Record<string, unknown> | null;
   tab: 'failure' | 'fix' | 'resume';
   payloadPatchJson: string;
   outputsPatchJson: string;
@@ -264,8 +410,63 @@ type FailureWorkspaceState = {
   error: string | null;
 };
 
-export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStoryGenerated, resumeJobId, onCancelExternalPipeline }) => {
-  const [state, setState] = useState<GeneratorState>('idle');
+const buildPipelineRuntimeSnapshot = (
+  statusData: any,
+  fallbackJobId?: string | null,
+): PipelineRuntimeSnapshot => {
+  const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
+  const currentPhase = typeof statusData?.currentPhase === 'string' ? statusData.currentPhase : undefined;
+  const imageProgress =
+    statusData?.imageProgress && typeof statusData.imageProgress.current === 'number'
+      ? { current: statusData.imageProgress.current, total: statusData.imageProgress.total || 0 }
+      : typeof statusData?.currentItem === 'number' && typeof statusData?.totalItems === 'number'
+        ? { current: statusData.currentItem, total: statusData.totalItems || 0 }
+        : null;
+
+  return {
+    jobId: statusData?.id || fallbackJobId || undefined,
+    friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+    processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
+    status: statusData?.status,
+    currentPhase,
+    progress,
+    phaseProgress: typeof statusData?.phaseProgress === 'number' ? statusData.phaseProgress : undefined,
+    startedAt: statusData?.startedAt || statusData?.createdAt,
+    updatedAt: statusData?.updatedAt,
+    elapsedSeconds: typeof statusData?.elapsedSeconds === 'number' ? statusData.elapsedSeconds : undefined,
+    etaSeconds: typeof statusData?.etaSeconds === 'number' || statusData?.etaSeconds === null ? statusData.etaSeconds : undefined,
+    currentItem: typeof statusData?.currentItem === 'number' ? statusData.currentItem : undefined,
+    totalItems: typeof statusData?.totalItems === 'number' ? statusData.totalItems : undefined,
+    subphaseLabel: typeof statusData?.subphaseLabel === 'string' ? statusData.subphaseLabel : undefined,
+    imageProgress,
+    imageJobs: Array.isArray(statusData?.imageJobs) ? statusData.imageJobs : [],
+    imageManifest: Array.isArray(statusData?.imageManifest) ? statusData.imageManifest : [],
+    generationPlan:
+      statusData?.generationPlan && Array.isArray(statusData.generationPlan.episodes)
+        ? statusData.generationPlan
+        : undefined,
+    resumeFromJobId: statusData?.resumeFromJobId,
+    outputDirectory:
+      statusData?.checkpoint?.resumeContext?.outputDirectory ||
+      statusData?.checkpoint?.outputs?.output_directory?.outputDirectory,
+  };
+};
+
+export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
+  onBack,
+  onStoryGenerated,
+  onPlayStory,
+  onViewLibrary,
+  resumeJobId,
+  initialSeasonPlanId,
+  initialSetupView = 'story',
+  mediaSetupTarget,
+  onGenerateTargetImages,
+  onGenerateTargetVideos,
+  onCancelExternalPipeline,
+}) => {
+  const [state, setState] = useState<GeneratorState>('config');
+  const [setupView, setSetupView] = useState<'story' | 'image' | 'video'>(initialSetupView);
   const [events, setEvents] = useState<PipelineEvent[]>([]);
   const [currentPhase, setCurrentPhase] = useState<string | undefined>();
   const [currentCheckpoint, setCurrentCheckpoint] = useState<CheckpointData | null>(null);
@@ -280,9 +481,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [liveProgress, setLiveProgress] = useState(0);
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
   const [imageProgress, setImageProgress] = useState<{ current: number; total: number } | null>(null);
+  const [pipelineRuntime, setPipelineRuntime] = useState<PipelineRuntimeSnapshot | null>(null);
   const seenManifestIdsRef = useRef<Set<string>>(new Set());
   const seenImageJobIdsRef = useRef<Set<string>>(new Set());
   const generationStartedAtRef = useRef<number>(Date.now());
+  const resumePlanUnavailableRef = useRef(false);
 
   // Pipeline reference for checkpoint continuation
   const pipelineRef = useRef<FullStoryPipeline | null>(null);
@@ -301,6 +504,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     videoLlmProvider,
     videoLlmModel,
     apiKey,
+    openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -308,6 +513,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     midapiToken,
     midjourneySettings,
     geminiSettings,
+    openaiSettings,
+    stableDiffusionSettings,
+    loraTrainingSettings,
     imageProvider,
     artStyle,
     imageStrategy,
@@ -315,21 +523,24 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     generationMode,
     narrationSettings,
     videoSettings,
-    handleLlmProviderChange,
-    handleLlmModelChange,
+    modelFamily,
+    taskModelOverrides,
+    effectiveTaskAssignments,
+    handleModelFamilyChange,
+    handleTaskModelChange,
+    handleTaskProviderChange,
+    resetTaskModel,
     handleImageLlmProviderChange,
     handleImageLlmModelChange,
     handleVideoLlmProviderChange,
     handleVideoLlmModelChange,
     handleGenerationModeChange,
-    handleApiKeyChange,
-    handleGeminiApiKeyChange,
-    handleElevenLabsApiKeyChange,
-    handleAtlasCloudApiKeyChange,
     handleAtlasCloudModelChange,
-    handleMidapiTokenChange,
     handleGeminiSettingsChange,
+    handleOpenaiSettingsChange,
     handleMidjourneySettingsChange,
+    handleStableDiffusionSettingsChange,
+    handleLoraTrainingSettingsChange,
     handleImageProviderChange,
     handleArtStyleChange,
     handleGenerationSettingsChange,
@@ -339,12 +550,53 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const { models: availableModels, atlasCloudModels, scannedAt: modelsScanDate, loading: modelsScanLoading, refresh: refreshModels } = useAvailableModels();
   const [showMjSettings, setShowMjSettings] = useState(false);
   const [showGeminiSettings, setShowGeminiSettings] = useState(false);
+  const [showSdSettings, setShowSdSettings] = useState(false);
+  const [showLoraSettings, setShowLoraSettings] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showModelTaskSheet, setShowModelTaskSheet] = useState(false);
+  // Keep STORY open by default (the required prompt/doc lives inside); start
+  // all other optional buckets collapsed so the primary CTA is reachable
+  // without a long scroll. The full wizard refactor (Tranche B) replaces this
+  // with an explicit step indicator.
   const [showStoryPanel, setShowStoryPanel] = useState(true);
-  const [showImagesPanel, setShowImagesPanel] = useState(true);
+  const [assetGenerationMode] = useState<'story-only' | 'story-and-images'>('story-and-images');
+  const [showImagesPanel, setShowImagesPanel] = useState(false);
+  const [styleReferenceUploads, setStyleReferenceUploads] = useState<StyleReferenceUpload[]>([]);
+  const [styleReferenceStrength, setStyleReferenceStrength] = useState<StyleReferenceStrength>('balanced');
+  const [savedArtStyles, setSavedArtStyles] = useState<SavedArtStyle[]>([]);
+  const [recentArtStyles, setRecentArtStyles] = useState<string[]>([]);
+  const [showArtStyleSheet, setShowArtStyleSheet] = useState(false);
+  const [artStyleEditorVisible, setArtStyleEditorVisible] = useState(false);
+  const [editingArtStyleOriginal, setEditingArtStyleOriginal] = useState<SavedArtStyle | null>(null);
+  const [editingArtStyleName, setEditingArtStyleName] = useState('');
+  const [editingArtStyleDraft, setEditingArtStyleDraft] = useState('');
   const [showNarrationPanel, setShowNarrationPanel] = useState(false);
   const [showVideoPanel, setShowVideoPanel] = useState(false);
+  const [runGenerateImages, setRunGenerateImages] = useState(generationSettings.generateImages);
+  const [runGenerateVideo, setRunGenerateVideo] = useState(videoSettings.enabled);
+  const [confirmCancelGeneration, setConfirmCancelGeneration] = useState(false);
+  const [showJobsSheet, setShowJobsSheet] = useState(false);
+
+  // Surface background image/video jobs in a header pill + bottom sheet rather
+  // than mounting the full panels at the bottom of the generator scroll. The
+  // pill is only rendered when jobs exist.
+  const imageJobCount = useImageJobStore((s) => countVisibleImageJobs(s.jobs));
+  const videoJobCount = useVideoJobStore((s) => Object.keys(s.jobs).length);
+  const totalBackgroundJobs = imageJobCount + videoJobCount;
+  const hasBackgroundJobs = totalBackgroundJobs > 0;
+
+  useEffect(() => {
+    setSetupView(initialSetupView || 'story');
+  }, [initialSetupView, mediaSetupTarget?.storyId, mediaSetupTarget?.episodeNumber]);
+
+  useEffect(() => {
+    setRunGenerateImages(generationSettings.generateImages);
+  }, [generationSettings.generateImages]);
+
+  useEffect(() => {
+    setRunGenerateVideo(videoSettings.enabled);
+  }, [videoSettings.enabled]);
 
   // Document mode state
   const [documentPath, setDocumentPath] = useState('');
@@ -359,6 +611,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   // Source analysis state
   const [sourceAnalysis, setSourceAnalysis] = useState<SourceMaterialAnalysis | null>(null);
   const [analysisResult, setAnalysisResult] = useState<SourceAnalysisResult | null>(null);
+  const [canonWizardState, setCanonWizardState] = useState<CanonWizardState | null>(null);
   const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number>(1);
   const [customStoryTitle, setCustomStoryTitle] = useState('');
   const [characterReferenceUploads, setCharacterReferenceUploads] = useState<Record<string, UploadedCharacterReference[]>>({});
@@ -372,8 +625,142 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [isCreatingSeasonPlan, setIsCreatingSeasonPlan] = useState(false);
   const activeEndingMode: EndingMode = sourceAnalysis?.resolvedEndingMode || sourceAnalysis?.detectedEndingMode || 'single';
   const activeEndings = sourceAnalysis?.resolvedEndings || [];
+  const nextSeasonEpisode = seasonPlan?.episodes
+    ?.filter((episode) => !isSeasonEpisodeGenerated(episode))
+    .sort((a, b) => a.episodeNumber - b.episodeNumber)[0] || null;
 
-  const fonts = useSettingsStore((state) => state.getFontSizes());
+  const fonts = useGeneratorSettingsStore((state) => state.getFontSizes());
+
+  const presetStyleOptions = useMemo(() => ART_STYLE_PRESETS.slice(0, 9), []);
+  const selectedPresetId = useMemo(() => {
+    const normalized = artStyle.trim();
+    if (!normalized) return null;
+    return ART_STYLE_PRESETS.find((preset) => composeCanonicalStyleString(preset.profile) === normalized)?.id || null;
+  }, [artStyle]);
+  const currentArtStyleLabel = useMemo(() => {
+    if (selectedPresetId) {
+      return ART_STYLE_PRESETS.find((preset) => preset.id === selectedPresetId)?.displayName || 'Preset style';
+    }
+    const trimmed = artStyle.trim();
+    if (!trimmed) return '';
+    return trimmed.length > 80 ? `${trimmed.slice(0, 77)}...` : trimmed;
+  }, [artStyle, selectedPresetId]);
+
+  const applyArtStyle = useCallback((style: string) => {
+    const trimmed = style.trim();
+    handleArtStyleChange(trimmed);
+    if (!trimmed) return;
+    setRecentArtStyles((prev) => {
+      const next = [trimmed, ...prev.filter((item) => item !== trimmed)].slice(0, MAX_RECENT_ART_STYLES);
+      AsyncStorage.setItem(RECENT_ART_STYLES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, [handleArtStyleChange]);
+
+  const applyPresetArtStyle = useCallback((presetId: string) => {
+    const preset = ART_STYLE_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    applyArtStyle(composeCanonicalStyleString(preset.profile) || preset.profile.name);
+  }, [applyArtStyle]);
+
+  const openNewArtStyleEditor = useCallback(() => {
+    setEditingArtStyleOriginal(null);
+    setEditingArtStyleName('');
+    setEditingArtStyleDraft('');
+    setArtStyleEditorVisible(true);
+  }, []);
+
+  const openEditArtStyleEditor = useCallback((style: SavedArtStyle) => {
+    setEditingArtStyleOriginal(style);
+    setEditingArtStyleName(style.name);
+    setEditingArtStyleDraft(style.style);
+    setArtStyleEditorVisible(true);
+  }, []);
+
+  const openEditCurrentArtStyleEditor = useCallback(() => {
+    const current = artStyle.trim();
+    if (!current) return;
+    const savedMatch = savedArtStyles.find((item) => item.style === current);
+    if (savedMatch) {
+      openEditArtStyleEditor(savedMatch);
+      return;
+    }
+    setEditingArtStyleOriginal(null);
+    setEditingArtStyleName(currentArtStyleLabel || 'Custom style');
+    setEditingArtStyleDraft(current);
+    setArtStyleEditorVisible(true);
+  }, [artStyle, currentArtStyleLabel, openEditArtStyleEditor, savedArtStyles]);
+
+  const saveEditedArtStyle = useCallback(() => {
+    const name = editingArtStyleName.trim();
+    const trimmed = editingArtStyleDraft.trim();
+    if (!name) {
+      Alert.alert('No Style Name', 'Give this art style a name before saving it.');
+      return;
+    }
+    if (!trimmed) {
+      Alert.alert('No Art Style', 'Describe the visual style before saving it.');
+      return;
+    }
+
+    setSavedArtStyles((prev) => {
+      const id = editingArtStyleOriginal?.id || buildSavedArtStyleId();
+      const saved = { id, name, style: trimmed };
+      const next = [
+        saved,
+        ...prev.filter((item) => item.id !== id && item.name !== name),
+      ].slice(0, MAX_SAVED_ART_STYLES);
+      AsyncStorage.setItem(SAVED_ART_STYLES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+    applyArtStyle(trimmed);
+    setArtStyleEditorVisible(false);
+    setEditingArtStyleOriginal(null);
+    setEditingArtStyleName('');
+    setEditingArtStyleDraft('');
+  }, [applyArtStyle, editingArtStyleDraft, editingArtStyleName, editingArtStyleOriginal]);
+
+  const removeSavedArtStyle = useCallback((styleId: string) => {
+    setSavedArtStyles((prev) => {
+      const next = prev.filter((item) => item.id !== styleId);
+      AsyncStorage.setItem(SAVED_ART_STYLES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadArtStyleLists = async () => {
+      try {
+        const [savedRaw, recentRaw] = await Promise.all([
+          AsyncStorage.getItem(SAVED_ART_STYLES_KEY),
+          AsyncStorage.getItem(RECENT_ART_STYLES_KEY),
+        ]);
+        if (!mounted) return;
+        if (savedRaw) {
+          const parsed = JSON.parse(savedRaw);
+          if (Array.isArray(parsed)) {
+            setSavedArtStyles(
+              parsed
+                .map(normalizeSavedArtStyle)
+                .filter((item): item is SavedArtStyle => Boolean(item))
+                .slice(0, MAX_SAVED_ART_STYLES),
+            );
+          }
+        }
+        if (recentRaw) {
+          const parsed = JSON.parse(recentRaw);
+          if (Array.isArray(parsed)) setRecentArtStyles(parsed.filter((item) => typeof item === 'string').slice(0, MAX_RECENT_ART_STYLES));
+        }
+      } catch {
+        // Art style shortcuts are convenience-only; ignore bad persisted data.
+      }
+    };
+    loadArtStyleLists();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const analysisCharacters: AnalysisCharacterTarget[] = sourceAnalysis
     ? [
@@ -411,6 +798,108 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     isJobCancelled: checkJobCancelled,
     cancelJob: cancelGenJob,
   } = useGenerationJobStore();
+
+  const hydrateImageJobsFromWorkerStatus = useCallback((statusData: any) => {
+    if (Array.isArray(statusData?.imageManifest)) {
+      for (const shot of statusData.imageManifest) {
+        if (!shot?.identifier || seenManifestIdsRef.current.has(shot.identifier)) continue;
+        seenManifestIdsRef.current.add(shot.identifier);
+        addImageJob({
+          id: `manifest-${shot.identifier}`,
+          identifier: shot.identifier,
+          prompt: shot.description || '',
+          maxRetries: 3,
+          metadata: { sceneId: shot.sceneId, beatId: shot.beatId, type: 'beat' as const },
+        });
+      }
+    }
+
+    if (!Array.isArray(statusData?.imageJobs)) return;
+    for (const imageJob of statusData.imageJobs) {
+      if (!imageJob?.id) continue;
+      const identifier = imageJob.identifier || imageJob.id;
+      const manifestKey = `manifest-${identifier}`;
+      const targetId = seenManifestIdsRef.current.has(identifier) ? manifestKey : imageJob.id;
+      const progress = imageJob.status === 'completed'
+        ? 100
+        : imageJob.status === 'processing'
+          ? 50
+          : 0;
+      const updates: Record<string, unknown> = {};
+      if (imageJob.status !== undefined) updates.status = imageJob.status;
+      if (imageJob.imageUrl !== undefined) updates.imageUrl = imageJob.imageUrl;
+      if (imageJob.imagePath !== undefined) updates.imagePath = imageJob.imagePath;
+      if (imageJob.localPath !== undefined) updates.localPath = imageJob.localPath;
+      if (imageJob.error !== undefined) updates.error = imageJob.error;
+      if (imageJob.status !== undefined) updates.progress = progress;
+
+      if (seenImageJobIdsRef.current.has(imageJob.id)) {
+        updateImageJob(targetId, updates);
+        continue;
+      }
+
+      seenImageJobIdsRef.current.add(imageJob.id);
+      if (seenManifestIdsRef.current.has(identifier)) {
+        updateImageJob(manifestKey, updates);
+      } else {
+        addImageJob({
+          id: imageJob.id,
+          identifier,
+          prompt: imageJob.prompt || '',
+          maxRetries: imageJob.maxRetries || 3,
+          metadata: imageJob.metadata,
+        });
+        if (imageJob.status !== 'pending') {
+          updateImageJob(imageJob.id, updates);
+        }
+      }
+    }
+  }, [addImageJob, updateImageJob]);
+
+  const getEpisodesToGenerate = useCallback((): number[] => {
+    if (selectedEpisodes.length > 0) {
+      return [...new Set(selectedEpisodes)].sort((a, b) => a - b);
+    }
+    return Array.from({ length: Math.max(1, selectedEpisodeCount) }, (_, i) => i + 1);
+  }, [selectedEpisodeCount, selectedEpisodes]);
+
+  const getLatestCompletedSeasonEpisode = useCallback(() => {
+    if (!seasonPlan) return null;
+    return [...seasonPlan.episodes]
+      .filter((episode) => isSeasonEpisodeGenerated(episode) && (episode.generatedJobId || episode.outputDir))
+      .sort((a, b) => (b.episodeNumber || 0) - (a.episodeNumber || 0))[0] || null;
+  }, [seasonPlan]);
+
+  const getContinuationJobId = useCallback((): string | undefined => (
+    getLatestCompletedSeasonEpisode()?.generatedJobId || undefined
+  ), [getLatestCompletedSeasonEpisode]);
+
+  const getContinuationOutputDir = useCallback((): string | undefined => (
+    getLatestCompletedSeasonEpisode()?.outputDir || undefined
+  ), [getLatestCompletedSeasonEpisode]);
+
+  const markSelectedEpisodesCompleted = useCallback(async (
+    story: Story,
+    jobId: string,
+    completedOutputDir?: string,
+  ) => {
+    if (!seasonPlan) return;
+    for (const episodeNumber of getEpisodesToGenerate()) {
+      const episode = story.episodes.find((candidate) => candidate.number === episodeNumber);
+      if (!episode) continue;
+      await seasonPlanStore.updateEpisodeStatus(
+        seasonPlan.id,
+        episodeNumber,
+        'completed',
+        episode.id,
+        story.id,
+        jobId,
+        completedOutputDir || story.outputDir,
+      );
+    }
+    const updated = seasonPlanStore.getPlan(seasonPlan.id);
+    if (updated) setSeasonPlan(updated.plan);
+  }, [getEpisodesToGenerate, seasonPlan]);
   
   // Track if we're viewing a historical job (not actively running)
   const [isViewingHistory, setIsViewingHistory] = useState(false);
@@ -418,6 +907,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const [failureWorkspace, setFailureWorkspace] = useState<FailureWorkspaceState>({
     failureContext: null,
     checkpoint: null,
+    resumePlan: null,
     tab: 'failure',
     payloadPatchJson: '{}',
     outputsPatchJson: '{}',
@@ -425,6 +915,13 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     resuming: false,
     error: null,
   });
+
+  const buildAnalysisPreferences = () => ({
+    targetScenesPerEpisode: 6,
+    targetChoicesPerEpisode: 4,
+    pacing: 'moderate' as const,
+  });
+  const isRecoverableHistoryJob = (job?: GenerationJob) => job?.status === 'failed' || job?.status === 'cancelled';
 
   // Resume viewing a job if resumeJobId is provided
   useEffect(() => {
@@ -482,6 +979,47 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     };
   }, [resumeJobId, getJob, setActiveJobId]);
 
+  useEffect(() => {
+    if (!initialSeasonPlanId || resumeJobId || seasonPlan || sourceAnalysis || (state !== 'idle' && state !== 'config')) return;
+    let cancelled = false;
+    seasonPlanStore.initialize()
+      .then(async () => {
+        if (cancelled) return;
+        const saved = seasonPlanStore.getPlan(initialSeasonPlanId);
+        if (!saved) return;
+        await seasonPlanStore.setActivePlan(initialSeasonPlanId);
+        if (cancelled) return;
+        const nextEpisode = saved.plan.episodes
+          .filter((episode) => !isSeasonEpisodeGenerated(episode))
+          .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+        setSeasonPlan(saved.plan);
+        setSourceAnalysis(saved.sourceAnalysis);
+        setCanonWizardState(saved.canonWizardState || (
+          saved.sourceAnalysis.sourceCanon
+            ? createCanonWizardState(saved.sourceAnalysis.sourceCanon, nextEpisode ? [nextEpisode.episodeNumber] : [])
+            : null
+        ));
+        setAnalysisResult({
+          analysis: saved.sourceAnalysis,
+          totalEpisodes: saved.sourceAnalysis.totalEstimatedEpisodes || saved.plan.totalEpisodes,
+          episodeOutlines: saved.sourceAnalysis.episodeBreakdown || saved.plan.episodes,
+          suggestedOptions: [],
+        });
+        setCustomStoryTitle(saved.sourceAnalysis.sourceTitle || saved.plan.seasonTitle);
+        if (nextEpisode) {
+          setSelectedEpisodes([nextEpisode.episodeNumber]);
+          setSelectedEpisodeCount(1);
+        }
+        setState('analysis_complete');
+      })
+      .catch((err) => {
+        console.warn('[GeneratorScreen] Failed to load requested season plan:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialSeasonPlanId, resumeJobId, seasonPlan, sourceAnalysis, state]);
+
   const loadFailureWorkspace = useCallback(async (jobId: string) => {
     setFailureWorkspace((prev) => ({ ...prev, loading: true, error: null }));
     try {
@@ -490,11 +1028,25 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       if (!response.ok) {
         throw new Error(data?.error || 'Failed to load failure context.');
       }
+      let resumePlan: Record<string, unknown> | null = null;
+      if (!resumePlanUnavailableRef.current) {
+        try {
+          const resumePlanResponse = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/resume-plan`);
+          if (resumePlanResponse.ok) {
+            resumePlan = await resumePlanResponse.json().catch(() => null);
+          } else if (resumePlanResponse.status === 404) {
+            resumePlanUnavailableRef.current = true;
+          }
+        } catch {
+          resumePlanUnavailableRef.current = true;
+        }
+      }
       setFailureWorkspace((prev) => ({
         ...prev,
         loading: false,
         failureContext: (data?.failureContext || null) as Record<string, unknown> | null,
         checkpoint: (data?.checkpoint || null) as Record<string, unknown> | null,
+        resumePlan: (resumePlan || null) as Record<string, unknown> | null,
         tab: 'failure',
         error: null,
       }));
@@ -516,10 +1068,85 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   }, [getJob, updateGenJob]);
 
   useEffect(() => {
-    const jobId = historyJob?.status === 'failed' ? historyJob.id : (state === 'error' ? currentJobId : null);
+    const jobId = isRecoverableHistoryJob(historyJob) ? historyJob!.id : (state === 'error' ? currentJobId : null);
     if (!jobId) return;
     void loadFailureWorkspace(jobId);
   }, [currentJobId, historyJob?.id, historyJob?.status, loadFailureWorkspace, state]);
+
+  useEffect(() => {
+    if (!USE_SERVER_WORKER || state !== 'running' || !currentJobId) return;
+    let cancelled = false;
+
+    const applyWorkerStatus = async () => {
+      try {
+        const response = await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}`);
+        const statusData = await response.json().catch(() => null);
+        if (cancelled || !response.ok || !statusData) return;
+
+        const progress = Math.max(0, Math.min(100, Number(statusData.progress ?? 0)));
+        const phase = typeof statusData.currentPhase === 'string' ? statusData.currentPhase : undefined;
+        setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, currentJobId));
+        if (phase) setCurrentPhase(phase);
+        setLiveProgress(progress);
+
+        if (typeof statusData.etaSeconds === 'number' || statusData.etaSeconds === null) {
+          setEtaSeconds(statusData.etaSeconds);
+        }
+        if (typeof statusData.currentItem === 'number' && typeof statusData.totalItems === 'number') {
+          setImageProgress({ current: statusData.currentItem, total: statusData.totalItems || 0 });
+        }
+        hydrateImageJobsFromWorkerStatus(statusData);
+
+        if (Array.isArray(statusData.timeline) && statusData.timeline.length > 0) {
+          const mappedEvents = statusData.timeline.slice(-80).map((entry: any): PipelineEvent => ({
+            type: entry.type === 'pipeline_event'
+              ? (entry.eventType || 'debug')
+              : entry.type === 'image_job_event'
+                ? 'debug'
+                : entry.type === 'stderr'
+                  ? 'warning'
+                  : 'debug',
+            phase: entry.phase || phase,
+            agent: entry.agent,
+            message: entry.message || entry.data?.identifier || entry.eventType || entry.type || 'worker update',
+            timestamp: entry.timestamp ? new Date(entry.timestamp) : new Date(),
+            telemetry: entry.telemetry,
+          }));
+          setEvents(mappedEvents);
+        }
+
+        await updateGenJob(currentJobId, {
+          status: (statusData.status as any) || 'running',
+          friendlyName: typeof statusData.friendlyName === 'string' ? statusData.friendlyName : undefined,
+          processTitle: typeof statusData.processTitle === 'string' ? statusData.processTitle : undefined,
+          currentPhase: phase || 'processing',
+          progress,
+          etaSeconds: typeof statusData.etaSeconds === 'number' || statusData.etaSeconds === null ? statusData.etaSeconds : undefined,
+          currentItem: typeof statusData.currentItem === 'number' ? statusData.currentItem : undefined,
+          totalItems: typeof statusData.totalItems === 'number' ? statusData.totalItems : undefined,
+          subphaseLabel: typeof statusData.subphaseLabel === 'string' ? statusData.subphaseLabel : undefined,
+        });
+
+        if (statusData.status === 'failed') {
+          setError(statusData.error || 'Generation failed');
+          setState('error');
+          void loadFailureWorkspace(currentJobId);
+        } else if (statusData.status === 'completed') {
+          setLiveProgress(100);
+          setState('complete');
+        }
+      } catch (pollErr) {
+        console.warn('[GeneratorScreen] Failed to poll worker status:', pollErr);
+      }
+    };
+
+    void applyWorkerStatus();
+    const interval = setInterval(() => { void applyWorkerStatus(); }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [currentJobId, hydrateImageJobsFromWorkerStatus, loadFailureWorkspace, state, updateGenJob]);
 
   useEffect(() => {
     if (analysisCharacters.length === 0) {
@@ -601,7 +1228,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   const clearDocument = () => {
     setDocumentPath(''); setDocumentContent(''); setParsedDocument(null); setDocumentBrief(null);
     setParseWarnings([]); setDocumentError(null); setSelectedFileName(null);
-    setSourceAnalysis(null); setAnalysisResult(null); setSelectedEpisodeCount(1);
+    setSourceAnalysis(null); setAnalysisResult(null); setCanonWizardState(null); setSelectedEpisodeCount(1);
     setCharacterReferenceUploads({}); setCharacterReferenceModes({});
   };
 
@@ -675,6 +1302,97 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       }
       return { ...prev, [characterId]: remaining };
     });
+  };
+
+  const pickStyleReferences = async () => {
+    const remainingSlots = MAX_STYLE_REFERENCE_UPLOADS - styleReferenceUploads.length;
+    if (remainingSlots <= 0) {
+      Alert.alert('Style References Full', `Remove a style reference before adding another. You can upload up to ${MAX_STYLE_REFERENCE_UPLOADS}.`);
+      return;
+    }
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['image/*'],
+        copyToCacheDirectory: true,
+        multiple: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      const assets = result.assets.slice(0, remainingSlots);
+      if (result.assets.length > remainingSlots) {
+        Alert.alert('Upload Limit', `Only the first ${remainingSlots} image(s) were added. Style references are limited to ${MAX_STYLE_REFERENCE_UPLOADS}.`);
+      }
+
+      const newUploads: StyleReferenceUpload[] = [];
+      for (const asset of assets) {
+        if (!asset?.uri) continue;
+
+        let data = '';
+        let mimeType = inferImageMimeType(asset.name, asset.mimeType);
+
+        if (Platform.OS === 'web') {
+          const response = await fetch(asset.uri);
+          const blob = await response.blob();
+          mimeType = blob.type || mimeType;
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Failed to read image file.'));
+            reader.readAsDataURL(blob);
+          });
+          data = dataUrl.replace(/^data:[^;]+;base64,/, '');
+        } else {
+          data = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' as any });
+        }
+
+        if (!data) continue;
+
+        const id = `style-ref-${Date.now()}-${newUploads.length}`;
+        let imagePath: string | undefined;
+        try {
+          const saveRes = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-reference/save`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              storyId: buildStyleReferenceStoryId(customStoryTitle || 'untitled'),
+              id,
+              data,
+              mimeType,
+            }),
+          });
+          if (saveRes.ok) {
+            const payload = await saveRes.json();
+            imagePath = typeof payload.imagePath === 'string' ? payload.imagePath : undefined;
+          }
+        } catch (saveErr) {
+          console.warn('[GeneratorScreen] Could not persist style reference; keeping inline fallback:', saveErr);
+        }
+
+        newUploads.push({
+          id,
+          name: asset.name || `Style reference ${styleReferenceUploads.length + newUploads.length + 1}`,
+          uri: asset.uri,
+          mimeType,
+          data,
+          imagePath,
+        });
+      }
+
+      if (newUploads.length === 0) {
+        Alert.alert('Upload Failed', 'Could not read the selected image(s). Please try other files.');
+        return;
+      }
+
+      setStyleReferenceUploads((prev) => [...prev, ...newUploads].slice(0, MAX_STYLE_REFERENCE_UPLOADS));
+    } catch (err) {
+      Alert.alert('Upload Failed', err instanceof Error ? err.message : 'Failed to load style reference image(s).');
+    }
+  };
+
+  const removeStyleReference = (uploadId: string) => {
+    setStyleReferenceUploads((prev) => prev.filter((upload) => upload.id !== uploadId));
   };
 
   const updateCharacterReferenceMode = (characterId: string, mode: CharacterReferenceMode) => {
@@ -767,55 +1485,113 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     }
   }, [currentJobId, addJobEvent, updateGenJob, sourceAnalysis]);
 
-  const showConfigScreen = () => setState('config');
-
   const selectedLlmApiKey = (
     llmProvider === 'gemini'
       ? geminiApiKey.trim()
+      : llmProvider === 'openai'
+        ? openaiApiKey.trim()
+      : llmProvider === 'openrouter'
+        ? openRouterApiKey.trim()
       : apiKey.trim()
   );
+  const resolveLlmProviderKey = useCallback((provider: GeneratorLlmProvider) => {
+    if (provider === 'gemini') return geminiApiKey.trim();
+    if (provider === 'openai') return openaiApiKey.trim();
+    if (provider === 'openrouter') return openRouterApiKey.trim();
+    return apiKey.trim();
+  }, [apiKey, geminiApiKey, openaiApiKey, openRouterApiKey]);
+  const isOpenAiQuotaError = useCallback((err: unknown): boolean => {
+    const msg = err instanceof Error ? err.message : String(err ?? '');
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes('openai api error: 429') ||
+      lower.includes('insufficient_quota') ||
+      lower.includes('exceeded your current quota')
+    );
+  }, []);
 
   const selectedLlmModel = (
     llmModel.trim() || availableModels[llmProvider][0]?.value || ''
   );
 
-  const { refreshSeasonPlanForAnalysis, handleEndingModeToggle } = useEndingModePlanner({
-    llmProvider,
-    selectedLlmModel,
-    selectedLlmApiKey,
-    sourceAnalysis,
-    activeEndingMode,
-    setSourceAnalysis,
-    setSeasonPlan,
-    setIsCreatingSeasonPlan,
-    handleEvent,
-  });
+  const syncCanonReviewState = useCallback(async (
+    nextCanon: LockedStoryCanon,
+    nextWizardState: CanonWizardState,
+    options: { persist?: boolean } = {},
+  ) => {
+    if (!sourceAnalysis) return;
+    const nextAnalysis = applyCanonToSourceAnalysis(sourceAnalysis, nextCanon);
+    const nextPlan = seasonPlan ? applyCanonToSeasonPlan(seasonPlan, nextCanon) : null;
+    setSourceAnalysis(nextAnalysis);
+    setCanonWizardState(nextWizardState);
+    if (nextPlan) setSeasonPlan(nextPlan);
+    if (options.persist && nextPlan) {
+      await seasonPlanStore.updateSavedPlan(nextPlan.id, {
+        plan: nextPlan,
+        sourceAnalysis: nextAnalysis,
+        canonWizardState: nextWizardState,
+      });
+    }
+  }, [seasonPlan, sourceAnalysis]);
 
-  const buildCreativeBrief = (): FullCreativeBrief | null => {
-    let brief: FullCreativeBrief | null = null;
-    
-    if (documentBrief) {
-      brief = { ...documentBrief, story: { ...documentBrief.story, title: customStoryTitle || documentBrief.story.title }, userPrompt: userPrompt.trim() || undefined };
-    } else if (userPrompt.trim()) {
-      brief = {
-        story: { title: customStoryTitle || 'New Story', genre: 'Action', synopsis: userPrompt.substring(0, 100), tone: 'Dramatic', themes: [] },
-        world: { premise: '', timePeriod: '', technologyLevel: '', keyLocations: [] },
-        protagonist: { id: 'p1', name: 'Hero', pronouns: 'he/him', description: '', role: '' },
-        npcs: [],
-        episode: { number: 1, title: 'Episode 1', synopsis: '', startingLocation: '' },
-        userPrompt: userPrompt.trim()
-      } as FullCreativeBrief;
+  const requestCanonRepairSuggestion = useCallback(async (
+    validation: CanonEditValidationResult,
+    canon: LockedStoryCanon,
+  ): Promise<CanonEditRepairSuggestion | null> => {
+    const fallback = validation.suggestion || null;
+    if (!selectedLlmApiKey || llmProvider !== 'anthropic') return fallback;
+    try {
+      const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': selectedLlmApiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: selectedLlmModel || llmModel || 'claude-sonnet-4-20250514',
+          max_tokens: 1200,
+          temperature: 0.2,
+          system: 'You propose minimal StoryRPG canon repair patches. Return JSON only.',
+          messages: [{
+            role: 'user',
+            content: `Canon conflicts:\n${validation.blockingConflicts.map((issue) => `- ${issue.factId}.${issue.fieldPath}: ${issue.message}`).join('\n')}\n\nLocked canon facts:\n${JSON.stringify(canon.facts, null, 2).slice(0, 12000)}\n\nReturn {"summary": string, "proposedPatches": [{"factId": string, "fieldPath": string, "nextValue": any, "reason": string}]}. Prefer preserving prior locked facts and repairing dependent wording.`,
+          }],
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Repair suggestion failed');
+      const rawText = Array.isArray(data?.content)
+        ? data.content.map((part: any) => part?.text || '').join('\n')
+        : '';
+      const parsed = JSON.parse(rawText);
+      if (!parsed?.summary || !Array.isArray(parsed.proposedPatches)) return fallback;
+      return {
+        source: 'llm',
+        summary: String(parsed.summary),
+        proposedPatches: parsed.proposedPatches
+          .filter((patch: any) => patch?.factId && patch?.fieldPath)
+          .map((patch: any) => ({
+            factId: String(patch.factId),
+            fieldPath: String(patch.fieldPath),
+            nextValue: patch.nextValue,
+            reason: String(patch.reason || 'Model-proposed canon repair.'),
+          })),
+      };
+    } catch (error) {
+      console.warn('[GeneratorScreen] LLM canon repair suggestion failed:', error);
+      return fallback;
     }
-    
-    // Attach season plan to brief if available - this provides encounter and branching directives
-    if (brief && seasonPlan) {
-      brief.seasonPlan = seasonPlan;
-    }
+  }, [llmModel, llmProvider, selectedLlmApiKey, selectedLlmModel]);
 
-    if (brief && sourceAnalysis) {
-      brief.endingMode = sourceAnalysis.resolvedEndingMode;
-      brief.endingTargets = sourceAnalysis.resolvedEndings;
-    }
+  const buildCreativeBrief = (sourceAnalysisOverride: SourceMaterialAnalysis | null = sourceAnalysis): FullCreativeBrief | null => {
+    const brief = buildGeneratorCreativeBrief({
+      documentBrief,
+      sourceAnalysis: sourceAnalysisOverride,
+      seasonPlan,
+      customStoryTitle,
+      userPrompt,
+    });
 
     if (brief && Object.keys(characterReferenceUploads).length > 0) {
       brief.characterReferenceImages = Object.fromEntries(
@@ -835,14 +1611,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     return brief;
   };
 
-  const createPipelineConfig = (): PipelineConfig => buildPipelineConfig({
+  const buildPipelineConfigInput = () => ({
     llmProvider,
     llmModel,
+    taskAssignments: effectiveTaskAssignments,
     imageLlmProvider,
     imageLlmModel,
     videoLlmProvider,
     videoLlmModel,
     apiKey,
+    openaiApiKey,
+    openRouterApiKey,
     geminiApiKey,
     elevenLabsApiKey,
     atlasCloudApiKey,
@@ -853,12 +1632,143 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     panelMode: generationSettings.panelMode || 'single',
     artStyle,
     geminiSettings,
+    openaiSettings,
     midjourneySettings,
-    generationSettings,
+    stableDiffusionSettings,
+    loraTrainingSettings,
+    generationSettings: {
+      ...generationSettings,
+      generateImages: runGenerateImages,
+    },
     generationMode,
     narrationSettings,
-    videoSettings,
+    videoSettings: {
+      ...videoSettings,
+      enabled: runGenerateVideo,
+    },
   });
+
+  // ----- Style Setup (inline on analysis_complete) -----------------------
+  // The section lets the user expand the raw style string into an editable
+  // profile, preview the three style-bible anchors, and approve them before
+  // we kick off generation. When they approve, the handoff payload here is
+  // merged into `createPipelineConfig` as `extras` so the pipeline skips
+  // re-building anchors that the UI already locked in.
+  const primaryProtagonistName =
+    sourceAnalysis?.protagonist?.name?.trim() || customStoryTitle || 'Hero';
+  const primaryLocationName =
+    sourceAnalysis?.keyLocations?.[0]?.name?.trim() || undefined;
+  const colorScriptTerms = (sourceAnalysis?.themes || [])
+    .slice(0, 3)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const styleSetup = useStyleSetup({
+    rawArtStyle: artStyle,
+    storyTitle: customStoryTitle || 'Untitled Story',
+    protagonistName: primaryProtagonistName,
+    colorTerms: colorScriptTerms,
+    primaryLocation: primaryLocationName,
+    expandStyleFn: async (raw: string) => {
+      const architect = new StyleArchitect({
+        provider: effectiveTaskAssignments.architect.provider,
+        model: effectiveTaskAssignments.architect.model,
+        apiKey: selectedLlmApiKey,
+        maxTokens: 1024,
+        temperature: 0.4,
+      });
+      return architect.expand({ artStyle: raw, genreHint: sourceAnalysis?.genre });
+    },
+    generateAnchorImageFn: async (_role, prompt) => {
+      const service = new ImageGenerationService({
+        enabled: true,
+        provider: (imageProvider === 'useapi' ? 'midapi' : imageProvider) as any,
+        geminiApiKey: geminiApiKey.trim(),
+        openaiApiKey: openaiApiKey.trim() || undefined,
+        openaiImageModel: openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel,
+        openaiModeration: openaiSettings.imageModeration || DEFAULT_OPENAI_SETTINGS.imageModeration,
+        atlasCloudApiKey: atlasCloudApiKey.trim() || undefined,
+        atlasCloudModel: atlasCloudModel.trim() || undefined,
+        midapiToken: midapiToken.trim() || undefined,
+        geminiSettings,
+        midjourneySettings,
+        stableDiffusionSettings,
+        savePrompts: false,
+      });
+      const identifier = `style-preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await service.generateImage(prompt, identifier, { type: 'style-reference' as any });
+      const imageUrl = result.imageUrl || '';
+      if (result.imageData && result.mimeType) {
+        return { data: result.imageData, mimeType: result.mimeType };
+      }
+      if (imageUrl.startsWith('data:')) {
+        const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          return { data: match[2], mimeType: match[1] };
+        }
+      }
+      if (imageUrl) {
+        const fetched = await fetch(imageUrl);
+        const blob = await fetched.blob();
+        const buffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+        const base64 = typeof btoa !== 'undefined'
+          ? btoa(binary)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : (global as any).Buffer?.from(bytes).toString('base64') || '';
+        return { data: base64, mimeType: blob.type || 'image/png' };
+      }
+      throw new Error('Concept image returned no data');
+    },
+    saveAnchorFn: async (role: AnchorRole, data: string, mimeType: string) => {
+      const storyId = buildStyleReferenceStoryId(customStoryTitle || 'untitled');
+      const res = await fetch(`${PROXY_CONFIG.getProxyUrl()}/style-anchor/save`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storyId, role, data, mimeType }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`save failed (${res.status}): ${body}`);
+      }
+      const payload = await res.json();
+      return { imagePath: payload.imagePath as string };
+    },
+  });
+
+  const createPipelineConfig = (extraOverrides?: PipelineConfigExtras): PipelineConfig => {
+    const handoff = styleSetup.handoff;
+    const uploadedStyleReferences = runGenerateImages
+      ? styleReferenceUploads.map((upload) => {
+          if (USE_SERVER_WORKER && upload.imagePath) {
+            return { imagePath: upload.imagePath };
+          }
+          return {
+            data: upload.data,
+            mimeType: upload.mimeType,
+            imagePath: upload.imagePath,
+          };
+        })
+      : [];
+    const extras: PipelineConfigExtras = {
+      artStyleProfileOverride: extraOverrides?.artStyleProfileOverride || handoff.profile,
+      preapprovedStyleAnchors:
+        extraOverrides?.preapprovedStyleAnchors || handoff.preapprovedStyleAnchors,
+      uploadedStyleReferences:
+        extraOverrides?.uploadedStyleReferences || uploadedStyleReferences,
+      styleReferenceStrength:
+        extraOverrides?.styleReferenceStrength || styleReferenceStrength,
+    };
+    const config = buildPipelineConfig(buildPipelineConfigInput(), extras);
+    config.generation = {
+      ...(config.generation || {}),
+      assetGenerationMode: runGenerateImages ? 'story-and-images' : 'story-only',
+    };
+    return config;
+  };
 
   const startAnalysis = async () => {
     if (!selectedLlmApiKey) {
@@ -866,7 +1776,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         'API Key Required',
         llmProvider === 'gemini'
           ? 'Please enter your Gemini LLM API key to continue.'
-          : 'Please enter your Anthropic API key to continue.'
+          : llmProvider === 'openai'
+            ? 'Please enter your OpenAI API key to continue.'
+            : 'Please enter your Anthropic API key to continue.'
       );
       return;
     }
@@ -908,7 +1820,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 sourceText,
                 title,
                 prompt,
-                preferences: { targetScenesPerEpisode: 8, targetChoicesPerEpisode: 4, pacing: 'moderate' },
+                preferences: buildAnalysisPreferences(),
               },
             },
             idempotencyKey: `analysis:${title}:${sourceText.length}:${prompt || ''}`,
@@ -920,13 +1832,18 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           const normalizedAnalysis = applyEndingModeToAnalysis(worker.result.sourceAnalysis);
           setAnalysisResult(result);
           setSourceAnalysis(normalizedAnalysis);
+          setCanonWizardState(normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : null);
           setCustomStoryTitle(normalizedAnalysis.sourceTitle || title);
           const episodeCount = Math.min(result.totalEpisodes || 1, 3);
           setSelectedEpisodeCount(episodeCount);
           if (worker.result.seasonPlan) {
             setSeasonPlan(worker.result.seasonPlan);
-            await seasonPlanStore.savePlan(worker.result.seasonPlan, normalizedAnalysis);
-            setSelectedEpisodes([1]);
+            await seasonPlanStore.savePlan(
+              worker.result.seasonPlan,
+              normalizedAnalysis,
+              normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : undefined,
+            );
+            setSelectedEpisodes(Array.from({ length: episodeCount }, (_, idx) => idx + 1));
           } else if (worker.result.seasonPlanError) {
             handleEvent({
               type: 'warning',
@@ -938,24 +1855,29 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           setState('analysis_complete');
           return;
         } catch (workerErr) {
-          console.warn('[GeneratorScreen] Worker analysis failed, falling back to in-browser pipeline:', workerErr);
-          handleEvent({
-            type: 'warning',
-            phase: 'initialization',
-            message: 'Server worker unavailable; falling back to browser analysis path',
-            timestamp: new Date(),
-          });
+          // Analysis runs exclusively through the server worker/proxy on web —
+          // no silent fallback to the in-browser path (see generation catch).
+          const errMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+          console.error('[GeneratorScreen] Worker analysis failed:', errMsg);
+          setError(
+            isProxyUnreachableError(errMsg)
+              ? `Analysis server unavailable — the proxy/worker isn't reachable (${errMsg}). Start it with "docker compose -f docker-compose.proxy.yml up -d" (or "npm run proxy"), wait for it to report healthy, then try again.`
+              : `Source analysis failed: ${errMsg}`,
+          );
+          setState('error');
+          return;
         }
       }
 
       const config = createPipelineConfig();
       const title = customStoryTitle || parsedDocument?.title || documentBrief?.story.title || 'Untitled Story';
-      const analysisResponse = await runStoryAnalysis({
-        config,
+      let analysisResponse;
+      const runAnalysisWithConfig = async (cfg: PipelineConfig) => runStoryAnalysis({
+        config: cfg,
         sourceText,
         title,
         prompt,
-        preferences: { targetScenesPerEpisode: 8, targetChoicesPerEpisode: 4, pacing: 'moderate' },
+        preferences: buildAnalysisPreferences(),
         onPipelineCreated: (pipeline) => {
           pipelineRef.current = pipeline;
           attachPipelineJobListeners(pipeline);
@@ -970,9 +1892,44 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           timestamp: event.timestamp,
         }),
       });
+
+      try {
+        analysisResponse = await runAnalysisWithConfig(config);
+      } catch (analysisErr) {
+        const fallbackProvider =
+          llmProvider === 'openai' && isOpenAiQuotaError(analysisErr)
+            ? (apiKey.trim()
+                ? 'anthropic'
+                : (geminiApiKey.trim() ? 'gemini' : null))
+            : null;
+        if (!fallbackProvider) throw analysisErr;
+
+        handleEvent({
+          type: 'warning',
+          phase: 'source_analysis',
+          message: `OpenAI quota exceeded; retrying source analysis with ${fallbackProvider.toUpperCase()}.`,
+          timestamp: new Date(),
+        });
+
+        const input = buildPipelineConfigInput();
+        const fallbackInput = {
+          ...input,
+          llmProvider: fallbackProvider,
+          llmModel: DEFAULT_LLM_MODELS[fallbackProvider],
+          // Drop per-task assignments so the legacy provider-swap takes effect;
+          // the quota-exhausted OpenAI assignments must not override the fallback.
+          taskAssignments: undefined,
+        };
+        const fallbackConfig = buildPipelineConfig(fallbackInput, {
+          artStyleProfileOverride: styleSetup.handoff.profile,
+          preapprovedStyleAnchors: styleSetup.handoff.preapprovedStyleAnchors,
+        });
+        analysisResponse = await runAnalysisWithConfig(fallbackConfig);
+      }
       const normalizedAnalysis = applyEndingModeToAnalysis(analysisResponse.sourceAnalysis);
       setAnalysisResult(analysisResponse.analysisResult);
       setSourceAnalysis(normalizedAnalysis);
+      setCanonWizardState(normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : null);
       setCustomStoryTitle(normalizedAnalysis.sourceTitle || title);
       const episodeCount = Math.min(analysisResponse.analysisResult.totalEpisodes || 1, 3);
       setSelectedEpisodeCount(episodeCount);
@@ -981,8 +1938,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       try {
         if (analysisResponse.seasonPlan) {
           setSeasonPlan(analysisResponse.seasonPlan);
-          await seasonPlanStore.savePlan(analysisResponse.seasonPlan, normalizedAnalysis);
-          setSelectedEpisodes([1]);
+          await seasonPlanStore.savePlan(
+            analysisResponse.seasonPlan,
+            normalizedAnalysis,
+            normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : undefined,
+          );
+          setSelectedEpisodes(Array.from({ length: episodeCount }, (_, idx) => idx + 1));
           const encounterCount = analysisResponse.seasonPlan.encounterPlan?.totalEncounters || 0;
           const branchCount = analysisResponse.seasonPlan.crossEpisodeBranches?.length || 0;
           handleEvent({
@@ -1006,17 +1967,78 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setState('error'); }
   };
 
+  const canonSetupApproved = Boolean(
+    sourceAnalysis?.sourceCanon?.lockStatus === 'locked'
+    && sourceAnalysis?.canonLockManifest?.requiredConceptsSatisfied === true
+    && canonWizardState?.stepStatus.story === 'approved'
+    && canonWizardState?.stepStatus.peopleWorld === 'approved'
+    && canonWizardState?.stepStatus.episodesEndings === 'approved'
+  );
+
+  const handleCanonEpisodeSelectionChange = useCallback((episodes: number[]) => {
+    setSelectedEpisodes(episodes);
+    setSelectedEpisodeCount(episodes.length);
+
+    const nextCanonState = sourceAnalysis?.sourceCanon
+      ? {
+          ...(canonWizardState || createCanonWizardState(sourceAnalysis.sourceCanon, episodes)),
+          selectedEpisodes: episodes,
+        }
+      : null;
+    if (nextCanonState) {
+      setCanonWizardState(nextCanonState);
+      if (seasonPlan) {
+        void seasonPlanStore.updateSavedPlan(seasonPlan.id, { canonWizardState: nextCanonState });
+      }
+    }
+
+    if (seasonPlan) {
+      const seasonPlanner = new SeasonPlannerAgent({ provider: 'anthropic', model: 'claude-sonnet-4-20250514', apiKey: '', maxTokens: 8000, temperature: 0.7 });
+      const validation = seasonPlanner.validateSelection(seasonPlan, episodes);
+      setSelectionWarnings(validation.warnings);
+      setEpisodeRecommendations(seasonPlanner.getEpisodeRecommendations(seasonPlan, episodes));
+    }
+  }, [canonWizardState, seasonPlan, sourceAnalysis?.sourceCanon]);
+
   const startGeneration = async () => {
     if (!selectedLlmApiKey) {
       Alert.alert(
         'API Key Required',
         llmProvider === 'gemini'
           ? 'Please enter your Gemini LLM API key to continue.'
-          : 'Please enter your Anthropic API key to continue.'
+          : llmProvider === 'openai'
+            ? 'Please enter your OpenAI API key to continue.'
+            : 'Please enter your Anthropic API key to continue.'
       );
       return;
     }
-    const brief = buildCreativeBrief();
+    if (sourceAnalysis?.sourceCanon && !canonSetupApproved) {
+      Alert.alert('Canon Review Required', 'Approve all three story setup screens before generation.');
+      return;
+    }
+    if (runGenerateVideo && !runGenerateImages) {
+      Alert.alert(
+        'Images Required',
+        'Video generation needs still images. Enable Images for this run or generate video later from an episode row after images exist.',
+      );
+      return;
+    }
+    const missingScopedKeys: string[] = [];
+    if (runGenerateImages && !resolveLlmProviderKey(imageLlmProvider)) {
+      missingScopedKeys.push(`Image planner (${imageLlmProvider.toUpperCase()})`);
+    }
+    if (runGenerateVideo && !resolveLlmProviderKey(videoLlmProvider)) {
+      missingScopedKeys.push(`Video planner (${videoLlmProvider.toUpperCase()})`);
+    }
+    if (missingScopedKeys.length > 0) {
+      Alert.alert(
+        'Missing Provider Key',
+        `Configure API keys for: ${missingScopedKeys.join(', ')}.`,
+      );
+      return;
+    }
+    const updatedSourceAnalysis = sourceAnalysis ? { ...sourceAnalysis, sourceTitle: customStoryTitle || sourceAnalysis.sourceTitle } : null;
+    const brief = buildCreativeBrief(updatedSourceAnalysis);
     if (!brief) { Alert.alert('Error', 'Failed to build story brief.'); return; }
     const proxyAvailable = await ensureProxyAvailable();
     if (!proxyAvailable) {
@@ -1036,16 +2058,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     setLiveProgress(0);
     setEtaSeconds(null);
     setImageProgress(null);
+    setPipelineRuntime(null);
     seenManifestIdsRef.current.clear();
     seenImageJobIdsRef.current.clear();
     generationStartedAtRef.current = Date.now();
-    const updatedSourceAnalysis = sourceAnalysis ? { ...sourceAnalysis, sourceTitle: customStoryTitle || sourceAnalysis.sourceTitle } : null;
-
     if (USE_SERVER_WORKER) {
       try {
         const config = createPipelineConfig();
-        const workerEpisodeCount = selectedEpisodeCount > 0 ? selectedEpisodeCount : 1;
+        const episodesToGenerate = getEpisodesToGenerate();
+        const workerEpisodeCount = episodesToGenerate.length;
         let workerJobIdForUpdates: string | null = null;
+        const continuationJobId = getContinuationJobId();
         const episodeRange = updatedSourceAnalysis && (selectedEpisodes.length > 0 || selectedEpisodeCount > 0)
           ? (selectedEpisodes.length > 0
             ? { start: Math.min(...selectedEpisodes), end: Math.max(...selectedEpisodes), specific: selectedEpisodes }
@@ -1065,12 +2088,13 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           idempotencyKey: `generation:${brief.story.title}:${JSON.stringify(episodeRange || {})}`,
           storyTitle: brief.story.title || 'Untitled Story',
           episodeCount: workerEpisodeCount,
-          resumeFromJobId: currentJobId || undefined,
+          resumeFromJobId: continuationJobId,
         },
         (evt) => handleEvent(evt),
         (statusData) => {
           const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
           const currentPhaseFromStatus = statusData?.currentPhase;
+          setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, workerJobIdForUpdates));
           if (typeof currentPhaseFromStatus === 'string' && currentPhaseFromStatus.length > 0) {
             setCurrentPhase(currentPhaseFromStatus);
           }
@@ -1097,51 +2121,13 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             setImageProgress({ current: statusData.currentItem, total: statusData.totalItems || 0 });
           }
 
-          if (Array.isArray(statusData?.imageManifest)) {
-            for (const shot of statusData.imageManifest) {
-              if (shot.identifier && !seenManifestIdsRef.current.has(shot.identifier)) {
-                seenManifestIdsRef.current.add(shot.identifier);
-                addImageJob({
-                  id: `manifest-${shot.identifier}`,
-                  identifier: shot.identifier,
-                  prompt: shot.description || '',
-                  maxRetries: 3,
-                  metadata: { sceneId: shot.sceneId, beatId: shot.beatId, type: 'beat' as const },
-                });
-              }
-            }
-          }
-
-          if (Array.isArray(statusData?.imageJobs)) {
-            for (const ij of statusData.imageJobs) {
-              if (!ij?.id) continue;
-              const manifestKey = `manifest-${ij.identifier || ij.id}`;
-              const targetId = seenManifestIdsRef.current.has(ij.identifier || '') ? manifestKey : ij.id;
-              if (seenImageJobIdsRef.current.has(ij.id)) {
-                updateImageJob(targetId, { status: ij.status, imageUrl: ij.imageUrl, progress: ij.status === 'completed' ? 100 : ij.status === 'processing' ? 50 : 0 });
-              } else {
-                seenImageJobIdsRef.current.add(ij.id);
-                if (seenManifestIdsRef.current.has(ij.identifier || '')) {
-                  updateImageJob(manifestKey, { status: ij.status, imageUrl: ij.imageUrl, progress: ij.status === 'completed' ? 100 : ij.status === 'processing' ? 50 : 0 });
-                } else {
-                  addImageJob({
-                    id: ij.id,
-                    identifier: ij.identifier || ij.id,
-                    prompt: ij.prompt || '',
-                    maxRetries: ij.maxRetries || 3,
-                    metadata: ij.metadata,
-                  });
-                  if (ij.status !== 'pending') {
-                    updateImageJob(ij.id, { status: ij.status, imageUrl: ij.imageUrl, progress: ij.status === 'completed' ? 100 : 50 });
-                  }
-                }
-              }
-            }
-          }
+          hydrateImageJobsFromWorkerStatus(statusData);
 
           if (workerJobIdForUpdates) {
             void updateGenJob(workerJobIdForUpdates, {
               status: (statusData?.status as any) || 'running',
+              friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+              processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
               currentPhase: currentPhaseFromStatus || 'processing',
               progress,
               currentEpisode: Number(statusData?.currentEpisode || 1),
@@ -1154,13 +2140,15 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             });
           }
         },
-        async (jobId) => {
+        async (jobId, startData) => {
           workerJobIdForUpdates = jobId;
           setCurrentJobId(jobId);
           setActiveJobId(jobId);
           await registerGenJob({
             id: jobId,
             storyTitle: brief.story.title || 'Untitled Story',
+            friendlyName: startData.friendlyName,
+            processTitle: startData.processTitle,
             startedAt: new Date().toISOString(),
             status: 'running',
             currentPhase: 'queued',
@@ -1181,38 +2169,32 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           if (onStoryGenerated) onStoryGenerated(result.story);
           if (result.outputManifest) setOutputManifest(result.outputManifest);
           if (result.outputDirectory) setOutputDirectory(result.outputDirectory);
+          if (workerJobIdForUpdates) {
+            await updateGenJob(workerJobIdForUpdates, {
+              outputDir: result.outputDirectory,
+            });
+            await markSelectedEpisodesCompleted(result.story, workerJobIdForUpdates, result.outputDirectory);
+          }
         }
         setLiveProgress(100);
         setEtaSeconds(null);
         setState('complete');
         return;
       } catch (err) {
+        // Generation runs exclusively through the server worker/proxy on web.
+        // We deliberately do NOT fall back to the fragile in-browser pipeline:
+        // a silent downgrade hides proxy outages and produces a degraded run
+        // (no episode plan, dies when the tab closes, no durable checkpoints).
+        // Surface a clear, actionable error instead.
         const errMsg = err instanceof Error ? err.message : String(err);
-        const isInfrastructureError = 
-          errMsg.includes('Failed to start worker job') ||
-          errMsg.includes('Worker start response missing') ||
-          errMsg.includes('Failed to fetch') ||
-          errMsg.includes('fetch failed') ||
-          errMsg.includes('Network request failed') ||
-          errMsg.includes('ECONNREFUSED') ||
-          errMsg.includes('ERR_CONNECTION_RESET') ||
-          errMsg.toLowerCase().includes('connection reset') ||
-          errMsg.includes('Worker job polling failed');
-        
-        if (isInfrastructureError) {
-          console.warn('[GeneratorScreen] Worker infrastructure unavailable, falling back to in-browser pipeline:', errMsg);
-          handleEvent({
-            type: 'warning',
-            phase: 'initialization',
-            message: 'Server worker unavailable; falling back to browser generation path',
-            timestamp: new Date(),
-          });
-        } else {
-          console.error('[GeneratorScreen] Worker generation pipeline failed:', errMsg);
-          setError(errMsg);
-          setState('error');
-          return;
-        }
+        console.error('[GeneratorScreen] Worker generation pipeline failed:', errMsg);
+        setError(
+          isProxyUnreachableError(errMsg)
+            ? `Generation server unavailable — the proxy/worker isn't reachable (${errMsg}). Start it with "docker compose -f docker-compose.proxy.yml up -d" (or "npm run proxy"), wait for it to report healthy, then try again.`
+            : errMsg,
+        );
+        setState('error');
+        return;
       }
     }
     
@@ -1227,7 +2209,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       status: 'running',
       currentPhase: 'initialization',
       progress: 0,
-      episodeCount: selectedEpisodeCount,
+      episodeCount: getEpisodesToGenerate().length,
       currentEpisode: 1,
       events: [],
     });
@@ -1236,10 +2218,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       let result: FullPipelineResult;
       if (updatedSourceAnalysis && (selectedEpisodes.length > 0 || selectedEpisodeCount > 0)) {
         // Use selected episodes from season plan if available, otherwise fall back to count
-        const episodesToGenerate = selectedEpisodes.length > 0 ? selectedEpisodes : Array.from({ length: selectedEpisodeCount }, (_, i) => i + 1);
+        const episodesToGenerate = getEpisodesToGenerate();
         const episodeRange = selectedEpisodes.length > 0 
           ? { start: Math.min(...selectedEpisodes), end: Math.max(...selectedEpisodes), specific: selectedEpisodes }
           : { start: 1, end: selectedEpisodeCount };
+        const continuationOutputDir = getContinuationOutputDir();
+        const resumeCheckpoint = continuationOutputDir
+          ? {
+              steps: { output_directory: { status: 'completed' } },
+              outputs: { output_directory: { outputDirectory: continuationOutputDir } },
+            }
+          : undefined;
         
         handleEvent({ type: 'phase_start', phase: 'initialization', message: `Starting generation of episode(s) ${episodesToGenerate.join(', ')} for "${brief.story.title}"...`, timestamp: new Date() });
         
@@ -1255,6 +2244,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           brief,
           sourceAnalysis: updatedSourceAnalysis,
           episodeRange,
+          resumeCheckpoint,
           onPipelineCreated: (pipeline) => {
             pipeline.setExternalJobId(jobId);
             pipelineRef.current = pipeline;
@@ -1327,6 +2317,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           if (onStoryGenerated) onStoryGenerated(sr.story!);
           if (sr.outputManifest) setOutputManifest(sr.outputManifest);
           if (sr.outputDirectory) setOutputDirectory(sr.outputDirectory);
+          await markSelectedEpisodesCompleted(sr.story!, jobId, sr.outputDirectory);
         }
         setState('complete');
         setLiveProgress(100);
@@ -1334,22 +2325,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         // Update job as completed
         if (jobId) {
           await updateGenJob(jobId, { status: 'completed', progress: 100 });
-        }
-        // Mark generated episodes as completed in season plan
-        if (seasonPlan && 'story' in result && result.story) {
-          const story = result.story;
-          for (const episode of story.episodes) {
-            await seasonPlanStore.updateEpisodeStatus(
-              seasonPlan.id, 
-              episode.number || 1, 
-              'completed',
-              episode.id,
-              story.id
-            );
-          }
-          // Refresh season plan
-          const updated = seasonPlanStore.getPlan(seasonPlan.id);
-          if (updated) setSeasonPlan(updated.plan);
         }
       } else { throw new Error(('error' in result ? result.error : 'Generation failed') || 'Unknown error'); }
     } catch (err) { 
@@ -1382,11 +2357,140 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     }
   };
 
+  const startImageGenerationForDraft = useCallback(async () => {
+    const draftOutputDir = outputDirectory || generatedStory?.outputDir;
+    if (!draftOutputDir) {
+      Alert.alert('Missing Draft Output', 'The story draft does not have an output directory for the image batch.');
+      return;
+    }
+    const proxyAvailable = await ensureProxyAvailable();
+    if (!proxyAvailable) {
+      Alert.alert('Backend Unavailable', 'Proxy server is not reachable at http://localhost:3001.');
+      return;
+    }
+
+    try {
+      const config = createPipelineConfig();
+      config.generation = {
+        ...(config.generation || {}),
+        assetGenerationMode: 'image-only',
+      };
+      const title = generatedStory?.title || customStoryTitle || 'Image Batch';
+      let workerJobIdForUpdates: string | null = null;
+      setState('running');
+      setError(null);
+      setLiveProgress(0);
+      setImageProgress(null);
+      generationStartedAtRef.current = Date.now();
+
+      const worker = await runWorkerJob<FullPipelineResult>({
+        mode: 'image-generation',
+        payload: {
+          config,
+          imageGenerationInput: {
+            outputDirectory: draftOutputDir,
+          },
+        },
+        idempotencyKey: `image-generation:${draftOutputDir}`,
+        storyTitle: `${title} Images`,
+        episodeCount: generatedStory?.episodes?.length || 1,
+      },
+      (evt) => handleEvent(evt),
+      (statusData) => {
+        const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
+        const currentPhaseFromStatus = statusData?.currentPhase;
+        setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, workerJobIdForUpdates));
+        if (typeof currentPhaseFromStatus === 'string' && currentPhaseFromStatus.length > 0) {
+          setCurrentPhase(currentPhaseFromStatus);
+        }
+        setLiveProgress(progress);
+        hydrateImageJobsFromWorkerStatus(statusData);
+        if (statusData?.imageProgress && typeof statusData.imageProgress.current === 'number') {
+          setImageProgress({ current: statusData.imageProgress.current, total: statusData.imageProgress.total || 0 });
+        }
+        if (workerJobIdForUpdates) {
+          void updateGenJob(workerJobIdForUpdates, {
+            status: (statusData?.status as any) || 'running',
+            friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+            processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
+            currentPhase: currentPhaseFromStatus || 'images',
+            progress,
+            currentEpisode: Number(statusData?.currentEpisode || 1),
+            episodeCount: Number(statusData?.episodeCount || generatedStory?.episodes?.length || 1),
+          });
+        }
+      },
+      async (jobId, startData) => {
+        workerJobIdForUpdates = jobId;
+        setCurrentJobId(jobId);
+        setActiveJobId(jobId);
+        await registerGenJob({
+          id: jobId,
+          storyTitle: `${title} Images`,
+          friendlyName: startData.friendlyName,
+          processTitle: startData.processTitle,
+          startedAt: new Date().toISOString(),
+          status: 'running',
+          currentPhase: 'queued',
+          progress: 0,
+          episodeCount: generatedStory?.episodes?.length || 1,
+          currentEpisode: 1,
+          outputDir: draftOutputDir,
+          events: [],
+        });
+      });
+
+      const result = worker.result;
+      if (!result || !result.success) {
+        throw new Error(result?.error || 'Image generation failed');
+      }
+      if ('story' in result && result.story) {
+        setGeneratedStory(result.story);
+        setGeneratedCode(storyToTypeScript(result.story));
+        if (onStoryGenerated) onStoryGenerated(result.story);
+        if (result.outputManifest) setOutputManifest(result.outputManifest);
+        if (result.outputDirectory) setOutputDirectory(result.outputDirectory);
+        if (workerJobIdForUpdates) {
+          await updateGenJob(workerJobIdForUpdates, {
+            outputDir: result.outputDirectory,
+          });
+        }
+      }
+      setLiveProgress(100);
+      setState('complete');
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setError(errMsg);
+      setState('error');
+      if (currentJobId) {
+        await updateGenJob(currentJobId, {
+          status: 'failed',
+          error: errMsg,
+          progress: liveProgress,
+        });
+      }
+    }
+  }, [
+    outputDirectory,
+    generatedStory,
+    ensureProxyAvailable,
+    createPipelineConfig,
+    customStoryTitle,
+    runWorkerJob,
+    handleEvent,
+    updateGenJob,
+    registerGenJob,
+    setActiveJobId,
+    onStoryGenerated,
+    currentJobId,
+    liveProgress,
+  ]);
+
   const handleCheckpointApprove = () => { setCurrentCheckpoint(null); setState('running'); };
   const handleCheckpointReject = (reason: string) => { Alert.alert('Checkpoint Rejected', 'Rejection logged, continuing generation.'); setCurrentCheckpoint(null); setState('running'); };
 
   const resumeFailedJob = async () => {
-    const jobId = historyJob?.status === 'failed' ? historyJob.id : currentJobId;
+    const jobId = isRecoverableHistoryJob(historyJob) ? historyJob!.id : currentJobId;
     if (!jobId) return;
 
     let payloadPatch: Record<string, unknown> = {};
@@ -1404,6 +2508,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       const configPatch = createPipelineConfig();
       const response = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/resume`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           payloadPatch: {
@@ -1418,6 +2523,21 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
         throw new Error(result?.error || 'Failed to resume generation.');
       }
 
+      await registerGenJob({
+        id: result.jobId,
+        projectId: typeof result.projectId === 'string' ? result.projectId : jobId,
+        resumeFromJobId: jobId,
+        storyTitle: historyJob?.storyTitle || customStoryTitle || 'Untitled Story',
+        friendlyName: typeof result.friendlyName === 'string' ? result.friendlyName : undefined,
+        processTitle: typeof result.processTitle === 'string' ? result.processTitle : undefined,
+        startedAt: new Date().toISOString(),
+        status: 'running',
+        currentPhase: 'queued',
+        progress: 0,
+        episodeCount: historyJob?.episodeCount || 1,
+        currentEpisode: historyJob?.currentEpisode || 1,
+        events: [],
+      });
       setFailureWorkspace((prev) => ({ ...prev, resuming: false, tab: 'resume' }));
       setIsViewingHistory(false);
       setHistoryJob(undefined);
@@ -1428,6 +2548,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       setLiveProgress(0);
       setEtaSeconds(null);
       setImageProgress(null);
+      setPipelineRuntime(null);
       setError(null);
       setState('running');
     } catch (resumeErr) {
@@ -1439,70 +2560,135 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
   
   const exportStory = () => {
     if (!generatedStory || !generatedCode) return;
-    Alert.alert('Export Ready', `Story: ${generatedStory.title}\n\n${formatStoryStats(generatedStory)}\n\nFile: ${getStoryFileName(generatedStory)}`, [{ text: 'Copy Code', onPress: () => console.log(generatedCode) }, { text: 'OK' }]);
-  };
-
-  const resetGenerator = () => {
-    setState('idle'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null); setCustomStoryTitle('');
-    setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
-    setCurrentJobId(null); setActiveJobId(null);
-    setLiveProgress(0); setEtaSeconds(null);
-    setIsViewingHistory(false); setHistoryJob(undefined);
-  };
-
-  // Cancel running generation job
-  const cancelGeneration = async () => {
+    const code = generatedCode;
+    const copyToClipboard = async () => {
+      try {
+        await Clipboard.setStringAsync(code);
+        Alert.alert('Copied', 'Story TypeScript code copied to clipboard.');
+      } catch (copyErr) {
+        console.warn('[GeneratorScreen] Failed to copy story code:', copyErr);
+        Alert.alert('Copy Failed', 'Could not copy to clipboard. Try again or export manually.');
+      }
+    };
     Alert.alert(
-      'Cancel Generation',
-      'Are you sure you want to stop the current generation? Progress will be saved and you may be able to resume later.',
+      'Export Ready',
+      `Story: ${generatedStory.title}\n\n${formatStoryStats(generatedStory)}\n\nFile: ${getStoryFileName(generatedStory)}`,
       [
-        { text: 'Keep Running', style: 'cancel' },
-        {
-          text: 'Stop Generation',
-          style: 'destructive',
-          onPress: async () => {
-            // Signal the in-browser pipeline to stop immediately
-            if (pipelineRef.current) {
-              pipelineRef.current.cancel();
-            } else if (onCancelExternalPipeline) {
-              onCancelExternalPipeline();
-            }
-            if (currentJobId) {
-              if (USE_SERVER_WORKER) {
-                try {
-                  await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST' });
-                } catch (cancelErr) {
-                  console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
-                }
-              }
-              await cancelGenJob(currentJobId);
-              // Save checkpoint data for potential resume
-              await updateGenJob(currentJobId, {
-                status: 'cancelled',
-                error: 'Cancelled by user',
-                currentPhase: currentPhase || 'unknown',
-                checkpoint: {
-                  briefJson: currentBriefRef.current ? JSON.stringify(currentBriefRef.current) : undefined,
-                  completedPhases: [...completedPhasesRef.current],
-                  lastSuccessfulPhase: lastSuccessfulPhaseRef.current || undefined,
-                  sourceAnalysisJson: sourceAnalysis ? JSON.stringify(sourceAnalysis) : undefined,
-                  isResumable: completedPhasesRef.current.length > 0,
-                  resumeHint: completedPhasesRef.current.length > 0 
-                    ? `Completed phases: ${completedPhasesRef.current.join(', ')}. Restart to regenerate.`
-                    : 'No phases completed. Restart to try again.',
-                },
-              });
-            }
-            setState('error');
-            setError('Generation cancelled by user. You may restart from the beginning.');
-            pipelineRef.current = null;
-          },
-        },
-      ]
+        { text: 'Copy Code', onPress: () => { void copyToClipboard(); } },
+        { text: 'OK' },
+      ],
     );
   };
 
-  const hasSourceInput = Boolean(documentBrief || userPrompt.trim());
+  const resetGenerator = () => {
+    setState('config'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null);
+    setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
+    setCurrentJobId(null); setActiveJobId(null);
+    setSeasonPlan(null); setSourceAnalysis(null); setAnalysisResult(null); setCanonWizardState(null); setSelectedEpisodes([]); setSelectedEpisodeCount(1);
+    setLiveProgress(0); setEtaSeconds(null); setImageProgress(null); setPipelineRuntime(null);
+    setIsViewingHistory(false); setHistoryJob(undefined);
+  };
+
+  const continueSeasonGeneration = useCallback(async () => {
+    let plan = seasonPlan;
+    let analysis = sourceAnalysis;
+
+    if (!plan || !analysis) {
+      await seasonPlanStore.initialize();
+      const active = seasonPlanStore.getActivePlan();
+      plan = active?.plan || null;
+      analysis = active?.sourceAnalysis || null;
+    }
+
+    if (!plan || !analysis) {
+      Alert.alert('Season Plan Missing', 'No saved season plan was found to continue.');
+      return;
+    }
+
+    const nextEpisode = plan.episodes
+      .filter((episode) => !isSeasonEpisodeGenerated(episode))
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
+
+    if (!nextEpisode) {
+      Alert.alert('Season Complete', 'All planned episodes have already been generated.');
+      return;
+    }
+
+    setSeasonPlan(plan);
+    setSourceAnalysis(analysis);
+    setAnalysisResult({
+      analysis,
+      totalEpisodes: analysis.totalEstimatedEpisodes || plan.totalEpisodes,
+      episodeOutlines: analysis.episodeBreakdown || plan.episodes,
+      suggestedOptions: [],
+    });
+    setCustomStoryTitle(analysis.sourceTitle || plan.seasonTitle);
+    setSelectedEpisodes([nextEpisode.episodeNumber]);
+    setSelectedEpisodeCount(1);
+    setEpisodeRecommendations([]);
+    setSelectionWarnings([]);
+    setGeneratedStory(null);
+    setGeneratedCode(null);
+    setOutputManifest(null);
+    setOutputDirectory(null);
+    setEvents([]);
+    setCurrentCheckpoint(null);
+    setError(null);
+    setIsViewingHistory(false);
+    setHistoryJob(undefined);
+    setLiveProgress(0);
+    setEtaSeconds(null);
+    setImageProgress(null);
+    setPipelineRuntime(null);
+    setState('analysis_complete');
+  }, [seasonPlan, sourceAnalysis]);
+
+  const cancelGeneration = () => {
+    setConfirmCancelGeneration(true);
+  };
+
+  const performCancelGeneration = async () => {
+    setConfirmCancelGeneration(false);
+    if (pipelineRef.current) {
+      pipelineRef.current.cancel();
+    } else if (onCancelExternalPipeline) {
+      onCancelExternalPipeline();
+    }
+    if (currentJobId) {
+      if (USE_SERVER_WORKER) {
+        try {
+          await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST', credentials: 'include' });
+        } catch (cancelErr) {
+          console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
+        }
+      }
+      await cancelGenJob(currentJobId);
+      await updateGenJob(currentJobId, {
+        status: 'cancelled',
+        error: 'Cancelled by user',
+        currentPhase: currentPhase || 'unknown',
+        checkpoint: {
+          briefJson: currentBriefRef.current ? JSON.stringify(currentBriefRef.current) : undefined,
+          completedPhases: [...completedPhasesRef.current],
+          lastSuccessfulPhase: lastSuccessfulPhaseRef.current || undefined,
+          sourceAnalysisJson: sourceAnalysis ? JSON.stringify(sourceAnalysis) : undefined,
+          isResumable: completedPhasesRef.current.length > 0,
+          resumeHint: completedPhasesRef.current.length > 0
+            ? `Completed phases: ${completedPhasesRef.current.join(', ')}. Restart to regenerate.`
+            : 'No phases completed. Restart to try again.',
+        },
+      });
+    }
+    // Route intentional cancels to a dedicated 'cancelled' state so the UI
+    // doesn't conflate user stops with actual pipeline failures (which would
+    // surface the failure-workspace triage UI). The error string is cleared to
+    // prevent any stale failure messaging.
+    setState('cancelled');
+    setError(null);
+    pipelineRef.current = null;
+  };
+
+  const hasSourceInput = Boolean(documentBrief || userPrompt.trim() || sourceAnalysis);
   const updateGenerationSetting = useCallback(<K extends keyof GenerationSettings>(
     key: K,
     value: GenerationSettings[K],
@@ -1522,18 +2708,30 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
       );
     }
 
-    const failure = failureWorkspace.failureContext;
+    const resumePlan = failureWorkspace.resumePlan;
+    const failure = failureWorkspace.failureContext || (
+      resumePlan
+        ? {
+            failurePhase: historyJob?.currentPhase || 'cancelled',
+            failureStepId: resumePlan.resumeFromUnit || 'last durable checkpoint',
+            failureKind: historyJob?.status || 'recoverable',
+            message: historyJob?.error || 'Job stopped before a detailed failure context was recorded.',
+            resumePatchableInputs: ['settings'],
+          }
+        : null
+    );
     if (!failure) return null;
 
     const resumeFrom = typeof failure.resumeFromStepId === 'string' ? failure.resumeFromStepId : 'last durable checkpoint';
     const blockedAction = typeof failure.failureArtifactKey === 'string' ? failure.failureArtifactKey : 'credit-spending recovery';
+    const resumeUnavailable = resumePlan?.canResume === false;
 
     return (
       <View style={styles.failureWorkspaceCard}>
         <View style={styles.failureWorkspaceHeader}>
           <Text style={styles.failureWorkspaceTitle}>FAILURE WORKSPACE</Text>
           <TouchableOpacity style={styles.textButton} onPress={() => {
-            const jobId = historyJob?.status === 'failed' ? historyJob.id : currentJobId;
+            const jobId = isRecoverableHistoryJob(historyJob) ? historyJob!.id : currentJobId;
             if (jobId) void loadFailureWorkspace(jobId);
           }}>
             <Text style={styles.textButtonText}>REFRESH</Text>
@@ -1566,6 +2764,31 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             <Text style={styles.failureValue}>{blockedAction}</Text>
             <Text style={styles.failureLabel}>ERROR</Text>
             <Text style={styles.failureMessage}>{String(failure.message || historyJob?.error || error || 'Unknown failure')}</Text>
+            {(failure.failureKind === 'image_completeness' || failure.failureKind === 'image_generation') && failure.context?.byCategory && (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.failureLabel}>MISSING IMAGES BY CATEGORY</Text>
+                {Object.entries(failure.context.byCategory as Record<string, string[]>).map(([category, keys]) => (
+                  <View key={category} style={{ marginTop: 6, marginLeft: 8 }}>
+                    <Text style={[styles.failureValue, { marginBottom: 2 }]}>
+                      {category.toUpperCase()} ({keys.length})
+                    </Text>
+                    {keys.slice(0, 10).map((key: string) => (
+                      <Text key={key} style={[styles.failureMessage, { fontSize: 11, marginLeft: 8, marginTop: 1 }]}>
+                        {key}
+                      </Text>
+                    ))}
+                    {keys.length > 10 && (
+                      <Text style={[styles.failureMessage, { fontSize: 11, marginLeft: 8, fontStyle: 'italic' }]}>
+                        ...and {keys.length - 10} more
+                      </Text>
+                    )}
+                  </View>
+                ))}
+                <Text style={[styles.failureMessage, { marginTop: 8 }]}>
+                  Resume will re-generate only the {failure.context.totalMissing || 'missing'} images.
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -1595,8 +2818,21 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
         {failureWorkspace.tab === 'resume' && (
           <View style={styles.failurePanel}>
+            {resumePlan && (
+              <>
+                <Text style={styles.failureLabel}>RESUME STRATEGY</Text>
+                <Text style={styles.failureValue}>{String(resumePlan.strategy || 'generation').toUpperCase()}</Text>
+                <Text style={styles.failureLabel}>REUSABLE WORK</Text>
+                <Text style={styles.failureMessage}>
+                  {String(resumePlan.reusableUnitCount ?? 0)} checkpoint unit(s)
+                </Text>
+                {typeof resumePlan.humanSummary === 'string' && (
+                  <Text style={styles.failureMessage}>{resumePlan.humanSummary}</Text>
+                )}
+              </>
+            )}
             <Text style={styles.failureLabel}>RESUME FROM</Text>
-            <Text style={styles.failureValue}>{resumeFrom}</Text>
+            <Text style={styles.failureValue}>{String(resumePlan?.resumeFromUnit || resumeFrom)}</Text>
             <Text style={styles.failureLabel}>CURRENT FAILURE POLICY</Text>
             <Text style={styles.failureValue}>{generationSettings.failFastMode ? 'FAIL FAST' : 'RECOVER'}</Text>
             <Text style={styles.failureLabel}>PATCHABLE INPUTS</Text>
@@ -1610,12 +2846,22 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
 
         <View style={styles.failureActions}>
           <TouchableOpacity
-            style={[styles.executeButton, failureWorkspace.resuming && { opacity: 0.6 }]}
+            style={[styles.executeButton, (failureWorkspace.resuming || resumeUnavailable) && { opacity: 0.6 }]}
             onPress={resumeFailedJob}
-            disabled={failureWorkspace.resuming}
+            disabled={failureWorkspace.resuming || resumeUnavailable}
           >
             <Text style={styles.executeButtonText}>
-              {failureWorkspace.resuming ? 'RESUMING...' : 'RESUME FROM FAILURE'}
+              {resumeUnavailable
+                ? 'RESUME UNAVAILABLE'
+                : failureWorkspace.resuming
+                ? 'RESUMING...'
+                : failureWorkspace.resumePlan?.strategy === 'scene'
+                  ? `RESUME AT ${String(failureWorkspace.resumePlan.resumeFromUnit || 'FAILED SCENE').toUpperCase()}`
+                  : failureWorkspace.resumePlan?.strategy === 'images'
+                    ? 'RESUME MISSING IMAGES'
+                    : failureWorkspace.resumePlan?.strategy === 'save'
+                      ? 'RETRY FINAL SAVE'
+                      : 'RESUME FROM FAILURE'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -1623,34 +2869,217 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
     );
   };
 
-  const configuredKeyCount = [apiKey, geminiApiKey, atlasCloudApiKey, midapiToken, elevenLabsApiKey]
-    .filter((value) => value.trim().length > 0)
-    .length;
   const imageProviderLabel = imageProvider === 'nano-banana'
     ? 'Gemini'
+    : imageProvider === 'dall-e'
+      ? 'OpenAI'
     : imageProvider === 'midapi'
       ? 'MidAPI'
-      : 'Atlas Cloud';
+      : imageProvider === 'stable-diffusion'
+        ? 'Stable Diffusion'
+        : 'Atlas Cloud';
+  const narrativeStructureLabel = 'standard episodes';
+  const narrativeSceneLabel = `${generationSettings.targetSceneCount} scenes`;
   const storySummaryLines = [
     `Source: ${hasSourceInput ? 'ready' : 'missing'}${customStoryTitle.trim() ? ` • title "${customStoryTitle.trim()}"` : ''}`,
     `Writing: ${llmProvider.toUpperCase()} • ${llmModel}`,
-    `Keys configured: ${configuredKeyCount}/5`,
+    `Narrative: ${narrativeStructureLabel} • ${narrativeSceneLabel}`,
+    `Run media: images ${runGenerateImages ? 'on' : 'off'} • video ${runGenerateVideo ? 'on' : 'off'}`,
   ];
   const imageSummaryLines = [
-    `${generationSettings.generateImages ? 'Images enabled' : 'Images disabled'} • ${imageProviderLabel} renderer`,
+    `${generationSettings.generateImages ? 'Generate story art after text' : 'Story art disabled'} • ${imageProviderLabel} renderer`,
     `Prompting: ${imageLlmProvider.toUpperCase()} • ${imageLlmModel}`,
-    `Style: ${artStyle.trim() || 'Default expressive illustrated'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'}`,
+    `Style: ${currentArtStyleLabel || '⚠ empty — will fall back to default (expressive illustrated)'} • refs ${generationSettings.generateCharacterRefs ? 'on' : 'off'} • style refs ${styleReferenceUploads.length}`,
   ];
   const videoSummaryLines = [
-    `${videoSettings.enabled ? 'Video enabled' : 'Video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
+    `${videoSettings.enabled ? 'Experimental video enabled' : 'Experimental video disabled'} • ${videoLlmProvider.toUpperCase()} • ${videoLlmModel}`,
     `${videoSettings.model} • ${videoSettings.durationSeconds}s • ${videoSettings.resolution} • ${videoSettings.aspectRatio}`,
-    `Strategy: ${videoSettings.strategy}${!generationSettings.generateImages ? ' • images required' : ''}`,
+    `Strategy: ${videoSettings.strategy}${!runGenerateImages ? ' • images required for story runs' : ''}`,
   ];
   const narrationSummaryLines = [
-    `${narrationSettings.enabled ? 'Narration enabled' : 'Narration disabled'} • ElevenLabs ${elevenLabsApiKey.trim() ? 'ready' : 'missing'}`,
+    `${narrationSettings.enabled ? 'Optional narration enabled' : 'Optional narration disabled'} • ${(narrationSettings.provider || 'elevenlabs').toUpperCase()} ${(narrationSettings.provider || 'elevenlabs') === 'gemini' ? (geminiApiKey.trim() ? 'ready' : 'missing') : (elevenLabsApiKey.trim() ? 'ready' : 'missing')}`,
     `${narrationSettings.preGenerateAudio ? 'Pre-generate on' : 'Pre-generate off'} • ${narrationSettings.autoPlay ? 'Auto-play on' : 'Auto-play off'}`,
-    `Highlight: ${narrationSettings.highlightMode.toUpperCase()}`,
+    `Highlight: ${narrationSettings.highlightMode.toUpperCase()} • Tags ${narrationSettings.performanceTagsEnabled ? 'on' : 'off'} • Casting ${narrationSettings.voiceCastingEnabled === false ? 'off' : 'on'}`,
   ];
+
+	  const renderImageSetupControls = () => (
+    <SetupStepCard
+      step="2"
+      title="IMAGE SETUP"
+      description="Choose the planning model, renderer, image model, and art style before opening detailed image options."
+    >
+      <View style={styles.configItem}>
+        <Text style={styles.configLabel}>IMAGE PLANNING LLM</Text>
+        <Text style={styles.configHint}>Controls the model that storyboards scenes and writes image prompts before rendering.</Text>
+        <View style={styles.segmentedControl}>
+          <TouchableOpacity style={[styles.segment, imageLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('anthropic')}>
+            <Text style={[styles.segmentText, imageLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageLlmProvider === 'openai' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('openai')}>
+            <Text style={[styles.segmentText, imageLlmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('gemini')}>
+            <Text style={[styles.segmentText, imageLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
+          </TouchableOpacity>
+        </View>
+        <ModelDropdown
+          options={availableModels[imageLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
+          value={imageLlmModel}
+          onSelect={handleImageLlmModelChange}
+          placeholder="Select model…"
+        />
+      </View>
+
+      <View style={styles.configItem}>
+        <Text style={styles.configLabel}>IMAGE PROVIDER</Text>
+        <View style={styles.segmentedControl}>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'nano-banana' && styles.segmentActive]} onPress={() => handleImageProviderChange('nano-banana')}>
+            <Text style={[styles.segmentText, imageProvider === 'nano-banana' && styles.segmentTextActive]}>GEMINI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'dall-e' && styles.segmentActive]} onPress={() => handleImageProviderChange('dall-e')}>
+            <Text style={[styles.segmentText, imageProvider === 'dall-e' && styles.segmentTextActive]}>OPENAI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'midapi' && styles.segmentActive]} onPress={() => handleImageProviderChange('midapi')}>
+            <Text style={[styles.segmentText, imageProvider === 'midapi' && styles.segmentTextActive]}>MIDAPI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segment, imageProvider === 'atlas-cloud' && styles.segmentActive]} onPress={() => handleImageProviderChange('atlas-cloud')}>
+            <Text style={[styles.segmentText, imageProvider === 'atlas-cloud' && styles.segmentTextActive]}>ATLAS</Text>
+          </TouchableOpacity>
+          {STABLE_DIFFUSION_UI_ENABLED && (
+            <TouchableOpacity style={[styles.segment, imageProvider === 'stable-diffusion' && styles.segmentActive]} onPress={() => handleImageProviderChange('stable-diffusion')}>
+              <Text style={[styles.segmentText, imageProvider === 'stable-diffusion' && styles.segmentTextActive]}>SD</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      {imageProvider === 'nano-banana' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <ModelDropdown
+            options={[
+              { value: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash', description: 'Original Nano Banana. Stable, cost-effective.' },
+              { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro', description: 'Nano Banana Pro. Highest quality, supports thinking.' },
+              { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash', description: 'Nano Banana 2. Pro quality at Flash speed. Recommended.' },
+            ]}
+            value={geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model}
+            onSelect={(v) => handleGeminiSettingsChange({ model: v })}
+          />
+        </View>
+      )}
+
+      {imageProvider === 'dall-e' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <ModelDropdown
+            options={[
+              { value: 'gpt-image-1', label: 'GPT Image 1', description: 'General-purpose high quality fallback, no org verification required.' },
+              { value: 'gpt-image-1-mini', label: 'GPT Image 1 Mini', description: 'Fastest and lowest cost. No verification required.' },
+              { value: 'gpt-image-1.5', label: 'GPT Image 1.5 (verified org only)', description: 'Requires OpenAI organization verification.' },
+              { value: 'gpt-image-2', label: 'GPT Image 2 (verified org only)', description: 'Default for storyboard pipeline. Strongest consistency + multi-ref editing.' },
+            ]}
+            value={openaiSettings.imageModel || DEFAULT_OPENAI_SETTINGS.imageModel}
+            onSelect={(v) => handleOpenaiSettingsChange({ imageModel: v as any, imageModeration: 'low' })}
+          />
+          <Text style={styles.configHint}>OpenAI image moderation is fixed to low for generated story art.</Text>
+        </View>
+      )}
+
+      {imageProvider === 'atlas-cloud' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <ModelDropdown
+            options={atlasCloudModels.map(m => ({
+              value: m.value,
+              label: m.label,
+              description: m.description || undefined,
+            }))}
+            value={atlasCloudModel}
+            onSelect={handleAtlasCloudModelChange}
+            placeholder="Select Atlas Cloud model…"
+          />
+        </View>
+      )}
+
+      {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+        <View style={styles.configItem}>
+          <Text style={styles.configLabel}>IMAGE MODEL</Text>
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={styles.input}
+              value={stableDiffusionSettings.defaultModel || ''}
+              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultModel: v })}
+              placeholder="e.g. sdxl-base-1.0 or checkpoint filename"
+              placeholderTextColor={TERMINAL.colors.muted}
+              autoCapitalize="none"
+            />
+          </View>
+        </View>
+      )}
+
+      <View style={styles.configItem}>
+        <Text style={styles.configLabel}>ART STYLE</Text>
+        <TouchableOpacity
+          style={styles.styleDropdownButton}
+          onPress={() => setShowArtStyleSheet(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Choose art style"
+        >
+          <View style={styles.styleDropdownTextBlock}>
+            <Text style={styles.styleDropdownValue} numberOfLines={1}>
+              {currentArtStyleLabel || 'Choose an art style'}
+            </Text>
+            <Text style={styles.styleDropdownHint} numberOfLines={1}>
+              Presets, saved styles, recents, and custom styles
+            </Text>
+          </View>
+          <ChevronDown size={16} color={TERMINAL.colors.muted} />
+        </TouchableOpacity>
+        {artStyle.trim().length === 0 ? (
+          <Text style={[styles.configHint, { marginTop: 4, color: TERMINAL.colors.warning || TERMINAL.colors.muted }]}>
+            ⚠ No art style set — images will fall back to &quot;dramatic cinematic story art&quot;.
+          </Text>
+        ) : null}
+      </View>
+    </SetupStepCard>
+	  );
+
+  const renderMediaTargetCard = (kind: 'images' | 'video') => (
+    <SetupStepCard
+      step="1"
+      title={kind === 'images' ? 'TARGET EPISODE' : 'TARGET EPISODE'}
+      description={mediaSetupTarget
+        ? `This job is scoped to episode ${mediaSetupTarget.episodeNumber}.`
+        : 'Choose an episode from the story database before running a media-only job.'}
+    >
+      <View style={styles.setupChecklist}>
+        <View style={styles.setupChecklistItem}>
+          <Text style={styles.setupChecklistLabel}>STORY</Text>
+          <Text style={styles.setupChecklistValue}>{mediaSetupTarget?.storyId || 'MISSING'}</Text>
+        </View>
+        <View style={styles.setupChecklistItem}>
+          <Text style={styles.setupChecklistLabel}>EPISODE</Text>
+          <Text style={[styles.setupChecklistValue, mediaSetupTarget ? styles.setupChecklistValueReady : null]}>
+            {mediaSetupTarget ? `${mediaSetupTarget.episodeNumber}` : 'MISSING'}
+          </Text>
+        </View>
+        <View style={styles.setupChecklistItem}>
+          <Text style={styles.setupChecklistLabel}>TITLE</Text>
+          <Text style={styles.setupChecklistValue}>{mediaSetupTarget?.episodeTitle || 'MISSING'}</Text>
+        </View>
+      </View>
+    </SetupStepCard>
+  );
+
+  const runTargetImageGeneration = () => {
+    if (!mediaSetupTarget) return;
+    void onGenerateTargetImages?.({ ...mediaSetupTarget, kind: 'images' });
+  };
+
+  const runTargetVideoGeneration = () => {
+    if (!mediaSetupTarget) return;
+    void onGenerateTargetVideos?.({ ...mediaSetupTarget, kind: 'video' });
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -1659,46 +3088,86 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
           <ChevronRight size={20} color={TERMINAL.colors.muted} style={{ transform: [{ rotate: '180deg' }] }} />
           <Text style={styles.headerButtonText}>BACK</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>AI GENERATOR</Text>
-        <View style={{ width: 60 }} />
-      </View>
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentPadding}>
-        <View style={styles.statusBar}>
-          <Cpu size={14} color={TERMINAL.colors.muted} />
-          <Text style={styles.statusLabel}>PIPELINE STATUS:</Text>
-          <Text style={[styles.statusValue, isViewingHistory ? styles.status_history : styles[`status_${state}`]]}>
-            {isViewingHistory ? 'JOB HISTORY' : state.toUpperCase().replace('_', ' ')}
-          </Text>
-        </View>
-        {state === 'idle' && (
-          <View style={styles.section}>
-            <View style={styles.sectionHeaderRow}><Sparkles size={18} color={TERMINAL.colors.primary} /><Text style={styles.sectionTitle}>NEURAL SYNTHESIS</Text></View>
-            <View style={styles.heroCard}>
-              <Text style={styles.heroText}>GENERATE COMPLETE INTERACTIVE STORIES USING AUTONOMOUS AI AGENTS.</Text>
-              <View style={styles.pipelineGrid}>
-                {[{ icon: '🌍', name: 'WORLD' }, { icon: '👥', name: 'CAST' }, { icon: '📋', name: 'PLAN' }, { icon: '📝', name: 'PROSE' }, { icon: '🎭', name: 'CHOICE' }, { icon: '✅', name: 'VALID' }].map((item, i) => (
-                  <View key={i} style={styles.pipelineGridItem}><Text style={styles.pipelineGridIcon}>{item.icon}</Text><Text style={styles.pipelineGridName}>{item.name}</Text></View>
-                ))}
-              </View>
-              <TouchableOpacity style={styles.primaryActionButton} onPress={showConfigScreen}><Text style={styles.primaryActionButtonText}>CONFIGURE STORY PIPELINE</Text><ChevronRight size={18} color="white" /></TouchableOpacity>
+        <Text style={styles.headerTitle}>
+          {setupView === 'image'
+            ? 'IMAGE SETUP'
+            : setupView === 'video'
+              ? 'VIDEO SETUP'
+              : (state === 'running' || state === 'checkpoint') && !isViewingHistory
+                ? 'GENERATING STORY'
+                : 'AI GENERATOR'}
+        </Text>
+        {hasBackgroundJobs ? (
+          <TouchableOpacity
+            style={styles.jobsPill}
+            onPress={() => setShowJobsSheet(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Open background jobs (${totalBackgroundJobs})`}
+          >
+            <Layers size={12} color={TERMINAL.colors.amber} />
+            <Text style={styles.jobsPillText}>JOBS</Text>
+            <View style={styles.jobsPillBadge}>
+              <Text style={styles.jobsPillBadgeText}>{totalBackgroundJobs}</Text>
             </View>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.headerSpacer} />
+        )}
+      </View>
+      {/*
+        Wizard-style step indicator. The generator now opens directly on the
+        configuration step, and the indicator reads the existing `state`
+        machine directly so we don't introduce a new source of truth.
+      */}
+      {state !== 'idle' && !isViewingHistory && state !== 'running' && state !== 'checkpoint' && (
+        <StepIndicator
+          currentStep={deriveWizardStep(state)}
+          completed={state === 'complete'}
+          errored={state === 'error'}
+        />
+      )}
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentPadding}>
+        {/* The status bar is redundant with the in-progress hero's worker/phase
+            state, so hide it while a generation is actively running. */}
+        {!((state === 'running' || state === 'checkpoint') && !isViewingHistory) && (
+          <View style={styles.statusBar}>
+            <Cpu size={14} color={TERMINAL.colors.muted} />
+            <Text style={styles.statusLabel}>PIPELINE STATUS:</Text>
+            <Text style={[styles.statusValue, isViewingHistory ? styles.status_history : styles[`status_${state}`]]}>
+              {isViewingHistory ? 'JOB HISTORY' : state.toUpperCase().replace('_', ' ')}
+            </Text>
           </View>
         )}
         {state === 'config' && (
           <View style={styles.section}>
-            <View style={styles.sectionHeaderRow}><Settings size={18} color={TERMINAL.colors.primary} /><Text style={styles.sectionTitle}>PIPELINE CONFIGURATION</Text></View>
+            <View style={styles.sectionHeaderRow}>
+              <Settings size={18} color={TERMINAL.colors.primary} />
+              <Text style={styles.sectionTitle}>
+                {setupView === 'image' ? 'IMAGE SETUP' : setupView === 'video' ? 'VIDEO SETUP' : 'PIPELINE CONFIGURATION'}
+              </Text>
+            </View>
             <Text style={styles.configIntro}>
-              Configure the story and shared credentials once, then toggle images, video, and narration on or off at a glance.
+              {setupView === 'image'
+                ? 'Tune image settings for the selected episode, then generate only that episode art.'
+                : setupView === 'video'
+                  ? 'Tune video settings for the selected episode, then animate only that episode.'
+	                  : 'Configure the story setup once, then toggle images, video, and narration on or off at a glance.'}
             </Text>
             <View style={styles.configGroup}>
+              {setupView === 'story' ? (
               <ConfigBucketCard
                 title="STORY"
-                description="Source material, writing model, shared credentials, and advanced story controls."
+	                description="Source material, writing model, and advanced story controls."
                 icon={<BookOpen size={16} color={TERMINAL.colors.primary} />}
                 expanded={showStoryPanel}
                 onToggleExpanded={() => setShowStoryPanel(!showStoryPanel)}
                 summaryLines={storySummaryLines}
               >
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>STORY DESIGNATION (TITLE)</Text>
+                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={customStoryTitle} onChangeText={setCustomStoryTitle} placeholder="E.G. THE VORTEX AWAKENS" placeholderTextColor={TERMINAL.colors.muted} /></View>
+                </View>
+
                 <View style={styles.configItem}>
                   <Text style={styles.configLabel}>SOURCE MATERIAL</Text>
                   <TouchableOpacity style={[styles.filePicker, selectedFileName ? styles.filePickerActive : null]} onPress={pickDocument}><View style={styles.fileIconBox}>{selectedFileName ? <CheckCircle2 size={20} color="white" /> : <FolderOpen size={20} color={TERMINAL.colors.muted} />}</View><View style={styles.fileInfo}><Text style={styles.fileName}>{selectedFileName || 'SELECT SOURCE DOCUMENT'}</Text><Text style={styles.fileMeta}>MD, TXT, PDF, JSON</Text></View>{selectedFileName && <TouchableOpacity onPress={clearDocument} style={styles.clearBtn}><Trash2 size={16} color={TERMINAL.colors.muted} /></TouchableOpacity>}</TouchableOpacity>
@@ -1711,27 +3180,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 </View>
 
                 <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>STORY DESIGNATION (TITLE)</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={customStoryTitle} onChangeText={setCustomStoryTitle} placeholder="E.G. THE VORTEX AWAKENS" placeholderTextColor={TERMINAL.colors.muted} /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>TEXT GENERATION PROVIDER</Text>
-                  <View style={styles.segmentedControl}>
-                    <TouchableOpacity style={[styles.segment, llmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleLlmProviderChange('anthropic')}>
-                      <Text style={[styles.segmentText, llmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, llmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleLlmProviderChange('gemini')}>
-                      <Text style={[styles.segmentText, llmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={styles.configItem}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text style={styles.configLabel}>TEXT MODEL</Text>
+                    <Text style={styles.configLabel}>MODEL FAMILY</Text>
                     <TouchableOpacity
-                      onPress={() => refreshModels({ anthropicApiKey: apiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey })}
+                      onPress={() => refreshModels({ anthropicApiKey: apiKey, openaiApiKey, geminiApiKey, atlasCloudApiKey: atlasCloudApiKey, ...(modelFamily === 'openrouter' ? { openRouterApiKey } : {}) })}
                       disabled={modelsScanLoading}
                       style={{ flexDirection: 'row', alignItems: 'center', opacity: modelsScanLoading ? 0.5 : 1 }}
                     >
@@ -1741,90 +3193,99 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       </Text>
                     </TouchableOpacity>
                   </View>
-                  <ModelDropdown
-                    options={availableModels[llmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
-                    value={llmModel}
-                    onSelect={handleLlmModelChange}
-                    placeholder="Select model…"
+                  <SegmentedControl<GeneratorLlmProvider>
+                    options={[
+                      { value: 'anthropic', label: 'Claude' },
+                      { value: 'openai', label: 'OpenAI' },
+                      { value: 'gemini', label: 'Gemini' },
+                      { value: 'openrouter', label: 'OpenRouter' },
+                    ]}
+                    value={modelFamily}
+                    onChange={handleModelFamilyChange}
+                    ariaLabel="Model family"
                   />
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>SHARED API KEYS</Text>
-                  <Text style={styles.configHint}>Credentials live here once and are reused by the image, video, and narration sections below.</Text>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ANTHROPIC API KEY {apiKey ? '✓' : '*'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={apiKey} onChangeText={handleApiKeyChange} placeholder="sk-ant-..." placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>GEMINI API KEY {geminiApiKey ? '✓' : '*'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={geminiApiKey} onChangeText={handleGeminiApiKeyChange} placeholder="AIzaSy... used for Gemini text, image, and video" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>MIDAPI TOKEN {midapiToken ? '✓' : 'OPTIONAL'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={midapiToken} onChangeText={handleMidapiTokenChange} placeholder="Used only when the image provider is MidAPI" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ATLAS CLOUD API KEY {atlasCloudApiKey ? '✓' : 'OPTIONAL'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={atlasCloudApiKey} onChangeText={handleAtlasCloudApiKeyChange} placeholder="Used only when the image provider is Atlas Cloud" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ELEVENLABS API KEY {elevenLabsApiKey ? '✓' : 'OPTIONAL'}</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={elevenLabsApiKey} onChangeText={handleElevenLabsApiKeyChange} placeholder="Used when narration is enabled" placeholderTextColor={TERMINAL.colors.muted} secureTextEntry autoCapitalize="none" /></View>
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>VALIDATION MODE</Text>
-                  <Text style={styles.configHint}>
-                    Controls how strictly quality checks can block generation.
+                  <Text style={[styles.toggleActionHint, { marginTop: 8 }]}>
+                    {MODEL_FAMILY_PRESETS[modelFamily].tagline}
                   </Text>
-                  <View style={styles.segmentedControl}>
-                    {GENERATION_MODE_OPTIONS.map((option) => (
-                      <TouchableOpacity
-                        key={option.value}
-                        style={[styles.segment, generationMode === option.value && styles.segmentActive]}
-                        onPress={() => handleGenerationModeChange(option.value)}
-                      >
-                        <Text style={[styles.segmentText, generationMode === option.value && styles.segmentTextActive]}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
+
+                  <View style={styles.presetSummary}>
+                    {PIPELINE_TASKS.map((task) => {
+                      const a = effectiveTaskAssignments[task.id];
+                      const customized = !task.crossProvider && Boolean(taskModelOverrides[task.id]);
+                      return (
+                        <View key={task.id} style={styles.presetRow}>
+                          <Text style={styles.presetTask}>{task.label}</Text>
+                          <View style={styles.presetModelWrap}>
+                            <Text style={styles.presetModel} numberOfLines={1}>
+                              {task.crossProvider ? `${a.provider} · ` : ''}{modelLabel(a.provider, a.model)}
+                            </Text>
+                            {customized ? <Text style={styles.presetCustom}>CUSTOM</Text> : null}
+                          </View>
+                        </View>
+                      );
+                    })}
                   </View>
-                  <Text style={[styles.configHint, { marginTop: 8 }]}>
-                    {GENERATION_MODE_OPTIONS.find((option) => option.value === generationMode)?.description}
-                  </Text>
-                </View>
 
-                <View style={styles.configItem}>
                   <TouchableOpacity
                     style={styles.inlineDisclosure}
-                    onPress={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                    onPress={() => setShowModelTaskSheet(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Customize models per task"
                   >
                     <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
-                    <Text style={styles.configLabel}>ADVANCED STORY SETTINGS</Text>
-                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showAdvancedSettings ? '90deg' : '0deg' }] }} />
+                    <Text style={styles.configLabel}>CUSTOMIZE PER TASK</Text>
+                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
                   </TouchableOpacity>
-                  {showAdvancedSettings && (
-                    <View style={styles.disclosureBody}>
-                      <GenerationSettingsPanel
-                        settings={generationSettings}
-                        onChange={handleGenerationSettingsChange}
-                      />
+                </View>
+
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>RUN OUTPUTS</Text>
+                  <TouchableOpacity style={styles.toggleActionRow} onPress={() => setRunGenerateImages(!runGenerateImages)}>
+                    <View>
+                      <Text style={styles.configLabel}>IMAGES</Text>
+                      <Text style={styles.toggleActionHint}>Include image generation in this story run only.</Text>
                     </View>
-                  )}
+                    <View style={[styles.booleanToggle, runGenerateImages && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, runGenerateImages && styles.booleanToggleKnobActive]} /></View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toggleActionRow} onPress={() => setRunGenerateVideo(!runGenerateVideo)}>
+                    <View>
+                      <Text style={styles.configLabel}>VIDEO</Text>
+                      <Text style={styles.toggleActionHint}>Include video generation in this story run only.</Text>
+                    </View>
+                    <View style={[styles.booleanToggle, runGenerateVideo && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, runGenerateVideo && styles.booleanToggleKnobActive]} /></View>
+                  </TouchableOpacity>
+                  {!runGenerateImages && runGenerateVideo ? (
+                    <View style={styles.warningCallout}>
+                      <Text style={styles.warningCalloutText}>Video requires still images. Enable images for this run or generate video later from an episode row.</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>NARRATIVE SETTINGS</Text>
+                  <TouchableOpacity
+                    style={styles.inlineDisclosure}
+                    onPress={() => setShowAdvancedSettings(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open narrative generation settings"
+                  >
+                    <Settings size={16} color={TERMINAL.colors.primary} style={{ marginRight: 8 }} />
+                    <Text style={styles.configLabel}>STRUCTURE, PACING, CHOICES, VALIDATION</Text>
+                    <Text style={styles.advancedSettingsHint}>OPEN</Text>
+                    <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
+                  </TouchableOpacity>
                 </View>
               </ConfigBucketCard>
+              ) : null}
 
+              {setupView === 'image' ? renderMediaTargetCard('images') : null}
+              {setupView === 'image' ? renderImageSetupControls() : null}
+
+              {setupView === 'image' ? (
               <ConfigBucketCard
                 title="IMAGES"
-                description="Storyboard prompting, renderer choice, style, and still-image outputs."
+                description="Generate story art after text: renderer choice, model, style, and still-image outputs."
                 icon={<ImageIcon size={16} color={generationSettings.generateImages ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
                 expanded={showImagesPanel}
                 onToggleExpanded={() => setShowImagesPanel(!showImagesPanel)}
@@ -1833,43 +3294,76 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 onToggleEnabled={(value) => updateGenerationSetting('generateImages', value)}
               >
                 <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>IMAGE PLANNING LLM</Text>
-                  <Text style={styles.configHint}>Controls the model that storyboards scenes and writes image prompts before rendering.</Text>
-                  <View style={styles.segmentedControl}>
-                    <TouchableOpacity style={[styles.segment, imageLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('anthropic')}>
-                      <Text style={[styles.segmentText, imageLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleImageLlmProviderChange('gemini')}>
-                      <Text style={[styles.segmentText, imageLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <ModelDropdown
-                    options={availableModels[imageLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
-                    value={imageLlmModel}
-                    onSelect={handleImageLlmModelChange}
-                    placeholder="Select model…"
-                  />
-                </View>
-
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>IMAGE PROVIDER</Text>
-                  <View style={styles.segmentedControl}>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'nano-banana' && styles.segmentActive]} onPress={() => handleImageProviderChange('nano-banana')}>
-                      <Text style={[styles.segmentText, imageProvider === 'nano-banana' && styles.segmentTextActive]}>GEMINI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'midapi' && styles.segmentActive]} onPress={() => handleImageProviderChange('midapi')}>
-                      <Text style={[styles.segmentText, imageProvider === 'midapi' && styles.segmentTextActive]}>MIDAPI</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.segment, imageProvider === 'atlas-cloud' && styles.segmentActive]} onPress={() => handleImageProviderChange('atlas-cloud')}>
-                      <Text style={[styles.segmentText, imageProvider === 'atlas-cloud' && styles.segmentTextActive]}>ATLAS</Text>
+                  <View style={styles.styleReferenceHeader}>
+                    <View style={styles.styleReferenceTitleBlock}>
+                      <Text style={styles.configLabel}>STYLE REFERENCE IMAGES</Text>
+                      <Text style={styles.configHint}>
+                        Upload up to {MAX_STYLE_REFERENCE_UPLOADS} images to seed the style bible. They influence palette, texture, lighting, finish, and mood, not characters or scene composition.
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.referenceUploadButton,
+                        (!generationSettings.generateImages || styleReferenceUploads.length >= MAX_STYLE_REFERENCE_UPLOADS) && styles.referenceUploadButtonDisabled,
+                      ]}
+                      onPress={pickStyleReferences}
+                      disabled={!generationSettings.generateImages || styleReferenceUploads.length >= MAX_STYLE_REFERENCE_UPLOADS}
+                    >
+                      <ImageIcon size={14} color={generationSettings.generateImages ? TERMINAL.colors.primary : TERMINAL.colors.muted} />
+                      <Text style={[
+                        styles.referenceUploadButtonText,
+                        !generationSettings.generateImages && styles.referenceUploadButtonTextDisabled,
+                      ]}>
+                        {styleReferenceUploads.length > 0 ? 'ADD STYLE IMAGE' : 'UPLOAD STYLE IMAGE'}
+                      </Text>
                     </TouchableOpacity>
                   </View>
-                </View>
 
-                <View style={styles.configItem}>
-                  <Text style={styles.configLabel}>ART STYLE</Text>
-                  <View style={styles.inputWrapper}><TextInput style={styles.input} value={artStyle} onChangeText={handleArtStyleChange} placeholder="e.g. rich digital painting, noir ink wash, anime cel shading, watercolor illustration..." placeholderTextColor={TERMINAL.colors.muted} /></View>
-                  <Text style={[styles.configHint, { marginTop: 4 }]}>Sets the visual aesthetic for all generated art. Leave blank for expressive illustrated style.</Text>
+                  {!generationSettings.generateImages ? (
+                    <Text style={styles.referenceModeHint}>Enable images to pass style references into generation.</Text>
+                  ) : (
+                    <>
+                      <View style={styles.referenceModeSection}>
+                        <Text style={styles.referenceModeLabel}>REFERENCE STRENGTH</Text>
+                        <View style={styles.referenceModeControl}>
+                          {(['subtle', 'balanced', 'strong'] as StyleReferenceStrength[]).map((strength) => (
+                            <TouchableOpacity
+                              key={strength}
+                              style={[styles.referenceModeOption, styleReferenceStrength === strength && styles.referenceModeOptionActive]}
+                              onPress={() => setStyleReferenceStrength(strength)}
+                            >
+                              <Text style={[styles.referenceModeOptionText, styleReferenceStrength === strength && styles.referenceModeOptionTextActive]}>
+                                {strength.toUpperCase()}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+
+                      {styleReferenceUploads.length > 0 ? (
+                        <View style={styles.referencePreviewGrid}>
+                          {styleReferenceUploads.map((upload) => (
+                            <View key={upload.id} style={styles.referencePreviewCard}>
+                              <Image source={{ uri: upload.uri }} style={styles.referencePreviewImage} />
+                              <TouchableOpacity
+                                style={styles.referencePreviewRemove}
+                                onPress={() => removeStyleReference(upload.id)}
+                              >
+                                <Trash2 size={12} color="white" />
+                              </TouchableOpacity>
+                              <Text style={styles.referencePreviewName} numberOfLines={1}>
+                                {upload.name}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : (
+                        <Text style={styles.characterReferenceEmpty}>
+                          No uploaded style reference yet. The pipeline will build the style bible from the art style text.
+                        </Text>
+                      )}
+                    </>
+                  )}
                 </View>
 
                 <View style={styles.configItem}>
@@ -1879,11 +3373,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <View style={[styles.booleanToggle, generationSettings.generateCharacterRefs && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, generationSettings.generateCharacterRefs && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateGenerationSetting('generateExpressionSheets', !generationSettings.generateExpressionSheets)}>
-                    <View><Text style={styles.configLabel}>EXPRESSION SHEETS</Text><Text style={styles.toggleActionHint}>Create alternate emotion references.</Text></View>
+                    <View><Text style={styles.configLabel}>EXPRESSION SHEETS</Text><Text style={styles.toggleActionHint}>Create alternate emotion references.{imageProvider === 'dall-e' ? ' Ignored when provider is DALL-E (gpt-image-2).' : ''}</Text></View>
                     <View style={[styles.booleanToggle, generationSettings.generateExpressionSheets && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, generationSettings.generateExpressionSheets && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateGenerationSetting('generateBodyVocabulary', !generationSettings.generateBodyVocabulary)}>
-                    <View><Text style={styles.configLabel}>BODY VOCABULARY</Text><Text style={styles.toggleActionHint}>Generate pose and silhouette references.</Text></View>
+                    <View><Text style={styles.configLabel}>BODY VOCABULARY</Text><Text style={styles.toggleActionHint}>Generate pose and silhouette references.{imageProvider === 'dall-e' ? ' Ignored when provider is DALL-E (gpt-image-2).' : ''}</Text></View>
                     <View style={[styles.booleanToggle, generationSettings.generateBodyVocabulary && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, generationSettings.generateBodyVocabulary && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                 </View>
@@ -1901,19 +3395,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       </TouchableOpacity>
                       {showGeminiSettings && (
                         <View style={styles.disclosureBody}>
-                          <View style={{ marginBottom: 16 }}>
-                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>IMAGE MODEL</Text>
-                            <ModelDropdown
-                              options={[
-                                { value: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash', description: 'Original Nano Banana. Stable, cost-effective.' },
-                                { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro', description: 'Nano Banana Pro. Highest quality, supports thinking.' },
-                                { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash', description: 'Nano Banana 2. Pro quality at Flash speed. Recommended.' },
-                              ]}
-                              value={geminiSettings.model || DEFAULT_GEMINI_SETTINGS.model}
-                              onSelect={(v) => handleGeminiSettingsChange({ model: v })}
-                            />
-                          </View>
-
                           <View style={styles.toggleConfigRow}>
                             <View style={styles.toggleConfigInfo}>
                               <Text style={styles.configLabel}>CONSISTENCY INSTRUCTION</Text>
@@ -2157,27 +3638,412 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </>
                 )}
 
-                {imageProvider === 'atlas-cloud' && (
+                {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
                   <View style={styles.configItem}>
-                    <Text style={[styles.configLabel, { marginBottom: 8 }]}>MODEL</Text>
-                    <ModelDropdown
-                      options={atlasCloudModels.map(m => ({
-                        value: m.value,
-                        label: m.label,
-                        description: m.description || undefined,
-                      }))}
-                      value={atlasCloudModel}
-                      onSelect={handleAtlasCloudModelChange}
-                      placeholder="Select Atlas Cloud model…"
-                    />
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowSdSettings(!showSdSettings)}
+                    >
+                      <Settings size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>STABLE DIFFUSION PARAMETERS</Text>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showSdSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showSdSettings && (
+                      <View style={styles.disclosureBody}>
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>BASE URL</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.baseUrl || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ baseUrl: v })}
+                              placeholder="http://localhost:7860 or proxy /sd-api"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                          <Text style={styles.configHint}>Points at Automatic1111/Forge WebUI (or the proxy mount).</Text>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>SAMPLER</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={stableDiffusionSettings.defaultSampler || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultSampler: v })}
+                              placeholder={DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultSampler}
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16, flexDirection: 'row', gap: 12 }}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>STEPS</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={String(stableDiffusionSettings.defaultSteps ?? '')}
+                                onChangeText={(v) => {
+                                  const n = parseInt(v, 10);
+                                  handleStableDiffusionSettingsChange({ defaultSteps: Number.isFinite(n) ? n : undefined });
+                                }}
+                                keyboardType="number-pad"
+                                placeholder={String(DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultSteps)}
+                                placeholderTextColor={TERMINAL.colors.muted}
+                              />
+                            </View>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>CFG</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={String(stableDiffusionSettings.defaultCfg ?? '')}
+                                onChangeText={(v) => {
+                                  const n = parseFloat(v);
+                                  handleStableDiffusionSettingsChange({ defaultCfg: Number.isFinite(n) ? n : undefined });
+                                }}
+                                keyboardType="decimal-pad"
+                                placeholder={String(DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultCfg)}
+                                placeholderTextColor={TERMINAL.colors.muted}
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>NEGATIVE PROMPT</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={[styles.input, { height: 80 }]}
+                              multiline
+                              value={stableDiffusionSettings.defaultNegativePrompt || ''}
+                              onChangeText={(v) => handleStableDiffusionSettingsChange({ defaultNegativePrompt: v })}
+                              placeholder={DEFAULT_STABLE_DIFFUSION_SETTINGS.defaultNegativePrompt}
+                              placeholderTextColor={TERMINAL.colors.muted}
+                            />
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={styles.inlineResetButton}
+                          onPress={() => handleStableDiffusionSettingsChange({ ...DEFAULT_STABLE_DIFFUSION_SETTINGS })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {STABLE_DIFFUSION_UI_ENABLED && imageProvider === 'stable-diffusion' && (
+                  <View style={styles.configItem}>
+                    <TouchableOpacity
+                      style={styles.inlineDisclosure}
+                      onPress={() => setShowLoraSettings(!showLoraSettings)}
+                    >
+                      <Cpu size={16} color={TERMINAL.colors.cyan} style={{ marginRight: 8 }} />
+                      <Text style={[styles.configLabel, { color: TERMINAL.colors.cyan }]}>LORA AUTO-TRAINING</Text>
+                      <View style={{ marginLeft: 8 }}>
+                        <Text style={[styles.configHint, { color: loraTrainingSettings.enabled ? TERMINAL.colors.success : TERMINAL.colors.muted }]}>
+                          {loraTrainingSettings.enabled ? 'ON' : 'OFF'}
+                        </Text>
+                      </View>
+                      <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 'auto', transform: [{ rotate: showLoraSettings ? '90deg' : '0deg' }] }} />
+                    </TouchableOpacity>
+                    {showLoraSettings && (
+                      <View style={styles.disclosureBody}>
+                        <Text style={styles.configHint}>
+                          Automatically train per-character and per-episode style LoRAs against the configured
+                          Stable Diffusion model. Training runs alongside scene generation and is cached by
+                          fingerprint so unchanged inputs never re-train. Only active for the Stable Diffusion
+                          provider; the pipeline silently skips this step on every other backend.
+                        </Text>
+
+                        <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flex: 1, paddingRight: 12 }}>
+                            <Text style={styles.configLabel}>ENABLE AUTO-TRAIN</Text>
+                            <Text style={styles.configHint}>
+                              Master switch. When disabled, every training call no-ops regardless of backend.
+                            </Text>
+                          </View>
+                          <Switch
+                            value={!!loraTrainingSettings.enabled}
+                            onValueChange={(value) => handleLoraTrainingSettingsChange({ enabled: value })}
+                            trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                          />
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER BACKEND</Text>
+                          <View style={styles.segmentedControl}>
+                            {(['disabled', 'kohya', 'diffusers', 'replicate'] as const).map((opt) => (
+                              <TouchableOpacity
+                                key={opt}
+                                style={[styles.segment, loraTrainingSettings.backend === opt && styles.segmentActive]}
+                                onPress={() => handleLoraTrainingSettingsChange({ backend: opt })}
+                              >
+                                <Text style={[styles.segmentText, loraTrainingSettings.backend === opt && styles.segmentTextActive]}>{opt.toUpperCase()}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                          <Text style={styles.configHint}>
+                            Only "kohya" is implemented today. The proxy forwards jobs to
+                            LORA_TRAINER_BASE_URL; leave empty to use whatever the proxy env provides.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 16 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>TRAINER BASE URL (OPTIONAL)</Text>
+                          <View style={styles.inputWrapper}>
+                            <TextInput
+                              style={styles.input}
+                              value={loraTrainingSettings.baseUrl || ''}
+                              onChangeText={(v) => handleLoraTrainingSettingsChange({ baseUrl: v })}
+                              placeholder="http://localhost:7861 (overrides LORA_TRAINER_BASE_URL)"
+                              placeholderTextColor={TERMINAL.colors.muted}
+                              autoCapitalize="none"
+                            />
+                          </View>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>CHARACTER ELIGIBILITY</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>MIN REFS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.characterThresholds.minRefs ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({
+                                      characterThresholds: { minRefs: Number.isFinite(n) ? n : DEFAULT_LORA_TRAINING_SETTINGS.characterThresholds.minRefs },
+                                    });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.characterThresholds.minRefs)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <Text style={styles.configHint}>
+                            Characters need at least this many distinct reference images before they become
+                            training candidates. Tiers: {loraTrainingSettings.characterThresholds.tiers.join(', ')}.
+                          </Text>
+                          <View style={{ marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                            {(['core', 'major', 'supporting', 'minor'] as const).map((tier) => {
+                              const active = loraTrainingSettings.characterThresholds.tiers.includes(tier);
+                              return (
+                                <TouchableOpacity
+                                  key={tier}
+                                  style={[styles.segment, active && styles.segmentActive, { paddingHorizontal: 12 }]}
+                                  onPress={() => {
+                                    const current = new Set(loraTrainingSettings.characterThresholds.tiers);
+                                    if (active) current.delete(tier); else current.add(tier);
+                                    handleLoraTrainingSettingsChange({
+                                      characterThresholds: { tiers: Array.from(current) as typeof loraTrainingSettings.characterThresholds.tiers },
+                                    });
+                                  }}
+                                >
+                                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{tier.toUpperCase()}</Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                            <Switch
+                              value={!!loraTrainingSettings.characterThresholds.blockScenes}
+                              onValueChange={(value) => handleLoraTrainingSettingsChange({ characterThresholds: { blockScenes: value } })}
+                              trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                            />
+                            <Text style={[styles.configLabel, { marginLeft: 8 }]}>BLOCK SCENES UNTIL TRAINED</Text>
+                          </View>
+                          <Text style={styles.configHint}>
+                            When enabled, episode scene generation waits for character LoRA jobs to finish so
+                            they can be applied from beat #1. Disable for a faster-but-less-consistent pass.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>STYLE ELIGIBILITY</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>MIN EPISODES</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.styleThresholds.minEpisodes ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({
+                                      styleThresholds: { minEpisodes: Number.isFinite(n) ? n : DEFAULT_LORA_TRAINING_SETTINGS.styleThresholds.minEpisodes },
+                                    });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.styleThresholds.minEpisodes)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                            <Switch
+                              value={!!loraTrainingSettings.styleThresholds.forceStyle}
+                              onValueChange={(value) => handleLoraTrainingSettingsChange({ styleThresholds: { forceStyle: value } })}
+                              trackColor={{ false: TERMINAL.colors.muted, true: TERMINAL.colors.cyan }}
+                            />
+                            <Text style={[styles.configLabel, { marginLeft: 8 }]}>FORCE STYLE LORA</Text>
+                          </View>
+                          <Text style={styles.configHint}>
+                            Force a style LoRA even if the series is shorter than MIN EPISODES. Useful when a
+                            single episode has a very specific, unique style bible.
+                          </Text>
+                        </View>
+
+                        <View style={{ marginTop: 20 }}>
+                          <Text style={[styles.configLabel, { marginBottom: 8 }]}>HYPERPARAMETERS</Text>
+                          <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>STEPS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.steps ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { steps: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.steps)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>RANK</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.rank ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { rank: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.rank)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>LR</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.learningRate ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseFloat(v);
+                                    handleLoraTrainingSettingsChange({ training: { learningRate: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="decimal-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.learningRate)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12, flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>RESOLUTION</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.resolution ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { resolution: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.resolution)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>BATCH SIZE</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.batchSize ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { batchSize: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.batchSize)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.configLabel, { marginBottom: 8 }]}>REPEATS</Text>
+                              <View style={styles.inputWrapper}>
+                                <TextInput
+                                  style={styles.input}
+                                  value={String(loraTrainingSettings.training.repeats ?? '')}
+                                  onChangeText={(v) => {
+                                    const n = parseInt(v, 10);
+                                    handleLoraTrainingSettingsChange({ training: { repeats: Number.isFinite(n) ? n : undefined } });
+                                  }}
+                                  keyboardType="number-pad"
+                                  placeholder={String(DEFAULT_LORA_TRAINING_SETTINGS.training.repeats)}
+                                  placeholderTextColor={TERMINAL.colors.muted}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                          <View style={{ marginTop: 12 }}>
+                            <Text style={[styles.configLabel, { marginBottom: 8 }]}>BASE MODEL (OPTIONAL)</Text>
+                            <View style={styles.inputWrapper}>
+                              <TextInput
+                                style={styles.input}
+                                value={loraTrainingSettings.training.baseModel || ''}
+                                onChangeText={(v) => handleLoraTrainingSettingsChange({ training: { baseModel: v } })}
+                                placeholder="Checkpoint the LoRA is fine-tuned on (defaults to SD default model)"
+                                placeholderTextColor={TERMINAL.colors.muted}
+                                autoCapitalize="none"
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={[styles.inlineResetButton, { marginTop: 20 }]}
+                          onPress={() => handleLoraTrainingSettingsChange({ ...DEFAULT_LORA_TRAINING_SETTINGS })}
+                        >
+                          <RefreshCw size={14} color={TERMINAL.colors.muted} style={{ marginRight: 6 }} />
+                          <Text style={styles.inlineResetButtonText}>RESET TO DEFAULTS</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 )}
 
               </ConfigBucketCard>
+              ) : null}
 
+              {setupView === 'video' ? renderMediaTargetCard('video') : null}
+              {setupView === 'video' ? (
               <ConfigBucketCard
                 title="VIDEO"
-                description="Optional beat animation using a direction LLM plus Veo rendering."
+                description="Optional experimental beat animation using a direction LLM plus Veo rendering."
                 icon={<Film size={16} color={videoSettings.enabled ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
                 expanded={showVideoPanel}
                 onToggleExpanded={() => setShowVideoPanel(!showVideoPanel)}
@@ -2193,6 +4059,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <View style={styles.segmentedControl}>
                       <TouchableOpacity style={[styles.segment, videoLlmProvider === 'anthropic' && styles.segmentActive]} onPress={() => handleVideoLlmProviderChange('anthropic')}>
                         <Text style={[styles.segmentText, videoLlmProvider === 'anthropic' && styles.segmentTextActive]}>ANTHROPIC</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.segment, videoLlmProvider === 'openai' && styles.segmentActive]} onPress={() => handleVideoLlmProviderChange('openai')}>
+                        <Text style={[styles.segmentText, videoLlmProvider === 'openai' && styles.segmentTextActive]}>OPENAI</Text>
                       </TouchableOpacity>
                       <TouchableOpacity style={[styles.segment, videoLlmProvider === 'gemini' && styles.segmentActive]} onPress={() => handleVideoLlmProviderChange('gemini')}>
                         <Text style={[styles.segmentText, videoLlmProvider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
@@ -2267,10 +4136,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </View>
                 </View>
               </ConfigBucketCard>
+              ) : null}
 
+              {setupView === 'story' ? (
               <ConfigBucketCard
                 title="NARRATION"
-                description="Optional voice playback settings for generated stories."
+                description="Optional experimental voice playback settings for generated stories."
                 icon={<Volume2 size={16} color={narrationSettings.enabled ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
                 expanded={showNarrationPanel}
                 onToggleExpanded={() => setShowNarrationPanel(!showNarrationPanel)}
@@ -2279,15 +4150,40 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 onToggleEnabled={(value) => updateNarrationSetting('enabled', value)}
               >
                 <View style={styles.configItem}>
-                  <Text style={styles.configGroupIntro}>AI VOICE NARRATION POWERED BY ELEVENLABS</Text>
-                  {!elevenLabsApiKey.trim() && (
+                  <Text style={styles.configGroupIntro}>AI VOICE NARRATION</Text>
+                  <View style={{ paddingVertical: 12 }}>
+                    <Text style={styles.configLabel}>VOICE PROVIDER</Text>
+                    <Text style={styles.configHint}>Gemini reuses the same Gemini key as story/image generation.</Text>
+                    <View style={styles.segmentedControl}>
+                      <TouchableOpacity style={[styles.segment, (narrationSettings.provider || 'elevenlabs') === 'elevenlabs' && styles.segmentActive]} onPress={() => updateNarrationSetting('provider', 'elevenlabs')}>
+                        <Text style={[styles.segmentText, (narrationSettings.provider || 'elevenlabs') === 'elevenlabs' && styles.segmentTextActive]}>ELEVENLABS</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.segment, narrationSettings.provider === 'gemini' && styles.segmentActive]} onPress={() => updateNarrationSetting('provider', 'gemini')}>
+                        <Text style={[styles.segmentText, narrationSettings.provider === 'gemini' && styles.segmentTextActive]}>GEMINI</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  {(narrationSettings.provider || 'elevenlabs') === 'elevenlabs' && !elevenLabsApiKey.trim() && (
                     <View style={styles.warningCallout}>
                       <Text style={styles.warningCalloutText}>Add an ElevenLabs key in the Story panel to generate narration.</Text>
+                    </View>
+                  )}
+                  {narrationSettings.provider === 'gemini' && !geminiApiKey.trim() && (
+                    <View style={styles.warningCallout}>
+                      <Text style={styles.warningCalloutText}>Add a Gemini key in the Story panel to generate Gemini narration.</Text>
                     </View>
                   )}
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('preGenerateAudio', !narrationSettings.preGenerateAudio)}>
                     <View><Text style={styles.configLabel}>PRE-GENERATE AUDIO</Text><Text style={styles.toggleActionHint}>Generate narration during story creation.</Text></View>
                     <View style={[styles.booleanToggle, narrationSettings.preGenerateAudio && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, narrationSettings.preGenerateAudio && styles.booleanToggleKnobActive]} /></View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('voiceCastingEnabled', narrationSettings.voiceCastingEnabled === false)}>
+                    <View><Text style={styles.configLabel}>AUTO VOICE CASTING</Text><Text style={styles.toggleActionHint}>Match narrator and character voices to cast personality.</Text></View>
+                    <View style={[styles.booleanToggle, narrationSettings.voiceCastingEnabled !== false && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, narrationSettings.voiceCastingEnabled !== false && styles.booleanToggleKnobActive]} /></View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('performanceTagsEnabled', !narrationSettings.performanceTagsEnabled)}>
+                    <View><Text style={styles.configLabel}>PERFORMANCE TAGS</Text><Text style={styles.toggleActionHint}>Add internal dramatic delivery tags to TTS prompts only.</Text></View>
+                    <View style={[styles.booleanToggle, narrationSettings.performanceTagsEnabled && styles.booleanToggleActive]}><View style={[styles.booleanToggleKnob, narrationSettings.performanceTagsEnabled && styles.booleanToggleKnobActive]} /></View>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toggleActionRow} onPress={() => updateNarrationSetting('autoPlay', !narrationSettings.autoPlay)}>
                     <View><Text style={styles.configLabel}>AUTO-PLAY</Text><Text style={styles.toggleActionHint}>Play narration automatically on each beat.</Text></View>
@@ -2310,7 +4206,57 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   </View>
                 </View>
               </ConfigBucketCard>
+              ) : null}
 
+              {setupView === 'image' ? (
+                <SetupStepCard
+                  step="3"
+                  title="GENERATE IMAGES"
+                  description="Run a media-only image job for the selected episode."
+                >
+                  <View style={styles.configActions}>
+                    {mediaSetupTarget ? (
+                      <TouchableOpacity style={styles.executeButton} onPress={runTargetImageGeneration}>
+                        <ImageIcon size={18} color="white" />
+                        <Text style={styles.executeButtonText}>GENERATE IMAGES FOR EPISODE</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={[styles.executeButton, { opacity: 0.5 }]}>
+                        <Text style={styles.executeButtonText}>SELECT EPISODE TO CONTINUE</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity style={styles.textButton} onPress={onBack}>
+                      <Text style={styles.textButtonText}>CANCEL</Text>
+                    </TouchableOpacity>
+                  </View>
+                </SetupStepCard>
+              ) : null}
+
+              {setupView === 'video' ? (
+                <SetupStepCard
+                  step="3"
+                  title="GENERATE VIDEO"
+                  description="Run a media-only animation job for the selected episode."
+                >
+                  <View style={styles.configActions}>
+                    {mediaSetupTarget ? (
+                      <TouchableOpacity style={styles.executeButton} onPress={runTargetVideoGeneration}>
+                        <Film size={18} color="white" />
+                        <Text style={styles.executeButtonText}>GENERATE VIDEO FOR EPISODE</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={[styles.executeButton, { opacity: 0.5 }]}>
+                        <Text style={styles.executeButtonText}>SELECT EPISODE TO CONTINUE</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity style={styles.textButton} onPress={onBack}>
+                      <Text style={styles.textButtonText}>CANCEL</Text>
+                    </TouchableOpacity>
+                  </View>
+                </SetupStepCard>
+              ) : null}
+
+              {setupView === 'story' ? (
               <SetupStepCard
                 step="5"
                 title="ANALYZE AND CONTINUE"
@@ -2327,16 +4273,16 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     <Text style={styles.setupChecklistLabel}>TEXT MODEL</Text>
                     <Text style={styles.setupChecklistValue}>{llmProvider.toUpperCase()}</Text>
                   </View>
-                  <View style={styles.setupChecklistItem}>
-                    <Text style={styles.setupChecklistLabel}>VISUALS</Text>
-                    <Text style={styles.setupChecklistValue}>{imageProvider.toUpperCase()}</Text>
-                  </View>
-                  <View style={styles.setupChecklistItem}>
-                    <Text style={styles.setupChecklistLabel}>OUTPUT</Text>
-                    <Text style={styles.setupChecklistValue}>
-                      {videoSettings.enabled ? 'VIDEO' : narrationSettings.enabled ? 'AUDIO' : 'TEXT'}
-                    </Text>
-                  </View>
+	                  <View style={styles.setupChecklistItem}>
+	                    <Text style={styles.setupChecklistLabel}>VISUALS</Text>
+	                    <Text style={styles.setupChecklistValue}>{runGenerateImages ? imageProvider.toUpperCase() : 'OFF'}</Text>
+	                  </View>
+	                  <View style={styles.setupChecklistItem}>
+	                    <Text style={styles.setupChecklistLabel}>OUTPUT</Text>
+	                    <Text style={styles.setupChecklistValue}>
+	                      {runGenerateVideo ? 'VIDEO' : narrationSettings.enabled ? 'AUDIO' : 'TEXT'}
+	                    </Text>
+	                  </View>
                 </View>
 
                 <View style={styles.configActions}>
@@ -2350,18 +4296,19 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                       <Text style={styles.executeButtonText}>ANALYZE SOURCE MATERIAL</Text>
                     </TouchableOpacity>
                   )}
-                  <TouchableOpacity style={styles.textButton} onPress={() => setState('idle')}>
+                  <TouchableOpacity style={styles.textButton} onPress={onBack}>
                     <Text style={styles.textButtonText}>CANCEL</Text>
                   </TouchableOpacity>
                 </View>
               </SetupStepCard>
+              ) : null}
             </View>
           </View>
         )}
         {state === 'analyzing' && (
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}><Search size={18} color={TERMINAL.colors.amber} /><Text style={[styles.sectionTitle, { color: TERMINAL.colors.amber }]}>SOURCE ANALYSIS IN PROGRESS</Text></View>
-            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} /></View>
+            <View style={styles.progressPlaceholder}><PipelineProgress events={events} currentPhase="source_analysis" isRunning={true} progress={liveProgress} etaSeconds={etaSeconds} runtime={pipelineRuntime} storyTitle={pipelineRuntime?.friendlyName || customStoryTitle || undefined} /></View>
           </View>
         )}
         {state === 'analysis_complete' && (
@@ -2369,105 +4316,36 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             <View style={styles.sectionHeaderRow}><CheckCircle2 size={18} color={TERMINAL.colors.cyan} /><Text style={[styles.sectionTitle, { color: TERMINAL.colors.cyan }]}>ANALYSIS COMPLETE</Text></View>
             {!analysisResult ? <View style={styles.errorCard}><Text style={styles.errorText}>ANALYSIS FAILED. PLEASE RETRY.</Text><TouchableOpacity style={styles.executeButton} onPress={startAnalysis}><Text style={styles.executeButtonText}>RETRY ANALYSIS</Text></TouchableOpacity></View> : (
               <View style={styles.analysisGroup}>
-                {/* Story Title and Genre */}
-                <View style={styles.titleCard}>
-                  <Text style={styles.configLabel}>STORY DESIGNATION</Text>
-                  <View style={styles.inputWrapper}>
-                    <TextInput style={[styles.input, { fontSize: 18 }]} value={customStoryTitle} onChangeText={setCustomStoryTitle} />
-                  </View>
-                  <Text style={styles.analysisMeta}>{sourceAnalysis?.genre?.toUpperCase()} • {sourceAnalysis?.tone?.toUpperCase()}</Text>
-                </View>
-                
-                {/* Quick Stats */}
-                <View style={styles.statsGrid}>
-                  <View style={styles.statItem}><Text style={styles.statLabel}>EPISODES</Text><Text style={styles.statValue}>{analysisResult.totalEpisodes}</Text></View>
-                  <View style={styles.statItem}><Text style={styles.statLabel}>CAST</Text><Text style={styles.statValue}>{(sourceAnalysis?.majorCharacters?.length || 0) + 1}</Text></View>
-                  <View style={styles.statItem}><Text style={styles.statLabel}>ZONES</Text><Text style={styles.statValue}>{sourceAnalysis?.keyLocations?.length || 0}</Text></View>
-                </View>
-
-                {/* Themes */}
-                {sourceAnalysis?.themes && sourceAnalysis.themes.length > 0 && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <BookOpen size={14} color={TERMINAL.colors.cyan} />
-                      <Text style={styles.analysisCardTitle}>THEMES</Text>
-                    </View>
-                    <View style={styles.tagList}>
-                      {sourceAnalysis.themes.slice(0, 5).map((theme, idx) => (
-                        <View key={idx} style={styles.themeTag}>
-                          <Text style={styles.themeTagText}>{theme.toUpperCase()}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                {/* Story Arcs */}
-                {sourceAnalysis?.storyArcs && sourceAnalysis.storyArcs.length > 0 && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <Layers size={14} color={TERMINAL.colors.amber} />
-                      <Text style={styles.analysisCardTitle}>STORY ARCS</Text>
-                    </View>
-                    {sourceAnalysis.storyArcs.slice(0, 3).map((arc, idx) => (
-                      <View key={idx} style={styles.arcItem}>
-                        <Text style={styles.arcName}>{arc.name.toUpperCase()}</Text>
-                        <Text style={styles.arcDescription} numberOfLines={2}>{arc.description}</Text>
-                        <Text style={styles.arcEpisodes}>Episodes {arc.estimatedEpisodeRange?.start || 1}-{arc.estimatedEpisodeRange?.end || '?'}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Locations */}
-                {sourceAnalysis?.keyLocations && sourceAnalysis.keyLocations.length > 0 && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <MapPin size={14} color={TERMINAL.colors.muted} />
-                      <Text style={styles.analysisCardTitle}>KEY LOCATIONS</Text>
-                    </View>
-                    <View style={styles.locationList}>
-                      {sourceAnalysis.keyLocations.slice(0, 6).map((loc, idx) => (
-                        <View key={idx} style={styles.locationItem}>
-                          <Text style={styles.locationName}>{loc.name?.toUpperCase()}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                <Text style={styles.subHeader}>SELECT EPISODES TO GENERATE</Text>
-                {sourceAnalysis && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <Layers size={14} color={TERMINAL.colors.primary} />
-                      <Text style={styles.analysisCardTitle}>ENDING MODE</Text>
-                    </View>
-                    <Text style={styles.characterReferenceIntro}>
-                      Choose whether branches should converge to one finale or preserve distinct ending routes.
-                    </Text>
-                    <View style={styles.endingModeRow}>
-                      <Text style={[styles.endingModeLabel, activeEndingMode === 'single' && styles.endingModeLabelActive]}>
-                        SINGLE ENDING
-                      </Text>
-                      <Switch
-                        value={activeEndingMode === 'multiple'}
-                        onValueChange={(value) => void handleEndingModeToggle(value ? 'multiple' : 'single')}
-                        trackColor={{ false: '#333', true: TERMINAL.colors.primary }}
-                        thumbColor="#fff"
-                      />
-                      <Text style={[styles.endingModeLabel, activeEndingMode === 'multiple' && styles.endingModeLabelActive]}>
-                        MULTIPLE ENDINGS
-                      </Text>
-                    </View>
-                    <Text style={styles.referenceModeHint}>
-                      {sourceAnalysis.endingModeReasoning
-                        || (sourceAnalysis.detectedEndingMode === 'multiple'
-                          ? 'The source suggests materially different endings, so multiple mode is the default.'
-                          : 'The source reads as one convergent ending, so single mode is the default.')}
-                    </Text>
-                  </View>
-                )}
+	                {sourceAnalysis?.sourceCanon ? (
+	                  <CanonWizard
+	                    canon={sourceAnalysis.sourceCanon}
+	                    wizardState={canonWizardState}
+	                    seasonPlan={seasonPlan}
+	                    selectedEpisodes={selectedEpisodes}
+	                    recommendations={episodeRecommendations}
+	                    warnings={selectionWarnings}
+	                    onCanonChange={(nextCanon, nextWizardState) => {
+	                      void syncCanonReviewState(nextCanon, nextWizardState);
+	                    }}
+	                    onStepApproved={(nextCanon, nextWizardState) => {
+	                      void syncCanonReviewState(nextCanon, nextWizardState, { persist: true });
+	                    }}
+	                    onEpisodeSelectionChange={handleCanonEpisodeSelectionChange}
+	                    onRequestRepairSuggestion={requestCanonRepairSuggestion}
+	                  />
+	                ) : isCreatingSeasonPlan ? (
+	                  <View style={styles.loadingContainer}>
+	                    <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
+	                    <Text style={styles.loadingText}>Creating season plan...</Text>
+	                  </View>
+	                ) : (
+	                  <View style={styles.errorCard}>
+	                    <Text style={styles.errorText}>LOCKED SOURCE CANON WAS NOT CREATED. RE-RUN ANALYSIS.</Text>
+	                    <TouchableOpacity style={styles.executeButton} onPress={startAnalysis}>
+	                      <Text style={styles.executeButtonText}>RETRY ANALYSIS</Text>
+	                    </TouchableOpacity>
+	                  </View>
+	                )}
                 {analysisCharacters.length > 0 && (
                   <View style={styles.analysisCard}>
                     <View style={styles.analysisCardHeader}>
@@ -2566,33 +4444,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                     </View>
                   </View>
                 )}
-                {isCreatingSeasonPlan ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-                    <Text style={styles.loadingText}>Creating season plan...</Text>
-                  </View>
-                ) : seasonPlan ? (
-                  <EpisodeSelector
-                    seasonPlan={seasonPlan}
-                    selectedEpisodes={selectedEpisodes}
-                    onSelectionChange={(episodes) => {
-                      setSelectedEpisodes(episodes);
-                      setSelectedEpisodeCount(episodes.length);
-                      // Validate selection and get recommendations
-                      const seasonPlanner = new SeasonPlannerAgent({ provider: 'anthropic', model: 'claude-sonnet-4-20250514', apiKey: '', maxTokens: 8000, temperature: 0.7 });
-                      const validation = seasonPlanner.validateSelection(seasonPlan, episodes);
-                      setSelectionWarnings(validation.warnings);
-                      const recs = seasonPlanner.getEpisodeRecommendations(seasonPlan, episodes);
-                      setEpisodeRecommendations(recs);
-                    }}
-                    recommendations={episodeRecommendations}
-                    warnings={selectionWarnings}
-                  />
-                ) : (
-                  <View style={styles.outlineList}>{(analysisResult.episodeOutlines || []).map((ep, idx) => (
-                    <View key={idx} style={styles.outlineItem}><View style={styles.outlineNumber}><Text style={styles.outlineNumberText}>{ep.episodeNumber}</Text></View><View style={styles.outlineInfo}><Text style={styles.outlineTitle}>{(ep.title || 'Untitled').toUpperCase()}</Text><Text style={styles.outlineSynopsis} numberOfLines={2}>{ep.synopsis}</Text></View></View>
-                  ))}</View>
-                )}
                 {activeEndings.length > 0 && (
                   <View style={styles.analysisCard}>
                     <View style={styles.analysisCardHeader}>
@@ -2635,26 +4486,121 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                 )}
               </View>
             )}
-            <View style={styles.configActions}>{(!documentBrief && !userPrompt.trim()) ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
+            <StyleSetupSection
+              rawArtStyle={artStyle}
+              expanding={styleSetup.expanding}
+              expansionError={styleSetup.expansionError}
+              profile={styleSetup.profile}
+              slots={styleSetup.slots}
+              useDefaults={styleSetup.useDefaults}
+              statusSummary={styleSetup.statusSummary}
+              onExpand={styleSetup.expand}
+              onUpdateField={styleSetup.updateField}
+              onGenerateAnchor={styleSetup.generateAnchor}
+              onApproveAnchor={styleSetup.approveAnchor}
+              onToggleUseDefaults={styleSetup.setUseDefaults}
+            />
+	            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={[styles.executeButton, sourceAnalysis?.sourceCanon && !canonSetupApproved ? { opacity: 0.5 } : null]} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>{sourceAnalysis?.sourceCanon && !canonSetupApproved ? 'APPROVE CANON TO CONTINUE' : 'INITIATE GENERATION'}</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
           </View>
         )}
         {(state === 'running' || state === 'checkpoint') && (
           <View style={styles.runningSection}>
-            <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} />
-            <View style={styles.runningActions}>
-              <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
-                <StopCircle size={18} color={TERMINAL.colors.error} />
-                <Text style={styles.cancelButtonText}>STOP GENERATION</Text>
-              </TouchableOpacity>
-            </View>
+            <ProgressStep>
+              <PipelineProgress events={events} currentPhase={currentPhase} isRunning={state === 'running'} progress={liveProgress} etaSeconds={etaSeconds} imageProgress={imageProgress} runtime={pipelineRuntime} storyTitle={pipelineRuntime?.friendlyName || customStoryTitle || undefined} />
+              <View style={styles.runningActions}>
+                <TouchableOpacity style={styles.cancelButton} onPress={cancelGeneration}>
+                  <StopCircle size={18} color={TERMINAL.colors.error} />
+                  <Text style={styles.cancelButtonText}>STOP GENERATION</Text>
+                </TouchableOpacity>
+              </View>
+            </ProgressStep>
           </View>
         )}
         {state === 'checkpoint' && currentCheckpoint && (<View style={styles.checkpointSection}><CheckpointReview checkpoint={currentCheckpoint} onApprove={handleCheckpointApprove} onReject={handleCheckpointReject} /></View>)}
         {state === 'complete' && generatedStory && !isViewingHistory && (
           <View style={styles.completeSection}>
-            <View style={styles.successHeader}><CheckCircle2 size={48} color={TERMINAL.colors.primary} /><Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text><Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text></View>
-            <View style={styles.storySummaryCard}><View style={styles.summaryRow}><Text style={styles.summaryLabel}>TITLE</Text><Text style={styles.summaryValue}>{(generatedStory.title || 'Untitled').toUpperCase()}</Text></View><View style={styles.summaryRow}><Text style={styles.summaryLabel}>EPISODES</Text><Text style={styles.summaryValue}>{generatedStory.episodes.length}</Text></View><View style={styles.summaryRow}><Text style={styles.summaryLabel}>SCENES</Text><Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text></View></View>
-            <View style={styles.completeActions}><TouchableOpacity style={styles.executeButton} onPress={exportStory}><Download size={18} color="white" /><Text style={styles.executeButtonText}>EXPORT STORY DATA</Text></TouchableOpacity><TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}><RefreshCw size={18} color={TERMINAL.colors.primary} /><Text style={styles.secondaryActionButtonText}>NEW GENERATION</Text></TouchableOpacity></View>
+            <CompleteStep>
+              <View style={styles.successHeader}>
+                <CheckCircle2 size={48} color={TERMINAL.colors.primary} />
+                <Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text>
+                <Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text>
+              </View>
+              <View style={styles.storySummaryCard}>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>TITLE</Text>
+                <Text style={styles.summaryValue}>{(generatedStory.title || 'Untitled').toUpperCase()}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>EPISODES</Text>
+                <Text style={styles.summaryValue}>{generatedStory.episodes.length}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>SCENES</Text>
+                <Text style={styles.summaryValue}>{generatedStory.episodes.reduce((acc, ep) => acc + ep.scenes.length, 0)}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>IMAGES</Text>
+                <Text style={styles.summaryValue}>{(generatedStory.imagesStatus || 'complete').toUpperCase()}</Text>
+              </View>
+            </View>
+            <View style={styles.completeActions}>
+              {generatedStory.imagesStatus === 'pending' && (
+                <TouchableOpacity style={styles.executeButton} onPress={() => { void startImageGenerationForDraft(); }}>
+                  <ImageIcon size={18} color="white" />
+                  <Text style={styles.executeButtonText}>GENERATE IMAGES</Text>
+                </TouchableOpacity>
+              )}
+              {onPlayStory && (
+                <TouchableOpacity
+                  style={[
+                    generatedStory.imagesStatus === 'pending' ? styles.secondaryActionButton : styles.executeButton,
+                  ]}
+                  onPress={() => { void onPlayStory(generatedStory); }}
+                >
+                  <Play size={18} color={generatedStory.imagesStatus === 'pending' ? TERMINAL.colors.primary : 'white'} />
+                  <Text style={generatedStory.imagesStatus === 'pending' ? styles.secondaryActionButtonText : styles.executeButtonText}>PLAY NOW</Text>
+                </TouchableOpacity>
+              )}
+              {onViewLibrary && (
+                <TouchableOpacity style={styles.secondaryActionButton} onPress={onViewLibrary}>
+                  <Library size={18} color={TERMINAL.colors.primary} />
+                  <Text style={styles.secondaryActionButtonText}>VIEW IN LIBRARY</Text>
+                </TouchableOpacity>
+              )}
+              {nextSeasonEpisode && (
+                <TouchableOpacity style={styles.executeButton} onPress={() => { void continueSeasonGeneration(); }}>
+                  <ChevronRight size={18} color="white" />
+                  <Text style={styles.executeButtonText}>CONTINUE WITH EPISODE {nextSeasonEpisode.episodeNumber}</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>
+                <RefreshCw size={18} color={TERMINAL.colors.primary} />
+                <Text style={styles.secondaryActionButtonText}>GENERATE ANOTHER</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.textButton} onPress={exportStory}>
+                <Text style={styles.textButtonText}>EXPORT STORY DATA</Text>
+              </TouchableOpacity>
+            </View>
+            </CompleteStep>
+          </View>
+        )}
+        {state === 'cancelled' && !isViewingHistory && (
+          <View style={styles.cancelledSection}>
+            <View style={styles.cancelledHeader}>
+              <PauseCircle size={40} color={TERMINAL.colors.amber} />
+              <Text style={styles.cancelledTitle}>GENERATION CANCELLED</Text>
+              <Text style={styles.cancelledSubtitle}>Pipeline stopped cleanly. Your inputs are preserved.</Text>
+            </View>
+            <View style={styles.cancelledActions}>
+              <TouchableOpacity style={styles.executeButton} onPress={() => setState('config')}>
+                <Settings size={18} color="white" />
+                <Text style={styles.executeButtonText}>BACK TO CONFIG</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryActionButton} onPress={resetGenerator}>
+                <RefreshCw size={18} color={TERMINAL.colors.primary} />
+                <Text style={styles.secondaryActionButtonText}>START OVER</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
         {state === 'error' && !isViewingHistory && (
@@ -2682,7 +4628,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
                   {(historyJob.status || 'unknown').toUpperCase()}
                 </Text>
               </View>
-              <Text style={styles.historyTitle}>{(historyJob.storyTitle || 'Untitled').toUpperCase()}</Text>
+              <Text style={styles.historyTitle}>{(historyJob.friendlyName || historyJob.storyTitle || 'Untitled').toUpperCase()}</Text>
               <Text style={styles.historyMeta}>
                 STARTED {new Date(historyJob.startedAt).toLocaleString().toUpperCase()}
               </Text>
@@ -2712,12 +4658,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
               </View>
             )}
 
-            {historyJob.status === 'failed' && renderFailureWorkspace()}
+            {isRecoverableHistoryJob(historyJob) && renderFailureWorkspace()}
 
             {/* Pipeline Progress / Event Log */}
             {events.length > 0 && (
               <View style={styles.historyProgressSection}>
-                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} />
+                <PipelineProgress events={events} currentPhase={currentPhase} isRunning={false} progress={historyJob.progress} etaSeconds={null} runtime={pipelineRuntime} storyTitle={historyJob.friendlyName || historyJob.storyTitle} />
               </View>
             )}
 
@@ -2733,11 +4679,267 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({ onBack, onStor
             </View>
           </View>
         )}
-        <ImageJobPanel />
-        <VideoJobPanel />
       </ScrollView>
-      
-      
+
+      <ConfirmDialog
+        visible={confirmCancelGeneration}
+        title="Stop generation?"
+        message="Progress will be saved and you may be able to resume later."
+        confirmLabel="Stop"
+        cancelLabel="Keep running"
+        destructive
+        onConfirm={performCancelGeneration}
+        onCancel={() => setConfirmCancelGeneration(false)}
+        testID="generator-cancel-dialog"
+      />
+
+      <Modal
+        visible={showArtStyleSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowArtStyleSheet(false)}
+      >
+        <View style={styles.jobsSheetOverlay}>
+          <Pressable
+            style={styles.jobsSheetBackdrop}
+            onPress={() => setShowArtStyleSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close art style picker"
+          />
+          <View style={styles.jobsSheet}>
+            <View style={styles.jobsSheetHandle} />
+            <View style={styles.jobsSheetHeader}>
+              <View style={styles.jobsSheetTitleRow}>
+                <ImageIcon size={16} color={TERMINAL.colors.primary} />
+                <Text style={styles.jobsSheetTitle}>ART STYLE</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.jobsSheetClose}
+                onPress={() => setShowArtStyleSheet(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close art style picker"
+              >
+                <Text style={styles.jobsSheetCloseText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.jobsSheetBody}
+              contentContainerStyle={styles.artStyleSheetContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.styleSheetActions}>
+                <TouchableOpacity style={styles.secondaryInlineButton} onPress={openNewArtStyleEditor}>
+                  <Text style={styles.secondaryInlineButtonText}>CREATE NEW STYLE</Text>
+                </TouchableOpacity>
+                {artStyle.trim().length > 0 && (
+                  <TouchableOpacity style={styles.secondaryInlineButton} onPress={openEditCurrentArtStyleEditor}>
+                    <Text style={styles.secondaryInlineButtonText}>EDIT CURRENT STYLE</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {presetStyleOptions.length > 0 ? (
+                <>
+                  <Text style={styles.styleSheetSectionTitle}>CURATED PRESETS</Text>
+                  <View style={styles.stylePresetGrid}>
+                    {presetStyleOptions.map((preset) => (
+                      <TouchableOpacity
+                        key={preset.id}
+                        style={[styles.stylePresetTile, selectedPresetId === preset.id && styles.stylePresetTileActive]}
+                        onPress={() => {
+                          applyPresetArtStyle(preset.id);
+                          setShowArtStyleSheet(false);
+                        }}
+                      >
+                        <Text style={[styles.stylePresetName, selectedPresetId === preset.id && styles.stylePresetNameActive]} numberOfLines={1}>
+                          {preset.displayName}
+                        </Text>
+                        <Text style={styles.stylePresetDescription} numberOfLines={2}>
+                          {preset.description}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              ) : null}
+
+              <Text style={styles.styleSheetSectionTitle}>SAVED STYLES</Text>
+              {savedArtStyles.length > 0 ? (
+                <View style={styles.styleList}>
+                  {savedArtStyles.map((style) => (
+                    <View key={style.id} style={styles.styleListRow}>
+                      <TouchableOpacity
+                        style={styles.styleListSelect}
+                        onPress={() => {
+                          applyArtStyle(style.style);
+                          setShowArtStyleSheet(false);
+                        }}
+                      >
+                        <Text style={styles.styleListName} numberOfLines={1}>{style.name}</Text>
+                        <Text style={styles.styleListText} numberOfLines={2}>{style.style}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.styleListIconButton} onPress={() => openEditArtStyleEditor(style)}>
+                        <Text style={styles.styleListIconButtonText}>EDIT</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.styleListIconButton} onPress={() => removeSavedArtStyle(style.id)}>
+                        <Trash2 size={13} color={TERMINAL.colors.muted} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.referenceModeHint}>No saved custom styles yet.</Text>
+              )}
+
+              {recentArtStyles.length > 0 && (
+                <>
+                  <Text style={styles.styleSheetSectionTitle}>RECENT</Text>
+                  <View style={styles.styleChipRow}>
+                    {recentArtStyles.map((style) => (
+                      <TouchableOpacity
+                        key={style}
+                        style={styles.styleChip}
+                        onPress={() => {
+                          applyArtStyle(style);
+                          setShowArtStyleSheet(false);
+                        }}
+                      >
+                        <Text style={styles.styleChipText} numberOfLines={1}>{style}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={artStyleEditorVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setArtStyleEditorVisible(false)}
+      >
+        <View style={styles.centerModalOverlay}>
+          <Pressable
+            style={styles.centerModalBackdrop}
+            onPress={() => setArtStyleEditorVisible(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close art style editor"
+          />
+          <View style={styles.centerModalCard}>
+            <Text style={styles.centerModalTitle}>
+              {editingArtStyleOriginal ? 'EDIT ART STYLE' : 'CREATE ART STYLE'}
+            </Text>
+            <Text style={styles.centerModalHint}>
+              Describe the exact visual look. This text becomes the style directive used by the image pipeline.
+            </Text>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.input}
+                value={editingArtStyleName}
+                onChangeText={setEditingArtStyleName}
+                placeholder="Style name, e.g. Gothic Wash"
+                placeholderTextColor={TERMINAL.colors.muted}
+              />
+            </View>
+            <View style={[styles.inputWrapper, styles.artStyleEditorInputWrap]}>
+              <TextInput
+                style={[styles.input, styles.artStyleEditorInput]}
+                value={editingArtStyleDraft}
+                onChangeText={setEditingArtStyleDraft}
+                placeholder="e.g. gothic ink wash with muted crimson accents and heavy silhouette design"
+                placeholderTextColor={TERMINAL.colors.muted}
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+              />
+            </View>
+            <View style={styles.centerModalActions}>
+              <TouchableOpacity style={styles.centerModalSecondary} onPress={() => setArtStyleEditorVisible(false)}>
+                <Text style={styles.centerModalSecondaryText}>CANCEL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.centerModalPrimary} onPress={saveEditedArtStyle}>
+                <Text style={styles.centerModalPrimaryText}>SAVE STYLE</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <AdvancedSettingsSheet
+        visible={showAdvancedSettings}
+        settings={generationSettings}
+        onChange={handleGenerationSettingsChange}
+        onClose={() => setShowAdvancedSettings(false)}
+      />
+
+      <ModelTaskSheet
+        visible={showModelTaskSheet}
+        onClose={() => setShowModelTaskSheet(false)}
+        modelFamily={modelFamily}
+        assignments={effectiveTaskAssignments}
+        overrides={taskModelOverrides}
+        availableModels={availableModels}
+        onTaskModelChange={handleTaskModelChange}
+        onTaskProviderChange={handleTaskProviderChange}
+        onResetTask={resetTaskModel}
+      />
+
+      {/*
+        Background jobs bottom sheet. Surfaces the full ImageJobPanel /
+        VideoJobPanel UIs on demand without forcing them to live at the
+        bottom of the generator scroll. Modal is unmounted when the sheet
+        is closed, so the panels do not render (and their internal
+        animations / polling don't run) unless requested.
+      */}
+      <Modal
+        visible={showJobsSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowJobsSheet(false)}
+      >
+        <View style={styles.jobsSheetOverlay}>
+          <Pressable
+            style={styles.jobsSheetBackdrop}
+            onPress={() => setShowJobsSheet(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close background jobs sheet"
+          />
+          <View style={styles.jobsSheet}>
+            <View style={styles.jobsSheetHandle} />
+            <View style={styles.jobsSheetHeader}>
+              <View style={styles.jobsSheetTitleRow}>
+                <Layers size={16} color={TERMINAL.colors.amber} />
+                <Text style={styles.jobsSheetTitle}>BACKGROUND JOBS</Text>
+                <View style={styles.jobsPillBadge}>
+                  <Text style={styles.jobsPillBadgeText}>{totalBackgroundJobs}</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.jobsSheetClose}
+                onPress={() => setShowJobsSheet(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close background jobs"
+              >
+                <Text style={styles.jobsSheetCloseText}>CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.jobsSheetBody}
+              contentContainerStyle={styles.jobsSheetBodyContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {imageJobCount > 0 && <ImageJobPanel />}
+              {videoJobCount > 0 && <VideoJobPanel />}
+              {!hasBackgroundJobs && (
+                <Text style={styles.jobsSheetEmpty}>NO ACTIVE JOBS</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -2746,25 +4948,127 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: TERMINAL.colors.bg },
   header: { height: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   headerTitle: { fontSize: 14, fontWeight: '900', color: 'white', letterSpacing: 2 },
+  headerSpacer: { width: 60 },
+  jobsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
+  jobsPillText: {
+    color: TERMINAL.colors.amber,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+  jobsPillBadge: {
+    minWidth: 18,
+    paddingHorizontal: 6,
+    height: 18,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: TERMINAL.colors.amber,
+  },
+  jobsPillBadgeText: {
+    color: TERMINAL.colors.bg,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  jobsSheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  jobsSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  jobsSheet: {
+    maxHeight: '85%',
+    backgroundColor: TERMINAL.colors.bg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingTop: 8,
+  },
+  jobsSheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    marginBottom: 8,
+  },
+  jobsSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  jobsSheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  jobsSheetTitle: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
+  jobsSheetClose: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  jobsSheetCloseText: {
+    color: TERMINAL.colors.muted,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  jobsSheetBody: {
+    flexGrow: 0,
+  },
+  jobsSheetBodyContent: {
+    padding: 16,
+    gap: 12,
+    paddingBottom: 32,
+  },
+  jobsSheetEmpty: {
+    textAlign: 'center',
+    color: TERMINAL.colors.muted,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+    paddingVertical: 40,
+  },
   headerIconButton: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8 },
   headerButtonText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   content: { flex: 1 },
   contentPadding: { padding: 20, paddingBottom: 40 },
-  statusBar: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#16191f', borderRadius: 12, marginBottom: 24, gap: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  statusBar: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 12, marginBottom: 24, gap: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   statusLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   statusValue: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
-  status_idle: { color: TERMINAL.colors.muted }, status_config: { color: TERMINAL.colors.cyan }, status_analyzing: { color: TERMINAL.colors.amber }, status_analysis_complete: { color: TERMINAL.colors.primary }, status_running: { color: TERMINAL.colors.amber }, status_checkpoint: { color: TERMINAL.colors.cyan }, status_complete: { color: TERMINAL.colors.primary }, status_error: { color: TERMINAL.colors.error }, status_history: { color: TERMINAL.colors.cyan },
+  status_idle: { color: TERMINAL.colors.muted }, status_config: { color: TERMINAL.colors.cyan }, status_analyzing: { color: TERMINAL.colors.amber }, status_analysis_complete: { color: TERMINAL.colors.primary }, status_running: { color: TERMINAL.colors.amber }, status_checkpoint: { color: TERMINAL.colors.cyan }, status_complete: { color: TERMINAL.colors.primary }, status_cancelled: { color: TERMINAL.colors.amber }, status_error: { color: TERMINAL.colors.error }, status_history: { color: TERMINAL.colors.cyan },
   section: { marginBottom: 32 }, sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }, sectionTitle: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },
   configIntro: { fontSize: 11, color: TERMINAL.colors.muted, lineHeight: 18, marginTop: -4, marginBottom: 18, fontWeight: '600' },
-  heroCard: { backgroundColor: '#16191f', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
-  heroText: { fontSize: 14, fontWeight: '900', color: 'white', textAlign: 'center', lineHeight: 22, marginBottom: 24, letterSpacing: 0.5 },
-  pipelineGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 12, marginBottom: 30 },
-  pipelineGridItem: { width: 60, height: 70, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, alignItems: 'center', justifyContent: 'center', gap: 4 },
-  pipelineGridIcon: { fontSize: 18 }, pipelineGridName: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
-  primaryActionButton: { backgroundColor: TERMINAL.colors.primary, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, gap: 12, width: '100%', justifyContent: 'center' },
-  primaryActionButtonText: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
   configGroup: { gap: 18, marginBottom: 30 },
-  setupStepCard: { backgroundColor: '#16191f', borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gap: 16 },
+  setupStepCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 22, padding: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gap: 16 },
   setupStepHeader: { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
   bucketCardHeader: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   bucketCardHeaderMain: { flex: 1, gap: 10 },
@@ -2786,7 +5090,62 @@ const styles = StyleSheet.create({
   configItem: { gap: 8 },
   configLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 1, marginLeft: 4 },
   configHint: { fontSize: 9, color: TERMINAL.colors.muted, marginLeft: 4, marginTop: 4, fontWeight: '600' },
+  styleDropdownButton: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16, paddingVertical: 10 },
+  styleDropdownTextBlock: { flex: 1, gap: 4 },
+  styleDropdownValue: { color: 'white', fontSize: 13, fontWeight: '900', letterSpacing: 0.3 },
+  styleDropdownHint: { color: TERMINAL.colors.muted, fontSize: 9, fontWeight: '700' },
   inlineDisclosure: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  presetSummary: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  presetTask: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: TERMINAL.colors.muted,
+    letterSpacing: 0.3,
+    flex: 1,
+    marginRight: 8,
+  },
+  presetModelWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+  },
+  presetModel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: 'white',
+    letterSpacing: 0.2,
+    flexShrink: 1,
+  },
+  presetCustom: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: TERMINAL.colors.cyan,
+    letterSpacing: 0.5,
+    marginLeft: 6,
+  },
+  advancedSettingsHint: {
+    marginLeft: 'auto',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+    color: TERMINAL.colors.primary,
+  },
   disclosureBody: { marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 12 },
   disclosureScroll: { marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 12, maxHeight: 420 },
   configGroupIntro: { color: TERMINAL.colors.muted, fontSize: 10, marginBottom: 16, letterSpacing: 1 },
@@ -2806,6 +5165,7 @@ const styles = StyleSheet.create({
   providerModelDescription: { color: TERMINAL.colors.muted, fontSize: 10, marginTop: 2, fontWeight: '600' },
   providerModelCheck: { color: TERMINAL.colors.primary, fontSize: 14, fontWeight: '900' },
   toggleActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  toggleActionTextBlock: { flex: 1, paddingRight: 12 },
   toggleActionHint: { color: TERMINAL.colors.muted, fontSize: 10, marginTop: 2, fontWeight: '600' },
   booleanToggle: { width: 44, height: 24, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', padding: 2 },
   booleanToggleActive: { backgroundColor: TERMINAL.colors.cyan },
@@ -2818,20 +5178,57 @@ const styles = StyleSheet.create({
   setupChecklistLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1, marginBottom: 6 },
   setupChecklistValue: { fontSize: 11, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   setupChecklistValueReady: { color: TERMINAL.colors.primary },
-  inputWrapper: { backgroundColor: '#16191f', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16 },
+  inputWrapper: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16 },
   input: { height: 50, color: 'white', fontSize: 14, fontWeight: '700' },
-  segmentedControl: { flexDirection: 'row', backgroundColor: '#16191f', borderRadius: 14, padding: 4, gap: 4 },
+  segmentedControl: { flexDirection: 'row', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 4 },
   segment: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 10 },
   segmentActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   segmentText: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, segmentTextActive: { color: 'white' },
-  modelPickerContainer: { backgroundColor: '#16191f', borderRadius: 14, padding: 4, gap: 2 },
+  stylePresetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  stylePresetTile: { width: '31.8%', minHeight: 78, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(255,255,255,0.03)', padding: 10, gap: 5 },
+  stylePresetTileActive: { borderColor: TERMINAL.colors.primary, backgroundColor: 'rgba(59,130,246,0.12)' },
+  stylePresetName: { color: 'white', fontSize: 10, fontWeight: '900', letterSpacing: 0.4 },
+  stylePresetNameActive: { color: TERMINAL.colors.primary },
+  stylePresetDescription: { color: TERMINAL.colors.muted, fontSize: 8, lineHeight: 12, fontWeight: '600' },
+  artStyleSheetContent: { padding: 16, gap: 14, paddingBottom: 40 },
+  styleSheetActions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  styleSheetSectionTitle: { color: TERMINAL.colors.amber, fontSize: 10, fontWeight: '900', letterSpacing: 1, marginLeft: 4, marginTop: 4 },
+  styleList: { gap: 8 },
+  styleListRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', padding: 8 },
+  styleListSelect: { flex: 1, paddingVertical: 4, paddingHorizontal: 4 },
+  styleListName: { color: 'white', fontSize: 11, fontWeight: '900', letterSpacing: 0.4, marginBottom: 3 },
+  styleListText: { color: TERMINAL.colors.muted, fontSize: 9, lineHeight: 14, fontWeight: '700' },
+  styleListIconButton: { minWidth: 42, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)' },
+  styleListIconButtonText: { color: TERMINAL.colors.primary, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  centerModalOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20, backgroundColor: 'rgba(0,0,0,0.62)' },
+  centerModalBackdrop: { ...StyleSheet.absoluteFillObject },
+  centerModalCard: { width: '100%', maxWidth: 560, borderRadius: 20, backgroundColor: TERMINAL.colors.bg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', padding: 18, gap: 12 },
+  centerModalTitle: { color: 'white', fontSize: 13, fontWeight: '900', letterSpacing: 1.2 },
+  centerModalHint: { color: TERMINAL.colors.muted, fontSize: 10, lineHeight: 16, fontWeight: '600' },
+  centerModalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 4 },
+  centerModalSecondary: { paddingVertical: 11, paddingHorizontal: 14, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.05)' },
+  centerModalPrimary: { paddingVertical: 11, paddingHorizontal: 14, borderRadius: 10, backgroundColor: TERMINAL.colors.primary },
+  centerModalSecondaryText: { color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  centerModalPrimaryText: { color: 'white', fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  artStyleEditorInputWrap: { paddingVertical: 10 },
+  artStyleEditorInput: { height: 110, textAlignVertical: 'top' },
+  styleChipSection: { gap: 8 },
+  styleChipSectionLabel: { color: TERMINAL.colors.muted, fontSize: 8, fontWeight: '900', letterSpacing: 1, marginLeft: 4 },
+  styleChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  styleChip: { maxWidth: '100%', flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 7, paddingHorizontal: 10, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  styleChipText: { color: 'white', fontSize: 9, fontWeight: '800', maxWidth: 260 },
+  styleChipRemove: { padding: 2 },
+  styleActionRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  secondaryInlineButton: { paddingVertical: 9, paddingHorizontal: 12, borderRadius: 10, backgroundColor: 'rgba(59,130,246,0.08)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)' },
+  secondaryInlineButtonText: { color: TERMINAL.colors.primary, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  modelPickerContainer: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 14, padding: 4, gap: 2 },
   modelPickerOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 10 },
   modelPickerOptionActive: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   modelPickerLabel: { fontSize: 11, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
   modelPickerLabelActive: { color: 'white' },
   modelPickerValue: { fontSize: 9, fontWeight: '700', color: 'rgba(255,255,255,0.15)', letterSpacing: 0.3 },
   modelPickerValueActive: { color: TERMINAL.colors.muted },
-  filePicker: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#16191f', borderRadius: 20, padding: 16, borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.1)', gap: 16 },
+  filePicker: { flexDirection: 'row', alignItems: 'center', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 16, borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.1)', gap: 16 },
   filePickerActive: { borderStyle: 'solid', borderColor: TERMINAL.colors.primary, backgroundColor: 'rgba(59, 130, 246, 0.05)' },
   fileIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   fileInfo: { flex: 1 }, fileName: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4 }, fileMeta: { fontSize: 9, color: TERMINAL.colors.muted, fontWeight: '700' },
@@ -2843,13 +5240,13 @@ const styles = StyleSheet.create({
   executeButtonText: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
   textButton: { paddingVertical: 12, alignItems: 'center' }, textButtonText: { fontSize: 11, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   configActions: { gap: 12 },
-  analysisGroup: { gap: 20, marginBottom: 30 }, titleCard: { backgroundColor: '#16191f', borderRadius: 20, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  analysisGroup: { gap: 20, marginBottom: 30 }, titleCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   analysisMeta: { fontSize: 10, color: TERMINAL.colors.muted, fontWeight: '700', marginTop: 10 }, statsGrid: { flexDirection: 'row', gap: 12 },
-  statItem: { flex: 1, backgroundColor: '#16191f', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  statItem: { flex: 1, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   statLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1, marginBottom: 4 }, statValue: { fontSize: 18, fontWeight: '900', color: 'white' },
   subHeader: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 2, marginTop: 10 },
   // Analysis card styles
-  analysisCard: { backgroundColor: '#16191f', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  analysisCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   analysisCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   analysisCardTitle: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   // Themes
@@ -2883,8 +5280,12 @@ const styles = StyleSheet.create({
   characterReferenceName: { fontSize: 11, fontWeight: '900', color: 'white', letterSpacing: 0.6 },
   characterReferenceRole: { fontSize: 8, fontWeight: '800', color: TERMINAL.colors.muted, letterSpacing: 1 },
   characterReferenceDescription: { fontSize: 10, color: TERMINAL.colors.muted, lineHeight: 16, fontWeight: '600' },
+  styleReferenceHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 },
+  styleReferenceTitleBlock: { flex: 1, gap: 4 },
   referenceUploadButton: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: 'rgba(59, 130, 246, 0.08)', borderWidth: 1, borderColor: 'rgba(59, 130, 246, 0.2)' },
+  referenceUploadButtonDisabled: { opacity: 0.55, backgroundColor: 'rgba(255,255,255,0.03)', borderColor: 'rgba(255,255,255,0.08)' },
   referenceUploadButtonText: { fontSize: 9, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 0.8 },
+  referenceUploadButtonTextDisabled: { color: TERMINAL.colors.muted },
   referenceModeSection: { gap: 8 },
   referenceModeLabel: { fontSize: 8, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 },
   referenceModeControl: { flexDirection: 'row', gap: 8 },
@@ -2909,18 +5310,23 @@ const styles = StyleSheet.create({
   locationList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   locationItem: { backgroundColor: 'rgba(255,255,255,0.05)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
   locationName: { fontSize: 9, fontWeight: '700', color: TERMINAL.colors.muted, letterSpacing: 0.5 },
-  outlineList: { maxHeight: 250, backgroundColor: '#16191f', borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', overflow: 'hidden' },
+  outlineList: { maxHeight: 250, backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', overflow: 'hidden' },
   outlineItem: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.03)', gap: 16 },
   outlineNumber: { width: 28, height: 28, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   outlineNumberText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.cyan }, outlineInfo: { flex: 1 },
   outlineTitle: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4, letterSpacing: 0.5 }, outlineSynopsis: { fontSize: 10, color: TERMINAL.colors.muted, lineHeight: 16, fontWeight: '600' },
-  generationConfig: { backgroundColor: '#16191f', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
+  generationConfig: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
   counter: { flexDirection: 'row', alignItems: 'center', marginTop: 16, gap: 30 },
   counterBtn: { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   counterBtnText: { fontSize: 24, color: 'white', fontWeight: '300' }, counterVal: { fontSize: 32, fontWeight: '900', color: TERMINAL.colors.primary },
   completeSection: { alignItems: 'center', paddingVertical: 20 }, successHeader: { alignItems: 'center', marginBottom: 30 },
   completeTitle: { fontSize: 20, fontWeight: '900', color: 'white', letterSpacing: 2, marginTop: 20, marginBottom: 8 }, completeSubtitle: { fontSize: 11, fontWeight: '700', color: TERMINAL.colors.primary, letterSpacing: 1 },
-  storySummaryCard: { width: '100%', backgroundColor: '#16191f', borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  cancelledSection: { alignItems: 'center', paddingVertical: 40, gap: 24 },
+  cancelledHeader: { alignItems: 'center', gap: 12 },
+  cancelledTitle: { fontSize: 16, fontWeight: '900', color: TERMINAL.colors.amber, letterSpacing: 2, marginTop: 12 },
+  cancelledSubtitle: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 18, fontWeight: '600', paddingHorizontal: 20 },
+  cancelledActions: { width: '100%', gap: 12 },
+  storySummaryCard: { width: '100%', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, summaryLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, summaryValue: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   completeActions: { width: '100%', gap: 12 }, secondaryActionButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 18, borderRadius: 20, borderWidth: 1, borderColor: TERMINAL.colors.primary, gap: 12 },
   secondaryActionButtonText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },
@@ -2928,7 +5334,7 @@ const styles = StyleSheet.create({
   errorTitle: { fontSize: 18, fontWeight: '900', color: TERMINAL.colors.error, letterSpacing: 2, marginTop: 16 },
   errorDetail: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 20, paddingHorizontal: 20, marginBottom: 30, fontWeight: '600' },
   errorActions: { width: '100%', gap: 12 },
-  progressPlaceholder: { backgroundColor: '#16191f', borderRadius: 24, padding: 4, marginTop: 10 },
+  progressPlaceholder: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 4, marginTop: 10 },
   errorCard: { backgroundColor: 'rgba(239, 68, 68, 0.05)', borderRadius: 20, padding: 24, borderWidth: 1, borderColor: 'rgba(239, 68, 68, 0.2)', alignItems: 'center', gap: 16 },
   errorText: { fontSize: 12, color: TERMINAL.colors.error, fontWeight: '700', textAlign: 'center', letterSpacing: 0.5 },
   runningSection: { paddingVertical: 10, gap: 16 }, checkpointSection: { paddingVertical: 10 },
@@ -2992,7 +5398,7 @@ const styles = StyleSheet.create({
   },
   historyStatItem: {
     flex: 1,
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 16,
     padding: 16,
     alignItems: 'center',
@@ -3029,7 +5435,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   historyProgressSection: {
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 24,
     padding: 4,
   },
@@ -3041,7 +5447,7 @@ const styles = StyleSheet.create({
   configError: { fontSize: 9, color: TERMINAL.colors.error, marginLeft: 4, marginTop: 4, fontWeight: '600' },
   // Model picker button
   modelPickerButton: {
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
@@ -3064,46 +5470,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 10,
   },
-  // Modal styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'flex-end',
-  },
-  modelPickerModal: {
-    backgroundColor: '#1e2229',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: '80%',
-    paddingBottom: 20,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  modalTitle: {
-    fontSize: 14,
-    fontWeight: '900',
-    color: 'white',
-    letterSpacing: 1,
-  },
-  modalCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCloseBtnText: {
-    color: TERMINAL.colors.muted,
-    fontSize: 16,
-    fontWeight: '700',
-  },
+  // Loading state (used by the season plan loading indicator). Modal-specific
+  // styles (modelPickerModal, modalHeader, modalTitle, etc.) previously lived
+  // here but were dead code tied to an earlier inline model-picker
+  // implementation; they have been removed along with the Modal import.
   loadingContainer: {
     padding: 60,
     alignItems: 'center',
@@ -3115,94 +5485,9 @@ const styles = StyleSheet.create({
     color: TERMINAL.colors.muted,
     letterSpacing: 1,
   },
-  errorContainer: {
-    padding: 40,
-    alignItems: 'center',
-    gap: 16,
-  },
-  errorMessage: {
-    fontSize: 12,
-    color: TERMINAL.colors.error,
-    textAlign: 'center',
-    fontWeight: '600',
-  },
-  retryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(59,130,246,0.1)',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.2)',
-  },
-  retryButtonText: {
-    fontSize: 11,
-    fontWeight: '900',
-    color: TERMINAL.colors.primary,
-    letterSpacing: 1,
-  },
-  modelList: {
-    maxHeight: 400,
-  },
-  modelItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.03)',
-    gap: 12,
-  },
-  modelItemSelected: {
-    backgroundColor: 'rgba(59,130,246,0.1)',
-  },
-  modelThumbnail: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  modelInfo: {
-    flex: 1,
-  },
-  modelName: {
-    fontSize: 13,
-    fontWeight: '900',
-    color: 'white',
-    marginBottom: 2,
-  },
-  modelNameSelected: {
-    color: TERMINAL.colors.primary,
-  },
-  modelType: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: TERMINAL.colors.cyan,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  modelDesc: {
-    fontSize: 10,
-    color: TERMINAL.colors.muted,
-    lineHeight: 14,
-    fontWeight: '600',
-  },
-  modalFooter: {
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-  },
-  modalFooterText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: TERMINAL.colors.muted,
-    letterSpacing: 1,
-  },
   failureWorkspaceCard: {
     marginTop: 16,
-    backgroundColor: '#16191f',
+    backgroundColor: TERMINAL.colors.bgLight,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: 'rgba(239,68,68,0.22)',

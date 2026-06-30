@@ -60,12 +60,12 @@ describe('webOutputCache', () => {
     const smallContent = JSON.stringify({ hello: 'world' });
     const oversizedContent = 'x'.repeat(140_000);
 
-    expect(cacheWebOutputFile('generated-stories/story-1/08-final-story.json', smallContent)).toBe(true);
+    expect(cacheWebOutputFile('generated-stories/story-1/story.json', smallContent)).toBe(true);
     expect(cacheWebOutputFile('generated-stories/story-1/09-large.json', oversizedContent)).toBe(false);
 
-    expect(readCachedOutputFile('generated-stories/story-1/08-final-story.json')).toEqual({ hello: 'world' });
+    expect(readCachedOutputFile('generated-stories/story-1/story.json')).toEqual({ hello: 'world' });
     expect(getCachedOutputsForDownload('generated-stories/story-1/')).toEqual([
-      { name: '08-final-story.json', content: smallContent },
+      { name: 'story.json', content: smallContent },
     ]);
   });
 
@@ -75,7 +75,7 @@ describe('webOutputCache', () => {
       JSON.stringify({ storyTitle: 'Story One', storyId: 'story-1' }),
     );
     cacheWebOutputFile(
-      'generated-stories/story-1/08-final-story.json',
+      'generated-stories/story-1/story.json',
       JSON.stringify({ storyId: 'story-1' }),
     );
 

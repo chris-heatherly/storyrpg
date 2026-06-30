@@ -17,6 +17,91 @@ describe('assertValidWorkerPayload', () => {
     expect(() => assertValidWorkerPayload(payload)).not.toThrow();
   });
 
+  it('accepts optional worker display labels', () => {
+    const payload = {
+      mode: 'generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      friendlyName: 'Bite Me · Story generation · Episodes 1-8',
+      processTitle: 'storyrpg:generation:Bite-Me',
+      generationInput: {
+        brief: {
+          story: { title: 'Bite Me' },
+        },
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
+  it('accepts a valid image-generation payload', () => {
+    const payload = {
+      mode: 'image-generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      imageGenerationInput: {
+        outputDirectory: '/tmp/generated-story/',
+        targetEpisodeNumber: 2,
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
+  it('accepts spot image-generation target slots', () => {
+    const payload = {
+      mode: 'image-generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      imageGenerationInput: {
+        outputDirectory: 'generated-stories/story-1',
+        mode: 'spot',
+        targetSlots: [{ episodeNumber: 1, sceneId: 'scene-3', beatId: 'beat-1' }],
+        skipEncounterImages: true,
+        skipCover: true,
+        skipCharacterRefs: true,
+        skipVisualContractValidation: true,
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
+  it('accepts a valid compile-episode payload', () => {
+    const payload = {
+      mode: 'compile-episode',
+      config: {},
+      resultPath: '/tmp/result.json',
+      compileEpisodeInput: {
+        outputDirectory: '/tmp/generated-story/',
+        request: {
+          storyRunId: 'run',
+          episodeNumber: 3,
+          mode: 'revalidate',
+          contextSource: 'latest',
+          totalEpisodes: 5,
+        },
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+  });
+
+  it('rejects malformed spot image-generation target slots', () => {
+    const payload = {
+      mode: 'image-generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      imageGenerationInput: {
+        outputDirectory: 'generated-stories/story-1',
+        mode: 'spot',
+        targetSlots: [{ episodeNumber: 0, sceneId: '', beatId: 'beat-1' }],
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).toThrow(/targetSlots entries/i);
+  });
+
   it('rejects a malformed analysis payload', () => {
     const payload = {
       mode: 'analysis',
@@ -28,5 +113,29 @@ describe('assertValidWorkerPayload', () => {
     };
 
     expect(() => assertValidWorkerPayload(payload)).toThrow(/sourceText and title/i);
+  });
+
+  it('rejects image-generation without an output directory', () => {
+    const payload = {
+      mode: 'image-generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      imageGenerationInput: {},
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).toThrow(/outputDirectory/i);
+  });
+
+  it('rejects compile-episode without a request', () => {
+    const payload = {
+      mode: 'compile-episode',
+      config: {},
+      resultPath: '/tmp/result.json',
+      compileEpisodeInput: {
+        outputDirectory: '/tmp/generated-story/',
+      },
+    };
+
+    expect(() => assertValidWorkerPayload(payload)).toThrow(/request/i);
   });
 });

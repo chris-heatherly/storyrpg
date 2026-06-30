@@ -72,12 +72,10 @@ export {
 
 // Pipeline
 export {
-  EpisodePipeline,
-  type CreativeBrief,
   type PipelineEvent,
   type PipelineEventHandler,
-  type PipelineResult,
-} from './pipeline/EpisodePipeline';
+  type PipelineProgressTelemetry,
+} from './pipeline/events';
 
 export {
   FullStoryPipeline,

@@ -111,7 +111,7 @@ const MALFORMED_SECOND_PERSON_PATTERNS: Array<{ id: string; pattern: RegExp }> =
   { id: 'you-kiss-takes', pattern: /\bYou kiss takes\b/i },
   { id: 'you-maze-exit', pattern: /\byou maze' exit\b/i },
   { id: 'you-rooftop', pattern: /\byou rooftop\b/i },
-  { id: 'you-dusk-club', pattern: /\bYou Dusk Club\b/i },
+  { id: 'you-proper-noun-phrase', pattern: /\bYou\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}\b/ },
   {
     id: 'you-possessive-noun-after-preposition',
     pattern:

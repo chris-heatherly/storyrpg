@@ -108,7 +108,10 @@ function blockedLabelHits(text: string, contract: RelationshipPacingContract): s
   const hits: string[] = [];
   for (const label of contract.blockedLabels ?? []) {
     if (!label || label.length < 3) continue;
-    const re = new RegExp(`\\b${escaped(label)}\\b`, 'ig');
+    const source = label.toLowerCase() === 'friend'
+      ? `${escaped(label)}(?:ship|s)?`
+      : escaped(label);
+    const re = new RegExp(`\\b${source}\\b`, 'ig');
     for (const match of text.matchAll(re)) {
       if (isBlockedLabelClaim(text, label, match.index ?? 0)) hits.push(label);
     }
@@ -181,6 +184,52 @@ function resolveNpcKey(value: string | undefined, aliases: Map<string, string>):
   return aliases.get(key) ?? key;
 }
 
+function npcAliasesForContract(story: Story, contract: RelationshipPacingContract, aliases: Map<string, string>): string[] {
+  const contractNpcKey = resolveNpcKey(contract.npcId, aliases);
+  if (!contractNpcKey) return [];
+  const values = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (trimmed.length >= 3) values.add(trimmed);
+  };
+
+  add(contract.npcId);
+  for (const npc of story.npcs ?? []) {
+    const raw = npc as { id?: string; name?: string; aliases?: string[] };
+    const npcKey = resolveNpcKey(raw.id, aliases) ?? resolveNpcKey(raw.name, aliases);
+    if (npcKey !== contractNpcKey) continue;
+    add(raw.id);
+    add(raw.name);
+    for (const alias of raw.aliases ?? []) add(alias);
+    const first = raw.name?.match(/[A-Za-zÀ-ž'’-]{3,}/)?.[0];
+    add(first);
+  }
+
+  return Array.from(values)
+    .filter((value) => !/^char-|^npc-/i.test(value))
+    .sort((a, b) => b.length - a.length);
+}
+
+function aliasPattern(aliases: string[]): string | undefined {
+  if (aliases.length === 0) return undefined;
+  return aliases.map(escaped).join('|');
+}
+
+function hasDirectContactAccess(text: string, aliases: string[]): boolean {
+  const alias = aliasPattern(aliases);
+  if (!alias) return false;
+  return new RegExp(`\\b(?:text(?:ed|s|ing)?|message(?:d|s|ing)?|dm(?:ed|s|ing)?|call(?:ed|s|ing)?|phone(?:s|d)?|reply|replies|buzz(?:es|ed)?|number|contact)\\b[^.!?]{0,120}\\b(?:${alias})\\b`, 'i').test(text)
+    || new RegExp(`\\b(?:${alias})\\b[^.!?]{0,120}\\b(?:text(?:ed|s|ing)?|message(?:d|s|ing)?|dm(?:ed|s|ing)?|call(?:ed|s|ing)?\\s+(?:from|back|on\\s+the\\s+phone|your\\s+phone)|phone(?:s|d)?|repl(?:y|ies)|send(?:s|ing)?|sent|buzz(?:es|ed)?|knows a place|adds?\\b[^.!?]{0,32}\\bemoji)\\b`, 'i').test(text);
+}
+
+function hasOnPageIntroductionEvidence(text: string, aliases: string[]): boolean {
+  const alias = aliasPattern(aliases);
+  if (!alias) return false;
+  return new RegExp(`\\b(?:meet|meets|met|introduce(?:s|d)?|appears?|arrives?|stands?|waits?|press(?:es|ed)?|hands?|offers?|raises?|smiles?|leans?|looks?|touch(?:es|ed)?|places?|says?|asks?|murmurs?|laughs?|waves?|opens?|holds?)\\b[^.!?]{0,120}\\b(?:${alias})\\b`, 'i').test(text)
+    || new RegExp(`\\b(?:${alias})\\b[^.!?]{0,120}\\b(?:meet|meets|met|introduce(?:s|d)?|appears?|arrives?|stands?|waits?|press(?:es|ed)?|hands?|offers?|raises?|smiles?|leans?|looks?|touch(?:es|ed)?|places?|says?|asks?|murmurs?|laughs?|waves?|opens?|holds?)\\b`, 'i').test(text);
+}
+
 function contractKey(contract: RelationshipPacingContract, aliases?: Map<string, string>): string | undefined {
   if (contract.npcId) {
     const key = aliases ? resolveNpcKey(contract.npcId, aliases) : contract.npcId;
@@ -235,6 +284,7 @@ export class RelationshipPacingValidator extends BaseValidator {
   validate(input: RelationshipPacingInput): ValidationResult {
     const issues: ValidationIssue[] = [];
     const seenScenes = new Map<string, number>();
+    const introducedScenes = new Map<string, number>();
     const accumulated = new Map<string, number>();
     const aliases = npcAliasMap(input.story);
 
@@ -258,9 +308,27 @@ export class RelationshipPacingValidator extends BaseValidator {
         const key = contractKey(contract, aliases);
         const loc = locationFor(ref, contract);
         const priorScenes = key ? (seenScenes.get(key) ?? 0) : 0;
+        const priorIntroductions = key ? (introducedScenes.get(key) ?? 0) : 0;
         const priorPositive = key ? (accumulated.get(key) ?? 0) : 0;
         const highTarget = STAGE_RANK[contract.targetStage] >= STAGE_RANK.friend;
         const treatmentBlocking = input.treatmentSourced || contract.source === 'treatment';
+        const npcAliases = npcAliasesForContract(input.story, contract, aliases);
+
+        if (key && contract.npcId && priorIntroductions === 0) {
+          let introducedInScene = false;
+          for (const beat of ref.scene.beats ?? []) {
+            const localText = beatText(beat);
+            if (!introducedInScene && hasDirectContactAccess(localText, npcAliases)) {
+              issues.push({
+                severity: treatmentBlocking ? 'error' : 'warning',
+                location: loc,
+                message: `Scene "${ref.scene.id}" gives ${contract.npcId} direct phone/contact access before an on-page introduction earns it.`,
+                suggestion: 'Introduce the NPC in person, show how numbers/contact access are exchanged, or rewrite the beat as public venue discovery rather than texting/calling an unmet character.',
+              });
+            }
+            if (hasOnPageIntroductionEvidence(localText, npcAliases)) introducedInScene = true;
+          }
+        }
 
         const blocked = blockedLabelHits(text, contract);
         if (blocked.length > 0) {
@@ -339,6 +407,12 @@ export class RelationshipPacingValidator extends BaseValidator {
         const key = contractKey(contract, aliases);
         if (key) contractedKeys.add(key);
         if (key) seenScenes.set(key, (seenScenes.get(key) ?? 0) + 1);
+        if (key && contract.npcId) {
+          const npcAliases = npcAliasesForContract(input.story, contract, aliases);
+          if ((ref.scene.beats ?? []).some((beat) => hasOnPageIntroductionEvidence(beatText(beat), npcAliases))) {
+            introducedScenes.set(key, (introducedScenes.get(key) ?? 0) + 1);
+          }
+        }
       }
       const consequenceNpcIds = new Set<string>();
       for (const consequence of consequences) {

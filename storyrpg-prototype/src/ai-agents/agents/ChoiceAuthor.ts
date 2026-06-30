@@ -28,6 +28,7 @@ import {
   StakesLayers,
 } from '../../types';
 import type { StoryVerb } from '../utils/storyVerbs';
+import type { RelationshipEvidenceTag, RelationshipSurface, RelationshipValueAxis } from '../../types/relationshipValue';
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
@@ -661,11 +662,17 @@ Before finalizing:
   }
 
   private buildCompactRetryJsonSchema(input: ChoiceAuthorInput) {
-    const schema = this.buildJsonSchema(input);
+    const choicePoint = input.sceneBlueprint.choicePoint;
+    const schema = buildChoiceSetJsonSchema({
+      choiceType: choicePoint?.type,
+      branching: Boolean(choicePoint?.branches || input.requiredBranchTargets?.length),
+      optionCount: input.optionCount,
+      compact: true,
+    });
     return {
       ...schema,
       name: 'choice_set_compact_retry',
-      maxOutputTokens: 8192,
+      maxOutputTokens: 6144,
     };
   }
 
@@ -709,10 +716,11 @@ ${choicePoint.type === 'dilemma' ? '- Every choice must include moralContract.' 
 
 Compactness:
 - choice text: 5-${this.choiceLimits?.maxChoiceWords ?? 15} words.
-- each outcomeTexts tier: exactly one vivid sentence.
-- reactionText: exactly one sentence.
-- residueHints.description: exactly one concrete sentence.
-- designNotes: one short clause.
+- each stakesAnnotation field: at most 12 words.
+- each outcomeTexts tier: exactly one vivid sentence, at most 16 words.
+- reactionText: exactly one sentence, at most 16 words.
+- residueHints.description: exactly one concrete sentence, at most 16 words.
+- designNotes: one short clause, at most 8 words.
 - Do not emit authorNotes, witnessReactions, failureResidue, reminderPlan, feedbackCue, visualResidueHint, memorableMoment, stakesLayers, storyVerb, or affordanceSource.
 
 Stat checks for relationship/strategic/dilemma:
@@ -1769,6 +1777,10 @@ ${input.sceneBlueprint.relationshipPacing?.length ? `
 Design relationship consequences and aftermath at the earned stage, not the future desired stage.
 ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; max relationship delta this scene ${c.maxDeltaThisScene}; allowed labels: ${c.allowedLabels.join(', ')}; blocked labels: ${c.blockedLabels.join(', ')}; evidence: ${c.requiredEvidence.join('; ')}`).join('\n')}
 - Relationship choices must show behavioral aftermath: changed distance, invitation, withholding, teasing, remembered detail, vulnerability, challenge, or refusal.
+- A relationship choice that claims meaning must include both a numeric relationship consequence and relationshipValueEvidence. The numeric consequence answers what hidden trust/affection/respect/fear changed; relationshipValueEvidence answers what dramatic kind of moment occurred.
+- Use relationshipValueEvidence to mark the McKee-square surface the choice earned: mutual aid or confession requires agency-respecting evidence; withheld care requires absence/avoidance evidence; hostility requires sabotage/attack/retaliation evidence; protective control or aid-with-strings requires coercion, guilt, agency removal, or conditional-help evidence.
+- Do not use large relationship deltas as a shortcut around pacing. If the scene does not contain a full relationship test, keep deltas small and avoid friend/trusted/intimate labels.
+- First-meeting choices cannot assume private phone access. Do not write choices, feedback, reminders, or witness reactions where the protagonist texts/calls/DMs an unmet NPC or already has their number before on-page exchange.
 - Do not use blocked labels in choice text, outcome text, feedback, reminder plans, or residue.
 ` : ''}
 ${input.sceneBlueprint.mechanicPressure?.length ? `
@@ -2034,10 +2046,11 @@ Branching choices need nextSceneId.
 ## Output Limits
 - Create exactly ${input.optionCount} choices.
 - Choice text: 5-${this.choiceLimits?.maxChoiceWords ?? 15} words.
-- outcomeTexts.success/partial/failure: exactly one vivid sentence each.
-- reactionText: exactly one sentence.
-- residueHints.description: exactly one concrete sentence.
-- designNotes: one short clause.
+- stakesAnnotation.want/cost/identity: at most 12 words each.
+- outcomeTexts.success/partial/failure: exactly one vivid sentence each, at most 16 words.
+- reactionText: exactly one sentence, at most 16 words.
+- residueHints.description: exactly one concrete sentence, at most 16 words.
+- designNotes: one short clause, at most 8 words.
 - Do not emit witnessReactions, failureResidue, reminderPlan, feedbackCue, visualResidueHint, memorableMoment, stakesLayers, storyVerb, affordanceSource, or authorNotes.
 
 ## Consequences
@@ -2137,16 +2150,13 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       }
     }
 
-    // Relationship choices MUST include ≥1 relationship consequence
+    // Relationship choices MUST include per-option relationship movement/evidence.
     if (choiceSet.choiceType === 'relationship') {
-      const hasRelConsequence = choiceSet.choices.some(c =>
-        c.consequences?.some(con => con.type === 'relationship')
-      );
-      if (!hasRelConsequence) {
-        const repaired = this.addRelationshipConsequences(choiceSet, input);
+      const repaired = this.ensureRelationshipChoiceMovement(choiceSet, input);
+      if (repaired > 0) {
         console.warn(
           `[ChoiceAuthor] Relationship choice set "${choiceSet.beatId}" had no relationship ` +
-          `consequences — ${repaired > 0 ? `repaired ${repaired} option(s)` : 'no suitable NPC found for repair'}.`
+          `movement/evidence on ${repaired} option(s) — repaired at option level.`
         );
       }
       this.capRelationshipConsequences(choiceSet, input);
@@ -2513,7 +2523,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
         const pressure = choice.mechanicPressure[0];
         choice.reminderPlan = {
           immediate: this.fictionFirstImmediateReminder(choice, pressure, input),
-          shortTerm: `Later scenes should remember how this changed access, posture, information, risk, or trust.`,
+          shortTerm: this.fictionFirstShortTermReminder(choice, pressure, input),
         };
         repaired += 1;
       }
@@ -2543,10 +2553,10 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       case 'relationship':
         return this.relationshipImmediateReminder(choice, contract, input);
       case 'item':
-        return `The object stays in the scene as more than a prop; someone has to carry what it opens, costs, or proves.`;
+        return `The object sits differently in the hand now, heavier with what it opens, costs, or proves.`;
       case 'information':
       case 'flag':
-        return `The answer changes what can be safely said next, and what has to stay hidden a little longer.`;
+        return `A new silence opens around what can be said aloud.`;
       case 'skill':
         return `The attempt leaves proof in the room: what worked, what failed, and what the next risk will demand.`;
       case 'identity':
@@ -2557,7 +2567,39 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       case 'resource':
         return `The moment leaves a visible cost behind: less room to bluff, delay, or pretend nothing changed.`;
       default:
-        return `The next beat should show the choice in posture, access, tone, cost, clue, memory, or narrowed options.`;
+        return `The room moves around the answer before anyone names what changed.`;
+    }
+  }
+
+  private fictionFirstShortTermReminder(
+    choice: Choice,
+    contract: MechanicPressureContract | undefined,
+    input: ChoiceAuthorInput,
+  ): string {
+    switch (contract?.domain) {
+      case 'relationship': {
+        const npcId = contract.mechanicRef.npcId;
+        const npc = input.npcsInScene.find((candidate) => candidate.id === npcId && !this.isProtagonistNpc(candidate, input));
+        return npc
+          ? `${npc.name} carries the answer into the next silence.`
+          : `The next silence keeps the shape of the answer.`;
+      }
+      case 'item':
+        return `The next door, hand, or lie has to account for what was taken up.`;
+      case 'information':
+      case 'flag':
+        return `The next conversation has to step around the truth now in the room.`;
+      case 'skill':
+        return `The next risk starts with the proof this attempt left behind.`;
+      case 'identity':
+        return `The next room reads the answer in your posture before you explain it.`;
+      case 'route':
+        return `The next threshold feels different before anyone explains why.`;
+      case 'score':
+      case 'resource':
+        return `The next demand arrives with less room to pretend nothing was spent.`;
+      default:
+        return `The next silence, glance, or opened door carries what changed.`;
     }
   }
 
@@ -2807,9 +2849,73 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
         dimension,
         change: positive ? Math.min(5, maxDelta) : -Math.min(3, maxDelta),
       }];
+      this.ensureRelationshipValueEvidence(choice, npc.id, dimension, positive);
       repaired += 1;
     }
     return repaired;
+  }
+
+  private relationshipChoiceHasMovement(choice: Choice): boolean {
+    return (choice.consequences ?? []).some((consequence) => consequence.type === 'relationship')
+      || (choice.relationshipValueEvidence ?? []).length > 0;
+  }
+
+  private ensureRelationshipChoiceMovement(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+    const npc = this.selectRelationshipNpc(input);
+    if (!npc) return 0;
+    const dimension = this.relationshipConsequenceDimension(input);
+    const maxDelta = Math.abs(this.relationshipPacingForNpc(input, npc.id)?.maxDeltaThisScene ?? 6);
+    let repaired = 0;
+
+    for (let i = 0; i < choiceSet.choices.length; i += 1) {
+      const choice = choiceSet.choices[i];
+      if (this.relationshipChoiceHasMovement(choice)) {
+        const rel = (choice.consequences ?? []).find((consequence) => consequence.type === 'relationship') as (Consequence & { npcId?: string; dimension?: string; change?: number }) | undefined;
+        this.ensureRelationshipValueEvidence(choice, rel?.npcId ?? npc.id, this.normalizeRelationshipDimension(rel?.dimension) ?? dimension, Number(rel?.change ?? 1) >= 0);
+        continue;
+      }
+
+      const text = `${choice.text || ''} ${choice.choiceIntent || ''}`.toLowerCase();
+      const positive = /\b(accept|trust|help|protect|honest|stay|listen|gentle|kind|join|share|comfort)\b/.test(text)
+        ? true
+        : /\b(refuse|reject|lie|hide|leave|cruel|mock|threaten|push|accuse|withdraw)\b/.test(text)
+          ? false
+          : i === 0;
+      choice.consequences = [...(choice.consequences || []), {
+        type: 'relationship',
+        npcId: npc.id,
+        dimension,
+        change: positive ? Math.min(5, maxDelta) : -Math.min(3, maxDelta),
+      }];
+      this.ensureRelationshipValueEvidence(choice, npc.id, dimension, positive);
+      repaired += 1;
+    }
+
+    return repaired;
+  }
+
+  private normalizeRelationshipDimension(value: string | undefined): RelationshipValueAxis | undefined {
+    if (value === 'affection') return 'love';
+    if (value === 'fear') return 'safety';
+    if (value === 'trust' || value === 'respect') return value;
+    return undefined;
+  }
+
+  private ensureRelationshipValueEvidence(choice: Choice, npcId: string, dimension: RelationshipValueAxis | 'affection' | 'fear', positive: boolean): void {
+    if ((choice.relationshipValueEvidence ?? []).some((evidence) => evidence.npcId === npcId)) return;
+    const axis: RelationshipValueAxis = dimension === 'fear' ? 'safety' : dimension === 'affection' ? 'love' : dimension;
+    const evidenceTags: RelationshipEvidenceTag[] = positive ? ['respected_agency'] : ['withheld_care'];
+    const intendedSurface: RelationshipSurface = positive ? 'mutual_aid' : 'withheld_help';
+    choice.relationshipValueEvidence = [
+      ...(choice.relationshipValueEvidence ?? []),
+      {
+        npcId,
+        axis,
+        evidenceTags,
+        intendedSurface,
+        reason: `The choice "${choice.text}" visibly changes the relationship surface.`,
+      },
+    ];
   }
 
   /**

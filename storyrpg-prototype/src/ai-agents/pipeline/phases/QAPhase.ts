@@ -48,6 +48,7 @@ import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
 import type { PipelineMemoryArtifactKind } from '../artifactMemoryTypes';
+import { findSceneForChoiceSet } from '../choiceSetLookup';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -388,14 +389,28 @@ export class QAPhase {
             .slice(0, 3);
 
           for (const weakCs of weakChoiceSets) {
-            const csIdx = choiceSets.findIndex(cs => cs.beatId === weakCs.beatId);
-            if (csIdx === -1) continue;
+            const weakSceneId = (weakCs as { sceneId?: string }).sceneId;
+            const matchingChoiceSetIndexes = choiceSets
+              .map((cs, index) => ({ cs, index }))
+              .filter(({ cs }) => cs.beatId === weakCs.beatId && (!weakSceneId || cs.sceneId === weakSceneId));
+            if (matchingChoiceSetIndexes.length !== 1) {
+              if (matchingChoiceSetIndexes.length > 1) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'qa_repair',
+                  message: `Skipped weak choice repair for beat ${weakCs.beatId}: beat id is not scene-unique and QA report did not provide an unambiguous scene id.`,
+                });
+              }
+              continue;
+            }
+            const { cs, index: csIdx } = matchingChoiceSetIndexes[0];
 
-            const sceneBlueprint = episodeBlueprint.scenes.find(s => s.choicePoint);
+            const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === cs.sceneId && s.choicePoint);
             if (!sceneBlueprint) continue;
 
-            const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === weakCs.beatId);
-            if (!beat) continue;
+            const sceneContent = findSceneForChoiceSet(sceneContents, cs);
+            const beat = sceneContent?.beats.find(b => b.id === weakCs.beatId);
+            if (!sceneContent || !beat) continue;
 
             context.emit({
               type: 'regeneration_triggered',
@@ -433,7 +448,7 @@ export class QAPhase {
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${weakCs.beatId} qa-repair-${qaRepairPass + 1})`);
 
             if (repairChoiceResult.success && repairChoiceResult.data) {
-              choiceSets[csIdx] = repairChoiceResult.data;
+              choiceSets[csIdx] = { ...repairChoiceResult.data, sceneId: sceneBlueprint.id };
               repairsMade++;
             }
           }

@@ -157,6 +157,54 @@ function cismigiuEncounter(extraText = '') {
 }
 
 describe('SceneTurnRealizationValidator', () => {
+  it('does not require final prose for arc pressure contracts outside the final-prose surface', () => {
+    const localTurn = turnContract({
+      turnId: 'scene-1-turn',
+      centralTurn: 'The protagonist chooses to publish the warning and accepts a public cost.',
+      beforeState: 'The warning is private.',
+      turnEvent: 'The protagonist chooses to publish the warning.',
+      afterState: 'The warning has a public cost.',
+    });
+    const localScene = scene({
+      id: 'scene-1',
+      startingBeatId: 'beat-1',
+      turnContract: localTurn,
+      beats: [
+        beat('beat-1', 'The warning is private until the protagonist chooses to publish it.'),
+        beat('beat-2', 'The public cost lands immediately, changing who will answer the next call.'),
+      ],
+      arcPressureContracts: [arcPressureContract({
+        id: 'arc-pressure-abstract',
+        sourceText: 'Observation versus authorship; being chosen versus choosing a public voice.',
+        eventAtoms: ['Observation versus authorship', 'being chosen versus choosing a public voice'],
+        targetSceneIds: ['scene-1'],
+        requiredRealization: ['season_plan', 'mechanic_pressure'],
+      })],
+    });
+    const localPlan: SeasonScenePlan = {
+      scenes: [{
+        id: 'scene-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'standard',
+        title: 'Warning scene',
+        dramaticPurpose: 'A private warning becomes public.',
+        narrativeRole: 'turn',
+        locations: ['apartment'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+        turnContract: localTurn,
+      }],
+      byEpisode: { 1: ['scene-1'] },
+      setupPayoffEdges: [],
+    };
+
+    const result = validator.validate({ story: story([localScene]), scenePlan: localPlan });
+
+    expect(result.issues.map((issue) => issue.location)).not.toContain('sceneTurn:ep1:scene-1:arc-pressure-abstract');
+  });
+
   it('fails when a treatment turn is mentioned but has no aftermath or handoff', () => {
     const result = validator.validate({
       story: story([

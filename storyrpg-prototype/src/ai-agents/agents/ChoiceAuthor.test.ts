@@ -123,7 +123,7 @@ describe('ChoiceAuthor.validateChoices', () => {
     });
 
     expect(author.buildJsonSchema(input).maxOutputTokens).toBe(16384);
-    expect(author.buildCompactRetryJsonSchema(input).maxOutputTokens).toBe(8192);
+    expect(author.buildCompactRetryJsonSchema(input).maxOutputTokens).toBe(6144);
     expect(author.buildCompactRetryJsonSchema(input).name).toBe('choice_set_compact_retry');
   });
 
@@ -598,6 +598,38 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
 });
 
 describe('ChoiceAuthor relationship consequence repair', () => {
+  it('repairs each relationship option, not only the first option in the set', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Trust the ally with the truth',
+          choiceType: 'relationship',
+          consequences: [{ type: 'relationship', npcId: 'ally', dimension: 'trust', change: 4 }],
+        },
+        { id: 'c2', text: 'Refuse the ally and hide it', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      npcsInScene: [{ id: 'ally', name: 'Jordan', pronouns: 'they/them', description: 'A cautious ally' }],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    expect(choiceSet.choices).toHaveLength(3);
+    for (const choice of choiceSet.choices) {
+      expect(choice.consequences).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'relationship', npcId: 'ally' }),
+      ]));
+      expect(choice.relationshipValueEvidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ npcId: 'ally', evidenceTags: expect.any(Array) }),
+      ]));
+    }
+  });
+
   it('adds relationship consequences when a relationship choice omits them', () => {
     const author: any = new ChoiceAuthor(config);
     const choiceSet = makeChoiceSet({
@@ -860,8 +892,11 @@ describe('ChoiceAuthor relationship consequence repair', () => {
     author.validateChoices(choiceSet, input);
 
     const immediate = choiceSet.choices[0].reminderPlan?.immediate;
+    const shortTerm = choiceSet.choices[0].reminderPlan?.shortTerm;
     expect(immediate).toContain('Mika');
     expect(immediate).not.toMatch(/Relationship with|moving only as far|friend|visible pressure around/i);
+    expect(shortTerm).toContain('Mika');
+    expect(shortTerm).not.toMatch(/Later scenes should remember|changed access|posture|information|risk|trust/i);
   });
 
   it('keeps default residue hints out of authoring register', () => {
@@ -1121,6 +1156,18 @@ describe('ChoiceAuthor.parseChoiceSetWithCompactRetry (reliability)', () => {
     expect(prompt).toContain('A'.repeat(900));
     expect(prompt).not.toContain('A'.repeat(901));
     expect(prompt).not.toContain('## Stat Check (REQUIRED');
+  });
+
+  it('uses a tighter compact retry schema and output budget after truncation', () => {
+    const author: any = new ChoiceAuthor(config);
+    const schema = author.buildCompactRetryJsonSchema(makeInput());
+    const choiceProps = schema.schema.properties.choices.items.properties;
+
+    expect(schema.maxOutputTokens).toBeLessThan(8192);
+    expect(choiceProps.outcomeTexts.properties.success.maxLength).toBeLessThan(160);
+    expect(choiceProps.stakesAnnotation.properties.want.maxLength).toBeLessThan(140);
+    expect(choiceProps.reactionText.maxLength).toBeLessThan(160);
+    expect(schema.schema.properties.designNotes.maxLength).toBeLessThan(100);
   });
 });
 

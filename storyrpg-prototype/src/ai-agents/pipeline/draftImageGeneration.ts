@@ -725,16 +725,6 @@ export class DraftImageGeneration {
         styleProfile: this.deps.config.imageGen?.artStyleProfile,
       });
 
-      const clubDoor = episode.number === 1
-        && scene.id === 'scene-3'
-        && /\b(doorman|velvet rope|club)\b/i.test(`${beat.text || ''} ${(beat as any).visualMoment || ''}`);
-      if (clubDoor) {
-        prompt.negativePrompt = [
-          prompt.negativePrompt,
-          'Victor Vâlcescu, aristocratic male lead, vampire patron, romantic stranger, tall dark-suited romantic man',
-        ].filter(Boolean).join(', ');
-        prompt.prompt = `${prompt.prompt}\n\nCAST GUARD: use only Kylie and an anonymous doorman unless the beat explicitly introduces a named character. Do not stage any later romantic male lead in this entrance image.`;
-      }
       return prompt;
     };
 

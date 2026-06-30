@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -16,7 +16,6 @@ import {
   Info,
   RefreshCw,
   Settings,
-  Trash2,
   Type,
 } from 'lucide-react-native';
 import type { AuthUser } from '../../services/authSession';
@@ -25,14 +24,13 @@ import { useSettingsStore, type FontSize } from '../../stores/settingsStore';
 import { TERMINAL } from '../../theme';
 import { APP_VERSION_LABEL } from '../../config/version';
 import { canShowInternalAppLinks, getGeneratorAppUrl } from '../../config/appLinks';
-import { ConfirmDialog, SegmentedControl, Toggle } from '../../components/ui';
+import { SegmentedControl, Toggle } from '../../components/ui';
 
 interface ReaderSettingsScreenProps {
   stories: StoryCatalogEntry[];
   onBack: () => void;
   authUser?: AuthUser | null;
   onSignOut?: () => void;
-  onDeleteStory?: (storyId: string) => void;
   onRefreshStories?: () => void;
   isRefreshing?: boolean;
 }
@@ -48,7 +46,6 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
   onBack,
   authUser,
   onSignOut,
-  onDeleteStory,
   onRefreshStories,
   isRefreshing = false,
 }) => {
@@ -59,7 +56,6 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
   const preferVideo = useSettingsStore((state) => state.preferVideo);
   const setPreferVideo = useSettingsStore((state) => state.setPreferVideo);
   const fonts = useSettingsStore((state) => state.getFontSizes());
-  const [storyPendingDelete, setStoryPendingDelete] = useState<StoryCatalogEntry | null>(null);
 
   const generatorUrl = getGeneratorAppUrl();
   const showGeneratorLink = canShowInternalAppLinks(developerMode, generatorUrl);
@@ -67,13 +63,6 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
     () => [...stories].sort((a, b) => (a.title || '').localeCompare(b.title || '')),
     [stories],
   );
-
-  const confirmDelete = () => {
-    if (storyPendingDelete) {
-      onDeleteStory?.(storyPendingDelete.id);
-    }
-    setStoryPendingDelete(null);
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -172,15 +161,6 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
                       {(story.genre || 'unknown').toUpperCase()} • {story.episodeCount || story.episodes.length || 0} EPISODES
                     </Text>
                   </View>
-                  {onDeleteStory && story.isBuiltIn !== true ? (
-                    <TouchableOpacity
-                      style={styles.iconButtonDanger}
-                      onPress={() => setStoryPendingDelete(story)}
-                      accessibilityLabel={`Delete ${story.title}`}
-                    >
-                      <Trash2 size={16} color={TERMINAL.colors.error} />
-                    </TouchableOpacity>
-                  ) : null}
                 </View>
               ))}
             </View>
@@ -207,20 +187,6 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
           ) : null}
         </Section>
       </ScrollView>
-
-      <ConfirmDialog
-        visible={storyPendingDelete !== null}
-        title="Delete chronicle?"
-        message={storyPendingDelete
-          ? `Are you sure you want to delete "${storyPendingDelete.title || 'Untitled'}"?`
-          : 'Are you sure you want to delete this chronicle?'}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        destructive
-        onConfirm={confirmDelete}
-        onCancel={() => setStoryPendingDelete(null)}
-        testID="reader-delete-story-dialog"
-      />
     </SafeAreaView>
   );
 };
@@ -319,7 +285,6 @@ const styles = StyleSheet.create({
   storyInfo: { flex: 1, minWidth: 0 },
   storyTitle: { color: TERMINAL.colors.textBody, fontSize: 12, fontWeight: '900', letterSpacing: 1 },
   storyMeta: { color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '700', marginTop: 4 },
-  iconButtonDanger: { padding: 8, borderRadius: 6, backgroundColor: 'rgba(239,68,68,0.1)' },
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 16, paddingVertical: 7 },
   infoLabel: { color: TERMINAL.colors.muted, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   infoValue: { color: TERMINAL.colors.textBody, fontSize: 11, fontWeight: '800', flexShrink: 1, textAlign: 'right' },

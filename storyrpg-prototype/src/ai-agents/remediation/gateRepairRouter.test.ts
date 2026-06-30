@@ -242,6 +242,30 @@ describe('GateRepairRouter', () => {
     expect(route.unsafeForProsePatch).toBe(true);
   });
 
+  it('routes route chronology failures to blueprint rebalance instead of prose repair', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'RouteContinuityValidator',
+      'Reader route s1 -> s2 stages arrival after threatEncounter. This inverts the event order.',
+      's2',
+    ));
+
+    expect(route.kind).toBe('blueprint_rebalance');
+    expect(route.unsafeForProsePatch).toBe(true);
+  });
+
+  it('routes relationship ledger target mismatches to episode replan instead of prose repair', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'RelationshipArcLedgerValidator',
+      'Scene "s1-3" targets tentative_ally for circle, but the deterministic relationship ledger only permits acquaintance.',
+      's1-3',
+    ));
+
+    expect(route.kind).toBe('episode_replan');
+    expect(route.unsafeForProsePatch).toBe(true);
+  });
+
   it('routes localized episode-turnout scene-turn misses to same-scene retry', () => {
     const router = new GateRepairRouter();
     const route = router.routeIssue(issue(
@@ -437,6 +461,86 @@ describe('treatment density guard', () => {
     expect(isTreatmentDensityExpandable(report)).toBe(false);
     expect(isUnsafeTreatmentDensityReport(report)).toBe(true);
     expect(unsafeTreatmentDensityReports([report])).toEqual([report]);
+  });
+
+  it('does not double-count regular choice pressure on encounter scenes', () => {
+    const report = analyzeSceneTreatmentDensity({
+      id: 'treatment-enc-1-1',
+      encounter: { id: 'treatment-enc-1-1' },
+      requiredBeats: [
+        { id: 'rb1', tier: 'authored', sourceTurn: 'The alarm sounds.', mustDepict: 'The alarm sounds as the protagonist reaches the locked door.' },
+      ],
+      signatureMoment: 'The protagonist decides whether to cross the locked threshold.',
+      authoredTreatmentFields: [
+        { id: 'enc1', episodeNumber: 1, fieldName: 'Encounter', sourceText: 'The locked threshold tests whether the protagonist can keep moving.', contractKind: 'encounter_anchor', requiredRealization: ['encounter', 'final_prose'], targetSceneIds: ['treatment-enc-1-1'], blockingLevel: 'treatment' },
+        { id: 'enc2', episodeNumber: 1, fieldName: 'Conflict', sourceText: 'The threshold can be crossed only by accepting a visible cost.', contractKind: 'encounter_conflict', requiredRealization: ['encounter', 'final_prose'], targetSceneIds: ['treatment-enc-1-1'], blockingLevel: 'treatment' },
+      ],
+      turnContract: {
+        turnId: 'turn',
+        source: 'treatment',
+        centralTurn: 'The protagonist chooses whether to cross the threshold.',
+        beforeState: 'Outside',
+        turnEvent: 'The protagonist accepts or refuses the cost of entering.',
+        afterState: 'Committed',
+        handoff: 'The result changes what help remains available.',
+      },
+      choicePoint: {
+        type: 'tactical',
+        stakes: { want: 'enter', cost: 'leverage', identity: 'witness' },
+        description: 'Choose how to cross the threshold.',
+        optionHints: ['Force it', 'Bargain'],
+      },
+      keyBeats: [],
+    } as never, { episodeNumber: 1, sceneIndex: 2 });
+
+    expect(report.hardUnits).toBe(5);
+    expect(report.overloaded).toBe(false);
+  });
+
+  it('does not charge broad episode-circle summaries as extra scene-local density', () => {
+    const report = analyzeSceneTreatmentDensity({
+      id: 'treatment-enc-1-1',
+      encounter: { id: 'treatment-enc-1-1' },
+      requiredBeats: [
+        { id: 'rb1', tier: 'authored', sourceTurn: 'The protagonist starts the public account.', mustDepict: 'The protagonist starts the public account.' },
+      ],
+      signatureMoment: 'The protagonist decides whether the public account is worth the cost.',
+      storyCircleBeatContracts: [
+        {
+          id: 'episode-circle-ep1-go-public-account',
+          beat: 'go',
+          sourceText: 'The protagonist arrives in the city. The protagonist meets an ally. The protagonist survives a public threat. The protagonist starts the public account.',
+          targetEpisodeNumber: 1,
+          requiredRealization: ['scene_turn', 'final_prose'],
+          eventAtoms: [
+            'The protagonist arrives in the city',
+            'The protagonist meets an ally',
+            'The protagonist survives a public threat',
+            'The protagonist starts the public account',
+          ],
+          targetSceneIds: ['treatment-enc-1-1'],
+          blockingLevel: 'structural',
+        },
+      ],
+      authoredTreatmentFields: [
+        { id: 'enc1', episodeNumber: 1, fieldName: 'Encounter', sourceText: 'The public account tests whether the protagonist can keep moving.', contractKind: 'encounter_anchor', requiredRealization: ['encounter', 'final_prose'], targetSceneIds: ['treatment-enc-1-1'], blockingLevel: 'treatment' },
+        { id: 'enc2', episodeNumber: 1, fieldName: 'Conflict', sourceText: 'The account can continue only if the protagonist accepts a visible cost.', contractKind: 'encounter_conflict', requiredRealization: ['encounter', 'final_prose'], targetSceneIds: ['treatment-enc-1-1'], blockingLevel: 'treatment' },
+      ],
+      turnContract: {
+        turnId: 'turn',
+        source: 'treatment',
+        centralTurn: 'The protagonist accepts or refuses the cost of becoming public.',
+        beforeState: 'Private',
+        turnEvent: 'The protagonist accepts or refuses the cost of becoming public.',
+        afterState: 'Known',
+        handoff: 'The result changes what help remains available.',
+      },
+      keyBeats: [],
+    } as never, { episodeNumber: 1, sceneIndex: 2 });
+
+    expect(report.obligations.map((item) => item.kind)).not.toContain('story_circle_structural_beat');
+    expect(report.hardUnits).toBe(5);
+    expect(report.overloaded).toBe(false);
   });
 
   it('recognizes timeline cues used by repair routing', () => {

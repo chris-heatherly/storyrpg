@@ -91,6 +91,17 @@ describe('assignChoiceTypes', () => {
     expect(types).toContain('expression'); // default 35/30/20/15 still applies
   });
 
+  it('does not inflate a sparse season slice into every local choice point', () => {
+    const s = scenes(7);
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 0, relationship: 1, strategic: 0, dilemma: 0 });
+    const counts = s.reduce((a, x) => { a[x.choicePoint!.type] = (a[x.choicePoint!.type] ?? 0) + 1; return a; }, {} as Record<string, number>);
+
+    expect(counts.relationship).toBeLessThan(7);
+    expect(counts.expression).toBeGreaterThan(0);
+    expect(counts.strategic).toBeGreaterThan(0);
+    expect(counts.dilemma).toBeGreaterThan(0);
+  });
+
   it('guarantees at least one dilemma at >=3 choice points (fixes the 0%-dilemma finding)', () => {
     const s = scenes(3); // largest-remainder alone would give 0 dilemma
     assignChoiceTypes(s);

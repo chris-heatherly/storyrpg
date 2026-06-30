@@ -5,7 +5,7 @@ describe('treatment obligation classifier', () => {
   it('keeps concrete signature devices blocking', () => {
     const result = classifyTreatmentObligation({
       validator: 'SignatureDevicePresenceValidator',
-      text: 'Victor walks Kylie home and kisses her hand at the threshold.',
+      text: 'The rescuer walks the protagonist home and stops at the threshold.',
     });
 
     expect(result).toMatchObject({
@@ -18,7 +18,7 @@ describe('treatment obligation classifier', () => {
   it('downgrades composite two-anchor signatures until they are split', () => {
     const result = classifyTreatmentObligation({
       validator: 'SignatureDevicePresenceValidator',
-      text: 'Two anchors, light then dark — the rooftop bar at sunset where the Dusk Club locks into place and Kylie catches both men watching her; then Cișmigiu at 1am, eight seconds of fog, a shadow, a scream, and a rescue.',
+      text: 'Two anchors, light then dark — the rooftop bar at sunset where the social circle locks into place; then the park at 1am, eight seconds of fog, a shadow, a scream, and a rescue.',
     });
 
     expect(result).toMatchObject({

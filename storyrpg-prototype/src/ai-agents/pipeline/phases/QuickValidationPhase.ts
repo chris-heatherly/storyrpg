@@ -36,6 +36,7 @@ import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
 import type { PipelineMemoryArtifactKind } from '../artifactMemoryTypes';
+import { findSceneForChoiceSet } from '../choiceSetLookup';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -256,10 +257,11 @@ export class QuickValidationPhase {
             if (csIdx === -1) continue;
 
             const cs = choiceSets[csIdx];
-            const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === cs.beatId);
-            if (!beat) continue;
+            const sceneContent = findSceneForChoiceSet(sceneContents, cs);
+            const beat = sceneContent?.beats.find(b => b.id === cs.beatId);
+            if (!sceneContent || !beat) continue;
 
-            const sceneBlueprint = episodeBlueprint.scenes.find(s => s.choicePoint);
+            const sceneBlueprint = episodeBlueprint.scenes.find(s => s.id === cs.sceneId && s.choicePoint);
             if (!sceneBlueprint) continue;
 
             repairAttempted = true;
@@ -293,7 +295,7 @@ export class QuickValidationPhase {
             }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${cs.beatId} quick-val-repair)`);
 
             if (repairResult.success && repairResult.data) {
-              choiceSets[csIdx] = repairResult.data;
+              choiceSets[csIdx] = { ...repairResult.data, sceneId: sceneBlueprint.id };
             }
           }
 
@@ -301,8 +303,7 @@ export class QuickValidationPhase {
           const densityIssues = repairableIssues.filter(i => i.category === 'choice_density');
           if (densityIssues.length > 0) {
             const scenesWithChoices = new Set(choiceSets.map(cs => {
-              const beat = sceneContents.flatMap(sc => sc.beats).find(b => b.id === cs.beatId);
-              return beat ? sceneContents.find(sc => sc.beats.includes(beat))?.sceneId : null;
+              return findSceneForChoiceSet(sceneContents, cs)?.sceneId ?? null;
             }).filter(Boolean));
 
             const scenesNeedingChoices = episodeBlueprint.scenes

@@ -28,6 +28,7 @@ import { classifyArchitectGateWarnings } from '../../remediation/architectGatePo
 import { gateEnabledPredicate } from '../../remediation/gateDefaults';
 import { buildSeasonPlanDirectives } from '../planningHelpers';
 import { assignChoiceTypes } from '../choiceTypePlanner';
+import { reconcileRelationshipPacingWithChoiceTypes } from '../relationshipPacingChoiceTypeReconciliation';
 import {
   episodeTypeCounts,
   seasonChoicePlanFromSeasonPlan,
@@ -184,6 +185,17 @@ export class EpisodeArchitecturePhase {
       const sceneCapFailure =
         /Blueprint must have no more than \d+ scenes/i.test(errorText) ||
         /Blueprint has \d+ scenes; maximum is \d+/i.test(errorText);
+      const deterministicPlannedDensityFailure = densityFailure && plannedSceneCount > 0;
+      if (deterministicPlannedDensityFailure) {
+        context.emit({
+          type: 'debug',
+          phase: 'architecture',
+          message:
+            'Planned-scene treatment density failed in deterministic architecture mode; stopping without prompt retry so the season scene plan can be repaired.',
+          data: { error: result.error },
+        });
+        break;
+      }
       if ((!branchFailure && !densityFailure && !sceneCapFailure) || attempt >= maxArchitectureAttempts) break;
 
       context.emit({
@@ -263,6 +275,10 @@ export class EpisodeArchitecturePhase {
     const choiceTypeChanges = assignChoiceTypes(result!.data.scenes as never, undefined, episodeSlice).filter((r) => r.from !== r.to);
     if (choiceTypeChanges.length > 0) {
       context.emit({ type: 'debug', phase: 'episode_architecture', message: `Rebalanced ${choiceTypeChanges.length} choice-point type(s) toward target taxonomy` });
+    }
+    const relationshipPacingReconciled = reconcileRelationshipPacingWithChoiceTypes(result!.data.scenes as never);
+    if (relationshipPacingReconciled > 0) {
+      context.emit({ type: 'debug', phase: 'episode_architecture', message: `Reconciled ${relationshipPacingReconciled} relationship-pacing contract(s) with final choice taxonomy` });
     }
 
     // Fill this episode's scenes into the structure plan (estimate-then-fill:

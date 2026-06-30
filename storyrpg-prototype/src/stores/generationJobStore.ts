@@ -313,12 +313,14 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
 
   removeProject: async (projectId, projectJobIds = []) => {
     const explicitIds = new Set([projectId, ...projectJobIds].filter(Boolean));
+    const isActiveJob = (job: GenerationJob): boolean => job.status === 'running' || job.status === 'pending';
 
     let updatedJobs: GenerationJob[] = [];
     let removedJobIds: string[] = [];
     set(state => {
       removedJobIds = state.jobs
         .filter(job => explicitIds.has(job.id) || getGenerationJobProjectId(job, state.jobs) === projectId)
+        .filter(job => !isActiveJob(job))
         .map(job => job.id);
       updatedJobs = state.jobs.filter(job => !removedJobIds.includes(job.id));
       return { jobs: updatedJobs };
@@ -331,14 +333,14 @@ export const useGenerationJobStore = create<GenerationJobStore>((set, get) => ({
         const response = await fetch(`${getProxyHost()}/generation-projects/${encodeURIComponent(projectId)}`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobIds: Array.from(new Set([...explicitIds, ...removedJobIds])) }),
+          body: JSON.stringify({ jobIds: removedJobIds }),
         });
         if (response.ok) return;
       } catch (e) {
         console.warn('[GenerationJobStore] Failed to remove generation project from server');
       }
 
-      await Promise.all(Array.from(new Set([...explicitIds, ...removedJobIds])).map(async (jobId) => {
+      await Promise.all(removedJobIds.map(async (jobId) => {
         try {
           await fetch(`${getProxyHost()}/generation-jobs/${jobId}`, {
             method: 'DELETE',

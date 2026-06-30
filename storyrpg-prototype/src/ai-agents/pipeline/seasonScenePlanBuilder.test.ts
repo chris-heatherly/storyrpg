@@ -294,6 +294,48 @@ describe('buildSeasonScenePlan', () => {
     expect(firstMeetingContracts.every((c) => c.targetStage !== 'trusted_ally' && c.targetStage !== 'intimate')).toBe(true);
   });
 
+  it('does not advance repeated group mentions past acquaintance without relationship-choice evidence', () => {
+    const ep = episode(1, ['hook'], {
+      estimatedSceneCount: 5,
+      mainCharacters: ['protagonist', 'ally-a', 'ally-b'],
+      treatmentGuidance: {
+        episodeTurns: [
+          'At the station, the protagonist hears a circle name used as a dare, not a settled bond.',
+          'At the archive, ally-a repeats the circle name while testing whether the protagonist listens.',
+          'At the cafe, ally-b jokes that the circle could become useful if everyone survives the week.',
+          'At the alley door, the circle name carries tension but no one has chosen membership yet.',
+          'At the safehouse, the circle still feels provisional until someone risks something for it.',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const groupContracts = scenesForEpisode(sp, 1)
+      .flatMap((scene) => scene.relationshipPacing ?? [])
+      .filter((contract) => contract.groupId);
+
+    expect(groupContracts.length).toBeGreaterThan(1);
+    expect(groupContracts.every((contract) => ['spark', 'acquaintance'].includes(contract.targetStage))).toBe(true);
+    expect(groupContracts.every((contract) => contract.targetStage !== 'tentative_ally')).toBe(true);
+  });
+
+  it('does not create relationship pacing contracts for the protagonist', () => {
+    const ep = episode(1, ['hook'], {
+      mainCharacters: ['Kylie Marinescu', 'Mika Dragan'],
+      treatmentGuidance: {
+        episodeTurns: [
+          'Mika adopts Kylie at the door of Vâlcescu Club, swaps out her American shoes, and hands her a key card to the side entrance.',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep], {
+      protagonist: { id: 'char-kylie-marinescu', name: 'Kylie Marinescu', description: '' },
+    } as any));
+    const contracts = scenesForEpisode(sp, 1).flatMap((s) => s.relationshipPacing ?? []);
+
+    expect(contracts.some((c) => c.npcId === 'Mika Dragan')).toBe(true);
+    expect(contracts.some((c) => c.npcId === 'Kylie Marinescu')).toBe(false);
+  });
+
   it('produces a signature device on the anchor scene from the visual anchor', () => {
     const ep = episode(1, ['climax'], {
       estimatedSceneCount: 4,

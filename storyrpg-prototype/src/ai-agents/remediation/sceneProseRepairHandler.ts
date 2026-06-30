@@ -32,6 +32,7 @@ import type { Scene as StoryScene } from '../../types';
 import type { Story } from '../../types/story';
 import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
+import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
@@ -519,11 +520,8 @@ function missingRequiredBeatTokensForRepair(moment: string, prose: string): stri
 function missingRequiredBeatFragmentsForRepair(moment: string, prose: string): string[] {
   const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
   return assessment.missingClauses.filter((clause) => {
-    const tokens = contentTokensForRealization(clause, stopwordsForRealization('RequiredBeatRealizationValidator'));
-    return tokens.some((token) => !(
-      token === 'kylie'
-      && /\byou\b/.test(normalizeRealizationText(prose))
-    ));
+  const tokens = contentTokensForRealization(clause, stopwordsForRealization('RequiredBeatRealizationValidator'));
+    return tokens.length > 0;
   });
 }
 
@@ -551,19 +549,8 @@ function fictionFacingRequiredBeatSentence(moment: string): string {
   sentence = sentence
     .replace(/^(?:and|or|then)\s+/i, '')
     .replace(/^That her job is\b/i, 'Your job is')
-    .replace(/\bKylie's\b/g, 'your')
-    .replace(/\bKylie\s+at\s+her\b/i, 'You are at your')
-    .replace(/\bKylie\s+at\b/i, 'You are at')
-    .replace(/\bKylie\s+watches\b/i, 'You watch')
-    .replace(/\bKylie\s+publishes\b/i, 'You publish')
-    .replace(/\bKylie\s+published\b/i, 'You published')
-    .replace(/\bKylie\s+plants\b/i, 'You plant')
-    .replace(/\bKylie\s+planted\b/i, 'You planted')
-    .replace(/\bKylie\s+leaves\b/i, 'You leave')
-    .replace(/\bKylie\s+left\b/i, 'You left')
-    .replace(/\bKylie\s+returns\b/i, 'You return')
-    .replace(/\bKylie\s+returned\b/i, 'You returned')
-    .replace(/\bKylie\b/g, 'you');
+    .replace(/\bthe protagonist's\b/ig, 'your')
+    .replace(/\bthe protagonist\b/ig, 'you');
   return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }
 
@@ -591,12 +578,14 @@ function appendRequiredBeatFallback(scene: RepairableStoryScene, issues: Repaira
     const fragments = missingRequiredBeatFragmentsForRepair(moment, sceneProseForScoring(scene));
     for (const fragment of (fragments.length > 0 ? fragments : [moment])) {
       const sentence = fictionFacingRequiredBeatSentence(fragment);
+      if (isPlanningRegisterText(sentence)) continue;
       if (normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) continue;
       beat.text = `${beat.text.trim()} ${sentence}`.trim();
       appended += 1;
     }
     if (fragments.length > 0 || !requiredBeatFullyLandedForRepair(moment, sceneProseForScoring(scene))) {
       const sentence = fictionFacingRequiredBeatSentence(moment);
+      if (isPlanningRegisterText(sentence)) continue;
       if (!normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) {
         beat.text = `${beat.text.trim()} ${sentence}`.trim();
         appended += 1;

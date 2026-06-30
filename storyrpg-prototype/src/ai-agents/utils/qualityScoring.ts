@@ -6,7 +6,7 @@ import type {
   FinalStoryContractIssue,
   FinalStoryContractReport,
 } from '../validators/FinalStoryContractValidator';
-import type { QualityCouncilReport } from '../quality-council/types';
+import type { QualityCouncilCheckpointReport, QualityCouncilReport } from '../quality-council/types';
 
 export type QualityDomainId =
   | 'story_circle_spine'
@@ -66,6 +66,12 @@ export interface QualityCap {
   domainId?: QualityDomainId;
 }
 
+export interface QualityEligibility {
+  eligibleFor90: boolean;
+  blockingReasons: string[];
+  capsApplied: QualityCap[];
+}
+
 export interface StoryCircleBeatEvidence {
   beat: StoryCircleBeat;
   status: 'realized' | 'metadata-only' | 'missing';
@@ -82,6 +88,7 @@ export interface StoryCircleQualityScoreBasis {
   finalScore: number;
   evidenceCoverage: number;
   caps: QualityCap[];
+  qualityEligibility: QualityEligibility;
   domains: QualityDomainScore[];
   storyCircle: {
     beats: Record<StoryCircleBeat, StoryCircleBeatEvidence>;
@@ -451,6 +458,7 @@ export function deriveStoryCircleQualityScore(
   const highScoreEligible = enforceAboveNinetyRequirements(cappedScore, caps, domainScores, storyCircle, staticSignals);
   const finalScore = highScoreEligible.score;
   highScoreEligible.addedCaps.forEach((cap) => caps.push(cap));
+  const qualityEligibility = buildQualityEligibility(caps);
 
   const basis: StoryCircleQualityScoreBasis = {
     version: 3,
@@ -459,6 +467,7 @@ export function deriveStoryCircleQualityScore(
     finalScore,
     evidenceCoverage,
     caps,
+    qualityEligibility,
     domains: domainScores,
     storyCircle: {
       beats: storyCircle.beats,
@@ -859,6 +868,7 @@ function collectReportFindings(
   });
 
   inputs.qualityCouncilReport?.checkpoints?.forEach((checkpoint) => {
+    if (isOptionalFusionTransportError(checkpoint, inputs.qualityCouncilReport?.checkpoints || [])) return;
     if (checkpoint.status === 'error') {
       findings.push({
         severity: 'critical',
@@ -1160,6 +1170,12 @@ function isEpisodeStoryCircleFinding(finding: SidecarFinding): boolean {
     || haystack.includes('metadata-only');
 }
 
+function hasIssue(issues: Array<Partial<FinalStoryContractIssue>>, pattern: RegExp): boolean {
+  return issues.some((issue) =>
+    pattern.test(`${issue.type ?? ''} ${issue.validator ?? ''} ${issue.message ?? ''}`),
+  );
+}
+
 function applyCaps(
   caps: QualityCap[],
   storyCircle: StoryCircleEvidenceSummary,
@@ -1282,6 +1298,51 @@ function applyCaps(
     });
   }
 
+  const finalContractIssues = [
+    ...(inputs.finalStoryContractReport?.blockingIssues || []),
+    ...(inputs.finalStoryContractReport?.warnings || []),
+  ];
+  if (hasIssue(finalContractIssues, /planning_register|planning-register|raw treatment|scaffold|fallback prose|protagonist synopsis/i)) {
+    caps.push({
+      id: 'planning_register_leak',
+      maxScore: 69,
+      reason: 'Planning-register, raw treatment, or fallback scaffold language appears in generated artifacts.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+  if (hasIssue(finalContractIssues, /empty_scene|empty encounter|empty scene|no playable beats|no beats/i)) {
+    caps.push({
+      id: 'empty_scene_or_encounter',
+      maxScore: 69,
+      reason: 'An empty scene or encounter remains in the final package.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+  if (hasIssue(finalContractIssues, /missing.*(?:required|treatment|atom)|required.*(?:missing|not dramatized)|missing_required_atom/i)) {
+    caps.push({
+      id: 'missing_required_treatment_atom',
+      maxScore: 74,
+      reason: 'A concrete required treatment obligation is missing from final prose.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+  if (hasIssue(finalContractIssues, /duplicate.*(?:treatment|atom|event)|out.of.order|chronolog|atom_out_of_order|duplicate_atom/i)) {
+    caps.push({
+      id: 'duplicate_or_out_of_order_treatment_atom',
+      maxScore: 79,
+      reason: 'A treatment event is duplicated or realized out of chronological order.',
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+  if (hasIssue(finalContractIssues, /false choice|cosmetic choice|meaningful choice|agency.*(?:missing|weak|false)|choice.*(?:no consequence|only changes tone)/i)) {
+    caps.push({
+      id: 'false_meaningful_choice',
+      maxScore: 84,
+      reason: 'A choice framed as meaningful lacks concrete outcome, process, relationship, information, resource, identity, or callback impact.',
+      domainId: 'choice_agency',
+    });
+  }
+
   if (signals.leakage.length > 0) {
     caps.push({
       id: 'player_facing_mechanics_leakage',
@@ -1312,10 +1373,24 @@ function applyCaps(
     });
   }
 
+  const allCouncilCheckpoints = inputs.qualityCouncilReport?.checkpoints || [];
   const councilCheckpoints = inputs.qualityCouncilReport?.enabled
-    ? (inputs.qualityCouncilReport.checkpoints || []).filter((checkpoint) => checkpoint.status !== 'skipped')
+    ? allCouncilCheckpoints.filter((checkpoint) =>
+      checkpoint.status !== 'skipped'
+      && !isOptionalFusionTransportError(checkpoint, allCouncilCheckpoints)
+    )
     : [];
   const councilErrors = councilCheckpoints.filter((checkpoint) => checkpoint.status === 'error');
+  const councilParseErrors = councilCheckpoints.filter((checkpoint) =>
+    checkpoint.parseStatus === 'raw_findings_dropped' || checkpoint.parseStatus === 'error',
+  );
+  if (councilParseErrors.length > 0) {
+    caps.push({
+      id: 'quality_council_parser_failed_closed',
+      maxScore: 79,
+      reason: `${councilParseErrors.length} Quality Council checkpoint(s) had parse diagnostics that made acceptance unsafe.`,
+    });
+  }
   if (councilErrors.length > 0 && councilErrors.length === councilCheckpoints.length) {
     caps.push({
       id: 'quality_council_all_checkpoints_failed',
@@ -1348,8 +1423,33 @@ function applyCaps(
   }
 }
 
+function isOptionalFusionTransportError(
+  checkpoint: QualityCouncilCheckpointReport,
+  allCheckpoints: QualityCouncilCheckpointReport[],
+): boolean {
+  if (checkpoint.status !== 'error' || !checkpoint.fusionUsed) return false;
+  const siblingPassed = allCheckpoints.some((candidate) =>
+    candidate !== checkpoint
+    && candidate.checkpoint === checkpoint.checkpoint
+    && !candidate.fusionUsed
+    && (candidate.status === 'passed' || candidate.status === 'findings')
+  );
+  if (!siblingPassed) return false;
+  return /openrouter api error|no endpoints found|provider routing|requested parameters|404/i
+    .test(`${checkpoint.summary || ''} ${checkpoint.error || ''}`);
+}
+
 function applyScoreCaps(score: number, caps: QualityCap[]): number {
   return caps.reduce((current, cap) => Math.min(current, cap.maxScore), score);
+}
+
+function buildQualityEligibility(caps: QualityCap[]): QualityEligibility {
+  const blockingCaps = caps.filter((cap) => cap.maxScore < 90);
+  return {
+    eligibleFor90: blockingCaps.length === 0,
+    blockingReasons: blockingCaps.map((cap) => cap.reason),
+    capsApplied: caps,
+  };
 }
 
 function enforceAboveNinetyRequirements(
@@ -1359,7 +1459,7 @@ function enforceAboveNinetyRequirements(
   storyCircle: StoryCircleEvidenceSummary,
   signals: StaticStorySignals,
 ): { score: number; addedCaps: QualityCap[] } {
-  if (score <= 90) {
+  if (score < 90) {
     return { score, addedCaps: [] };
   }
   const addedCaps: QualityCap[] = [];
@@ -1374,10 +1474,10 @@ function enforceAboveNinetyRequirements(
   if (!noCaps || !allStoryCircleRealized || !allCoreDomainsAtLeast85 || !noLeakage || !meaningfulAgency) {
     addedCaps.push({
       id: 'above_90_requirements_not_met',
-      maxScore: 90,
-      reason: 'Scores above 90 require no caps, all Story Circle beats realized on-page, all core domains at least 85, no leakage, and meaningful agency.',
+      maxScore: 89,
+      reason: 'Scores at or above 90 require no caps, all Story Circle beats realized on-page, all core domains at least 85, no leakage, and meaningful agency.',
     });
-    return { score: Math.min(score, 90), addedCaps };
+    return { score: Math.min(score, 89), addedCaps };
   }
 
   return { score, addedCaps };

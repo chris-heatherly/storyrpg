@@ -328,6 +328,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // intimacy, and group membership must be earned through scene time, visible
   // behavior, and relationship consequences. Reversible via =0.
   GATE_RELATIONSHIP_PACING: true,
+  // Relationship/location slow-burn enforcement: major named locations are full
+  // scene units; relationship stages and thematic-square surfaces are computed
+  // from a deterministic ledger rather than accepted from prose or prompt intent.
+  // Reversible via =0.
+  GATE_SCENE_SPATIAL_UNIT: true,
+  GATE_RELATIONSHIP_ARC_LEDGER: true,
+  GATE_THEMATIC_SQUARE_TURN: true,
   // Narrative mechanic pressure: flags, scores, skills, items, routes,
   // relationships, information, and encounter outcomes must be earned as
   // on-page pressure and spent as future story permission, not bare state math.

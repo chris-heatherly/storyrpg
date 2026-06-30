@@ -105,7 +105,7 @@ function makeInput(overrides: Partial<QAPhaseInput> = {}): QAPhaseInput {
       },
     ] as any,
     choiceSets: [
-      { beatId: 'beat-1', choiceType: 'expression', choices: [{ id: 'c1', nextSceneId: 'scene-2' }] },
+      { sceneId: 'scene-1', beatId: 'beat-1', choiceType: 'expression', choices: [{ id: 'c1', nextSceneId: 'scene-2' }] },
     ] as any,
     encounters: new Map(),
     ...overrides,
@@ -281,6 +281,127 @@ describe('QAPhase', () => {
     expect(events.some(e => e.type === 'warning' && (e as any).phase === 'qa'
       && (e as any).message.includes('below threshold'))).toBe(true);
     expect(result.qaReport?.overallScore).toBe(40);
+  });
+
+  it('repairs weak choices using the scene-scoped choice set when local beat ids repeat', async () => {
+    const failing = makeQAReport({
+      overallScore: 50,
+      passesQA: false,
+      criticalIssues: ['stakes'],
+      stakes: {
+        metrics: { falseChoiceCount: 1 },
+        choiceSetAnalysis: [{
+          sceneId: 'scene-b',
+          beatId: 'beat-6',
+          stakesScore: 30,
+          analysis: 'flat stakes',
+          improvements: ['make the second scene decision costlier'],
+        }],
+      },
+    });
+    const runFullQA = vi.fn(async () => makeQAReport({ overallScore: 88 }));
+    runFullQA.mockResolvedValueOnce(failing);
+    const deps = makeDeps({
+      qaRunner: { runFullQA } as any,
+      choiceAuthor: {
+        execute: vi.fn(async () => ({
+          success: true,
+          data: { beatId: 'beat-6', choiceType: 'dilemma', choices: [{ id: 'scene-b-choice-repaired' }] },
+        })),
+      } as any,
+    });
+    const events: PipelineEvent[] = [];
+    const input = makeInput({
+      episodeBlueprint: {
+        scenes: [
+          {
+            id: 'scene-a',
+            name: 'Scene A',
+            location: 'loc-1',
+            npcsPresent: [],
+            leadsTo: ['scene-b'],
+            choicePoint: { optionHints: ['a', 'b'] },
+          },
+          {
+            id: 'scene-b',
+            name: 'Scene B',
+            location: 'loc-1',
+            npcsPresent: [],
+            leadsTo: ['scene-c'],
+            choicePoint: { optionHints: ['c', 'd'] },
+          },
+        ],
+        suggestedFlags: [],
+        suggestedScores: [],
+        suggestedTags: [],
+      } as any,
+      sceneContents: [
+        {
+          sceneId: 'scene-a',
+          sceneName: 'Scene A',
+          locationId: 'loc-1',
+          beats: [{ id: 'beat-6', text: 'The first local decision.' }],
+        },
+        {
+          sceneId: 'scene-b',
+          sceneName: 'Scene B',
+          locationId: 'loc-1',
+          beats: [{ id: 'beat-6', text: 'The second local decision.' }],
+        },
+      ] as any,
+      choiceSets: [
+        { sceneId: 'scene-a', beatId: 'beat-6', choiceType: 'expression', choices: [{ id: 'scene-a-choice' }] },
+        { sceneId: 'scene-b', beatId: 'beat-6', choiceType: 'expression', choices: [{ id: 'scene-b-choice' }] },
+      ] as any,
+    });
+
+    const result = await new QAPhase(deps).run(input, makeContext(events));
+
+    expect((deps.choiceAuthor.execute as any)).toHaveBeenCalledTimes(1);
+    expect((deps.choiceAuthor.execute as any).mock.calls[0][0].sceneBlueprint.id).toBe('scene-b');
+    expect(input.choiceSets[0].choices[0].id).toBe('scene-a-choice');
+    expect(input.choiceSets[1]).toMatchObject({
+      sceneId: 'scene-b',
+      beatId: 'beat-6',
+      choices: [{ id: 'scene-b-choice-repaired' }],
+    });
+    expect(result.qaReport?.overallScore).toBe(88);
+  });
+
+  it('skips ambiguous weak-choice repair when duplicate beat ids lack scene evidence', async () => {
+    const failing = makeQAReport({
+      overallScore: 50,
+      passesQA: false,
+      criticalIssues: ['stakes'],
+      stakes: {
+        metrics: { falseChoiceCount: 1 },
+        choiceSetAnalysis: [{
+          beatId: 'beat-6',
+          stakesScore: 30,
+          analysis: 'flat stakes',
+          improvements: ['make the decision costlier'],
+        }],
+      },
+    });
+    const deps = makeDeps({ qaRunner: { runFullQA: vi.fn(async () => failing) } as any });
+    const events: PipelineEvent[] = [];
+    const input = makeInput({
+      sceneContents: [
+        { sceneId: 'scene-a', sceneName: 'Scene A', beats: [{ id: 'beat-6', text: 'First.' }] },
+        { sceneId: 'scene-b', sceneName: 'Scene B', beats: [{ id: 'beat-6', text: 'Second.' }] },
+      ] as any,
+      choiceSets: [
+        { sceneId: 'scene-a', beatId: 'beat-6', choiceType: 'expression', choices: [{ id: 'scene-a-choice' }] },
+        { sceneId: 'scene-b', beatId: 'beat-6', choiceType: 'expression', choices: [{ id: 'scene-b-choice' }] },
+      ] as any,
+    });
+
+    await new QAPhase(deps).run(input, makeContext(events));
+
+    expect((deps.choiceAuthor.execute as any)).not.toHaveBeenCalled();
+    expect(events.some(e => e.type === 'warning'
+      && (e as any).phase === 'qa_repair'
+      && (e as any).message.includes('not scene-unique'))).toBe(true);
   });
 
   describe('runQualityAssurance', () => {

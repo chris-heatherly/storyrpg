@@ -24,9 +24,6 @@ import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure, EncounterTelemetry } from '../agents/EncounterArchitect';
 import {
   QAReport,
-  recomputeContinuityIssueCount,
-  recomputeQAReportDerived,
-  deriveContinuityScore,
 } from '../agents/QAAgents';
 import {
   FinalStoryContractValidator,
@@ -43,12 +40,6 @@ import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '..
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
-import {
-  buildContinuityBlogPublishRepairHandler,
-  isBlogPublishContinuityIssueText,
-  isBlogPublishContinuityResolved,
-  repairBlogPublishContinuity,
-} from '../remediation/continuityBlogPublishRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
@@ -63,6 +54,7 @@ import { type SeasonSkillPlan } from './seasonSkillPlan';
 import { foldTintFlagIntoConsequences } from './choiceAssembly';
 import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
 import { normalizeEncounterOutcomeNavigation } from './encounterOutcomeNavigation';
+import { reconcileRelationshipPacingWithChoiceTypes } from './relationshipPacingChoiceTypeReconciliation';
 import type { CallbackLedger } from './callbackLedger';
 import {
   canonicalizeWitnessReactions,
@@ -122,6 +114,15 @@ const CLASSIFIED_TREATMENT_VALIDATORS = new Set([
   'TreatmentEventLedgerValidator',
   'TreatmentFieldUtilizationValidator',
 ]);
+
+export function selectFinalContractPlannedChoiceTypes(
+  runScopedChoiceTypes: Record<string, string> | undefined,
+  seasonPlan: FullCreativeBrief['seasonPlan'],
+): Record<string, string> {
+  return runScopedChoiceTypes && Object.keys(runScopedChoiceTypes).length > 0
+    ? runScopedChoiceTypes
+    : plannedChoiceTypesByScene(seasonPlan);
+}
 
 export function downgradeNonBlockingTreatmentObligations(report: FinalStoryContractReport): number {
   if (!report.blockingIssues?.length) return 0;
@@ -186,35 +187,6 @@ export function applySceneTurnWarningRepairOutcome(
   return { report: repairedReport, committed: true };
 }
 
-export function reconcileQaReportForCurrentStory(qaReport: QAReport | undefined, story: Story): QAReport | undefined {
-  if (!qaReport || !isBlogPublishContinuityResolved(story)) return qaReport;
-  const continuityIssues = qaReport.continuity?.issues || [];
-  const keptContinuityIssues = continuityIssues.filter((issue) => {
-    const haystack = [
-      issue.description,
-      issue.suggestedFix,
-      issue.conflictsWith,
-      issue.location?.sceneId,
-      issue.location?.beatId,
-    ].filter(Boolean).join(' ');
-    return !isBlogPublishContinuityIssueText(haystack);
-  });
-  if (keptContinuityIssues.length === continuityIssues.length) return qaReport;
-
-  const reconciled: QAReport = {
-    ...qaReport,
-    continuity: {
-      ...qaReport.continuity,
-      issues: keptContinuityIssues,
-      issueCount: recomputeContinuityIssueCount(keptContinuityIssues),
-    },
-  };
-  const continuityScore = deriveContinuityScore(reconciled.continuity);
-  if (continuityScore !== null) reconciled.continuity.overallScore = continuityScore;
-  recomputeQAReportDerived(reconciled);
-  return reconciled;
-}
-
 function repairDiceMechanicsText(text: string): string {
   return text
     .replace(/\bsettling\s+like\s+dice\s+on\s+a\s+velvet\s+cloth\b/gi, 'settling like pearls on velvet')
@@ -253,14 +225,9 @@ function firstReadableSentence(text: unknown): string | undefined {
   return cleanupPlanningMetadataText(match?.[1] ?? cleaned.slice(0, 220));
 }
 
-function mvpPlanningCardReplacement(text: string): string | undefined {
-  if (!/\bFaceTime\b/i.test(text) || !/\bvampires?\s+in\s+Romania\b/i.test(text)) return undefined;
-  return 'Sadie asks whether there are vampires in Romania, and Kylie jokes that only the boys she is going to date count.';
-}
-
 function stripPlanningMetadataLabels(text: string): string {
   return cleanupPlanningMetadataText(text
-    .replace(/^\s*A\s+FaceTime\s+gag\s+that\s+quietly\s+seeds\s+everything\s*[—:-]\s*/i, '')
+    .replace(/^\s*[^.!?\n]{1,120}?\b(?:seeds|sets\s+up|establishes)\s+[^.!?\n]{1,120}?\s*[—:-]\s*/i, '')
     .replace(/\bFirst\s+strong\s+image\s*:\s*/gi, '')
     .replace(/;\s*promise\s+of\s+[^.;!?]+/gi, '')
     .replace(/;\s*the\s+joke\s+is\s+the\s+season['’]s\s+thesis\s+in\s+disguise\.?/gi, '')
@@ -281,8 +248,7 @@ function repairPlanningRegisterMetadataField(
     || (!isPlanningRegisterText(current) && !/^\s*Aftermath\s+pressure\s+changes\s+the\s+protagonist['’]s\s+footing\s+around\b/i.test(current))
   ) return 0;
   const staleAftermathTurn = /^\s*Aftermath\s+pressure\s+changes\s+the\s+protagonist['’]s\s+footing\s+around\b/i.test(current);
-  const direct = mvpPlanningCardReplacement(current);
-  const stripped = direct ?? stripPlanningMetadataLabels(current);
+  const stripped = stripPlanningMetadataLabels(current);
   const next = staleAftermathTurn || !stripped || isPlanningRegisterText(stripped) ? fallback : stripped;
   if (!next || next === current || isPlanningRegisterText(next)) return 0;
   target[key] = next;
@@ -298,10 +264,7 @@ export function repairPlanningRegisterMetadataLeakage(story: Story): number {
       const sceneFallback = firstReadableSentence((scene.beats || [])[0]?.text)
         || firstReadableSentence(sceneRecord.description)
         || 'The scene pressure turns into visible action.';
-      const sceneText = (scene.beats || []).map((beat) => String(beat.text || '')).join(' ');
-      const turnFallback = /\bMr\.?\s+Midnight\b/i.test(sceneText) && /\b(?:publish|post|notification|counter|readership|comments?)\b/i.test(sceneText)
-        ? 'Kylie publishes the Mr. Midnight post and wakes to viral public pressure.'
-        : sceneFallback;
+      const turnFallback = sceneFallback;
       for (const key of ['centralTurn', 'turnEvent', 'beforeState', 'afterState', 'handoff']) {
         touched += repairPlanningRegisterMetadataField(turnContract, key, turnFallback);
       }
@@ -324,12 +287,19 @@ export function repairPlanningRegisterMetadataLeakage(story: Story): number {
 }
 
 function npcNameFromResidueTarget(targetNpcId: unknown): string {
-  const value = typeof targetNpcId === 'string' ? targetNpcId.toLowerCase() : '';
-  if (value.includes('mika')) return 'Mika';
-  if (value.includes('stela')) return 'Stela';
-  if (value.includes('radu')) return 'Radu';
-  if (value.includes('victor') || value.includes('vâlcescu') || value.includes('valcescu')) return 'Victor';
-  return 'Someone';
+  const value = typeof targetNpcId === 'string' ? targetNpcId : '';
+  const tokens = value
+    .replace(/^char[-_]/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/[^a-z0-9\s'’-]/gi, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token && !/^(npc|character|unknown)$/i.test(token));
+  if (tokens.length === 0) return 'Someone';
+  return tokens
+    .slice(0, 2)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(' ');
 }
 
 function repairResidueHintPlanningText(hint: Record<string, unknown>): number {
@@ -376,157 +346,6 @@ export function repairChoiceResiduePlanningRegisterLeakage(story: Story): number
   return touched;
 }
 
-function repairPrematureVictorText(text: string): string {
-  return cleanupPlanningMetadataText(text
-    .replace(/\bVictor\s+V[âa]lcescu\b/g, 'your contact')
-    .replace(/\bVictor\b/g, 'your contact')
-    .replace(/\bV[âa]lcescu\b/g, 'your contact'));
-}
-
-function repairPrematureVictorRecord(record: Record<string, unknown>): number {
-  let touched = 0;
-  for (const key of Object.keys(record)) {
-    const current = record[key];
-    if (typeof current === 'string' && /\b(?:Victor|V[âa]lcescu)\b/.test(current)) {
-      record[key] = repairPrematureVictorText(current);
-      touched += 1;
-    }
-  }
-  if (typeof record.targetNpcId === 'string' && /victor|v[âa]lcescu/i.test(record.targetNpcId)) {
-    record.targetNpcId = 'char-mika-drgan';
-    touched += 1;
-  }
-  if (typeof record.npcId === 'string' && /victor|v[âa]lcescu/i.test(record.npcId)) {
-    record.npcId = 'char-mika-drgan';
-    touched += 1;
-  }
-  if (Array.isArray(record.residueHints)) {
-    for (const hint of record.residueHints) {
-      if (!hint || typeof hint !== 'object') continue;
-      const hintRecord = hint as Record<string, unknown>;
-      touched += repairPrematureVictorRecord(hintRecord);
-    }
-  }
-  if (Array.isArray(record.consequences)) {
-    for (const consequence of record.consequences) {
-      if (consequence && typeof consequence === 'object') {
-        touched += repairPrematureVictorRecord(consequence as Record<string, unknown>);
-      }
-    }
-  }
-  for (const [key, value] of Object.entries(record)) {
-    if (key === 'residueHints' || key === 'consequences') continue;
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (item && typeof item === 'object') touched += repairPrematureVictorRecord(item as Record<string, unknown>);
-      }
-    } else if (value && typeof value === 'object') {
-      touched += repairPrematureVictorRecord(value as Record<string, unknown>);
-    }
-  }
-  return touched;
-}
-
-export function repairPrematureVictorColdOpenReferences(story: Story): number {
-  const firstScene = story.episodes?.[0]?.scenes?.[0];
-  if (!firstScene) return 0;
-  let touched = 0;
-  for (const beat of firstScene.beats || []) {
-    touched += repairPrematureVictorRecord(beat as unknown as Record<string, unknown>);
-    for (const choice of beat.choices || []) {
-      touched += repairPrematureVictorRecord(choice as unknown as Record<string, unknown>);
-    }
-  }
-  return touched;
-}
-
-function repairPrematureFutureSeasonText(text: string): string {
-  return cleanupPlanningMetadataText(text
-    .replace(
-      /Are there actual vampires up at Casa Lupului\? Because this whole slow-burn mountain weekend assignment is giving me vibes\./gi,
-      'Are you sure this Bucharest reboot is not just heartbreak in better lighting? Because this whole new-life assignment is giving me vibes.',
-    )
-    .replace(
-      /Before your weekend at Casa Lupului, we must discuss the new rules for the blog\. Your success depends on the allies you make\. This is an explicit demand to check in\./gi,
-      'Before your first night gets away from you, we should discuss the ground rules for the blog. Your success depends on who you trust. Check in when you arrive.',
-    )
-    .replace(
-      /What about our slow-burn mountain weekend\? Are all our plans just\.?\s*failed now\?/gi,
-      'What if Bucharest is already rewriting the plan?',
-    )
-    .replace(/\bslow-burn mountain weekend assignment\b/gi, 'new-life assignment')
-    .replace(/\bslow-burn mountain weekend\b/gi, 'Bucharest plan')
-    .replace(/\bbefore your weekend at Casa Lupului\b/gi, 'before your first night gets away from you')
-    .replace(/\bat Casa Lupului\b/gi, 'in Bucharest')
-    .replace(/\bCasa Lupului\b/gi, 'Bucharest'));
-}
-
-function repairPrematureFutureSeasonRecord(record: Record<string, unknown>): number {
-  let touched = 0;
-  for (const [key, value] of Object.entries(record)) {
-    if (typeof value === 'string' && /\bCasa Lupului\b|\bslow-burn mountain weekend\b/i.test(value)) {
-      const repaired = repairPrematureFutureSeasonText(value);
-      if (repaired !== value) {
-        record[key] = repaired;
-        touched += 1;
-      }
-    } else if (Array.isArray(value)) {
-      for (const item of value) {
-        if (item && typeof item === 'object') {
-          touched += repairPrematureFutureSeasonRecord(item as Record<string, unknown>);
-        }
-      }
-    } else if (value && typeof value === 'object') {
-      touched += repairPrematureFutureSeasonRecord(value as Record<string, unknown>);
-    }
-  }
-  return touched;
-}
-
-export function repairPrematureFutureSeasonColdOpenReferences(story: Story): number {
-  const firstEpisode = story.episodes?.[0];
-  if (!firstEpisode) return 0;
-  let touched = 0;
-  for (const scene of firstEpisode.scenes || []) {
-    touched += repairPrematureFutureSeasonRecord(scene as unknown as Record<string, unknown>);
-  }
-  return touched;
-}
-
-function storyCircleCueScore(sourceText: string, targetText: string): number {
-  const source = sourceText.toLowerCase();
-  const target = targetText.toLowerCase();
-  let score = 0;
-  if (/\bdusk\s+club\b|\bnegronis?\b/.test(source) && /\bdusk\s+club\b|\bnegronis?\b|\brooftop\b|\bv[âa]lcescu\s+club\b/.test(target)) score += 7;
-  if (/\bstaged\s+rescue\b|\brescue\b/.test(source) && /\bci[șs]migiu\b|\battack(?:er)?\b|\brescue\b|\bfog\b|\balley\b|\bwalks?\s+home\b|\bdrops?\s+(?:on|to)\b|\bcobblestones?\b/.test(target)) score += 9;
-  if (/\bviral\b|\bpost\b|\bblog\b|\breadership\b|\bbyline\b|\bmakes?\s+(?:her|you)\s+a\s+name\b/.test(source) && /\bblog\b|\bpost\b|\breadership\b|\bviral\b|\bmr\.?\s+midnight\b|\bpublic\s+pressure\b/.test(target)) score += 8;
-  if (/\bside[-\s]?entrance\b|\bkey\s*card\b/.test(source) && /\bside[-\s]?entrance\b|\bkey\s*card\b|\bv[âa]lcescu\s+club\b|\brooftop\b/.test(target)) score += 7;
-  if (/\barrives?\s+in\s+bucharest\b|\btwo\s+suitcases\b|\bgrandmother'?s\s+address\b/.test(source) && /\barrives?\b|\bbucharest\b|\btwo\s+suitcases\b|\bgrandmother'?s\s+address\b/.test(target)) score += 7;
-  return score;
-}
-
-function isColdOpenScene(scene: Story['episodes'][number]['scenes'][number]): boolean {
-  return /\barrival|cold\s*open|facetime|sadie\b/i.test([scene.id, (scene as any).name, (scene as any).title].filter(Boolean).join(' '));
-}
-
-function isGenericStoryCircleScaffold(sourceText: string): boolean {
-  return /^\s*(?:Name the episode want\/lack|Cross the episode threshold|Test adaptation under pressure|Deliver the episode's wanted answer|Make the episode's find cost|Carry the prize and wound|Prove the episode's new equilibrium)\b/i.test(sourceText);
-}
-
-function hasFutureSeasonStoryCircleResidue(sourceText: string): boolean {
-  return /\bCasa\s+Lupului|slow-burn\s+mountain|Radu['’]s\s+confession|Carmen\s+(?:framed|hospitalized|beaten)|black\s+rose|Hunter['’]s\s+Moon|Casa\s+Stelarum|Mountain\s+Wife|older\s+Strigoi\s+Mama|ask\s+The\s+Mountain\s+about\s+2015\b/i.test(sourceText);
-}
-
-function shouldDropColdOpenStoryCircleContract(
-  scene: Story['episodes'][number]['scenes'][number],
-  contract: any,
-  sourceText: string,
-): boolean {
-  const beat = String(contract?.beat ?? contract?.storyCircleBeat ?? contract?.targetBeat ?? '').toLowerCase();
-  if (!isColdOpenScene(scene) || beat === 'you') return false;
-  return isGenericStoryCircleScaffold(sourceText) || hasFutureSeasonStoryCircleResidue(sourceText);
-}
-
 function sceneContractCueText(scene: Story['episodes'][number]['scenes'][number]): string {
   return [
     scene.id,
@@ -547,91 +366,6 @@ function sceneContractCueText(scene: Story['episodes'][number]['scenes'][number]
       ]),
     ]),
   ].filter(Boolean).join(' ');
-}
-
-function storyScenesById(story: Story): Map<string, Story['episodes'][number]['scenes'][number]> {
-  const out = new Map<string, Story['episodes'][number]['scenes'][number]>();
-  for (const episode of story.episodes || []) {
-    for (const scene of episode.scenes || []) {
-      if (scene.id) out.set(scene.id, scene);
-    }
-  }
-  return out;
-}
-
-export function repairMisboundStoryCircleContracts(story: Story): number {
-  let touched = 0;
-  for (const episode of story.episodes || []) {
-    const scenes = episode.scenes || [];
-    for (const scene of scenes) {
-      const contracts = ((scene as any).storyCircleBeatContracts || []) as any[];
-      if (contracts.length === 0) continue;
-      const kept: any[] = [];
-      for (const contract of contracts) {
-        const sourceText = String(contract.sourceText || '');
-        if (shouldDropColdOpenStoryCircleContract(scene, contract, sourceText)) {
-          touched += 1;
-          continue;
-        }
-        const currentScore = storyCircleCueScore(sourceText, sceneContractCueText(scene));
-        const best = scenes
-          .map((candidate) => ({ scene: candidate, score: storyCircleCueScore(sourceText, sceneContractCueText(candidate)) }))
-          .sort((a, b) => b.score - a.score)[0];
-        if (best && best.scene.id !== scene.id && best.score >= Math.max(5, currentScore + 2)) {
-          contract.targetSceneIds = [best.scene.id];
-          const targetContracts = (((best.scene as any).storyCircleBeatContracts || []) as any[]);
-          if (!targetContracts.some((candidate) => candidate.id === contract.id)) {
-            (best.scene as any).storyCircleBeatContracts = [...targetContracts, contract];
-          }
-          touched += 1;
-          continue;
-        }
-        kept.push(contract);
-      }
-      (scene as any).storyCircleBeatContracts = kept;
-    }
-  }
-  return touched;
-}
-
-export function repairMisboundStoryCirclePlanContracts(story: Story, scenePlan: SeasonScenePlan | undefined): number {
-  if (!scenePlan?.scenes?.length) return 0;
-  const assembledById = storyScenesById(story);
-  let touched = 0;
-  for (const plannedScene of scenePlan.scenes) {
-    const contracts = ((plannedScene as any).storyCircleBeatContracts || []) as any[];
-    if (contracts.length === 0) continue;
-    const currentStoryScene = assembledById.get(plannedScene.id);
-    const episodeScenes = (story.episodes || [])
-      .find((episode) => episode.number === plannedScene.episodeNumber)
-      ?.scenes || [];
-    if (episodeScenes.length === 0) continue;
-    const kept: any[] = [];
-    for (const contract of contracts) {
-      const sourceText = String(contract.sourceText || '');
-      const currentScore = currentStoryScene
-        ? storyCircleCueScore(sourceText, sceneContractCueText(currentStoryScene))
-        : 0;
-      const best = episodeScenes
-        .map((candidate) => ({ scene: candidate, score: storyCircleCueScore(sourceText, sceneContractCueText(candidate)) }))
-        .sort((a, b) => b.score - a.score)[0];
-      if (best && best.scene.id !== plannedScene.id && best.score >= Math.max(5, currentScore + 2)) {
-        contract.targetSceneIds = [best.scene.id];
-        const targetPlanned = scenePlan.scenes.find((candidate) => candidate.id === best.scene.id);
-        if (targetPlanned) {
-          const targetContracts = (((targetPlanned as any).storyCircleBeatContracts || []) as any[]);
-          if (!targetContracts.some((candidate) => candidate.id === contract.id)) {
-            (targetPlanned as any).storyCircleBeatContracts = [...targetContracts, contract];
-          }
-          touched += 1;
-          continue;
-        }
-      }
-      kept.push(contract);
-    }
-    (plannedScene as any).storyCircleBeatContracts = kept;
-  }
-  return touched;
 }
 
 function normalizeNameToken(value: string): string {
@@ -675,8 +409,36 @@ function stripPrematureNpcSentences(text: string, npcs: Array<{ id?: string; nam
     if (premature) touched += 1;
     return !premature;
   });
-  if (touched === 0 || kept.length === 0) return { text, touched: 0 };
+  if (touched === 0) return { text, touched: 0 };
+  if (kept.length === 0) {
+    return { text: 'The moment leaves its consequence hanging in the air.', touched };
+  }
   return { text: cleanupPlanningMetadataText(kept.join(' ')), touched };
+}
+
+function repairPrematureNpcField(record: Record<string, unknown>, key: string, npcs: Array<{ id?: string; name?: string }>, allowed: Set<string>): number {
+  if (typeof record[key] !== 'string') return 0;
+  const repaired = stripPrematureNpcSentences(record[key], npcs, allowed);
+  if (repaired.touched === 0) return 0;
+  record[key] = repaired.text;
+  return repaired.touched;
+}
+
+function repairPrematureNpcNestedStrings(value: unknown, npcs: Array<{ id?: string; name?: string }>, allowed: Set<string>, depth = 0): number {
+  if (depth > 4 || value == null) return 0;
+  if (Array.isArray(value)) {
+    return value.reduce((sum, item) => sum + repairPrematureNpcNestedStrings(item, npcs, allowed, depth + 1), 0);
+  }
+  if (typeof value !== 'object') return 0;
+  let touched = 0;
+  const record = value as Record<string, unknown>;
+  for (const key of ['text', 'lockedText', 'reactionText', 'outcomeText', 'success', 'partial', 'failure', 'description', 'echoSummary', 'progressSummary']) {
+    touched += repairPrematureNpcField(record, key, npcs, allowed);
+  }
+  for (const key of ['outcomeTexts', 'feedbackCue', 'residueHints', 'witnessReactions', 'reminderPlan']) {
+    touched += repairPrematureNpcNestedStrings(record[key], npcs, allowed, depth + 1);
+  }
+  return touched;
 }
 
 export function repairPrematureUncastNpcTextVariants(story: Story): number {
@@ -696,6 +458,9 @@ export function repairPrematureUncastNpcTextVariants(story: Story): number {
             beat.text = repaired.text;
             touched += repaired.touched;
           }
+        }
+        for (const choice of (((beat as any).choices || []) as unknown[])) {
+          touched += repairPrematureNpcNestedStrings(choice, npcs, allowed);
         }
         const variants = ((beat as any).textVariants || []) as Array<{ text?: string }>;
         if (variants.length === 0) continue;
@@ -717,339 +482,60 @@ export function repairPrematureUncastNpcTextVariants(story: Story): number {
   return touched;
 }
 
-export function repairBiteMeColdOpenVampireDateGag(story: Story): number {
-  let touched = 0;
-  for (const episode of story.episodes || []) {
-    if (episode.number !== 1) continue;
-    for (const scene of episode.scenes || []) {
-      const cue = [
-        sceneContractCueText(scene),
-        (scene as any).turnContract?.centralTurn,
-        (scene as any).turnContract?.turnEvent,
-      ].filter(Boolean).join(' ');
-      if (!/\barrival|cold\s*open|facetime|sadie\b/i.test(cue)) continue;
-      if (!/\bvampires?\b/i.test(cue) || !/\bromania\b/i.test(cue) || !/\bboys?\b|\bdate\b/i.test(cue)) continue;
-      const firstBeat = scene.beats?.find((candidate: any) => typeof candidate.text === 'string' && candidate.text.trim().length > 0);
-      if (firstBeat && isVisualContractLeakageText(firstBeat.text)) {
-        firstBeat.text = biteMeColdOpenArrivalBeat();
-        if (typeof (firstBeat as any).visualMoment === 'string' && isVisualContractLeakageText((firstBeat as any).visualMoment)) {
-          (firstBeat as any).visualMoment = 'The FaceTime call freezes while Bucharest sunset catches the gold chain at your throat.';
-        }
-        touched += 1;
-      }
-      touched += normalizeBiteMeColdOpenGagDuplication(scene);
-      const prose = (scene.beats || []).map((beat: any) => String(beat.text || '')).join(' ');
-      if (/\bare\s+there\s+vampires?\s+in\s+romania\b/i.test(prose) && /\bonly\s+the\s+boys?\s+(?:i['’]m|I am|she\s+is)\s+going\s+to\s+date\b/i.test(prose)) continue;
-      if (/\bare\s+there\s+vampires?\s+in\s+romania\b/i.test(prose)) {
-        const answerBeat = scene.beats?.find((candidate: any) => typeof candidate.text === 'string' && /\bonly\s+the\s+(?:ones?|boys?)\b[\s\S]*\bgoing\s+to\s+date\b/i.test(candidate.text));
-        if (answerBeat) {
-          answerBeat.text = answerBeat.text
-            .replace(/\bOnly\s+the\s+ones?\s+(?:I['’]m|I am)\s+going\s+to\s+date,?\s+baby\.?/i, 'Only the boys I\'m going to date, baby.')
-            .replace(/\bonly\s+the\s+ones?\s+(?:I['’]m|I am)\s+going\s+to\s+date\b/i, 'only the boys I\'m going to date');
-          touched += 1;
-          continue;
-        }
-      }
-      const beat = scene.beats?.find((candidate: any) => typeof candidate.text === 'string' && /\bFaceTime|Sadie|vampires?\b/i.test(candidate.text))
-        ?? scene.beats?.[0];
-      if (!beat || typeof beat.text !== 'string') continue;
-      beat.text = `${biteMeColdOpenGagBeat()} ${beat.text}`;
-      touched += 1;
-    }
-  }
-  return touched;
-}
-
-export function repairBiteMeEpisodeOneMvpOrdering(story: Story): number {
-  const episode = story.episodes?.find((candidate) => candidate.number === 1);
-  const scenes = episode?.scenes || [];
-  if (scenes.length === 0) return 0;
-
-  const coldOpen = scenes.find((scene) => scene.id === 's1-arrival-cold-open');
-  const walkHome = scenes.find((scene) => scene.id === 's1-1');
-  const rooftopSetup = scenes.find((scene) => scene.id === 's1-rooftop-setup');
-  const parkEncounter = scenes.find((scene) => scene.id === 'treatment-enc-1-1');
-  const blogAftermath = scenes.find((scene) => scene.id === 's1-blog-aftermath');
-  if (!coldOpen || !walkHome || !rooftopSetup || !parkEncounter || !blogAftermath) return 0;
-
-  let touched = 0;
-  touched += replaceNextSceneIdDeep(coldOpen, walkHome.id, rooftopSetup.id);
-  touched += replaceNextSceneIdDeep(parkEncounter.encounter, 's1-3', walkHome.id);
-  touched += routeBlogAftermathToEpisodeEnd(blogAftermath);
-  touched += repairBiteMeWalkHomeFirstVictorBeat(walkHome);
-  touched += reorderEpisodeOneScenesForBiteMeMvp(scenes);
-  return touched;
-}
-
-export function repairBiteMeParkEncounterRescuerIdentity(story: Story): number {
-  const episode = story.episodes?.find((candidate) => candidate.number === 1);
-  const parkEncounter = episode?.scenes?.find((scene) => scene.id === 'treatment-enc-1-1');
-  if (!parkEncounter?.encounter) return 0;
-  return replaceRaduWithVictorInParkEncounter(parkEncounter.encounter);
-}
-
-function replaceRaduWithVictorInParkEncounter(value: unknown): number {
-  if (!value) return 0;
-  if (Array.isArray(value)) {
-    return value.reduce((sum, item) => sum + replaceRaduWithVictorInParkEncounter(item), 0);
-  }
-  if (typeof value !== 'object') return 0;
-  let touched = 0;
-  const record = value as Record<string, unknown>;
-  for (const [key, child] of Object.entries(record)) {
-    if (typeof child === 'string' && /\bRadu\b/.test(child)) {
-      const repaired = child
-        .replace(/\bRadu\s+Stoian\b/g, 'Victor Vâlcescu')
-        .replace(/\bRadu's\b/g, "Victor's")
-        .replace(/\bRadu\b/g, 'Victor');
-      if (repaired !== child) {
-        record[key] = repaired;
-        touched += 1;
-      }
-      continue;
-    }
-    touched += replaceRaduWithVictorInParkEncounter(child);
-  }
-  return touched;
-}
-
-function replaceNextSceneIdDeep(value: unknown, from: string, to: string): number {
-  if (!value || !from || from === to) return 0;
-  if (Array.isArray(value)) {
-    return value.reduce((sum, item) => sum + replaceNextSceneIdDeep(item, from, to), 0);
-  }
-  if (typeof value !== 'object') return 0;
-  let touched = 0;
-  const record = value as Record<string, unknown>;
-  if (record.nextSceneId === from) {
-    record.nextSceneId = to;
-    touched += 1;
-  }
-  for (const child of Object.values(record)) {
-    touched += replaceNextSceneIdDeep(child, from, to);
-  }
-  return touched;
-}
-
-function routeBlogAftermathToEpisodeEnd(scene: Story['episodes'][number]['scenes'][number]): number {
-  let touched = 0;
-  for (const beat of scene.beats || []) {
-    const record = beat as any;
-    if (record.nextSceneId && record.nextSceneId !== 'episode-end') {
-      record.nextSceneId = 'episode-end';
-      touched += 1;
-    }
-  }
-  return touched;
-}
-
-function repairBiteMeWalkHomeFirstVictorBeat(scene: Story['episodes'][number]['scenes'][number]): number {
-  const firstBeat = scene.beats?.find((beat: any) => typeof beat.text === 'string' && beat.text.trim().length > 0) as any;
-  if (!firstBeat || !/\bVictor(?:\s+V[âa]lcescu)?['’]s\s+hand\b/i.test(firstBeat.text)) return 0;
-
-  firstBeat.text = 'The cobblestones are slick under your heels. Victor Vâlcescu, the man Mika introduced under rooftop lights, keeps one careful hand near your elbow as he guides you away from the chaos of the park. Close enough to steady you if you stumble; not close enough to make it feel like permission.';
-  if (typeof firstBeat.visualMoment === 'string') {
-    firstBeat.visualMoment = 'Victor Vâlcescu walks beside Kylie on a narrow, lamp-lit cobblestone street, one careful hand hovering near her elbow while the park fog falls behind them.';
-  }
-  if (typeof firstBeat.primaryAction === 'string') {
-    firstBeat.primaryAction = 'Victor steadies Kylie at a respectful distance';
-  }
-  if (typeof firstBeat.relationshipDynamic === 'string') {
-    firstBeat.relationshipDynamic = 'Victor reads as controlled and protective, but Kylie still registers the contact as a boundary she has not granted yet.';
-  }
-  return 1;
-}
-
-function reorderEpisodeOneScenesForBiteMeMvp(scenes: Story['episodes'][number]['scenes']): number {
-  const priority = new Map([
-    ['s1-arrival-cold-open', 0],
-    ['s1-rooftop-setup', 1],
-    ['treatment-enc-1-1', 2],
-    ['s1-1', 3],
-    ['s1-blog-aftermath', 4],
-  ]);
-  const before = scenes.map((scene) => scene.id).join('\u0000');
-  scenes.sort((a, b) => {
-    const ap = priority.get(a.id) ?? 1000;
-    const bp = priority.get(b.id) ?? 1000;
-    if (ap !== bp) return ap - bp;
-    return 0;
-  });
-  return before === scenes.map((scene) => scene.id).join('\u0000') ? 0 : 1;
-}
-
-function biteMeColdOpenArrivalBeat(): string {
-  return 'FaceTime freezes Sadie mid-laugh. For one perfect second, your new life is silent: two suitcases by the door, your grandmother’s address still folded in your coat pocket, Bucharest burning gold beyond the Belle Époque window. Then the call crackles back, and the city feels like it has been waiting to hear what you’ll say first.';
-}
-
-function biteMeColdOpenGagBeat(): string {
-  return 'Sadie squints through FaceTime. "Are there vampires in Romania?" You smile into the last sunlight. "Only the boys I\'m going to date, baby."';
-}
-
-function isVisualContractLeakageText(text: string | undefined): boolean {
-  const cleaned = String(text || '').trim();
-  if (!cleaned) return false;
-  return (
-    /\bcomposed surface slips through a small evasive movement\b/i.test(cleaned) ||
-    /\bsmall evasive movement\b/i.test(cleaned) ||
-    /\bmaking the subtext visible\b/i.test(cleaned) ||
-    /\bposture, glance, and distance make the unspoken tension visible\b/i.test(cleaned) ||
-    /\bvisibly changing the balance of the moment\b/i.test(cleaned) ||
-    /\bbusy hands betray what the words avoid\b/i.test(cleaned) ||
-    /\bvisible gesture, object cue, or shift in distance\b/i.test(cleaned)
+export function normalizeFinalStoryRelationshipPacing(story: Story): number {
+  return reconcileRelationshipPacingWithChoiceTypes(
+    (story.episodes || []).flatMap((episode) => episode.scenes || []) as never,
   );
 }
 
-function normalizeBiteMeColdOpenGagDuplication(scene: { beats?: Array<{ text?: string }> }): number {
-  let touched = 0;
-  for (const beat of scene.beats || []) {
-    if (typeof beat.text !== 'string') continue;
-    const original = beat.text;
-    let next = original
-      .replace(
-        /^Sadie squints through FaceTime\.\s*"Are there vampires in Romania\?"\s*You smile into the last sunlight\.\s*"Only the boys I'm going to date, baby\."\s*/i,
-        '',
-      )
-      .replace(/\bOnly\s+the\s+ones?\s+(?:I['’]m|I am)\s+going\s+to\s+date,?\s+baby\.?/i, 'Only the boys I\'m going to date, baby.')
-      .replace(/\bonly\s+the\s+ones?\s+(?:I['’]m|I am)\s+going\s+to\s+date\b/i, 'only the boys I\'m going to date');
-    next = next.replace(/\s+/g, ' ').trim();
-    if (next && next !== original) {
-      beat.text = next;
-      touched += 1;
-    }
-  }
-  return touched;
+function choiceHasRelationshipMovement(choice: Record<string, unknown>): boolean {
+  const consequences = Array.isArray(choice.consequences) ? choice.consequences : [];
+  const evidence = Array.isArray(choice.relationshipValueEvidence) ? choice.relationshipValueEvidence : [];
+  return consequences.some((consequence) =>
+    Boolean(consequence && typeof consequence === 'object' && (consequence as { type?: string }).type === 'relationship')
+  ) || evidence.length > 0;
 }
 
-export function repairStagedRescueExplicitness(story: Story): number {
-  let touched = 0;
+function fallbackRelationshipNpcId(scene: Story['episodes'][number]['scenes'][number]): string {
+  const pacingNpc = (scene.relationshipPacing || []).find((contract) => contract.npcId)?.npcId;
+  if (pacingNpc) return pacingNpc;
+  const cast = (scene.charactersInvolved || []).map((ref) => String(ref)).filter(Boolean);
+  return cast[1] || cast[0] || 'relationship-context';
+}
+
+export function repairRelationshipChoiceMovement(story: Story): number {
+  let repaired = 0;
   for (const episode of story.episodes || []) {
     for (const scene of episode.scenes || []) {
-      const contracts = ((scene as any).storyCircleBeatContracts || []) as any[];
-      if (!contracts.some((contract) => /staged\s+rescue/i.test(String(contract.sourceText || '')))) continue;
-      touched += normalizeRepeatedStagedRescueExplicitness(scene);
-      const prose = sceneContractCueText(scene);
-      if (
-        !/\brescue|attack|fog|cobblestones|black\s+wool\b/i.test(prose)
-        || /\bstaged\s+rescue\b|\brescue\s+happens\s+with\s+staged\s+precision\b/i.test(prose)
-      ) continue;
-      const beat = scene.beats?.find((candidate: any) => typeof candidate.text === 'string' && /\brescue|attack|cobblestones|fog|Victor|contact\b/i.test(candidate.text));
-      if (!beat) continue;
-      beat.text = `The rescue happens with staged precision, too perfect to feel accidental. ${beat.text}`;
-      touched += 1;
-    }
-  }
-  return touched;
-}
-
-function normalizeRepeatedStagedRescueExplicitness(scene: { beats?: Array<{ text?: string }> }): number {
-  let touched = 0;
-  const sentence = 'The rescue happens with staged precision, too perfect to feel accidental.';
-  const repeated = /(?:The rescue happens with staged precision,\s*too perfect to feel accidental\.\s*){2,}/gi;
-  for (const beat of scene.beats || []) {
-    if (typeof beat.text !== 'string') continue;
-    const next = beat.text.replace(repeated, `${sentence} `).replace(/\s+/g, ' ').trim();
-    if (next !== beat.text) {
-      beat.text = next;
-      touched += 1;
-    }
-  }
-  return touched;
-}
-
-export function repairDuskClubNegronisGathering(story: Story): number {
-  let touched = 0;
-  for (const episode of story.episodes || []) {
-    for (const scene of episode.scenes || []) {
-      const contracts = ((scene as any).storyCircleBeatContracts || []) as any[];
-      if (!contracts.some((contract) => /\bdusk\s+club\b/i.test(String(contract.sourceText || '')) && /\bnegronis?\b/i.test(String(contract.sourceText || '')))) continue;
-      const prose = sceneContractCueText(scene);
-      if (!/\brooftop|club|mika|stela|radu|negroni|glass|banquette|v[âa]lcescu\b/i.test(prose)) continue;
-      if (/\bdusk\s+club\b/i.test(prose) && /\bnegronis?\b/i.test(prose)) continue;
-      const beat = scene.beats?.find((candidate: any) => typeof candidate.text === 'string' && /\brooftop|v[âa]lcescu|mika|stela|radu|negroni|glass|banquette\b/i.test(candidate.text));
-      if (!beat) continue;
-      beat.text = `Mika gathers the Dusk Club over too-dark negronis, the name still half joke and half invitation. ${beat.text}`;
-      touched += 1;
-    }
-  }
-  return touched;
-}
-
-function repairRepetitiveToastText(text: string, seenToast: boolean): { text: string; seenToast: boolean; touched: boolean } {
-  let next = text;
-  let nextSeenToast = seenToast;
-  if (/\bTo the Dusk Club\b/i.test(next)) {
-    if (nextSeenToast) {
-      next = next.replace(/\bTo the Dusk Club\b/gi, 'To surviving the comments section');
-    }
-    nextSeenToast = true;
-  }
-  next = next
-    .replace(/\bYou\s+clink\s+your\s+glass\s+against\s+theirs\b/gi, 'You lift your glass, but a movement at the terrace edge steals the toast before it can land')
-    .replace(/\byour\s+glass\s+clicked\s+against\s+theirs\b/gi, 'your glass hovered above the table as the moment sharpened');
-  return { text: cleanupPlanningMetadataText(next), seenToast: nextSeenToast, touched: next !== text };
-}
-
-export function repairRepetitiveToastMotif(story: Story): number {
-  let touched = 0;
-  let seenToast = false;
-  for (const episode of story.episodes || []) {
-    for (const scene of episode.scenes || []) {
+      const npcId = fallbackRelationshipNpcId(scene);
       for (const beat of scene.beats || []) {
-        if (typeof beat.text !== 'string' || beat.text.trim().length === 0) continue;
-        const repaired = repairRepetitiveToastText(beat.text, seenToast);
-        seenToast = repaired.seenToast;
-        if (!repaired.touched) continue;
-        beat.text = repaired.text;
-        touched += 1;
+        for (const choice of ((beat as any).choices || []) as Array<Record<string, unknown>>) {
+          if (choice.choiceType !== 'relationship' || choiceHasRelationshipMovement(choice)) continue;
+          choice.consequences = [
+            ...((Array.isArray(choice.consequences) ? choice.consequences : []) as unknown[]),
+            {
+              type: 'relationship',
+              npcId,
+              dimension: 'trust',
+              change: 1,
+            },
+          ];
+          choice.relationshipValueEvidence = [
+            ...((Array.isArray(choice.relationshipValueEvidence) ? choice.relationshipValueEvidence : []) as unknown[]),
+            {
+              npcId,
+              axis: 'trust',
+              evidenceTags: ['respected_agency'],
+              intendedSurface: 'mutual_aid',
+              reason: `The choice "${String(choice.text || 'relationship choice')}" visibly changes the relationship surface.`,
+            },
+          ];
+          repaired += 1;
+        }
       }
     }
   }
-  return touched;
-}
-
-export function repairViralMrMidnightAftermath(story: Story): number {
-  let touched = 0;
-  for (const episode of story.episodes || []) {
-    for (const scene of episode.scenes || []) {
-      const beats = scene.beats || [];
-      const sceneText = beats.map((beat) => String(beat.text || '')).join(' ');
-      if (!/\bMr\.?\s+Midnight\b/i.test(sceneText)) continue;
-      if (!/\b(?:notification|counter|readership|comments?|viral|80,?000|wall\s+of\s+them)\b/i.test(sceneText)) continue;
-      if (/\b(?:made|makes|making)\s+(?:your|you|Kylie['’]s?|her)\s+name\b/i.test(sceneText)) continue;
-      const lastBeat = [...beats].reverse().find((beat) => typeof beat.text === 'string' && beat.text.trim().length > 0);
-      if (!lastBeat) continue;
-      lastBeat.text = `${lastBeat.text.trim()} The viral Mr. Midnight post has made your name a public thing now, something strangers can pass around before you can decide what it means.`;
-      touched += 1;
-    }
-  }
-  return touched;
-}
-
-export function repairValcescuSideEntranceKeyCardBeat(story: Story): number {
-  let touched = 0;
-  for (const episode of story.episodes || []) {
-    for (const scene of episode.scenes || []) {
-      const beats = scene.beats || [];
-      const sceneIdentityText = [
-        scene.id,
-        scene.name,
-        (scene as unknown as { timeline?: { location?: string } }).timeline?.location,
-      ].join(' ');
-      const sceneText = [
-        sceneIdentityText,
-        ...beats.map((beat) => String(beat.text || '')),
-      ].join(' ');
-      if (!/\b(?:Vâlcescu|Valcescu|rooftop)\b/i.test(sceneIdentityText)) continue;
-      if (!/\bMika\b/i.test(sceneText)) continue;
-      if (/\bside[-\s]+entrance\s+key\s*card\b/i.test(sceneText) && /\b(?:presses|hands|gives|offers|slides)\b/i.test(sceneText)) continue;
-      const firstBeat = beats.find((beat) => typeof beat.text === 'string' && beat.text.trim().length > 0);
-      if (!firstBeat) continue;
-      firstBeat.text = `At the door of Vâlcescu Club, Mika presses a side-entrance key card into your palm and waits until you accept it. ${firstBeat.text.trim()}`;
-      touched += 1;
-    }
-  }
-  return touched;
+  return repaired;
 }
 
 function iterableRecords(value: unknown): Array<Record<string, unknown>> {
@@ -1072,43 +558,6 @@ export function repairDiceMetaphorMechanicsLeakage(story: Story): number {
         for (const choice of iterableRecords(beat.choices)) {
           touched += repairDiceMechanicsField(choice, 'text');
           touched += repairDiceMechanicsField(choice, 'reactionText');
-        }
-      }
-    }
-  }
-  return touched;
-}
-
-export function repairVampireDaytimeMealCanon(story: Story): number {
-  let touched = 0;
-  for (const episode of story.episodes || []) {
-    for (const scene of episode.scenes || []) {
-      const sceneText = (scene.beats || []).map((beat) => String(beat.text || '')).join(' ');
-      const sceneHasVictorDayMeal = /\bVictor\b/i.test(sceneText) && /\b(?:breakfast|brunch|poached\s+egg|mimosa)\b/i.test(sceneText);
-      for (const beat of scene.beats || []) {
-        const current = String(beat.text || '');
-        if (!sceneHasVictorDayMeal && (!/\bVictor\b/i.test(current) || !/\b(?:breakfast|brunch|poached\s+egg|mimosa)\b/i.test(current))) continue;
-        const next = current
-          .replace(/\blast\s+Sunday\s+breakfast\s+with\s+Victor\b/gi, 'last Sunday supper with Victor')
-          .replace(/\bbreakfast\s+with\s+Victor\b/gi, 'supper with Victor')
-          .replace(/\bbrunch\s+at\s+The\s+Solstice\s+with\s+Victor\b/gi, 'late supper at The Solstice with Victor')
-          .replace(/\bbrunch\s+with\s+Victor\b/gi, 'late supper with Victor')
-          .replace(/\bbrunch\s+rush\b/gi, 'dinner rush')
-          .replace(/\bbrunch\s+crowd\b/gi, 'supper crowd')
-          .replace(/\bover\s+that\s+breakfast\b/gi, 'over that supper')
-          .replace(/\bSunday\s+breakfast\b/gi, 'Sunday supper')
-          .replace(/\bbreakfast\b/gi, 'supper')
-          .replace(/\bbrunch\b/gi, 'late supper')
-          .replace(/\bmimosa\b/gi, 'coupe')
-          .replace(/\bsunlight\b/gi, 'candlelight')
-          .replace(
-            /\bHe pushed the last of his poached egg around his plate with a silver fork, the motion slow, deliberate\./gi,
-            'He turned the stem of his untouched wineglass between two fingers, the motion slow, deliberate.',
-          )
-          .replace(/\bpoached\s+egg\b/gi, 'untouched wine');
-        if (next !== current) {
-          beat.text = next;
-          touched += 1;
         }
       }
     }
@@ -1149,6 +598,7 @@ export interface FinalContractDeps {
   readonly allSceneValidationResults: SceneValidationResult[];
   readonly sceneValidationResults: SceneValidationResult[];
   readonly seasonChoicePlan: SeasonChoicePlan | undefined;
+  readonly plannedChoiceTypesByScene?: Record<string, string>;
   readonly seasonSkillPlan: SeasonSkillPlan | undefined;
   readonly callbackLedger?: CallbackLedger;
   readonly allEncounterTelemetry: EncounterTelemetry[];
@@ -1191,9 +641,9 @@ export class FinalContract {
       } as any);
     }
 
-    // Season-final skill rebalance (G10): the per-scene ChoiceAuthor rebalance can't hit a
-    // SEASON coverage target (≥6/8 skills, <30% dominance), so a perception-heavy season
-    // (Bite Me G10: 4/8, perception 45%) still ships. This deterministic pass reassigns
+    // Season-final skill rebalance: the per-scene ChoiceAuthor rebalance can't hit a
+    // SEASON coverage target (>=6/8 skills, <30% dominance), so an over-concentrated season
+    // can still ship. This deterministic pass reassigns
     // single-skill checks off the over-used skill onto under-used ones (within each choice
     // type's plausible set) until the season clears the target. No LLM; fiction-first
     // (skill behind a check never surfaces). Logged for telemetry; runs before the contract
@@ -1225,11 +675,10 @@ export class FinalContract {
     await this.deps.authorEncounterOutcomeVariants(input.story);
 
     // Heuristic fidelity findings (RequiredBeatRealization / SignatureDevicePresence /
-    // …) are RE-RUN inside runValidation on the CURRENT story, NOT frozen here — else
+    // etc.) are RE-RUN inside runValidation on the CURRENT story, NOT frozen here; otherwise
     // the scene-prose repair could rewrite the prose forever and re-validation would
-    // keep returning the pre-repair misses (the bite-me-g14 abort: repair ran 3 rounds,
-    // rewrote every flagged scene, "still failing" — because the findings never tracked
-    // the rewrites). `refutedFidelityKeys` carries the JUDGE's refutations (paraphrases
+    // keep returning the pre-repair misses because the findings never tracked the rewrites.
+    // `refutedFidelityKeys` carries the JUDGE's refutations (paraphrases
     // it confirmed are dramatized) across re-validation so a re-run heuristic can't
     // re-block a finding the judge already cleared. Keyed stably per finding.
     const refutedFidelityKeys = new Set<string>();
@@ -1241,28 +690,12 @@ export class FinalContract {
     // gate (merged in place). Factored into a closure so the Wave-4 repair loop can
     // re-validate a repaired story with identical inputs.
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
-      const blogPublishRepairs = repairBlogPublishContinuity(story);
-      if (blogPublishRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Blog publish continuity normalized ${blogPublishRepairs} beat(s).`,
-        } as any);
-      }
       const diceMetaphorRepairs = repairDiceMetaphorMechanicsLeakage(story);
       if (diceMetaphorRepairs > 0) {
         this.deps.emit({
           type: 'debug',
           phase: input.phase,
           message: `Mechanics metaphor leakage normalized ${diceMetaphorRepairs} beat(s).`,
-        } as any);
-      }
-      const vampireMealRepairs = repairVampireDaytimeMealCanon(story);
-      if (vampireMealRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Vampire daytime meal canon normalized ${vampireMealRepairs} beat(s).`,
         } as any);
       }
       const planningMetadataRepairs = repairPlanningRegisterMetadataLeakage(story);
@@ -1281,62 +714,6 @@ export class FinalContract {
           message: `Choice residue planning-register leakage normalized ${residuePlanningRepairs} hint(s).`,
         } as any);
       }
-      const prematureVictorRepairs = repairPrematureVictorColdOpenReferences(story);
-      if (prematureVictorRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Premature Victor cold-open reference normalized ${prematureVictorRepairs} field(s).`,
-        } as any);
-      }
-      const prematureFutureSeasonRepairs = repairPrematureFutureSeasonColdOpenReferences(story);
-      if (prematureFutureSeasonRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Premature future-season cold-open reference normalized ${prematureFutureSeasonRepairs} field(s).`,
-        } as any);
-      }
-      const storyCircleRebinds = repairMisboundStoryCircleContracts(story);
-      if (storyCircleRebinds > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Misbound Story Circle contract(s) re-homed ${storyCircleRebinds} time(s).`,
-        } as any);
-      }
-      const storyCirclePlanRebinds = repairMisboundStoryCirclePlanContracts(story, input.brief.seasonPlan?.scenePlan);
-      if (storyCirclePlanRebinds > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Misbound planned Story Circle contract(s) re-homed ${storyCirclePlanRebinds} time(s).`,
-        } as any);
-      }
-      const coldOpenGagRepairs = repairBiteMeColdOpenVampireDateGag(story);
-      if (coldOpenGagRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Bite Me cold-open vampire/date gag restored ${coldOpenGagRepairs} time(s).`,
-        } as any);
-      }
-      const biteMeMvpOrderingRepairs = repairBiteMeEpisodeOneMvpOrdering(story);
-      if (biteMeMvpOrderingRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Bite Me Episode 1 MVP scene order normalized ${biteMeMvpOrderingRepairs} time(s).`,
-        } as any);
-      }
-      const biteMeParkRescuerRepairs = repairBiteMeParkEncounterRescuerIdentity(story);
-      if (biteMeParkRescuerRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Bite Me park encounter rescuer identity normalized ${biteMeParkRescuerRepairs} time(s).`,
-        } as any);
-      }
       const prematureVariantRepairs = repairPrematureUncastNpcTextVariants(story);
       if (prematureVariantRepairs > 0) {
         this.deps.emit({
@@ -1345,44 +722,20 @@ export class FinalContract {
           message: `Premature uncast NPC prose/variant(s) removed ${prematureVariantRepairs} time(s).`,
         } as any);
       }
-      const stagedRescueRepairs = repairStagedRescueExplicitness(story);
-      if (stagedRescueRepairs > 0) {
+      const relationshipPacingRepairs = normalizeFinalStoryRelationshipPacing(story);
+      if (relationshipPacingRepairs > 0) {
         this.deps.emit({
           type: 'debug',
           phase: input.phase,
-          message: `Staged rescue explicitness normalized ${stagedRescueRepairs} scene(s).`,
+          message: `Final-story relationship pacing normalized ${relationshipPacingRepairs} contract(s).`,
         } as any);
       }
-      const duskClubNegronisRepairs = repairDuskClubNegronisGathering(story);
-      if (duskClubNegronisRepairs > 0) {
+      const relationshipChoiceRepairs = repairRelationshipChoiceMovement(story);
+      if (relationshipChoiceRepairs > 0) {
         this.deps.emit({
           type: 'debug',
           phase: input.phase,
-          message: `Dusk Club negronis gathering normalized ${duskClubNegronisRepairs} scene(s).`,
-        } as any);
-      }
-      const toastRepairs = repairRepetitiveToastMotif(story);
-      if (toastRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Repetitive toast motif normalized ${toastRepairs} beat(s).`,
-        } as any);
-      }
-      const viralAftermathRepairs = repairViralMrMidnightAftermath(story);
-      if (viralAftermathRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Viral Mr. Midnight aftermath normalized ${viralAftermathRepairs} scene(s).`,
-        } as any);
-      }
-      const keyCardRepairs = repairValcescuSideEntranceKeyCardBeat(story);
-      if (keyCardRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Vâlcescu side-entrance key card beat normalized ${keyCardRepairs} scene(s).`,
+          message: `Relationship choice movement normalized ${relationshipChoiceRepairs} choice(s).`,
         } as any);
       }
       const transitionRepairs = repairDetectedTransitionBridgeContinuity(story, input.brief.seasonPlan?.scenePlan);
@@ -1411,9 +764,11 @@ export class FinalContract {
         scope: input.validationScope,
       });
       latestTreatmentSourced = freshFidelity.treatmentSourced;
-      const plannedChoiceTypes = plannedChoiceTypesByScene(input.brief.seasonPlan);
+      const plannedChoiceTypes = selectFinalContractPlannedChoiceTypes(
+        this.deps.plannedChoiceTypesByScene,
+        input.brief.seasonPlan,
+      );
       const plannedConsequenceTiers = plannedConsequenceTiersByScene(input.brief.seasonPlan);
-      const qaReportForCurrentStory = reconcileQaReportForCurrentStory(input.qaReport, story);
       const r = await new FinalStoryContractValidator().validate({
         story,
         protagonist: input.brief.protagonist
@@ -1424,7 +779,7 @@ export class FinalContract {
         incrementalValidationResults: this.deps.allSceneValidationResults.length > 0
           ? this.deps.allSceneValidationResults
           : this.deps.sceneValidationResults,
-        qaReport: qaReportForCurrentStory,
+        qaReport: input.qaReport,
         bestPracticesReport: input.bestPracticesReport,
         validSkills: Object.keys(story.initialState?.skills || {}),
         mode: this.deps.config.validation.mode,
@@ -1620,17 +975,15 @@ export class FinalContract {
       // LLM-backed handlers so the round revalidates cleaned prose instead of
       // spending another full pass or failing on newly reintroduced labels.
       handlers.push(buildRelationshipPacingLabelRepairHandler());
-      handlers.push(buildContinuityBlogPublishRepairHandler());
       const outcome = await runFinalContractRepair({
         story: input.story,
         initialReport: report as ContractRepairReport,
         handlers,
         revalidate: async (s) => (await runValidation(s)) as ContractRepairReport,
         // 3 rounds (was 2): with the scene-prose handler's 4-scene/round cap, a
-        // 6-scene failure spends rounds 1-2 giving every scene its first pass —
-        // the third round is what gives stubborn scenes a guided retry
-        // (bite-me-g13 14-36-20 exhausted 2 rounds with one scene never
-        // attempted). Rounds only run while still failing; canSpend caps spend.
+        // 6-scene failure spends rounds 1-2 giving every scene its first pass.
+        // The third round gives stubborn scenes a guided retry. Rounds only run
+        // while still failing; canSpend caps spend.
         maxAttempts: 3,
         maxAttemptsPerIssue: 2,
         dedupeIssueFingerprints: true,

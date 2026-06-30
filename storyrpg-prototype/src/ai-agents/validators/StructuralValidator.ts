@@ -661,7 +661,53 @@ export class StructuralValidator {
         }
       }
 
+      const episodeSceneIds = new Set((episode.scenes || []).map(scene => scene.id));
+      const validSingleForwardTarget = (scene: Scene): string | undefined => {
+        const validTargets = [...new Set([
+          ...((scene as any).leadsTo || []),
+          (scene as any).fallbackSceneId,
+        ].filter((targetId): targetId is string => {
+          return typeof targetId === 'string'
+            && targetId.length > 0
+            && (episodeSceneIds.has(targetId) || isTerminalSceneTarget(targetId));
+        }))];
+        return validTargets.length === 1 ? validTargets[0] : undefined;
+      };
+      const targetIsMissing = (targetId: unknown): targetId is string => {
+        return typeof targetId === 'string'
+          && targetId.length > 0
+          && !episodeSceneIds.has(targetId)
+          && !isTerminalSceneTarget(targetId);
+      };
+
       for (const scene of episode.scenes || []) {
+        const singleForwardTarget = validSingleForwardTarget(scene);
+        if (singleForwardTarget && scene.beats && scene.beats.length > 0) {
+          for (const beat of scene.beats) {
+            if (targetIsMissing(beat.nextSceneId)) {
+              fixes.push(`Repaired missing beat scene target ${scene.id}/${beat.id}: ${beat.nextSceneId} -> ${singleForwardTarget}`);
+              beat.nextSceneId = singleForwardTarget;
+              fixedCount++;
+            }
+            for (const choice of beat.choices || []) {
+              if (targetIsMissing(choice.nextSceneId)) {
+                fixes.push(`Repaired missing choice scene target ${scene.id}/${beat.id}/${choice.id}: ${choice.nextSceneId} -> ${singleForwardTarget}`);
+                choice.nextSceneId = singleForwardTarget;
+                fixedCount++;
+              }
+            }
+          }
+        }
+        if (singleForwardTarget && scene.encounter?.outcomes) {
+          for (const [outcomeName, outcome] of Object.entries(scene.encounter.outcomes)) {
+            if (outcome && targetIsMissing((outcome as any).nextSceneId)) {
+              fixes.push(`Repaired missing encounter outcome target ${scene.id}/${outcomeName}: ${(outcome as any).nextSceneId} -> ${singleForwardTarget}`);
+              (outcome as any).nextSceneId = singleForwardTarget;
+              fixedCount++;
+            }
+          }
+        }
+
         // Fix scene startingBeatId
         if (scene.beats && scene.beats.length > 0) {
           const beatIds = new Set(scene.beats.map(b => b.id));

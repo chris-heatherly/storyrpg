@@ -32,6 +32,10 @@ export interface QualityCouncilCheckpointReport {
   status: 'passed' | 'findings' | 'skipped' | 'error';
   summary: string;
   findings: CouncilFinding[];
+  parseStatus?: 'ok' | 'recovered' | 'raw_findings_dropped' | 'error';
+  parseError?: string;
+  rawFindingCountEstimate?: number;
+  droppedFindingCount?: number;
   rawResponse?: string;
   error?: string;
   fusionUsed?: boolean;

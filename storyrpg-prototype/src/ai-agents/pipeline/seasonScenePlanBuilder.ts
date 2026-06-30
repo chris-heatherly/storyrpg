@@ -431,6 +431,29 @@ function pacingStartStage(priorScenes: number): RelationshipPacingContract['star
   return 'tentative_ally';
 }
 
+const RELATIONSHIP_STAGE_RANK: Record<RelationshipPacingContract['targetStage'], number> = {
+  unmet: 0,
+  noticed: 1,
+  spark: 2,
+  acquaintance: 3,
+  tentative_ally: 4,
+  friend: 5,
+  trusted_ally: 6,
+  intimate: 7,
+};
+
+function lowerRelationshipStage<T extends RelationshipPacingContract['targetStage']>(stage: T, maxStage: T): T {
+  return RELATIONSHIP_STAGE_RANK[stage] <= RELATIONSHIP_STAGE_RANK[maxStage] ? stage : maxStage;
+}
+
+function sceneCanEarnRelationshipAdvancement(scene: PlannedScene): boolean {
+  return scene.choiceType === 'relationship';
+}
+
+function maxRelationshipStageWithoutChoice(priorScenes: number): RelationshipPacingContract['targetStage'] {
+  return priorScenes <= 0 ? 'spark' : 'acquaintance';
+}
+
 function pacingMaxDelta(priorScenes: number, text: string): number {
   if (priorScenes <= 0) return MAJOR_EVIDENCE_RE.test(text) ? 8 : 6;
   if (priorScenes === 1) return 8;
@@ -442,7 +465,7 @@ function relationshipSourceForScene(scene: PlannedScene): RelationshipPacingCont
     return 'treatment';
   }
   if (scene.kind === 'encounter') return 'encounter';
-  if (scene.choiceType === 'relationship' || scene.hasChoice) return 'choice';
+  if (scene.choiceType === 'relationship') return 'choice';
   return 'planner';
 }
 
@@ -452,13 +475,17 @@ function buildNpcPacingContract(
   priorScenes: number,
   text: string,
 ): RelationshipPacingContract {
-  const targetStage = pacingTargetStage(priorScenes, text);
+  const maxStage = sceneCanEarnRelationshipAdvancement(scene)
+    ? 'intimate'
+    : maxRelationshipStageWithoutChoice(priorScenes);
+  const startStage = lowerRelationshipStage(pacingStartStage(priorScenes), maxStage);
+  const targetStage = lowerRelationshipStage(pacingTargetStage(priorScenes, text), maxStage);
   const early = priorScenes <= 1 && targetStage !== 'friend';
   return {
     id: `${scene.id}-rel-${slugId(npcId)}`,
     source: relationshipSourceForScene(scene),
     npcId,
-    startStage: pacingStartStage(priorScenes),
+    startStage,
     targetStage,
     allowedLabels: early
       ? ['spark', 'connection', 'new acquaintance', 'invitation', 'guarded warmth', 'testing trust']
@@ -479,13 +506,17 @@ function buildNpcPacingContract(
 
 function buildGroupPacingContract(scene: PlannedScene, priorScenes: number, text: string): RelationshipPacingContract {
   const groupId = /dusk club/i.test(text) ? 'dusk-club' : `${slugId(scene.title)}-group`;
+  const maxStage = sceneCanEarnRelationshipAdvancement(scene)
+    ? 'intimate'
+    : maxRelationshipStageWithoutChoice(priorScenes);
+  const startStage = lowerRelationshipStage(pacingStartStage(priorScenes), maxStage);
   const early = priorScenes <= 1;
   return {
     id: `${scene.id}-rel-${groupId}`,
     source: relationshipSourceForScene(scene),
     groupId,
-    startStage: pacingStartStage(priorScenes),
-    targetStage: early ? 'spark' : 'tentative_ally',
+    startStage,
+    targetStage: lowerRelationshipStage(early ? 'spark' : 'tentative_ally', maxStage),
     allowedLabels: early
       ? ['invitation', 'dare', 'inside joke', 'provisional name', 'fragile beginning']
       : ['tentative group', 'earned circle', 'shared ritual'],
@@ -503,9 +534,22 @@ function buildGroupPacingContract(scene: PlannedScene, priorScenes: number, text
   };
 }
 
-function applyRelationshipPacingContracts(scenes: PlannedScene[]): void {
+function protagonistRelationshipKeys(protagonist?: SeasonPlan['protagonist']): Set<string> {
+  return new Set(
+    ['protagonist', 'hero', 'player', 'you', protagonist?.id, protagonist?.name]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map(slugId),
+  );
+}
+
+function isProtagonistRelationshipRef(value: string, protagonistKeys: Set<string>): boolean {
+  return protagonistKeys.has(slugId(value));
+}
+
+function applyRelationshipPacingContracts(scenes: PlannedScene[], protagonist?: SeasonPlan['protagonist']): void {
   const npcSeen = new Map<string, number>();
   const groupSeen = new Map<string, number>();
+  const protagonistKeys = protagonistRelationshipKeys(protagonist);
   for (const scene of [...scenes].sort((a, b) => (a.episodeNumber - b.episodeNumber) || (a.order - b.order))) {
     const text = relationshipTextForScene(scene);
     const relationshipRelevant =
@@ -513,12 +557,16 @@ function applyRelationshipPacingContracts(scenes: PlannedScene[]): void {
       || RELATIONSHIP_TURN_RE.test(text)
       || scene.kind === 'encounter';
     if (!relationshipRelevant) {
-      for (const npc of scene.npcsInvolved ?? []) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
+      for (const npc of scene.npcsInvolved ?? []) {
+        if (!isProtagonistRelationshipRef(npc, protagonistKeys)) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
+      }
       continue;
     }
 
     const contracts = [...(scene.relationshipPacing ?? [])];
-    const npcs = (scene.npcsInvolved ?? []).filter((npc) => npc && !contracts.some((c) => c.npcId === npc)).slice(0, 3);
+    const npcs = (scene.npcsInvolved ?? [])
+      .filter((npc) => npc && !isProtagonistRelationshipRef(npc, protagonistKeys) && !contracts.some((c) => c.npcId === npc))
+      .slice(0, 3);
     for (const npc of npcs) {
       contracts.push(buildNpcPacingContract(scene, npc, npcSeen.get(npc) ?? 0, text));
     }
@@ -530,7 +578,9 @@ function applyRelationshipPacingContracts(scenes: PlannedScene[]): void {
     }
 
     if (contracts.length > 0) scene.relationshipPacing = contracts;
-    for (const npc of scene.npcsInvolved ?? []) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
+    for (const npc of scene.npcsInvolved ?? []) {
+      if (!isProtagonistRelationshipRef(npc, protagonistKeys)) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
+    }
   }
 }
 
@@ -884,10 +934,10 @@ function turnSceneOverlap(turnTokens: string[], sceneTokenSet: Set<string>): num
 function locationAliasHitCount(textTokens: Set<string>, locationTokens: Set<string>): number {
   let hits = 0;
   const hasAny = (tokens: string[]): boolean => tokens.some((token) => textTokens.has(token));
-  if (hasAny(['bookshop', 'bookstore']) && (locationTokens.has('book') || locationTokens.has('books') || locationTokens.has('lumina'))) {
+  if (hasAny(['bookshop', 'bookstore']) && (locationTokens.has('book') || locationTokens.has('books') || locationTokens.has('shop') || locationTokens.has('store'))) {
     hits += 3;
   }
-  if (hasAny(['garden', 'gardens', 'park']) && (locationTokens.has('garden') || locationTokens.has('gardens') || locationTokens.has('cismigiu'))) {
+  if (hasAny(['garden', 'gardens', 'park']) && (locationTokens.has('garden') || locationTokens.has('gardens') || locationTokens.has('park'))) {
     hits += 3;
   }
   return hits;
@@ -922,7 +972,7 @@ export function getAuthoredEpisodeEventTexts(ep: SeasonEpisode): string[] {
 
 /**
  * Some treatments use `plannedEncounters` as a high-level label for authored
- * turns already listed under `episodeTurns` (Bite Me Ep1: rooftop + Cismigiu).
+ * turns already listed under `episodeTurns`.
  * In that case, allocating a separate encounter scene duplicates the same event.
  */
 export function encounterIsCoveredByAuthoredTurns(enc: EpisodePlannedEncounter, authoredTurns: string[]): boolean {
@@ -1143,20 +1193,20 @@ function inferAuthoredLocationFromText(text: string | undefined, locations: stri
   const declaredMatch = (pattern: RegExp) => locations.find((loc) =>
     pattern.test(loc.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
   );
-  if (/\b(?:cismigiu|park|gardens?)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:cismigiu|park|garden)/) || 'Cișmigiu Gardens';
+  if (/\b(?:park|gardens?)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:park|garden)/);
   }
   if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:rooftop|roof|bar)/) || 'Rooftop Bar';
+    return declaredMatch(/\b(?:rooftop|roof|bar|terrace)/);
   }
-  if (/\b(?:valcescu|club|key card|side entrance)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:valcescu|club)/) || 'Vâlcescu Club';
+  if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:club|venue|door|entrance)/);
   }
-  if (/\b(?:bookshop|bookstore|lumina|quartz|crystal)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:book|lumina)/) || 'Lumina Books';
+  if (/\b(?:bookshop|bookstore|quartz|crystal|stone|charm|talisman)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:book|shop|store)/);
   }
   if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:estate|country|maze|garden)/) || "Victor's Estate";
+    return declaredMatch(/\b(?:estate|country|maze|garden)/);
   }
   return undefined;
 }
@@ -1290,6 +1340,7 @@ export function bindAuthoredTurnsToScenes(
   ep: SeasonEpisode,
   scenes: PlannedScene[],
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
+  protagonist?: SeasonPlan['protagonist'],
 ): void {
   if (scenes.length === 0) return;
   const guidance = ep.treatmentGuidance;
@@ -1326,11 +1377,8 @@ export function bindAuthoredTurnsToScenes(
   //
   //    Bind spine turns to STANDARD prose scenes only — an ENCOUNTER scene's content is
   //    its anchor/signature (bound in step 2 below), and it physically cannot dramatize an
-  //    unrelated spine turn. bite-me-g18 aborted the whole pipeline because the "At Sunday
-  //    breakfast Victor reframes the blog…" turn aligned onto the midnight-maze encounter,
-  //    so EncounterAnchorContentValidator (blocking, no encounter-repair) demanded a
-  //    Sunday-breakfast beat the maze can never depict. Encounters still get their signature
-  //    (step 2) and advisory seeds (step 3); only authored spine turns are kept off them.
+  //    unrelated spine turn. Encounters still get their signature (step 2) and advisory
+  //    seeds (step 3); only authored spine turns are kept off them.
   const turnTargetsRaw = targets.filter((s) => s.kind !== 'encounter');
   const turnTargets = turnTargetsRaw.length > 0 ? turnTargetsRaw : targets;
   if (turns.length > 0) {
@@ -1373,9 +1421,8 @@ export function bindAuthoredTurnsToScenes(
   }
 
   // 3. Seed plants (ADVISORY, tier:'seed'). The episode turns above are the spine;
-  //    the treatment also authors a cold open and a list of consequence seeds (the
-  //    too-dark negroni, the courtyard dog, the readership number — the texture and
-  //    setup wires that pay off in later episodes). These were previously carried on
+  //    the treatment also authors a cold open and a list of consequence seeds: the texture
+  //    and setup wires that pay off in later episodes. These were previously carried on
   //    treatmentGuidance but never decomposed into beats, so the authors never saw
   //    them and dropped them. Distribute them as advisory seed beats: the cold open
   //    to the opening scene, each consequence seed to its best-match content scene
@@ -1385,9 +1432,8 @@ export function bindAuthoredTurnsToScenes(
   const coldOpen = guidance?.coldOpenFunction?.trim();
   // The cold open is split out as its own enforceable tier (WS1.3): it is the episode opener,
   // reliably present, so blocking on it is low-FP — unlike the generic consequence seeds, which
-  // are texture/foreshadow and FP-prone to enforce. g17 dropped the entire ep1 cold open (the
-  // Sadie FaceTime + grandmother's-chain hook) as an advisory seed; this lets a dedicated gate
-  // catch + re-author it instead of shipping a silent warning.
+  // are texture/foreshadow and FP-prone to enforce. This lets a dedicated gate catch and
+  // re-author missing cold opens instead of shipping silent warnings.
   if (coldOpen) {
     const text = structuralTreatmentRequiredBeatText(coldOpen);
     seedSpecs.push({ text, sourceTurn: text, toOpening: true, tier: 'coldopen' });
@@ -1440,7 +1486,7 @@ export function bindAuthoredTurnsToScenes(
   }
 
   applySceneTurnContracts(scenes);
-  applyRelationshipPacingContracts(scenes);
+  applyRelationshipPacingContracts(scenes, protagonist);
   applyMechanicPressureContracts(scenes);
   assignTreatmentFieldContractsToScenes(ep, scenes);
 }
@@ -1457,6 +1503,7 @@ export function buildEpisodeScenes(
   ep: SeasonEpisode,
   legacyStructureText: string | undefined,
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
+  protagonist?: SeasonPlan['protagonist'],
 ): PlannedScene[] {
   const encounters = ep.plannedEncounters ?? [];
   const turns = getAuthoredEpisodeEventTexts(ep);
@@ -1577,7 +1624,7 @@ export function buildEpisodeScenes(
 
   // Bind authored turns + the signature device deterministically (shared with the
   // LLM-authored path). This is the single source of truth for turn→scene binding.
-  bindAuthoredTurnsToScenes(ep, scenes, infoLedger);
+  bindAuthoredTurnsToScenes(ep, scenes, infoLedger, protagonist);
   promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
   repairUnsupportedPlanningEventPurposes(ep, scenes);
 
@@ -1615,7 +1662,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     const legacyStructureText = role && role !== 'rising' && role !== 'falling'
       ? legacyStructure?.[role]
       : undefined;
-    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureText, plan.informationLedger));
+    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureText, plan.informationLedger, plan.protagonist));
   }
 
   // Resolve setup/payoff edges from the season's cross-episode structures.

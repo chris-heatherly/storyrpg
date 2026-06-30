@@ -45,7 +45,6 @@ import {
   Volume2,
   StopCircle,
   Users,
-  MapPin,
   BookOpen,
   ImageIcon,
   Film,
@@ -67,7 +66,6 @@ import { AdvancedSettingsSheet } from './generator/AdvancedSettingsSheet';
 import { ProgressStep } from './generator/steps/ProgressStep';
 import { CompleteStep } from './generator/steps/CompleteStep';
 import { GenerationSettingsPanel, GenerationSettings } from '../components/GenerationSettingsPanel';
-import { EpisodeSelector } from '../components/EpisodeSelector';
 import { useGeneratorSettingsStore } from '../stores/generatorSettingsStore';
 import { seasonPlanStore } from '../stores/seasonPlanStore';
 import { SeasonPlan, EpisodeRecommendation } from '../types/seasonPlan';
@@ -87,14 +85,19 @@ import {
 } from '../config/modelFamilies';
 import type { GeneratorLlmProvider } from '../config/generatorLlmOptions';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
-import { useEndingModePlanner } from './generator/useEndingModePlanner';
 import { buildPipelineConfig, PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
 import { StyleArchitect } from '../ai-agents/agents/StyleArchitect';
 import { ImageGenerationService } from '../ai-agents/services/imageGenerationService';
 import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
 import { StyleSetupSection } from './generator/StyleSetupSection';
+import { CanonWizard } from './generator/CanonWizard';
 import { runStoryAnalysis, runStoryGeneration } from '../ai-agents/services/storyGenerationService';
 import { buildGeneratorCreativeBrief } from './generator/buildCreativeBrief';
+import {
+  applyCanonToSeasonPlan,
+  applyCanonToSourceAnalysis,
+  createCanonWizardState,
+} from '../ai-agents/utils/sourceCanonEditor';
 
 // Import the real pipeline
 import {
@@ -109,7 +112,13 @@ import { PipelineConfig, DEFAULT_MIDJOURNEY_SETTINGS, DEFAULT_GEMINI_SETTINGS, D
 import { DEFAULT_LLM_MODELS, STABLE_DIFFUSION_UI_ENABLED } from '../config/generatorLlmOptions';
 import { ART_STYLE_PRESETS } from '../ai-agents/config/artStylePresets';
 import { composeCanonicalStyleString } from '../ai-agents/images/artStyleProfile';
-import { EndingMode, SourceMaterialAnalysis, STORY_CIRCLE_BEATS, StoryEndingTarget } from '../types/sourceAnalysis';
+import { EndingMode, SourceMaterialAnalysis, StoryEndingTarget } from '../types/sourceAnalysis';
+import type {
+  CanonEditRepairSuggestion,
+  CanonEditValidationResult,
+  CanonWizardState,
+  LockedStoryCanon,
+} from '../types/storyCanon';
 import type { MediaSetupTarget, Story } from '../types';
 import {
   storyToTypeScript,
@@ -218,17 +227,6 @@ const SAVED_ART_STYLES_KEY = '@storyrpg_saved_art_styles';
 const RECENT_ART_STYLES_KEY = '@storyrpg_recent_art_styles';
 const MAX_SAVED_ART_STYLES = 12;
 const MAX_RECENT_ART_STYLES = 8;
-const STORY_CIRCLE_LABELS: Record<string, string> = {
-  you: 'YOU',
-  need: 'NEED',
-  go: 'GO',
-  search: 'SEARCH',
-  find: 'FIND',
-  take: 'TAKE',
-  return: 'RETURN',
-  change: 'CHANGE',
-};
-
 const buildSavedArtStyleId = (): string => `style-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const normalizeSavedArtStyle = (item: unknown): SavedArtStyle | null => {
@@ -613,6 +611,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   // Source analysis state
   const [sourceAnalysis, setSourceAnalysis] = useState<SourceMaterialAnalysis | null>(null);
   const [analysisResult, setAnalysisResult] = useState<SourceAnalysisResult | null>(null);
+  const [canonWizardState, setCanonWizardState] = useState<CanonWizardState | null>(null);
   const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number>(1);
   const [customStoryTitle, setCustomStoryTitle] = useState('');
   const [characterReferenceUploads, setCharacterReferenceUploads] = useState<Record<string, UploadedCharacterReference[]>>({});
@@ -995,6 +994,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
         setSeasonPlan(saved.plan);
         setSourceAnalysis(saved.sourceAnalysis);
+        setCanonWizardState(saved.canonWizardState || (
+          saved.sourceAnalysis.sourceCanon
+            ? createCanonWizardState(saved.sourceAnalysis.sourceCanon, nextEpisode ? [nextEpisode.episodeNumber] : [])
+            : null
+        ));
         setAnalysisResult({
           analysis: saved.sourceAnalysis,
           totalEpisodes: saved.sourceAnalysis.totalEstimatedEpisodes || saved.plan.totalEpisodes,
@@ -1224,7 +1228,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   const clearDocument = () => {
     setDocumentPath(''); setDocumentContent(''); setParsedDocument(null); setDocumentBrief(null);
     setParseWarnings([]); setDocumentError(null); setSelectedFileName(null);
-    setSourceAnalysis(null); setAnalysisResult(null); setSelectedEpisodeCount(1);
+    setSourceAnalysis(null); setAnalysisResult(null); setCanonWizardState(null); setSelectedEpisodeCount(1);
     setCharacterReferenceUploads({}); setCharacterReferenceModes({});
   };
 
@@ -1510,17 +1514,75 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     llmModel.trim() || availableModels[llmProvider][0]?.value || ''
   );
 
-  const { refreshSeasonPlanForAnalysis, handleEndingModeToggle } = useEndingModePlanner({
-    llmProvider,
-    selectedLlmModel,
-    selectedLlmApiKey,
-    sourceAnalysis,
-    activeEndingMode,
-    setSourceAnalysis,
-    setSeasonPlan,
-    setIsCreatingSeasonPlan,
-    handleEvent,
-  });
+  const syncCanonReviewState = useCallback(async (
+    nextCanon: LockedStoryCanon,
+    nextWizardState: CanonWizardState,
+    options: { persist?: boolean } = {},
+  ) => {
+    if (!sourceAnalysis) return;
+    const nextAnalysis = applyCanonToSourceAnalysis(sourceAnalysis, nextCanon);
+    const nextPlan = seasonPlan ? applyCanonToSeasonPlan(seasonPlan, nextCanon) : null;
+    setSourceAnalysis(nextAnalysis);
+    setCanonWizardState(nextWizardState);
+    if (nextPlan) setSeasonPlan(nextPlan);
+    if (options.persist && nextPlan) {
+      await seasonPlanStore.updateSavedPlan(nextPlan.id, {
+        plan: nextPlan,
+        sourceAnalysis: nextAnalysis,
+        canonWizardState: nextWizardState,
+      });
+    }
+  }, [seasonPlan, sourceAnalysis]);
+
+  const requestCanonRepairSuggestion = useCallback(async (
+    validation: CanonEditValidationResult,
+    canon: LockedStoryCanon,
+  ): Promise<CanonEditRepairSuggestion | null> => {
+    const fallback = validation.suggestion || null;
+    if (!selectedLlmApiKey || llmProvider !== 'anthropic') return fallback;
+    try {
+      const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': selectedLlmApiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: selectedLlmModel || llmModel || 'claude-sonnet-4-20250514',
+          max_tokens: 1200,
+          temperature: 0.2,
+          system: 'You propose minimal StoryRPG canon repair patches. Return JSON only.',
+          messages: [{
+            role: 'user',
+            content: `Canon conflicts:\n${validation.blockingConflicts.map((issue) => `- ${issue.factId}.${issue.fieldPath}: ${issue.message}`).join('\n')}\n\nLocked canon facts:\n${JSON.stringify(canon.facts, null, 2).slice(0, 12000)}\n\nReturn {"summary": string, "proposedPatches": [{"factId": string, "fieldPath": string, "nextValue": any, "reason": string}]}. Prefer preserving prior locked facts and repairing dependent wording.`,
+          }],
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Repair suggestion failed');
+      const rawText = Array.isArray(data?.content)
+        ? data.content.map((part: any) => part?.text || '').join('\n')
+        : '';
+      const parsed = JSON.parse(rawText);
+      if (!parsed?.summary || !Array.isArray(parsed.proposedPatches)) return fallback;
+      return {
+        source: 'llm',
+        summary: String(parsed.summary),
+        proposedPatches: parsed.proposedPatches
+          .filter((patch: any) => patch?.factId && patch?.fieldPath)
+          .map((patch: any) => ({
+            factId: String(patch.factId),
+            fieldPath: String(patch.fieldPath),
+            nextValue: patch.nextValue,
+            reason: String(patch.reason || 'Model-proposed canon repair.'),
+          })),
+      };
+    } catch (error) {
+      console.warn('[GeneratorScreen] LLM canon repair suggestion failed:', error);
+      return fallback;
+    }
+  }, [llmModel, llmProvider, selectedLlmApiKey, selectedLlmModel]);
 
   const buildCreativeBrief = (sourceAnalysisOverride: SourceMaterialAnalysis | null = sourceAnalysis): FullCreativeBrief | null => {
     const brief = buildGeneratorCreativeBrief({
@@ -1770,12 +1832,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           const normalizedAnalysis = applyEndingModeToAnalysis(worker.result.sourceAnalysis);
           setAnalysisResult(result);
           setSourceAnalysis(normalizedAnalysis);
+          setCanonWizardState(normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : null);
           setCustomStoryTitle(normalizedAnalysis.sourceTitle || title);
           const episodeCount = Math.min(result.totalEpisodes || 1, 3);
           setSelectedEpisodeCount(episodeCount);
           if (worker.result.seasonPlan) {
             setSeasonPlan(worker.result.seasonPlan);
-            await seasonPlanStore.savePlan(worker.result.seasonPlan, normalizedAnalysis);
+            await seasonPlanStore.savePlan(
+              worker.result.seasonPlan,
+              normalizedAnalysis,
+              normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : undefined,
+            );
             setSelectedEpisodes(Array.from({ length: episodeCount }, (_, idx) => idx + 1));
           } else if (worker.result.seasonPlanError) {
             handleEvent({
@@ -1862,6 +1929,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       const normalizedAnalysis = applyEndingModeToAnalysis(analysisResponse.sourceAnalysis);
       setAnalysisResult(analysisResponse.analysisResult);
       setSourceAnalysis(normalizedAnalysis);
+      setCanonWizardState(normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : null);
       setCustomStoryTitle(normalizedAnalysis.sourceTitle || title);
       const episodeCount = Math.min(analysisResponse.analysisResult.totalEpisodes || 1, 3);
       setSelectedEpisodeCount(episodeCount);
@@ -1870,7 +1938,11 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       try {
         if (analysisResponse.seasonPlan) {
           setSeasonPlan(analysisResponse.seasonPlan);
-          await seasonPlanStore.savePlan(analysisResponse.seasonPlan, normalizedAnalysis);
+          await seasonPlanStore.savePlan(
+            analysisResponse.seasonPlan,
+            normalizedAnalysis,
+            normalizedAnalysis.sourceCanon ? createCanonWizardState(normalizedAnalysis.sourceCanon) : undefined,
+          );
           setSelectedEpisodes(Array.from({ length: episodeCount }, (_, idx) => idx + 1));
           const encounterCount = analysisResponse.seasonPlan.encounterPlan?.totalEncounters || 0;
           const branchCount = analysisResponse.seasonPlan.crossEpisodeBranches?.length || 0;
@@ -1895,6 +1967,39 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setState('error'); }
   };
 
+  const canonSetupApproved = Boolean(
+    sourceAnalysis?.sourceCanon?.lockStatus === 'locked'
+    && sourceAnalysis?.canonLockManifest?.requiredConceptsSatisfied === true
+    && canonWizardState?.stepStatus.story === 'approved'
+    && canonWizardState?.stepStatus.peopleWorld === 'approved'
+    && canonWizardState?.stepStatus.episodesEndings === 'approved'
+  );
+
+  const handleCanonEpisodeSelectionChange = useCallback((episodes: number[]) => {
+    setSelectedEpisodes(episodes);
+    setSelectedEpisodeCount(episodes.length);
+
+    const nextCanonState = sourceAnalysis?.sourceCanon
+      ? {
+          ...(canonWizardState || createCanonWizardState(sourceAnalysis.sourceCanon, episodes)),
+          selectedEpisodes: episodes,
+        }
+      : null;
+    if (nextCanonState) {
+      setCanonWizardState(nextCanonState);
+      if (seasonPlan) {
+        void seasonPlanStore.updateSavedPlan(seasonPlan.id, { canonWizardState: nextCanonState });
+      }
+    }
+
+    if (seasonPlan) {
+      const seasonPlanner = new SeasonPlannerAgent({ provider: 'anthropic', model: 'claude-sonnet-4-20250514', apiKey: '', maxTokens: 8000, temperature: 0.7 });
+      const validation = seasonPlanner.validateSelection(seasonPlan, episodes);
+      setSelectionWarnings(validation.warnings);
+      setEpisodeRecommendations(seasonPlanner.getEpisodeRecommendations(seasonPlan, episodes));
+    }
+  }, [canonWizardState, seasonPlan, sourceAnalysis?.sourceCanon]);
+
   const startGeneration = async () => {
     if (!selectedLlmApiKey) {
       Alert.alert(
@@ -1905,6 +2010,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             ? 'Please enter your OpenAI API key to continue.'
             : 'Please enter your Anthropic API key to continue.'
       );
+      return;
+    }
+    if (sourceAnalysis?.sourceCanon && !canonSetupApproved) {
+      Alert.alert('Canon Review Required', 'Approve all three story setup screens before generation.');
       return;
     }
     if (runGenerateVideo && !runGenerateImages) {
@@ -2475,7 +2584,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     setState('config'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null);
     setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
     setCurrentJobId(null); setActiveJobId(null);
-    setSeasonPlan(null); setSourceAnalysis(null); setAnalysisResult(null); setSelectedEpisodes([]); setSelectedEpisodeCount(1);
+    setSeasonPlan(null); setSourceAnalysis(null); setAnalysisResult(null); setCanonWizardState(null); setSelectedEpisodes([]); setSelectedEpisodeCount(1);
     setLiveProgress(0); setEtaSeconds(null); setImageProgress(null); setPipelineRuntime(null);
     setIsViewingHistory(false); setHistoryJob(undefined);
   };
@@ -4207,198 +4316,36 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             <View style={styles.sectionHeaderRow}><CheckCircle2 size={18} color={TERMINAL.colors.cyan} /><Text style={[styles.sectionTitle, { color: TERMINAL.colors.cyan }]}>ANALYSIS COMPLETE</Text></View>
             {!analysisResult ? <View style={styles.errorCard}><Text style={styles.errorText}>ANALYSIS FAILED. PLEASE RETRY.</Text><TouchableOpacity style={styles.executeButton} onPress={startAnalysis}><Text style={styles.executeButtonText}>RETRY ANALYSIS</Text></TouchableOpacity></View> : (
               <View style={styles.analysisGroup}>
-                {/* Story Title and Genre */}
-                <View style={styles.titleCard}>
-                  <Text style={styles.configLabel}>STORY DESIGNATION</Text>
-                  <View style={styles.inputWrapper}>
-                    <TextInput style={[styles.input, { fontSize: 18 }]} value={customStoryTitle} onChangeText={setCustomStoryTitle} />
-                  </View>
-                  <Text style={styles.analysisMeta}>{sourceAnalysis?.genre?.toUpperCase()} • {sourceAnalysis?.tone?.toUpperCase()}</Text>
-                </View>
-                
-                {/* Quick Stats */}
-                <View style={styles.statsGrid}>
-                  <View style={styles.statItem}><Text style={styles.statLabel}>EPISODES</Text><Text style={styles.statValue}>{analysisResult.totalEpisodes}</Text></View>
-                  <View style={styles.statItem}><Text style={styles.statLabel}>CAST</Text><Text style={styles.statValue}>{(sourceAnalysis?.majorCharacters?.length || 0) + 1}</Text></View>
-                  <View style={styles.statItem}><Text style={styles.statLabel}>ZONES</Text><Text style={styles.statValue}>{sourceAnalysis?.keyLocations?.length || 0}</Text></View>
-                </View>
-
-                {/* Themes */}
-                {sourceAnalysis?.themes && sourceAnalysis.themes.length > 0 && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <BookOpen size={14} color={TERMINAL.colors.cyan} />
-                      <Text style={styles.analysisCardTitle}>THEMES</Text>
-                    </View>
-                    <View style={styles.tagList}>
-                      {sourceAnalysis.themes.slice(0, 5).map((theme, idx) => (
-                        <View key={idx} style={styles.themeTag}>
-                          <Text style={styles.themeTagText}>{theme.toUpperCase()}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                {/* Story Arcs */}
-                {sourceAnalysis?.storyArcs && sourceAnalysis.storyArcs.length > 0 && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <Layers size={14} color={TERMINAL.colors.amber} />
-                      <Text style={styles.analysisCardTitle}>STORY ARCS</Text>
-                    </View>
-                    {sourceAnalysis.storyArcs.slice(0, 3).map((arc, idx) => (
-                      <View key={idx} style={styles.arcItem}>
-                        <Text style={styles.arcName}>{arc.name.toUpperCase()}</Text>
-                        <Text style={styles.arcDescription} numberOfLines={2}>{arc.description}</Text>
-                        <Text style={styles.arcEpisodes}>Episodes {arc.estimatedEpisodeRange?.start || 1}-{arc.estimatedEpisodeRange?.end || '?'}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Narrative Anchors (Stakes / Goal / Inciting Incident / Climax) */}
-                {sourceAnalysis?.anchors && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <Layers size={14} color={TERMINAL.colors.amber} />
-                      <Text style={styles.analysisCardTitle}>NARRATIVE ANCHORS</Text>
-                    </View>
-                    {sourceAnalysis.anchors.stakes ? (
-                      <View style={styles.arcItem}>
-                        <Text style={styles.arcName}>STAKES</Text>
-                        <Text style={styles.arcDescription} numberOfLines={3}>
-                          {sourceAnalysis.anchors.stakes}
-                        </Text>
-                      </View>
-                    ) : null}
-                    {sourceAnalysis.anchors.goal ? (
-                      <View style={styles.arcItem}>
-                        <Text style={styles.arcName}>GOAL</Text>
-                        <Text style={styles.arcDescription} numberOfLines={3}>
-                          {sourceAnalysis.anchors.goal}
-                        </Text>
-                      </View>
-                    ) : null}
-                    {sourceAnalysis.anchors.incitingIncident ? (
-                      <View style={styles.arcItem}>
-                        <Text style={styles.arcName}>INCITING INCIDENT</Text>
-                        <Text style={styles.arcDescription} numberOfLines={3}>
-                          {sourceAnalysis.anchors.incitingIncident}
-                        </Text>
-                      </View>
-                    ) : null}
-                    {sourceAnalysis.anchors.climax ? (
-                      <View style={styles.arcItem}>
-                        <Text style={styles.arcName}>CLIMAX</Text>
-                        <Text style={styles.arcDescription} numberOfLines={3}>
-                          {sourceAnalysis.anchors.climax}
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
-                )}
-
-                {/* Story Circle Structure */}
-                {sourceAnalysis?.storyCircle && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <Layers size={14} color={TERMINAL.colors.cyan} />
-                      <Text style={styles.analysisCardTitle}>STORY CIRCLE</Text>
-                    </View>
-                    {(
-                      STORY_CIRCLE_BEATS.map((beat) => [
-                        STORY_CIRCLE_LABELS[beat] || beat.toUpperCase(),
-                        sourceAnalysis.storyCircle?.[beat],
-                      ]) as Array<[string, string | undefined]>
-                    ).map(([label, value], idx) =>
-                      value ? (
-                        <View key={idx} style={styles.arcItem}>
-                          <Text style={styles.arcName}>{label}</Text>
-                          <Text style={styles.arcDescription} numberOfLines={3}>
-                            {value}
-                          </Text>
-                        </View>
-                      ) : null,
-                    )}
-                  </View>
-                )}
-
-                {/* Locations */}
-                {sourceAnalysis?.keyLocations && sourceAnalysis.keyLocations.length > 0 && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <MapPin size={14} color={TERMINAL.colors.muted} />
-                      <Text style={styles.analysisCardTitle}>KEY LOCATIONS</Text>
-                    </View>
-                    <View style={styles.locationList}>
-                      {sourceAnalysis.keyLocations.slice(0, 6).map((loc, idx) => (
-                        <View key={idx} style={styles.locationItem}>
-                          <Text style={styles.locationName}>{loc.name?.toUpperCase()}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                <Text style={styles.subHeader}>SELECT EPISODES TO GENERATE</Text>
-                {sourceAnalysis && (
-                  <View style={styles.analysisCard}>
-                    <View style={styles.analysisCardHeader}>
-                      <Layers size={14} color={TERMINAL.colors.primary} />
-                      <Text style={styles.analysisCardTitle}>ENDING MODE</Text>
-                    </View>
-                    <Text style={styles.characterReferenceIntro}>
-                      Choose whether branches should converge to one finale or preserve distinct ending routes.
-                    </Text>
-                    <View style={styles.endingModeRow}>
-                      <Text style={[styles.endingModeLabel, activeEndingMode === 'single' && styles.endingModeLabelActive]}>
-                        SINGLE ENDING
-                      </Text>
-                      <Switch
-                        value={activeEndingMode === 'multiple'}
-                        onValueChange={(value) => void handleEndingModeToggle(value ? 'multiple' : 'single')}
-                        trackColor={{ false: '#333', true: TERMINAL.colors.primary }}
-                        thumbColor="#fff"
-                      />
-                      <Text style={[styles.endingModeLabel, activeEndingMode === 'multiple' && styles.endingModeLabelActive]}>
-                        MULTIPLE ENDINGS
-                      </Text>
-                    </View>
-                    <Text style={styles.referenceModeHint}>
-                      {sourceAnalysis.endingModeReasoning
-                        || (sourceAnalysis.detectedEndingMode === 'multiple'
-                          ? 'The source suggests materially different endings, so multiple mode is the default.'
-                          : 'The source reads as one convergent ending, so single mode is the default.')}
-                    </Text>
-                  </View>
-                )}
-                {isCreatingSeasonPlan ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
-                    <Text style={styles.loadingText}>Creating season plan...</Text>
-                  </View>
-                ) : seasonPlan ? (
-                  <EpisodeSelector
-                    seasonPlan={seasonPlan}
-                    selectedEpisodes={selectedEpisodes}
-                    onSelectionChange={(episodes) => {
-                      setSelectedEpisodes(episodes);
-                      setSelectedEpisodeCount(episodes.length);
-                      const seasonPlanner = new SeasonPlannerAgent({ provider: 'anthropic', model: 'claude-sonnet-4-20250514', apiKey: '', maxTokens: 8000, temperature: 0.7 });
-                      const validation = seasonPlanner.validateSelection(seasonPlan, episodes);
-                      setSelectionWarnings(validation.warnings);
-                      const recs = seasonPlanner.getEpisodeRecommendations(seasonPlan, episodes);
-                      setEpisodeRecommendations(recs);
-                    }}
-                    recommendations={episodeRecommendations}
-                    warnings={selectionWarnings}
-                  />
-                ) : (
-                  <View style={styles.outlineList}>{(analysisResult.episodeOutlines || []).map((ep, idx) => (
-                    <View key={idx} style={styles.outlineItem}><View style={styles.outlineNumber}><Text style={styles.outlineNumberText}>{ep.episodeNumber}</Text></View><View style={styles.outlineInfo}><Text style={styles.outlineTitle}>{(ep.title || 'Untitled').toUpperCase()}</Text><Text style={styles.outlineSynopsis} numberOfLines={2}>{ep.synopsis}</Text></View></View>
-                  ))}</View>
-                )}
+	                {sourceAnalysis?.sourceCanon ? (
+	                  <CanonWizard
+	                    canon={sourceAnalysis.sourceCanon}
+	                    wizardState={canonWizardState}
+	                    seasonPlan={seasonPlan}
+	                    selectedEpisodes={selectedEpisodes}
+	                    recommendations={episodeRecommendations}
+	                    warnings={selectionWarnings}
+	                    onCanonChange={(nextCanon, nextWizardState) => {
+	                      void syncCanonReviewState(nextCanon, nextWizardState);
+	                    }}
+	                    onStepApproved={(nextCanon, nextWizardState) => {
+	                      void syncCanonReviewState(nextCanon, nextWizardState, { persist: true });
+	                    }}
+	                    onEpisodeSelectionChange={handleCanonEpisodeSelectionChange}
+	                    onRequestRepairSuggestion={requestCanonRepairSuggestion}
+	                  />
+	                ) : isCreatingSeasonPlan ? (
+	                  <View style={styles.loadingContainer}>
+	                    <ActivityIndicator size="small" color={TERMINAL.colors.cyan} />
+	                    <Text style={styles.loadingText}>Creating season plan...</Text>
+	                  </View>
+	                ) : (
+	                  <View style={styles.errorCard}>
+	                    <Text style={styles.errorText}>LOCKED SOURCE CANON WAS NOT CREATED. RE-RUN ANALYSIS.</Text>
+	                    <TouchableOpacity style={styles.executeButton} onPress={startAnalysis}>
+	                      <Text style={styles.executeButtonText}>RETRY ANALYSIS</Text>
+	                    </TouchableOpacity>
+	                  </View>
+	                )}
                 {analysisCharacters.length > 0 && (
                   <View style={styles.analysisCard}>
                     <View style={styles.analysisCardHeader}>
@@ -4553,7 +4500,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
               onApproveAnchor={styleSetup.approveAnchor}
               onToggleUseDefaults={styleSetup.setUseDefaults}
             />
-            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={styles.executeButton} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>INITIATE GENERATION</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
+	            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={[styles.executeButton, sourceAnalysis?.sourceCanon && !canonSetupApproved ? { opacity: 0.5 } : null]} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>{sourceAnalysis?.sourceCanon && !canonSetupApproved ? 'APPROVE CANON TO CONTINUE' : 'INITIATE GENERATION'}</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
           </View>
         )}
         {(state === 'running' || state === 'checkpoint') && (

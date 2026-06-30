@@ -26,7 +26,6 @@ import { buildPlanningRegisterMetadataRepairHandler } from './planningRegisterMe
 import { buildPlayerFacingProseRepairHandler } from './playerFacingProseRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from './relationshipPacingLabelRepairHandler';
 import { buildTransitionBridgeRepairHandler } from './transitionBridgeRepairHandler';
-import { buildContinuityBlogPublishRepairHandler } from './continuityBlogPublishRepairHandler';
 import { buildTenseDriftRepairHandler } from './tenseDriftRepairHandler';
 
 /** Minimal shape this loop needs from a contract report (FinalStoryContractReport-compatible). */
@@ -82,6 +81,7 @@ export interface FinalContractRepairOutcome {
 }
 
 type ContractRepairIssue = ContractRepairReport['blockingIssues'][number];
+type MutableRecord = Record<string, unknown>;
 
 function extractQuotedMoment(value: string): string | undefined {
   const match = /"([^"]{16,})"/.exec(value);
@@ -135,6 +135,79 @@ function selectRepairableIssuesForRound(
     issues: selected,
     keys: Array.from(selectedKeys),
     exhaustedKeys: Array.from(exhaustedKeys),
+  };
+}
+
+function sanitizeDramaticIntentText(value: string): string {
+  return value
+    .replace(/\bthe protagonist wants to shift the moment without saying everything directly\b/gi, 'press for a visible change while keeping the deeper motive guarded')
+    .replace(/\bthe protagonist enters without full control of the room\b/gi, 'the room has not yielded control yet')
+    .replace(/\bthe protagonist's\b/gi, "the focal character's")
+    .replace(/\bthe protagonist\b/gi, 'the focal character');
+}
+
+function sanitizeDramaticIntentObject(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  let changed = 0;
+  const record = value as MutableRecord;
+
+  if (record.characterObjectives && typeof record.characterObjectives === 'object' && !Array.isArray(record.characterObjectives)) {
+    const objectives = record.characterObjectives as MutableRecord;
+    if (typeof objectives['the protagonist'] === 'string') {
+      const sanitized = sanitizeDramaticIntentText(objectives['the protagonist']);
+      if (objectives['the focal character'] === undefined) objectives['the focal character'] = sanitized;
+      delete objectives['the protagonist'];
+      changed += 1;
+    }
+  }
+
+  for (const [key, child] of Object.entries(record)) {
+    if (typeof child === 'string') {
+      const sanitized = sanitizeDramaticIntentText(child);
+      if (sanitized !== child) {
+        record[key] = sanitized;
+        changed += 1;
+      }
+    } else if (child && typeof child === 'object') {
+      changed += sanitizeDramaticIntentObject(child);
+    }
+  }
+  return changed;
+}
+
+function buildDramaticIntentMetadataHygieneHandler(): ContractRepairHandler {
+  return ({ story, blockingIssues }) => {
+    const relevant = blockingIssues.some((issue) =>
+      issue.validator === 'RouteContinuityValidator'
+      || issue.type === 'unsafe_fallback_prose'
+      || /\bdramaticIntent\b|\bthe protagonist\b|\bwithout full control of the room\b|\bwithout saying everything directly\b/i.test(issue.message || '')
+    );
+    if (!relevant) return { story, changed: false };
+
+    let rewritten = 0;
+    for (const episode of (story as Story).episodes ?? []) {
+      for (const scene of episode.scenes ?? []) {
+        for (const beat of scene.beats ?? []) {
+          rewritten += sanitizeDramaticIntentObject((beat as unknown as MutableRecord).dramaticIntent);
+        }
+      }
+    }
+
+    if (rewritten <= 0) return { story, changed: false };
+    return {
+      story,
+      changed: true,
+      record: {
+        rule: 'final_contract_dramatic_intent_metadata_hygiene',
+        scope: 'season',
+        attempted: rewritten,
+        succeeded: true,
+        degraded: false,
+        blocked: false,
+        attempts: 1,
+        details: `Sanitized ${rewritten} dramaticIntent metadata field(s)`,
+      },
+    };
   };
 }
 
@@ -253,6 +326,7 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // surrounding sentence is otherwise diegetic ("the player opposite you").
     // Rewrite the visible prose in-place instead of weakening the leakage gate.
     buildPlayerFacingProseRepairHandler(),
+    buildDramaticIntentMetadataHygieneHandler(),
     // Planning-register leak in metadata fields: strip authoring directives from
     // beat/scene metadata that image planning and the reader may consume, without
     // changing story text, choices, encounters, or navigation.
@@ -270,10 +344,5 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // choice-bridge beat and planned location jump, add a short in-fiction
     // travel/arrival sentence to that bridge beat before spending LLM repair.
     buildTransitionBridgeRepairHandler(),
-    // Continuity duplicate-publish miss: when an earlier scene writes the blog
-    // post but prematurely hits Publish before the planned publish scene, keep
-    // the authored writing moment and convert the earlier beat into saved-draft
-    // prose. Choices, encounters, ids, and navigation are untouched.
-    buildContinuityBlogPublishRepairHandler(),
   ];
 }

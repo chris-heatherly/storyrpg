@@ -247,10 +247,13 @@ export function otherGenderNamesFromStory(story: Story, pronouns: string): strin
   const target = targetGender(pronouns);
   if (!target) return [];
   const wrongPrefix = target === 'f' ? 'he' : 'she'; // protagonist female -> male NPCs are the risk
-  const names: string[] = [];
+  const names = new Set<string>();
   for (const npc of story.npcs || []) {
     const p = (npc.pronouns || '').toLowerCase();
-    if (p.startsWith(wrongPrefix) && npc.name) names.push(npc.name);
+    if (!p.startsWith(wrongPrefix) || !npc.name) continue;
+    names.add(npc.name);
+    const firstName = npc.name.trim().split(/\s+/)[0];
+    if (firstName && firstName.length >= 3) names.add(firstName);
   }
-  return names;
+  return [...names];
 }

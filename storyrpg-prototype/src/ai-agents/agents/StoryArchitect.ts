@@ -47,6 +47,7 @@ import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import { applySceneContract } from '../utils/sceneContractBuilders';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
+import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import type {
   PlannedScene,
   SetupPayoffEdge,
@@ -73,6 +74,7 @@ import { ThemePressureValidator } from '../validators/ThemePressureValidator';
 import { SceneTurnContractValidator } from '../validators/SceneTurnContractValidator';
 import { EpisodePressureArchitectureValidator } from '../validators/EpisodePressureArchitectureValidator';
 import { EpisodeStoryCircleValidator } from '../validators/EpisodeStoryCircleValidator';
+import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
 import {
   analyzeEpisodeTreatmentDensity,
   describeTreatmentDensityReport,
@@ -100,8 +102,15 @@ import {
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import {
   buildEpisodeCircleBeatContracts,
+  normalizeStoryCircleContractForSceneProse,
   type EpisodeCircleContractScene,
 } from '../utils/storyCircleBeatContracts';
+import {
+  BLUEPRINT_SCANNED_SCENE_FIELDS,
+  isBlueprintHygieneUnsafeText,
+  pickBlueprintSafeText,
+  sanitizeBlueprintText,
+} from '../utils/blueprintTextHygiene';
 
 /**
  * Smallest episode (by scene count) that should be asked to carry a SECOND
@@ -529,6 +538,10 @@ export interface SceneBlueprint {
   // checklist (plan §5.4 / GAP-B). Undefined/empty for from-scratch runs and
   // scenes the treatment is silent on — the SceneWriter prompt is then unchanged.
   requiredBeats?: RequiredBeat[];
+  treatmentAtomIds?: string[];
+  ownedChronologyKeys?: string[];
+  sourceContextIds?: string[];
+  nonCopyableContext?: Array<Pick<TreatmentEventAtom, 'id' | 'sourceText' | 'eventText' | 'sourceSection'>>;
   signatureMoment?: string;
   turnContract?: SceneTurnContract;
   relationshipPacing?: RelationshipPacingContract[];
@@ -1746,12 +1759,33 @@ export class StoryArchitect extends BaseAgent {
       && /\b(player|protagonist|choice|chooses|choose|decision|decides|act|acts|action|refusal|refuses|sacrifice|risks|commit|commits|reveals|hides|protects|betrays|trusts|confronts|accepts|rejects|identity|cost|open|block|archive|read|wait|decline|publish|invite|thank|kiss|scream|run|freeze|fight)\b/i.test(value);
   }
 
+  private hasExternalThemeResolutionText(value: unknown): value is string {
+    return this.hasBlueprintText(value)
+      && /\b(coincidence|coincidentally|prophecy|prophec|destiny|fate|deus ex|rescued by|saves them without|villain decides|antagonist decides|external rescue|outside force|randomly|by chance)\b/i.test(value);
+  }
+
+  private playableChoicePressureFallback(): string {
+    return 'how the protagonist chooses to respond when the scene pressure changes their safety, trust, cost, and identity';
+  }
+
+  private normalizeChoicePressureText(value: string | undefined): string | undefined {
+    if (!this.hasChoicePressureSafeBlueprintText(value)) return undefined;
+    if (this.hasExternalThemeResolutionText(value)) return this.playableChoicePressureFallback();
+    return value;
+  }
+
   private buildTreatmentThemeChoicePressure(
     guidance: TreatmentEpisodeGuidance | undefined,
     themePressure: string,
   ): string {
     const authoredChoice = guidance?.forcedChoice || guidance?.majorChoicePressures?.[0] || themePressure;
-    return `Player/protagonist choice makes the theme answerable: ${authoredChoice}. The action tests ${themePressure}`;
+    const playableChoice = this.hasExternalThemeResolutionText(authoredChoice)
+      ? this.playableChoicePressureFallback()
+      : authoredChoice;
+    const playableTheme = this.hasExternalThemeResolutionText(themePressure)
+      ? 'the scene pressure'
+      : themePressure;
+    return `Player/protagonist choice makes the theme answerable: ${playableChoice}. The action tests ${playableTheme}`;
   }
 
   private normalizeInformationPlan(
@@ -2018,7 +2052,10 @@ export class StoryArchitect extends BaseAgent {
       scene.personalStake = this.pickPersonalStake(scene.personalStake, personalStake);
       scene.stakesLayers = this.mergeTreatmentStakesLayers(scene.stakesLayers, stakesLayers);
       if (scene.choicePoint) {
-        scene.choicePoint.themeAnswer = this.pickBlueprintText(scene.choicePoint.themeAnswer, blueprint.dramaticAudit.themeChoicePressure);
+        scene.choicePoint.themeAnswer = this.hasThemeChoiceAction(scene.choicePoint.themeAnswer)
+          && !this.hasExternalThemeResolutionText(scene.choicePoint.themeAnswer)
+          ? scene.choicePoint.themeAnswer
+          : this.buildTreatmentThemeChoicePressure(guidance, scene.themePressure || themePressure);
         scene.choicePoint.stakesLayers = this.mergeTreatmentStakesLayers(scene.choicePoint.stakesLayers, stakesLayers);
       }
     }
@@ -2040,11 +2077,11 @@ export class StoryArchitect extends BaseAgent {
 
     finalScene.keyBeats = Array.isArray(finalScene.keyBeats) ? finalScene.keyBeats : [];
     if (!finalScene.keyBeats.some((beat) => beat.includes(endingPressure))) {
-      finalScene.keyBeats.push(`Forward pressure: ${endingPressure}`);
+      finalScene.keyBeats.push(endingPressure);
     }
     finalScene.narrativeFunction = finalScene.narrativeFunction
-      ? `${finalScene.narrativeFunction} Forward pressure: ${endingPressure}`
-      : `Forward pressure: ${endingPressure}`;
+      ? `${finalScene.narrativeFunction} ${endingPressure}`
+      : endingPressure;
     finalScene.dramaticStructure = {
       question: finalScene.dramaticStructure?.question || guidance?.dramaticQuestion || blueprint.dramaticAudit?.episodeQuestion || 'What changes because of this scene?',
       turn: finalScene.dramaticStructure?.turn || guidance?.forcedChoice || guidance?.informationMovement || endingPressure,
@@ -2300,12 +2337,12 @@ export class StoryArchitect extends BaseAgent {
 
     choiceScene.choicePoint.reminderPlan = {
       immediate: choiceScene.choicePoint.reminderPlan?.immediate
-        || `The aftermath changes what characters say, hide, risk, or trust: ${this.fictionFirstResidueSummary(authoredResidue[0])}`,
+        || this.fictionFirstImmediateResidue(authoredResidue[0]),
       shortTerm: choiceScene.choicePoint.reminderPlan?.shortTerm
-        || `The consequence stays visible through changed access, posture, information, or danger: ${this.fictionFirstResidueSummary(authoredResidue[0])}`,
+        || this.fictionFirstShortTermResidue(authoredResidue[0]),
       ...(choiceScene.choicePoint.reminderPlan?.later
         ? { later: choiceScene.choicePoint.reminderPlan.later }
-        : { later: `Later pressure can return through trust, knowledge, access, or risk: ${this.fictionFirstResidueSummary(authoredResidue[0])}` }),
+        : { later: this.fictionFirstLaterResidue(authoredResidue[0]) }),
     };
 
     this.registerConsequenceSeedEmitters(blueprint, input, guidance);
@@ -2325,6 +2362,25 @@ export class StoryArchitect extends BaseAgent {
       .replace(/\bin\s+a\s+later\s+episode\b/gi, 'later')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  private fictionFirstImmediateResidue(text: string): string {
+    const summary = this.fictionFirstResidueSummary(text);
+    return summary || 'The room remembers what you chose.';
+  }
+
+  private fictionFirstShortTermResidue(text: string): string {
+    const summary = this.fictionFirstResidueSummary(text);
+    return summary
+      ? `${summary} The next silence, glance, or opened door carries it forward.`
+      : 'The next silence, glance, or opened door carries what changed.';
+  }
+
+  private fictionFirstLaterResidue(text: string): string {
+    const summary = this.fictionFirstResidueSummary(text);
+    return summary
+      ? `${summary} It waits for the moment someone notices.`
+      : 'What changed waits for the moment someone notices.';
   }
 
   /**
@@ -2781,13 +2837,13 @@ Remember: The encounter is the heart. Design outward from it.
   private sceneEventCueCount(value: string | undefined): number {
     const text = this.normalizePlannerText(value);
     const cues = [
-      /\b(?:lands?|arrives?|unpacks?|two suitcases|grandmother(?:s)? address|belle epoque|lipscani window)\b/,
-      /\b(?:valcescu|club|side entrance|key card|american shoes|night two)\b/,
-      /\b(?:lumina|bookshop|bookstore|quartz|crystal|stela presses|wants to be with you)\b/,
-      /\b(?:rooftop|mr charcoal|charcoal suited man|victor across|mika clocks|follow mika|walk over|lets eat first|worst date|podcast|kitchen entrance|rougher man)\b/,
-      /\b(?:cismigiu|park|garden|willow|shadow|pinned|attacker|scream|freeze|fight back|rescues?|1 ?am|1 ?15|1 ?16)\b/,
-      /\b(?:blog|post|dating after dusk|mr midnight|readership|reads?|viral|codename|4 ?am|6 ?pm|80 ?000|84 ?000)\b/,
-      /\b(?:9 ?am|dm pile|brand deal|horrible dream|coming over with herbs|cliffhanger|episode end)\b/,
+      /\b(?:lands?|arrives?|arrival|unpacks?|suitcases?|address|airport|station|new home|new city)\b/,
+      /\b(?:club|venue|side entrance|key card|keycard|private door|service entrance|threshold|invitation)\b/,
+      /\b(?:bookshop|bookstore|quartz|crystal|stone|charm|token|talisman|gift|ward|protection)\b/,
+      /\b(?:rooftop|roof|terrace|bar|party|table|booth|stranger|date|podcast|kitchen entrance|walk over|follow|notices across)\b/,
+      /\b(?:park|garden|alley|street|shadow|pinned|attacker|scream|freeze|fight back|rescues?|ambush|threat|1 ?am)\b/,
+      /\b(?:blog|post|readership|reads?|views|comments|viral|codename|draft|dashboard|profile|public pressure|public signal)\b/,
+      /\b(?:dm pile|brand deal|message pile|horrible dream|coming over|cliffhanger|episode end)\b/,
     ];
     return cues.filter((cue) => cue.test(text)).length;
   }
@@ -2824,13 +2880,13 @@ Remember: The encounter is the heart. Design outward from it.
       const text = beat.mustDepict || beat.sourceTurn;
       return beat.tier !== 'seed'
         && beat.tier !== 'connective'
-        && this.hasReaderSafeBlueprintText(text);
+        && this.hasChoicePressureSafeBlueprintText(text);
     });
     if (concreteRequired) return concreteRequired.mustDepict || concreteRequired.sourceTurn;
 
     const seedRequired = requiredBeats.find((beat) => {
       const text = beat.mustDepict || beat.sourceTurn;
-      return beat.tier === 'seed' && this.hasReaderSafeBlueprintText(text);
+      return beat.tier === 'seed' && this.hasChoicePressureSafeBlueprintText(text);
     });
     return seedRequired?.mustDepict || seedRequired?.sourceTurn;
   }
@@ -2838,7 +2894,12 @@ Remember: The encounter is the heart. Design outward from it.
   private hasReaderSafeBlueprintText(value: unknown): value is string {
     return this.hasBlueprintText(value)
       && !isPlanningRegisterText(value)
-      && !this.isChoiceMenuPlanningText(value);
+      && !this.isChoiceMenuPlanningText(value)
+      && !isBlueprintHygieneUnsafeText(value);
+  }
+
+  private hasChoicePressureSafeBlueprintText(value: unknown): value is string {
+    return this.hasReaderSafeBlueprintText(value);
   }
 
   private localAuthoredFieldText(
@@ -2872,8 +2933,8 @@ Remember: The encounter is the heart. Design outward from it.
     for (const candidate of candidates) {
       const trimmed = candidate?.trim();
       if (!trimmed || this.isBroadPlannedSceneSummary(trimmed)) continue;
-      if (isPlanningRegisterText(trimmed)) continue;
-      if (this.isChoiceMenuPlanningText(trimmed)) continue;
+      if (!this.hasReaderSafeBlueprintText(trimmed)) continue;
+      if (this.isGenericPlannedScenePlaceholder(trimmed)) continue;
       if (out.some((existing) => existing === trimmed)) continue;
       out.push(trimmed);
       if (out.length >= 8) break;
@@ -2912,16 +2973,13 @@ Remember: The encounter is the heart. Design outward from it.
       scene.title,
     ];
     return candidates.find((candidate) =>
-      this.hasBlueprintText(candidate)
-      && !isPlanningRegisterText(candidate)
-      && !this.isChoiceMenuPlanningText(candidate)
+      this.hasReaderSafeBlueprintText(candidate)
       && !this.isBroadPlannedSceneSummary(candidate)
       && !this.isGenericPlannedScenePlaceholder(candidate)
     )
       || this.firstConcreteRequiredBeat(requiredBeats)
-      || scene.title
-      || scene.dramaticPurpose
-      || 'Depict the planned scene turn.';
+      || pickBlueprintSafeText(scene.title, scene.dramaticPurpose)
+      || 'A concrete episode consequence becomes visible.';
   }
 
   private plannedSceneChoicePressure(scene: PlannedScene, localPurpose: string, requiredBeats: RequiredBeat[]): string {
@@ -2929,19 +2987,22 @@ Remember: The encounter is the heart. Design outward from it.
       .find((field) => field.contractKind === 'major_choice_pressure')?.sourceText;
     const candidates = [
       authoredChoicePressure,
+      this.firstConcreteRequiredBeat(requiredBeats),
+      scene.signatureMoment,
+      localPurpose,
       scene.turnContract?.turnEvent,
       scene.turnContract?.centralTurn,
-      this.firstConcreteRequiredBeat(requiredBeats),
-      localPurpose,
-      scene.signatureMoment,
       scene.stakes,
       scene.dramaticPurpose,
     ];
-    const concrete = candidates.find((candidate) =>
-      this.hasReaderSafeBlueprintText(candidate)
-      && !this.isBroadPlannedSceneSummary(candidate)
-      && !this.isGenericPlannedScenePlaceholder(candidate)
-    );
+    const concrete = candidates
+      .filter((candidate) =>
+        this.hasChoicePressureSafeBlueprintText(candidate)
+        && !this.isBroadPlannedSceneSummary(candidate)
+        && !this.isGenericPlannedScenePlaceholder(candidate)
+      )
+      .map((candidate) => this.normalizeChoicePressureText(candidate))
+      .find((candidate): candidate is string => Boolean(candidate));
     return concrete || 'the pressure already visible in this moment';
   }
 
@@ -3040,17 +3101,20 @@ Remember: The encounter is the heart. Design outward from it.
         identity: guidance?.liePressure || existingChoice?.stakes?.identity || 'The choice defines who the protagonist becomes under pressure.',
       },
       stakesLayers: this.mergeTreatmentStakesLayers(existingChoice?.stakesLayers, stakesLayers),
-      themeAnswer: existingChoice?.themeAnswer || guidance?.themePressure || guidance?.liePressure,
+      themeAnswer: this.hasThemeChoiceAction(existingChoice?.themeAnswer)
+        && !this.hasExternalThemeResolutionText(existingChoice?.themeAnswer)
+        ? existingChoice?.themeAnswer
+        : this.buildTreatmentThemeChoicePressure(guidance, guidance?.themePressure || guidance?.liePressure || pressure),
       description: `Treatment-defined pressure: ${pressure}`,
       optionHints: options.length >= 2 ? options : [pressure],
       consequenceDomain: existingChoice?.consequenceDomain || this.inferChoiceConsequenceDomain(pressure, guidance),
       reminderPlan: {
         immediate: existingChoice?.reminderPlan?.immediate || 'Someone opens a door, withholds a truth, or shifts their tone before the moment passes.',
-        shortTerm: existingChoice?.reminderPlan?.shortTerm || 'The aftermath stays visible in what characters offer, hide, risk, or refuse.',
+        shortTerm: existingChoice?.reminderPlan?.shortTerm || 'The next room has to move around what just changed.',
         ...(existingChoice?.reminderPlan?.later
           ? { later: existingChoice.reminderPlan.later }
           : residue[0]
-            ? { later: `Let the consequence return through trust, knowledge, access, or risk: ${this.fictionFirstResidueSummary(residue[0])}` }
+            ? { later: this.fictionFirstLaterResidue(residue[0]) }
             : {}),
       },
       expectedResidue: Array.from(new Set([
@@ -3146,10 +3210,10 @@ Remember: The encounter is the heart. Design outward from it.
       const turnContract = rawTurnContract
         ? {
             ...rawTurnContract,
-            centralTurn: this.isChoiceMenuPlanningText(rawTurnContract.centralTurn) ? localPurpose : rawTurnContract.centralTurn,
-            pressurePeak: this.isChoiceMenuPlanningText(rawTurnContract.pressurePeak) ? localPurpose : rawTurnContract.pressurePeak,
-            turnEvent: this.isChoiceMenuPlanningText(rawTurnContract.turnEvent) ? localPurpose : rawTurnContract.turnEvent,
-            handoff: this.isChoiceMenuPlanningText(rawTurnContract.handoff) ? localPurpose : rawTurnContract.handoff,
+            centralTurn: this.hasReaderSafeBlueprintText(rawTurnContract.centralTurn) ? rawTurnContract.centralTurn : localPurpose,
+            pressurePeak: this.hasReaderSafeBlueprintText(rawTurnContract.pressurePeak) ? rawTurnContract.pressurePeak : localPurpose,
+            turnEvent: this.hasReaderSafeBlueprintText(rawTurnContract.turnEvent) ? rawTurnContract.turnEvent : localPurpose,
+            handoff: this.hasReaderSafeBlueprintText(rawTurnContract.handoff) ? rawTurnContract.handoff : localPurpose,
           }
         : rawTurnContract;
       const repairedLocation = this.inferPlannedSceneLocationFromRequiredBeats(
@@ -3218,7 +3282,10 @@ Remember: The encounter is the heart. Design outward from it.
         setsUpInfoIds: (p as { setsUpInfoIds?: string[] }).setsUpInfoIds,
         revealsInfoIds: (p as { revealsInfoIds?: string[] }).revealsInfoIds,
         paysOffInfoIds: (p as { paysOffInfoIds?: string[] }).paysOffInfoIds,
-        themePressure: (p.authoredTreatmentFields || []).find((field) => field.contractKind === 'theme_angle' || field.contractKind === 'lie_pressure')?.sourceText,
+        themePressure: (p.authoredTreatmentFields || []).find((field) =>
+          (field.contractKind === 'theme_angle' || field.contractKind === 'lie_pressure')
+          && this.hasReaderSafeBlueprintText(field.sourceText)
+        )?.sourceText,
         keyBeats: localKeyBeats,
         leadsTo: nextId ? [nextId] : [],
       };
@@ -3240,7 +3307,7 @@ Remember: The encounter is the heart. Design outward from it.
             cost: PLACEHOLDER_STAKES.cost,
             identity: PLACEHOLDER_STAKES.identity,
           },
-          description: `Choose how the protagonist responds as this pressure turns: ${choicePressure}.`,
+          description: `The decision turns on ${choicePressure}.`,
           optionHints: [],
         };
       }
@@ -3287,450 +3354,14 @@ Remember: The encounter is the heart. Design outward from it.
       treatmentBindingReport: binding.report,
     };
     this.applySceneContractsToPlannedBlueprint(blueprint, input);
+    this.repairBlueprintHygieneUnsafeText(blueprint, input);
     this.repairBroadArrivalRequiredBeats(blueprint);
-    this.repairRooftopSetupDensity(blueprint);
     this.repairPlannedSequentialReachability(blueprint);
     return blueprint;
   }
 
   private repairBroadArrivalRequiredBeats(blueprint: EpisodeBlueprint): void {
-    const scenes = blueprint.scenes ?? [];
-    if (scenes.length === 0) return;
-
-    for (const scene of scenes) {
-      if (
-        scene.signatureMoment
-        && this.isColdOpenArrivalScene(scene)
-        && this.isRooftopDuskClubMoment(scene.signatureMoment)
-      ) {
-        const rooftopTarget = this.findDuskClubScene(scenes, scene);
-        if (rooftopTarget) {
-          const rooftopMoment = scene.signatureMoment;
-          rooftopTarget.keyBeats = [...new Set([...(rooftopTarget.keyBeats ?? []), rooftopMoment])];
-          if (!rooftopTarget.signatureMoment || this.isRooftopDuskClubMoment(rooftopTarget.signatureMoment)) {
-            rooftopTarget.signatureMoment = rooftopMoment;
-          }
-        }
-        scene.signatureMoment = scene.turnContract?.centralTurn
-          ?? scene.narrativeFunction
-          ?? scene.keyBeats?.[0]
-          ?? scene.name;
-      }
-
-      if (scene.signatureMoment && this.isTwoAnchorRooftopEncounterBeat(scene.signatureMoment)) {
-        const rooftopTarget = this.findDuskClubScene(scenes, scene);
-        const encounterTarget = this.findEncounterScene(scenes) ?? scene;
-        if (rooftopTarget) {
-          const rooftopMoment = 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.';
-          rooftopTarget.keyBeats = [...new Set([...(rooftopTarget.keyBeats ?? []), rooftopMoment])];
-          if (!rooftopTarget.signatureMoment || this.isTwoAnchorRooftopEncounterBeat(rooftopTarget.signatureMoment)) {
-            rooftopTarget.signatureMoment = rooftopMoment;
-          }
-        }
-        if (encounterTarget) {
-          const encounterMoment = 'In Cișmigiu at 1am, fog, a shadow, a scream, and Victor rescuing Kylie stage the dark anchor.';
-          encounterTarget.keyBeats = [...new Set([...(encounterTarget.keyBeats ?? []), encounterMoment])];
-          if (!encounterTarget.signatureMoment || this.isTwoAnchorRooftopEncounterBeat(encounterTarget.signatureMoment)) {
-            encounterTarget.signatureMoment = encounterMoment;
-          }
-        }
-        scene.signatureMoment = scene.keyBeats?.find((beat) => /\bVictor walks Kylie home\b/i.test(beat))
-          ?? scene.turnContract?.centralTurn
-          ?? scene.narrativeFunction
-          ?? scene.name;
-      }
-
-      const kept: RequiredBeat[] = [];
-      for (const beat of scene.requiredBeats ?? []) {
-        const text = `${beat.mustDepict || ''} ${beat.sourceTurn || ''}`;
-        if (this.isAbstractOpeningPromiseBeat(text)) {
-          continue;
-        }
-        if (this.isCompositeSeedBundleBeat(beat, text)) {
-          continue;
-        }
-        if (this.isTwoAnchorRooftopEncounterBeat(text)) {
-          const rooftopTarget = this.findDuskClubScene(scenes, scene);
-          const encounterTarget = this.findEncounterScene(scenes) ?? scene;
-          const parts = [
-            {
-              suffix: 'rooftop-anchor',
-              text: 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
-              target: rooftopTarget,
-            },
-            {
-              suffix: 'cismigiu-anchor',
-              text: 'In Cișmigiu at 1am, fog, a shadow, a scream, and Victor rescuing Kylie stage the dark anchor.',
-              target: encounterTarget,
-            },
-          ];
-          for (const part of parts) {
-            const target = part.target;
-            if (!target) continue;
-            const nextBeat: RequiredBeat = {
-              ...beat,
-              id: `${beat.id}-${part.suffix}`,
-              sourceTurn: part.text,
-              mustDepict: part.text,
-            };
-            if (target.id === scene.id) {
-              if (!kept.some((candidate) => candidate.id === nextBeat.id)) {
-                kept.push(nextBeat);
-              }
-              continue;
-            }
-            if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === nextBeat.id)) {
-              target.requiredBeats = [...(target.requiredBeats ?? []), nextBeat];
-            }
-          }
-          continue;
-        }
-        if (this.isArrivalDuskClubBylineBeat(text)) {
-          const arrivalBeat: RequiredBeat = {
-            ...beat,
-            id: `${beat.id}-arrival`,
-            sourceTurn: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
-            mustDepict: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
-          };
-          if (!kept.some((candidate) => candidate.id === arrivalBeat.id)) {
-            kept.push(arrivalBeat);
-          }
-
-          const duskTarget = this.findDuskClubScene(scenes, scene);
-          if (duskTarget && duskTarget.id !== scene.id) {
-            const duskBeat: RequiredBeat = {
-              ...beat,
-              id: `${beat.id}-dusk-club`,
-              sourceTurn: 'Kylie forms the Dusk Club as a social armor for her Bucharest reinvention.',
-              mustDepict: 'Kylie forms the Dusk Club as a social armor for her Bucharest reinvention.',
-            };
-            if (!(duskTarget.requiredBeats ?? []).some((candidate) => candidate.id === duskBeat.id)) {
-              duskTarget.requiredBeats = [...(duskTarget.requiredBeats ?? []), duskBeat];
-            }
-          }
-
-          const blogTarget = this.findExplicitWritingScene(scenes, scene);
-          if (blogTarget && blogTarget.id !== scene.id) {
-            const bylineBeat: RequiredBeat = {
-              ...beat,
-              id: `${beat.id}-byline`,
-              sourceTurn: 'Kylie channels the reinvention into chasing her own byline.',
-              mustDepict: 'Kylie channels the reinvention into chasing her own byline.',
-            };
-            if (!(blogTarget.requiredBeats ?? []).some((candidate) => candidate.id === bylineBeat.id)) {
-              blogTarget.requiredBeats = [...(blogTarget.requiredBeats ?? []), bylineBeat];
-            }
-          }
-          continue;
-        }
-        if (this.isArrivalBlogLaunchBeat(text)) {
-          const arrivalBeat: RequiredBeat = {
-            ...beat,
-            id: `${beat.id}-arrival`,
-            sourceTurn: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
-            mustDepict: 'Kylie arrives in Bucharest after public humiliation, trying to reinvent herself.',
-          };
-          if (!kept.some((candidate) => candidate.id === arrivalBeat.id)) {
-            kept.push(arrivalBeat);
-          }
-          const blogTarget = this.findWritingAftermathScene(scenes, scene);
-          if (blogTarget && blogTarget.id !== scene.id) {
-            const blogBeat: RequiredBeat = {
-              ...beat,
-              id: `${beat.id}-blog-launch`,
-              sourceTurn: 'Kylie launches a blog to reinvent herself after public humiliation.',
-              mustDepict: 'Kylie launches a blog to reinvent herself after public humiliation.',
-            };
-            if (!(blogTarget.requiredBeats ?? []).some((candidate) => candidate.id === blogBeat.id)) {
-              blogTarget.requiredBeats = [...(blogTarget.requiredBeats ?? []), blogBeat];
-            }
-          }
-          continue;
-        }
-        if (!this.isBroadArrivalIdentityBeat(text)) {
-          kept.push(beat);
-          continue;
-        }
-
-        const parts = [
-          {
-            suffix: 'arrival',
-            text: "She arrives in Bucharest with two suitcases and her grandmother's address.",
-            target: scene,
-          },
-          {
-            suffix: 'dusk-club',
-            text: 'She gathers the Dusk Club over too-dark negronis.',
-            target: this.findDuskClubScene(scenes, scene),
-          },
-        ];
-
-        for (const part of parts) {
-          const target = part.target;
-          if (!target) continue;
-          const nextBeat: RequiredBeat = {
-            ...beat,
-            id: `${beat.id}-${part.suffix}`,
-            sourceTurn: part.text,
-            mustDepict: part.text,
-          };
-          if (target.id === scene.id) {
-            if (!kept.some((candidate) => candidate.id === nextBeat.id)) {
-              kept.push(nextBeat);
-            }
-            continue;
-          }
-          if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === nextBeat.id)) {
-            target.requiredBeats = [...(target.requiredBeats ?? []), nextBeat];
-          }
-        }
-      }
-      scene.requiredBeats = kept;
-    }
-  }
-
-  private repairRooftopSetupDensity(blueprint: EpisodeBlueprint): void {
-    const scenes = blueprint.scenes ?? [];
-    const blogTarget = scenes.find((scene) => /\b(?:blog|aftermath|apartment|home)\b/i.test([
-      scene.id,
-      scene.name,
-      scene.description,
-      scene.location,
-    ].filter(Boolean).join(' ')));
-
-    for (const scene of scenes) {
-      const sceneText = [
-        scene.id,
-        scene.name,
-        scene.description,
-        scene.dramaticPurpose,
-        scene.location,
-        ...(scene.keyBeats ?? []),
-        scene.signatureMoment,
-      ].filter(Boolean).join(' ');
-      const isRooftopSetup = /\b(?:rooftop|bar|dusk club|v[aâ]lcescu)\b/i.test(sceneText);
-      const keptFields: AuthoredTreatmentFieldContract[] = [];
-      for (const field of scene.authoredTreatmentFields ?? []) {
-        const text = field.sourceText || '';
-        const belongsInBlogAftermath = /\b(?:by\s+6pm|80,?000|readership)\b/i.test(text)
-          && /\b(?:arrives in bucharest|dusk club|blog|post)\b/i.test(text);
-        if (belongsInBlogAftermath && blogTarget && blogTarget.id !== scene.id) {
-          if (!(blogTarget.authoredTreatmentFields ?? []).some((candidate) => candidate.id === field.id)) {
-            blogTarget.authoredTreatmentFields = [
-              ...(blogTarget.authoredTreatmentFields ?? []),
-              { ...field, targetSceneIds: [blogTarget.id] },
-            ];
-          }
-          continue;
-        }
-        keptFields.push(field);
-      }
-      scene.authoredTreatmentFields = keptFields;
-
-      if (!isRooftopSetup) continue;
-
-      const hasDuskClubSignature = /\bdusk club\b/i.test(sceneText);
-      const seedTexts = new Set(
-        (scene.requiredBeats ?? [])
-          .filter((beat) => beat.tier === 'seed')
-          .flatMap((beat) => [beat.mustDepict, beat.sourceTurn])
-          .filter((text): text is string => Boolean(text))
-          .map((text) => text.trim()),
-      );
-      scene.keyBeats = (scene.keyBeats ?? []).filter((beat) => {
-        if (this.isRooftopDuskClubMoment(beat)) return true;
-        if (seedTexts.has(beat.trim())) return false;
-        return classifyTreatmentObligation({ text: beat }).blocksFinalProse;
-      });
-      scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) => {
-        const text = `${beat.sourceTurn || ''} ${beat.mustDepict || ''}`;
-        if (beat.tier === 'seed') return false;
-        if (hasDuskClubSignature && /\bgathers? the dusk club\b/i.test(text)) return false;
-        if (/\bat the door of v[aâ]lcescu club\b/i.test(text) && /\bside-entrance key card\b/i.test(text)) return false;
-        return true;
-      });
-    }
-  }
-
-  private isBroadArrivalIdentityBeat(text: string): boolean {
-    const normalized = text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-    return normalized.includes('arrives in bucharest')
-      && normalized.includes('dusk club')
-      && /\b(?:observing|ordering second|writing the piece later)\b/i.test(text);
-  }
-
-  private isArrivalDuskClubBylineBeat(text: string): boolean {
-    const normalized = text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-    return normalized.includes('arrives in bucharest')
-      && normalized.includes('dusk club')
-      && /\b(?:byline|reinvention|reinvent)\b/i.test(text);
-  }
-
-  private isArrivalBlogLaunchBeat(text: string): boolean {
-    const normalized = text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-    return normalized.includes('arrives in bucharest')
-      && /\blaunch(?:es)?\s+(?:a\s+)?blog\b/i.test(text);
-  }
-
-  private isAbstractOpeningPromiseBeat(text: string): boolean {
-    return /\b(?:ordinary world|opening promise)\b/i.test(text)
-      && /\b(?:reinvention|desire|identity|tension|performance|intimacy|predation)\b/i.test(text);
-  }
-
-  private isCompositeSeedBundleBeat(beat: RequiredBeat, text: string): boolean {
-    if (beat.tier !== 'seed') return false;
-    const normalized = text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-    const semicolonCount = (text.match(/;/g) ?? []).length;
-    if (semicolonCount < 3) return false;
-    const cueCount = [
-      'quartz',
-      'side-entrance key card',
-      'mika',
-      'rougher man',
-      'black roses',
-      'stray dog',
-      'readership',
-    ].filter((cue) => normalized.includes(cue)).length;
-    return cueCount >= 4;
-  }
-
-  private isTwoAnchorRooftopEncounterBeat(text: string): boolean {
-    const normalized = text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-    return normalized.includes('two anchors')
-      && normalized.includes('rooftop')
-      && normalized.includes('dusk club')
-      && normalized.includes('cismigiu')
-      && /\b(?:shadow|scream|rescue|rescues?)\b/i.test(text);
-  }
-
-  private isRooftopDuskClubMoment(text: string): boolean {
-    const normalized = text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-    return normalized.includes('rooftop')
-      && normalized.includes('dusk club')
-      && /\b(?:watching|both men|sunset|locks into place)\b/i.test(text);
-  }
-
-  private findEncounterScene(scenes: SceneBlueprint[]): SceneBlueprint | undefined {
-    return scenes.find((scene) => scene.isEncounter)
-      ?? scenes.find((scene) => /\b(?:encounter|attack|cismigiu|park)\b/i.test([
-        scene.id,
-        scene.name,
-        scene.description,
-        scene.location,
-      ].filter(Boolean).join(' ')));
-  }
-
-  private findDuskClubScene(scenes: SceneBlueprint[], sourceScene: SceneBlueprint): SceneBlueprint | undefined {
-    const candidates = scenes.filter((scene) =>
-      scene.id !== sourceScene.id
-      && !scene.isEncounter
-      && !this.isColdOpenArrivalScene(scene)
-      && !this.isWritingAftermathScene(scene),
-    );
-    const explicitSocialScene = candidates.find((scene) => /\b(?:dusk club|negronis?|rooftop|bar)\b/i.test([
-      scene.id,
-      scene.name,
-      scene.description,
-      scene.dramaticPurpose,
-      scene.location,
-      ...(scene.requiredBeats ?? []).map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
-      ...(scene.keyBeats ?? []),
-    ].filter(Boolean).join(' ')));
-    if (explicitSocialScene) return explicitSocialScene;
-    return candidates.find((scene) => {
-      const text = [
-        scene.id,
-        scene.name,
-        scene.description,
-        scene.dramaticPurpose,
-        scene.location,
-      ].filter(Boolean).join(' ');
-      return /\b(?:development scene 2|friend|debrief|negronis?)\b/i.test(text)
-        && !/\b(?:rooftop|park|attack|bookshop|blog|aftermath|v[aâ]lcescu)\b/i.test(text);
-    });
-  }
-
-  private isColdOpenArrivalScene(scene: SceneBlueprint): boolean {
-    const text = [
-      scene.id,
-      scene.name,
-      scene.description,
-      scene.dramaticPurpose,
-      scene.location,
-      scene.narrativeFunction,
-    ].filter(Boolean).join(' ');
-    return /\b(?:cold[-\s]?open|arrival|arrives|bucharest|lipscani)\b/i.test(text)
-      && !/\b(?:rooftop|bar|negronis?|blog|aftermath|attack|park|cismigiu|v[aâ]lcescu)\b/i.test(text);
-  }
-
-  private isWritingAftermathScene(scene: SceneBlueprint): boolean {
-    return /\b(?:post|writing|readership|viral|aftermath|blog)\b/i.test([
-      scene.id,
-      scene.name,
-      scene.description,
-      scene.dramaticPurpose,
-      scene.location,
-    ].filter(Boolean).join(' '));
-  }
-
-  private findWritingAftermathScene(scenes: SceneBlueprint[], sourceScene: SceneBlueprint): SceneBlueprint | undefined {
-    const candidates = scenes.filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter);
-    const encounterIndex = scenes.findIndex((scene) => scene.isEncounter || /\benc\b|encounter|attack|park/i.test(scene.id));
-    const afterEncounter = encounterIndex >= 0
-      ? scenes.slice(encounterIndex + 1).filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter)
-      : candidates;
-    const laterApartment = [...afterEncounter].reverse().find((scene) => /\b(?:apartment|aftermath|release|blog|viral|readership|home)\b/i.test([
-      scene.id,
-      scene.name,
-      scene.description,
-      scene.dramaticPurpose,
-      scene.location,
-    ].filter(Boolean).join(' ')));
-    if (laterApartment) return laterApartment;
-    return candidates.find((scene) => /\b(?:post|writing|readership|viral|aftermath)\b/i.test([
-      scene.id,
-      scene.name,
-      scene.description,
-      scene.dramaticPurpose,
-      scene.location,
-    ].filter(Boolean).join(' '))) ?? candidates[candidates.length - 1];
-  }
-
-  private findExplicitWritingScene(scenes: SceneBlueprint[], sourceScene: SceneBlueprint): SceneBlueprint | undefined {
-    const candidates = scenes.filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter);
-    const encounterIndex = scenes.findIndex((scene) => scene.isEncounter || /\benc\b|encounter|attack|park/i.test(scene.id));
-    const afterEncounter = encounterIndex >= 0
-      ? scenes.slice(encounterIndex + 1).filter((scene) => scene.id !== sourceScene.id && !scene.isEncounter)
-      : candidates;
-    const isExplicitWritingScene = (scene: SceneBlueprint): boolean => /\b(?:blog|post|writing|readership|viral|mr\.?\s+midnight)\b/i.test([
-      scene.name,
-      scene.description,
-      scene.dramaticPurpose,
-      ...(scene.keyBeats ?? []),
-      scene.signatureMoment,
-      scene.turnContract?.centralTurn,
-      scene.turnContract?.turnEvent,
-      scene.turnContract?.afterState,
-    ].filter(Boolean).join(' '));
-    return afterEncounter.find(isExplicitWritingScene) ?? candidates.find(isExplicitWritingScene);
+    void blueprint;
   }
 
   private repairPlannedSequentialReachability(blueprint: EpisodeBlueprint): void {
@@ -3811,11 +3442,79 @@ Remember: The encounter is the heart. Design outward from it.
         scene.choicePoint.stakes = {
           want: scene.choicePoint.stakes?.want || `Pursue the scene turn: ${scene.turnContract?.centralTurn || scene.name}`,
           cost: isPlaceholderStake(scene.choicePoint.stakes?.cost)
-            ? `Risk the changed state or residue from ${scene.name}.`
-            : scene.choicePoint.stakes?.cost || `Risk the changed state or residue from ${scene.name}.`,
+            ? `Risk losing leverage from ${scene.name}.`
+            : scene.choicePoint.stakes?.cost || `Risk losing leverage from ${scene.name}.`,
           identity: isPlaceholderStake(scene.choicePoint.stakes?.identity)
-            ? scene.personalStake || `Reveal who the protagonist becomes under this scene pressure.`
-            : scene.choicePoint.stakes?.identity || scene.personalStake || `Reveal who the protagonist becomes under this scene pressure.`,
+            ? scene.personalStake || 'Reveal a specific self-protective or self-authored posture.'
+            : scene.choicePoint.stakes?.identity || scene.personalStake || 'Reveal a specific self-protective or self-authored posture.',
+        };
+      }
+    }
+  }
+
+  private safeBlueprintSceneFallback(scene: SceneBlueprint, input: StoryArchitectInput, index: number): string {
+    return pickBlueprintSafeText(
+      this.firstConcreteRequiredBeat(scene.requiredBeats || []),
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.centralTurn,
+      scene.dramaticStructure?.turn,
+      scene.dramaticStructure?.pressurePeak,
+      scene.name,
+      scene.description,
+      input.episodeSynopsis,
+    ) || `Episode ${input.episodeNumber ?? ''} scene ${index + 1} leaves a visible consequence.`.replace(/\s+/g, ' ').trim();
+  }
+
+  private repairBlueprintHygieneUnsafeText(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    for (let index = 0; index < (blueprint.scenes || []).length; index += 1) {
+      const scene = blueprint.scenes[index];
+      const sceneFallback = this.safeBlueprintSceneFallback(scene, input, index);
+      const sceneRecord = scene as unknown as Record<string, unknown>;
+      for (const field of BLUEPRINT_SCANNED_SCENE_FIELDS) {
+        const repaired = sanitizeBlueprintText(sceneRecord[field], sceneFallback);
+        if (repaired && repaired !== sceneRecord[field]) {
+          sceneRecord[field] = repaired;
+        }
+      }
+
+      scene.requiredBeats = (scene.requiredBeats || []).map((beat) => {
+        const sourceTurn = sanitizeBlueprintText(beat.sourceTurn, beat.mustDepict, sceneFallback) || sceneFallback;
+        const mustDepict = sanitizeBlueprintText(beat.mustDepict, beat.sourceTurn, sceneFallback) || sourceTurn;
+        return {
+          ...beat,
+          sourceTurn,
+          mustDepict,
+        };
+      });
+
+      if (scene.choicePoint) {
+        const decisionFallback = pickBlueprintSafeText(
+          this.firstConcreteRequiredBeat(scene.requiredBeats || []),
+          scene.turnContract?.turnEvent,
+          scene.description,
+          sceneFallback,
+        ) || sceneFallback;
+        const choiceDescription = sanitizeBlueprintText(
+          scene.choicePoint.description,
+          `The decision turns on ${decisionFallback}.`,
+        ) || `The decision turns on ${decisionFallback}.`;
+        scene.choicePoint.description = choiceDescription;
+        scene.choicePoint.stakes = {
+          ...scene.choicePoint.stakes,
+          want: sanitizeBlueprintText(scene.choicePoint.stakes?.want, `Pursue ${decisionFallback}.`) || `Pursue ${decisionFallback}.`,
+          cost: sanitizeBlueprintText(scene.choicePoint.stakes?.cost, `Risk losing leverage around ${decisionFallback}.`) || `Risk losing leverage around ${decisionFallback}.`,
+          identity: sanitizeBlueprintText(scene.choicePoint.stakes?.identity, 'Reveal a self-protective or self-authored posture.') || 'Reveal a self-protective or self-authored posture.',
+        };
+      }
+
+      if (scene.turnContract) {
+        scene.turnContract = {
+          ...scene.turnContract,
+          centralTurn: sanitizeBlueprintText(scene.turnContract.centralTurn, sceneFallback) || sceneFallback,
+          beforeState: sanitizeBlueprintText(scene.turnContract.beforeState, `Before the turn, ${sceneFallback}`) || `Before the turn, ${sceneFallback}`,
+          turnEvent: sanitizeBlueprintText(scene.turnContract.turnEvent, sceneFallback) || sceneFallback,
+          afterState: sanitizeBlueprintText(scene.turnContract.afterState, `After the turn, consequences remain around ${sceneFallback}.`) || `After the turn, consequences remain around ${sceneFallback}.`,
+          handoff: sanitizeBlueprintText(scene.turnContract.handoff, `Carry the visible consequence forward from ${sceneFallback}.`) || `Carry the visible consequence forward from ${sceneFallback}.`,
         };
       }
     }
@@ -3969,21 +3668,6 @@ Remember: The encounter is the heart. Design outward from it.
       .replace(/[\u0300-\u036f]/g, '');
     if (!authoredText.trim()) return undefined;
 
-    if (/\b(?:apartment|walk\s*up|counter|dm pile|brand deal|phone buzzes|are you home|coming over with herbs|4 ?am|blog|post|readership|mr midnight|80 ?000|84 ?000)\b/.test(authoredText)) {
-      return "Kylie's Lipscani Apartment";
-    }
-    if (/\bvalcescu\s+(?:club|door|side\s*entrance|velvet\s*rope|vip\s*table)\b|\b(?:club|door|side\s*entrance|velvet\s*rope|vip\s*table)\b[\s\S]{0,60}\bvalcescu\b/.test(authoredText)) {
-      return 'Vâlcescu Club';
-    }
-    if (/\blumina\b/.test(authoredText) || /\bbook\s*shop\b|\bbookshop\b|\bbookstore\b/.test(authoredText)) {
-      return 'Lumina Books';
-    }
-    if (/\brooftop\b/.test(authoredText)) {
-      return 'Rooftop Bar';
-    }
-    if (/\bcismigiu\b/.test(authoredText) || /\bgardens?\b|\bpark\b|\bwillow\b/.test(authoredText)) {
-      return 'Cișmigiu Gardens';
-    }
     if (/\bapartment\b|\bwalk\s*up\b/.test(authoredText)) {
       return currentLocation;
     }
@@ -4014,13 +3698,12 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
       this.applySceneContractsToPlannedBlueprint(blueprint, input);
+      this.repairBlueprintHygieneUnsafeText(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
-      this.repairRooftopSetupDensity(blueprint);
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
-      this.repairRooftopSetupDensity(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
 
       const unresolvedBinding = blueprint.treatmentBindingReport?.unresolved ?? [];
@@ -4068,6 +3751,13 @@ Remember: The encounter is the heart. Design outward from it.
         return {
           success: false,
           error: plannedValidation.error,
+        };
+      }
+      const plannedHygieneIssues = this.collectBlueprintHygieneIssues(blueprint);
+      if (plannedHygieneIssues.length > 0) {
+        return {
+          success: false,
+          error: plannedHygieneIssues.join('\n'),
         };
       }
 
@@ -4430,7 +4120,6 @@ REQUIREMENTS:
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
-      this.repairRooftopSetupDensity(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
 
       // Log choice point info BEFORE validation
@@ -4448,6 +4137,11 @@ REQUIREMENTS:
         console.log(`[StoryArchitect] Structural validation found ${structuralIssues.length} issue(s), retrying with feedback...`);
         this.lastStructuralFeedback = structuralIssues;
         return this.execute(input, retryCount + 1);
+      }
+
+      const hygieneIssues = this.collectBlueprintHygieneIssues(blueprint);
+      if (hygieneIssues.length > 0) {
+        throw new Error(hygieneIssues.join('\n'));
       }
 
       this.validateBlueprint(blueprint, input);
@@ -4566,11 +4260,12 @@ REQUIREMENTS:
                                hardText.includes('[StoryCircleGate]') ||
                                hardText.includes('EpisodeStoryCircleValidator');
     const isDuplicateEventError = hardText.includes('appears to restage the same high-pressure event');
+    const isBlueprintHygieneError = hardText.includes('[BlueprintContractHygiene]');
     const isParseError = hardText.includes('Failed to parse JSON response') ||
                          hardText.includes('Expected double-quoted property name') ||
                          hardText.includes('Unexpected token');
 
-    const hasHard = isChoiceDensityError || isEncounterPlanningError || isStructuralError || isDuplicateEventError || isParseError;
+    const hasHard = isChoiceDensityError || isEncounterPlanningError || isStructuralError || isDuplicateEventError || isBlueprintHygieneError || isParseError;
 
     return {
       hasHard,
@@ -5237,7 +4932,9 @@ If you don't include enough choice points, the story will be rejected as non-int
         if (typeof contract.targetEpisodeNumber === 'number' && contract.targetEpisodeNumber !== episodeNumber) {
           continue;
         }
-        if (contract.id && !inherited.has(contract.id)) inherited.set(contract.id, { ...contract });
+        for (const normalized of normalizeStoryCircleContractForSceneProse(contract)) {
+          if (normalized.id && !inherited.has(normalized.id)) inherited.set(normalized.id, { ...normalized });
+        }
       }
       scene.storyCircleBeatContracts = kept;
     }
@@ -5345,9 +5042,6 @@ If you don't include enough choice points, the story will be rejected as non-int
   }
 
   private isLikelyFutureSeasonEpisodeCircleText(text: string, input: StoryArchitectInput): boolean {
-    if (input.episodeNumber <= 1 && /\bCasa\s+Lupului|slow-burn\s+mountain|mountain\s+weekend|Radu['’]s\s+confession|Carmen\s+(?:framed|hospitalized|beaten)|black\s+rose|Hunter['’]s\s+Moon|Casa\s+Stelarum|Mountain\s+Wife|older\s+Strigoi\s+Mama|mirror\s+(?:reveal|behind\s+Victor|shows\s+Kylie)|Stela\s+reveals?\s+she\s+is\s+a\s+hunter|ask\s+The\s+Mountain\s+about\s+2015\b/i.test(text)) {
-      return true;
-    }
     const explicitEpisode = text.match(/\b(?:ep|episode)\.?\s*#?\s*(\d+)\b/i)?.[1];
     return explicitEpisode ? Number(explicitEpisode) !== input.episodeNumber : false;
   }
@@ -6258,8 +5952,8 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       // (3) Missing/partial reminderPlan — fill the established defaults.
       if (!cp.reminderPlan?.immediate || !cp.reminderPlan?.shortTerm) {
         cp.reminderPlan = {
-          immediate: cp.reminderPlan?.immediate || 'Someone reacts before the silence settles.',
-          shortTerm: cp.reminderPlan?.shortTerm || 'The aftermath stays visible in what characters offer, hide, risk, or refuse.',
+          immediate: cp.reminderPlan?.immediate || 'A silence opens where the answer used to be.',
+          shortTerm: cp.reminderPlan?.shortTerm || 'The next room has to move around what just changed.',
         };
         console.warn(`[StoryArchitect] Scene ${scene.id} major choice missing reminderPlan; filled defaults.`);
       }
@@ -6669,6 +6363,13 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       plannedEncounters: input.seasonPlanDirectives?.plannedEncounters,
     });
     return result.issues;
+  }
+
+  private collectBlueprintHygieneIssues(blueprint: EpisodeBlueprint): string[] {
+    const result = new BlueprintContractHygieneValidator().validate(blueprint);
+    return result.blockingIssues.map((issue) =>
+      `[BlueprintContractHygiene] ${issue.message} (${issue.path}${issue.sceneId ? ` scene=${issue.sceneId}` : ''}) "${issue.excerpt}"`
+    );
   }
 
   private collectDramaticStructureIssues(

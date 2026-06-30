@@ -120,6 +120,12 @@ export type {
   RelationshipValueLadderResult,
   RelationshipValueTransitionCheck,
 } from './RelationshipValueLadderValidator';
+export { SceneSpatialUnitValidator } from './SceneSpatialUnitValidator';
+export type { SceneSpatialUnitInput } from './SceneSpatialUnitValidator';
+export { RelationshipArcLedgerValidator } from './RelationshipArcLedgerValidator';
+export type { RelationshipArcLedgerInput } from './RelationshipArcLedgerValidator';
+export { ThematicSquareTurnValidator } from './ThematicSquareTurnValidator';
+export type { ThematicSquareTurnInput } from './ThematicSquareTurnValidator';
 export { SceneTurnContractValidator } from './SceneTurnContractValidator';
 export type {
   SceneTurnContractMetrics,

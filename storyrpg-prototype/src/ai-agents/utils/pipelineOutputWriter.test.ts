@@ -86,6 +86,59 @@ describe('deriveRunQualityScore', () => {
     expect(result.basis.caps.map((cap) => cap.id)).toContain('quality_council_all_checkpoints_failed');
   });
 
+  it('does not cap when optional Fusion transport fails after the base final council passes', () => {
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory(),
+      finalStoryContractReport: passingFinalStoryContract(),
+      qualityCouncilReport: {
+        enabled: true,
+        mode: 'repair-routing',
+        checkpoints: [
+          {
+            checkpoint: 'plan',
+            status: 'passed',
+            summary: 'Plan council passed.',
+            findings: [],
+            callsUsed: 1,
+          },
+          {
+            checkpoint: 'route-playtest',
+            status: 'passed',
+            summary: 'Route council passed.',
+            findings: [],
+            callsUsed: 1,
+          },
+          {
+            checkpoint: 'final',
+            status: 'passed',
+            summary: 'Final council passed.',
+            findings: [],
+            callsUsed: 1,
+          },
+          {
+            checkpoint: 'final',
+            status: 'error',
+            summary: 'Quality Council final failed: OpenRouter API error: 404 - No endpoints found that can handle the requested parameters.',
+            findings: [],
+            error: 'OpenRouter API error: 404 - No endpoints found that can handle the requested parameters.',
+            fusionUsed: true,
+            callsUsed: 1,
+          },
+        ],
+        summary: {
+          recommendedRepairRoutes: [],
+          highConfidenceFindings: [],
+          advisoryFindings: [],
+          fusionUsed: true,
+          callsUsed: 4,
+        },
+      } as any,
+    });
+
+    expect(result.score).toBeGreaterThan(90);
+    expect(result.basis.caps.map((cap) => cap.id)).not.toContain('quality_council_checkpoint_failed');
+  });
+
   it('caps below 50 when route continuity blockers remain in the final contract', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory(),

@@ -10,6 +10,12 @@ import type {
   SceneResidue,
   SceneTransitionOut,
 } from '../agents/StoryArchitect';
+import {
+  cleanBlueprintText as cleanText,
+  isBlueprintHygieneUnsafeText,
+  pickBlueprintSafeText,
+  stripStructuralTreatmentLabels,
+} from './blueprintTextHygiene';
 
 type SceneContractSource = 'turnContract' | 'requiredBeat' | 'encounter' | 'choice' | 'purpose' | 'role';
 
@@ -46,36 +52,10 @@ const GENERIC_TURN_RE =
 
 const REQUIRED_BEAT_TIERS = new Set(['signature', 'authored', 'coldopen']);
 
-function cleanText(value: unknown): string {
-  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
-}
-
-function stripStructuralTreatmentLabels(value: unknown): string {
-  const text = cleanText(value);
-  if (!text) return '';
-  const matches = Array.from(text.matchAll(/\b(hook|promise|stakes)\s*(?:—|-|:)\s*/gi));
-  if (matches.length === 0) return text;
-
-  const segments: Partial<Record<'hook' | 'promise' | 'stakes', string>> = {};
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index];
-    const label = match[1].toLowerCase() as 'hook' | 'promise' | 'stakes';
-    const start = (match.index || 0) + match[0].length;
-    const end = index + 1 < matches.length ? matches[index + 1].index || text.length : text.length;
-    const segment = text.slice(start, end).replace(/^[\s;,:-]+|[\s;,:-]+$/g, '').trim();
-    if (segment) segments[label] = segment;
-  }
-
-  const concrete = [segments.hook, segments.stakes]
-    .filter((segment): segment is string => Boolean(segment))
-    .join('; ');
-  return concrete || text.replace(/\b(?:hook|promise|stakes)\s*(?:—|-|:)\s*/gi, '').trim();
-}
-
 function firstMeaningful(values: Array<unknown>): string {
   for (const value of values) {
     const text = stripStructuralTreatmentLabels(value);
-    if (text) return text;
+    if (text && !isBlueprintHygieneUnsafeText(text)) return text;
   }
   return '';
 }
@@ -96,7 +76,7 @@ function trimSentence(value: string, max = 140): string {
 export function isGenericScenePlannerText(value: unknown): boolean {
   const text = cleanText(value);
   if (!text) return true;
-  return GENERIC_PLANNER_TEXT_RE.test(text) || GENERIC_TURN_RE.test(text);
+  return isBlueprintHygieneUnsafeText(text) || GENERIC_PLANNER_TEXT_RE.test(text) || GENERIC_TURN_RE.test(text);
 }
 
 function isConcreteRequiredBeat(beat: RequiredBeat | undefined): boolean {
@@ -178,7 +158,7 @@ function deriveConcreteTurn(scene: SceneBlueprint, context: SceneContractContext
   ]);
   return {
     source: 'role',
-    text: `${sentenceCase(roleLabel(role))} changes the protagonist's footing around ${trimSentence(pressure, 90)}.`,
+    text: `${sentenceCase(roleLabel(role))} shifts visible leverage around ${trimSentence(pressure || context.episodeTitle || 'the episode turn', 90)}.`,
   };
 }
 
@@ -213,7 +193,7 @@ function deriveStakesLayers(scene: SceneBlueprint, turn: string, personalStake: 
   return {
     material: existing.material || `The scene changes concrete access, safety, information, reputation, or options: ${turnSummary}`,
     relational: existing.relational || `Someone's trust, leverage, visibility, or distance shifts because ${turnSummary}`,
-    identity: existing.identity || `The protagonist must decide what this pressure says about who they are: ${personalSummary}`,
+    identity: existing.identity || `A self-protective or self-authored posture is tested by ${personalSummary}`,
     existential: existing.existential,
   };
 }
@@ -223,20 +203,24 @@ export function deriveSceneContract(scene: SceneBlueprint, context: SceneContrac
   const role = context.role || scene.narrativeRole;
   const sceneId = scene.id || `scene-${(context.sceneIndex ?? 0) + 1}`;
   const concreteTurn = sentenceCase(stripStructuralTreatmentLabels(text));
-  const beforeState = stripStructuralTreatmentLabels(scene.turnContract?.beforeState) && !isGenericScenePlannerText(scene.turnContract?.beforeState)
-    ? stripStructuralTreatmentLabels(scene.turnContract?.beforeState)
+  const beforeState = pickBlueprintSafeText(scene.turnContract?.beforeState)
+    && !isGenericScenePlannerText(scene.turnContract?.beforeState)
+    ? pickBlueprintSafeText(scene.turnContract?.beforeState) || ''
     : `Before the turn, ${trimSentence(firstMeaningful([scene.dramaticQuestion, scene.wantVsNeed, scene.description, context.episodeSynopsis, concreteTurn]), 130)}`;
-  const turnEvent = stripStructuralTreatmentLabels(scene.turnContract?.turnEvent) && !isGenericScenePlannerText(scene.turnContract?.turnEvent)
-    ? stripStructuralTreatmentLabels(scene.turnContract?.turnEvent)
+  const turnEvent = pickBlueprintSafeText(scene.turnContract?.turnEvent)
+    && !isGenericScenePlannerText(scene.turnContract?.turnEvent)
+    ? pickBlueprintSafeText(scene.turnContract?.turnEvent) || ''
     : concreteTurn;
-  const afterState = stripStructuralTreatmentLabels(scene.turnContract?.afterState) && !isGenericScenePlannerText(scene.turnContract?.afterState)
-    ? stripStructuralTreatmentLabels(scene.turnContract?.afterState)
-    : `After the turn, the scene leaves changed leverage, knowledge, relationship, danger, or identity pressure from: ${trimSentence(concreteTurn, 120)}`;
-  const handoff = stripStructuralTreatmentLabels(scene.turnContract?.handoff) && !isGenericScenePlannerText(scene.turnContract?.handoff)
-    ? stripStructuralTreatmentLabels(scene.turnContract?.handoff)
+  const afterState = pickBlueprintSafeText(scene.turnContract?.afterState)
+    && !isGenericScenePlannerText(scene.turnContract?.afterState)
+    ? pickBlueprintSafeText(scene.turnContract?.afterState) || ''
+    : `After the turn, visible leverage, knowledge, relationship, danger, or identity pressure remains from: ${trimSentence(concreteTurn, 120)}`;
+  const handoff = pickBlueprintSafeText(scene.turnContract?.handoff)
+    && !isGenericScenePlannerText(scene.turnContract?.handoff)
+    ? pickBlueprintSafeText(scene.turnContract?.handoff) || ''
     : context.nextSceneId
-      ? `Hand forward to ${context.nextSceneId} through the immediate consequence of this changed state.`
-      : 'Close the episode scene with the visible consequence of the changed state.';
+      ? `Hand forward to ${context.nextSceneId} through the immediate visible consequence.`
+      : 'Close the episode scene with the visible consequence.';
   const turnSource: SceneTurnContract['source'] = source === 'turnContract'
     ? scene.turnContract?.source || 'planner'
     : source === 'requiredBeat'
@@ -258,7 +242,7 @@ export function deriveSceneContract(scene: SceneBlueprint, context: SceneContrac
   const title = deriveConcreteSceneName(scene, { concreteTurn });
   const personalStake = cleanText(scene.personalStake)
     || cleanText(scene.choicePoint?.stakes?.identity)
-    || `The protagonist risks a changed identity, relationship, access, or future option because ${trimSentence(concreteTurn, 120)}`;
+    || `A relationship, access point, identity posture, or future option is at risk because ${trimSentence(concreteTurn, 120)}`;
   const themePressure = cleanText(scene.themePressure)
     || cleanText(context.episodeTheme)
     || `The scene tests what the protagonist will accept, refuse, reveal, or protect under pressure.`;
@@ -267,7 +251,7 @@ export function deriveSceneContract(scene: SceneBlueprint, context: SceneContrac
     ? scene.residue
     : [{
         type: deriveResidueType(concreteTurn),
-        description: `This scene leaves visible residue: ${trimSentence(afterState, 150)}`,
+    description: `This scene leaves visible consequence: ${trimSentence(afterState, 150)}`,
       }];
   const transitionOut: SceneTransitionOut[] = context.nextSceneId
     ? (scene.transitionOut && scene.transitionOut.length > 0
@@ -288,13 +272,13 @@ export function deriveSceneContract(scene: SceneBlueprint, context: SceneContrac
   const sequenceIntent: NarrativeSequenceIntent = {
     ...(scene.sequenceIntent || {}),
     sequenceId: scene.sequenceIntent?.sequenceId || `${sceneId}-sequence-1`,
-    objective: stripStructuralTreatmentLabels(scene.sequenceIntent?.objective) || stripStructuralTreatmentLabels(scene.dramaticQuestion) || `Move the scene from pressure into a changed state around ${trimSentence(concreteTurn, 90)}.`,
-    activity: stripStructuralTreatmentLabels(scene.sequenceIntent?.activity) || `Kylie notices what changes in the room, in her body, and in the way people answer her.`,
-    obstacle: stripStructuralTreatmentLabels(scene.sequenceIntent?.obstacle) || stripStructuralTreatmentLabels(scene.conflictEngine) || `The current pressure resists an easy answer.`,
-    startState: stripStructuralTreatmentLabels(scene.sequenceIntent?.startState) || beforeState,
-    turningPoint: stripStructuralTreatmentLabels(scene.sequenceIntent?.turningPoint) || concreteTurn,
-    endState: stripStructuralTreatmentLabels(scene.sequenceIntent?.endState) || afterState,
-    visualThread: stripStructuralTreatmentLabels(scene.sequenceIntent?.visualThread) || `Track the visible residue of ${trimSentence(title, 70)}.`,
+    objective: pickBlueprintSafeText(scene.sequenceIntent?.objective, scene.dramaticQuestion) || `Move the scene from pressure into visible consequence around ${trimSentence(concreteTurn, 90)}.`,
+    activity: pickBlueprintSafeText(scene.sequenceIntent?.activity) || `The room, the body, and the way people answer all register the turn.`,
+    obstacle: pickBlueprintSafeText(scene.sequenceIntent?.obstacle, scene.conflictEngine) || `The current pressure resists an easy answer.`,
+    startState: pickBlueprintSafeText(scene.sequenceIntent?.startState) || beforeState,
+    turningPoint: pickBlueprintSafeText(scene.sequenceIntent?.turningPoint) || concreteTurn,
+    endState: pickBlueprintSafeText(scene.sequenceIntent?.endState) || afterState,
+    visualThread: pickBlueprintSafeText(scene.sequenceIntent?.visualThread) || `Track the visible consequence of ${trimSentence(title, 70)}.`,
     mechanicThread: scene.sequenceIntent?.mechanicThread || residue[0]?.type,
   };
 

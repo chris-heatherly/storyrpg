@@ -20,11 +20,16 @@ function getCatalogSourceKey(entry: StoryCatalogEntry): string {
   const artifactState = entry.imageArtifacts
     ? `refs:${entry.imageArtifacts.hasSeasonReferences ? 1 : 0}:art:${entry.imageArtifacts.hasEpisodeArt ? 1 : 0}`
     : 'refs:?:art:?';
+  const episodeState = [
+    entry.episodeCount ?? entry.episodes.length,
+    ...entry.episodes.map((episode) => `${episode.number}:${episode.id}:${episode.title}`),
+  ].join(',');
   return [
     entry.fullStoryUrl || entry.outputDir || `story:${entry.id}`,
     entry.updatedAt || '',
     entry.imagesStatus || '',
     artifactState,
+    episodeState,
   ].join('|');
 }
 

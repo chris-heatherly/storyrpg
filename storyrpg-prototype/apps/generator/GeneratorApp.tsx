@@ -11,7 +11,7 @@ import { seasonPlanStore } from '../../src/stores/seasonPlanStore';
 import { GeneratorScreen } from '../../src/screens/GeneratorScreen';
 import { LoginScreen, SettingsScreen, VisualizerScreen } from '../../src/screens';
 import { allStories as builtInStories } from '../../src/data/stories';
-import type { MediaSetupTarget, Story, StoryCatalogEntry } from '../../src/types';
+import type { MediaSetupTarget, Story, StoryCatalogEntry, StorySetupCatalogEntry } from '../../src/types';
 import { TERMINAL } from '../../src/theme';
 import { PROXY_CONFIG } from '../../src/config/endpoints';
 import { pipelineClient, type PipelineHandle } from '../../src/ai-agents/pipeline/PipelineClient';
@@ -210,6 +210,7 @@ function GeneratorAppContent() {
   const [videoGeneratingStoryId, setVideoGeneratingStoryId] = useState<string | null>(null);
   const [imageGeneratingStoryId, setImageGeneratingStoryId] = useState<string | null>(null);
   const [seasonContinuations, setSeasonContinuations] = useState<Record<string, SeasonContinuation>>({});
+  const [storySetups, setStorySetups] = useState<StorySetupCatalogEntry[]>([]);
   const videoPipelineRef = useRef<PipelineHandle | null>(null);
 
   const {
@@ -278,12 +279,40 @@ function GeneratorAppContent() {
   useEffect(() => {
     const rebuildSeasonContinuations = () => {
       const next: Record<string, SeasonContinuation> = {};
+      const setups: StorySetupCatalogEntry[] = [];
       const addContinuationKey = (key: string | null | undefined, continuation: SeasonContinuation) => {
         const normalized = normalizeContinuationKey(key);
         if (normalized) next[normalized] = continuation;
       };
 
       for (const saved of seasonPlanStore.getPlans()) {
+        const sourceCanon = saved.sourceAnalysis?.sourceCanon;
+        const identity = sourceCanon?.facts.find((fact) => fact.domain === 'story' && fact.kind === 'identity')?.value as any;
+        const promise = sourceCanon?.facts.find((fact) => fact.domain === 'story' && fact.kind === 'promise')?.value as any;
+        const stepStatus = saved.canonWizardState?.stepStatus;
+        const approvedStepCount = stepStatus
+          ? Object.values(stepStatus).filter((status) => status === 'approved').length
+          : 0;
+        const selectedEpisodes = saved.canonWizardState?.selectedEpisodes?.length
+          ? saved.canonWizardState.selectedEpisodes
+          : saved.plan.episodes
+              .filter((episode) => episode.status === 'selected' || isSeasonEpisodeGenerated(episode))
+              .map((episode) => episode.episodeNumber);
+
+        setups.push({
+          setupId: sourceCanon?.canonId || saved.plan.id,
+          planId: saved.plan.id,
+          title: identity?.title || saved.sourceAnalysis?.sourceTitle || saved.plan.seasonTitle || 'Untitled Story Setup',
+          genre: identity?.genre || saved.sourceAnalysis?.genre || 'unknown',
+          tone: identity?.tone || saved.sourceAnalysis?.tone,
+          synopsis: promise?.logline || promise?.highConceptPitch || saved.plan.sourceTitle || saved.sourceAnalysis?.sourceTitle || '',
+          totalEpisodes: saved.plan.totalEpisodes,
+          selectedEpisodes,
+          approvedStepCount,
+          status: approvedStepCount === 3 ? 'approved' : approvedStepCount > 0 ? 'needs_review' : 'draft',
+          updatedAt: saved.plan.updatedAt ? String(saved.plan.updatedAt) : undefined,
+        });
+
         const nextEpisode = saved.plan.episodes
           .filter((episode) => !isSeasonEpisodeGenerated(episode))
           .sort((a, b) => a.episodeNumber - b.episodeNumber)[0];
@@ -307,6 +336,7 @@ function GeneratorAppContent() {
         }
       }
       setSeasonContinuations(next);
+      setStorySetups(setups.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))));
     };
 
     seasonPlanStore.initialize()
@@ -399,6 +429,14 @@ function GeneratorAppContent() {
     openGenerator(undefined, planId);
   }, [openGenerator]);
 
+  const handleDeleteStoryMeta = useCallback(async (planId: string) => {
+    await seasonPlanStore.deletePlan(planId);
+    track('story setup deleted', { plan_id: planId });
+    if (generatorSeasonPlanId === planId) {
+      setGeneratorSeasonPlanId(undefined);
+    }
+  }, [generatorSeasonPlanId]);
+
   const handleStoryArtifactsChanged = useCallback(async (storyEntry: StoryCatalogEntry) => {
     await loadStories();
     const freshStory = await fetchStoryByCatalogEntry(storyEntry, builtInStories);
@@ -416,6 +454,36 @@ function GeneratorAppContent() {
   const handleOpenVideoSetup = useCallback((target: MediaSetupTarget) => {
     openGenerator(undefined, undefined, 'video', target);
   }, [openGenerator]);
+
+  const handleDeleteStoryEpisode = useCallback(async (story: StoryCatalogEntry, target: MediaSetupTarget) => {
+    if (Platform.OS !== 'web') return;
+    try {
+      const response = await fetch(`${PROXY_CONFIG.getProxyUrl()}/stories/${encodeURIComponent(story.id)}/episodes/${encodeURIComponent(String(target.episodeNumber))}`, {
+        method: 'DELETE',
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result?.success === false) {
+        throw new Error(result?.error || `Episode ${target.episodeNumber} was not deleted.`);
+      }
+
+      await loadStories();
+      const freshStory = await fetchStoryByCatalogEntry(story, builtInStories);
+      if (freshStory) {
+        upsertStory(freshStory);
+        if (currentStory?.id === freshStory.id) {
+          updateCurrentStory(freshStory);
+        }
+      } else {
+        removeStory(story.id);
+      }
+      track('generated episode deleted', {
+        story_id: story.id,
+        episode_number: target.episodeNumber,
+      });
+    } catch (error) {
+      Alert.alert('Delete Episode Failed', error instanceof Error ? error.message : 'Failed to delete the episode.');
+    }
+  }, [currentStory?.id, loadStories, removeStory, updateCurrentStory, upsertStory]);
 
   const handleGenerateVideos = useCallback(async (target: MediaSetupTarget) => {
     if (videoGeneratingStoryId) return;
@@ -669,12 +737,15 @@ function GeneratorAppContent() {
       {route === 'home' ? (
         <SettingsScreen
           stories={stories}
+          storySetups={storySetups}
           authUser={authUser}
           onSignOut={() => { void onSignOut(); }}
           onBack={() => openGenerator()}
           onOpenVisualizer={handleOpenVisualizer}
           onOpenGenerator={(jobId?: string) => openGenerator(jobId)}
           onDeleteStory={handleDeleteStory}
+          onDeleteStoryMeta={handleDeleteStoryMeta}
+          onDeleteStoryEpisode={handleDeleteStoryEpisode}
           onRenameStory={handleRenameStory}
           onGenerateVideos={handleOpenVideoSetup}
           onGenerateImages={handleOpenImageSetup}

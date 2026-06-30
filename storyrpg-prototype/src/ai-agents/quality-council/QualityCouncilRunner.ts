@@ -95,7 +95,7 @@ export class QualityCouncilRunner {
 
   private async runAgent(
     checkpoint: QualityCouncilCheckpointReport['checkpoint'],
-    agent: { review(input: QualityCouncilAgentInput): Promise<{ success: boolean; data?: { summary: string; findings: any[] }; rawResponse?: string; error?: string }> } | undefined,
+    agent: { review(input: QualityCouncilAgentInput): Promise<{ success: boolean; data?: { summary: string; findings: any[] }; rawResponse?: string; error?: string; metadata?: Record<string, unknown> }> } | undefined,
     input: QualityCouncilAgentInput,
     fusionUsed = false,
   ): Promise<void> {
@@ -107,13 +107,26 @@ export class QualityCouncilRunner {
     this.emit?.({ type: 'debug', phase: 'quality_council', message: `Quality Council ${checkpoint}${fusionUsed ? ' Fusion' : ''} review started.` });
     const result = await agent.review(input);
     const findings = result.data?.findings || [];
+    const diagnostics = result.metadata?.councilParseDiagnostics as {
+      parseStatus?: 'ok' | 'recovered' | 'raw_findings_dropped' | 'error';
+      parseError?: string;
+      rawFindingCountEstimate?: number;
+      droppedFindingCount?: number;
+    } | undefined;
+    const parserFailedClosed = result.success
+      && findings.length === 0
+      && (diagnostics?.parseStatus === 'raw_findings_dropped' || diagnostics?.parseStatus === 'error');
     this.reports.push({
       checkpoint,
-      status: result.success ? (findings.length > 0 ? 'findings' : 'passed') : 'error',
+      status: parserFailedClosed ? 'error' : result.success ? (findings.length > 0 ? 'findings' : 'passed') : 'error',
       summary: result.data?.summary || result.error || 'Quality Council review completed.',
       findings,
+      parseStatus: diagnostics?.parseStatus,
+      parseError: diagnostics?.parseError,
+      rawFindingCountEstimate: diagnostics?.rawFindingCountEstimate,
+      droppedFindingCount: diagnostics?.droppedFindingCount,
       rawResponse: result.rawResponse,
-      error: result.error,
+      error: parserFailedClosed ? diagnostics?.parseError : result.error,
       fusionUsed,
       callsUsed: 1,
     });

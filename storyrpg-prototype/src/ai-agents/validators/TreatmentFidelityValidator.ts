@@ -247,20 +247,8 @@ function collectCriticalSourceAnchors(sourceText: string | undefined): Array<{ l
   // places, codenames, and authored numeric promises. Keep this conservative
   // so the final-story gate catches identity drift without requiring every
   // capitalized phrase from a treatment to appear verbatim.
-  for (const value of [
-    'Dating After Dusk',
-    'Daniel Hayes',
-    'Sadie',
-    'Lumina Books',
-    'Mr. Midnight',
-    'The Mountain',
-    'Vâlcescu Club',
-    'Cismigiu',
-    'Cișmigiu',
-    'rose quartz',
-  ]) {
-    addIfPresent('source anchor', value);
-  }
+  const titleCaseAnchors = sourceText.match(/\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,3}\b/g) ?? [];
+  for (const value of titleCaseAnchors) addIfPresent('source anchor', value);
 
   for (const match of sourceText.matchAll(/\b(?:\d{1,3},\d{3}|\d+K)\b/g)) {
     const value = match[0];

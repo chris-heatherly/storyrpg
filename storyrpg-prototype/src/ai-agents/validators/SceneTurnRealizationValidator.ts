@@ -137,7 +137,7 @@ function storyCircleContractsFor(scene: Scene, planned?: PlannedScene): StoryCir
   const byId = new Map<string, StoryCircleBeatRealizationContract>();
   for (const contract of planned?.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
   for (const contract of scene.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
-  return Array.from(byId.values());
+  return Array.from(byId.values()).filter((contract) => contract.requiredRealization.includes('final_prose'));
 }
 
 function arcPressureContractsFor(scene: Scene, episodeNumber: number, planned?: PlannedScene): ArcPressureTreatmentContract[] {
@@ -149,6 +149,7 @@ function arcPressureContractsFor(scene: Scene, episodeNumber: number, planned?: 
   for (const contract of sourceContracts) byId.set(contract.id, contract);
   return Array.from(byId.values()).filter((contract) =>
     isSceneBoundArcPressureKind(contract.contractKind)
+    && contract.requiredRealization.includes('final_prose')
     && arcPressureContractTargetsEpisode(contract, episodeNumber)
     && (contract.targetSceneIds.length === 0 || contract.targetSceneIds.includes(scene.id))
   );

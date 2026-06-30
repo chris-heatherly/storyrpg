@@ -192,13 +192,13 @@ export function extractCompoundClauses(moment: string, stopwords: Set<string>): 
     : /\s*(?:;|,|\band\b)\s*/i;
 
   const clauses = listSource
-    .replace(/([.!?])\s+(?=(?:She|He|They|The|A|An|By|Kylie|Victor|Mika|Stela|Ileana|Radu|Sadie)\b)/g, '$1|CLAUSE|')
-    .replace(/,\s+and\s+(?=(?:the|a|an|Kylie|Victor|Mika|Stela|Ileana|Radu|Sadie)\b)/gi, '|CLAUSE|')
+    .replace(/([.!?])\s+(?=(?:She|He|They|The|A|An|By|[A-Z][a-z]+)\b)/g, '$1|CLAUSE|')
+    .replace(/,\s+and\s+(?=(?:the|a|an|[A-Z][a-z]+)\b)/gi, '|CLAUSE|')
     .split(splitPattern)
     .flatMap((clause) => clause.split('|CLAUSE|'))
     .map((clause) => clause
       .replace(/^\s*(?:and|or|including|include|includes|collects?|shows?|depicts?)\s+/i, '')
-      .replace(/^\s*[^—:]{2,60}\s+—\s+(?=\b(?:the|a|an|kylie|victor|mika|stela|ileana|radu|sadie)\b)/i, '')
+      .replace(/^\s*[^—:]{2,60}\s+—\s+(?=\b(?:the|a|an|[a-z][a-z]+)\b)/i, '')
       .replace(/^[\s:—-]+|[\s.]+$/g, '')
       .trim())
     .filter((clause) => contentTokensForRealization(clause, stopwords).length >= 2);

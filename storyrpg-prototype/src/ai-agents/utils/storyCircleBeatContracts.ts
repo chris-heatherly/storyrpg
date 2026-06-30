@@ -44,6 +44,7 @@ const BEAT_LABELS: Record<StoryCircleBeat, RegExp[]> = {
 
 const STATE_CHANGE_RE =
   /\b(goes viral|go viral|skips? a day|genre changes?|changes?|reveals?|confesses?|confession|offers?|frames?|hospitalized|turns?|dies?|dark|saved?|rescued?|runs?|walks? out|chooses?|choice|ends?|final post|dawn|truths?|mirror|contract|freed|forgiven|surrender|refuse|humanity|voice)\b/i;
+const ACTION_VERB_RE = /\b(?:accepts?|adopts?|arrives?|asks?|assaults?|attacks?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|finds?|follows?|forms?|gathers?|gives?|hands?|interrupts?|kisses?|lands?|launches?|leaps?|leaves?|names?|offers?|opens?|pins?|presses?|publishes?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|turns?|unpacks?|vanishes?|walks?|warns?|writes?)\b/i;
 
 export interface EpisodeCircleContractScene {
   id: string;
@@ -104,6 +105,7 @@ function eventAtoms(text: string): string[] {
   const atoms = text
     .replace(/\([^)]*\bEp(?:isode)?\.?\s*#?\s*\d+[^)]*\)/gi, '')
     .replace(/\b(Mr|Mrs|Ms|Dr)\./g, '$1')
+    .replace(/^\s*[^.!?\n:]{1,160}:\s+/, '')
     .split(/\s*(?:→|;|\.|\band then\b|\bwhile\b|\bbut\b)\s*/i)
     .flatMap(expandCompositeEventAtom)
     .map((part) => part.trim().replace(/^[-–—:,]+|[-–—:,]+$/g, '').trim())
@@ -111,10 +113,51 @@ function eventAtoms(text: string): string[] {
   return dedupe(atoms).slice(0, 8);
 }
 
+function protectQuotedCommas(text: string): string {
+  return text.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (match) => match.replace(/,/g, '__COMMA__'));
+}
+
+function restoreQuotedCommas(text: string): string {
+  return text.replace(/__COMMA__/g, ',');
+}
+
+function splitSubjectActionSeries(text: string): string[] {
+  const raw = protectQuotedCommas(text)
+    .replace(/^\s*(?:and|then)\s+/i, '')
+    .split(/\s*,\s*|\s+\band\s+/i)
+    .map((part) => restoreQuotedCommas(part).trim().replace(/^(?:and|then)\s+/i, ''))
+    .filter((part) => treatmentFieldTokens(part).length >= 3);
+  if (raw.length < 2) return [text.trim()].filter(Boolean);
+
+  const firstVerb = ACTION_VERB_RE.exec(raw[0]);
+  if (!firstVerb || firstVerb.index <= 0) return [text.trim()].filter(Boolean);
+  const subject = raw[0].slice(0, firstVerb.index).trim();
+  if (subject.length < 2 || subject.length > 90) return [text.trim()].filter(Boolean);
+  let actionPrefixEnd = 1;
+  while (actionPrefixEnd < raw.length && ACTION_VERB_RE.test(raw[actionPrefixEnd])) {
+    actionPrefixEnd++;
+  }
+  if (actionPrefixEnd < 2) return [text.trim()].filter(Boolean);
+
+  const actionParts = raw.slice(0, actionPrefixEnd);
+  const trailingDescription = raw.slice(actionPrefixEnd).join(', ');
+  if (trailingDescription) {
+    actionParts[actionParts.length - 1] = `${actionParts[actionParts.length - 1]}, ${trailingDescription}`;
+  }
+
+  const parts = actionParts.map((part, index) => {
+    if (index === 0) return part;
+    return `${subject} ${part}`;
+  });
+  return parts.length > 1 ? parts : [text.trim()].filter(Boolean);
+}
+
 function expandCompositeEventAtom(atom: string): string[] {
   const text = atom.trim().replace(/\s+/g, ' ');
   const normalized = text.toLowerCase();
   const expanded: string[] = [];
+  const actionSeries = splitSubjectActionSeries(text);
+  if (actionSeries.length > 1) expanded.push(...actionSeries);
 
   if (/\barrives?\s+in\s+bucharest\b/.test(normalized) && /\bdusk club\b/.test(normalized)) {
     const arrival = text.match(/\b(?:she|kylie)\s+arrives?\s+in\s+bucharest\b[\s\S]*?(?=,\s*(?:and\s+)?gathers?\b|\s+and\s+gathers?\b|$)/i)?.[0];
@@ -212,10 +255,26 @@ export function buildStoryCircleBeatContractsForPlan(
 }
 
 function requiredEpisodeRealizationFor(beat: StoryCircleBeat, sourceText: string): StoryCircleBeatRealizationTarget[] {
+  if (isAggregateEpisodeCircleSource(sourceText)) {
+    return ['season_plan', 'scene_turn'];
+  }
   const targets: StoryCircleBeatRealizationTarget[] = ['scene_turn', 'final_prose'];
   if (beat === 'return' || beat === 'change') targets.push('episode_ending');
   if (STATE_CHANGE_RE.test(sourceText)) targets.push('mechanic_pressure');
   return dedupe(targets) as StoryCircleBeatRealizationTarget[];
+}
+
+function isAggregateEpisodeCircleSource(sourceText: string): boolean {
+  const atoms = eventAtoms(sourceText);
+  const tokenCount = treatmentFieldTokens(sourceText).length;
+  const hasRolePrefix = /^\s*[^.!?\n:]{1,120}:\s+/.test(sourceText);
+  const hasEpisodeCircleInstruction =
+    /^(?:in\s+["“][^"”]+["”],?\s*)?(?:establish|name|frame|showcase|dramatize)\b/i.test(sourceText)
+    && /\b(?:episode|known world|current normal|before disruption|ordinary world|opening promise|core value|episode pressure)\b/i.test(sourceText);
+  const hasMultipleObligations = atoms.length >= 2 || sourceText.split(/\s*,\s*/).length >= 3;
+  return atoms.length >= 4
+    || (hasRolePrefix && tokenCount >= 35)
+    || (hasEpisodeCircleInstruction && hasMultipleObligations && tokenCount >= 16);
 }
 
 function orderedEpisodeScenes(scenes: EpisodeCircleContractScene[]): EpisodeCircleContractScene[] {
@@ -336,16 +395,32 @@ function eventCueScore(sourceText: string, targetText: string): number {
     && /\barrival\b|\barrives?\b|\bbucharest\b|\btwo suitcases\b|\bgrandmother'?s address\b/.test(target)) {
     score += 1.2;
   }
+  if (/\b(?:arrives?|arrival|lands?|unpacks?|bags?|suitcases?|old address|new address|port city|new city)\b/.test(source)
+    && /\b(?:arrives?|arrival|lands?|unpacks?|bags?|suitcases?|old address|new address|port city|new city)\b/.test(target)) {
+    score += 1.2;
+  }
   if (/\bdusk club\b|\bnegronis?\b/.test(source)
     && /\bdusk club\b|\bnegronis?\b|\brooftop\b|\bclub\b/.test(target)) {
     score += 1.2;
   }
-  if (/\bstaged rescue\b|\brescues?\b|\bmr\.?\s+midnight\b/.test(source)
-    && /\bstaged rescue\b|\brescues?\b|\battack\b|\bcismigiu\b|\bpark\b|\bmr\.?\s+midnight\b/.test(target)) {
+  if (/\b(?:new circle|friend group|allies|bitter drinks|table|booth|bar|gathers?)\b/.test(source)
+    && /\b(?:new circle|friend group|allies|bitter drinks|table|booth|bar|gathers?)\b/.test(target)) {
+    score += 1.2;
+  }
+  if (/\bstaged rescue\b|\brescues?\b|\battack\b/.test(source)
+    && /\bstaged rescue\b|\brescues?\b|\battack\b|\bpark\b|\bgarden\b|\balley\b|\bstreet\b/.test(target)) {
+    score += 1.2;
+  }
+  if (/\b(?:staged rescue|rescues?|attack|attacked|threat|ambush)\b/.test(source)
+    && /\b(?:staged rescue|rescues?|attack|attacked|threat|ambush|park|garden|alley|street)\b/.test(target)) {
     score += 1.2;
   }
   if (/\bviral\b|\bpost\b|\bblog\b|\breadership\b|\bbyline\b/.test(source)
     && /\bviral\b|\bpost\b|\bblog\b|\breadership\b|\bbyline\b|\baftermath\b/.test(target)) {
+    score += 1.2;
+  }
+  if (/\b(?:viral|publication|anonymous post|public post|readership|byline|public name)\b/.test(source)
+    && /\b(?:viral|publication|anonymous post|public post|readership|byline|aftermath|public name)\b/.test(target)) {
     score += 1.2;
   }
   return score;
@@ -391,18 +466,21 @@ function requiredBeatFor(contract: StoryCircleBeatRealizationContract, scene: Pl
   };
 }
 
-function sceneLocalContractsFor(contract: StoryCircleBeatRealizationContract): StoryCircleBeatRealizationContract[] {
-  if (contract.blockingLevel !== 'treatment' || !contract.requiredRealization.includes('final_prose')) {
-    return shouldHardBindSceneContract(contract) ? [contract] : [];
-  }
+export function normalizeStoryCircleContractForSceneProse(contract: StoryCircleBeatRealizationContract): StoryCircleBeatRealizationContract[] {
+  if (!contract.requiredRealization.includes('final_prose')) return shouldHardBindSceneContract(contract) ? [contract] : [];
 
-  const atoms = dedupe(contract.eventAtoms?.length ? contract.eventAtoms : eventAtoms(contract.sourceText));
-  const concreteAtoms = atoms.filter((atom) => shouldHardBindSceneContract({
+  const recomputedAtoms = eventAtoms(contract.sourceText);
+  const atoms = dedupe(recomputedAtoms.length > 0 ? recomputedAtoms : contract.eventAtoms ?? []);
+  const hardBindableAtoms = atoms.filter((atom) => shouldHardBindSceneContract({
     ...contract,
     sourceText: atom,
     eventAtoms: [atom],
     stateChange: STATE_CHANGE_RE.test(atom) ? atom : undefined,
   }));
+  const actionAtoms = atoms.filter((atom) => ACTION_VERB_RE.test(atom));
+  const concreteAtoms = contract.blockingLevel === 'treatment'
+    ? dedupe([...hardBindableAtoms, ...actionAtoms])
+    : atoms;
 
   if (concreteAtoms.length > 0 && (concreteAtoms.length > 1 || !shouldHardBindSceneContract(contract))) {
     return concreteAtoms.map((atom, index) => ({
@@ -443,7 +521,7 @@ export function assignStoryCircleBeatContractsToScenes(
 ): StoryCircleBeatRealizationContract[] {
   const contracts = buildStoryCircleBeatContractsForPlan(plan);
   for (const contract of contracts) {
-    const sceneContracts = sceneLocalContractsFor(contract);
+    const sceneContracts = normalizeStoryCircleContractForSceneProse(contract);
     if (sceneContracts.length === 0) {
       contract.targetSceneIds = [];
       continue;

@@ -140,6 +140,21 @@ describe('canonicalizeProtagonistPronouns — reflexive in ambiguous sentence (g
     expect(beat0(story).description).toContain('his glass');
     expect(result.ambiguous.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('does not rewrite a male NPC pronoun when only the NPC first name appears with a protagonist possessive', () => {
+    const story = storyWith(
+      [{ name: 'Victor Valcescu', pronouns: 'he/him' }],
+      [{
+        id: 'b1',
+        visualMoment: 'Victor stands just outside the light of Kylie\'s apartment building entrance, looking down at her as he says her name.',
+      }],
+    );
+    const result = canonicalizeProtagonistPronouns(story, KYLIE, otherGenderNamesFromStory(story, 'she/her'));
+
+    expect(beat0(story).visualMoment).toBe('Victor stands just outside the light of Kylie\'s apartment building entrance, looking down at her as he says her name.');
+    expect(result.repaired).toBe(0);
+    expect(result.ambiguous.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe('otherGenderNamesFromStory', () => {
@@ -149,6 +164,14 @@ describe('otherGenderNamesFromStory', () => {
       [{ id: 'b1', text: '' }],
     );
     expect(otherGenderNamesFromStory(story, 'she/her')).toEqual(['Victor']);
+  });
+
+  it('includes full names and first-name aliases for wrong-gender NPCs', () => {
+    const story = storyWith(
+      [{ name: 'Victor Valcescu', pronouns: 'he/him' }, { name: 'Stela Pavel', pronouns: 'she/her' }],
+      [{ id: 'b1', text: '' }],
+    );
+    expect(otherGenderNamesFromStory(story, 'she/her')).toEqual(['Victor Valcescu', 'Victor']);
   });
 });
 

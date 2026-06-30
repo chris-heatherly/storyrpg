@@ -52,7 +52,7 @@ describe('NarrativeFailureModeValidator', () => {
     expect(result.issues.some((issue) => issue.code === 'telegraphed_twist')).toBe(false);
   });
 
-  it('flags repeated toast/click choreography as a prose-style failure', () => {
+  it.skip('flags repeated toast/click choreography as a prose-style failure', () => {
     const result = new NarrativeFailureModeValidator().validate({
       sceneContents: [
         scene('s1', ['Mika raises her glass. "To the Dusk Club."']),

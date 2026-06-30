@@ -23,5 +23,7 @@ export * from './content';
 export * from './encounter';
 export * from './story';
 export * from './scenePlan';
+export * from './treatmentEvent';
+export * from './storyCanon';
 export * from './narrativeThread';
 export * from './relationshipValue';

@@ -60,7 +60,6 @@ function ReaderAppContent() {
     storyCacheRef,
     loadStories,
     loadFullStory,
-    removeStory,
   } = useStoryLibrary(builtInStories);
   const { player } = useGamePlayerState();
   const { currentStory, currentEpisode } = useGameStoryState();
@@ -243,24 +242,6 @@ function ReaderAppContent() {
     setCurrentScreen('reading');
   };
 
-  const handleDeleteStory = async (storyId: string) => {
-    removeStory(storyId);
-    try {
-      const stored = await AsyncStorage.getItem(GENERATED_STORIES_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as unknown[];
-        const filtered = parsed.filter((raw) => {
-          if (!raw || typeof raw !== 'object') return true;
-          const obj = raw as { id?: string; storyId?: string; story?: { id?: string } };
-          return obj.id !== storyId && obj.storyId !== storyId && obj.story?.id !== storyId;
-        });
-        await AsyncStorage.setItem(GENERATED_STORIES_KEY, JSON.stringify(filtered));
-      }
-    } catch (err) {
-      console.warn('[ReaderApp] Failed to remove story from local storage:', err);
-    }
-  };
-
   const handleRenameStory = (storyId: string, title: string) => {
     setStories((prev) => prev.map((story) => (
       story.id === storyId ? { ...story, title } : story
@@ -308,7 +289,6 @@ function ReaderAppContent() {
           authUser={authUser}
           onSignOut={() => { void onSignOut(); }}
           onBack={() => setCurrentScreen('home')}
-          onDeleteStory={handleDeleteStory}
           onRefreshStories={loadStories}
           isRefreshing={isRefreshing}
         />

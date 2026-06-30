@@ -1,6 +1,6 @@
 import type { AgentConfig } from '../config';
 import { AgentResponse, BaseAgent } from '../agents/BaseAgent';
-import { buildCouncilOutputSchema, normalizeCouncilOutput } from './schema';
+import { buildCouncilOutputSchema, normalizeCouncilOutputWithDiagnostics } from './schema';
 import type { CouncilAgentOutput, CouncilCheckpoint } from './types';
 
 export interface QualityCouncilAgentInput {
@@ -52,17 +52,24 @@ Rules:
         [{ role: 'user', content: prompt }],
         { jsonSchema: buildCouncilOutputSchema(`${this.checkpoint.replace(/-/g, '_')}_quality_council`) },
       );
+      const normalized = normalizeCouncilOutputWithDiagnostics(data, this.checkpoint, rawResponse);
       return {
         success: true,
-        data: normalizeCouncilOutput(data, this.checkpoint),
+        data: normalized.output,
         rawResponse,
+        metadata: { councilParseDiagnostics: normalized.diagnostics },
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      const normalized = normalizeCouncilOutputWithDiagnostics(
+        { summary: `Quality Council ${this.checkpoint} failed: ${msg}`, findings: [] },
+        this.checkpoint,
+      );
       return {
         success: false,
         error: msg,
-        data: normalizeCouncilOutput({ summary: `Quality Council ${this.checkpoint} failed: ${msg}`, findings: [] }, this.checkpoint),
+        data: normalized.output,
+        metadata: { councilParseDiagnostics: { ...normalized.diagnostics, parseStatus: 'error', parseError: msg } },
       };
     }
   }

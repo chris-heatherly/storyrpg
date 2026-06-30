@@ -204,7 +204,6 @@ function isTerseActionSummary(moment: string): boolean {
 const CONCRETE_ACTION_REQUIREMENT_TOKENS = new Set([
   'walk-home',
   'swap-shoes',
-  'american-shoes',
   'kiss-hand',
   'threshold',
   'decline-entry',
@@ -219,8 +218,6 @@ function hasConcreteActionRequirement(missing: MissingMoment): boolean {
 
 function hasUnsafeDeterministicInsertionCue(moment: string): boolean {
   const timelineText = moment
-    .replace(/\bDating After Dusk\b/g, '')
-    .replace(/\bDusk Club\b/g, '')
     .replace(/\bafter (?:a |the )?public breakup\b/ig, '')
     .replace(/\bafter (?:a |the )?(?:humiliating|cancelled|canceled) (?:engagement|breakup)\b/ig, '');
   return /\b(?:night|morning|dawn|dusk|sunset|midnight|weekend|later|earlier|before|after|next|previous|second|third|fourth|return(?:s|ed)?|again|handoff|transition|[0-9]+\s*(?:am|pm|a\.m\.|p\.m\.))\b/i

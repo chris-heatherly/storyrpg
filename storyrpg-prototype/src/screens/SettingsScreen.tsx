@@ -9,7 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import type { AuthUser } from '../services/authSession';
-import { MediaSetupTarget, StoryCatalogEntry } from '../types';
+import { MediaSetupTarget, StoryCatalogEntry, StorySetupCatalogEntry } from '../types';
 import { TERMINAL } from '../theme';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { useGenerationJobStore, GenerationJob } from '../stores/generationJobStore';
@@ -30,12 +30,15 @@ import {
 
 interface SettingsScreenProps {
   stories: StoryCatalogEntry[];
+  storySetups?: StorySetupCatalogEntry[];
   onBack: () => void;
   authUser?: AuthUser | null;
   onSignOut?: () => void;
   onOpenVisualizer: (storyId: string) => void;
   onOpenGenerator: (jobId?: string) => void; // Optional jobId to resume viewing
   onDeleteStory?: (storyId: string) => void;
+  onDeleteStoryMeta?: (planId: string) => void;
+  onDeleteStoryEpisode?: (story: StoryCatalogEntry, target: MediaSetupTarget) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (target: MediaSetupTarget) => void;
   onGenerateImages?: (target: MediaSetupTarget) => void;
@@ -52,11 +55,14 @@ interface SettingsScreenProps {
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   stories,
+  storySetups = [],
   authUser,
   onSignOut,
   onOpenVisualizer,
   onOpenGenerator,
   onDeleteStory,
+  onDeleteStoryMeta,
+  onDeleteStoryEpisode,
   onRenameStory,
   onGenerateVideos,
   onGenerateImages,
@@ -78,6 +84,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [artifactOverrides, setArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['imageArtifacts']>>>>({});
   const [episodeArtifactOverrides, setEpisodeArtifactOverrides] = useState<Record<string, Partial<NonNullable<StoryCatalogEntry['episodes'][number]['imageArtifacts']>>>>({});
   const [deletingArtifactKeys, setDeletingArtifactKeys] = useState<Set<string>>(new Set());
+  const [deletingEpisodeKeys, setDeletingEpisodeKeys] = useState<Set<string>>(new Set());
 
 	  const getArtifactOverrideKeys = (
 	    story: StoryCatalogEntry,
@@ -264,6 +271,19 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     (target ? [getEpisodeArtifactOverrideKey(story, target)] : getArtifactOverrideKeys(story, scope))
       .some((key) => deletingArtifactKeys.has(key));
 
+  const setEpisodeDeletionPending = (story: StoryCatalogEntry, target: MediaSetupTarget, pending: boolean) => {
+    const key = getEpisodeArtifactOverrideKey(story, target);
+    setDeletingEpisodeKeys((prev) => {
+      const next = new Set(prev);
+      if (pending) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const isEpisodeDeletionPending = (story: StoryCatalogEntry, target: MediaSetupTarget) =>
+    deletingEpisodeKeys.has(getEpisodeArtifactOverrideKey(story, target));
+
   const confirmDestructiveAction = (
     title: string,
     message: string,
@@ -400,6 +420,24 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     );
   };
 
+  const handleDeleteStoryEpisode = (story: StoryCatalogEntry, target: MediaSetupTarget) => {
+    const deleteEpisode = async () => {
+      setEpisodeDeletionPending(story, target, true);
+      try {
+        await onDeleteStoryEpisode?.(story, target);
+      } finally {
+        setEpisodeDeletionPending(story, target, false);
+      }
+    };
+
+    confirmDestructiveAction(
+      'Delete Episode?',
+      `This deletes generated episode ${target.episodeNumber} from the story package. Story setup metadata and other episodes stay in place.`,
+      'Delete Episode',
+      () => { void deleteEpisode(); },
+    );
+  };
+
   const handleOpenStoryFolder = async (story: StoryCatalogEntry) => {
     if (!story.outputDir) {
       Alert.alert('Folder Unavailable', 'This story does not have a local output folder.');
@@ -508,9 +546,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <StoryLibrarySection
           styles={styles}
           stories={displayStories}
+          storySetups={storySetups}
           generatedStoryIds={generatedStoryIds}
           onOpenVisualizer={onOpenVisualizer}
           onDeleteStory={onDeleteStory}
+          onDeleteStoryMeta={onDeleteStoryMeta ? (planId) => {
+            const setup = storySetups.find((candidate) => candidate.planId === planId);
+            confirmDestructiveAction(
+              'Delete Story Meta?',
+              `This deletes the saved setup/canon metadata for "${setup?.title || 'this story'}". Generated episodes remain until deleted separately.`,
+              'Delete Meta',
+              () => onDeleteStoryMeta(planId),
+            );
+          } : undefined}
+          onDeleteStoryEpisode={handleDeleteStoryEpisode}
           onRenameStory={onRenameStory}
           onGenerateVideos={onGenerateVideos}
           onGenerateImages={onGenerateImages}
@@ -527,6 +576,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           imageGeneratingStoryId={imageGeneratingStoryId}
           isDeletingSeasonReferences={(story) => isArtifactDeletionPending(story, 'season')}
           isDeletingEpisodeArt={(story, target) => isArtifactDeletionPending(story, 'episode', target)}
+          isDeletingStoryEpisode={(story, target) => isEpisodeDeletionPending(story, target)}
         />
 
         <SystemInfoSection
@@ -809,6 +859,7 @@ const styles = StyleSheet.create({
   },
   storyManageItemCompact: {
     paddingRight: 512,
+    minHeight: 144,
   },
   storyManageItemNarrow: {
     alignItems: 'stretch',

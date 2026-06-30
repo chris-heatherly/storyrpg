@@ -485,6 +485,32 @@ function joinPromptList(value: unknown, separator = ', ', fallback = ''): string
     : fallback;
 }
 
+function buildTreatmentEventPromptSections(scene: SceneBlueprint): string {
+  const mustDramatize = [
+    ...(scene.requiredBeats || []).map((beat) => beat.mustDepict).filter(Boolean),
+    ...(scene.treatmentAtomIds || []).map((id) => `Treatment atom ${id}`),
+  ];
+  const continuity = [
+    ...(scene.ownedChronologyKeys || []).map((key) => `Chronology key already owned here: ${key}`),
+    ...(scene.sourceContextIds || []).map((id) => `Context atom available for continuity only: ${id}`),
+  ];
+  const nonCopyable = scene.nonCopyableContext || [];
+  if (mustDramatize.length === 0 && continuity.length === 0 && nonCopyable.length === 0) return '';
+  return `
+### Treatment Event Boundary
+#### Must Dramatize
+${mustDramatize.length ? mustDramatize.map((item) => `- ${item}`).join('\n') : '- No treatment event atoms assigned to this scene.'}
+
+#### Continuity Context
+${continuity.length ? continuity.map((item) => `- ${item}`).join('\n') : '- None.'}
+
+#### Non-Copyable Source Context
+${nonCopyable.length ? nonCopyable.map((item) => `- ${item.id}: ${item.sourceText || item.eventText}`).join('\n') : '- None.'}
+
+Invariant: non-copyable context may shape implication, tone, and subtext, but must not be quoted, paraphrased, summarized, or turned into beat prose, choice text, visual metadata, or scene takeaways.
+`;
+}
+
 export class SceneWriter extends BaseAgent {
   private choiceDensityValidator: ChoiceDensityValidator;
   private textLimits: {
@@ -1880,6 +1906,8 @@ ${input.sceneBlueprint.themePressure ? `- **Theme Pressure**: ${input.sceneBluep
 - In action scenes, the hero or allies should be wounded, damaged, depleted, exposed, or narrowly escape a specific harm.
 - Every meaningful conflict should damage someone or something: physical injury, emotional hurt, social humiliation, relational rupture, resource loss, reputation damage, information exposure, identity pressure, moral compromise, lost leverage, increased danger, or narrowing options.
 - Preserve rests where they serve contrast, aftermath, dread, tenderness, or sharper payoff; do not force constant combat or argument.
+- Keep this scene spatially honest: it has one primary dramatic location. You may point toward a later major named location as a handoff, but do not stage arrival, access, introductions, encounters, clues, choices, or relationship turns there inside this scene.
+- If the scene moves from one major named location to another, end on the handoff before meaningful action begins in the next place. The next location needs its own scene.
 
 ### Genre-Aware Jeopardy
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
@@ -1904,7 +1932,10 @@ ${input.sceneBlueprint.relationshipPacing?.length ? `
 Write the relationship at the earned stage, not the future desired stage. Instant chemistry is allowed; instant friendship, trust, intimacy, or settled group membership is not.
 ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; allowed labels: ${joinPromptList(c.allowedLabels, ', ', 'earned current-stage labels only')}; blocked labels: ${joinPromptList(c.blockedLabels, ', ', 'unearned future-stage labels')}; evidence required: ${joinPromptList(c.requiredEvidence, '; ', 'show the on-page behavior that earns any movement')}`).join('\n')}
 - Show relationship movement through behavior: proximity, eye contact, teasing, withholding, invitation, remembered detail, vulnerability, challenge, refusal, protection, or changed access.
+- If an NPC is at unmet or first-meeting stage, do not let the protagonist text, call, DM, receive private replies from, or already have that NPC's number until the scene shows the introduction and how contact access is exchanged.
 - If a group name appears early, make it a dare, joke, invitation, or fragile beginning unless prior scenes have earned settled membership.
+- A first introduction can turn unmet into spark, but it cannot also conduct the later friendship/trust/intimacy proof. Keep first-meeting prose curious, wary, provisional, or testing unless the ledger contract explicitly permits more.
+- Treat McKee-square movement as behavior, not labels: care with agency, withheld care, active hostility, or control/coercion disguised as care. A scene that claims relationship movement must show the value turn on-page; a quiet setup scene must not imply that the relationship already moved.
 - Do not use blocked labels in narration, scene takeaways, visual metadata, relationshipDynamic, or transition/bridge prose.
 ` : ''}
 ${input.sceneBlueprint.mechanicPressure?.length ? `
@@ -1990,6 +2021,7 @@ ${input.sceneBlueprint.keyBeats
   .filter((beat) => !isAgentFacingPressureNote(beat))
   .map((beat) => `- ${stripAgentFacingPressureLabel(beat)}`)
   .join('\n')}
+${buildTreatmentEventPromptSections(input.sceneBlueprint)}
 ${buildRequiredBeatsSection(input.sceneBlueprint)}${input.sceneBlueprint.invariants?.length ? `### HOLD THESE LINES — treatment invariants (do NOT depict the negated event)
 The treatment is emphatic that these do NOT happen this episode. Do not write prose
 (or imply, in aftermath or a character's memory) that the negated event occurred:
@@ -2378,7 +2410,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
 
   private ensureBeatVisualContract(beat: GeneratedBeat): void {
     const text = (beat.text || '').trim();
-    const subject = beat.speaker || 'the protagonist';
+    const subject = beat.speaker || 'the focal character';
 
     // Derive shotType from text signals when LLM didn't set it
     if (!beat.shotType) {
@@ -2561,7 +2593,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       ...(blueprint?.keyBeats || []),
       ...beats.map((beat) => beat.text),
     ].filter(Boolean).join(' ');
-    const subject = firstBeat?.speaker || content.charactersInvolved?.[0] || 'the protagonist';
+    const subject = firstBeat?.speaker || content.charactersInvolved?.[0] || 'the focal character';
     return {
       ...(blueprint?.sequenceIntent || content.sequenceIntent || {}),
       sequenceId: blueprint?.sequenceIntent?.sequenceId || content.sequenceIntent?.sequenceId || `${content.sceneId || 'scene'}-sequence-1`,
@@ -2639,7 +2671,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     if (/(report|warn|tell|explain)/.test(lowered)) return 'make someone else understand the danger or truth';
     if (/(observe|watch|study|notice|realize)/.test(lowered)) return 'read the situation without exposing too much';
     if (/(leave|door|walk away|retreat)/.test(lowered)) return 'escape the exchange before the real feeling is exposed';
-    return `${subject} wants to shift the moment without saying everything directly`;
+    return `press for a visible change while keeping the deeper motive guarded`;
   }
 
   private deriveIntentObstacle(text: string): string {
@@ -2652,7 +2684,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
   }
 
   private deriveStatusBefore(text: string, subject: string): string {
-    if (/(enters?|arrives?|approaches?)/i.test(text)) return `${subject} enters without full control of the room`;
+    if (/(enters?|arrives?|approaches?)/i.test(text)) return 'the room has not yielded control yet';
     if (/(phone|evidence|proof|charm|key|letter)/i.test(text)) return 'the truth is still deniable';
     return 'leverage is unresolved at the start of the beat';
   }

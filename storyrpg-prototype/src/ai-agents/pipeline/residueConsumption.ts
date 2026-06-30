@@ -144,12 +144,7 @@ const FLAG_WORD_STOPLIST = new Set([
 ]);
 
 function titleWord(word: string): string {
-  if (/^cismigiu$/i.test(word)) return 'Cișmigiu';
-  if (/^mika$/i.test(word)) return 'Mika';
-  if (/^stela$/i.test(word)) return 'Stela';
-  if (/^victor$/i.test(word)) return 'Victor';
-  if (/^kylie$/i.test(word)) return 'Kylie';
-  return word;
+  return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
 function wordsForFlag(flag: string): string[] {
@@ -170,19 +165,19 @@ function flagResidueAcknowledgment(flag: string): string {
     return 'The missing notebook keeps tugging at your attention.';
   }
   if (has('bruised') || has('bruise')) {
-    const place = proper.find((word) => word === 'Cișmigiu');
+    const place = proper.find((word) => !['Bruised', 'Bruise'].includes(word));
     return place ? `The bruise from ${place} pulls when you move.` : 'The bruise still pulls when you move.';
   }
   if (has('survivor') || has('survived')) {
-    const place = proper.find((word) => word === 'Cișmigiu');
+    const place = proper.find((word) => !['Survivor', 'Survived'].includes(word));
     return place ? `Surviving ${place} has left your senses too awake.` : 'Surviving that night has left your senses too awake.';
   }
   if (has('walked') && has('home')) {
-    const person = proper.find((word) => ['Victor', 'Mika', 'Stela', 'Kylie'].includes(word));
+    const person = proper.find((word) => !['Walked', 'Home'].includes(word));
     return person ? `${person} walking you home still changes how safe the room feels.` : 'Being walked home still changes how safe the room feels.';
   }
   if (has('claimed')) {
-    const person = proper.find((word) => ['Victor', 'Mika', 'Stela', 'Kylie'].includes(word));
+    const person = proper.find((word) => word !== 'Claimed');
     return person ? `${person}'s claim on you lingers like a touch you cannot quite shake.` : 'That claim on you lingers like a touch you cannot quite shake.';
   }
   if (has('wine')) {

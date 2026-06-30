@@ -17,6 +17,7 @@ import type {
   WorldTreatmentRealizationContract,
 } from './scenePlan';
 import type { CliffhangerType } from './story';
+import type { CanonLockManifest, LockedStoryCanon } from './storyCanon';
 import type { ThemeImageSystemMotif } from './relationshipValue';
 
 // ========================================
@@ -957,6 +958,14 @@ export interface SourceMaterialAnalysis {
   analysisTimestamp: Date;
   confidenceScore: number; // 0-100, how confident the analysis is
   warnings: string[]; // Any issues or ambiguities found
+
+  /**
+   * Source-stage locked story canon. New generation must establish this before
+   * season planning. Optional only so older saved artifacts/checkpoints continue
+   * to deserialize through compatibility paths.
+   */
+  sourceCanon?: LockedStoryCanon;
+  canonLockManifest?: CanonLockManifest;
 
   // Direct language fragments from source (for authentic voice)
   directLanguageFragments?: DirectLanguageFragment[] | DirectLanguageFragmentGroups;

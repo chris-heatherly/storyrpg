@@ -49,6 +49,7 @@
     "replay:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/replay-gates.ts",
     "rollout:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/gate-rollout-status.ts",
     "corpus:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/defect-corpus/replay-corpus.ts",
+    "audit:episode": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/audit-generated-episode-vs-treatment.ts",
     "smoke:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/smoke-live.ts",
     "memory:index-project": "node scripts/memory.mjs index-project",
     "memory:index-run": "node scripts/memory.mjs index-run",

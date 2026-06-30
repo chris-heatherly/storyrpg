@@ -212,10 +212,14 @@ RULES:
 - Each Story Circle beat realization contract must become a specific scene event/state change. Hook/Plot Turn/Pinch/Midpoint/Climax/Resolution labels are not prose; stage the authored beat atoms.
 - Each arc pressure contract must become causal story movement somewhere in its target episode: the arc question is tested, the Lie facet is pressured, the midpoint reframes, the late crisis costs/narrows options, the finale answers, the handoff leaves residue, or the episode turnout changes state.
 - Each world/location contract must become staged evidence where relevant: location purpose, authored rule pressure, faction leverage, taboo/cost, or choice pressure. Do not use authored locations as generic backdrops.
+- Treat each scene as one spatial unit with exactly one primary dramatic location. A major named location change creates a new scene; the current scene may only hand off to the next location if no major introduction, relationship turn, encounter, clue reveal, or choice happens there.
+- Do not compress venue arrival, travel, exterior access, interior/social table, aftermath, and home/blog reflection into one scene. Micro-transitions such as sidewalk, hallway, threshold, car ride, or doorway can be handoff texture only.
+- A major NPC introduction must get its own on-page beat at the scene's primary location. Do not introduce one major NPC and immediately jump venue, form a group identity, exchange private contact, or advance to friendship/trust/intimacy in the same beat.
 - Every planned encounter must appear as exactly one scene with kind:"encounter" and its encounterId.
 - setsUp/paysOff reference OTHER scene ids. A setup must pay off in the SAME or a LATER episode — never earlier.
 - Use stable scene ids like "s<episode>-<n>" for standard scenes; use the encounterId for encounter scenes.
-- If a scene forms or advances a bond, author it as paced relationship movement: instant chemistry, joke, attraction, invitation, or testing is allowed; friendship, trust, intimacy, and group membership must be earned by prior scene evidence and relationship consequences.
+- If a scene forms or advances a bond, author it as paced relationship movement: instant chemistry, joke, attraction, invitation, or testing is allowed; friendship, trust, intimacy, private contact, and group membership must be earned by prior full-scene evidence, relationship choices, relationship consequences, and relationshipValueEvidence.
+- Relationship movement must have a McKee-square value turn or be explicitly quiet setup: care with agency, withheld care, active hostility, or control/coercion disguised as care. Do not ask the prose model to invent final relationship truth; plan the scene-local evidence that earns the move.
 
 BUDGET INTENT (declare the dramatic "diet" of each unit — the season balances these later):
 - Not every scene carries a player choice. Set "hasChoice": true ONLY where the scene presents a real
@@ -537,10 +541,10 @@ export function normalizeAuthoredScenePlan(
     const rawScenes = rawByEpisode.get(ep.episodeNumber);
     if (!rawScenes || rawScenes.length === 0) {
       // Gap fill: deterministic scenes for an episode the model skipped.
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
       continue;
     }
-    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger);
+    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger, plan.protagonist);
     // Floor guard: an authored episode below the structural minimum (the model
     // returned e.g. only a setup + an encounter) is too small to carry a
     // scene-graph branch and hard-aborts at branch validation downstream
@@ -549,7 +553,7 @@ export function normalizeAuthoredScenePlan(
     // skipped episode — so adequately-sized authored episodes are untouched and
     // golden parity holds (only fires when the floor is requested AND violated).
     if (normalized.length < minScenesPerEpisode) {
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
       continue;
     }
     scenesByEpisode.set(ep.episodeNumber, normalized);
@@ -619,6 +623,7 @@ function normalizeEpisodeScenes(
   ep: SeasonEpisode,
   rawScenes: RawScene[],
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
+  protagonist?: SeasonPlan['protagonist'],
 ): PlannedScene[] {
   const encountersById = new Map((ep.plannedEncounters ?? []).map((e) => [e.id, e]));
   const usedEncounterIds = new Set<string>();
@@ -729,7 +734,7 @@ function normalizeEpisodeScenes(
   // treatment-sourced run carries discrete requiredBeats + a signatureMoment
   // regardless of what the model returned (§3.2 / §5). Shared with the
   // deterministic path via the same helper.
-  bindAuthoredTurnsToScenes(ep, built, infoLedger);
+  bindAuthoredTurnsToScenes(ep, built, infoLedger, protagonist);
   promoteCoveredAuthoredEncounters(ep, built, coveredEncounterIds);
   return built;
 }

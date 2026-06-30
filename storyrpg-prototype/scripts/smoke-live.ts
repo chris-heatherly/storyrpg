@@ -19,7 +19,7 @@ import { extractMonotonicMetrics, episodeProseCorpus } from '../src/ai-agents/pi
  * failure surfaces, then THIS checker confirms the engines did their job. The checker is fully
  * offline and runs over ANY run dir, so it doubles as a regression probe against archived runs:
  *
- *   npm run smoke:check -- --run bite-me-g17      # check an archived run (substring match)
+ *   npm run smoke:check -- --run archived-run     # check an archived run (substring match)
  *   npm run smoke:check -- --run generated-stories/<dir>
  *
  * Five checks, each mapping to a Phase 0/1 engine:

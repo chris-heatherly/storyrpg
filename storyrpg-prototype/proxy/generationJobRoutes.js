@@ -601,19 +601,29 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     activeWorkers,
   } = lifecycle;
 
-  const deleteGenerationJobRecords = (jobIds) => {
+  const deleteGenerationJobRecords = (jobIds, options = {}) => {
+    const { protectActiveWorkers = false } = options;
     const ids = new Set(Array.from(jobIds).filter(Boolean));
     let jobs = loadJobs();
     const workerJobs = loadWorkerJobs();
     const checkpoints = loadCheckpoints();
     const artifacts = { deleted: [], rewritten: [] };
     const cleanedOutputDirs = new Set();
+    const skippedActiveJobIds = new Set();
 
     const jobsById = new Map([...jobs, ...workerJobs].map((job) => [job.id, job]));
     const checkpointsByJobId = new Map(checkpoints.map((checkpoint) => [checkpoint.jobId, checkpoint]));
 
     for (const jobId of ids) {
       const job = jobsById.get(jobId);
+      const active = activeWorkers.get(jobId);
+      const isLiveWorker = Boolean(active?.proc && !active.proc.killed)
+        || job?.status === 'running'
+        || job?.status === 'pending';
+      if (protectActiveWorkers && isLiveWorker) {
+        skippedActiveJobIds.add(jobId);
+        continue;
+      }
       const checkpoint = checkpointsByJobId.get(jobId);
       const outputDir = getJobOutputDir(job)
         || checkpoint?.resumeContext?.outputDirectory
@@ -630,7 +640,6 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
         console.warn(`[Proxy] Skipped artifact cleanup for job ${jobId}; unsafe outputDir: ${outputDir}`);
       }
 
-      const active = activeWorkers.get(jobId);
       if (active?.proc && !active.proc.killed) {
         try { active.proc.kill('SIGTERM'); } catch {
           // best-effort; already-dead processes throw ESRCH
@@ -646,17 +655,18 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     }
 
     const initialJobsLength = jobs.length;
-    jobs = jobs.filter((job) => !ids.has(job.id));
+    jobs = jobs.filter((job) => !ids.has(job.id) || skippedActiveJobIds.has(job.id));
     if (jobs.length !== initialJobsLength) saveJobs(jobs);
 
-    const nextWorkerJobs = workerJobs.filter((job) => !ids.has(job.id));
+    const nextWorkerJobs = workerJobs.filter((job) => !ids.has(job.id) || skippedActiveJobIds.has(job.id));
     if (nextWorkerJobs.length !== workerJobs.length) saveWorkerJobs(nextWorkerJobs);
 
-    const nextCheckpoints = checkpoints.filter((checkpoint) => !ids.has(checkpoint.jobId));
+    const nextCheckpoints = checkpoints.filter((checkpoint) => !ids.has(checkpoint.jobId) || skippedActiveJobIds.has(checkpoint.jobId));
     if (nextCheckpoints.length !== checkpoints.length) saveCheckpoints(nextCheckpoints);
 
     return {
-      deletedJobIds: Array.from(ids),
+      deletedJobIds: Array.from(ids).filter((jobId) => !skippedActiveJobIds.has(jobId)),
+      skippedActiveJobIds: Array.from(skippedActiveJobIds),
       artifacts,
     };
   };
@@ -690,7 +700,10 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const jobs = loadJobs();
     const workerJobs = loadWorkerJobs();
     const projectJobIds = collectProjectJobIds(projectId, requestedJobIds, jobs, workerJobs);
-    const result = deleteGenerationJobRecords(projectJobIds);
+    const result = deleteGenerationJobRecords(projectJobIds, { protectActiveWorkers: true });
+    if (result.skippedActiveJobIds.length > 0) {
+      console.warn(`[Proxy] Skipped active generation worker(s) during project cleanup: ${result.skippedActiveJobIds.join(', ')}`);
+    }
     console.log(`[Proxy] Deleted generation project: ${projectId} (${result.deletedJobIds.length} job record(s))`);
     res.json({ success: true, projectId, ...result });
   });

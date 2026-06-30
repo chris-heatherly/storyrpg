@@ -357,8 +357,20 @@ function sceneAlreadyCarriesStructuralBeat(scene: StorySceneLike, contract: unkn
   return needles.some((needle) => substantiallyDuplicates(needle, localText));
 }
 
+function isBroadEpisodeCircleContract(contract: unknown): boolean {
+  const record = contract as { id?: unknown; eventAtoms?: unknown };
+  return typeof record.id === 'string'
+    && record.id.startsWith('episode-circle-')
+    && Array.isArray(record.eventAtoms)
+    && record.eventAtoms.length >= 3;
+}
+
+function isEncounterScene(scene: StorySceneLike): boolean {
+  return Boolean(scene.encounter) || Boolean((scene as { isEncounter?: boolean }).isEncounter) || /^treatment-enc-/i.test(scene.id ?? '');
+}
+
 function thresholdForScene(scene: StorySceneLike, sceneIndex?: number): TreatmentDensityThreshold {
-  const isEncounter = Boolean(scene.encounter) || /^treatment-enc-/i.test(scene.id ?? '');
+  const isEncounter = isEncounterScene(scene);
   const isOpening = sceneIndex === 0 || /s\d+-1$/i.test(scene.id ?? '');
   if (isEncounter) return { hardUnits: 5, totalUnits: 7, profile: 'encounter' };
   if (isOpening) return { hardUnits: 5, totalUnits: 999, profile: 'opening' };
@@ -402,7 +414,10 @@ export function analyzeSceneTreatmentDensity(
   }
 
   const storyCircleContracts = scene.storyCircleBeatContracts ?? [];
-  const additionalStoryCircleUnits = storyCircleContracts.filter((contract) => !sceneAlreadyCarriesStructuralBeat(scene, contract)).length;
+  const additionalStoryCircleUnits = storyCircleContracts.filter((contract) =>
+    !isBroadEpisodeCircleContract(contract) &&
+    !sceneAlreadyCarriesStructuralBeat(scene, contract)
+  ).length;
   if (additionalStoryCircleUnits > 0) {
     pushObligation(obligations, 'story_circle_structural_beat', `${additionalStoryCircleUnits} Story Circle contract(s)`, 1, 1);
   }
@@ -438,7 +453,7 @@ export function analyzeSceneTreatmentDensity(
     }
   }
 
-  if (scene.choicePoint) {
+  if (scene.choicePoint && !isEncounterScene(scene)) {
     pushObligation(obligations, 'choice_pressure', scene.choicePoint.description, 1, 1);
   }
 
@@ -578,6 +593,23 @@ export class GateRepairRouter {
         return directive('blueprint_rebalance', issue, 'Continuity contradiction appears to come from authored beat ordering.');
       }
       return directive('scene_cluster_rewrite', issue, 'Continuity issues must repair local sequence context, not direct prose insertion.');
+    }
+
+    if (validator === 'RouteContinuityValidator') {
+      if (/\b(?:route_chronology_violation|route_duplicate_event|chronology|duplicate|inverts?|stages?.+after|appears to stage)\b/i.test(issueText)) {
+        return directive('blueprint_rebalance', issue, 'Route chronology or duplicate-event ownership must be repaired in the scene graph, not direct prose insertion.');
+      }
+      if (/\brole_fidelity_violation\b/i.test(issueText)) {
+        return directive('scene_cluster_rewrite', issue, 'Named role-fidelity issues need the local scene cluster to preserve cause and aftermath.');
+      }
+      return directive('diagnostic_stop', issue, 'Route continuity issue has no safe direct prose repair route.');
+    }
+
+    if (validator === 'RelationshipArcLedgerValidator') {
+      if (/\b(?:relationship choice|group-defining player choice|only permits|target(?:s|ed)?\s+\w+|before any player relationship choice|ledger-earned)\b/i.test(issueText)) {
+        return directive('episode_replan', issue, 'Relationship arc ledger mismatch requires choice/relationship architecture, not prose-only repair.');
+      }
+      return directive('blueprint_rebalance', issue, 'Relationship arc ledger issue requires relationship pacing or scene-plan correction.');
     }
 
     if (validator === 'EncounterAnchorContentValidator') {

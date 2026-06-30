@@ -52,6 +52,8 @@ export interface SeasonNarrativeState {
   episodeArcTargets: Map<number, CharacterArcTargets>;
   /** E1: season-level choice-type budget; episodes draw their slice from it. */
   choicePlan?: SeasonChoicePlan;
+  /** Post-architecture, post-rebalance per-scene choice-type contract. */
+  choiceTypesByScene?: Record<string, string>;
   /** Season skill-progression plan; per-episode targets. */
   skillPlan?: SeasonSkillPlan;
   /** State at the end of the previous episode (seeded from disk on resume). */
@@ -121,6 +123,7 @@ export interface SerializedSeasonState {
   episodeTwistPlans: Array<[number, TwistPlan]>;
   episodeArcTargets: Array<[number, CharacterArcTargets]>;
   choicePlan?: SeasonChoicePlan;
+  choiceTypesByScene?: Record<string, string>;
   skillPlan?: SeasonSkillPlan;
   priorEpisodeSnapshot?: EpisodeStateSnapshot;
 }
@@ -138,6 +141,7 @@ export function serializeSeasonState(season: SeasonNarrativeState): SerializedSe
     episodeTwistPlans: [...season.episodeTwistPlans.entries()],
     episodeArcTargets: [...season.episodeArcTargets.entries()],
     choicePlan: season.choicePlan,
+    choiceTypesByScene: season.choiceTypesByScene,
     skillPlan: season.skillPlan,
     priorEpisodeSnapshot: season.priorEpisodeSnapshot,
   };

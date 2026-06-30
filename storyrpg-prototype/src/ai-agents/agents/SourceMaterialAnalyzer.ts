@@ -64,6 +64,7 @@ import { buildBranchConsequenceContracts } from '../utils/branchConsequenceContr
 import { buildEndingRealizationContracts } from '../utils/endingRealizationContracts';
 import { buildFailureModeAuditContracts } from '../utils/failureModeAuditContracts';
 import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
+import { buildLockedStoryCanon } from '../utils/sourceCanonBuilder';
 import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import {
   BRANCH_AND_BOTTLENECK,
@@ -1602,7 +1603,7 @@ Return ONLY valid JSON.
       ],
     });
 
-    return {
+    const analysis: SourceMaterialAnalysis = {
       sourceTitle: input.title || 'Untitled',
       sourceAuthor: input.author,
       sourceFormat: treatment.isTreatment ? 'story_treatment' : ((input.sourceText || '').trim() ? 'source_material' : 'prompt'),
@@ -1678,6 +1679,18 @@ Return ONLY valid JSON.
       directLanguageFragments: normalizeDirectLanguageFragments(structure.directLanguageFragments),
       adaptationGuidance: normalizeAdaptationGuidance(structure.adaptationGuidance),
     };
+
+    const sourceCanon = buildLockedStoryCanon({
+      analysis,
+      sourceText: treatmentSourceText || input.sourceText,
+      userPrompt: input.userPrompt,
+      treatment,
+    });
+
+    analysis.sourceCanon = sourceCanon;
+    analysis.canonLockManifest = sourceCanon.lockManifest;
+
+    return analysis;
   }
 
   // Helper methods

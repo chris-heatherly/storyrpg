@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 import {
   ActivityIndicator,
   GestureResponderEvent,
@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   View,
-} from 'react-native';
+} from "react-native";
 import {
   Bot,
   ChevronRight,
@@ -26,43 +26,94 @@ import {
   StopCircle,
   Trash2,
   XCircle,
-} from 'lucide-react-native';
-import type { MediaSetupTarget, StoryCatalogEntry } from '../../types';
-import type { GenerationJob, JobStatus } from '../../stores/generationJobStore';
-import { TERMINAL } from '../../theme';
-import { APP_VERSION_LABEL } from '../../config/version';
-import { STABLE_DIFFUSION_UI_ENABLED } from '../../config/generatorLlmOptions';
-import { useGeneratorSettings } from '../../hooks/useGeneratorSettings';
-import { PipelineProgress } from '../PipelineProgress';
+} from "lucide-react-native";
+import type {
+  MediaSetupTarget,
+  StoryCatalogEntry,
+  StorySetupCatalogEntry,
+} from "../../types";
+import type { GenerationJob, JobStatus } from "../../stores/generationJobStore";
+import { TERMINAL } from "../../theme";
+import { APP_VERSION_LABEL } from "../../config/version";
+import { STABLE_DIFFUSION_UI_ENABLED } from "../../config/generatorLlmOptions";
+import { useGeneratorSettings } from "../../hooks/useGeneratorSettings";
+import { PipelineProgress } from "../PipelineProgress";
 
 type SettingsStyles = Record<string, any>;
 
 function normalizeContinuationKey(value?: string | null) {
   if (!value) return null;
-  return value.trim().toLowerCase().replace(/\/+$/, '');
+  return value.trim().toLowerCase().replace(/\/+$/, "");
 }
 
 function getStoryContinuation(
   story: StoryCatalogEntry,
-  continuations: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>,
+  continuations: Record<
+    string,
+    { planId: string; nextEpisodeNumber: number; totalEpisodes: number }
+  >,
 ) {
   const keys = [
     story.id,
     story.outputDir,
-    story.outputDir?.split('/').filter(Boolean).pop(),
+    story.outputDir?.split("/").filter(Boolean).pop(),
     story.fullStoryUrl,
     story.title,
   ];
 
   for (const key of keys) {
     const normalized = normalizeContinuationKey(key);
-    if (normalized && continuations[normalized]) return continuations[normalized];
+    if (normalized && continuations[normalized])
+      return continuations[normalized];
   }
   return undefined;
 }
 
 function getMediaTargetKey(target: MediaSetupTarget) {
   return `${target.storyId}:${target.episodeNumber}`;
+}
+
+function setupMatchesGroup(
+  setup: StorySetupCatalogEntry,
+  group: StorySeasonGroup,
+) {
+  const setupKeys = [setup.planId, setup.setupId, setup.title].map(
+    normalizeContinuationKey,
+  );
+  const groupKeys = [
+    group.continuation?.planId,
+    group.key,
+    group.title,
+    ...group.rows.flatMap((row) => [
+      row.story.id,
+      row.story.title,
+      row.story.outputDir,
+      row.story.outputDir?.split("/").filter(Boolean).pop(),
+      row.story.fullStoryUrl,
+    ]),
+  ].map(normalizeContinuationKey);
+
+  return setupKeys.some((setupKey) => setupKey && groupKeys.includes(setupKey));
+}
+
+function getStorySetupForGroup(
+  setups: StorySetupCatalogEntry[],
+  group: StorySeasonGroup,
+) {
+  const matches = setups.filter((setup) => setupMatchesGroup(setup, group));
+  if (matches.length === 0) return undefined;
+
+  const continuationPlanId = normalizeContinuationKey(
+    group.continuation?.planId,
+  );
+  return (
+    matches.find(
+      (setup) => normalizeContinuationKey(setup.planId) === continuationPlanId,
+    ) ||
+    matches.find((setup) => setup.status === "approved") ||
+    matches.find((setup) => setup.status === "needs_review") ||
+    matches[0]
+  );
 }
 
 type StoryEpisodeRow = {
@@ -82,14 +133,21 @@ type StorySeasonGroup = {
   genre: string;
   isBuiltIn: boolean;
   isGeneratedLocal: boolean;
-  continuation?: { planId: string; nextEpisodeNumber: number; totalEpisodes: number };
+  continuation?: {
+    planId: string;
+    nextEpisodeNumber: number;
+    totalEpisodes: number;
+  };
   rows: StoryEpisodeRow[];
 };
 
 function buildStorySeasonGroups(
   stories: StoryCatalogEntry[],
   generatedStoryIds: string[],
-  continuations: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>,
+  continuations: Record<
+    string,
+    { planId: string; nextEpisodeNumber: number; totalEpisodes: number }
+  >,
 ): StorySeasonGroup[] {
   const groups = new Map<string, StorySeasonGroup>();
 
@@ -100,34 +158,41 @@ function buildStorySeasonGroups(
     const existing = groups.get(seasonKey);
     const group = existing || {
       key: seasonKey,
-      title: story.title || 'Untitled',
-      genre: story.genre || 'unknown',
+      title: story.title || "Untitled",
+      genre: story.genre || "unknown",
       isBuiltIn,
       isGeneratedLocal: false,
       continuation,
       rows: [],
     };
 
-    group.isGeneratedLocal = group.isGeneratedLocal || (generatedStoryIds.includes(story.id) && !isBuiltIn);
+    group.isGeneratedLocal =
+      group.isGeneratedLocal ||
+      (generatedStoryIds.includes(story.id) && !isBuiltIn);
     group.continuation = group.continuation || continuation;
 
-    const episodes = story.episodes.length > 0
-      ? story.episodes
-      : [{
-          id: story.id,
-          number: 1,
-          title: story.title || 'Episode',
-          synopsis: story.synopsis || '',
-          coverImage: story.coverImage || '',
-        }];
+    const episodes =
+      story.episodes.length > 0
+        ? story.episodes
+        : [
+            {
+              id: story.id,
+              number: 1,
+              title: story.title || "Episode",
+              synopsis: story.synopsis || "",
+              coverImage: story.coverImage || "",
+            },
+          ];
 
     for (const episode of episodes) {
       group.rows.push({
         key: `${story.outputDir || story.id}:${episode.id || episode.number}`,
         story,
-        episodeId: episode.id || `${story.id}-episode-${episode.number || group.rows.length + 1}`,
+        episodeId:
+          episode.id ||
+          `${story.id}-episode-${episode.number || group.rows.length + 1}`,
         episodeNumber: episode.number || group.rows.length + 1,
-        episodeTitle: episode.title || story.title || 'Episode',
+        episodeTitle: episode.title || story.title || "Episode",
         episodeSynopsis: episode.synopsis || story.synopsis,
         imageArtifacts: episode.imageArtifacts,
         videoArtifacts: episode.videoArtifacts,
@@ -162,10 +227,19 @@ function SectionHeader({
     <>
       <View style={styles.sectionHeaderRow}>
         {icon}
-        <Text style={[styles.sectionTitle, titleColor ? { color: titleColor } : null]}>{title}</Text>
+        <Text
+          style={[
+            styles.sectionTitle,
+            titleColor ? { color: titleColor } : null,
+          ]}
+        >
+          {title}
+        </Text>
         {right}
       </View>
-      {description ? <Text style={styles.sectionDesc}>{description}</Text> : null}
+      {description ? (
+        <Text style={styles.sectionDesc}>{description}</Text>
+      ) : null}
     </>
   );
 }
@@ -208,7 +282,11 @@ export function GeneratorLauncherSection({
   );
 }
 
-export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles }) {
+export function GeneratorCredentialsSection({
+  styles,
+}: {
+  styles: SettingsStyles;
+}) {
   const [credentialsExpanded, setCredentialsExpanded] = React.useState(false);
   const {
     apiKey,
@@ -243,7 +321,9 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
       ? [stableDiffusionSettings.apiKey, loraTrainingSettings.apiKey]
       : []),
   ];
-  const configuredKeyCount = credentialValues.filter((value) => Boolean(value?.trim())).length;
+  const configuredKeyCount = credentialValues.filter((value) =>
+    Boolean(value?.trim()),
+  ).length;
   const credentialTotal = credentialValues.length;
 
   return (
@@ -252,8 +332,8 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
         style={[
           styles.settingCard,
           {
-            flexDirection: 'row',
-            alignItems: 'center',
+            flexDirection: "row",
+            alignItems: "center",
             gap: 12,
             marginBottom: credentialsExpanded ? 10 : 0,
           },
@@ -268,95 +348,105 @@ export function GeneratorCredentialsSection({ styles }: { styles: SettingsStyles
           <KeyRound size={18} color="white" />
         </View>
         <View style={{ flex: 1, gap: 4 }}>
-          <Text style={[styles.sectionTitle, { color: 'white' }]}>CREDENTIALS</Text>
+          <Text style={[styles.sectionTitle, { color: "white" }]}>
+            CREDENTIALS
+          </Text>
           <Text style={styles.configHint}>
-            {configuredKeyCount}/{credentialTotal} configured • stored locally for generator jobs
+            {configuredKeyCount}/{credentialTotal} configured • stored locally
+            for generator jobs
           </Text>
         </View>
         <ChevronRight
           size={18}
           color={TERMINAL.colors.muted}
-          style={{ transform: [{ rotate: credentialsExpanded ? '90deg' : '0deg' }] }}
+          style={{
+            transform: [{ rotate: credentialsExpanded ? "90deg" : "0deg" }],
+          }}
         />
       </TouchableOpacity>
 
       {credentialsExpanded ? (
         <View style={styles.settingCard}>
-        <View style={styles.credentialGrid}>
-          <Text style={styles.configHint}>
-            Provider keys are reused by story, image, video, and narration jobs. They stay in local generator storage.
-          </Text>
+          <View style={styles.credentialGrid}>
+            <Text style={styles.configHint}>
+              Provider keys are reused by story, image, video, and narration
+              jobs. They stay in local generator storage.
+            </Text>
 
-          <CredentialInput
-            styles={styles}
-            label={`ANTHROPIC API KEY ${apiKey ? '✓' : '*'}`}
-            value={apiKey}
-            onChangeText={handleApiKeyChange}
-            placeholder="sk-ant-..."
-          />
-          <CredentialInput
-            styles={styles}
-            label={`OPENAI API KEY ${openaiApiKey ? '✓' : '*'}`}
-            value={openaiApiKey}
-            onChangeText={handleOpenaiApiKeyChange}
-            placeholder="sk-proj-... used for OpenAI text and images"
-          />
-          <CredentialInput
-            styles={styles}
-            label={`GEMINI API KEY ${geminiApiKey ? '✓' : '*'}`}
-            value={geminiApiKey}
-            onChangeText={handleGeminiApiKeyChange}
-            placeholder="AIzaSy... used for Gemini text, images, and video"
-          />
-          <CredentialInput
-            styles={styles}
-            label={`OPENROUTER API KEY ${openRouterApiKey ? '✓' : '*'}`}
-            value={openRouterApiKey}
-            onChangeText={handleOpenRouterApiKeyChange}
-            placeholder="sk-or-... routes to DeepSeek, Grok, Mistral, Qwen, etc."
-          />
-          <CredentialInput
-            styles={styles}
-            label={`ATLAS CLOUD API KEY ${atlasCloudApiKey ? '✓' : 'OPTIONAL'}`}
-            value={atlasCloudApiKey}
-            onChangeText={handleAtlasCloudApiKeyChange}
-            placeholder="Used only when Atlas Cloud renders images"
-          />
-          <CredentialInput
-            styles={styles}
-            label={`MIDAPI TOKEN ${midapiToken ? '✓' : 'OPTIONAL'}`}
-            value={midapiToken}
-            onChangeText={handleMidapiTokenChange}
-            placeholder="Used only when MidAPI renders images"
-          />
-          <CredentialInput
-            styles={styles}
-            label={`ELEVENLABS API KEY ${elevenLabsApiKey ? '✓' : 'OPTIONAL'}`}
-            value={elevenLabsApiKey}
-            onChangeText={handleElevenLabsApiKeyChange}
-            placeholder="Used when narration is enabled"
-          />
+            <CredentialInput
+              styles={styles}
+              label={`ANTHROPIC API KEY ${apiKey ? "✓" : "*"}`}
+              value={apiKey}
+              onChangeText={handleApiKeyChange}
+              placeholder="sk-ant-..."
+            />
+            <CredentialInput
+              styles={styles}
+              label={`OPENAI API KEY ${openaiApiKey ? "✓" : "*"}`}
+              value={openaiApiKey}
+              onChangeText={handleOpenaiApiKeyChange}
+              placeholder="sk-proj-... used for OpenAI text and images"
+            />
+            <CredentialInput
+              styles={styles}
+              label={`GEMINI API KEY ${geminiApiKey ? "✓" : "*"}`}
+              value={geminiApiKey}
+              onChangeText={handleGeminiApiKeyChange}
+              placeholder="AIzaSy... used for Gemini text, images, and video"
+            />
+            <CredentialInput
+              styles={styles}
+              label={`OPENROUTER API KEY ${openRouterApiKey ? "✓" : "*"}`}
+              value={openRouterApiKey}
+              onChangeText={handleOpenRouterApiKeyChange}
+              placeholder="sk-or-... routes to DeepSeek, Grok, Mistral, Qwen, etc."
+            />
+            <CredentialInput
+              styles={styles}
+              label={`ATLAS CLOUD API KEY ${atlasCloudApiKey ? "✓" : "OPTIONAL"}`}
+              value={atlasCloudApiKey}
+              onChangeText={handleAtlasCloudApiKeyChange}
+              placeholder="Used only when Atlas Cloud renders images"
+            />
+            <CredentialInput
+              styles={styles}
+              label={`MIDAPI TOKEN ${midapiToken ? "✓" : "OPTIONAL"}`}
+              value={midapiToken}
+              onChangeText={handleMidapiTokenChange}
+              placeholder="Used only when MidAPI renders images"
+            />
+            <CredentialInput
+              styles={styles}
+              label={`ELEVENLABS API KEY ${elevenLabsApiKey ? "✓" : "OPTIONAL"}`}
+              value={elevenLabsApiKey}
+              onChangeText={handleElevenLabsApiKeyChange}
+              placeholder="Used when narration is enabled"
+            />
 
-          {STABLE_DIFFUSION_UI_ENABLED ? (
-            <>
-              <CredentialInput
-                styles={styles}
-                label={`STABLE DIFFUSION API KEY ${stableDiffusionSettings.apiKey ? '✓' : 'OPTIONAL'}`}
-                value={stableDiffusionSettings.apiKey || ''}
-                onChangeText={(apiKeyValue) => handleStableDiffusionSettingsChange({ apiKey: apiKeyValue })}
-                placeholder="Bearer token for secured Stable Diffusion backends"
-              />
-              <CredentialInput
-                styles={styles}
-                label={`LORA TRAINER API KEY ${loraTrainingSettings.apiKey ? '✓' : 'OPTIONAL'}`}
-                value={loraTrainingSettings.apiKey || ''}
-                onChangeText={(apiKeyValue) => handleLoraTrainingSettingsChange({ apiKey: apiKeyValue })}
-                placeholder="Bearer token for the trainer sidecar"
-              />
-            </>
-          ) : null}
+            {STABLE_DIFFUSION_UI_ENABLED ? (
+              <>
+                <CredentialInput
+                  styles={styles}
+                  label={`STABLE DIFFUSION API KEY ${stableDiffusionSettings.apiKey ? "✓" : "OPTIONAL"}`}
+                  value={stableDiffusionSettings.apiKey || ""}
+                  onChangeText={(apiKeyValue) =>
+                    handleStableDiffusionSettingsChange({ apiKey: apiKeyValue })
+                  }
+                  placeholder="Bearer token for secured Stable Diffusion backends"
+                />
+                <CredentialInput
+                  styles={styles}
+                  label={`LORA TRAINER API KEY ${loraTrainingSettings.apiKey ? "✓" : "OPTIONAL"}`}
+                  value={loraTrainingSettings.apiKey || ""}
+                  onChangeText={(apiKeyValue) =>
+                    handleLoraTrainingSettingsChange({ apiKey: apiKeyValue })
+                  }
+                  placeholder="Bearer token for the trainer sidecar"
+                />
+              </>
+            ) : null}
+          </View>
         </View>
-      </View>
       ) : null}
     </View>
   );
@@ -395,13 +485,13 @@ function CredentialInput({
 
 function getJobStatusIcon(status: JobStatus) {
   switch (status) {
-    case 'running':
+    case "running":
       return <Play size={14} color={TERMINAL.colors.amber} />;
-    case 'completed':
+    case "completed":
       return <CheckCircle2 size={14} color={TERMINAL.colors.primary} />;
-    case 'failed':
+    case "failed":
       return <XCircle size={14} color={TERMINAL.colors.error} />;
-    case 'cancelled':
+    case "cancelled":
       return <StopCircle size={14} color={TERMINAL.colors.muted} />;
     default:
       return <Clock size={14} color={TERMINAL.colors.muted} />;
@@ -410,13 +500,13 @@ function getJobStatusIcon(status: JobStatus) {
 
 function getJobStatusColor(status: JobStatus) {
   switch (status) {
-    case 'running':
+    case "running":
       return TERMINAL.colors.amber;
-    case 'completed':
+    case "completed":
       return TERMINAL.colors.primary;
-    case 'failed':
+    case "failed":
       return TERMINAL.colors.error;
-    case 'cancelled':
+    case "cancelled":
       return TERMINAL.colors.muted;
     default:
       return TERMINAL.colors.muted;
@@ -424,36 +514,49 @@ function getJobStatusColor(status: JobStatus) {
 }
 
 function getJobImageStatsLabel(job: GenerationJob) {
-  const generatedFiles = job.imageStats?.generatedFiles ?? job.generatedImageCount;
-  const referenceFiles = job.imageStats?.referenceFiles ?? job.referenceImageCount;
+  const generatedFiles =
+    job.imageStats?.generatedFiles ?? job.generatedImageCount;
+  const referenceFiles =
+    job.imageStats?.referenceFiles ?? job.referenceImageCount;
   const storyFiles = job.imageStats?.storyFiles ?? job.storyImageCount;
-  const resolvedSlots = job.imageStats?.resolvedSlots ?? job.resolvedImageSlotCount;
+  const resolvedSlots =
+    job.imageStats?.resolvedSlots ?? job.resolvedImageSlotCount;
   const totalSlots = job.imageStats?.totalSlots ?? job.totalImageSlotCount;
-  const missingSlots = job.imageStats?.missingSlots ?? job.missingImageSlotCount;
-  if (typeof generatedFiles !== 'number' && typeof resolvedSlots !== 'number') return null;
+  const missingSlots =
+    job.imageStats?.missingSlots ?? job.missingImageSlotCount;
+  if (typeof generatedFiles !== "number" && typeof resolvedSlots !== "number")
+    return null;
   const parts: string[] = [];
-  if (typeof generatedFiles === 'number') {
-    parts.push(`${generatedFiles} IMAGE FILE${generatedFiles === 1 ? '' : 'S'}`);
+  if (typeof generatedFiles === "number") {
+    parts.push(
+      `${generatedFiles} IMAGE FILE${generatedFiles === 1 ? "" : "S"}`,
+    );
   }
-  if (typeof referenceFiles === 'number' && referenceFiles > 0) {
-    parts.push(`${referenceFiles} REF${referenceFiles === 1 ? '' : 'S'}`);
+  if (typeof referenceFiles === "number" && referenceFiles > 0) {
+    parts.push(`${referenceFiles} REF${referenceFiles === 1 ? "" : "S"}`);
   }
-  if (typeof storyFiles === 'number' && storyFiles > 0) {
+  if (typeof storyFiles === "number" && storyFiles > 0) {
     parts.push(`${storyFiles} STORY`);
   }
-  if (typeof resolvedSlots === 'number' && typeof totalSlots === 'number' && totalSlots > 0) {
+  if (
+    typeof resolvedSlots === "number" &&
+    typeof totalSlots === "number" &&
+    totalSlots > 0
+  ) {
     parts.push(`${resolvedSlots}/${totalSlots} SLOTS`);
-  } else if (typeof resolvedSlots === 'number') {
-    parts.push(`${resolvedSlots} RESOLVED SLOT${resolvedSlots === 1 ? '' : 'S'}`);
+  } else if (typeof resolvedSlots === "number") {
+    parts.push(
+      `${resolvedSlots} RESOLVED SLOT${resolvedSlots === 1 ? "" : "S"}`,
+    );
   }
-  if (typeof missingSlots === 'number' && missingSlots > 0) {
+  if (typeof missingSlots === "number" && missingSlots > 0) {
     parts.push(`${missingSlots} LEFT`);
   }
-  return parts.join(' • ');
+  return parts.join(" • ");
 }
 
 function getJobDisplayName(job: GenerationJob) {
-  return job.friendlyName || job.storyTitle || 'Untitled';
+  return job.friendlyName || job.storyTitle || "Untitled";
 }
 
 interface GenerationJobsSectionProps {
@@ -465,7 +568,11 @@ interface GenerationJobsSectionProps {
   onOpenGenerator: (jobId?: string) => void;
   onOpenJobFolder?: (job: GenerationJob) => void;
   onCancelJob: (job: GenerationJob) => void;
-  onRemoveJob: (jobId: string, projectId?: string, projectJobIds?: string[]) => void;
+  onRemoveJob: (
+    jobId: string,
+    projectId?: string,
+    projectJobIds?: string[],
+  ) => void;
   onClearCompletedJobs: () => void;
   formatJobTime: (dateString: string) => string;
   formatEta: (seconds?: number | null) => string | null;
@@ -489,15 +596,30 @@ export function GenerationJobsSection({
     <View style={styles.section}>
       <SectionHeader
         styles={styles}
-        icon={<Cpu size={18} color={activeJobs.length > 0 ? TERMINAL.colors.amber : TERMINAL.colors.muted} />}
+        icon={
+          <Cpu
+            size={18}
+            color={
+              activeJobs.length > 0
+                ? TERMINAL.colors.amber
+                : TERMINAL.colors.muted
+            }
+          />
+        }
         title="GENERATION PROJECTS"
-        titleColor={activeJobs.length > 0 ? TERMINAL.colors.amber : TERMINAL.colors.muted}
+        titleColor={
+          activeJobs.length > 0 ? TERMINAL.colors.amber : TERMINAL.colors.muted
+        }
         description="MONITOR AND RESUME STORY GENERATION PROJECTS"
-        right={activeJobs.length > 0 ? (
-          <View style={styles.activeJobsBadge}>
-            <Text style={styles.activeJobsBadgeText}>{activeJobs.length} ACTIVE</Text>
-          </View>
-        ) : null}
+        right={
+          activeJobs.length > 0 ? (
+            <View style={styles.activeJobsBadge}>
+              <Text style={styles.activeJobsBadgeText}>
+                {activeJobs.length} ACTIVE
+              </Text>
+            </View>
+          ) : null
+        }
       />
 
       {!jobsLoaded ? (
@@ -515,24 +637,39 @@ export function GenerationJobsSection({
               <View style={styles.jobHeader}>
                 <View style={styles.jobStatusIndicator}>
                   {getJobStatusIcon(job.status)}
-                  <Text style={[styles.jobStatus, { color: getJobStatusColor(job.status) }]}>
-                    {(job.status || 'unknown').toUpperCase()}
+                  <Text
+                    style={[
+                      styles.jobStatus,
+                      { color: getJobStatusColor(job.status) },
+                    ]}
+                  >
+                    {(job.status || "unknown").toUpperCase()}
                   </Text>
                 </View>
-                <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
+                <Text style={styles.jobTime}>
+                  {formatJobTime(job.updatedAt)}
+                </Text>
               </View>
-              <Text style={styles.jobTitle}>{getJobDisplayName(job).toUpperCase()}</Text>
+              <Text style={styles.jobTitle}>
+                {getJobDisplayName(job).toUpperCase()}
+              </Text>
               {job.attemptCount && job.attemptCount > 1 ? (
-                <Text style={styles.jobTelemetryText}>{job.attemptCount} ATTEMPTS IN THIS PROJECT</Text>
+                <Text style={styles.jobTelemetryText}>
+                  {job.attemptCount} ATTEMPTS IN THIS PROJECT
+                </Text>
               ) : null}
               {getJobImageStatsLabel(job) ? (
                 <View style={styles.jobImageStatsRow}>
                   <ImageIcon size={13} color={TERMINAL.colors.cyan} />
-                  <Text style={styles.jobImageStatsText}>{getJobImageStatsLabel(job)}</Text>
+                  <Text style={styles.jobImageStatsText}>
+                    {getJobImageStatsLabel(job)}
+                  </Text>
                 </View>
               ) : null}
               <View style={styles.jobMeta}>
-                <Text style={styles.jobPhase}>{(job.currentPhase || 'unknown').toUpperCase()}</Text>
+                <Text style={styles.jobPhase}>
+                  {(job.currentPhase || "unknown").toUpperCase()}
+                </Text>
                 <View style={styles.metaDot} />
                 <Text style={styles.jobEpisodes}>
                   EP {job.currentEpisode}/{job.episodeCount}
@@ -540,14 +677,24 @@ export function GenerationJobsSection({
               </View>
               {job.progress > 0 ? (
                 <View style={styles.progressBarContainer}>
-                  <View style={[styles.progressBar, { width: `${job.progress}%` }]} />
+                  <View
+                    style={[styles.progressBar, { width: `${job.progress}%` }]}
+                  />
                 </View>
               ) : null}
-              {(job.subphaseLabel || typeof job.phaseProgress === 'number' || typeof job.etaSeconds === 'number') ? (
+              {job.subphaseLabel ||
+              typeof job.phaseProgress === "number" ||
+              typeof job.etaSeconds === "number" ? (
                 <Text style={styles.jobTelemetryText}>
-                  {job.subphaseLabel ? `${job.subphaseLabel.toUpperCase()} • ` : ''}
-                  {typeof job.phaseProgress === 'number' ? `${Math.round(job.phaseProgress)}% PHASE • ` : ''}
-                  {formatEta(job.etaSeconds) ? `ETA ${formatEta(job.etaSeconds)}` : ''}
+                  {job.subphaseLabel
+                    ? `${job.subphaseLabel.toUpperCase()} • `
+                    : ""}
+                  {typeof job.phaseProgress === "number"
+                    ? `${Math.round(job.phaseProgress)}% PHASE • `
+                    : ""}
+                  {formatEta(job.etaSeconds)
+                    ? `ETA ${formatEta(job.etaSeconds)}`
+                    : ""}
                 </Text>
               ) : null}
               {Array.isArray(job.events) && job.events.length > 0 ? (
@@ -555,7 +702,7 @@ export function GenerationJobsSection({
                   <PipelineProgress
                     events={job.events as any}
                     currentPhase={job.currentPhase}
-                    isRunning={job.status === 'running'}
+                    isRunning={job.status === "running"}
                     progress={job.progress}
                     etaSeconds={job.etaSeconds ?? null}
                   />
@@ -567,7 +714,9 @@ export function GenerationJobsSection({
                   onPress={() => onOpenGenerator(job.id)}
                 >
                   <Eye size={14} color={TERMINAL.colors.primary} />
-                  <Text style={styles.viewProgressButtonText}>VIEW PROGRESS</Text>
+                  <Text style={styles.viewProgressButtonText}>
+                    VIEW PROGRESS
+                  </Text>
                 </TouchableOpacity>
                 {job.outputDir && onOpenJobFolder ? (
                   <TouchableOpacity
@@ -606,45 +755,74 @@ export function GenerationJobsSection({
                   <View style={styles.jobHeader}>
                     <View style={styles.jobStatusIndicator}>
                       {getJobStatusIcon(job.status)}
-                      <Text style={[styles.jobStatus, { color: getJobStatusColor(job.status) }]}>
-                        {(job.status || 'unknown').toUpperCase()}
+                      <Text
+                        style={[
+                          styles.jobStatus,
+                          { color: getJobStatusColor(job.status) },
+                        ]}
+                      >
+                        {(job.status || "unknown").toUpperCase()}
                       </Text>
                     </View>
-                    <Text style={styles.jobTime}>{formatJobTime(job.updatedAt)}</Text>
+                    <Text style={styles.jobTime}>
+                      {formatJobTime(job.updatedAt)}
+                    </Text>
                   </View>
-                  <Text style={styles.jobTitle}>{getJobDisplayName(job).toUpperCase()}</Text>
+                  <Text style={styles.jobTitle}>
+                    {getJobDisplayName(job).toUpperCase()}
+                  </Text>
                   {job.attemptCount && job.attemptCount > 1 ? (
-                    <Text style={styles.jobTelemetryText}>{job.attemptCount} ATTEMPTS IN THIS PROJECT</Text>
+                    <Text style={styles.jobTelemetryText}>
+                      {job.attemptCount} ATTEMPTS IN THIS PROJECT
+                    </Text>
                   ) : null}
                   {getJobImageStatsLabel(job) ? (
                     <View style={styles.jobImageStatsRow}>
                       <ImageIcon size={13} color={TERMINAL.colors.cyan} />
-                      <Text style={styles.jobImageStatsText}>{getJobImageStatsLabel(job)}</Text>
+                      <Text style={styles.jobImageStatsText}>
+                        {getJobImageStatsLabel(job)}
+                      </Text>
                     </View>
                   ) : null}
                   <View style={styles.jobMeta}>
-                    <Text style={styles.jobPhase}>{(job.currentPhase || 'unknown').toUpperCase()}</Text>
+                    <Text style={styles.jobPhase}>
+                      {(job.currentPhase || "unknown").toUpperCase()}
+                    </Text>
                     <View style={styles.metaDot} />
                     <Text style={styles.jobEpisodes}>
                       EP {job.currentEpisode}/{job.episodeCount}
                     </Text>
                     <View style={styles.metaDot} />
-                    <Text style={styles.jobEvents}>{job.events?.length || 0} EVENTS</Text>
+                    <Text style={styles.jobEvents}>
+                      {job.events?.length || 0} EVENTS
+                    </Text>
                   </View>
                   {job.error ? (
-                    <Text style={styles.jobError} numberOfLines={2}>{job.error}</Text>
+                    <Text style={styles.jobError} numberOfLines={2}>
+                      {job.error}
+                    </Text>
                   ) : null}
-                  {(job.subphaseLabel || typeof job.phaseProgress === 'number' || typeof job.etaSeconds === 'number') ? (
+                  {job.subphaseLabel ||
+                  typeof job.phaseProgress === "number" ||
+                  typeof job.etaSeconds === "number" ? (
                     <Text style={styles.jobTelemetryText}>
-                      {job.subphaseLabel ? `${job.subphaseLabel.toUpperCase()} • ` : ''}
-                      {typeof job.phaseProgress === 'number' ? `${Math.round(job.phaseProgress)}% PHASE • ` : ''}
-                      {formatEta(job.etaSeconds) ? `ETA ${formatEta(job.etaSeconds)}` : ''}
+                      {job.subphaseLabel
+                        ? `${job.subphaseLabel.toUpperCase()} • `
+                        : ""}
+                      {typeof job.phaseProgress === "number"
+                        ? `${Math.round(job.phaseProgress)}% PHASE • `
+                        : ""}
+                      {formatEta(job.etaSeconds)
+                        ? `ETA ${formatEta(job.etaSeconds)}`
+                        : ""}
                     </Text>
                   ) : null}
                   <View style={styles.jobActions}>
                     <View style={styles.viewDetailsButton}>
                       <Eye size={14} color={TERMINAL.colors.cyan} />
-                      <Text style={styles.viewDetailsButtonText}>VIEW DETAILS</Text>
+                      <Text style={styles.viewDetailsButtonText}>
+                        VIEW DETAILS
+                      </Text>
                     </View>
                     {job.outputDir && onOpenJobFolder ? (
                       <TouchableOpacity
@@ -691,17 +869,29 @@ export function GenerationJobsSection({
 interface StoryLibrarySectionProps {
   styles: SettingsStyles;
   stories: StoryCatalogEntry[];
+  storySetups?: StorySetupCatalogEntry[];
   generatedStoryIds: string[];
   onOpenVisualizer: (storyId: string) => void;
   onDeleteStory?: (storyId: string) => void;
+  onDeleteStoryMeta?: (planId: string) => void;
+  onDeleteStoryEpisode?: (
+    story: StoryCatalogEntry,
+    target: MediaSetupTarget,
+  ) => void;
   onRenameStory?: (storyId: string, newTitle: string) => void;
   onGenerateVideos?: (target: MediaSetupTarget) => void;
   onGenerateImages?: (target: MediaSetupTarget) => void;
   onOpenStoryFolder?: (story: StoryCatalogEntry) => void;
   onDeleteSeasonImageReferences?: (story: StoryCatalogEntry) => void;
-  onDeleteEpisodeArt?: (story: StoryCatalogEntry, target: MediaSetupTarget) => void;
+  onDeleteEpisodeArt?: (
+    story: StoryCatalogEntry,
+    target: MediaSetupTarget,
+  ) => void;
   onContinueSeasonPlan?: (planId: string) => void;
-  seasonContinuations?: Record<string, { planId: string; nextEpisodeNumber: number; totalEpisodes: number }>;
+  seasonContinuations?: Record<
+    string,
+    { planId: string; nextEpisodeNumber: number; totalEpisodes: number }
+  >;
   onRequestDeleteStory: (story: StoryCatalogEntry) => void;
   onRequestRenameStory: (story: StoryCatalogEntry) => void;
   onRefreshStories?: () => void;
@@ -709,15 +899,25 @@ interface StoryLibrarySectionProps {
   videoGeneratingStoryId?: string | null;
   imageGeneratingStoryId?: string | null;
   isDeletingSeasonReferences?: (story: StoryCatalogEntry) => boolean;
-  isDeletingEpisodeArt?: (story: StoryCatalogEntry, target: MediaSetupTarget) => boolean;
+  isDeletingEpisodeArt?: (
+    story: StoryCatalogEntry,
+    target: MediaSetupTarget,
+  ) => boolean;
+  isDeletingStoryEpisode?: (
+    story: StoryCatalogEntry,
+    target: MediaSetupTarget,
+  ) => boolean;
 }
 
 export function StoryLibrarySection({
   styles,
   stories,
+  storySetups = [],
   generatedStoryIds,
   onOpenVisualizer,
   onDeleteStory,
+  onDeleteStoryMeta,
+  onDeleteStoryEpisode,
   onRenameStory,
   onGenerateVideos,
   onGenerateImages,
@@ -734,11 +934,19 @@ export function StoryLibrarySection({
   imageGeneratingStoryId,
   isDeletingSeasonReferences,
   isDeletingEpisodeArt,
+  isDeletingStoryEpisode,
 }: StoryLibrarySectionProps) {
   const { width } = useWindowDimensions();
   const isNarrow = width < 860;
   const isCompact = width < 1120;
-  const seasonGroups = buildStorySeasonGroups(stories, generatedStoryIds, seasonContinuations);
+  const seasonGroups = buildStorySeasonGroups(
+    stories,
+    generatedStoryIds,
+    seasonContinuations,
+  );
+  const storySetupsWithoutGroups = storySetups.filter(
+    (setup) => !seasonGroups.some((group) => setupMatchesGroup(setup, group)),
+  );
 
   const renderStoryAction = (
     key: string,
@@ -746,7 +954,13 @@ export function StoryLibrarySection({
     icon: React.ReactNode,
     color: string,
     onPress: () => void,
-    options?: { disabled?: boolean; loading?: boolean; danger?: boolean; backgroundColor?: string; grid?: boolean },
+    options?: {
+      disabled?: boolean;
+      loading?: boolean;
+      danger?: boolean;
+      backgroundColor?: string;
+      grid?: boolean;
+    },
   ) => {
     const disabled = options?.disabled === true;
     const actionColor = disabled ? TERMINAL.colors.muted : color;
@@ -755,9 +969,13 @@ export function StoryLibrarySection({
         key={key}
         style={[
           styles.storyActionButton,
-          options?.grid && isCompact && !isNarrow ? styles.storyActionButtonGrid : null,
+          options?.grid && isCompact && !isNarrow
+            ? styles.storyActionButtonGrid
+            : null,
           options?.danger ? styles.deleteIconButton : null,
-          options?.backgroundColor ? { backgroundColor: options.backgroundColor } : null,
+          options?.backgroundColor
+            ? { backgroundColor: options.backgroundColor }
+            : null,
           disabled ? styles.storyActionButtonDisabled : null,
         ]}
         onPress={onPress}
@@ -767,33 +985,52 @@ export function StoryLibrarySection({
           <ActivityIndicator size={16} color={TERMINAL.colors.amber} />
         ) : (
           <>
-            {React.isValidElement(icon) ? React.cloneElement(icon as React.ReactElement<any>, { color: actionColor }) : icon}
-            <Text style={[styles.storyActionText, { color: actionColor }]}>{label}</Text>
+            {React.isValidElement(icon)
+              ? React.cloneElement(icon as React.ReactElement<any>, {
+                  color: actionColor,
+                })
+              : icon}
+            <Text style={[styles.storyActionText, { color: actionColor }]}>
+              {label}
+            </Text>
           </>
         )}
       </TouchableOpacity>
     );
   };
 
-  const renderActionRows = (actions: React.ReactNode[], pinned = false) => {
-    const chunkSize = isCompact ? 3 : actions.length;
+  const renderActionRows = (
+    actions: React.ReactNode[],
+    pinned = false,
+    compactChunkSize = pinned ? 3 : actions.length,
+  ) => {
+    const chunkSize = isCompact ? compactChunkSize : actions.length;
     const rows: React.ReactNode[] = [];
     for (let i = 0; i < actions.length; i += chunkSize) {
       rows.push(
-        <View key={`row-${i}`} style={[
-          styles.storyActionRow,
-          pinned && isCompact && !isNarrow ? styles.storyActionRowGrid : null,
-        ]}>
+        <View
+          key={`row-${i}`}
+          style={[
+            styles.storyActionRow,
+            pinned && isCompact && !isNarrow ? styles.storyActionRowGrid : null,
+          ]}
+        >
           {actions.slice(i, i + chunkSize)}
-        </View>
+        </View>,
       );
     }
     return (
-      <View style={[
-        styles.storyManageActions,
-        !pinned && !isNarrow ? styles.storyManageActionsInline : null,
-        isNarrow ? styles.storyManageActionsNarrow : pinned ? styles.storyManageActionsPinned : null,
-      ]}>
+      <View
+        style={[
+          styles.storyManageActions,
+          !pinned && !isNarrow ? styles.storyManageActionsInline : null,
+          isNarrow
+            ? styles.storyManageActionsNarrow
+            : pinned
+              ? styles.storyManageActionsPinned
+              : null,
+        ]}
+      >
         {rows}
       </View>
     );
@@ -807,235 +1044,464 @@ export function StoryLibrarySection({
         title="STORY DATABASE"
         titleColor={TERMINAL.colors.cyan}
         description="VIEW ARCHITECTURE, RENAME CHRONICLES, OR PURGE DATA"
-        right={onRefreshStories ? (
-          <TouchableOpacity
-            onPress={onRefreshStories}
-            disabled={isRefreshing}
-            style={styles.miniRefreshButton}
-          >
-            <RefreshCw
-              size={12}
-              color={TERMINAL.colors.cyan}
-              style={isRefreshing ? { opacity: 0.5 } : null}
-            />
-            <Text style={styles.miniRefreshText}>{isRefreshing ? 'SCANNING' : 'REFRESH'}</Text>
-          </TouchableOpacity>
-        ) : null}
+        right={
+          onRefreshStories ? (
+            <TouchableOpacity
+              onPress={onRefreshStories}
+              disabled={isRefreshing}
+              style={styles.miniRefreshButton}
+            >
+              <RefreshCw
+                size={12}
+                color={TERMINAL.colors.cyan}
+                style={isRefreshing ? { opacity: 0.5 } : null}
+              />
+              <Text style={styles.miniRefreshText}>
+                {isRefreshing ? "SCANNING" : "REFRESH"}
+              </Text>
+            </TouchableOpacity>
+          ) : null
+        }
       />
 
-      {seasonGroups.length === 0 ? (
+      {storySetups.length === 0 && seasonGroups.length === 0 ? (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyText}>NO CHRONICLES DETECTED</Text>
         </View>
       ) : (
         <View style={styles.storyManagementList}>
-          {seasonGroups.map((group) => {
-            const representativeStory = group.rows.find((row) => row.story.outputDir && row.story.isBuiltIn !== true)?.story || group.rows[0]?.story;
-            const canDeleteSeasonRefs = Boolean(
-              onDeleteSeasonImageReferences
-              && representativeStory?.outputDir
-              && representativeStory.isBuiltIn !== true
+          {storySetupsWithoutGroups.map((setup) => {
+            const setupActions: React.ReactNode[] = [];
+            if (onContinueSeasonPlan) {
+              setupActions.push(
+                renderStoryAction(
+                  "view-meta",
+                  "VIEW META",
+                  <Eye size={14} color={TERMINAL.colors.primary} />,
+                  TERMINAL.colors.primary,
+                  () => onContinueSeasonPlan(setup.planId),
+                  { backgroundColor: "rgba(59, 130, 246, 0.12)", grid: true },
+                ),
+              );
+            }
+            if (onDeleteStoryMeta) {
+              setupActions.push(
+                renderStoryAction(
+                  "delete-meta",
+                  "DELETE META",
+                  <Trash2 size={14} color={TERMINAL.colors.error} />,
+                  TERMINAL.colors.error,
+                  () => onDeleteStoryMeta(setup.planId),
+                  { danger: true, grid: true },
+                ),
+              );
+            }
+            return (
+              <View
+                key={setup.planId}
+                style={[
+                  styles.storyManageItem,
+                  isCompact && !isNarrow ? styles.storyManageItemCompact : null,
+                  isNarrow ? styles.storyManageItemNarrow : null,
+                ]}
+              >
+                <View style={styles.storyEpisodeNumber}>
+                  <Text style={styles.storyEpisodeNumberText}>SET</Text>
+                  <Text style={styles.storyEpisodeNumberValue}>
+                    {setup.approvedStepCount}/3
+                  </Text>
+                </View>
+                <View style={styles.storyManageInfo}>
+                  <Text style={styles.storyEpisodeTitle}>
+                    {setup.title.toUpperCase()}
+                  </Text>
+                  <View style={styles.storyManageMetaRow}>
+                    <Text style={styles.storyManageMeta}>
+                      {setup.genre.toUpperCase()}
+                    </Text>
+                    {setup.tone ? (
+                      <>
+                        <View style={styles.metaDot} />
+                        <Text style={styles.storyManageMeta}>
+                          {setup.tone.toUpperCase()}
+                        </Text>
+                      </>
+                    ) : null}
+                    <View style={styles.metaDot} />
+                    <Text
+                      style={[
+                        styles.storyTypeBadge,
+                        {
+                          color:
+                            setup.status === "approved"
+                              ? TERMINAL.colors.primary
+                              : setup.status === "needs_review"
+                                ? TERMINAL.colors.amber
+                                : TERMINAL.colors.muted,
+                        },
+                      ]}
+                    >
+                      {setup.status.toUpperCase()}
+                    </Text>
+                    <View style={styles.metaDot} />
+                    <Text style={styles.storyManageMeta}>
+                      {setup.selectedEpisodes.length > 0
+                        ? `EP ${setup.selectedEpisodes.join(", ")} SELECTED`
+                        : `${setup.totalEpisodes} EPISODES`}
+                    </Text>
+                  </View>
+                  {setup.synopsis ? (
+                    <Text style={styles.storyManageMeta} numberOfLines={2}>
+                      {setup.synopsis}
+                    </Text>
+                  ) : null}
+                </View>
+                {renderActionRows(setupActions, true)}
+              </View>
             );
-            const seasonRefsAvailable = representativeStory?.imageArtifacts?.hasSeasonReferences === true;
-            const seasonRefsDeleting = Boolean(representativeStory && isDeletingSeasonReferences?.(representativeStory));
+          })}
+          {seasonGroups.map((group) => {
+            const representativeStory =
+              group.rows.find(
+                (row) => row.story.outputDir && row.story.isBuiltIn !== true,
+              )?.story || group.rows[0]?.story;
+            const storySetup = getStorySetupForGroup(storySetups, group);
+            const canDeleteSeasonRefs = Boolean(
+              onDeleteSeasonImageReferences &&
+              representativeStory?.outputDir &&
+              representativeStory.isBuiltIn !== true,
+            );
+            const seasonRefsAvailable =
+              representativeStory?.imageArtifacts?.hasSeasonReferences === true;
+            const seasonRefsDeleting = Boolean(
+              representativeStory &&
+              isDeletingSeasonReferences?.(representativeStory),
+            );
             const headerActions: React.ReactNode[] = [];
-            if (group.continuation && onContinueSeasonPlan) {
-              headerActions.push(renderStoryAction(
-                'continue',
-                `NEXT EP ${group.continuation.nextEpisodeNumber}/${group.continuation.totalEpisodes}`,
-                <ChevronRight size={14} color={TERMINAL.colors.amber} />,
-                TERMINAL.colors.amber,
-                () => onContinueSeasonPlan(group.continuation!.planId),
-                { backgroundColor: 'rgba(245, 158, 11, 0.12)' },
-              ));
+            if (storySetup && onContinueSeasonPlan) {
+              headerActions.push(
+                renderStoryAction(
+                  "view-meta",
+                  "VIEW META",
+                  <Eye size={14} color={TERMINAL.colors.primary} />,
+                  TERMINAL.colors.primary,
+                  () => onContinueSeasonPlan(storySetup.planId),
+                  { backgroundColor: "rgba(59, 130, 246, 0.12)" },
+                ),
+              );
+            }
+            if (storySetup && onDeleteStoryMeta) {
+              headerActions.push(
+                renderStoryAction(
+                  "delete-meta",
+                  "DELETE META",
+                  <Trash2 size={14} color={TERMINAL.colors.error} />,
+                  TERMINAL.colors.error,
+                  () => onDeleteStoryMeta(storySetup.planId),
+                  { danger: true },
+                ),
+              );
             }
             if (canDeleteSeasonRefs && representativeStory) {
-              headerActions.push(renderStoryAction(
-                'clear-refs',
-                'CLEAR REFS',
-                <Trash2 size={14} color={TERMINAL.colors.amber} />,
-                TERMINAL.colors.amber,
-                () => onDeleteSeasonImageReferences?.(representativeStory),
-                {
-                  disabled: !seasonRefsAvailable || seasonRefsDeleting,
-                  loading: seasonRefsDeleting,
-                  backgroundColor: seasonRefsAvailable ? 'rgba(245, 158, 11, 0.1)' : undefined,
-                },
-              ));
+              headerActions.push(
+                renderStoryAction(
+                  "clear-refs",
+                  "CLEAR REFS",
+                  <Trash2 size={14} color={TERMINAL.colors.amber} />,
+                  TERMINAL.colors.amber,
+                  () => onDeleteSeasonImageReferences?.(representativeStory),
+                  {
+                    disabled: !seasonRefsAvailable || seasonRefsDeleting,
+                    loading: seasonRefsDeleting,
+                    backgroundColor: seasonRefsAvailable
+                      ? "rgba(245, 158, 11, 0.1)"
+                      : undefined,
+                  },
+                ),
+              );
+            }
+            if (representativeStory && onRenameStory) {
+              headerActions.push(
+                renderStoryAction(
+                  "rename",
+                  "RENAME",
+                  <Edit2 size={14} color={TERMINAL.colors.primary} />,
+                  TERMINAL.colors.primary,
+                  () => onRequestRenameStory(representativeStory),
+                ),
+              );
+            }
+            if (representativeStory && onDeleteStory) {
+              headerActions.push(
+                renderStoryAction(
+                  "delete",
+                  "DELETE",
+                  <Trash2 size={14} color={TERMINAL.colors.error} />,
+                  TERMINAL.colors.error,
+                  () => onRequestDeleteStory(representativeStory),
+                  { danger: true },
+                ),
+              );
+            }
+            if (group.continuation && onContinueSeasonPlan) {
+              headerActions.push(
+                renderStoryAction(
+                  "continue",
+                  `NEXT EP ${group.continuation.nextEpisodeNumber}/${group.continuation.totalEpisodes}`,
+                  <ChevronRight size={14} color={TERMINAL.colors.amber} />,
+                  TERMINAL.colors.amber,
+                  () => onContinueSeasonPlan(group.continuation!.planId),
+                  { backgroundColor: "rgba(245, 158, 11, 0.12)" },
+                ),
+              );
             }
             return (
               <View key={group.key} style={styles.storySeasonGroup}>
-                <View style={[styles.storySeasonHeader, isNarrow ? styles.storySeasonHeaderNarrow : null]}>
+                <View
+                  style={[
+                    styles.storySeasonHeader,
+                    isNarrow ? styles.storySeasonHeaderNarrow : null,
+                  ]}
+                >
                   <View style={styles.storyManageInfo}>
-                    <Text style={styles.storyManageTitle}>{group.title.toUpperCase()}</Text>
+                    <Text style={styles.storyManageTitle}>
+                      {group.title.toUpperCase()}
+                    </Text>
                     <View style={styles.storyManageMetaRow}>
-                      <Text style={styles.storyManageMeta}>{group.genre.toUpperCase()}</Text>
+                      <Text style={styles.storyManageMeta}>
+                        {group.genre.toUpperCase()}
+                      </Text>
                       <View style={styles.metaDot} />
                       <Text
                         style={[
                           styles.storyTypeBadge,
-                          { color: group.isBuiltIn ? TERMINAL.colors.muted : TERMINAL.colors.amber },
+                          {
+                            color: group.isBuiltIn
+                              ? TERMINAL.colors.muted
+                              : TERMINAL.colors.amber,
+                          },
                         ]}
                       >
-                        {group.isBuiltIn ? 'SAMPLE' : 'GENERATED'}
+                        {group.isBuiltIn ? "SAMPLE" : "GENERATED"}
                       </Text>
                       {group.isGeneratedLocal ? (
                         <>
                           <View style={styles.metaDot} />
-                          <Text style={[styles.storyTypeBadge, { color: TERMINAL.colors.primary }]}>LOCAL</Text>
+                          <Text
+                            style={[
+                              styles.storyTypeBadge,
+                              { color: TERMINAL.colors.primary },
+                            ]}
+                          >
+                            LOCAL
+                          </Text>
                         </>
                       ) : null}
                       <View style={styles.metaDot} />
                       <Text
-                        style={[styles.storyManageMeta, styles.storyManageMetaNoWrap]}
+                        style={[
+                          styles.storyManageMeta,
+                          styles.storyManageMetaNoWrap,
+                        ]}
                         numberOfLines={1}
                       >
-                        {group.rows.length} EPISODE{group.rows.length === 1 ? '' : 'S'}
+                        {group.rows.length} EPISODE
+                        {group.rows.length === 1 ? "" : "S"}
                       </Text>
                     </View>
                   </View>
-                  {headerActions.length > 0 ? renderActionRows(headerActions) : null}
+                  {headerActions.length > 0
+                    ? renderActionRows(headerActions, false, 5)
+                    : null}
                 </View>
 
                 {group.rows.map((row) => {
                   const story = row.story;
-                  const makeTarget = (kind: MediaSetupTarget['kind']): MediaSetupTarget => ({
+                  const makeTarget = (
+                    kind: MediaSetupTarget["kind"],
+                  ): MediaSetupTarget => ({
                     kind,
                     storyId: story.id,
-                    outputDir: story.outputDir || '',
+                    outputDir: story.outputDir || "",
                     episodeId: row.episodeId,
                     episodeNumber: row.episodeNumber,
                     episodeTitle: row.episodeTitle,
                   });
-                  const imageTarget = makeTarget('images');
-                  const videoTarget = makeTarget('video');
+                  const imageTarget = makeTarget("images");
+                  const videoTarget = makeTarget("video");
                   const imageTargetKey = getMediaTargetKey(imageTarget);
                   const videoTargetKey = getMediaTargetKey(videoTarget);
-                  const canGenerateVideo = Boolean(onGenerateVideos && story.outputDir);
+                  const canGenerateVideo = Boolean(
+                    onGenerateVideos && story.outputDir,
+                  );
                   const canGenerateImages = Boolean(
-                    onGenerateImages
-                    && story.outputDir
-                    && story.isBuiltIn !== true
+                    onGenerateImages &&
+                    story.outputDir &&
+                    story.isBuiltIn !== true,
                   );
                   const canOpenFolder = Boolean(
-                    onOpenStoryFolder
-                    && story.outputDir
+                    onOpenStoryFolder && story.outputDir,
                   );
                   const canDeleteEpisodeArt = Boolean(
-                    onDeleteEpisodeArt
-                    && story.outputDir
-                    && story.isBuiltIn !== true
+                    onDeleteEpisodeArt &&
+                    story.outputDir &&
+                    story.isBuiltIn !== true,
                   );
-                  const episodeArtAvailable = row.imageArtifacts?.hasEpisodeArt === true;
-                  const episodeArtDeleting = Boolean(isDeletingEpisodeArt?.(story, imageTarget));
-                  const canRename = Boolean(onRenameStory);
-                  const canDelete = Boolean(onDeleteStory);
+                  const canDeleteStoryEpisode = Boolean(
+                    onDeleteStoryEpisode &&
+                    story.outputDir &&
+                    story.isBuiltIn !== true,
+                  );
+                  const episodeArtAvailable =
+                    row.imageArtifacts?.hasEpisodeArt === true;
+                  const episodeArtDeleting = Boolean(
+                    isDeletingEpisodeArt?.(story, imageTarget),
+                  );
+                  const episodeDeleting = Boolean(
+                    isDeletingStoryEpisode?.(story, imageTarget),
+                  );
                   const rowActions: React.ReactNode[] = [];
                   if (canGenerateVideo) {
-                    rowActions.push(renderStoryAction(
-                      'animate',
-                      'ANIMATE',
-                      <Film size={14} color="rgb(168, 85, 247)" />,
-                      'rgb(168, 85, 247)',
-                      () => onGenerateVideos?.(videoTarget),
-                      {
-                        loading: videoGeneratingStoryId === videoTargetKey,
-                        disabled: videoGeneratingStoryId !== null || !episodeArtAvailable,
-                        backgroundColor: videoGeneratingStoryId === videoTargetKey ? 'rgba(245, 158, 11, 0.15)' : episodeArtAvailable ? 'rgba(168, 85, 247, 0.1)' : undefined,
-                        grid: true,
-                      },
-                    ));
+                    rowActions.push(
+                      renderStoryAction(
+                        "animate",
+                        "ANIMATE",
+                        <Film size={14} color="rgb(168, 85, 247)" />,
+                        "rgb(168, 85, 247)",
+                        () => onGenerateVideos?.(videoTarget),
+                        {
+                          loading: videoGeneratingStoryId === videoTargetKey,
+                          disabled:
+                            videoGeneratingStoryId !== null ||
+                            !episodeArtAvailable,
+                          backgroundColor:
+                            videoGeneratingStoryId === videoTargetKey
+                              ? "rgba(245, 158, 11, 0.15)"
+                              : episodeArtAvailable
+                                ? "rgba(168, 85, 247, 0.1)"
+                                : undefined,
+                          grid: true,
+                        },
+                      ),
+                    );
                   }
                   if (canGenerateImages) {
-                    rowActions.push(renderStoryAction(
-                      'images',
-                      'IMAGES',
-                      <ImageIcon size={14} color={TERMINAL.colors.primary} />,
-                      TERMINAL.colors.primary,
-                      () => onGenerateImages?.(imageTarget),
-                      {
-                        loading: imageGeneratingStoryId === imageTargetKey,
-                        disabled: imageGeneratingStoryId !== null,
-                        backgroundColor: imageGeneratingStoryId === imageTargetKey ? 'rgba(245, 158, 11, 0.15)' : 'rgba(59, 130, 246, 0.12)',
-                        grid: true,
-                      },
-                    ));
+                    rowActions.push(
+                      renderStoryAction(
+                        "images",
+                        "IMAGES",
+                        <ImageIcon size={14} color={TERMINAL.colors.primary} />,
+                        TERMINAL.colors.primary,
+                        () => onGenerateImages?.(imageTarget),
+                        {
+                          loading: imageGeneratingStoryId === imageTargetKey,
+                          disabled: imageGeneratingStoryId !== null,
+                          backgroundColor:
+                            imageGeneratingStoryId === imageTargetKey
+                              ? "rgba(245, 158, 11, 0.15)"
+                              : "rgba(59, 130, 246, 0.12)",
+                          grid: true,
+                        },
+                      ),
+                    );
                   }
                   if (canDeleteEpisodeArt) {
-                    rowActions.push(renderStoryAction(
-                      'clear-art',
-                      'CLEAR ART',
-                      <Trash2 size={14} color={TERMINAL.colors.error} />,
-                      TERMINAL.colors.error,
-                      () => onDeleteEpisodeArt?.(story, imageTarget),
-                      {
-                        disabled: !episodeArtAvailable || episodeArtDeleting,
-                        loading: episodeArtDeleting,
-                        backgroundColor: episodeArtAvailable ? 'rgba(239, 68, 68, 0.1)' : undefined,
-                        grid: true,
-                      },
-                    ));
+                    rowActions.push(
+                      renderStoryAction(
+                        "clear-art",
+                        "CLEAR ART",
+                        <Trash2 size={14} color={TERMINAL.colors.error} />,
+                        TERMINAL.colors.error,
+                        () => onDeleteEpisodeArt?.(story, imageTarget),
+                        {
+                          disabled: !episodeArtAvailable || episodeArtDeleting,
+                          loading: episodeArtDeleting,
+                          backgroundColor: episodeArtAvailable
+                            ? "rgba(239, 68, 68, 0.1)"
+                            : undefined,
+                          grid: true,
+                        },
+                      ),
+                    );
                   }
-                  rowActions.push(renderStoryAction(
-                    'map',
-                    'MAP',
-                    <RefreshCw size={14} color={TERMINAL.colors.cyan} />,
-                    TERMINAL.colors.cyan,
-                    () => onOpenVisualizer(story.id),
-                    { backgroundColor: 'rgba(6, 182, 212, 0.1)', grid: true },
-                  ));
+                  if (canDeleteStoryEpisode) {
+                    rowActions.push(
+                      renderStoryAction(
+                        "delete-episode",
+                        "DELETE EP",
+                        <Trash2 size={14} color={TERMINAL.colors.error} />,
+                        TERMINAL.colors.error,
+                        () => onDeleteStoryEpisode?.(story, imageTarget),
+                        {
+                          disabled: episodeDeleting,
+                          loading: episodeDeleting,
+                          danger: true,
+                          grid: true,
+                        },
+                      ),
+                    );
+                  }
+                  rowActions.push(
+                    renderStoryAction(
+                      "map",
+                      "MAP",
+                      <RefreshCw size={14} color={TERMINAL.colors.cyan} />,
+                      TERMINAL.colors.cyan,
+                      () => onOpenVisualizer(story.id),
+                      { backgroundColor: "rgba(6, 182, 212, 0.1)", grid: true },
+                    ),
+                  );
                   if (canOpenFolder) {
-                    rowActions.push(renderStoryAction(
-                      'folder',
-                      'FOLDER',
-                      <FolderOpen size={14} color={TERMINAL.colors.amber} />,
-                      TERMINAL.colors.amber,
-                      () => onOpenStoryFolder?.(story),
-                      { backgroundColor: 'rgba(245, 158, 11, 0.1)', grid: true },
-                    ));
+                    rowActions.push(
+                      renderStoryAction(
+                        "folder",
+                        "FOLDER",
+                        <FolderOpen size={14} color={TERMINAL.colors.amber} />,
+                        TERMINAL.colors.amber,
+                        () => onOpenStoryFolder?.(story),
+                        {
+                          backgroundColor: "rgba(245, 158, 11, 0.1)",
+                          grid: true,
+                        },
+                      ),
+                    );
                   }
-                  if (canRename) {
-                    rowActions.push(renderStoryAction(
-                      'rename',
-                      'RENAME',
-                      <Edit2 size={14} color={TERMINAL.colors.primary} />,
-                      TERMINAL.colors.primary,
-                      () => onRequestRenameStory(story),
-                      { grid: true },
-                    ));
-                  }
-                  if (canDelete) {
-                    rowActions.push(renderStoryAction(
-                      'delete',
-                      'DELETE',
-                      <Trash2 size={14} color={TERMINAL.colors.error} />,
-                      TERMINAL.colors.error,
-                      () => onRequestDeleteStory(story),
-                      { danger: true, grid: true },
-                    ));
-                  }
-
                   return (
                     <View
                       key={row.key}
                       style={[
                         styles.storyManageItem,
-                        isCompact && !isNarrow ? styles.storyManageItemCompact : null,
+                        isCompact && !isNarrow
+                          ? styles.storyManageItemCompact
+                          : null,
                         isNarrow ? styles.storyManageItemNarrow : null,
                       ]}
                     >
                       <View style={styles.storyEpisodeNumber}>
                         <Text style={styles.storyEpisodeNumberText}>EP</Text>
-                        <Text style={styles.storyEpisodeNumberValue}>{row.episodeNumber}</Text>
+                        <Text style={styles.storyEpisodeNumberValue}>
+                          {row.episodeNumber}
+                        </Text>
                       </View>
                       <View style={styles.storyManageInfo}>
-                        <Text style={styles.storyEpisodeTitle}>{(row.episodeTitle || 'Untitled').toUpperCase()}</Text>
+                        <Text style={styles.storyEpisodeTitle}>
+                          {(row.episodeTitle || "Untitled").toUpperCase()}
+                        </Text>
                         <View style={styles.storyManageMetaRow}>
-                          <Text style={styles.storyManageMeta}>{story.imagesStatus ? `IMAGES ${story.imagesStatus.toUpperCase()}` : 'READY'}</Text>
+                          <Text style={styles.storyManageMeta}>
+                            {story.imagesStatus
+                              ? `IMAGES ${story.imagesStatus.toUpperCase()}`
+                              : "READY"}
+                          </Text>
                           {story.outputDir ? (
                             <>
                               <View style={styles.metaDot} />
-                              <Text style={styles.storyManageMeta}>{story.outputDir.split('/').filter(Boolean).pop()}</Text>
+                              <Text style={styles.storyManageMeta}>
+                                {story.outputDir
+                                  .split("/")
+                                  .filter(Boolean)
+                                  .pop()}
+                              </Text>
                             </>
                           ) : null}
                         </View>
@@ -1059,7 +1525,11 @@ interface SystemInfoSectionProps {
   onSignOut?: () => void;
 }
 
-export function SystemInfoSection({ styles, accountLabel, onSignOut }: SystemInfoSectionProps) {
+export function SystemInfoSection({
+  styles,
+  accountLabel,
+  onSignOut,
+}: SystemInfoSectionProps) {
   return (
     <View style={styles.section}>
       <SectionHeader
@@ -1088,7 +1558,9 @@ export function SystemInfoSection({ styles, accountLabel, onSignOut }: SystemInf
         </View>
         <View style={styles.infoRow}>
           <Text style={styles.infoLabel}>STATUS</Text>
-          <Text style={[styles.infoValue, { color: TERMINAL.colors.primary }]}>OPERATIONAL</Text>
+          <Text style={[styles.infoValue, { color: TERMINAL.colors.primary }]}>
+            OPERATIONAL
+          </Text>
         </View>
         {onSignOut ? (
           <TouchableOpacity

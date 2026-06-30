@@ -26,22 +26,19 @@ const STOPWORDS = new Set([
 ]);
 
 const LOCATION_ALIASES: Array<[string, RegExp]> = [
-  ['cismigiu', /\b(?:cismigiu|cișmigiu|cismigiu\s+gardens?|gardens?|park)\b/i],
-  ['apartment', /\b(?:apartment|walk-up|deadbolt|welcome\s+mat|lipscani\s+apartment)\b/i],
-  ['club', /\b(?:valcescu|vâlcescu|booth|velvet\s+rope|front\s+line|side\s+entrance|the\s+club)\b/i],
+  ['park', /\b(?:gardens?|park)\b/i],
+  ['apartment', /\b(?:apartment|walk-up|deadbolt|welcome\s+mat)\b/i],
+  ['club', /\b(?:club|booth|velvet\s+rope|front\s+line|side\s+entrance|venue)\b/i],
   ['rooftop', /\b(?:rooftop|roof|terrace)\b/i],
-  ['bookshop', /\b(?:bookshop|bookstore|book\s+shop|lumina|books)\b/i],
+  ['bookshop', /\b(?:bookshop|bookstore|book\s+shop|books)\b/i],
   ['street', /\b(?:street|sidewalk|alley|courtyard|boulevard)\b/i],
   ['estate', /\b(?:estate|house|manor|villa)\b/i],
   ['maze', /\b(?:maze|hedge\s+maze|labyrinth)\b/i],
 ];
 
 const PARTICIPANT_ALIASES: Array<[string, RegExp]> = [
-  ['victor', /\bvictor\b/i],
-  ['charcoal_man', /\b(?:charcoal\s+suit|man\s+in\s+(?:the\s+)?charcoal|mr\.?\s+midnight|midnight)\b/i],
-  ['mika', /\bmika\b/i],
-  ['stela', /\bstela\b/i],
-  ['radu', /\bradu\b/i],
+  ['named_person', /\b[A-Z][a-z]+\b/],
+  ['distinctive_stranger', /\b(?:charcoal\s+suit|man\s+in\s+(?:the\s+)?charcoal|midnight|stranger)\b/i],
   ['attacker', /\b(?:attacker|attackers|adversary|enemy|unseen)\b/i],
 ];
 

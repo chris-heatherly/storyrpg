@@ -78,6 +78,35 @@ function resolveStoryFolderPath(storiesDir, outputDir) {
   return candidate;
 }
 
+function rewriteStoryFileEpisodes(storyDir, storyFileAbs, targetStoryId, targetEpisodeNumber, updateManifest) {
+  if (!fs.existsSync(storyFileAbs)) return 0;
+  const raw = JSON.parse(fs.readFileSync(storyFileAbs, 'utf8'));
+  const decoded = codec.safeDecodeStory(raw);
+  if (!decoded.ok || decoded.pkg.storyId !== targetStoryId) return 0;
+
+  const storyBody = decoded.pkg.story;
+  const beforeCount = Array.isArray(storyBody.episodes) ? storyBody.episodes.length : 0;
+  storyBody.episodes = (storyBody.episodes || []).filter((episode) => Number(episode.number) !== targetEpisodeNumber);
+  const removed = beforeCount - storyBody.episodes.length;
+  if (removed <= 0) return 0;
+
+  const nextRaw = decoded.pkg.detectedSchemaVersion === 1
+    ? storyBody
+    : {
+        ...raw,
+        story: storyBody,
+        updatedAt: new Date().toISOString(),
+      };
+  const { sha256, bytes } = atomicWriteJsonSync(storyFileAbs, nextRaw, { pretty: true });
+  if (updateManifest) {
+    manifestModule.updateManifestForPrimaryRewrite(storyDir, {
+      primaryStoryHash: sha256,
+      primaryStoryBytes: bytes,
+    });
+  }
+  return removed;
+}
+
 function openFolderInDesktop(folderPath) {
   const command = process.platform === 'darwin'
     ? 'open'
@@ -135,6 +164,41 @@ function registerStoryMutationRoutes(app, { storiesDir, deletedStoriesFile }) {
     }
 
     res.json({ success: deleted > 0, deleted });
+  });
+
+  app.delete('/stories/:storyId/episodes/:episodeNumber', (req, res) => {
+    const { storyId } = req.params;
+    const episodeNumber = Number(req.params.episodeNumber);
+    if (!Number.isFinite(episodeNumber) || episodeNumber < 1) {
+      return res.status(400).json({ error: 'episodeNumber must be a positive number' });
+    }
+    if (!fs.existsSync(storiesDir)) return res.status(404).json({ error: 'No generated stories directory found' });
+
+    let removed = 0;
+    let rewritten = 0;
+    for (const dir of listStoryDirs(storiesDir)) {
+      const storyDir = path.join(storiesDir, dir);
+      const loaded = readStoryPackage(storyDir);
+      if (!loaded || loaded.pkg.storyId !== storyId) continue;
+
+      try {
+        const primaryRemoved = rewriteStoryFileEpisodes(storyDir, loaded.primary.abs, storyId, episodeNumber, true);
+        if (primaryRemoved > 0) {
+          removed += primaryRemoved;
+          rewritten += 1;
+        }
+
+        const legacyAbs = path.join(storyDir, '08-final-story.json');
+        if (legacyAbs !== loaded.primary.abs && fs.existsSync(legacyAbs)) {
+          const legacyRemoved = rewriteStoryFileEpisodes(storyDir, legacyAbs, storyId, episodeNumber, false);
+          if (legacyRemoved > 0) rewritten += 1;
+        }
+      } catch (error) {
+        console.error(`[Proxy] Error deleting episode ${episodeNumber} for story ${storyId}:`, error);
+      }
+    }
+
+    res.json({ success: removed > 0, removed, rewritten });
   });
 
   app.post('/open-story-folder', (req, res) => {
@@ -294,4 +358,5 @@ function registerStoryMutationRoutes(app, { storiesDir, deletedStoriesFile }) {
 module.exports = {
   registerStoryMutationRoutes,
   resolveStoryFolderPath,
+  rewriteStoryFileEpisodes,
 };

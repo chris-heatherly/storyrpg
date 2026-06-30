@@ -910,6 +910,38 @@ describe('buildSceneProseRepairHandler', () => {
     expect(result.changed).toBe(false);
   });
 
+  it('does not append a required-beat fallback when the fallback sentence is planning-register prose', async () => {
+    const moment =
+      'The protagonist arrives in the capital as a charming observer with two suitcases and the intent to rebuild after a public failure.';
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{ id: 'b1', text: 'They study the map in silence.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      allowRequiredBeatFallback: () => true,
+    });
+    const story = makeStory();
+
+    await handler({
+      story,
+      blockingIssues: [{
+        ...requiredBeatIssue('s2-1'),
+        message: `Authored required beat is missing from scene "s2-1": "${moment}".`,
+      }],
+    });
+
+    expect(story.episodes[1].scenes[0].beats[0].text).not.toContain('intent to rebuild');
+    expect(story.episodes[1].scenes[0].beats[0].text).not.toContain(moment);
+  });
+
   it('skips same-scene repair when the repair router classifies the issue as unsafe for prose patching', async () => {
     const critic = { execute: vi.fn() };
     const routedAway: string[] = [];

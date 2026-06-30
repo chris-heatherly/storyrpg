@@ -171,6 +171,12 @@ describe('processText', () => {
     expect(sanitizeReaderProse('Your understanding changes.')).toBe('');
     expect(sanitizeReaderProse('You chose cunning over panic.')).toBe('');
     expect(sanitizeReaderProse('The selected route changes the next scene.')).toBe('');
+    expect(sanitizeReaderProse("The aftermath changes what characters say, hide, risk, or trust: By sunset, the apartment has stopped feeling like a room and started feeling like a dare.")).toBe('');
+    expect(sanitizeReaderProse("The consequence stays visible through changed access, posture, information, or danger: two suitcases gape on the floor.")).toBe('');
+    expect(sanitizeReaderProse("Later pressure can return through trust, knowledge, access, or risk: your grandmother's address waits on the table.")).toBe('');
+    expect(sanitizeReaderProse('The answer changes what can be safely said next, and what has to stay hidden a little longer.')).toBe('');
+    expect(sanitizeReaderProse('Later scenes should remember how this changed access, posture, information, risk, or trust.')).toBe('');
+    expect(sanitizeReaderProse('The aftermath stays visible in what characters offer, hide, risk, or refuse.')).toBe('');
     expect(sanitizeReaderProse('The world gives up a little more of its pattern.')).toBe('');
     expect(sanitizeReaderProse('Your ordinary world is reinvention-as-performance.')).toBe('');
     expect(sanitizeReaderProse("Her grandmother's address.")).toBe('');

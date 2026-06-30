@@ -135,15 +135,14 @@ export function classifyTreatmentObligation(
 
 function isCompositeTwoAnchorSignature(normalized: string): boolean {
   return normalized.includes('two anchors')
-    && normalized.includes('rooftop')
-    && normalized.includes('dusk club')
-    && normalized.includes('cismigiu')
+    && /\b(?:rooftop|roof|terrace|first anchor)\b/.test(normalized)
+    && /\b(?:park|garden|street|alley|second anchor)\b/.test(normalized)
     && /\b(?:shadow|scream|rescue|rescues?)\b/.test(normalized);
 }
 
 function isFutureEpisodeOnly(normalized: string, messageNormalized: string): boolean {
   return /\b(?:future episode|later episode|outside generated|outside the generated|partial slice|partial season)\b/.test(messageNormalized)
-    || /\b(?:hunter'?s moon|casa stelarum|final confrontation|episode [2-9]|ep[2-9])\b/.test(normalized);
+    || /\b(?:final confrontation|episode [2-9]|ep[2-9])\b/.test(normalized);
 }
 
 function isAbstractPressure(normalized: string): boolean {

@@ -315,6 +315,20 @@ export interface StoryCatalogEntry {
   episodes: StoryCatalogEpisode[];
 }
 
+export interface StorySetupCatalogEntry {
+  setupId: string;
+  planId: string;
+  title: string;
+  genre: string;
+  tone?: string;
+  synopsis: string;
+  totalEpisodes: number;
+  selectedEpisodes: number[];
+  approvedStepCount: number;
+  status: 'draft' | 'approved' | 'needs_review';
+  updatedAt?: string;
+}
+
 export interface MediaSetupTarget {
   kind: 'images' | 'video';
   storyId: string;

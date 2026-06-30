@@ -32,6 +32,7 @@ import type {
   StoryCircleStructure,
 } from './sourceAnalysis';
 import type { ChoiceType } from './choice';
+import type { TreatmentEventAtom } from './treatmentEvent';
 
 // ========================================
 // SCENE PLAN CORE TYPES
@@ -796,6 +797,14 @@ export interface PlannedScene {
    * is silent on (inference is allowed and expected there).
    */
   requiredBeats?: RequiredBeat[];
+  /** Playable treatment event atoms this scene owns and must dramatize exactly once. */
+  treatmentAtomIds?: string[];
+  /** Content-neutral chronology keys owned by this scene, used to prevent duplicate event realization. */
+  ownedChronologyKeys?: string[];
+  /** Non-playable treatment/context atom ids available for implication, tone, and subtext only. */
+  sourceContextIds?: string[];
+  /** Source context that must not be copied or paraphrased into reader-facing prose. */
+  nonCopyableContext?: Array<Pick<TreatmentEventAtom, 'id' | 'sourceText' | 'eventText' | 'sourceSection'>>;
   /**
    * A single staged signature device/image the prose MUST show in this scene
    * (e.g. the Ep1 joined-blood archive floor). Convenience surface for the most

@@ -127,6 +127,46 @@ describe('EpisodeArchitecturePhase', () => {
     ]);
   });
 
+  it('does not retry deterministic planned-scene density failures with prompt mutation', async () => {
+    const execute = vi.fn(async () => ({
+      success: false,
+      error: '[TreatmentDensityGate] Episode 1 planned scene plan overload: Treatment density overload in scene "scene-2"',
+    }));
+    const deps = makeDeps({ storyArchitect: { execute } as any });
+    const events: PipelineEvent[] = [];
+    const brief = {
+      ...makeBrief(),
+      seasonPlan: {
+        episodes: [{
+          episodeNumber: 1,
+          plannedScenes: [
+            { id: 'scene-1', episodeNumber: 1, order: 1, kind: 'standard', title: 'Opening' },
+            { id: 'scene-2', episodeNumber: 1, order: 2, kind: 'encounter', title: 'Encounter' },
+          ],
+          plannedEncounters: [],
+        }],
+        crossEpisodeBranches: [],
+        consequenceChains: [],
+        arcs: [],
+        informationLedger: [],
+      },
+    };
+
+    await expect(
+      new EpisodeArchitecturePhase(deps).run(
+        brief as any,
+        { worldRules: [], tensions: [] } as any,
+        { characters: [] } as any,
+        makeContext(events),
+      ),
+    ).rejects.toBeInstanceOf(PipelineError);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(events.filter(e => e.type === 'regeneration_triggered')).toHaveLength(0);
+    expect(events.some(e => e.type === 'debug'
+      && (e as any).message.includes('deterministic architecture mode'))).toBe(true);
+  });
+
   it('raises the scene cap to match an authored season-scene slice', async () => {
     const execute = vi.fn(async () => ({ success: true, data: makeBlueprint() }));
     const deps = makeDeps({ storyArchitect: { execute } as any });

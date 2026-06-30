@@ -288,6 +288,17 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // labels like friend/trusted ally/inner circle must match scene history and
   // relationship mechanics.
   { validator: 'RelationshipPacingValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_RELATIONSHIP_PACING', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Spatial unit enforcement: major named locations are full scene units. A scene
+  // may hand off to the next place, but it cannot conduct introductions, choices,
+  // encounters, reveals, or relationship turns in two major locations at once.
+  { validator: 'SceneSpatialUnitValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_SCENE_SPATIAL_UNIT', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // Deterministic relationship arc ledger: relationship stages, private contact,
+  // group membership, and high-stage labels must be earned by full scenes,
+  // relationship choices, stat movement, and evidence tags.
+  { validator: 'RelationshipArcLedgerValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_RELATIONSHIP_ARC_LEDGER', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // McKee thematic-square relationship turns: relationshipValueEvidence must
+  // match deterministic Love/Indifference/Hate/Control rungs and allowed surfaces.
+  { validator: 'ThematicSquareTurnValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_THEMATIC_SQUARE_TURN', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Narrative mechanic pressure: hidden flags/scores/skills/items/routes/relationships
   // must originate in visible story evidence, leave residue, and be spent as earned
   // narrative permission.

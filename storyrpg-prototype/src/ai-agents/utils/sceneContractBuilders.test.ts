@@ -61,7 +61,7 @@ describe('sceneContractBuilders', () => {
     expect(contract.title).toContain('Mika swaps Kylie shoes');
     expect(contract.turnContract.source).toBe('treatment');
     expect(contract.turnContract.centralTurn).toContain('key card');
-    expect(contract.dramaticStructure.changedState).toContain('changed leverage');
+    expect(contract.dramaticStructure.changedState).toContain('visible leverage');
     expect(contract.transitionOut[0]).toMatchObject({ toSceneId: 's1-2', connector: 'therefore' });
     expect(contract.residue[0].type).toBe('access');
     expect(contract.sequenceIntent.turningPoint).toContain('key card');
@@ -124,7 +124,7 @@ describe('sceneContractBuilders', () => {
     expect(contract.title).not.toBe('release scene 6');
     expect(contract.turnContract.centralTurn.toLowerCase()).toContain('aftermath pressure');
     expect(contract.dramaticStructure.question).toContain('What changes');
-    expect(contract.residue[0].description).toContain('visible residue');
+    expect(contract.residue[0].description).toContain('visible consequence');
     expect(contract.transitionOut).toEqual([]);
   });
 
@@ -166,7 +166,7 @@ describe('sceneContractBuilders', () => {
 
     expect(contract.stakesLayers.material).toContain('concrete access');
     expect(contract.stakesLayers.relational).toContain('trust');
-    expect(contract.stakesLayers.identity).toContain('protagonist');
+    expect(contract.stakesLayers.identity).toContain('self-protective');
     expect(contract.stakesLayers.existential).toContain('future');
   });
 });

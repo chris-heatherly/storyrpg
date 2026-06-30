@@ -86,13 +86,21 @@ export interface ChoiceTypeAssignment {
   to: ChoiceType;
 }
 
+function emptyCounts(): Record<ChoiceType, number> {
+  return { expression: 0, relationship: 0, strategic: 0, dilemma: 0 };
+}
+
+function totalCounts(counts: Record<ChoiceType, number>): number {
+  return ORDER.reduce((s, t) => s + Math.max(0, counts[t] ?? 0), 0);
+}
+
 /**
  * Convert season-plan per-episode counts into a proportion target. Returns undefined when
  * no counts are given or they're all zero (so callers fall back to the default mix).
  */
 function countsToTarget(counts?: Record<ChoiceType, number>): ChoiceTypeTarget | undefined {
   if (!counts) return undefined;
-  const total = ORDER.reduce((s, t) => s + Math.max(0, counts[t] ?? 0), 0);
+  const total = totalCounts(counts);
   if (total <= 0) return undefined;
   return {
     expression: (Math.max(0, counts.expression ?? 0) / total) * 100,
@@ -100,6 +108,30 @@ function countsToTarget(counts?: Record<ChoiceType, number>): ChoiceTypeTarget |
     strategic: (Math.max(0, counts.strategic ?? 0) / total) * 100,
     dilemma: (Math.max(0, counts.dilemma ?? 0) / total) * 100,
   };
+}
+
+function allocateChoiceTypeCountsForEpisode(
+  n: number,
+  target: ChoiceTypeTarget,
+  seasonCounts?: Record<ChoiceType, number>,
+): Record<ChoiceType, number> {
+  if (!seasonCounts) return allocateChoiceTypeCounts(n, target);
+  const seasonTotal = totalCounts(seasonCounts);
+  if (seasonTotal <= 0) return allocateChoiceTypeCounts(n, target);
+
+  // If the season slice is denser than the episode's actual choice-point count,
+  // compress proportionally. If it is sparse, reserve only the explicit planned
+  // slots and let extra local choice points use the normal mix instead of
+  // inflating a one-item slice into 100% of the episode.
+  if (seasonTotal >= n) {
+    return allocateChoiceTypeCounts(n, countsToTarget(seasonCounts) ?? target);
+  }
+
+  const counts = emptyCounts();
+  for (const type of ORDER) counts[type] = Math.max(0, seasonCounts[type] ?? 0);
+  const filler = allocateChoiceTypeCounts(n - seasonTotal, target);
+  for (const type of ORDER) counts[type] += filler[type];
+  return counts;
 }
 
 /**
@@ -146,8 +178,7 @@ export function assignChoiceTypes(
   const n = unAuthored.length;
   if (n === 0) return assignments;
 
-  const effectiveTarget = countsToTarget(seasonCounts) ?? target;
-  const counts = allocateChoiceTypeCounts(n, effectiveTarget);
+  const counts = allocateChoiceTypeCountsForEpisode(n, target, seasonCounts);
 
   // Guarantee at least one DILEMMA in a reasonably-sized episode. Largest-
   // remainder gives dilemma (the lowest target weight) 0 slots at small N, so

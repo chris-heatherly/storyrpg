@@ -96,37 +96,9 @@ function isAbstractTrajectoryClause(clause: string): boolean {
     && /\b(?:new|fresh|glamorous|better)\s+(?:life|start)\b/.test(normalized);
 }
 
-function isOpeningLifeHookDepicted(moment: string, prose: string): boolean {
-  const source = normalizeRealizationText(moment);
-  if (
-    !/\bunpack(?:ing|s|ed)?\b/.test(source)
-    || !/\b(?:bucharest|lipscani)\b/.test(source)
-    || !/\b(?:blog|post|article|dusk club)\b/.test(source)
-    || !/\b(?:friend|friends|new life|glittering life|glittering new life|romance|blog views|supernatural danger|predators?)\b/.test(source)
-  ) {
-    return false;
-  }
-
-  const text = normalizeRealizationText(prose);
-  const hasArrival =
-    /\b(?:unpack|unpacking|unpacked|boxes|suitcase|apartment|bucharest|lipscani)\b/.test(text);
-  const hasBlog =
-    /\b(?:blog|posted|post|launch article|article|view counter|views|dusk dawn|dusk and dawn)\b/.test(text);
-  const hasSocialInvitation =
-    /\b(?:mika|stela|friend|friends|dusk club|club|sofa|keycard|rooftop)\b/.test(text);
-  const hasAspirationalLife =
-    /\b(?:glittering|new life|celebration|celebrate|city|nightlife|club|velvet|gold|thousand views|romance|blog views|exclusive|opening night|perfect hook)\b/.test(text);
-  const hasDanger =
-    !/\b(?:supernatural danger|predators?)\b/.test(source)
-    || /\b(?:predator|teeth|shadow|wolves|danger|stillness|watched|gaze)\b/.test(text);
-
-  return hasArrival && hasBlog && hasSocialInvitation && hasAspirationalLife && hasDanger;
-}
-
 function ledgerMomentDepicted(moment: string, prose: string): boolean {
   const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
   if (assessment.depicted) return true;
-  if (isOpeningLifeHookDepicted(moment, prose)) return true;
   if (
     assessment.mode === 'compound-clauses'
     && assessment.missingClauses.length > 0
@@ -230,6 +202,7 @@ export class TreatmentEventLedgerValidator extends BaseValidator {
       for (const scene of episode.scenes || []) {
         const prose = readerFacingSceneProse(scene);
         for (const contract of scene.storyCircleBeatContracts || []) {
+          if (!contract.requiredRealization.includes('final_prose')) continue;
           if (!isMustDramatize(contract, input.treatmentSourced)) continue;
           if (!inActiveEpisodeScope(episode.number, contract, activeEpisodes)) continue;
           if (contract.targetSceneIds.length > 0 && !contract.targetSceneIds.includes(scene.id)) continue;

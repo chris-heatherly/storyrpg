@@ -241,6 +241,16 @@ Your plans must define:
 
     console.log(`[SeasonPlanner] Creating season plan for: ${sourceAnalysis.sourceTitle}`);
 
+    if (
+      sourceAnalysis.sourceCanon?.lockStatus !== 'locked'
+      || sourceAnalysis.canonLockManifest?.requiredConceptsSatisfied !== true
+    ) {
+      return {
+        success: false,
+        error: 'Source canon is not locked. SourceMaterialAnalyzer must establish and lock canonical story facts before season planning.',
+      };
+    }
+
     // Always use LLM - we need it for encounter planning and cross-episode branching
     let planData: MutablePlanData;
 
@@ -1714,6 +1724,11 @@ CRITICAL RULES:
 
     // Build SeasonEpisode objects with encounter data
     const episodes: SeasonEpisode[] = analysis.episodeBreakdown.map(ep => {
+      const canonEpisodeFact = analysis.sourceCanon?.facts.find((fact) =>
+        fact.domain === 'episode'
+        && fact.kind === 'episode_profile'
+        && fact.subjectId === `episode-${ep.episodeNumber}`
+      );
       const deps = dependenciesMap[ep.episodeNumber] || 
         (ep.episodeNumber > 1 ? [ep.episodeNumber - 1] : []);
       
@@ -1783,6 +1798,8 @@ CRITICAL RULES:
 
       return {
         ...ep,
+        canonEpisodeId: canonEpisodeFact?.id,
+        derivedFromFactIds: canonEpisodeFact ? [canonEpisodeFact.id] : undefined,
         storyCircleRole,
         structuralRole,
         status: 'planned' as const,
@@ -1826,9 +1843,20 @@ CRITICAL RULES:
       );
       const episodeRange = authoredArc.episodeRange || { start: 1, end: analysis.totalEstimatedEpisodes };
       const storyCircleSpan = this.deriveArcStoryCircleSpan(episodeRange, storyCircleRoleByEpisode);
+      const canonArcFact = analysis.sourceCanon?.facts.find((fact) => {
+        if (fact.domain !== 'arc' || fact.kind !== 'arc') return false;
+        const value = fact.value as { name?: string; episodeRange?: { start?: number; end?: number } } | undefined;
+        return value?.name === authoredArc.name
+          || (
+            value?.episodeRange?.start === episodeRange.start
+            && value?.episodeRange?.end === episodeRange.end
+          );
+      });
       return {
         ...authoredArc,
         id: authoredArc.id || `arc-${episodeRange.start}-${episodeRange.end}`,
+        canonArcId: canonArcFact?.id,
+        derivedFromFactIds: canonArcFact ? [canonArcFact.id] : authoredArc.derivedFromFactIds,
         name: authoredArc.name || `Arc ${episodeRange.start}-${episodeRange.end}`,
         description: authoredArc.description || `Episodes ${episodeRange.start}-${episodeRange.end}`,
         episodeRange,
@@ -1975,6 +2003,8 @@ CRITICAL RULES:
       id: planId,
       sourceTitle: analysis.sourceTitle,
       sourceAuthor: analysis.sourceAuthor,
+      sourceCanon: analysis.sourceCanon,
+      canonLockManifest: analysis.canonLockManifest,
       createdAt: now,
       updatedAt: now,
       analysisVersion: analysis.analysisTimestamp?.toISOString() || now.toISOString(),
@@ -2635,6 +2665,16 @@ CRITICAL RULES:
     return 'escalation';
   }
 
+  private normalizeArcTurnoutType(value: unknown, fallback: ArcEpisodeTurnoutType): ArcEpisodeTurnoutType {
+    const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (text === 'setup' || text === 'escalation' || text === 'reversal' || text === 'revelation'
+      || text === 'cost' || text === 'choice' || text === 'recontextualization' || text === 'crisis'
+      || text === 'finale' || text === 'handoff') {
+      return text;
+    }
+    return fallback;
+  }
+
   private deriveArcStoryCircleSpan(
     range: { start: number; end: number },
     storyCircleRoleByEpisode: Map<number, StoryCircleRoleAssignment[]>,
@@ -2945,7 +2985,8 @@ CRITICAL RULES:
       const storyCircleRole = this.primaryStoryCircleRoleForEpisode(episode) ?? episode.storyCircleRole?.[0];
       const storyCircleBeat = existing?.storyCircleBeat || storyCircleRole?.beat || 'search';
       const storyCircleRoleKind = existing?.storyCircleRoleKind || storyCircleRole?.roleKind || 'expansion';
-      const turnType = existing?.turnType || this.inferArcTurnoutType(episode, storyCircleBeat, anchors);
+      const inferredTurnType = this.inferArcTurnoutType(episode, storyCircleBeat, anchors);
+      const turnType = this.normalizeArcTurnoutType(existing?.turnType, inferredTurnType);
       const cliffhanger = episode.cliffhangerPlan;
       return {
         episodeNumber: episode.episodeNumber,

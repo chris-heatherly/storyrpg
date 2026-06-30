@@ -18,13 +18,13 @@ export function repairLiveActionTense(value: unknown): { value: unknown; changed
     /^[A-Z]/.test(match) ? `${replacement.charAt(0).toUpperCase()}${replacement.slice(1)}` : replacement;
 
   next = next
-    .replace(/\bBefore (he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) turned\b/g, 'Before $1 turns')
-    .replace(/\b(he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) turned\b/g, '$1 turns')
-    .replace(/\b(he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) looked\b/g, '$1 looks')
-    .replace(/\b(he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) stepped\b/g, '$1 steps')
-    .replace(/\b(he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) reached\b/g, '$1 reaches')
-    .replace(/\b(he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) held\b/g, '$1 holds')
-    .replace(/\b(he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen) didn't\b/g, "$1 doesn't")
+    .replace(/\bBefore (he|she|it|they|[A-Z][a-z]+) turned\b/g, 'Before $1 turns')
+    .replace(/\b(he|she|it|they|[A-Z][a-z]+) turned\b/g, '$1 turns')
+    .replace(/\b(he|she|it|they|[A-Z][a-z]+) looked\b/g, '$1 looks')
+    .replace(/\b(he|she|it|they|[A-Z][a-z]+) stepped\b/g, '$1 steps')
+    .replace(/\b(he|she|it|they|[A-Z][a-z]+) reached\b/g, '$1 reaches')
+    .replace(/\b(he|she|it|they|[A-Z][a-z]+) held\b/g, '$1 holds')
+    .replace(/\b(he|she|it|they|[A-Z][a-z]+) didn't\b/g, "$1 doesn't")
     .replace(/\byou saw\b/g, 'you see')
     .replace(/\byou felt\b/g, 'you feel')
     .replace(/\byou heard\b/g, 'you hear')

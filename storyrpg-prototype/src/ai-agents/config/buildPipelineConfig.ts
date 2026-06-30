@@ -227,7 +227,7 @@ export function buildPipelineConfig(
           route: 'fusion' as const,
           provider: {
             allowFallbacks: true,
-            requireParameters: true,
+            requireParameters: false,
           },
         },
       };

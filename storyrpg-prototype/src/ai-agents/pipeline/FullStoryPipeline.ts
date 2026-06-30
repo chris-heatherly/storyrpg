@@ -145,6 +145,7 @@ import {
   refreshBriefSeasonPlanFromAnalysis,
 } from './treatmentRefresh';
 import { SeasonCanon } from './seasonCanon';
+import { renderSourceCanonPrompt } from '../utils/sourceCanonPrompt';
 import { createRunState, type PipelineRunState } from './runState';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
@@ -835,6 +836,7 @@ export class FullStoryPipeline {
   // sequentially-generated episodes.
   private get seasonCanon(): SeasonCanon { return this.runState.season.canon; }
   private set seasonCanon(v: SeasonCanon) { this.runState.season.canon = v; }
+  private sourceCanonPromptBlock?: string;
   private get priorEpisodeSnapshot(): EpisodeStateSnapshot | undefined { return this.runState.season.priorEpisodeSnapshot; }
   private set priorEpisodeSnapshot(v: EpisodeStateSnapshot | undefined) { this.runState.season.priorEpisodeSnapshot = v; }
   /**
@@ -844,6 +846,8 @@ export class FullStoryPipeline {
    */
   private get seasonChoicePlan(): SeasonChoicePlan | undefined { return this.runState.season.choicePlan; }
   private set seasonChoicePlan(v: SeasonChoicePlan | undefined) { this.runState.season.choicePlan = v; }
+  private get plannedChoiceTypesByScene(): Record<string, string> | undefined { return this.runState.season.choiceTypesByScene; }
+  private set plannedChoiceTypesByScene(v: Record<string, string> | undefined) { this.runState.season.choiceTypesByScene = v; }
   private get seasonSkillPlan(): SeasonSkillPlan | undefined { return this.runState.season.skillPlan; }
   private set seasonSkillPlan(v: SeasonSkillPlan | undefined) { this.runState.season.skillPlan = v; }
   /**
@@ -876,7 +880,9 @@ export class FullStoryPipeline {
   private establishedCanonForPrompt(episodeNumber?: number): string | undefined {
     if (!this.seasonCanonOn) return undefined;
     const block = this.seasonCanon.canonForPrompt(episodeNumber);
-    return block && block.trim() ? block : undefined;
+    const sourceBlock = this.sourceCanonPromptBlock;
+    const blocks = [sourceBlock, block].filter((candidate) => candidate && candidate.trim());
+    return blocks.length > 0 ? blocks.join('\n\n') : undefined;
   }
   private completedPhases = new Set<string>();
   private invalidatedResumeEpisodes = new Set<number>();
@@ -4692,6 +4698,10 @@ export class FullStoryPipeline {
       generationPlan: { get: () => this.generationPlan },
       remediationBudget: { get: () => this.remediationBudget },
       seasonChoicePlan: { get: () => this.seasonChoicePlan },
+      plannedChoiceTypesByScene: {
+        get: () => this.plannedChoiceTypesByScene,
+        set: (value) => { this.plannedChoiceTypesByScene = value; },
+      },
       seasonThreadLedger: { get: () => this.seasonThreadLedger },
     });
     return new ContentGenerationPhase(deps).run(
@@ -5389,6 +5399,7 @@ export class FullStoryPipeline {
     this.resetQualityCouncil();
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.seasonCanon = new SeasonCanon({ storyId: idSlugify(baseBrief.story.title) });
+    this.sourceCanonPromptBlock = renderSourceCanonPrompt(analysis.sourceCanon);
     this.priorEpisodeSnapshot = undefined;
     const startTime = Date.now();
 
@@ -6516,7 +6527,9 @@ export class FullStoryPipeline {
           generatedThroughEpisode: i,
         },
       });
-      const plannedChoiceTypes = plannedChoiceTypesByScene(episodeBrief.seasonPlan);
+      const plannedChoiceTypes = this.plannedChoiceTypesByScene && Object.keys(this.plannedChoiceTypesByScene).length > 0
+        ? this.plannedChoiceTypesByScene
+        : plannedChoiceTypesByScene(episodeBrief.seasonPlan);
       const plannedConsequenceTiers = plannedConsequenceTiersByScene(episodeBrief.seasonPlan);
 
       let report = await new FinalStoryContractValidator().validate({
@@ -9415,6 +9428,7 @@ export class FullStoryPipeline {
         allSceneValidationResults: { get: () => this.allSceneValidationResults },
         sceneValidationResults: { get: () => this.sceneValidationResults },
         seasonChoicePlan: { get: () => this.seasonChoicePlan },
+        plannedChoiceTypesByScene: { get: () => this.plannedChoiceTypesByScene },
         seasonSkillPlan: { get: () => this.seasonSkillPlan },
         callbackLedger: { get: () => this.callbackLedger },
         allEncounterTelemetry: { get: () => this.allEncounterTelemetry },
@@ -9834,13 +9848,18 @@ export class FullStoryPipeline {
           .replace(/^-|-$/g, '') || 'choice'}`;
 
         const readerTargetName = this.sanitizeReaderFacingSceneName(targetScene?.name || targetSceneId, targetSceneId);
+        const originalTargetBeat = choice.nextBeatId
+          ? content.beats.find(candidate => candidate.id === choice.nextBeatId)
+          : undefined;
+        const originalTargetBeatId = originalTargetBeat?.isChoiceBridge ? undefined : choice.nextBeatId;
+
         const routeContext = {
           sourceSceneId: sceneBlueprint.id,
           sourceBeatId: beat.id,
           sourceChoiceId: choice.id,
           choiceSummary: choice.feedbackCue?.echoSummary || choice.text,
           originalTargetSceneId: targetSceneId,
-          originalTargetBeatId: choice.nextBeatId,
+          originalTargetBeatId,
           transitionIntent: `Bridge from "${this.sanitizeReaderFacingSceneName(sceneBlueprint.name)}" to "${readerTargetName}" without teleporting the player.`,
           bridgePurpose: 'choice_transition',
         };
@@ -9851,7 +9870,7 @@ export class FullStoryPipeline {
         const existingBridge = content.beats.find(candidate => candidate.id === bridgeId);
         if (existingBridge) {
           existingBridge.nextSceneId = targetSceneId;
-          existingBridge.nextBeatId = routeContext.originalTargetBeatId;
+          existingBridge.nextBeatId = originalTargetBeatId;
           existingBridge.isChoiceBridge = true;
           existingBridge.routeContext = routeContext;
           continue;
@@ -9862,7 +9881,7 @@ export class FullStoryPipeline {
           id: bridgeId,
           text: bridgeText,
           nextSceneId: targetSceneId,
-          nextBeatId: routeContext.originalTargetBeatId,
+          nextBeatId: originalTargetBeatId,
           isChoiceBridge: true,
           routeContext,
           visualMoment: bridgeText,

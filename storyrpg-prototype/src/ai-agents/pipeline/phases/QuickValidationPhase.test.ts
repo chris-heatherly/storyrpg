@@ -70,7 +70,7 @@ function makeInput(overrides: Partial<QuickValidationPhaseInput> = {}): QuickVal
       },
     ] as any,
     choiceSets: [
-      { beatId: 'beat-1', choiceType: 'expression', choices: [{ id: 'choice-1' }] },
+      { sceneId: 'scene-1', beatId: 'beat-1', choiceType: 'expression', choices: [{ id: 'choice-1' }] },
     ] as any,
     encounters: new Map(),
     ...overrides,
@@ -174,8 +174,84 @@ describe('QuickValidationPhase', () => {
     const result = await new QuickValidationPhase(deps).run(input, makeContext(events));
 
     expect((deps.choiceAuthor.execute as any)).toHaveBeenCalledTimes(1);
-    expect(input.choiceSets[0]).toBe(repairedChoiceSet);
+    expect(input.choiceSets[0]).toMatchObject({ ...repairedChoiceSet, sceneId: 'scene-1' });
     expect(runQuickValidation).toHaveBeenCalledTimes(2);
+    expect(result?.canProceed).toBe(true);
+  });
+
+  it('repairs the scene-scoped choice set when local beat ids repeat', async () => {
+    const failing = {
+      canProceed: false,
+      warningCount: 0,
+      blockingIssues: [
+        {
+          category: 'stakes_triangle',
+          level: 'error',
+          message: 'flat stakes',
+          location: { choiceId: 'scene-b-choice' },
+        },
+      ],
+    };
+    const runQuickValidation = vi.fn(async () => passResult());
+    runQuickValidation.mockResolvedValueOnce(failing);
+    const repairedChoiceSet = { beatId: 'beat-6', choiceType: 'dilemma', choices: [{ id: 'scene-b-choice-repaired' }] };
+    const deps = makeDeps({
+      integratedValidator: { runQuickValidation } as any,
+      choiceAuthor: { execute: vi.fn(async () => ({ success: true, data: repairedChoiceSet })) } as any,
+    });
+    const events: PipelineEvent[] = [];
+    const input = makeInput({
+      episodeBlueprint: {
+        scenes: [
+          {
+            id: 'scene-a',
+            name: 'Scene A',
+            location: 'loc-1',
+            npcsPresent: [],
+            leadsTo: ['scene-b'],
+            choicePoint: { optionHints: ['a', 'b'] },
+          },
+          {
+            id: 'scene-b',
+            name: 'Scene B',
+            location: 'loc-1',
+            npcsPresent: [],
+            leadsTo: ['scene-c'],
+            choicePoint: { optionHints: ['c', 'd'] },
+          },
+        ],
+        suggestedFlags: [],
+        suggestedScores: [],
+        suggestedTags: [],
+      } as any,
+      sceneContents: [
+        {
+          sceneId: 'scene-a',
+          sceneName: 'Scene A',
+          beats: [{ id: 'beat-6', text: 'The first local decision.' }],
+        },
+        {
+          sceneId: 'scene-b',
+          sceneName: 'Scene B',
+          beats: [{ id: 'beat-6', text: 'The second local decision.' }],
+        },
+      ] as any,
+      choiceSets: [
+        { sceneId: 'scene-a', beatId: 'beat-6', choiceType: 'expression', choices: [{ id: 'scene-a-choice' }] },
+        { sceneId: 'scene-b', beatId: 'beat-6', choiceType: 'expression', choices: [{ id: 'scene-b-choice' }] },
+      ] as any,
+    });
+
+    const result = await new QuickValidationPhase(deps).run(input, makeContext(events));
+
+    expect((deps.choiceAuthor.execute as any)).toHaveBeenCalledTimes(1);
+    expect((deps.choiceAuthor.execute as any).mock.calls[0][0].sceneBlueprint.id).toBe('scene-b');
+    expect(input.choiceSets[0].choices[0].id).toBe('scene-a-choice');
+    expect(input.choiceSets[1]).toMatchObject({
+      sceneId: 'scene-b',
+      beatId: 'beat-6',
+      choices: [{ id: 'scene-b-choice-repaired' }],
+    });
     expect(result?.canProceed).toBe(true);
   });
 

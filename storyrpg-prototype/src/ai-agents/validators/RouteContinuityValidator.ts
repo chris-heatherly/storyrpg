@@ -1,6 +1,11 @@
 import type { Beat, Choice, Episode, Scene, Story } from '../../types';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { READER_PROSE_LEAK_PATTERNS, STRUCTURAL_SCAFFOLDING_PATTERNS } from '../constants/metaProse';
+import {
+  detectPrimaryStoryEventCues,
+  STORY_EVENT_CUE_ORDER,
+  type StoryEventCue,
+} from '../remediation/storyEventCues';
 import { collectEncounterMetaTexts, collectReaderFacingTexts } from './EncounterAnchorContentValidator';
 
 export type RouteContinuityIssueType =
@@ -26,15 +31,7 @@ export interface RouteContinuityResult {
   issues: RouteContinuityIssue[];
 }
 
-type RouteCue =
-  | 'arrival'
-  | 'valcescuDoor'
-  | 'bookshopQuartz'
-  | 'rooftopMeet'
-  | 'parkAttack'
-  | 'walkHome'
-  | 'lateNightWriting'
-  | 'blogAftermath';
+type RouteCue = Extract<StoryEventCue, 'arrival' | 'venueDoor' | 'objectHandoff' | 'socialMeet' | 'threatEncounter' | 'lateNightWriting' | 'blogAftermath'> | 'walkHome';
 
 interface CueHit {
   cue: RouteCue;
@@ -55,52 +52,28 @@ const TERMINAL_SCENE_TARGETS = new Set([
 ]);
 
 const ROUTE_CUE_ORDER: Record<RouteCue, number> = {
-  arrival: 10,
-  valcescuDoor: 20,
-  bookshopQuartz: 30,
-  rooftopMeet: 40,
-  parkAttack: 50,
+  ...STORY_EVENT_CUE_ORDER,
   walkHome: 60,
-  lateNightWriting: 70,
-  blogAftermath: 80,
-};
+} as Record<RouteCue, number>;
 
 const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
-  'valcescuDoor',
-  'bookshopQuartz',
-  'rooftopMeet',
-  'parkAttack',
+  'venueDoor',
+  'objectHandoff',
+  'threatEncounter',
   'walkHome',
   'blogAftermath',
 ]);
 
-const ROUTE_CUE_PATTERNS: Record<RouteCue, RegExp[]> = {
-  arrival: [
-    /\b(?:bucharest|romania|airport|arriv(?:e|al|ing)|grandmother['’]s apartment|suitcase|face\s*time|facetime|sadie)\b/i,
-  ],
-  valcescuDoor: [
-    /\b(?:v[âa]lcescu|valcescu|side entrance|key\s*card|club door|club threshold|mika)\b/i,
-    /\b(?:club|door|entrance)\b[^.!?\n]{0,120}\b(?:key\s*card|mika|v[âa]lcescu|valcescu)\b/i,
-  ],
-  bookshopQuartz: [
-    /\b(?:bookshop|stela|quartz|crystal|star chart|astrology)\b/i,
-  ],
-  rooftopMeet: [
-    /\b(?:rooftop|roof\b|club roof|roofline)\b/i,
-    /\bvictor\b[^.!?\n]{0,160}\b(?:rooftop|roof)\b/i,
-  ],
-  parkAttack: [
-    /\b(?:ci[sș]migiu|cismigiu|park|attacker|attack|aggressor|shadow|knife|rescues?|rescue|lunges?|chases?)\b/i,
-  ],
+const WALK_HOME_PATTERNS: RegExp[] = [
+  /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b/,
+  /\b(?:small of your back|guiding you away|under your heels)\b/i,
+];
+
+const PUBLIC_BLOG_AFTERMATH_MARKERS = /\b(?:readership|reads?|viral|views|comments|dashboard|profile|public pressure|public signal|broke the internet|attention spike|audience growth)\b/i;
+
+const ROUTE_CUE_PATTERNS: Record<'walkHome', RegExp[]> = {
   walkHome: [
-    /\bvictor\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b/i,
-    /\b(?:small of your back|guiding you away|cobblestones are slick|under your heels)\b/i,
-  ],
-  lateNightWriting: [
-    /\b(?:4\s*a\.?m\.?|four\s*a\.?m\.?|laptop|draft|post\s+the\s+blog|write\s+the\s+blog|writing)\b/i,
-  ],
-  blogAftermath: [
-    /\b(?:viral|80,?000|eighty thousand|reads|views|comments|6\s*p\.?m\.?|six\s*p\.?m\.?)\b/i,
+    ...WALK_HOME_PATTERNS,
   ],
 };
 
@@ -202,7 +175,9 @@ function collectRouteTextFields(scene: Scene): TextField[] {
     pushText(fields, `scene:${scene.id}.beat:${beat.id}.emotionalRead`, beat.emotionalRead, scene.id, beat.id);
     pushText(fields, `scene:${scene.id}.beat:${beat.id}.relationshipDynamic`, beat.relationshipDynamic, scene.id, beat.id);
     pushText(fields, `scene:${scene.id}.beat:${beat.id}.mustShowDetail`, beat.mustShowDetail, scene.id, beat.id);
-    collectStrings(beat.textVariants, fields, `scene:${scene.id}.beat:${beat.id}.textVariants`, scene.id, beat.id);
+    for (const [index, variant] of (beat.textVariants || []).entries()) {
+      pushText(fields, `scene:${scene.id}.beat:${beat.id}.textVariants[${index}].text`, variant?.text, scene.id, beat.id);
+    }
     collectStrings(beat.dramaticIntent, fields, `scene:${scene.id}.beat:${beat.id}.dramaticIntent`, scene.id, beat.id);
     collectStrings(beat.coveragePlan, fields, `scene:${scene.id}.beat:${beat.id}.coveragePlan`, scene.id, beat.id);
     for (const choice of beat.choices || []) {
@@ -239,7 +214,6 @@ function collectObligationTexts(scene: Scene): string[] {
 function sceneCueHits(scene: Scene, sceneIndex: number): CueHit[] {
   const routeText = [
     scene.id,
-    scene.name,
     scene.timeline?.location,
     scene.timeline?.timeOfDay,
     scene.timeline?.transitionIn,
@@ -248,10 +222,12 @@ function sceneCueHits(scene: Scene, sceneIndex: number): CueHit[] {
   ].filter((text): text is string => typeof text === 'string' && text.trim().length > 0).join('\n');
 
   const hits: CueHit[] = [];
-  for (const cue of Object.keys(ROUTE_CUE_PATTERNS) as RouteCue[]) {
-    if (ROUTE_CUE_PATTERNS[cue].some((pattern) => pattern.test(routeText))) {
-      hits.push({ cue, order: ROUTE_CUE_ORDER[cue], scene, sceneIndex });
-    }
+  for (const cue of detectPrimaryStoryEventCues(routeText)) {
+    if (cue === 'roadBreakdown' || cue === 'friendDebrief' || cue === 'endingAftermath') continue;
+    hits.push({ cue, order: ROUTE_CUE_ORDER[cue], scene, sceneIndex });
+  }
+  if (ROUTE_CUE_PATTERNS.walkHome.some((pattern) => pattern.test(routeText))) {
+    hits.push({ cue: 'walkHome', order: ROUTE_CUE_ORDER.walkHome, scene, sceneIndex });
   }
   return hits.sort((a, b) => a.order - b.order);
 }
@@ -263,13 +239,13 @@ function isRecapOnlyCue(scene: Scene, cue: RouteCue): boolean {
     ...collectReaderFacingTexts(scene),
     ...collectEncounterMetaTexts(scene),
   ].join(' ');
-  return RECAP_MARKERS.test(text) && ROUTE_CUE_PATTERNS.blogAftermath.some((pattern) => pattern.test(text));
+  return RECAP_MARKERS.test(text) && PUBLIC_BLOG_AFTERMATH_MARKERS.test(text);
 }
 
 function extractRequiredRescuer(obligationText: string): string | undefined {
   const patterns = [
     /\b([A-Z][A-Za-zÀ-ž'’.-]{2,}(?:\s+[A-Z][A-Za-zÀ-ž'’.-]{2,}){0,2})\s+(?:rescues?|saves?|pulls|drags|carries)\b/,
-    /\brescued\s+by\s+([A-Z][A-Za-zÀ-ž'’.-]{2,}(?:\s+[A-Z][A-Za-zÀ-ž'’.-]{2,}){0,2})\b/i,
+    /\brescued\s+by\s+([A-Z][A-Za-zÀ-ž'’.-]{2,}(?:\s+[A-Z][A-Za-zÀ-ž'’.-]{2,}){0,2})\b/,
   ];
   for (const pattern of patterns) {
     const match = obligationText.match(pattern);

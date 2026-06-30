@@ -18,6 +18,7 @@ import {
   EpisodeStatus,
 } from '../types/seasonPlan';
 import { SourceMaterialAnalysis } from '../types/sourceAnalysis';
+import type { CanonWizardState } from '../types/storyCanon';
 
 const STORAGE_KEY = 'season-plans';
 const ACTIVE_PLAN_KEY = 'active-season-plan';
@@ -343,9 +344,9 @@ export const seasonPlanStore = {
   /**
    * Save a new season plan (atomic)
    */
-  async savePlan(plan: SeasonPlan, sourceAnalysis: SourceMaterialAnalysis): Promise<void> {
+  async savePlan(plan: SeasonPlan, sourceAnalysis: SourceMaterialAnalysis, canonWizardState?: CanonWizardState): Promise<void> {
     await storeMutex.withLock(async () => {
-      state.plans.set(plan.id, { plan, sourceAnalysis });
+      state.plans.set(plan.id, { plan, sourceAnalysis, canonWizardState });
       state.activePlanId = plan.id;
       await saveToStorage();
       notifyListeners();
@@ -371,6 +372,45 @@ export const seasonPlanStore = {
       };
 
       state.plans.set(planId, { ...existing, plan: updatedPlan });
+      await saveToStorage();
+      notifyListeners();
+    });
+  },
+
+  /**
+   * Update the plan plus its source-analysis/setup metadata in one atomic write.
+   */
+  async updateSavedPlan(
+    planId: string,
+    updates: {
+      plan?: Partial<SeasonPlan>;
+      sourceAnalysis?: SourceMaterialAnalysis;
+      canonWizardState?: CanonWizardState;
+    },
+  ): Promise<void> {
+    await storeMutex.withLock(async () => {
+      const existing = state.plans.get(planId);
+      if (!existing) {
+        console.warn(`[SeasonPlanStore] Plan not found: ${planId}`);
+        return;
+      }
+
+      const updatedPlan: SeasonPlan = updates.plan
+        ? {
+            ...existing.plan,
+            ...updates.plan,
+            updatedAt: new Date(),
+          }
+        : {
+            ...existing.plan,
+            updatedAt: new Date(),
+          };
+
+      state.plans.set(planId, {
+        plan: updatedPlan,
+        sourceAnalysis: updates.sourceAnalysis || existing.sourceAnalysis,
+        canonWizardState: updates.canonWizardState || existing.canonWizardState,
+      });
       await saveToStorage();
       notifyListeners();
     });

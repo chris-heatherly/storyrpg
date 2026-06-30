@@ -135,7 +135,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
-  it('downgrades settled Dusk Club membership into a provisional joke', async () => {
+  it('caps unearned group membership contracts to a provisional stage', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1];
     scene.beats[0].text = 'Stela presses rose quartz into your palm, and the Dusk Club is now three.';
@@ -155,7 +155,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     });
 
     expect(result.changed).toBe(true);
-    expect(scene.beats[0].text).toContain('joke about calling it the Dusk Club');
+    expect(scene.relationshipPacing?.[0]?.targetStage).toBe('spark');
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
@@ -187,6 +187,59 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(scene.name).toBe('ally debrief');
     expect(scene.title).toBe('ally debrief');
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+  });
+
+  it('caps relationship pacing target stages from validator-owned permitted-stage findings', async () => {
+    const story = {
+      id: 'generic-relationship-cap',
+      title: 'Generic Relationship Cap',
+      genre: 'drama',
+      synopsis: '',
+      initialState: { attributes: {}, skills: {}, tags: [], inventory: [] },
+      npcs: [{ id: 'ally', name: 'Ally' }],
+      episodes: [{
+        id: 'ep1',
+        number: 1,
+        title: 'Episode 1',
+        startingSceneId: 'scene-a',
+        scenes: [{
+          id: 'scene-a',
+          name: 'Scene A',
+          title: 'Scene A',
+          startingBeatId: 'beat-a',
+          relationshipPacing: [{
+            id: 'scene-a-rel-ally',
+            source: 'planner',
+            npcId: 'ally',
+            startStage: 'spark',
+            targetStage: 'friend',
+            allowedLabels: ['friend', 'trusted ally'],
+            blockedLabels: [],
+            requiredEvidence: ['show behavior before naming the bond'],
+            minScenesSinceIntroduction: 0,
+            maxDeltaThisScene: 8,
+            mechanicDimensions: ['trust'],
+          }],
+          beats: [{ id: 'beat-a', text: 'The conversation stays careful.', choices: [] }],
+        }],
+      }],
+    } as unknown as Story;
+
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: [{
+        validator: 'RelationshipArcLedgerValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: 'scene-a',
+        message: 'Scene "scene-a" targets friend for ally, but the deterministic relationship ledger only permits acquaintance.',
+      }],
+    });
+
+    const contract = story.episodes[0].scenes[0].relationshipPacing?.[0];
+    expect(result.changed).toBe(true);
+    expect(contract?.targetStage).toBe('acquaintance');
+    expect(contract?.allowedLabels.join(' ')).not.toMatch(/\bfriend|trusted ally\b/i);
+    expect(contract?.blockedLabels).toEqual(expect.arrayContaining(['friend', 'trusted ally']));
   });
 
   it('no-ops when relationship pacing is not blocking', async () => {

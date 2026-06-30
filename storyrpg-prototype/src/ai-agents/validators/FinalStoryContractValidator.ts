@@ -28,6 +28,7 @@ import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
+import { EmptyPlayableSceneValidator } from './EmptyPlayableSceneValidator';
 import { TreatmentEventLedgerValidator } from './TreatmentEventLedgerValidator';
 import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { RouteContinuityValidator } from './RouteContinuityValidator';
@@ -89,6 +90,11 @@ function sceneRefFromValidationLocation(location?: string): { episodeNumber?: nu
   return { episodeNumber: Number(match[1]), sceneId: match[2] };
 }
 
+function isContractualQaCritical(message: unknown): boolean {
+  return /\b(?:agency|choice|cosmetic|false choice|chronolog|timeline|out of order|continuity|contradiction|empty scene|empty encounter|missing required|treatment|raw treatment|planning|scaffold|fallback|leak|pov|point of view|protagonist)\b/i
+    .test(String(message || ''));
+}
+
 function locationSetsCompatible(planned: Set<string>, staged: Set<string>): boolean {
   const sharedLocation = [...planned].some((location) => staged.has(location));
   if (sharedLocation) return true;
@@ -121,6 +127,7 @@ const FIDELITY_FALLBACK_POLICY: Record<string, FidelitySeverityMetadata> = {
 
 export type FinalStoryContractIssueType =
   | 'empty_scene'
+  | 'empty_encounter_scene'
   | 'placeholder_scene'
   | 'invalid_encounter'
   | 'missing_runtime_encounter'
@@ -532,6 +539,24 @@ export class FinalStoryContractValidator {
           beatId: finding.beatId,
           validator: 'PlanningRegisterLeakValidator',
           suggestion: 'Rewrite this field as in-world prose or visual direction; remove planning-register instructions and authorial task labels.',
+        });
+      }
+    }
+
+    {
+      const emptyScenes = new EmptyPlayableSceneValidator().validate({ story: input.story });
+      for (const finding of emptyScenes.findings) {
+        issues.push({
+          type: finding.type,
+          severity: 'error',
+          message: finding.message,
+          episodeId: finding.episodeId,
+          episodeNumber: finding.episodeNumber,
+          sceneId: finding.sceneId,
+          validator: finding.validator,
+          suggestion: finding.type === 'empty_encounter_scene'
+            ? 'Regenerate the encounter scene or remove it before assembly; encounter scenes must contain beats, storylets, phases, or outcomes.'
+            : 'Regenerate the scene or remove it before assembly; playable scenes must contain beat prose, choices, or storylets.',
         });
       }
     }
@@ -1831,7 +1856,9 @@ export class FinalStoryContractValidator {
         type: 'qa_blocker_present',
         severity: resolveFinalContractSeverity({
           requestedSeverity: qaReport.criticalIssues.length > 0 ? 'error' : 'warning',
-          findingClass: 'craft_critic',
+          findingClass: qaReport.criticalIssues.some(isContractualQaCritical)
+            ? 'runtime_contract'
+            : 'craft_critic',
           treatmentSourced,
           gateId: 'GATE_QA_CRITICAL_BLOCK',
           sourceKind: 'qa',

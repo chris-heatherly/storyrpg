@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildDeterministicContractHandlers,
   runFinalContractRepair,
   type ContractRepairReport,
   type ContractRepairHandler,
@@ -161,5 +162,52 @@ describe('runFinalContractRepair', () => {
     });
     expect(out.passed).toBe(false);
     expect(out.attempts).toBe(0);
+  });
+
+  it('sanitizes generic dramaticIntent metadata scaffold during deterministic repair', async () => {
+    const localStory = {
+      id: 'metadata-hygiene',
+      title: 'Metadata Hygiene',
+      episodes: [{
+        id: 'ep1',
+        number: 1,
+        scenes: [{
+          id: 'scene-1',
+          beats: [{
+            id: 'beat-1',
+            text: 'The room changes when the letter lands on the table.',
+            dramaticIntent: {
+              characterObjectives: {
+                'the protagonist': 'the protagonist wants to shift the moment without saying everything directly',
+              },
+              statusBefore: 'the protagonist enters without full control of the room',
+              statusAfter: "the protagonist's visible action shifts attention and leverage",
+            },
+          }],
+        }],
+      }],
+    } as unknown as Story;
+
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: {
+        passed: false,
+        blockingIssues: [{
+          validator: 'RouteContinuityValidator',
+          type: 'unsafe_fallback_prose',
+          sceneId: 'scene-1',
+          beatId: 'beat-1',
+          message: 'Unsafe fallback/planning prose survived in scene:scene-1.beat:beat-1.dramaticIntent.',
+        }],
+      },
+      handlers: buildDeterministicContractHandlers(),
+      revalidate: async () => pass,
+    });
+
+    const intent = localStory.episodes[0].scenes[0].beats[0].dramaticIntent as any;
+    expect(out.passed).toBe(true);
+    expect(intent.characterObjectives['the protagonist']).toBeUndefined();
+    expect(JSON.stringify(intent)).not.toMatch(/the protagonist|without saying everything directly|without full control of the room/i);
+    expect(intent.characterObjectives['the focal character']).toContain('visible change');
   });
 });

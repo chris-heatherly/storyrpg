@@ -23,32 +23,33 @@ const stringMap = {
   },
 } as const;
 
-const stakes = {
+const buildStakes = (maxLength: number) => ({
   type: 'object',
   additionalProperties: false,
   required: ['want', 'cost', 'identity'],
   properties: {
-    want: shortString(180),
-    cost: shortString(180),
-    identity: shortString(180),
+    want: shortString(maxLength),
+    cost: shortString(maxLength),
+    identity: shortString(maxLength),
   },
-} as const;
+}) as const;
 
-const outcomeTexts = {
+const buildOutcomeTexts = (maxLength: number) => ({
   type: 'object',
   additionalProperties: false,
   required: ['success', 'partial', 'failure'],
   properties: {
-    success: shortString(220),
-    partial: shortString(220),
-    failure: shortString(220),
+    success: shortString(maxLength),
+    partial: shortString(maxLength),
+    failure: shortString(maxLength),
   },
-} as const;
+}) as const;
 
 export interface ChoiceSetSchemaOptions {
   choiceType?: string;
   branching?: boolean;
   optionCount?: number;
+  compact?: boolean;
 }
 
 export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): StructuredJsonSchema {
@@ -62,6 +63,31 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
   const optionCount = rawOptionCount
     ? Math.max(3, Math.min(4, rawOptionCount))
     : undefined;
+  const stringLimits = options.compact
+    ? {
+        stakes: 100,
+        outcome: 120,
+        choiceText: 90,
+        short: 70,
+        reaction: 120,
+        consequenceDescription: 120,
+        moral: 140,
+        residue: 120,
+        designNotes: 80,
+      }
+    : {
+        stakes: 180,
+        outcome: 220,
+        choiceText: 120,
+        short: 80,
+        reaction: 220,
+        consequenceDescription: 180,
+        moral: 220,
+        residue: 220,
+        designNotes: 120,
+      };
+  const stakes = buildStakes(stringLimits.stakes);
+  const outcomeTexts = buildOutcomeTexts(stringLimits.outcome);
   const requiredChoiceFields = [
     'id',
     'text',
@@ -98,16 +124,16 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
             additionalProperties: false,
             required: requiredChoiceFields,
             properties: {
-              id: shortString(80),
-              text: shortString(120),
+              id: shortString(stringLimits.short),
+              text: shortString(stringLimits.choiceText),
               choiceType: shortString(40),
-              choiceIntent: shortString(80),
+              choiceIntent: shortString(stringLimits.short),
               consequenceTier: shortString(40),
               nextSceneId: shortString(120),
               stakes,
               stakesAnnotation: stakes,
               outcomeTexts,
-              reactionText: shortString(220),
+              reactionText: shortString(stringLimits.reaction),
               tintFlag: { type: 'string', enum: [...canonicalTintVocabulary()] },
               consequences: {
                 type: 'array',
@@ -130,7 +156,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
                     itemId: shortString(120),
                     change: { type: 'number' },
                     quantity: { type: 'number' },
-                    description: shortString(180),
+                    description: shortString(stringLimits.consequenceDescription),
                   },
                 },
               },
@@ -162,8 +188,8 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
                       properties: {
                         id: shortString(80),
                         delta: { type: 'number' },
-                        reason: shortString(160),
-                        hint: shortString(160),
+                        reason: shortString(stringLimits.moral),
+                        hint: shortString(stringLimits.moral),
                       },
                     },
                   },
@@ -174,12 +200,12 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
                 additionalProperties: false,
                 required: ['valueA', 'valueB', 'unavoidableCost', 'benefits', 'harms', 'uncertainty'],
                 properties: {
-                  valueA: shortString(160),
-                  valueB: shortString(160),
-                  unavoidableCost: shortString(220),
+                  valueA: shortString(stringLimits.moral),
+                  valueB: shortString(stringLimits.moral),
+                  unavoidableCost: shortString(stringLimits.moral),
                   benefits: stringArray,
                   harms: stringArray,
-                  uncertainty: shortString(200),
+                  uncertainty: shortString(stringLimits.moral),
                 },
               },
               residueHints: {
@@ -190,7 +216,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
                   required: ['kind', 'description'],
                   properties: {
                     kind: shortString(80),
-                    description: shortString(220),
+                    description: shortString(stringLimits.residue),
                     targetNpcId: shortString(120),
                   },
                 },
@@ -201,7 +227,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
                 required: ['id', 'summary'],
                 properties: {
                   id: shortString(80),
-                  summary: shortString(180),
+                  summary: shortString(stringLimits.moral),
                   flags: stringArray,
                 },
               },
@@ -210,7 +236,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
           },
         },
         overallStakes: stakes,
-        designNotes: shortString(120),
+        designNotes: shortString(stringLimits.designNotes),
       },
     },
   };

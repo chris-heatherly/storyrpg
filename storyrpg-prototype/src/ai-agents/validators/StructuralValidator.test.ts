@@ -382,6 +382,43 @@ describe('StructuralValidator routing prefers leadsTo over array neighbour', () 
     const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
     expect(lastBeat.choices[0].nextSceneId).toBe('scene-3');
   });
+
+  it('repairs a missing beat scene target to the sole authored forward target', () => {
+    const story = makeBranchStory({
+      id: 'beat-2a-2', text: 'cold path end', image: 'http://localhost:3001/b.png',
+      nextSceneId: 'scene-3_alias',
+    });
+    const result = new StructuralValidator().autoFix(story);
+    const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
+    const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
+    expect(lastBeat.nextSceneId).toBe('scene-3');
+    expect(result.fixes.some((f) => f.includes('missing beat scene target'))).toBe(true);
+  });
+
+  it('repairs a missing choice scene target to the sole authored forward target', () => {
+    const story = makeBranchStory({
+      id: 'beat-2a-2', text: 'cold path end', image: 'http://localhost:3001/b.png',
+      choices: [{ id: 'continue', text: 'Continue', choiceType: 'expression', nextSceneId: 'scene-3_alias' }],
+    });
+    const result = new StructuralValidator().autoFix(story);
+    const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
+    const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
+    expect(lastBeat.choices[0].nextSceneId).toBe('scene-3');
+    expect(result.fixes.some((f) => f.includes('missing choice scene target'))).toBe(true);
+  });
+
+  it('does not guess a missing choice scene target across multiple authored branches', () => {
+    const story = makeBranchStory({
+      id: 'beat-2a-2', text: 'cold path end', image: 'http://localhost:3001/b.png',
+      choices: [{ id: 'branch', text: 'Take the branch', choiceType: 'dilemma', nextSceneId: 'scene-alias' }],
+    });
+    (story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a') as any).leadsTo = ['scene-2b', 'scene-3'];
+    const result = new StructuralValidator().autoFix(story);
+    const sceneA = result.story.episodes[0].scenes.find((s: any) => s.id === 'scene-2a')!;
+    const lastBeat: any = sceneA.beats[sceneA.beats.length - 1];
+    expect(lastBeat.choices[0].nextSceneId).toBe('scene-alias');
+    expect(result.fixes.some((f) => f.includes('missing choice scene target'))).toBe(false);
+  });
 });
 
 describe('StructuralValidator namespaces colliding beat ids', () => {

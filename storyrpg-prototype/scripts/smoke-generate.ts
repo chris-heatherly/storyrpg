@@ -5,8 +5,8 @@ import { parseDocument } from '../src/ai-agents/utils/documentParser';
 import { runStoryAnalysis, runStoryGeneration } from '../src/ai-agents/services/storyGenerationService';
 
 /**
- * WS2 — the generation half of the watched live smoke run. Generates EPISODE 1 ONLY of the
- * bite-me treatment with the Phase 0/1 gates enabled, story-only (no images), so the recurring
+ * WS2 — the generation half of the watched live smoke run. Generates EPISODE 1 ONLY from a
+ * supplied treatment with the Phase 0/1 gates enabled, story-only (no images), so the recurring
  * failure surfaces are exercised against a real LLM as cheaply as possible. Point smoke:check
  * at the printed RUN DIR afterward.
  *
@@ -14,11 +14,11 @@ import { runStoryAnalysis, runStoryGeneration } from '../src/ai-agents/services/
  * .env, which dotenv does not override):
  *   EXPO_PUBLIC_LLM_PROVIDER=gemini EXPO_PUBLIC_LLM_MODEL=gemini-2.5-pro \
  *   GATE_RESIDUE_CONSUME=1 GATE_COLD_OPEN_REALIZATION=1 GATE_ENCOUNTER_SKILL_REBALANCE=1 \
- *   npx ts-node --transpile-only scripts/smoke-generate.ts /tmp/bite-me-treatment.md
+ *   npx ts-node --transpile-only scripts/smoke-generate.ts /tmp/story-treatment.md
  */
 
 async function main(): Promise<void> {
-  const docPath = process.argv[2] || '/tmp/bite-me-treatment.md';
+  const docPath = process.argv[2] || '/tmp/story-treatment.md';
   const treatment = fs.readFileSync(docPath, 'utf8');
   const config = loadConfig();
   // Story-only: skip image/video generation for the smoke run.
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   console.log(`[smoke] provider=${planner?.provider} model=${planner?.model} assets=story-only`);
   console.log(`[smoke] gates: RESIDUE_CONSUME=${process.env.GATE_RESIDUE_CONSUME} COLD_OPEN=${process.env.GATE_COLD_OPEN_REALIZATION} SKILL_REBALANCE=${process.env.GATE_ENCOUNTER_SKILL_REBALANCE} ENCOUNTER_POV=${process.env.GATE_ENCOUNTER_POV ?? '(default ON)'}`);
 
-  const parsed = parseDocument(treatment, 'bite-me-treatment.md');
+  const parsed = parseDocument(treatment, 'story-treatment.md');
   if (!parsed.success || !parsed.brief) {
     console.error('[smoke] parseDocument failed:', parsed.error);
     process.exit(1);
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   const analysis = await runStoryAnalysis({
     config,
     sourceText: treatment,
-    title: brief.story?.title ?? 'Bite Me',
+    title: brief.story?.title ?? 'Smoke Story',
     onEvent,
   });
   console.log(`[smoke] analysis done — generating EPISODE 1 only…`);

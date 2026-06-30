@@ -57,6 +57,9 @@ import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
+import { SceneSpatialUnitValidator } from './SceneSpatialUnitValidator';
+import { RelationshipArcLedgerValidator } from './RelationshipArcLedgerValidator';
+import { ThematicSquareTurnValidator } from './ThematicSquareTurnValidator';
 import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
@@ -475,6 +478,21 @@ const FIDELITY_POLICY_BY_VALIDATOR: Record<string, Partial<FidelityFinding>> = {
     findingClass: 'repairable_contract',
     sourceKind: 'story',
   },
+  SceneSpatialUnitValidator: {
+    gateId: 'GATE_SCENE_SPATIAL_UNIT',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  RelationshipArcLedgerValidator: {
+    gateId: 'GATE_RELATIONSHIP_ARC_LEDGER',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
+  ThematicSquareTurnValidator: {
+    gateId: 'GATE_THEMATIC_SQUARE_TURN',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
   NarrativeMechanicPressureValidator: {
     gateId: 'GATE_NARRATIVE_MECHANIC_PRESSURE',
     findingClass: 'repairable_contract',
@@ -607,6 +625,9 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   SceneTransitionContinuityValidator: 'GATE_SCENE_TRANSITION_CONTINUITY',
   SceneTurnRealizationValidator: 'GATE_SCENE_TURN_REALIZATION',
   RelationshipPacingValidator: 'GATE_RELATIONSHIP_PACING',
+  SceneSpatialUnitValidator: 'GATE_SCENE_SPATIAL_UNIT',
+  RelationshipArcLedgerValidator: 'GATE_RELATIONSHIP_ARC_LEDGER',
+  ThematicSquareTurnValidator: 'GATE_THEMATIC_SQUARE_TURN',
   NarrativeMechanicPressureValidator: 'GATE_NARRATIVE_MECHANIC_PRESSURE',
   TreatmentFieldUtilizationValidator: 'GATE_TREATMENT_FIELD_UTILIZATION',
   SeasonPromiseRealizationValidator: 'GATE_SEASON_PROMISE_REALIZATION',
@@ -745,6 +766,36 @@ function collectFidelityFindings(
     guard(() => {
       const result = new RelationshipPacingValidator().validate({ story, scenePlan, treatmentSourced });
       return toFindings('RelationshipPacingValidator', result.issues);
+    });
+  }
+
+  // Major named locations are scene boundaries. A beat may hand off to the next
+  // venue, but introductions, choices, relationship turns, encounters, and clue
+  // reveals must not be compressed into another location's scene.
+  if (isGateEnabled('GATE_SCENE_SPATIAL_UNIT')) {
+    guard(() => {
+      const result = new SceneSpatialUnitValidator().validate({ story, scenePlan, treatmentSourced });
+      return toFindings('SceneSpatialUnitValidator', result.issues);
+    });
+  }
+
+  // Deterministic relationship arc ledger: stage labels, private access, group
+  // membership, and high-stage bond claims must be earned by full scenes,
+  // player relationship choices, relationship stat movement, and evidence tags.
+  if (isGateEnabled('GATE_RELATIONSHIP_ARC_LEDGER')) {
+    guard(() => {
+      const result = new RelationshipArcLedgerValidator().validate({ story, scenePlan, treatmentSourced });
+      return toFindings('RelationshipArcLedgerValidator', result.issues);
+    });
+  }
+
+  // McKee thematic-square relationship turns: relationshipValueEvidence must
+  // match the deterministic value rung and only permit surfaces that the hidden
+  // relationship stats + evidence have earned.
+  if (isGateEnabled('GATE_THEMATIC_SQUARE_TURN')) {
+    guard(() => {
+      const result = new ThematicSquareTurnValidator().validate({ story, scenePlan, treatmentSourced });
+      return toFindings('ThematicSquareTurnValidator', result.issues);
     });
   }
 

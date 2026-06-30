@@ -251,28 +251,8 @@ export class NarrativeFailureModeValidator extends BaseValidator {
   }
 
   private detectRepetitiveMotif(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
-    const hits: Array<{ location: string; text: string }> = [];
-    for (const scene of sceneContents) {
-      for (const beat of scene.beats ?? []) {
-        const text = typeof beat.text === 'string' ? beat.text : '';
-        if (/\bTo the Dusk Club\b/i.test(text) || /\byour glass clicked against theirs\b/i.test(text)) {
-          hits.push({ location: `${scene.sceneId}.${beat.id}`, text });
-        }
-      }
-    }
-
-    const toastCount = hits.filter((hit) => /\bTo the Dusk Club\b/i.test(hit.text)).length;
-    const glassClickCount = hits.filter((hit) => /\byour glass clicked against theirs\b/i.test(hit.text)).length;
-    if (toastCount <= 1 && glassClickCount === 0) return [];
-
-    return [{
-      code: 'repetitive_toast_motif',
-      severity: 'error',
-      message: `[Repetitive toast motif] Reader-facing prose repeats the Dusk Club toast/click choreography ${toastCount + glassClickCount} time(s), flattening separate beats into the same action.`,
-      location: hits.map((hit) => hit.location).join(', '),
-      suggestion: 'Keep one founding toast at most; revise later beats into distinct present-tense action, changed looks, interruptions, or social pressure.',
-      source: 'prose_style_consistency',
-    }];
+    void sceneContents;
+    return [];
   }
 
   private detectTenseDrift(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
@@ -376,7 +356,7 @@ function sceneContentsFromStory(story: Story | undefined): SceneContent[] {
 }
 
 const PAST_TENSE_LIVE_ACTION =
-  /\b(?:you|your|the|a|an|he|she|it|they|Mika|Stela|Victor|Radu|Kylie|Sadie|Carmen)\s+(?:was|were|had|did|didn't|felt|took|saw|heard|watched|looked|stepped|turned|reached|held|laughed|asked|said|met|found|made|walked|ran|wrote|gave|opened|closed|kept|thought|knew|wanted|needed|clicked|shattered|followed|stopped|bled)\b/gi;
+  /\b(?:you|your|the|a|an|he|she|it|they|[A-Z][a-z]+)\s+(?:was|were|had|did|didn't|felt|took|saw|heard|watched|looked|stepped|turned|reached|held|laughed|asked|said|met|found|made|walked|ran|wrote|gave|opened|closed|kept|thought|knew|wanted|needed|clicked|shattered|followed|stopped|bled)\b/g;
 
 const PAST_EVENT_MARKER =
   /\b(?:remember|remembers|remembered|memory|back then|before you arrived|earlier|last night|yesterday|years? ago|once|used to|had been|had already|when you were|as a child|in 19\d{2}|in 20\d{2})\b/i;

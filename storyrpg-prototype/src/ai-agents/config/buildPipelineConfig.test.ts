@@ -915,5 +915,6 @@ describe('buildPipelineConfig', () => {
     expect(config.agents.qualityCouncilPlan?.apiKey).toBe('or-key');
     expect(config.agents.qualityCouncilFusion?.model).toBe('openrouter/fusion');
     expect(config.agents.qualityCouncilFusion?.openRouter?.route).toBe('fusion');
+    expect(config.agents.qualityCouncilFusion?.openRouter?.provider?.requireParameters).toBe(false);
   });
 });

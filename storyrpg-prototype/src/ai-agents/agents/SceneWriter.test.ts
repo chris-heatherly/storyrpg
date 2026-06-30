@@ -1923,6 +1923,7 @@ describe('SceneWriter dramatic intent visual contracts', () => {
     expect(strengthened.primaryAction).not.toMatch(/reports what she witnessed|observes the situation|deflects with practiced charm|^Alex smiles$/i);
     expect(strengthened.primaryAction).not.toContain('takes a decisive physical action');
     expect(strengthened.visualMoment).toContain(strengthened.dramaticIntent.visibleTurn.split(' ')[0]);
+    expect(JSON.stringify(strengthened.dramaticIntent)).not.toMatch(/the protagonist|without saying everything directly|without full control of the room/i);
   });
 
   it('does not replace already concrete physical actions', () => {

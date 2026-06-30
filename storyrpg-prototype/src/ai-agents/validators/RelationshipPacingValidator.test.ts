@@ -65,6 +65,55 @@ describe('RelationshipPacingValidator', () => {
     expect(result.issues.some((issue) => issue.severity === 'error' && issue.message.includes('unearned relationship label'))).toBe(true);
   });
 
+  it('fails when first-meeting narration declares friendship as an abstract state', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-1', 'Somewhere ahead, there are folklore shelves, too-dark negronis, and the first dangerous shape of a friendship.', [contract()]),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('unearned relationship label'))).toBe(true);
+  });
+
+  it('fails when an unmet NPC is reachable by private text before an on-page introduction', () => {
+    const result = validator.validate({
+      story: story([
+        scene(
+          's1-1',
+          'You message Mika and Stela before you can talk yourself out of it. The reply comes quickly. Mika knows a place.',
+          [
+            contract({ npcId: 'mika', targetStage: 'acquaintance' }),
+            contract({ id: 's1-1-rel-stela', npcId: 'stela', targetStage: 'acquaintance' }),
+          ],
+        ),
+      ], [{ id: 'mika', name: 'Mika' }, { id: 'stela', name: 'Stela' }]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.filter((issue) => issue.message.includes('direct phone/contact access')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('allows private text after the NPC has been introduced on-page', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-1', 'At the club door, Mika offers the key card like a test.', [contract({ npcId: 'mika', targetStage: 'acquaintance' })]),
+        scene('s1-2', 'A text from Mika lights up the phone: you survived the comments.', [contract({
+          id: 's1-2-rel-mika',
+          npcId: 'mika',
+          startStage: 'acquaintance',
+          targetStage: 'tentative_ally',
+          minScenesSinceIntroduction: 0,
+        })]),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('direct phone/contact access'))).toBe(false);
+  });
+
   it('fails when first-week chemistry is narrated as years of comfort', () => {
     const result = validator.validate({
       story: story([

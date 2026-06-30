@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { SeasonPlannerAgent } from './SeasonPlannerAgent';
 import { BaseAgent } from './BaseAgent';
 import { extractTreatmentFromMarkdown } from '../utils/treatmentExtraction';
+import { buildLockedStoryCanon } from '../utils/sourceCanonBuilder';
 
 function makePlanner() {
   return new SeasonPlannerAgent({
@@ -19,8 +20,12 @@ function makePlanner() {
 function makeAnalysis() {
   const treatment = readFileSync(join(__dirname, '../fixtures/bite-me-treatment.md'), 'utf8');
   const extracted = extractTreatmentFromMarkdown(treatment);
-  return {
+  const analysis = {
     sourceTitle: 'Bite Me',
+    sourceFormat: 'story_treatment',
+    treatmentMetadata: extracted.metadata,
+    treatmentSeasonGuidance: extracted.seasonGuidance,
+    totalWordCount: treatment.split(/\s+/).length,
     analysisTimestamp: new Date('2026-01-01T00:00:00Z'),
     genre: 'paranormal romance',
     tone: 'glamorous and dangerous',
@@ -118,9 +123,40 @@ function makeAnalysis() {
     }),
     totalEstimatedEpisodes: 8,
   } as any;
+  const sourceCanon = buildLockedStoryCanon({
+    analysis,
+    sourceText: treatment,
+    treatment: extracted,
+  });
+  analysis.sourceCanon = sourceCanon;
+  analysis.canonLockManifest = sourceCanon.lockManifest;
+  return analysis;
 }
 
 describe('SeasonPlannerAgent treatment handoff', () => {
+  it('normalizes encounter-style arc turnout vocabulary before arc-pressure validation', () => {
+    const planner = makePlanner();
+    const turnouts = (planner as any).normalizeArcEpisodeTurnouts(
+      [{
+        episodeNumber: 2,
+        storyCircleBeat: 'search',
+        storyCircleRoleKind: 'primary',
+        turnType: 'exploration',
+        description: 'The middle episode tests the arc question with a new obstacle.',
+        leavesProtagonistWith: 'A changed sense of what the problem costs.',
+        whyThisCannotMoveLater: 'The next episode depends on this pressure having changed state.',
+      }],
+      [{
+        episodeNumber: 2,
+        storyCircleRole: [{ beat: 'search', roleKind: 'primary' }],
+        synopsis: 'A generic middle episode.',
+      }],
+      { start: 1, end: 3, midpointEpisode: 2, crisisEpisode: 2 },
+    );
+
+    expect(turnouts[0].turnType).toBe('escalation');
+  });
+
   it('re-samples malformed planner JSON before falling back', async () => {
     const planner = makePlanner();
     let calls = 0;

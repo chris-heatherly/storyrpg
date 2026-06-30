@@ -75,6 +75,10 @@ import {
 } from '../../validators';
 import { scanEncounterTemplateProse } from '../../validators/EncounterQualityValidator';
 import { CallbackLedger } from '../callbackLedger';
+import {
+  mergeDuplicatePublicAftermathScenes,
+  validateBlueprintRouteCueOrder,
+} from '../blueprintRouteCuePreflight';
 import { UnresolvedCallbackForPrompt, recordScenePayoffs } from '../callbackOrchestration';
 import { capabilityNoteForProfile } from '../characterCanonFacts';
 import { repairBranchFanOut } from '../choiceAssembly';
@@ -103,6 +107,8 @@ import { buildSceneSettingContext } from '../planningHelpers';
 import { attachResidueRequirements } from '../reconvergenceResidue';
 import { buildContinueInLocation, buildPriorEncounterOutcomes } from '../scenePreventionContext';
 import { plannedConsequenceTiersByScene } from '../plannedSceneBudgets';
+import { findChoiceSetForScene } from '../choiceSetLookup';
+import { reconcileRelationshipPacingWithChoiceTypes } from '../relationshipPacingChoiceTypeReconciliation';
 import { SeasonChoicePlan, episodeTypeCounts } from '../seasonChoicePlan';
 import {
   SeasonSkillPlan,
@@ -184,6 +190,7 @@ export interface ContentGenerationPhaseDeps {
   readonly generationPlan: GenerationPlan | null;
   readonly remediationBudget: RemediationBudget | null;
   readonly seasonChoicePlan: SeasonChoicePlan | undefined;
+  plannedChoiceTypesByScene: Record<string, string> | undefined;
   readonly seasonThreadLedger: ThreadLedger;
 
   // --- Helpers shared with other monolith regions (injected closures) ---
@@ -351,6 +358,44 @@ export class ContentGenerationPhase {
     // clone/checkpoint reload). Empty slice → default mix.
     const episodeSlice = episodeTypeCounts(this.deps.seasonChoicePlan, episodeNumber ?? 1);
     const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never, undefined, episodeSlice);
+    const relationshipPacingReconciled = reconcileRelationshipPacingWithChoiceTypes(blueprint.scenes as never);
+    if (relationshipPacingReconciled > 0) {
+      context.emit({
+        type: 'debug',
+        phase: 'content_generation',
+        message: `Reconciled ${relationshipPacingReconciled} relationship-pacing contract(s) after content-phase choice taxonomy reassertion`,
+      });
+    }
+    const plannedChoiceTypesByScene = Object.fromEntries(
+      blueprint.scenes
+        .filter((scene) => scene.choicePoint?.type)
+        .map((scene) => [scene.id, scene.choicePoint!.type as string])
+    );
+    this.deps.plannedChoiceTypesByScene = {
+      ...(this.deps.plannedChoiceTypesByScene ?? {}),
+      ...plannedChoiceTypesByScene,
+    };
+    const mergedPublicAftermathScenes = mergeDuplicatePublicAftermathScenes(blueprint);
+    if (mergedPublicAftermathScenes > 0) {
+      context.emit({
+        type: 'debug',
+        phase: 'content_generation',
+        message: `Merged ${mergedPublicAftermathScenes} duplicate public-aftermath scene(s) before scene prose generation`,
+      });
+    }
+    const routeCueIssues = validateBlueprintRouteCueOrder(blueprint);
+    if (routeCueIssues.length > 0) {
+      throw new PipelineError(
+        `Blueprint route cue preflight failed with ${routeCueIssues.length} issue(s): ${routeCueIssues.slice(0, 3).map((issue) => issue.message).join('; ')}`,
+        'content_generation',
+        {
+          context: {
+            failureKind: 'blueprint_route_cue_preflight',
+            issues: routeCueIssues,
+          },
+        },
+      );
+    }
     const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
     const densityEpisodeNumber = episodeNumber ?? brief.episode.number;
     const treatmentDensityReports = analyzeEpisodeTreatmentDensity(blueprint.scenes as never, densityEpisodeNumber);
@@ -1750,7 +1795,7 @@ export class ContentGenerationPhase {
                 // Plant the on-page contracts on the deterministic fallback too — the
                 // success path is not the only place these obligations must be honored.
                 applyOnPageContracts(fallbackChoiceSet.choices);
-                choiceSets.push(fallbackChoiceSet);
+                choiceSets.push({ ...fallbackChoiceSet, sceneId: sceneBlueprint.id });
                 // Record the fallback's planted flags so later scenes can pay them off,
                 // exactly as the authored path does below.
                 episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: fallbackChoiceSet.choices }, this.deps.callbackLedger));
@@ -1849,7 +1894,7 @@ export class ContentGenerationPhase {
                     }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
 
                     if (revisedChoiceResult.success && revisedChoiceResult.data) {
-                      currentChoiceData = revisedChoiceResult.data;
+                      currentChoiceData = { ...revisedChoiceResult.data, sceneId: sceneBlueprint.id };
                       currentStakesResult = this.deps.incrementalValidator.validateStakes(currentChoiceData);
                       
                       // Update the choice set in the array
@@ -2016,9 +2061,7 @@ export class ContentGenerationPhase {
             })
             .filter((p): p is CharacterVoiceProfile => p !== null);
 
-          const sceneChoiceSet = choiceSets.find(cs => 
-            sceneContent.beats.some(b => b.id === cs.beatId)
-          );
+          const sceneChoiceSet = findChoiceSetForScene(choiceSets, sceneContent);
 
           const sceneValidation = await this.deps.incrementalValidator.validateScene(
             sceneContent,
@@ -3129,9 +3172,7 @@ export class ContentGenerationPhase {
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
       if (completedScene && outputDirectory && episodeNumber) {
         await this.deps.saveResumeUnit(outputDirectory, sceneUnitId, sceneCheckpointPath, completedScene);
-        const completedChoice = choiceSets.find((cs) =>
-          completedScene.beats.some((beat) => beat.id === cs.beatId)
-        );
+        const completedChoice = findChoiceSetForScene(choiceSets, completedScene);
         if (completedChoice) {
           await this.deps.saveResumeUnit(outputDirectory, choiceUnitId, choiceCheckpointPath, completedChoice);
         }

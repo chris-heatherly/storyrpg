@@ -25,6 +25,7 @@ import {
   ThemeArgumentContract,
 } from './sourceAnalysis';
 import type { CliffhangerType } from './story';
+import type { CanonLockManifest, CanonWizardState, LockedStoryCanon } from './storyCanon';
 import type { ConditionExpression } from './conditions';
 import type {
   ArcPressureTreatmentContract,
@@ -63,6 +64,10 @@ export interface CliffhangerPlan {
 }
 
 export interface SeasonEpisode extends EpisodeOutline {
+  /** Canon episode fact this season episode derives from. */
+  canonEpisodeId?: string;
+  derivedFromFactIds?: string[];
+
   unlockConditions?: ConditionExpression;
 
   // Generation status
@@ -158,6 +163,9 @@ export interface ArcStoryCircleSpan {
 
 export interface SeasonArc {
   id: string;
+  /** Canon arc fact this planner projection derives from. */
+  canonArcId?: string;
+  derivedFromFactIds?: string[];
   name: string;
   description: string;
   episodeRange: {
@@ -631,6 +639,14 @@ export interface SeasonPlan {
   // Warnings or notes about the plan
   warnings: string[];
   notes: string[];
+
+  /**
+   * Locked source canon copied from SourceMaterialAnalysis. New season plans
+   * must be derived from this artifact rather than reinterpreting source input.
+   * Optional for old saved plans only.
+   */
+  sourceCanon?: LockedStoryCanon;
+  canonLockManifest?: CanonLockManifest;
 }
 
 // ========================================
@@ -640,6 +656,7 @@ export interface SeasonPlan {
 export interface SavedSeasonPlan {
   plan: SeasonPlan;
   sourceAnalysis: SourceMaterialAnalysis;
+  canonWizardState?: CanonWizardState;
 }
 
 export interface SeasonPlanSummary {

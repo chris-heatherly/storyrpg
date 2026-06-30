@@ -921,7 +921,7 @@ function targetForBlogAftermathPrerequisiteText(
   );
   if (disallowed.has('lateNightWriting')) {
     const draftTarget = sameEpisode
-      .filter(isPrimaryBlogDraftScene)
+      .filter((scene) => isPrimaryBlogDraftScene(scene) || isBlogDraftText(sceneText(scene)))
       .sort((a, b) => scoreSceneForBeat(text, b, excludeRequiredBeatId) - scoreSceneForBeat(text, a, excludeRequiredBeatId) || a.order - b.order)[0];
     if (draftTarget) return draftTarget;
   }
@@ -1523,7 +1523,7 @@ function findOrCreateBlogAftermathScene(
 ): PlannedScene {
   const prerequisiteAnchor = latestBlogAftermathPrerequisiteScene(scenes, episodeNumber, sourceScene, triggerText);
   const existing = scenes
-    .filter((scene) => scene.episodeNumber === episodeNumber && isPrimaryBlogAftermathScene(scene))
+    .filter((scene) => scene.episodeNumber === episodeNumber && (isPrimaryBlogAftermathScene(scene) || isSyntheticBlogAftermathScene(scene)))
     .sort((a, b) => a.order - b.order)[0];
   if (existing) {
     if (existing.order <= prerequisiteAnchor.order) {
@@ -1607,7 +1607,7 @@ function isSyntheticBlogAftermathScene(scene: PlannedScene): boolean {
     return scene.planningOrigin.splitKind === 'viral_aftermath'
       || scene.planningOrigin.splitKind === 'public_blog_aftermath';
   }
-  return /^s\d+-blog-aftermath$/.test(scene.id) && isPrimaryBlogAftermathScene(scene);
+  return /^s\d+-blog-aftermath$/.test(scene.id);
 }
 
 function blogAftermathPrerequisiteCues(scene: PlannedScene): Set<SceneEventCue> {
@@ -1641,6 +1641,8 @@ function latestPrerequisiteForSyntheticBlogAftermath(
       const candidateCues = primarySceneCues(candidate);
       for (const cue of prerequisiteCues) {
         if (candidateCues.has(cue)) return true;
+        if (cue === 'lateNightWriting' && isBlogDraftText(sceneText(candidate))) return true;
+        if (cue === 'threatEncounter' && hasThreatPrerequisiteText(sceneText(candidate))) return true;
       }
       return false;
     })
@@ -1673,6 +1675,33 @@ function evictInvalidBlogAftermathOwnership(
   decisions: PlannedSceneBindingDecision[],
 ): void {
   for (const scene of scenes.filter((candidate) => isSyntheticBlogAftermathScene(candidate) || isPrimaryBlogAftermathScene(candidate))) {
+    const turnText = [
+      scene.turnContract?.centralTurn,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.handoff,
+    ].filter(Boolean).join(' ');
+    if (blogAftermathDisallowedOwnershipCues(turnText).size > 0) {
+      setSceneTurnContract(scene, {
+        turnId: scene.turnContract?.turnId ?? `${scene.id}-turn`,
+        source: scene.turnContract?.source ?? 'treatment',
+        centralTurn: 'The post becomes visible public pressure.',
+        beforeState: 'The protagonist has turned private experience into testimony.',
+        turnEvent: 'The readership number climbs until the post becomes a public signal.',
+        afterState: 'The story now has attention, leverage, and danger attached to it.',
+        handoff: 'Let the public attention become pressure without restaging the prerequisite event.',
+      });
+      decisions.push({
+        action: 'rebound',
+        issueKind: 'chronology_conflict',
+        contractId: `turn-contract:${scene.id}`,
+        contractKind: 'pressure_lane',
+        episodeNumber: scene.episodeNumber,
+        fromSceneId: scene.id,
+        toSceneId: scene.id,
+        reason: 'Public-post aftermath helper carried a prerequisite event in its turn contract, so the turn was reset to public-pressure aftermath only.',
+      });
+    }
+
     const keptBeats: RequiredBeat[] = [];
     for (const beat of scene.requiredBeats ?? []) {
       const text = beatText(beat);

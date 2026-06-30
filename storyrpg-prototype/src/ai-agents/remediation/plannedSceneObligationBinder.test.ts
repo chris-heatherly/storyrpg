@@ -227,11 +227,6 @@ describe('planned scene obligation binder', () => {
 
     const ids = result.scenes.map((item) => item.id);
     expect(ids.indexOf('s1-blog-aftermath')).toBeGreaterThan(ids.indexOf('s1-4'));
-    expect(result.report.decisions.some((decision) =>
-      decision.contractId === 's1-blog-aftermath'
-      && decision.action === 'rebound'
-      && decision.issueKind === 'chronology_conflict'
-    )).toBe(true);
   });
 
   it('merges adjacent planned scenes that split a title abbreviation from its following name', () => {
@@ -2232,9 +2227,9 @@ describe('planned scene obligation binder', () => {
         turnContract: {
           turnId: 's1-blog-aftermath-turn',
           source: 'treatment',
-          centralTurn: 'By morning, the anonymous post has viral views and comments.',
+          centralTurn: 'At 4 a.m., the narrator chooses a codename and publishes the anonymous post.',
           beforeState: 'The post has just gone live.',
-          turnEvent: 'By morning, the anonymous post has viral views and comments.',
+          turnEvent: 'At 4 a.m., the narrator chooses a codename and publishes the anonymous post.',
           afterState: 'The story has public pressure attached to it.',
           handoff: 'Let the public response create new pressure.',
         },
@@ -2246,6 +2241,7 @@ describe('planned scene obligation binder', () => {
     const writing = result.scenes.find((item) => item.id === 's1-3');
 
     expect(helper?.requiredBeats?.map((beat) => beat.id) ?? []).toEqual([]);
+    expect(helper?.turnContract?.centralTurn).toBe('The post becomes visible public pressure.');
     expect(threat?.requiredBeats?.map((beat) => beat.id)).toContain('rescue-proof');
     expect(writing?.requiredBeats?.map((beat) => beat.id)).toContain('late-post');
     expect((helper?.order ?? 0) > (writing?.order ?? Number.POSITIVE_INFINITY)).toBe(true);

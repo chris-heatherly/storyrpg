@@ -1,0 +1,254 @@
+import type { EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
+import {
+  detectStoryEventCues,
+  STORY_EVENT_CUE_ORDER,
+  type StoryEventCue,
+} from '../remediation/storyEventCues';
+
+type RouteCue = Extract<
+  StoryEventCue,
+  'arrival' | 'venueDoor' | 'objectHandoff' | 'socialMeet' | 'threatEncounter' | 'lateNightWriting' | 'blogAftermath'
+>;
+
+export interface BlueprintRouteCueIssue {
+  type: 'route_chronology_violation' | 'route_duplicate_event' | 'helper_owns_prerequisite_event';
+  sceneId: string;
+  message: string;
+}
+
+interface CueHit {
+  cue: RouteCue;
+  order: number;
+  sceneId: string;
+}
+
+const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
+  'venueDoor',
+  'objectHandoff',
+  'threatEncounter',
+  'blogAftermath',
+]);
+
+const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|turns?.{0,80}into)\b/i;
+const PUBLIC_AFTERMARKERS = /\b(?:readership|reads?|viral|views|comments|dashboard|profile|public pressure|public signal|attention spike|audience growth)\b/i;
+const BLOG_DRAFT_MARKERS = /\b(?:[234]\s*a\.?\s*m\.?|[234]\s*am|late night|unable to sleep|writes?|writing|draft|blank page|publish button|publishes|published|codename)\b/i;
+const THREAT_PREREQUISITE_MARKERS = /\b(?:attack|attacked|attacker|ambush|terror|rescue|rescued|rescuer|saved|saves|threat|knife|scream|rough hands|grabbed|pinned)\b/i;
+
+function sceneCueText(scene: SceneBlueprint): string {
+  return [
+    scene.id,
+    scene.name,
+    scene.description,
+    scene.location,
+    scene.timeOfDay,
+    scene.narrativeFunction,
+    scene.dramaticPurpose,
+    scene.signatureMoment,
+    scene.turnContract?.centralTurn,
+    scene.choicePoint?.description,
+    ...(scene.choicePoint?.optionHints ?? []),
+    ...(scene.keyBeats ?? []),
+    ...(scene.requiredBeats ?? []).map((beat) => beat.mustDepict),
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n');
+}
+
+function cueHits(scene: SceneBlueprint): CueHit[] {
+  const text = sceneCueText(scene);
+  const isPublicRecap = RECAP_MARKERS.test(text) && PUBLIC_AFTERMARKERS.test(text);
+  const hits: CueHit[] = [];
+  for (const cue of detectStoryEventCues(text)) {
+    const order = STORY_EVENT_CUE_ORDER[cue];
+    if (typeof order !== 'number') continue;
+    if (cue !== 'blogAftermath' && isPublicRecap) continue;
+    hits.push({ cue: cue as RouteCue, order, sceneId: scene.id });
+  }
+  return hits.sort((a, b) => a.order - b.order);
+}
+
+function isPublicAftermathScene(scene: SceneBlueprint): boolean {
+  const origin = scene.planningOrigin;
+  if (origin?.kind === 'binder_split' && (origin.splitKind === 'viral_aftermath' || origin.splitKind === 'public_blog_aftermath')) {
+    return true;
+  }
+  if (/blog-aftermath|public.*aftermath|viral.*aftermath/i.test(scene.id)) return true;
+  return cueHits(scene).some((hit) => hit.cue === 'blogAftermath');
+}
+
+function prerequisiteOwnershipCues(value: string | undefined): RouteCue[] {
+  const text = value ?? '';
+  const cues = detectStoryEventCues(text);
+  const out = new Set<RouteCue>();
+  if (BLOG_DRAFT_MARKERS.test(text) || cues.has('lateNightWriting')) out.add('lateNightWriting');
+  if (THREAT_PREREQUISITE_MARKERS.test(text) || cues.has('threatEncounter')) out.add('threatEncounter');
+  if (cues.has('roadBreakdown')) out.add('threatEncounter');
+  return Array.from(out);
+}
+
+function validatePublicAftermathOwnership(blueprint: EpisodeBlueprint): BlueprintRouteCueIssue[] {
+  const issues: BlueprintRouteCueIssue[] = [];
+  for (const scene of blueprint.scenes ?? []) {
+    if (!isPublicAftermathScene(scene)) continue;
+    const ownershipChecks = [
+      ...(scene.requiredBeats ?? []).map((beat) => ({
+        id: beat.id,
+        text: [beat.mustDepict, beat.sourceTurn].filter(Boolean).join(' '),
+      })),
+      {
+        id: `${scene.id}:turnContract`,
+        text: [scene.turnContract?.centralTurn, scene.turnContract?.turnEvent].filter(Boolean).join(' '),
+      },
+    ];
+    for (const check of ownershipChecks) {
+      const cues = prerequisiteOwnershipCues(check.text);
+      if (cues.length === 0) continue;
+      issues.push({
+        type: 'helper_owns_prerequisite_event',
+        sceneId: scene.id,
+        message: `Public aftermath scene "${scene.id}" owns prerequisite ${cues.join('/')} beat "${check.id}" instead of referencing it as prior context.`,
+      });
+      break;
+    }
+  }
+  return issues;
+}
+
+function enumerateRoutes(blueprint: EpisodeBlueprint): string[][] {
+  const sceneMap = new Map((blueprint.scenes ?? []).map((scene) => [scene.id, scene]));
+  const start = blueprint.startingSceneId || blueprint.scenes?.[0]?.id;
+  if (!start || !sceneMap.has(start)) return [];
+
+  const routes: string[][] = [];
+  const maxDepth = Math.max((blueprint.scenes ?? []).length + 3, 8);
+  const queue: Array<{ sceneId: string; path: string[] }> = [{ sceneId: start, path: [] }];
+  while (queue.length > 0 && routes.length < 64) {
+    const { sceneId, path } = queue.shift()!;
+    if (path.includes(sceneId)) {
+      routes.push([...path, sceneId]);
+      continue;
+    }
+
+    const nextPath = [...path, sceneId];
+    if (nextPath.length > maxDepth) {
+      routes.push(nextPath);
+      continue;
+    }
+
+    const scene = sceneMap.get(sceneId);
+    const targets = (scene?.leadsTo ?? []).filter((target) => sceneMap.has(target));
+    if (targets.length === 0) {
+      routes.push(nextPath);
+      continue;
+    }
+    for (const target of targets.slice(0, 6)) {
+      queue.push({ sceneId: target, path: nextPath });
+    }
+  }
+  return routes;
+}
+
+function appendUnique<T>(target: T[] | undefined, source: T[] | undefined, keyOf: (value: T) => string): T[] | undefined {
+  if (!source?.length) return target;
+  const out = [...(target ?? [])];
+  const seen = new Set(out.map(keyOf));
+  for (const value of source) {
+    const key = keyOf(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function mergeSceneObligations(target: SceneBlueprint, source: SceneBlueprint): void {
+  target.keyBeats = appendUnique(target.keyBeats, source.keyBeats, (value) => value) ?? target.keyBeats;
+  target.requiredBeats = appendUnique(target.requiredBeats, source.requiredBeats, (value) => value.id) ?? target.requiredBeats;
+  target.treatmentAtomIds = appendUnique(target.treatmentAtomIds, source.treatmentAtomIds, (value) => value) ?? target.treatmentAtomIds;
+  target.ownedChronologyKeys = appendUnique(target.ownedChronologyKeys, source.ownedChronologyKeys, (value) => value) ?? target.ownedChronologyKeys;
+  target.sourceContextIds = appendUnique(target.sourceContextIds, source.sourceContextIds, (value) => value) ?? target.sourceContextIds;
+  target.authoredTreatmentFields = appendUnique(target.authoredTreatmentFields, source.authoredTreatmentFields, (value) => value.id) ?? target.authoredTreatmentFields;
+  target.storyCircleBeatContracts = appendUnique(target.storyCircleBeatContracts, source.storyCircleBeatContracts, (value) => value.id) ?? target.storyCircleBeatContracts;
+  target.arcPressureContracts = appendUnique(target.arcPressureContracts, source.arcPressureContracts, (value) => value.id) ?? target.arcPressureContracts;
+  target.branchConsequenceContracts = appendUnique(target.branchConsequenceContracts, source.branchConsequenceContracts, (value) => value.id) ?? target.branchConsequenceContracts;
+  target.endingRealizationContracts = appendUnique(target.endingRealizationContracts, source.endingRealizationContracts, (value) => value.id) ?? target.endingRealizationContracts;
+  target.characterTreatmentContracts = appendUnique(target.characterTreatmentContracts, source.characterTreatmentContracts, (value) => value.id) ?? target.characterTreatmentContracts;
+  target.worldTreatmentContracts = appendUnique(target.worldTreatmentContracts, source.worldTreatmentContracts, (value) => value.id) ?? target.worldTreatmentContracts;
+  target.seasonPromiseContracts = appendUnique(target.seasonPromiseContracts, source.seasonPromiseContracts, (value) => value.id) ?? target.seasonPromiseContracts;
+  target.residueObligationIds = appendUnique(target.residueObligationIds, source.residueObligationIds, (value) => value) ?? target.residueObligationIds;
+}
+
+function replaceTarget(scene: SceneBlueprint, from: string, to: string[]): void {
+  const next = new Set<string>();
+  for (const target of scene.leadsTo ?? []) {
+    if (target === from) {
+      for (const replacement of to) next.add(replacement);
+    } else {
+      next.add(target);
+    }
+  }
+  scene.leadsTo = Array.from(next);
+}
+
+export function mergeDuplicatePublicAftermathScenes(blueprint: EpisodeBlueprint): number {
+  const firstByCue = new Map<RouteCue, SceneBlueprint>();
+  const toRemove = new Set<string>();
+  for (const scene of blueprint.scenes ?? []) {
+    if (toRemove.has(scene.id)) continue;
+    const cues = new Set(cueHits(scene).map((hit) => hit.cue));
+    if (!cues.has('blogAftermath')) continue;
+    const first = firstByCue.get('blogAftermath');
+    if (!first) {
+      firstByCue.set('blogAftermath', scene);
+      continue;
+    }
+    if (scene.choicePoint || scene.isEncounter) continue;
+    mergeSceneObligations(first, scene);
+    const replacements = (scene.leadsTo ?? []).filter((target) => target !== scene.id);
+    for (const candidate of blueprint.scenes ?? []) replaceTarget(candidate, scene.id, replacements);
+    toRemove.add(scene.id);
+  }
+  if (toRemove.size === 0) return 0;
+  blueprint.scenes = (blueprint.scenes ?? []).filter((scene) => !toRemove.has(scene.id));
+  blueprint.bottleneckScenes = (blueprint.bottleneckScenes ?? []).filter((sceneId) => !toRemove.has(sceneId));
+  return toRemove.size;
+}
+
+export function validateBlueprintRouteCueOrder(blueprint: EpisodeBlueprint): BlueprintRouteCueIssue[] {
+  const sceneMap = new Map((blueprint.scenes ?? []).map((scene) => [scene.id, scene]));
+  const issues: BlueprintRouteCueIssue[] = validatePublicAftermathOwnership(blueprint);
+  for (const route of enumerateRoutes(blueprint)) {
+    const routeHits = route.flatMap((sceneId) => {
+      const scene = sceneMap.get(sceneId);
+      return scene ? cueHits(scene) : [];
+    });
+
+    for (let index = 1; index < routeHits.length; index += 1) {
+      const previous = routeHits[index - 1];
+      const current = routeHits[index];
+      if (current.order >= previous.order) continue;
+      issues.push({
+        type: 'route_chronology_violation',
+        sceneId: current.sceneId,
+        message: `Blueprint route ${route.join(' -> ')} stages ${current.cue} after ${previous.cue}.`,
+      });
+      break;
+    }
+
+    const firstByCue = new Map<RouteCue, CueHit>();
+    for (const hit of routeHits) {
+      if (!DUPLICATE_SENSITIVE_CUES.has(hit.cue)) continue;
+      const first = firstByCue.get(hit.cue);
+      if (!first) {
+        firstByCue.set(hit.cue, hit);
+        continue;
+      }
+      if (first.sceneId === hit.sceneId) continue;
+      issues.push({
+        type: 'route_duplicate_event',
+        sceneId: hit.sceneId,
+        message: `Blueprint route ${route.join(' -> ')} stages ${hit.cue} in both "${first.sceneId}" and "${hit.sceneId}".`,
+      });
+      break;
+    }
+  }
+  return issues;
+}

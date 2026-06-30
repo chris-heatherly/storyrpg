@@ -599,6 +599,14 @@ function bestSceneForBeat(text: string, scenes: PlannedScene[], excludeRequiredB
         .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
     }
   }
+  if (sourceCues.has('lateNightWriting') || isBlogDraftText(text)) {
+    const draftMatches = scenes.filter(isPrimaryBlogDraftScene);
+    if (draftMatches.length > 0) {
+      return draftMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
   if (sourceCues.has('venueDoor')) {
     const doorMatches = scenes.filter(isPrimaryVenueDoorScene);
     if (doorMatches.length > 0) {
@@ -897,11 +905,24 @@ function hasThreatPrerequisiteText(value: string | undefined): boolean {
   return /\b(?:attack|attacked|attacker|ambush|terror|rescue|rescued|rescuer|saved|saves|threat|knife|scream|rough hands|grabbed|pinned)\b/.test(text);
 }
 
+function isPublicAftermathSummaryText(value: string | undefined): boolean {
+  return !isBlogDraftText(value)
+    && (isBlogMetricText(value) || isPublicBlogAftermathText(value) || hasCue(value, 'blogAftermath'));
+}
+
+function hasLiveThreatPrerequisiteText(value: string | undefined): boolean {
+  if (!hasThreatPrerequisiteText(value)) return false;
+  const text = normalize(value);
+  const liveThreatAction = /\b(?:attack|attacked|attacker|ambush|knife|scream|rough hands|grab(?:s|bed)?|pinned|corners?|lunges?|chases?|fight back|dont scream)\b/.test(text);
+  if (isPublicAftermathSummaryText(value) && !liveThreatAction) return false;
+  return true;
+}
+
 function blogAftermathDisallowedOwnershipCues(value: string | undefined): Set<SceneEventCue> {
   const cues = eventCues(value);
   const disallowed = new Set<SceneEventCue>();
   if (isBlogDraftText(value) || cues.has('lateNightWriting')) disallowed.add('lateNightWriting');
-  if (hasThreatPrerequisiteText(value) || cues.has('threatEncounter')) disallowed.add('threatEncounter');
+  if (hasLiveThreatPrerequisiteText(value) || cues.has('threatEncounter')) disallowed.add('threatEncounter');
   if (cues.has('roadBreakdown')) disallowed.add('roadBreakdown');
   return disallowed;
 }

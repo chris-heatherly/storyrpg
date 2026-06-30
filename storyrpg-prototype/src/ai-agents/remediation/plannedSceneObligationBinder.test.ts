@@ -1253,8 +1253,8 @@ describe('planned scene obligation binder', () => {
     const writingIndex = result.scenes.findIndex((item) => item.id === 's1-4');
     const aftermathIndex = result.scenes.findIndex((item) => item.id === 's1-blog-aftermath');
     expect(aftermathIndex).toBeGreaterThan(writingIndex);
-    expect(aftermath?.requiredBeats?.map((beat) => beat.id) ?? []).not.toContain(publicAftermathBeat.id);
-    expect(rescue?.requiredBeats?.map((beat) => beat.id)).toContain(publicAftermathBeat.id);
+    expect(aftermath?.requiredBeats?.map((beat) => beat.id) ?? []).toContain(publicAftermathBeat.id);
+    expect(rescue?.requiredBeats?.map((beat) => beat.id) ?? []).not.toContain(publicAftermathBeat.id);
   });
 
   it('relieves unsafe rooftop overload by moving Valcescu, blog metric, and abstract season pressure obligations', () => {
@@ -2240,9 +2240,9 @@ describe('planned scene obligation binder', () => {
     const threat = result.scenes.find((item) => item.id === 's1-2');
     const writing = result.scenes.find((item) => item.id === 's1-3');
 
-    expect(helper?.requiredBeats?.map((beat) => beat.id) ?? []).toEqual([]);
+    expect(helper?.requiredBeats?.map((beat) => beat.id) ?? []).toEqual(['rescue-proof']);
     expect(helper?.turnContract?.centralTurn).toBe('The post becomes visible public pressure.');
-    expect(threat?.requiredBeats?.map((beat) => beat.id)).toContain('rescue-proof');
+    expect(threat?.requiredBeats?.map((beat) => beat.id) ?? []).not.toContain('rescue-proof');
     expect(writing?.requiredBeats?.map((beat) => beat.id)).toContain('late-post');
     expect((helper?.order ?? 0) > (writing?.order ?? Number.POSITIVE_INFINITY)).toBe(true);
   });

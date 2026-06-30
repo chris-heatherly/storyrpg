@@ -229,6 +229,8 @@ export function loadCompletedEpisode(
 ): ResumedEpisode | null {
   const watermark = load<EpisodeCompletionWatermark>(episodeCompleteArtifact(episodeNumber));
   if (!watermark || watermark.version !== 1 || watermark.episodeNumber !== episodeNumber) return null;
+  if (watermark.lock?.runtimeContractPassed === false) return null;
+  if (watermark.lock?.seasonCanonArtifact && watermark.lock.canonSealed !== true) return null;
   const incrementalContract = load<{
     passed?: boolean;
     blockingCount?: number;

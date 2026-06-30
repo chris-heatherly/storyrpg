@@ -90,6 +90,34 @@ describe('episodeCheckpoints', () => {
     expect(detectCompletedEpisodes([1], store.load)).toEqual([]);
   });
 
+  it('rejects new completion watermarks with failed lock evidence', async () => {
+    const runtimeFailed = makeStore();
+    await writeEpisodeCompletion({
+      episode: makeEpisode(1),
+      episodeNumber: 1,
+      title: 'One',
+      save: runtimeFailed.save,
+      lock: {
+        runtimeContractPassed: false,
+      },
+    });
+    expect(loadCompletedEpisode(1, runtimeFailed.load)).toBeNull();
+
+    const canonUnsealed = makeStore();
+    await writeEpisodeCompletion({
+      episode: makeEpisode(2),
+      episodeNumber: 2,
+      title: 'Two',
+      save: canonUnsealed.save,
+      lock: {
+        runtimeContractPassed: true,
+        canonSealed: false,
+        seasonCanonArtifact: 'season-canon.json',
+      },
+    });
+    expect(loadCompletedEpisode(2, canonUnsealed.load)).toBeNull();
+  });
+
   it('partitionResumableEpisodes splits specs and preserves order within each side', async () => {
     const store = makeStore();
     await writeEpisodeCompletion({ episode: makeEpisode(2), episodeNumber: 2, title: 'Two', save: store.save });

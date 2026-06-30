@@ -140,6 +140,7 @@ import {
   type EpisodeCompletionLockEvidence,
 } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
+import { resolveEpisodeParallelism } from './episodeScheduling';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
@@ -5603,9 +5604,13 @@ export class FullStoryPipeline {
         .filter((item): item is { episodeNumber: number; idx: number; outline: EpisodeOutline } => Boolean(item.outline));
 
       const dependencyMode = this.config.generation?.episodeDependencyMode || 'sequential';
-      let parallelEnabled = this.config.generation?.episodeParallelismEnabled === true && dependencyMode === 'independent';
-      if (parallelEnabled && this.seasonCanonOn) {
-        parallelEnabled = false;
+      const parallelism = resolveEpisodeParallelism({
+        episodeParallelismEnabled: this.config.generation?.episodeParallelismEnabled,
+        dependencyMode,
+        seasonCanonEnabled: this.seasonCanonOn,
+      });
+      const parallelEnabled = parallelism.enabled;
+      if (parallelism.disabledReason === 'season_canon_enabled') {
         this.emit({
           type: 'warning',
           phase: 'episode_parallelism',

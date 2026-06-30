@@ -108,21 +108,61 @@ function completionWatermarkPath(runDir, episodeNumber) {
   return path.join(runDir, 'checkpoints', `episode-${episodeNumber}-complete.json`);
 }
 
+function summarizeSceneLocks(runDir, episodeNumber, lock = {}) {
+  const artifact = typeof lock.sceneLockArtifact === 'string' && lock.sceneLockArtifact.length > 0
+    ? lock.sceneLockArtifact
+    : `episode-${episodeNumber}-scene-locks.json`;
+  const abs = resolveInside(runDir, artifact);
+  const report = abs ? readJsonIfExists(abs) : null;
+  const locks = Array.isArray(report?.locks) ? report.locks : [];
+  const issues = Array.isArray(report?.validation?.issues) ? report.validation.issues : [];
+  const failedSceneIds = locks
+    .filter((sceneLock) => sceneLock?.passed === false && typeof sceneLock?.sceneId === 'string')
+    .map((sceneLock) => sceneLock.sceneId);
+  const missingSceneIds = issues
+    .filter((issue) => issue?.code === 'missing_scene_validation_lock')
+    .map((issue) => {
+      const pathText = typeof issue?.path === 'string' ? issue.path : '';
+      const match = pathText.match(/scenes\[([^\]]+)\]/);
+      return match ? match[1] : null;
+    })
+    .filter(Boolean);
+
+  return {
+    present: Boolean(report),
+    artifact,
+    passed: report ? report.passed !== false && report.validation?.passed !== false : lock.sceneLocksPassed,
+    expectedSceneCount: Array.isArray(report?.expectedSceneIds) ? report.expectedSceneIds.length : 0,
+    lockedSceneCount: typeof report?.lockedSceneCount === 'number' ? report.lockedSceneCount : locks.length,
+    failedSceneIds,
+    missingSceneIds,
+    issueCount: issues.length,
+  };
+}
+
 function summarizeEpisodeLock(runDir, episodeNumber, status) {
   const watermark = readJsonIfExists(completionWatermarkPath(runDir, episodeNumber));
   const lock = watermark?.lock || {};
   const runtimeContractPassed = lock.runtimeContractPassed === true;
+  const sceneLocks = summarizeSceneLocks(runDir, episodeNumber, lock);
+  const sceneLocksPassed = lock.sceneLocksPassed !== false
+    && (!lock.sceneLockArtifact || (sceneLocks.present && sceneLocks.passed !== false));
   const canonRequired = typeof lock.seasonCanonArtifact === 'string' && lock.seasonCanonArtifact.length > 0;
   const canonSealed = lock.canonSealed === true || (!canonRequired && lock.canonSealed !== false);
-  const locked = runtimeContractPassed && canonSealed && status === 'clean';
+  const locked = runtimeContractPassed && sceneLocksPassed && canonSealed && status === 'clean';
   const reasons = [];
   if (!watermark) reasons.push('missing completion watermark');
   if (!runtimeContractPassed) reasons.push('runtime contract not confirmed');
+  if (lock.sceneLocksPassed === false) reasons.push('scene locks not confirmed');
+  if (lock.sceneLockArtifact && !sceneLocks.present) reasons.push('scene lock artifact missing');
+  if (sceneLocks.present && sceneLocks.passed === false) reasons.push('scene locks failed');
   if (canonRequired && lock.canonSealed !== true) reasons.push('canon seal not confirmed');
   if (status !== 'clean') reasons.push(`artifact graph is ${status}`);
   return {
     locked,
     runtimeContractPassed,
+    sceneLocksPassed,
+    sceneLockArtifact: lock.sceneLockArtifact,
     canonSealed: lock.canonSealed,
     incrementalContractArtifact: lock.incrementalContractArtifact,
     seasonCanonArtifact: lock.seasonCanonArtifact,
@@ -188,10 +228,15 @@ function scanArtifactRun(storiesDir, runId) {
   const globals = summarizeCurrentIndex(runDir);
   const episodes = listEpisodeNumbers(runDir).map((episodeNumber) => {
     const summary = summarizeCurrentIndex(runDir, episodeNumber);
+    const lock = summarizeEpisodeLock(runDir, episodeNumber, summary.status);
     return {
       episodeNumber,
       ...summary,
-      lock: summarizeEpisodeLock(runDir, episodeNumber, summary.status),
+      lock,
+      sceneLocks: summarizeSceneLocks(runDir, episodeNumber, {
+        sceneLockArtifact: lock.sceneLockArtifact,
+        sceneLocksPassed: lock.sceneLocksPassed,
+      }),
       obligations: summarizeContextOutObligations(runDir, episodeNumber),
     };
   });

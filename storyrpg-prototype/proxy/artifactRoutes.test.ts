@@ -100,10 +100,21 @@ describe('artifactRoutes', () => {
       assembledArtifact: 'checkpoints/episode-1-assembled.json',
       lock: {
         runtimeContractPassed: true,
+        sceneLocksPassed: true,
+        sceneLockArtifact: 'episode-1-scene-locks.json',
         canonSealed: true,
         incrementalContractArtifact: 'episode-1-incremental-contract.json',
         seasonCanonArtifact: 'season-canon.json',
       },
+    });
+    writeJson(path.join(runDir, 'episode-1-scene-locks.json'), {
+      version: 1,
+      episodeNumber: 1,
+      expectedSceneIds: ['s1'],
+      lockedSceneCount: 1,
+      passed: true,
+      locks: [{ sceneId: 's1', sceneName: 'Opening', passed: true }],
+      validation: { passed: true, issues: [] },
     });
     writeJson(path.join(runDir, 'season-canon.json'), {
       version: 1,
@@ -126,11 +137,73 @@ describe('artifactRoutes', () => {
     expect(scan.episodes[0].lock).toMatchObject({
       locked: true,
       runtimeContractPassed: true,
+      sceneLocksPassed: true,
+      sceneLockArtifact: 'episode-1-scene-locks.json',
       canonSealed: true,
+    });
+    expect(scan.episodes[0].sceneLocks).toMatchObject({
+      present: true,
+      artifact: 'episode-1-scene-locks.json',
+      passed: true,
+      expectedSceneCount: 1,
+      lockedSceneCount: 1,
+      issueCount: 0,
     });
     expect(scan.episodes[0].obligations).toEqual({
       unresolvedCount: 2,
       byKind: { callback: 1, character_arc: 1 },
+    });
+  });
+
+  it('reports failed scene locks as an unlocked episode health reason', () => {
+    const storiesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'storyrpg-artifacts-'));
+    const runDir = path.join(storiesDir, 'run-scene-lock-failed');
+    const runtime = artifactRef('runtime-episode', 1, 1);
+
+    writeArtifact(runDir, runtime);
+    writeCurrent(runDir, 1, [runtime]);
+    writeJson(path.join(runDir, 'checkpoints', 'episode-1-complete.json'), {
+      version: 1,
+      episodeNumber: 1,
+      title: 'One',
+      completedAt: new Date().toISOString(),
+      sceneCount: 2,
+      assembledArtifact: 'checkpoints/episode-1-assembled.json',
+      lock: {
+        runtimeContractPassed: true,
+        sceneLocksPassed: true,
+        sceneLockArtifact: 'episode-1-scene-locks.json',
+      },
+    });
+    writeJson(path.join(runDir, 'episode-1-scene-locks.json'), {
+      version: 1,
+      episodeNumber: 1,
+      expectedSceneIds: ['s1', 's2'],
+      lockedSceneCount: 1,
+      passed: false,
+      locks: [{ sceneId: 's1', sceneName: 'Opening', passed: true }],
+      validation: {
+        passed: false,
+        issues: [{
+          validator: 'SceneLockGate',
+          severity: 'error',
+          code: 'missing_scene_validation_lock',
+          path: 'episodes[1].scenes[s2]',
+        }],
+      },
+    });
+
+    const scan = scanArtifactRun(storiesDir, 'run-scene-lock-failed');
+
+    expect(scan.episodes[0].lock.locked).toBe(false);
+    expect(scan.episodes[0].lock.reasons).toContain('scene locks failed');
+    expect(scan.episodes[0].sceneLocks).toMatchObject({
+      present: true,
+      passed: false,
+      expectedSceneCount: 2,
+      lockedSceneCount: 1,
+      missingSceneIds: ['s2'],
+      issueCount: 1,
     });
   });
 });

@@ -8,6 +8,13 @@ describe('detectStoryEventCues', () => {
     expect(cues.has('venueDoor')).toBe(false);
   });
 
+  it('detects generic social group formation as a social scene cue', () => {
+    const cues = detectStoryEventCues('The traveler forms a new circle with two strangers over bitter drinks.');
+
+    expect(cues.has('socialMeet')).toBe(true);
+    expect(cues.has('venueDoor')).toBe(false);
+  });
+
   it('does not treat a message about a public post as an object handoff', () => {
     const cues = detectStoryEventCues('A friend texts to say the late-night post is powerful.');
 
@@ -21,6 +28,7 @@ describe('detectStoryEventCues', () => {
 
   it('keeps draft and future-viral intent separate from public blog aftermath', () => {
     expect(detectStoryEventCues('The rescue is the kind of story that could go viral.').has('blogAftermath')).toBe(false);
+    expect(detectStoryEventCues("Introduce the reader's first meeting with the protagonist.").has('blogAftermath')).toBe(false);
     expect(detectStoryEventCues('At 4am, the cursor blinks on a blank page before you publish the anonymous post.').has('blogAftermath')).toBe(false);
     expect(detectStoryEventCues('By evening, the anonymous post has gone viral and the views counter keeps climbing.').has('blogAftermath')).toBe(true);
   });
@@ -29,6 +37,13 @@ describe('detectStoryEventCues', () => {
     expect(detectStoryEventCues('At 4am, the narrator writes the anonymous post.').has('lateNightWriting')).toBe(true);
     expect(detectStoryEventCues('At 4 a.m., the narrator chooses a codename and publishes.').has('lateNightWriting')).toBe(true);
     expect(detectStoryEventCues('At 4 a.m., the narrator chooses a codename and publishes.').has('blogAftermath')).toBe(false);
+  });
+
+  it('detects generic public writing launches as writing cues', () => {
+    const cues = detectStoryEventCues('The narrator starts a public account under a codename.');
+
+    expect(cues.has('lateNightWriting')).toBe(true);
+    expect(cues.has('blogAftermath')).toBe(false);
   });
 
   it('detects inflected attack and rescue wording as a threat encounter', () => {

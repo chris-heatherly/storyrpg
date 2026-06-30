@@ -2,24 +2,25 @@
 
 ## 1. StoryRPG Structure Model
 
-Season -> Acts -> Seven-Point Anchors + Buffers -> Episodes -> Episode Turns -> Scenes -> Beats
+Season -> Story Circle -> Story Arcs Across Acts -> Episodes -> Episode Turns -> Scenes -> Beats
 
-## 3. 3-Act / 7-Point Season Spine
+## 3. Story Circle Season Spine
 
-- Hook: Mara accepts the lighthouse post.
-- Plot Turn 1: The lantern answers with her sister's voice.
-- Pinch 1: The town council threatens to burn the station.
-- Midpoint: Mara learns the light is a prison, not a beacon.
-- Pinch 2: Her ally sells the key to save his family.
-- Climax: Mara opens the storm door during the king tide.
-- Resolution: The harbor remembers what it buried.
+- You: Mara accepts the lighthouse post.
+- Need: Mara needs to stop treating the lantern as private grief.
+- Go: The lantern answers with her sister's voice.
+- Search: The town council threatens to burn the station.
+- Find: Mara learns the light is a prison, not a beacon.
+- Take: Her ally sells the key to save his family.
+- Return: Mara opens the storm door during the king tide.
+- Change: The harbor remembers what it buried.
 
 ## 7. Episode Outline
 
 ### Episode 1: The Lantern Job
 
 - **Act:** Act 1
-- **Structural role: anchor, fused anchors, or buffer:** Hook + Plot Turn 1
+- **Story Circle role:** you + go
 - **Episode promise:** Mara takes the lighthouse job and discovers the light can answer grief.
 - **Episode turns:**
   - Mara arrives at the emptied lighthouse with her sister's scarf in her bag.
@@ -40,7 +41,7 @@ Season -> Acts -> Seven-Point Anchors + Buffers -> Episodes -> Episode Turns -> 
 ### 2. Breakwater Oath
 
 - **Act:** Act 2A
-- **Structural role:** Pinch 1
+- **Story Circle role:** search
 - **Episode promise:** Mara tests whether anyone in town can be trusted.
 - **Episode turns:** Mara follows the lighthouse shadow to the old breakwater; Jonas admits the council has hidden wreck records; the sea returns a drowned bell.
 - **Encounter anchors:** The council hearing turns public suspicion into a social encounter with real reputation damage.

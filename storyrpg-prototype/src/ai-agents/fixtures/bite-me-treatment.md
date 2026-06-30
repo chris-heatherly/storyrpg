@@ -5,7 +5,7 @@ A StoryRPG branching-narrative season treatment.
 ## 7. Episode Outline
 
 ### Episode 1 — "Welcome to Dusk"
-- **Structural role:** Hook.
+- **Story Circle role:** you.
 - **Tone register:** Sparkly paranormal rom-com with one dark bite at the end.
 - **Episode promise:** Can Kylie survive her first fabulous night in Bucharest?
 - **Synopsis:** Kylie meets Mika and Stela, launches the Dusk Club, and is rescued by Victor after an attack in the park.
@@ -24,7 +24,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** Stela texts that she had a horrible dream and is coming over with herbs.
 
 ### Episode 2 — "Mr. Midnight"
-- **Structural role:** Plot Turn 1.
+- **Story Circle role:** need.
 - **Tone register:** Dating-column comedy with a velvet shadow.
 - **Episode promise:** Who is Mr. Midnight, and how brave is Kylie willing to be?
 - **Synopsis:** Kylie goes on terrible dates, meets Victor properly, and meets Radu after a cab breakdown.
@@ -42,7 +42,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** A no-profile account warns Kylie that Ileana is missing and that she should not go to Victor's weekend.
 
 ### Episode 3 — "The Weekend"
-- **Structural role:** Plot Turn 1 completion.
+- **Story Circle role:** go.
 - **Tone register:** Glossy country-house romance with one anonymous warning.
 - **Episode promise:** What does Kylie look like when she lets herself be courted?
 - **Synopsis:** Kylie spends the weekend at Victor's estate and notices the first impossible cracks.
@@ -61,7 +61,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** Radu's scarf appears on Kylie's doormat even though she never gave him her address.
 
 ### Episode 4 — "The Mountain"
-- **Structural role:** Pinch 1.
+- **Story Circle role:** search.
 - **Tone register:** Woodsmoke second-lead romance with gathering unease.
 - **Episode promise:** Is there a version where Kylie chooses the quiet life?
 - **Synopsis:** Kylie visits Radu's lodge while Mika and Stela pull her in opposite directions.
@@ -80,7 +80,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** The no-profile account tells Kylie to ask The Mountain about his last girlfriend.
 
 ### Episode 5 — "Mirror, Mirror"
-- **Structural role:** Midpoint.
+- **Story Circle role:** find.
 - **Tone register:** Romance until the genre flips in real time.
 - **Episode promise:** What does Kylie want when she finally lets herself want?
 - **Synopsis:** Victor asks Kylie to wind down the blog; later, the mirror reveals what he is.
@@ -100,7 +100,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** Kylie sees Victor's stag-crest ring in her grandmother's 1961 photograph as Victor texts, "We should talk."
 
 ### Episode 6 — "Wolf at the Door"
-- **Structural role:** Pinch 2.
+- **Story Circle role:** take.
 - **Tone register:** Dark romance with a friend group still holding the frame.
 - **Episode promise:** Is anyone in Kylie's life just a person?
 - **Synopsis:** Radu confesses what he is, Carmen is attacked, and Victor frames Radu.
@@ -118,7 +118,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** A black rose waits inside Kylie's warded apartment with Victor's card saying Mika brought it.
 
 ### Episode 7 — "Best Friend"
-- **Structural role:** Pinch 2 completion.
+- **Story Circle role:** return.
 - **Tone register:** Friendship reckoning inside dark romance.
 - **Episode promise:** Can Kylie hold on to the friend she loves after the truth?
 - **Synopsis:** Kylie confronts Mika and learns she has been steering Kylie toward Victor.
@@ -137,7 +137,7 @@ A StoryRPG branching-narrative season treatment.
 - **Cliffhanger:** Radu stands in the courtyard and admits he tried to be there the first night.
 
 ### Episode 8 — "Bite Me"
-- **Structural role:** Climax and Resolution.
+- **Story Circle role:** change.
 - **Tone register:** Full dark romance with the warmth of the Dusk Club in one ending.
 - **Episode promise:** Who is Kylie Marinescu now?
 - **Synopsis:** The Hunter's Moon ball forces Kylie to choose what she will and will not become.

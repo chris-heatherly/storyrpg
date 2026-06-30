@@ -74,7 +74,7 @@ function plan(contractOrEpisodeNumber: SceneTurnContract | number = turnContract
 
 function storyCircleContract(overrides: Partial<StoryCircleBeatRealizationContract> = {}): StoryCircleBeatRealizationContract {
   return {
-    id: 'Story Circle-midpoint-mirror',
+    id: 'Story Circle-find-mirror',
     beat: 'find',
     sourceText: 'Kylie sees herself alone in Victor mirror; Stela confesses two truths; the genre changes; the blog skips a day.',
     targetEpisodeNumber: 1,
@@ -89,7 +89,7 @@ function storyCircleContract(overrides: Partial<StoryCircleBeatRealizationContra
 
 function arcPressureContract(overrides: Partial<ArcPressureTreatmentContract> = {}): ArcPressureTreatmentContract {
   return {
-    id: 'arc-pressure-champagne-midpoint',
+    id: 'arc-pressure-champagne-find',
     source: 'treatment',
     arcId: 'arc-1',
     arcTitle: 'Champagne',
@@ -178,7 +178,7 @@ describe('SceneTurnRealizationValidator', () => {
         sourceText: 'Observation versus authorship; being chosen versus choosing a public voice.',
         eventAtoms: ['Observation versus authorship', 'being chosen versus choosing a public voice'],
         targetSceneIds: ['scene-1'],
-        requiredRealization: ['season_plan', 'mechanic_pressure'],
+        requiredRealization: ['season_arc', 'mechanic_pressure'],
       })],
     });
     const localPlan: SeasonScenePlan = {
@@ -380,7 +380,7 @@ describe('SceneTurnRealizationValidator', () => {
           id: 's1-1',
           turnContract: turnContract({
             source: 'planner',
-            centralTurn: 'Let the fallout settle into the next pressure: rising pressure.',
+            centralTurn: 'Let the fallout settle into the next pressure: search pressure.',
           }),
           beats: [
             beat('b1', 'Afterward, Kylie locks the door and studies the key card.', {
@@ -653,8 +653,8 @@ describe('SceneTurnRealizationValidator', () => {
   });
 
   it('does not merge stale planned arc pressure when the generated scene has explicit current contracts', () => {
-    const midpoint = arcPressureContract({
-      id: 'arc-pressure-midpoint',
+    const find = arcPressureContract({
+      id: 'arc-pressure-find',
       contractKind: 'arc_midpoint_recontextualization',
       fieldName: 'Midpoint recontextualization',
       targetEpisodeNumbers: [2],
@@ -679,7 +679,7 @@ describe('SceneTurnRealizationValidator', () => {
             centralTurn: 'Kylie realizes Victor is dangerous.',
             turnEvent: 'Kylie realizes Victor is dangerous.',
           }),
-          arcPressureContracts: [midpoint],
+          arcPressureContracts: [find],
           beats: [
             beat('b1', 'The blog dashboard climbs while Kylie studies the invitation to Vâlcescu Club.', {
               sequenceIntent: { beatRole: 'setup' },
@@ -699,7 +699,7 @@ describe('SceneTurnRealizationValidator', () => {
           ...plan(2).scenes[0],
           id: 's2-1',
           episodeNumber: 2,
-          arcPressureContracts: [midpoint, staleLateCrisis],
+          arcPressureContracts: [find, staleLateCrisis],
         }],
       },
       treatmentSourced: true,

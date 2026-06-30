@@ -24,7 +24,7 @@ import {
   spineDerivedHeavyPercent,
   type BudgetContext,
 } from './seasonBudgetAllocator';
-import type { StructuralRole } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 import { SeasonBudgetValidator } from '../validators/SeasonBudgetValidator';
 import {
   CHOICE_TYPE_TARGET,
@@ -541,19 +541,19 @@ const RANK: Record<string, number> = { callback: 0, tint: 1, branchlet: 2, branc
 
 describe('episodePosture (Layer C)', () => {
   it('maps convergent tentpole beats to convergent', () => {
-    for (const r of ['hook', 'midpoint', 'climax', 'resolution', 'falling'] as StructuralRole[]) {
+    for (const r of ['you', 'find', 'return', 'change', 'return'] as StoryCircleBeat[]) {
       expect(episodePosture([r])).toBe('convergent');
     }
   });
 
-  it('maps plotTurn1 / pinch1 / rising to open-field', () => {
-    for (const r of ['plotTurn1', 'pinch1', 'rising'] as StructuralRole[]) {
+  it('maps go / search / search to open-field', () => {
+    for (const r of ['go', 'search', 'search'] as StoryCircleBeat[]) {
       expect(episodePosture([r])).toBe('open-field');
     }
   });
 
-  it('maps pinch2 to open-field-short', () => {
-    expect(episodePosture(['pinch2'])).toBe('open-field-short');
+  it('maps take to open-field-short', () => {
+    expect(episodePosture(['take'])).toBe('open-field-short');
   });
 
   it('defaults to open-field for an absent / unknown role', () => {
@@ -562,10 +562,10 @@ describe('episodePosture (Layer C)', () => {
   });
 
   it('takes the most permissive posture when an episode fuses beats', () => {
-    // hook (convergent) + plotTurn1 (open-field) → open-field wins.
-    expect(episodePosture(['hook', 'plotTurn1'])).toBe('open-field');
-    // hook (convergent) + pinch2 (open-field-short) → open-field-short wins.
-    expect(episodePosture(['hook', 'pinch2'])).toBe('open-field-short');
+    // you (convergent) + go (open-field) → open-field wins.
+    expect(episodePosture(['you', 'go'])).toBe('open-field');
+    // you (convergent) + take (open-field-short) → open-field-short wins.
+    expect(episodePosture(['you', 'take'])).toBe('open-field-short');
   });
 });
 
@@ -610,50 +610,50 @@ describe('positionalMagnitude (Layer B)', () => {
 describe('proposeTierPositional (Layers A + C)', () => {
   it('expression is callback-only regardless of posture', () => {
     const u = standardScene({ id: 'e', hasChoice: true, choiceType: 'expression' });
-    const p = proposeTierPositional(u, ['plotTurn1'], 0);
+    const p = proposeTierPositional(u, ['go'], 0);
     expect(p).toEqual({ floor: 'callback', ceil: 'callback', preferred: 'callback' });
   });
 
   it('branch-point encounters propose branch anywhere', () => {
     const enc = encounterScene({ id: 'bp', encounter: { type: 'combat', difficulty: 'hard', relevantSkills: ['c'], isBranchPoint: true } });
-    expect(proposeTierPositional(enc, ['hook'], 0).preferred).toBe('branch');
-    expect(proposeTierPositional(enc, ['resolution'], 0).preferred).toBe('branch');
+    expect(proposeTierPositional(enc, ['you'], 0).preferred).toBe('branch');
+    expect(proposeTierPositional(enc, ['change'], 0).preferred).toBe('branch');
   });
 
-  it('non-branch encounters propose branchlet, escalating to branch at pinch2/climax', () => {
+  it('non-branch encounters propose branchlet, escalating to branch at take/return', () => {
     const enc = encounterScene({ id: 'ne', encounter: { type: 'combat', difficulty: 'moderate', relevantSkills: ['c'], isBranchPoint: false } });
-    expect(proposeTierPositional(enc, ['hook'], 0).preferred).toBe('branchlet');
-    expect(proposeTierPositional(enc, ['climax'], 0).preferred).toBe('branch');
-    expect(proposeTierPositional(enc, ['pinch2'], 0).preferred).toBe('branch');
+    expect(proposeTierPositional(enc, ['you'], 0).preferred).toBe('branchlet');
+    expect(proposeTierPositional(enc, ['return'], 0).preferred).toBe('branch');
+    expect(proposeTierPositional(enc, ['take'], 0).preferred).toBe('branch');
   });
 
   it('a convergent episode caps a non-encounter major at branchlet; open-field reaches branch', () => {
     const major = standardScene({ id: 'maj', hasChoice: true, choiceType: 'strategic', narrativeRole: 'turn' });
     // τ = 0 so the unit clears the major threshold.
-    const conv = proposeTierPositional(major, ['midpoint'], 0);
+    const conv = proposeTierPositional(major, ['find'], 0);
     expect(conv.ceil).toBe('branchlet');
     expect(conv.preferred).toBe('branchlet');
 
-    const open = proposeTierPositional(major, ['plotTurn1'], 0);
+    const open = proposeTierPositional(major, ['go'], 0);
     expect(open.ceil).toBe('branch');
     expect(open.preferred).toBe('branch');
   });
 
-  it('a minor (sub-τ) non-encounter lands in the light band; resolution leans callback', () => {
+  it('a minor (sub-τ) non-encounter lands in the light band; change leans callback', () => {
     const minor = standardScene({ id: 'min', hasChoice: true, choiceType: 'relationship', narrativeRole: 'release' });
     // τ above the unit's magnitude → light band.
-    const open = proposeTierPositional(minor, ['rising'], 1);
+    const open = proposeTierPositional(minor, ['search'], 1);
     expect(open.floor).toBe('callback');
     expect(open.ceil).toBe('tint');
     expect(open.preferred).toBe('tint');
 
-    const res = proposeTierPositional(minor, ['resolution'], 1);
+    const res = proposeTierPositional(minor, ['change'], 1);
     expect(res.preferred).toBe('callback');
   });
 
   it('dilemmas always sit in the heavy band even below τ', () => {
     const dil = standardScene({ id: 'd', hasChoice: true, choiceType: 'dilemma', narrativeRole: 'release' });
-    const p = proposeTierPositional(dil, ['rising'], 1); // τ high
+    const p = proposeTierPositional(dil, ['search'], 1); // τ high
     expect(RANK[p.floor]).toBeGreaterThanOrEqual(RANK.branchlet);
   });
 });
@@ -694,9 +694,9 @@ describe('allocateConsequenceTiers — flag gating (Phase 1)', () => {
   function buildPlan(): { units: ReturnType<typeof buildBudgetUnits>; ctx: BudgetContext } {
     nextOrder = 0;
     const scenes: PlannedScene[] = [];
-    // Episode 2 = plotTurn1 (open-field): a strong major scene → can reach branch.
+    // Episode 2 = go (open-field): a strong major scene → can reach branch.
     scenes.push(standardScene({ id: 'open-major', episodeNumber: 2, hasChoice: true, choiceType: 'strategic', narrativeRole: 'turn', setsUp: ['x', 'y'], stakes: 'the plan' }));
-    // Episode 5 = midpoint (convergent): an equally strong major → capped at branchlet.
+    // Episode 5 = find (convergent): an equally strong major → capped at branchlet.
     scenes.push(standardScene({ id: 'conv-major', episodeNumber: 5, hasChoice: true, choiceType: 'strategic', narrativeRole: 'turn', setsUp: ['x', 'y'], stakes: 'the plan' }));
     // Filler light scenes so the budget has room.
     for (let i = 0; i < 18; i++) {
@@ -705,10 +705,10 @@ describe('allocateConsequenceTiers — flag gating (Phase 1)', () => {
     const plan = scenePlanFrom(scenes);
     const units = buildBudgetUnits(plan);
     allocateChoiceTypes(units);
-    const roleByEpisode: Record<number, StructuralRole[]> = {
-      1: ['hook'],
-      2: ['plotTurn1'],
-      5: ['midpoint'],
+    const roleByEpisode: Record<number, StoryCircleBeat[]> = {
+      1: ['you'],
+      2: ['go'],
+      5: ['find'],
     };
     return { units, ctx: { roleByEpisode } };
   }
@@ -768,17 +768,17 @@ describe('allocateConsequenceTiers — flag gating (Phase 1)', () => {
 describe('encounterSpineTier (Layer D invariant)', () => {
   it('branch-point encounters → branch anywhere', () => {
     const bp = encounterScene({ id: 'bp', encounter: { type: 'combat', difficulty: 'hard', relevantSkills: ['c'], isBranchPoint: true } });
-    expect(encounterSpineTier(bp, ['hook'])).toBe('branch');
-    expect(encounterSpineTier(bp, ['resolution'])).toBe('branch');
+    expect(encounterSpineTier(bp, ['you'])).toBe('branch');
+    expect(encounterSpineTier(bp, ['change'])).toBe('branch');
     expect(encounterSpineTier(bp, undefined)).toBe('branch');
   });
 
-  it('non-branch encounters → branchlet, escalating to branch at pinch2/climax', () => {
+  it('non-branch encounters → branchlet, escalating to branch at take/return', () => {
     const ne = encounterScene({ id: 'ne', encounter: { type: 'combat', difficulty: 'moderate', relevantSkills: ['c'], isBranchPoint: false } });
-    expect(encounterSpineTier(ne, ['hook'])).toBe('branchlet');
+    expect(encounterSpineTier(ne, ['you'])).toBe('branchlet');
     expect(encounterSpineTier(ne, undefined)).toBe('branchlet');
-    expect(encounterSpineTier(ne, ['pinch2'])).toBe('branch');
-    expect(encounterSpineTier(ne, ['climax'])).toBe('branch');
+    expect(encounterSpineTier(ne, ['take'])).toBe('branch');
+    expect(encounterSpineTier(ne, ['return'])).toBe('branch');
   });
 });
 
@@ -866,7 +866,7 @@ describe('allocateConsequenceTiers — two-population (Phase 2)', () => {
     }
   });
 
-  it('flag ON: non-branch encounters escalate to branch at pinch2/climax via ctx', () => {
+  it('flag ON: non-branch encounters escalate to branch at take/return via ctx', () => {
     process.env.CONSEQUENCE_TWO_POP = '1';
     nextOrder = 0;
     const ne = encounterScene({ id: 'ne', episodeNumber: 7, encounter: {
@@ -876,7 +876,7 @@ describe('allocateConsequenceTiers — two-population (Phase 2)', () => {
       standardScene({ id: `f${i}`, episodeNumber: 1, hasChoice: true, choiceType: 'expression' }));
     const units = buildBudgetUnits(scenePlanFrom([ne, ...filler]));
     allocateChoiceTypes(units);
-    const ctx: BudgetContext = { roleByEpisode: { 7: ['climax'] } };
+    const ctx: BudgetContext = { roleByEpisode: { 7: ['return'] } };
     allocateConsequenceTiers(units, ctx);
     expect(units.find((u) => u.id === 'ne')!.consequenceTier).toBe('branch');
   });
@@ -940,7 +940,7 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
     // A relationship/release scene — low positional magnitude, normally light.
     const betrayal = standardScene({
       id: 'betrayal',
-      episodeNumber: 2, // plotTurn1 → open-field, so an elevated unit may reach branch
+      episodeNumber: 2, // go → open-field, so an elevated unit may reach branch
       hasChoice: true,
       choiceType: 'relationship',
       narrativeRole: 'release',
@@ -955,7 +955,7 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
     units.find((u) => u.id === 'betrayal')!.choiceType = 'relationship';
 
     const ctx: BudgetContext = {
-      roleByEpisode: { 1: ['hook'], 2: ['plotTurn1'] },
+      roleByEpisode: { 1: ['you'], 2: ['go'] },
       chargeMap: new Map([['betrayal', 0.95]]),
     };
     allocateConsequenceTiers(units, ctx);
@@ -989,7 +989,7 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
     units.find((u) => u.id === 'hollow-major')!.choiceType = 'strategic';
 
     const ctx: BudgetContext = {
-      roleByEpisode: { 1: ['hook'], 2: ['plotTurn1'] },
+      roleByEpisode: { 1: ['you'], 2: ['go'] },
       chargeMap: new Map([['hollow-major', 0]]), // zero charge
     };
     allocateConsequenceTiers(units, ctx);
@@ -1027,7 +1027,7 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
     nextOrder = 0;
     const conv = standardScene({
       id: 'conv-charged',
-      episodeNumber: 5, // midpoint → convergent
+      episodeNumber: 5, // find → convergent
       hasChoice: true,
       choiceType: 'relationship',
       narrativeRole: 'release',
@@ -1041,7 +1041,7 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
     units.find((u) => u.id === 'conv-charged')!.choiceType = 'relationship';
 
     const ctx: BudgetContext = {
-      roleByEpisode: { 1: ['hook'], 5: ['midpoint'] },
+      roleByEpisode: { 1: ['you'], 5: ['find'] },
       chargeMap: new Map([['conv-charged', 0.99]]),
     };
     allocateConsequenceTiers(units, ctx);
@@ -1068,14 +1068,14 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
   });
 
   // Regression (review LOW): a charged non-encounter unit in a RESOLUTION episode
-  // stays callback-dominant — resolution has no runway to reconverge a fork, so
+  // stays callback-dominant — change has no runway to reconverge a fork, so
   // even high charge discharges as acknowledgment, not a branchlet (Layer C).
-  it('flag ON: a charged resolution-episode unit stays callback (no runway)', () => {
+  it('flag ON: a charged change-episode unit stays callback (no runway)', () => {
     process.env.CONSEQUENCE_CHARGE = '1';
     nextOrder = 0;
     const res = standardScene({
       id: 'res-charged',
-      episodeNumber: 8, // resolution → convergent, terminal
+      episodeNumber: 8, // change → convergent, terminal
       hasChoice: true,
       choiceType: 'relationship',
       narrativeRole: 'payoff',
@@ -1089,7 +1089,7 @@ describe('allocateConsequenceTiers — charge (Phase 3)', () => {
     units.find((u) => u.id === 'res-charged')!.choiceType = 'relationship';
 
     const ctx: BudgetContext = {
-      roleByEpisode: { 1: ['hook'], 8: ['resolution'] },
+      roleByEpisode: { 1: ['you'], 8: ['change'] },
       chargeMap: new Map([['res-charged', 0.99]]),
     };
     allocateConsequenceTiers(units, ctx);

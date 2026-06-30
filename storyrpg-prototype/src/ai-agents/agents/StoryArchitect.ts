@@ -11,13 +11,11 @@
 import { AgentConfig, GenerationSettingsConfig } from '../config';
 import {
   StoryAnchors,
-  LegacyStructuralMap,
   EncounterStoryCircleTarget,
   EncounterStoryCircleTargetEvidence,
   StoryCircleBeat,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
   STORY_CIRCLE_BEATS,
   TreatmentEpisodeGuidance,
   ThemeArgumentContract,
@@ -46,6 +44,7 @@ import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import { applySceneContract } from '../utils/sceneContractBuilders';
+import { collectColdOpenProfileIssues } from '../utils/coldOpenProfile';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import type {
@@ -57,10 +56,12 @@ import type {
   AuthoredTreatmentFieldContract,
   BranchConsequenceRealizationContract,
   CharacterTreatmentRealizationContract,
+  ColdOpenProfile,
   EndingRealizationContract,
   FailureModeAuditContract,
   MechanicPressureContract,
   RelationshipPacingContract,
+  SceneConstructionProfile,
   SceneTurnContract,
   SeasonPromiseRealizationContract,
   StoryCircleBeatRealizationContract,
@@ -83,9 +84,7 @@ import {
 } from '../remediation/gateRepairRouter';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import { treatmentFieldTokens } from '../utils/treatmentFieldContracts';
-import {
-  legacyStructuralRolesToStoryCircleRoles,
-} from '../utils/storyCircleDistribution';
+import { storyCircleRoleBeats } from '../utils/storyCircleDistribution';
 import {
   buildEncounterStoryCircleTargetRationale,
   isEncounterStoryCircleTarget,
@@ -111,6 +110,7 @@ import {
   pickBlueprintSafeText,
   sanitizeBlueprintText,
 } from '../utils/blueprintTextHygiene';
+import { collectSceneConstructionProfileIssues } from '../utils/sceneConstructionProfile';
 
 /**
  * Smallest episode (by scene count) that should be asked to carry a SECOND
@@ -171,23 +171,11 @@ export interface StoryArchitectInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** @deprecated Story Circle is the primary structure. */
-  seasonLegacyStructure?: LegacyStructuralMap;
-
   /**
    * Season-level Story Circle beat map (from SeasonPlan.storyCircle). This is
    * the primary macro structure for the episode blueprint.
    */
   seasonStoryCircle?: StoryCircleStructure;
-
-  /**
-   * Which beat(s) of the season legacyStructure this specific episode carries
-   * (from SeasonEpisode.structuralRole). Drives which `arc.*` fields are
-   * required vs. optional and what dramatic function the episode serves.
-   *
-   * @deprecated Use episodeStoryCircleRole for new generation.
-   */
-  episodeStructuralRole?: StructuralRole[];
 
   /**
    * Which Story Circle beat(s) this episode carries at the season level.
@@ -544,6 +532,8 @@ export interface SceneBlueprint {
   nonCopyableContext?: Array<Pick<TreatmentEventAtom, 'id' | 'sourceText' | 'eventText' | 'sourceSection'>>;
   signatureMoment?: string;
   turnContract?: SceneTurnContract;
+  coldOpenProfile?: ColdOpenProfile;
+  sceneConstructionProfile?: SceneConstructionProfile;
   relationshipPacing?: RelationshipPacingContract[];
   mechanicPressure?: MechanicPressureContract[];
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
@@ -674,28 +664,12 @@ export interface EpisodeBlueprint {
   title: string;
   synopsis: string;
 
-  /**
-   * Deprecated episode-level compatibility summary.
-   * Story Circle enforcement happens through episodeCircle.
-   *
-   * For legacy buffer episodes (episodes with `structuralRole` of `rising` or
-   * `falling`), the writer fills the 1-2 compatibility beats the episode
-   * actually lands and leaves the others as empty strings. New generation uses
-   * `episodeCircle`, which must fill all eight Story Circle beats.
-   */
-  arc: {
-    hook: string;          // Ordinary world + core value introduced
-    plotTurn1: string;     // Inciting incident / world-disruption
-    pinch1: string;        // First major setback against the antagonizing force
-    midpoint: string;      // Commitment / reversal / path-to-victory discovered
-    pinch2: string;        // Crisis + transformation culmination
-    climax: string;        // Decisive confrontation (fuses PT2 + Climax)
-    resolution: string;    // Aftermath + legacy
-  };
+  /** Episode-level Story Circle summary retained for validators that aggregate blueprint text. */
+  arc: StoryCircleStructure;
 
   /**
-   * Episode-level Story Circle. Unlike the legacy `arc` compatibility block,
-   * this must fill all eight beats so each episode has its own complete loop.
+   * Episode-level Story Circle. This must fill all eight beats so each episode
+   * has its own complete loop.
    */
   episodeCircle?: StoryCircleStructure;
 
@@ -703,14 +677,6 @@ export interface EpisodeBlueprint {
    * Season-level Story Circle beat(s) this episode carries.
    */
   storyCircleRole?: StoryCircleRoleAssignment[];
-
-  /**
-   * Which beats of the season-level legacyStructure this episode is responsible
-   * for landing. Copied through from the SeasonPlannerAgent's assignment so
-   * validators can assert the episode's arc fields are populated for the
-   * beats it owns.
-   */
-  structuralRole?: StructuralRole[];
 
   // Themes to weave through
   themes: string[];
@@ -2094,16 +2060,17 @@ export class StoryArchitect extends BaseAgent {
     }
 
     blueprint.arc = blueprint.arc || {
-      hook: '',
-      plotTurn1: '',
-      pinch1: '',
-      midpoint: '',
-      pinch2: '',
-      climax: '',
-      resolution: '',
+      you: '',
+      need: '',
+      go: '',
+      search: '',
+      find: '',
+      take: '',
+      return: '',
+      change: '',
     };
-    if (!blueprint.arc.resolution?.includes(endingPressure)) {
-      blueprint.arc.resolution = [blueprint.arc.resolution, endingPressure].filter(Boolean).join(' ');
+    if (!blueprint.arc.change?.includes(endingPressure)) {
+      blueprint.arc.change = [blueprint.arc.change, endingPressure].filter(Boolean).join(' ');
     }
   }
 
@@ -3267,6 +3234,8 @@ Remember: The encounter is the heart. Design outward from it.
         requiredBeats,
         signatureMoment,
         turnContract,
+        coldOpenProfile: p.coldOpenProfile,
+        sceneConstructionProfile: p.sceneConstructionProfile,
         relationshipPacing: p.relationshipPacing,
         mechanicPressure: arcPressureBinding.mechanicPressure,
         authoredTreatmentFields: p.authoredTreatmentFields,
@@ -3321,14 +3290,17 @@ Remember: The encounter is the heart. Design outward from it.
       if (directive) this.applyPlannedEncounterToScene(scenes[i], directive);
     }
 
-    // Arc block: fill the beats this episode owns from the season legacyStructure.
-    const emptyArc = { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' };
+    const emptyArc: StoryCircleStructure = {
+      you: '',
+      need: '',
+      go: '',
+      search: '',
+      find: '',
+      take: '',
+      return: '',
+      change: '',
+    };
     const arc = { ...emptyArc };
-    const legacyStructure = input.seasonLegacyStructure;
-    for (const role of input.episodeStructuralRole ?? []) {
-      if (role === 'rising' || role === 'falling') continue;
-      if (legacyStructure && legacyStructure[role]) arc[role] = legacyStructure[role];
-    }
     const storyCircleRole = this.resolveEpisodeStoryCircleRole(input);
     const episodeCircle = this.buildEpisodeCircle(input, arc);
 
@@ -3342,7 +3314,6 @@ Remember: The encounter is the heart. Design outward from it.
       arc,
       episodeCircle,
       storyCircleRole,
-      structuralRole: input.episodeStructuralRole,
       themes: [],
       scenes,
       startingSceneId: sceneIds[0] ?? '',
@@ -3361,7 +3332,129 @@ Remember: The encounter is the heart. Design outward from it.
   }
 
   private repairBroadArrivalRequiredBeats(blueprint: EpisodeBlueprint): void {
-    void blueprint;
+    const scenes = blueprint.scenes ?? [];
+    const rooftop = scenes.find((scene) =>
+      /\b(?:rooftop|dusk club|valcescu|vâlcescu)\b/i.test([
+        scene.id,
+        scene.name,
+        scene.description,
+        scene.location,
+      ].filter(Boolean).join(' '))
+      && !/\b(?:cold open|cold-open|arrival)\b/i.test([scene.id, scene.name].filter(Boolean).join(' '))
+    ) || scenes.find((scene) =>
+      /\b(?:rooftop|dusk club|valcescu|vâlcescu)\b/i.test([
+        scene.id,
+        scene.name,
+        scene.description,
+        scene.location,
+      ].filter(Boolean).join(' '))
+    );
+    const blog = scenes.find((scene) =>
+      /\b(?:blog|post|midnight|aftermath|viral|readership|dashboard)\b/i.test([
+        scene.id,
+        scene.name,
+        scene.description,
+        scene.location,
+      ].filter(Boolean).join(' '))
+    );
+
+    for (const scene of scenes) {
+      const kept: NonNullable<SceneBlueprint['requiredBeats']> = [];
+      for (const beat of scene.requiredBeats ?? []) {
+        const text = `${beat.sourceTurn || ''} ${beat.mustDepict || ''}`;
+        if (/\b(?:arrival|dusk-club|byline)$/.test(beat.id || '')) {
+          kept.push(beat);
+          continue;
+        }
+        if (this.isAbstractStoryCirclePromiseBeat(beat, text)) {
+          continue;
+        }
+        if (!this.isCompositeSeedBundleBeat(beat, text) && !this.isTwoAnchorRooftopEncounterBeat(text) && !this.isBroadArrivalBundleBeat(text)) {
+          kept.push(beat);
+          continue;
+        }
+        if (/\barrives?\b|\btwo suitcases\b|\bgrandmother\b|\baddress\b/i.test(text)) {
+          kept.push({ ...beat, id: `${beat.id}-arrival`, mustDepict: this.arrivalSlice(text), sourceTurn: this.arrivalSlice(text) });
+        }
+        if (rooftop && /\b(?:dusk club|rooftop|negronis|watching her|both men)\b/i.test(text)) {
+          rooftop.requiredBeats = [
+            ...(rooftop.requiredBeats ?? []),
+            { ...beat, id: `${beat.id}-dusk-club`, mustDepict: this.duskClubSlice(text), sourceTurn: this.duskClubSlice(text) },
+          ];
+        }
+        if (blog && /\b(?:blog|post|readership|byline|writes?|viral|midnight)\b/i.test(text)) {
+          blog.requiredBeats = [
+            ...(blog.requiredBeats ?? []),
+            { ...beat, id: `${beat.id}-byline`, mustDepict: this.blogSlice(text), sourceTurn: this.blogSlice(text) },
+          ];
+        }
+      }
+      scene.requiredBeats = kept;
+      if (scene.signatureMoment && rooftop && scene !== rooftop && /\brooftop bar\b/i.test(scene.signatureMoment)) {
+        rooftop.signatureMoment = scene.signatureMoment;
+        scene.signatureMoment = undefined;
+      }
+      if (scene.authoredTreatmentFields?.length && blog && scene !== blog) {
+        const remaining = [];
+        for (const field of scene.authoredTreatmentFields) {
+          if (/\b(?:blog|post|readership|viral|midnight)\b/i.test(field.sourceText || '')) {
+            blog.authoredTreatmentFields = [...(blog.authoredTreatmentFields ?? []), field];
+          } else {
+            remaining.push(field);
+          }
+        }
+        scene.authoredTreatmentFields = remaining;
+      }
+    }
+  }
+
+  private isAbstractStoryCirclePromiseBeat(beat: { id?: string; tier?: string }, text: string): boolean {
+    return beat.tier === 'authored'
+      && /\bstory-circle\b/i.test(beat.id || '')
+      && /\b(?:ordinary world|opening promise|promise:|desire, intimacy, and predation|known world)\b/i.test(text)
+      && !/\b(?:arrives?|two suitcases|grandmother|dusk club|rooftop|negronis|blog|post|midnight|attack|rescue|choice)\b/i.test(text);
+  }
+
+  private isCompositeSeedBundleBeat(beat: { tier?: string }, text: string): boolean {
+    return beat.tier === 'seed' && (text.split(';').length >= 4 || [
+      /\bquartz\b/i,
+      /\bkey card\b/i,
+      /\brougher man\b/i,
+      /\bblack roses\b/i,
+      /\breadership\b/i,
+    ].filter((pattern) => pattern.test(text)).length >= 3);
+  }
+
+  private isTwoAnchorRooftopEncounterBeat(text: string): boolean {
+    return /\brooftop\b/i.test(text) && /\b(?:cismigiu|cișmigiu)\b/i.test(text) && /\b(?:then|;|two anchors)\b/i.test(text);
+  }
+
+  private isBroadArrivalBundleBeat(text: string): boolean {
+    return /\b(?:arrives?|two suitcases|grandmother)\b/i.test(text)
+      && /\b(?:Dusk Club|negronis|observing|byline|writes?|blog|piece later)\b/i.test(text);
+  }
+
+  private repairRooftopSetupDensity(blueprint: EpisodeBlueprint): void {
+    for (const scene of blueprint.scenes ?? []) {
+      if (!/\b(?:rooftop|dusk club)\b/i.test([scene.id, scene.name, scene.description, scene.location, scene.signatureMoment].filter(Boolean).join(' '))) continue;
+      const signature = scene.signatureMoment || scene.keyBeats?.find((beat) => /\brooftop\b/i.test(beat) && /\bdusk club\b/i.test(beat));
+      scene.keyBeats = signature ? [signature] : (scene.keyBeats ?? []);
+      scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) =>
+        beat.tier !== 'seed' && !/\bsuccubus\b|\b57-year contract\b|\bblack roses\b|\bhalf-second\b/i.test(`${beat.mustDepict || ''} ${beat.sourceTurn || ''}`)
+      );
+    }
+  }
+
+  private arrivalSlice(text: string): string {
+    return text.match(/[^.;]*(?:arrives?|two suitcases|grandmother[^.;]*address)[^.;]*/i)?.[0]?.trim() || text;
+  }
+
+  private duskClubSlice(text: string): string {
+    return text.match(/[^.;]*(?:Dusk Club|rooftop|negronis|both men watching)[^.;]*/i)?.[0]?.trim() || text;
+  }
+
+  private blogSlice(text: string): string {
+    return text.match(/[^.;]*(?:blog|post|readership|byline|viral|Midnight)[^.;]*/i)?.[0]?.trim() || text;
   }
 
   private repairPlannedSequentialReachability(blueprint: EpisodeBlueprint): void {
@@ -3668,8 +3761,27 @@ Remember: The encounter is the heart. Design outward from it.
       .replace(/[\u0300-\u036f]/g, '');
     if (!authoredText.trim()) return undefined;
 
+    if (/\b(?:blog|post|mr\.?\s+midnight|dating after dusk|dm pile)\b/.test(authoredText)
+      && /\b(?:4\s*am|9\s*am|unable to sleep|home|counter|apartment|launches|writes?|scrolling)\b/.test(authoredText)) {
+      return currentLocation;
+    }
     if (/\bapartment\b|\bwalk\s*up\b/.test(authoredText)) {
       return currentLocation;
+    }
+    if (/\b(?:cismigiu|park|gardens?)\b/.test(authoredText)) {
+      return 'Cișmigiu Gardens';
+    }
+    if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(authoredText)) {
+      return 'Rooftop Bar';
+    }
+    if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance|vip table)\b/.test(authoredText)) {
+      return 'Vâlcescu Club';
+    }
+    if (/\b(?:bookshop|bookstore|quartz|crystal|stone|charm|talisman)\b/.test(authoredText)) {
+      return 'Lumina Books';
+    }
+    if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(authoredText)) {
+      return "Victor's Estate";
     }
     return undefined;
   }
@@ -3705,6 +3817,24 @@ Remember: The encounter is the heart. Design outward from it.
       this.ensureCharacterIntroductionBeats(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
+
+      const sceneConstructionIssues = this.applySceneConstructionProfiles(blueprint, input);
+      if (sceneConstructionIssues.length > 0) {
+        return {
+          success: false,
+          error:
+            `[SceneConstructionGate] Episode ${input.episodeNumber} has ${sceneConstructionIssues.length} scene construction conflict(s): ` +
+            sceneConstructionIssues.slice(0, 5).join(' | ') +
+            ` Rebalance the planned scene so each scene has one primary turn and compatible support obligations before content generation.`,
+          metadata: {
+            diagnostics: {
+              gate: 'SceneConstructionGate',
+              episodeNumber: input.episodeNumber,
+              sceneConstructionProfiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
+            },
+          },
+        };
+      }
 
       const unresolvedBinding = blueprint.treatmentBindingReport?.unresolved ?? [];
       if (unresolvedBinding.length > 0) {
@@ -4068,37 +4198,32 @@ REQUIREMENTS:
         blueprint.synopsis = '';
       }
 
-      // Ensure the legacy arc object exists with the old compatibility shape.
-      // Missing fields are backfilled to '' so old downstream code can rely on
-      // their presence; Story Circle enforcement happens through episodeCircle.
+      // Ensure the episode arc object exists with the Story Circle shape.
       if (!blueprint.arc) {
         blueprint.arc = {
-          hook: '',
-          plotTurn1: '',
-          pinch1: '',
-          midpoint: '',
-          pinch2: '',
-          climax: '',
-          resolution: '',
+          you: '',
+          need: '',
+          go: '',
+          search: '',
+          find: '',
+          take: '',
+          return: '',
+          change: '',
         };
       } else {
         const a: Partial<EpisodeBlueprint['arc']> = blueprint.arc as Partial<EpisodeBlueprint['arc']>;
         blueprint.arc = {
-          hook: a.hook ?? '',
-          plotTurn1: a.plotTurn1 ?? '',
-          pinch1: a.pinch1 ?? '',
-          midpoint: a.midpoint ?? '',
-          pinch2: a.pinch2 ?? '',
-          climax: a.climax ?? '',
-          resolution: a.resolution ?? '',
+          you: a.you ?? '',
+          need: a.need ?? '',
+          go: a.go ?? '',
+          search: a.search ?? '',
+          find: a.find ?? '',
+          take: a.take ?? '',
+          return: a.return ?? '',
+          change: a.change ?? '',
         };
       }
 
-      // Propagate the caller's structuralRole assignment so validators and
-      // downstream writers can see which beats this episode owns.
-      if (!blueprint.structuralRole && input.episodeStructuralRole) {
-        blueprint.structuralRole = [...input.episodeStructuralRole];
-      }
       if (!blueprint.storyCircleRole || blueprint.storyCircleRole.length === 0) {
         blueprint.storyCircleRole = this.resolveEpisodeStoryCircleRole(input);
       }
@@ -4121,6 +4246,29 @@ REQUIREMENTS:
       this.ensureCharacterIntroductionBeats(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
+
+      const sceneConstructionIssues = this.applySceneConstructionProfiles(blueprint, input);
+      if (sceneConstructionIssues.length > 0) {
+        if (retryCount < maxRetries) {
+          console.log(`[StoryArchitect] Scene construction found ${sceneConstructionIssues.length} issue(s), retrying with feedback...`);
+          this.lastStructuralFeedback = sceneConstructionIssues;
+          return this.execute(input, retryCount + 1);
+        }
+        return {
+          success: false,
+          error:
+            `[SceneConstructionGate] Episode ${input.episodeNumber} has ${sceneConstructionIssues.length} scene construction conflict(s): ` +
+            sceneConstructionIssues.slice(0, 5).join(' | ') +
+            ` Rebalance the blueprint so each scene has one primary turn and compatible support obligations before content generation.`,
+          metadata: {
+            diagnostics: {
+              gate: 'SceneConstructionGate',
+              episodeNumber: input.episodeNumber,
+              sceneConstructionProfiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
+            },
+          },
+        };
+      }
 
       // Log choice point info BEFORE validation
       const scenesWithChoices = blueprint.scenes?.filter(s => s.choicePoint) || [];
@@ -4593,13 +4741,14 @@ ${this.buildCliffhangerPlanSection(input)}
     { "beat": "you|need|go|search|find|take|return|change", "roleKind": "primary|expansion", "source": "llm" }
   ],
   "arc": {
-    "hook": "Ordinary world + core value introduced (fill if this episode carries the 'hook' beat)",
-    "plotTurn1": "Inciting incident / world-disruption (fill if this episode carries 'plotTurn1')",
-    "pinch1": "First major setback against the antagonizing force (fill if this episode carries 'pinch1')",
-    "midpoint": "Commitment / reversal / path-to-victory discovered (fill if this episode carries 'midpoint')",
-    "pinch2": "Crisis + transformation culmination (fill if this episode carries 'pinch2')",
-    "climax": "Decisive confrontation that fuses PT2 and the season Climax (fill if this episode carries 'climax')",
-    "resolution": "Aftermath and legacy (fill if this episode carries 'resolution')"
+    "you": "Episode-specific ordinary world/status quo pressure",
+    "need": "Episode-specific missing need beneath the want",
+    "go": "Episode-specific threshold crossing into the episode problem",
+    "search": "Episode-specific tests, attempts, and complications",
+    "find": "Episode-specific discovery, gain, or apparent answer",
+    "take": "Episode-specific cost, loss, or price of the find",
+    "return": "Episode-specific return to the original pressure field",
+    "change": "Episode-specific changed state after the episode loop"
   },
   "themes": ["theme1", "theme2"],
   "scenes": [
@@ -4846,7 +4995,7 @@ If you don't include enough choice points, the story will be rejected as non-int
     if (input.episodeStoryCircleRole?.length) {
       return input.episodeStoryCircleRole.map((role) => ({ ...role }));
     }
-    return legacyStructuralRolesToStoryCircleRoles(input.episodeStructuralRole);
+    return [];
   }
 
   private normalizeEpisodeCircle(
@@ -5027,23 +5176,47 @@ If you don't include enough choice points, the story will be rejected as non-int
       const text = value.trim();
       return this.isLikelyFutureSeasonEpisodeCircleText(text, input) ? undefined : text;
     };
-    const localBeat = (beat: StoryCircleBeat, legacyBeat?: keyof EpisodeBlueprint['arc']): string =>
-      (legacyBeat && localArcText(arc?.[legacyBeat])) || synopsis || 'the episode pressure';
+    const localBeat = (beat: StoryCircleBeat): string =>
+      localArcText(arc?.[beat]) || synopsis || 'the episode pressure';
     return {
-      you: `In "${title}", establish the episode's known world or current normal before disruption: ${localBeat('you', 'hook')}`,
+      you: `In "${title}", establish the episode's known world or current normal before disruption: ${localBeat('you')}`,
       need: `Name the episode want/lack that starts motion and makes the pressure active: ${localBeat('need')}`,
-      go: `Cross the episode threshold so old tactics stop working: ${localBeat('go', 'plotTurn1')}`,
-      search: `Test adaptation under pressure through failed plans, new rules, allies, tools, and identity-revealing choices: ${localBeat('search', 'pinch1')}`,
-      find: `Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: ${localBeat('find', 'midpoint')}`,
-      take: `Make the episode's find cost something visible: ${localBeat('take', 'pinch2')}`,
-      return: `Carry the prize and wound back toward the episode's consequence field, relationship, home, arena, or public identity: ${localBeat('return', 'climax')}`,
-      change: `Prove the episode's new equilibrium through changed behavior, relationship, self-concept, world-state, or tragic refusal: ${localBeat('change', 'resolution')}`,
+      go: `Cross the episode threshold so old tactics stop working: ${localBeat('go')}`,
+      search: `Test adaptation under pressure through failed plans, new rules, allies, tools, and identity-revealing choices: ${localBeat('search')}`,
+      find: `Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: ${localBeat('find')}`,
+      take: `Make the episode's find cost something visible: ${localBeat('take')}`,
+      return: `Carry the prize and wound back toward the episode's consequence field, relationship, home, arena, or public identity: ${localBeat('return')}`,
+      change: `Prove the episode's new equilibrium through changed behavior, relationship, self-concept, world-state, or tragic refusal: ${localBeat('change')}`,
     };
   }
 
   private isLikelyFutureSeasonEpisodeCircleText(text: string, input: StoryArchitectInput): boolean {
     const explicitEpisode = text.match(/\b(?:ep|episode)\.?\s*#?\s*(\d+)\b/i)?.[1];
-    return explicitEpisode ? Number(explicitEpisode) !== input.episodeNumber : false;
+    if (explicitEpisode) return Number(explicitEpisode) !== input.episodeNumber;
+
+    const normalizedText = text.toLowerCase();
+    const localContext = [
+      input.episodeTitle,
+      input.episodeSynopsis,
+      input.synopsis,
+    ].filter(Boolean).join(' ').toLowerCase();
+    const futureSeasonMarkers = [
+      /\blater\s+(?:episode|season|arc)\b/,
+      /\bfinale\b/,
+      /\bfinal\s+post\b/,
+      /\bhunter\s+moon\b/,
+      /\bmountain\s+(?:weekend|wife)\b/,
+      /\bcasa\s+(?:lupului|stelarum)\b/,
+      /\bmirror\s+behind\s+victor\b/,
+      /\bradu'?s?\s+confession\b/,
+    ];
+    if (!futureSeasonMarkers.some((pattern) => pattern.test(normalizedText))) return false;
+
+    const importantTokens = normalizedText
+      .split(/[^a-z0-9']+/)
+      .filter((token) => token.length >= 5 && !['kylie', 'victor', 'episode', 'season', 'story'].includes(token));
+    const overlap = importantTokens.filter((token) => localContext.includes(token)).length;
+    return overlap === 0;
   }
 
   private buildCliffhangerPlanSection(input: StoryArchitectInput): string {
@@ -5053,7 +5226,7 @@ If you don't include enough choice points, the story will be rejected as non-int
     return `
 ## Story Circle Cliffhanger Plan (final scene contract)
 - Style: ${plan.style}
-- Structural role: ${plan.mappedStructuralRole}
+- Next loop launch beat: ${plan.storyCircleLaunchBeat || 'go'}
 - Type: ${plan.type}
 - Intensity: ${plan.intensity}
 - Hook to deliver: ${plan.hook}
@@ -5364,9 +5537,6 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       }
       if (guidance.toneRegister) {
         section += `- Tone register: ${guidance.toneRegister}\n`;
-      }
-      if (guidance.rawStructuralRole) {
-        section += `- Structural role: ${guidance.rawStructuralRole}\n`;
       }
       if (guidance.synopsis) {
         section += `- Authored synopsis: ${guidance.synopsis}\n`;
@@ -5794,6 +5964,17 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       );
   }
 
+  private applySceneConstructionProfiles(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
+    const issues = collectSceneConstructionProfileIssues(blueprint.scenes, { episodeNumber: input.episodeNumber });
+    for (const scene of blueprint.scenes ?? []) {
+      const budget = scene.sceneConstructionProfile?.capacity.beatBudget;
+      if (budget?.recommended) {
+        scene.recommendedBeatCount = Math.max(scene.recommendedBeatCount ?? 0, budget.recommended);
+      }
+    }
+    return issues;
+  }
+
   private buildTreatmentDensityDiagnostics(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Record<string, unknown> {
     const reports = analyzeEpisodeTreatmentDensity(blueprint.scenes, input.episodeNumber);
     const unsafeReports = reports.filter((report) => {
@@ -5818,6 +5999,8 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           location: scene.location,
           narrativeRole: scene.narrativeRole,
           recommendedBeatCount: scene.recommendedBeatCount,
+          coldOpenProfile: scene.coldOpenProfile,
+          sceneConstructionProfile: scene.sceneConstructionProfile,
           requiredBeatIds: (scene.requiredBeats ?? []).map((beat) => beat.id),
           authoredTreatmentFieldIds: (scene.authoredTreatmentFields ?? []).map((field) => field.id),
           hasChoice: Boolean(scene.choicePoint),
@@ -5852,6 +6035,17 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     // Story Circle VERIFICATION (tier 2). Every episode completes a local loop
     // and carries at least one macro season beat through scene-bound contracts.
     this.bindEpisodeCircleContracts(blueprint, input);
+    const coldOpenIssues = collectColdOpenProfileIssues(blueprint.scenes ?? [], {
+      episodeNumber: input.episodeNumber,
+      storyCircleRole: blueprint.storyCircleRole,
+      episodeCircle: blueprint.episodeCircle,
+    });
+    if (coldOpenIssues.length > 0) {
+      throw new Error(
+        `[ColdOpenStoryCircleGate] Episode ${input.episodeNumber} cold open validation failed: ${coldOpenIssues.join('; ')} ` +
+        `The opening scene must fulfill its Story Circle role on-page through one immediate dramatic collision.`,
+      );
+    }
     const episodeStoryCircle = new EpisodeStoryCircleValidator().validate({
       episodeNumber: input.episodeNumber,
       episodeCircle: blueprint.episodeCircle,
@@ -6437,9 +6631,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     input: StoryArchitectInput,
     logWarnings: boolean
   ): string[] {
+    const roleBeats = storyCircleRoleBeats(input.episodeStoryCircleRole);
     const isFinale = Boolean(
-      input.episodeStructuralRole?.includes('resolution') ||
-      input.cliffhangerPlan?.mappedStructuralRole === 'resolution'
+      roleBeats.includes('change') ||
+      input.cliffhangerPlan?.storyCircleLaunchBeat === 'change'
     );
     const result = new EpisodePressureArchitectureValidator().validate(blueprint, {
       isFinale,

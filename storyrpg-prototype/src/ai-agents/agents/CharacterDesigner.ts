@@ -14,7 +14,6 @@ import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent
 import type {
   CharacterFashionStyle,
   StoryAnchors,
-  LegacyStructuralMap,
   CharacterArchitecture,
 } from '../../types/sourceAnalysis';
 import type { InformationLedgerEntry } from '../../types/seasonPlan';
@@ -63,9 +62,6 @@ export interface CharacterDesignerInput {
    * the story spine.
    */
   seasonAnchors?: StoryAnchors;
-
-  /** Season-level legacy-structure beat map (for long-arc character planning). */
-  seasonLegacyStructure?: LegacyStructuralMap;
 
   /**
    * Authored character architecture (treatment Section 3): the protagonist's

@@ -158,7 +158,7 @@ describe('SceneWriter structural guards', () => {
         id: 's1-3',
         name: 'The Park Warning',
         description: 'Kylie realizes the path through the park is not as empty as it looked.',
-        narrativeFunction: 'Aftermath that resettles stakes; serves the hook beat.',
+        narrativeFunction: 'Aftermath that resettles stakes; serves the you beat.',
         keyBeats: [
           'The lamps flicker out behind Kylie.',
           'Forward pressure: the next scene remembers what she misses.',
@@ -198,7 +198,7 @@ describe('SceneWriter structural guards', () => {
       'beat-5',
       'beat-6',
     ]);
-    expect(JSON.stringify(normalized.beats)).not.toMatch(/Decide how to handle|Forward pressure|serves the hook beat/i);
+    expect(JSON.stringify(normalized.beats)).not.toMatch(/Decide how to handle|Forward pressure|serves the you beat/i);
 
     const issues = (writer as any).collectIssues(normalized, input);
     expect(issues.join('\n')).not.toContain('SCENE-LENGTH UNDERFILL');
@@ -211,7 +211,7 @@ describe('SceneWriter structural guards', () => {
         id: 's1-6',
         name: 'Release Scene',
         description: 'Forward pressure: route into the next episode.',
-        narrativeFunction: 'This serves the resolution beat.',
+        narrativeFunction: 'This serves the change beat.',
         keyBeats: [
           'Forward pressure: route into the next episode.',
           'Forward pressure: route into the next episode.',
@@ -241,7 +241,7 @@ describe('SceneWriter structural guards', () => {
     const normalized = (writer as any).normalizeContent(content, input);
     expect(normalized.beats).toHaveLength(6);
     expect(normalized.beats[5].isChoicePoint).toBe(true);
-    expect(JSON.stringify(normalized.beats)).not.toMatch(/Forward pressure|serves the resolution beat|decision register/i);
+    expect(JSON.stringify(normalized.beats)).not.toMatch(/Forward pressure|serves the change beat|decision register/i);
   });
 
   it('compacts short over-fragmented beat prose before hard cap validation', () => {
@@ -309,7 +309,7 @@ describe('SceneWriter structural guards', () => {
     expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(false);
   });
 
-  it('drops unknown callbackHookIds that were not provided by the deterministic hook list', () => {
+  it('drops unknown callbackHookIds that were not provided by the deterministic you list', () => {
     const writer = createWriter();
     const normalized = (writer as any).normalizeContent(
       {
@@ -384,7 +384,7 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.beats[0].textVariants).toEqual([]);
   });
 
-  it('wires callback textVariants to deterministic hook flags when the model omits the condition', () => {
+  it('wires callback textVariants to deterministic you flags when the model omits the condition', () => {
     const writer = createWriter();
     const normalized = (writer as any).normalizeContent(
       {
@@ -1310,7 +1310,7 @@ describe('SceneWriter structural guards', () => {
     expect(dominants.map((b: any) => b.id)).toEqual(['b2']);
   });
 
-  it('canonicalizes a bare textVariant callbackHookId to its planted flag: hook id', () => {
+  it('canonicalizes a bare textVariant callbackHookId to its planted flag: you id', () => {
     const writer = createWriter();
 
     const normalized = (writer as any).normalizeContent(
@@ -1324,7 +1324,7 @@ describe('SceneWriter structural guards', () => {
             textVariants: [
               {
                 // The bug (bite-me-g14): agent copies the condition flag NAME into
-                // callbackHookId instead of the planted `flag:`-prefixed hook id.
+                // callbackHookId instead of the planted `flag:`-prefixed you id.
                 condition: { type: 'flag', flag: 'treatment_seed_ep1_3', value: true },
                 text: 'The key card you palmed back then still opens the door.',
                 callbackHookId: 'treatment_seed_ep1_3',
@@ -1631,8 +1631,8 @@ describe('SceneWriter structural guards', () => {
       protagonistInfo: { name: 'Kylie', pronouns: 'she/her', description: 'A food writer.' },
       npcs: [], targetBeatCount: 4, dialogueHeavy: false,
       cliffhangerPlan: {
-        style: 'serialized_tv', mappedStructuralRole: 'rising', type: 'mystery', intensity: 'high',
-        hook: 'A hand-knit scarf on her doormat, a note: "Thought you\'d be cold. — R."',
+        style: 'serialized_tv', mappedStoryCircleBeat: 'search', type: 'mystery', intensity: 'high',
+        you: 'A hand-knit scarf on her doormat, a note: "Thought you\'d be cold. — R."',
         setup: 'Radu was seeded all episode.', resolvedEpisodeTension: 'She felt lucky.',
         newOpenQuestion: 'Which man is honest?', emotionalCharge: 'lucky tilting to unease',
         nextEpisodePressure: 'The mountain weekend.',

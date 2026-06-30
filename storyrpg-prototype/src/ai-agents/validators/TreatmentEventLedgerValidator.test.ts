@@ -10,7 +10,7 @@ const HOOK = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is
 
 function contract(overrides: Partial<StoryCircleBeatRealizationContract> = {}): StoryCircleBeatRealizationContract {
   return {
-    id: 'Story Circle-hook-kylie-bucharest-blog-park-rescue',
+    id: 'Story Circle-you-kylie-bucharest-blog-park-rescue',
     beat: 'you',
     sourceText: HOOK,
     targetEpisodeNumber: 1,
@@ -218,7 +218,7 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(result.findings).toHaveLength(0);
   });
 
-  it('does not require abstract new-life trajectory wording when concrete hook clauses are staged', () => {
+  it('does not require abstract new-life trajectory wording when concrete you clauses are staged', () => {
     const result = validator.validate({
       story: story([
         scene({
@@ -241,7 +241,7 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(result.findings).toHaveLength(0);
   });
 
-  it.skip('accepts the Bite Me opening-life hook when unpacking, blog launch, friends, and aspiration are staged on-page', () => {
+  it.skip('accepts the Bite Me opening-life you when unpacking, blog launch, friends, and aspiration are staged on-page', () => {
     const result = validator.validate({
       story: story([
         scene({
@@ -270,7 +270,7 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(result.findings).toHaveLength(0);
   });
 
-  it.skip('accepts the alternate Bite Me Dusk Club hook when repaired prose stages blog ambition and predator danger', () => {
+  it.skip('accepts the alternate Bite Me Dusk Club you when repaired prose stages blog ambition and predator danger', () => {
     const result = validator.validate({
       story: story([
         scene({

@@ -276,7 +276,7 @@ describe('storyEngine.executeChoice', () => {
     } as Choice;
   }
 
-  it('returns success with no resolution when no statCheck', () => {
+  it('returns success with no change when no statCheck', () => {
     const result = executeChoice(makeChoice(), createPlayer());
     expect(result.success).toBe(true);
     expect(result.resolution).toBeUndefined();
@@ -291,7 +291,7 @@ describe('storyEngine.executeChoice', () => {
     expect(result.consequences).toHaveLength(0);
   });
 
-  it('returns resolution with tier, roll, target, margin for stat check', () => {
+  it('returns change with tier, roll, target, margin for stat check', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.1);
     const choice = makeChoice({
       statCheck: { skillWeights: { persuasion: 1.0 }, difficulty: 50 },

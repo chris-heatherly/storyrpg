@@ -69,7 +69,7 @@ const WALK_HOME_PATTERNS: RegExp[] = [
   /\b(?:small of your back|guiding you away|under your heels)\b/i,
 ];
 
-const PUBLIC_BLOG_AFTERMATH_MARKERS = /\b(?:readership|reads?|viral|views|comments|dashboard|profile|public pressure|public signal|broke the internet|attention spike|audience growth)\b/i;
+const PUBLIC_BLOG_AFTERMATH_MARKERS = /\b(?:readership|viral|views|comments|dashboard|profile|public pressure|public signal|broke the internet|attention spike|audience growth)\b|\b\d[\d,]*\s+reads?\b/i;
 
 const ROUTE_CUE_PATTERNS: Record<'walkHome', RegExp[]> = {
   walkHome: [

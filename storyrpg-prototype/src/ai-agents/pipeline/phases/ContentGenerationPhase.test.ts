@@ -104,6 +104,29 @@ describe('ContentGenerationPhase cold-open alignment', () => {
 });
 
 describe('ContentGenerationPhase treatment density gate', () => {
+  it('allows bounded opening density only when the cold open has enough beat budget', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const { analyzeSceneTreatmentDensity } = await import('../../remediation/gateRepairRouter');
+    const phase = new ContentGenerationPhase({} as never);
+    const report = analyzeSceneTreatmentDensity({
+      id: 's1-1',
+      requiredBeats: [
+        { id: 'opening', tier: 'coldopen', mustDepict: 'The protagonist reaches the station desk.' },
+      ],
+      authoredTreatmentFields: Array.from({ length: 14 }, (_, index) => ({
+        id: `support-${index + 1}`,
+        sourceText: `Support pressure ${index + 1} colors the opening collision.`,
+        contractKind: 'pressure_lane',
+        requiredRealization: ['final_prose'],
+      })),
+      recommendedBeatCount: 10,
+    } as never, { episodeNumber: 1, sceneIndex: 0 });
+
+    expect(report.overloaded).toBe(true);
+    expect(report.threshold.totalUnits).toBeLessThan(900);
+    expect((phase as any).sceneDensityCanExpandWithBeatBudget(report, { id: 's1-1', recommendedBeatCount: 10 })).toBe(true);
+  });
+
   it('treats dense standard scenes with sufficient recommended beat budget as expandable', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const { analyzeEpisodeTreatmentDensity, unsafeTreatmentDensityReports } = await import('../../remediation/gateRepairRouter');

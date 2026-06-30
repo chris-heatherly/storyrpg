@@ -32,7 +32,7 @@ boundary is enforced by `npm run check:reader-boundary`.
 
 1. Optional source analysis via `SourceMaterialAnalyzer`.
 2. Optional season planning via `SeasonPlannerAgent` and
-   `SevenPointCoverageValidator`.
+   `StoryCircleCoverageValidator`.
 3. Shared foundation: `WorldBuilder`, `CharacterDesigner`, `NPCDepthValidator`,
    and `PhaseValidator`.
 4. Per-episode planning and content: `StoryArchitect`, `BranchManager`,

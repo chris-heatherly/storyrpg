@@ -46,30 +46,7 @@ export interface StoryAnchors {
 }
 
 /**
- * Deprecated season-level structural contract from the pre-Story-Circle model.
- *
- * Each string names the beat at the season level. Individual episodes carry
- * one or more of these beats as their structural role (see
- * {@link EpisodeOutline.structuralRole}). The `climax` field here SHOULD
- * match the {@link StoryAnchors.climax} anchor either exactly or as a
- * recognizable rephrasing. Story Circle validators are authoritative for new
- * generation; this remains for old artifacts and migration.
- */
-export interface LegacyStructuralMap {
-  hook: string;
-  plotTurn1: string;
-  pinch1: string;
-  midpoint: string;
-  pinch2: string;
-  climax: string;
-  resolution: string;
-}
-
-/**
  * The season-level / episode-level Story Circle structural contract.
- *
- * The pipeline treats this as the primary structure. Legacy structural fields
- * remain below as compatibility aliases for old artifacts and checkpoints.
  */
 export interface StoryCircleStructure {
   you: string;
@@ -105,8 +82,8 @@ export interface StoryCircleRoleAssignment {
   roleKind: 'primary' | 'expansion';
   /** Episode/scene index carrying the primary beat this expands, if applicable. */
   expansionOfUnit?: number;
-  /** Why this assignment exists. Useful when old Story Circle artifacts migrate. */
-  source?: 'distribution' | 'treatment' | 'llm' | 'migration';
+  /** Why this assignment exists. */
+  source?: 'distribution' | 'treatment' | 'llm';
 }
 
 export type EncounterStoryCircleTarget = Extract<StoryCircleBeat, 'go' | 'search' | 'find' | 'take'>;
@@ -121,13 +98,6 @@ export interface EncounterStoryCircleTargetEvidence {
   /** Whether this encounter/cliffhanger hands pressure to the next cycle. */
   cliffhangerHandoff?: 'next_need' | 'next_go' | 'none';
 }
-
-/**
- * The names of the legacy structural beats in {@link LegacyStructuralMap}. Used
- * to key the authored historical beat→episode anchor map
- * ({@link TreatmentSeasonGuidance.beatEpisodeAnchors}).
- */
-export type LegacyStructuralBeat = keyof LegacyStructuralMap;
 
 /**
  * Optional reusable-story abstraction metadata inferred from a known story or
@@ -211,37 +181,6 @@ export interface CharacterFashionStyle {
   accessories: string[];
   sourceEvidence?: string[];
 }
-
-/**
- * Which beat of the legacy-structure structure a given episode carries.
- *
- * `rising` and `falling` are non-beat buffer slots used when an episode sits
- * BETWEEN two named beats and purely escalates / de-escalates tension.
- */
-export type StructuralRole =
-  | 'hook'
-  | 'plotTurn1'
-  | 'pinch1'
-  | 'midpoint'
-  | 'pinch2'
-  | 'climax'
-  | 'resolution'
-  | 'rising'
-  | 'falling';
-
-/**
- * The seven "real" beats (excluding rising / falling buffers). Exported so
- * validators can iterate the required set.
- */
-export const LEGACY_STRUCTURAL_BEATS: ReadonlyArray<Exclude<StructuralRole, 'rising' | 'falling'>> = [
-  'hook',
-  'plotTurn1',
-  'pinch1',
-  'midpoint',
-  'pinch2',
-  'climax',
-  'resolution',
-] as const;
 
 // ========================================
 // STORY STRUCTURE TYPES
@@ -367,8 +306,7 @@ export interface StoryEndingTarget {
 export interface TreatmentEpisodeGuidance {
   sourceKind?: 'authored' | 'authored_lite' | 'derived_from_lite';
   authoredTitle?: string;
-  rawStructuralRole?: string;
-  normalizedStructuralRoles?: StructuralRole[];
+  rawStoryCircleRole?: string;
   structuralNote?: string;
   dramaticQuestion?: string;
   episodePromise?: string;
@@ -477,18 +415,7 @@ export interface TreatmentSeasonGuidance {
     }>;
   };
   seasonSpine?: string;
-  /**
-   * Section-7 per-beat episode anchors parsed from the season-spine free text
-   * (e.g. `Plot turn 1 (Ep3)` → `{ plotTurn1: 3 }`). Authored beat→episode
-   * mapping of record; reconciled against the per-episode `structuralRole`
-   * bullets downstream (SourceMaterialAnalyzer / SeasonPlannerAgent).
-   */
-  beatEpisodeAnchors?: Partial<Record<LegacyStructuralBeat, number>>;
-  /**
-   * Story Circle beat→episode anchors parsed from authored season-spine text.
-   * New generation should prefer this over `beatEpisodeAnchors`; the legacy map
-   * remains as a migration alias for older treatments and checkpoints.
-   */
+  /** Story Circle beat→episode anchors parsed from authored season-spine text. */
   storyCircleBeatEpisodeAnchors?: Partial<Record<StoryCircleBeat, number>>;
   arcPlan?: string;
   arcGuidance?: {
@@ -761,31 +688,10 @@ export interface EpisodeOutline {
   estimatedSceneCount: number;
   estimatedChoiceCount: number;
 
-  /**
-   * Which beat(s) of the season's {@link LegacyStructuralMap} this episode
-   * carries. A single episode may fuse multiple beats (e.g. `['hook','plotTurn1']`
-   * in a short 3-episode season) or sit BETWEEN beats as a `rising` / `falling`
-   * buffer in a long season.
-   *
-   * Populated by SeasonPlannerAgent as a deprecated compatibility alias.
-   * Story Circle roles are authoritative for new generation, but old artifacts
-   * still use this to drive migration into storyCircleRole.
-   */
-  structuralRole?: StructuralRole[];
-
-  /**
-   * Story Circle beat assignment for this episode. This is the primary
-   * structural field for new generation. `structuralRole` remains as a
-   * deprecated Story Circle compatibility alias while old artifacts migrate.
-   */
+  /** Story Circle beat assignment for this episode. */
   storyCircleRole?: StoryCircleRoleAssignment[];
 
-  /**
-   * @deprecated in favor of {@link structuralRole} + season-level legacyStructure.
-   * Retained so existing SourceMaterialAnalyzer output still typechecks; new
-   * code should read `structuralRole` and consult the season's `legacyStructure`
-   * for the beat text.
-   */
+  /** Episode-level setup/conflict/resolution summary. */
   narrativeFunction: {
     setup: string;
     conflict: string;
@@ -849,14 +755,6 @@ export interface SourceMaterialAnalysis {
    * Inferred by SourceMaterialAnalyzer when the caller does not supply them.
    */
   anchors: StoryAnchors;
-
-  /**
-   * Deprecated season-level structural beat map. Inferred by
-   * SourceMaterialAnalyzer as a compatibility alias for old checkpoints.
-   *
-   * @deprecated Story Circle is the primary structure.
-   */
-  legacyStructure: LegacyStructuralMap;
 
   /**
    * Primary season-level Story Circle beat map. Each episode carries one or

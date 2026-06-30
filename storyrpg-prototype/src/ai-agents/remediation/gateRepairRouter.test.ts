@@ -399,6 +399,31 @@ describe('treatment density guard', () => {
     expect(report.overloadReasons.join(' ')).toMatch(/hard units|time cue/);
   });
 
+  it('uses a bounded total-unit threshold for opening scenes', () => {
+    const report = analyzeSceneTreatmentDensity({
+      id: 's1-1',
+      requiredBeats: [
+        { id: 'opening', tier: 'coldopen', sourceTurn: 'The protagonist enters the station.', mustDepict: 'The protagonist enters the station.' },
+      ],
+      authoredTreatmentFields: Array.from({ length: 20 }, (_, index) => ({
+        id: `pressure-${index + 1}`,
+        episodeNumber: 1,
+        fieldName: `Pressure ${index + 1}`,
+        sourceText: `Supporting pressure detail ${index + 1} should influence the opening.`,
+        contractKind: 'pressure_lane' as const,
+        requiredRealization: ['final_prose' as const],
+        targetSceneIds: ['s1-1'],
+        blockingLevel: 'treatment' as const,
+      })),
+      keyBeats: [],
+    } as never, { episodeNumber: 1, sceneIndex: 0 });
+
+    expect(report.threshold.profile).toBe('opening');
+    expect(report.threshold.totalUnits).toBeLessThan(900);
+    expect(report.overloaded).toBe(true);
+    expect(isUnsafeTreatmentDensityReport(report)).toBe(true);
+  });
+
   it('allows small non-encounter overages to be handled by beat expansion', () => {
     const report = analyzeSceneTreatmentDensity({
       id: 's1-2',

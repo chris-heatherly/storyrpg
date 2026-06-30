@@ -7,6 +7,7 @@ import {
   requiredMomentsFor,
   rewriteLosesRequiredMoment,
 } from './sceneRealizationGuard';
+import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 
 const BLUEPRINT_SCENE = {
   requiredBeats: [
@@ -113,6 +114,40 @@ describe('requiredMomentsFor', () => {
 });
 
 describe('missingRequiredMoments', () => {
+  it('does not enforce routed construction obligations as hidden scene realization requirements', () => {
+    const scene = {
+      id: 's1-1',
+      requiredBeats: [
+        {
+          id: 'active-arrival',
+          tier: 'authored',
+          mustDepict: 'The traveler arrives at the station with two suitcases.',
+        },
+        {
+          id: 'routed-aftermath',
+          tier: 'authored',
+          mustDepict: 'The traveler turns a later rescue into public proof that they can author a new life.',
+        },
+      ],
+      sceneConstructionProfile: {
+        activeCast: [],
+        passiveCast: [],
+        obligations: [
+          { source: 'requiredBeat', id: 'active-arrival', slot: 'must_stage' },
+          { source: 'requiredBeat', id: 'routed-aftermath', slot: 'route_later' },
+        ],
+      },
+    } as any;
+
+    const realizationScene = buildSceneConstructionPromptView(scene);
+    const missing = missingRequiredMoments(realizationScene, [
+      { id: 'b1', text: 'At the station, the traveler arrives with two suitcases and stops at the threshold.' },
+    ]);
+
+    expect(realizationScene.requiredBeats?.map((beat: any) => beat.id)).toEqual(['active-arrival']);
+    expect(missing).toEqual([]);
+  });
+
   it('flags under-realized moments with their absent content words', () => {
     const beats = [
       { id: 'b1', text: 'The post goes up; fifty thousand readers before the car clears Bucharest city limits.' },
@@ -290,16 +325,16 @@ describe('insertMissingMomentBeats', () => {
     expect(beats.some((beat) => beat.text?.includes('Kylie Marinescu arrives in Bucharest'))).toBe(true);
   });
 
-  it('does not treat Bite Me proper nouns as unsafe timeline cues', () => {
+  it('does not treat title-cased project and group names as unsafe timeline cues', () => {
     const beats = [
       { id: 'b1', text: 'The rescue leaves her hands shaking above the keyboard.', nextBeatId: 'b2' },
       { id: 'b2', text: 'The publish button waits.' },
     ];
     const missing = [{
-      moment: 'Dating After Dusk turns the Dusk Club rescue into proof Kylie can author a new life',
+      moment: 'Signal After Dusk turns the Dusk Circle rescue into proof the narrator can author a new life',
       validator: 'RequiredBeatRealizationValidator' as const,
       tier: 'authored',
-      missingTokens: ['dating', 'dusk', 'club'],
+      missingTokens: ['signal', 'dusk', 'circle'],
     }];
     const skipped: string[] = [];
 
@@ -308,7 +343,7 @@ describe('insertMissingMomentBeats', () => {
     });
 
     expect(skipped).toEqual([]);
-    expect(beats.some((beat) => beat.text?.includes('Dating After Dusk turns the Dusk Club rescue'))).toBe(true);
+    expect(beats.some((beat) => beat.text?.includes('Signal After Dusk turns the Dusk Circle rescue'))).toBe(true);
   });
 
   it('skips terse action summaries instead of pasting planning labels into prose', () => {

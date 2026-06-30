@@ -120,7 +120,7 @@ describe('mergeUnresolvedForScene', () => {
     expect(merged.map((h) => h.flags[0])).toEqual(['ep0flag', 'f1']);
   });
 
-  it('does not duplicate a flag already covered by a cross-episode hook', () => {
+  it('does not duplicate a flag already covered by a cross-episode you', () => {
     const cross = [{ id: 'x', sourceEpisode: 0, summary: 'prior', flags: ['f1'] }];
     const plants: EpisodePlant[] = [{ flag: 'f1', summary: 's1', sceneId: 'scene-1' }];
     const merged = mergeUnresolvedForScene(cross, plants, 1)!;

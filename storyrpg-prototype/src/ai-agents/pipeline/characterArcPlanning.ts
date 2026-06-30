@@ -38,10 +38,8 @@ import type { IdentityProfile } from '../../types';
 import type {
   CharacterArchitecture,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 
@@ -84,9 +82,7 @@ export interface PlanEpisodeArcTargetsParams {
   totalEpisodes: number;
   seasonAnchors?: StoryAnchors;
   seasonStoryCircle?: StoryCircleStructure;
-  seasonLegacyStructure?: LegacyStructuralMap;
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
-  episodeStructuralRole?: StructuralRole[];
   characterArchitecture?: CharacterArchitecture;
   /** Fail-open reporter — wired to `this.emit({ type: 'warning', … })`. */
   emitWarning: (message: string) => void;
@@ -122,9 +118,7 @@ export async function planEpisodeArcTargets(
         totalEpisodes: params.totalEpisodes,
         seasonAnchors: params.seasonAnchors,
         seasonStoryCircle: params.seasonStoryCircle,
-        seasonLegacyStructure: params.seasonLegacyStructure,
         episodeStoryCircleRole: params.episodeStoryCircleRole,
-        episodeStructuralRole: params.episodeStructuralRole,
         characterArchitecture: params.characterArchitecture,
       }),
       timeoutMs,

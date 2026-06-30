@@ -54,7 +54,6 @@ export class BranchAnalysisPhase {
       const seasonEpisode = currentEpisodeNumber
         ? brief.seasonPlan?.episodes?.find(e => e.episodeNumber === currentEpisodeNumber)
         : undefined;
-      const structuralRoleForEpisode = seasonEpisode?.structuralRole;
 
       const result = await withTimeout(this.deps.branchManager.execute({
         episodeId: blueprint.episodeId,
@@ -72,10 +71,8 @@ export class BranchAnalysisPhase {
         },
         seasonAnchors: brief.seasonPlan?.anchors,
         seasonStoryCircle: brief.seasonPlan?.storyCircle,
-        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
         episodeStoryCircleRole: seasonEpisode?.storyCircleRole,
         episodeCircle: blueprint.episodeCircle,
-        episodeStructuralRole: structuralRoleForEpisode,
       }), PIPELINE_TIMEOUTS.llmAgent, 'BranchManager.execute');
 
       if (!result.success || !result.data) {

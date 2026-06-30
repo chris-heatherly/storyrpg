@@ -21,7 +21,7 @@ describe('architectGatePolicy', () => {
   it('treats everything as advisory with no flags enabled (default-off guarantee)', () => {
     const warnings = [
       '[TreatmentFidelity] drifted from the treatment',
-      '[DramaticStructure] missing midpoint reversal',
+      '[DramaticStructure] missing find reversal',
       '[ThemePressure] theme never pressured',
     ];
     const { blocking, advisory } = classifyArchitectGateWarnings(warnings, allOff);
@@ -32,14 +32,14 @@ describe('architectGatePolicy', () => {
   it('blocks only matching-tagged warnings when one flag is enabled', () => {
     const warnings = [
       '[TreatmentFidelity] drifted from the treatment',
-      '[DramaticStructure] missing midpoint reversal',
+      '[DramaticStructure] missing find reversal',
     ];
     const { blocking, advisory } = classifyArchitectGateWarnings(
       warnings,
       enable('GATE_TREATMENT_FIDELITY'),
     );
     expect(blocking).toEqual(['[TreatmentFidelity] drifted from the treatment']);
-    expect(advisory).toEqual(['[DramaticStructure] missing midpoint reversal']);
+    expect(advisory).toEqual(['[DramaticStructure] missing find reversal']);
   });
 
   it('keeps untagged warnings advisory regardless of flags', () => {

@@ -85,7 +85,6 @@ export class CharacterDesignPhase {
       rawDocument: brief.rawDocument,
       memoryContext: this.deps.cachedPipelineMemory || undefined,
       seasonAnchors: brief.seasonPlan?.anchors,
-      seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
       characterArchitecture: brief.seasonPlan?.characterArchitecture,
       characterTreatmentContracts: brief.seasonPlan?.characterTreatmentContracts,
       informationLedger: brief.seasonPlan?.informationLedger,

@@ -93,7 +93,7 @@ describe('selectTextVariant', () => {
       {
         condition: { type: 'flag', flag: 'city-saved', value: true },
         text: 'Callback.',
-        callbackHookId: 'some-hook',
+        callbackHookId: 'some-you',
       },
     ];
     expect(selectTextVariant('base', variants, player)).toBe('Callback.');
@@ -149,7 +149,7 @@ describe('processText', () => {
   it('strips scene-planning prose before it can render as reader text', () => {
     const player = makePlayer();
     const text = processText(
-      'Aftermath that resettles stakes; serves the hook beat ("Kylie unpacks in Bucharest.").',
+      'Aftermath that resettles stakes; serves the you beat ("Kylie unpacks in Bucharest.").',
       undefined,
       player,
       null,

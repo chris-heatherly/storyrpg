@@ -216,7 +216,7 @@ Rest and aftermath scenes still need intent, resistance, and changed footing.
 **Power-dynamic shift:** in multi-character scenes, the power dynamic must shift **at least once** —
 leverage, trust, vulnerability, intimacy, distance, status, information, threat, debt, or
 public/private advantage changes hands (`storytellingPrinciples.ts:468-470`; `SceneWriter.ts:434`).
-The validator escalates this to an `error` for major/`sceneEpisode` scenes, `warning` otherwise
+The validator escalates this to an `error` for major/high-pressure planned scenes, `warning` otherwise
 (`SceneTurnContractValidator.ts:289-295`).
 
 **Removability test:** if removing a scene changes no information, relationship, identity,
@@ -346,7 +346,7 @@ detailed", realistic…) and warns when image-facing text uses one that isn't in
 When you change a craft rule, match the enforcement tier:
 
 - **`error`** (blocks / forces a retry) — the four scene-turn elements, the power-dynamic shift on
-  major/`sceneEpisode` scenes, and the removability/consequence test
+  major/high-pressure planned scenes, and the removability/consequence test
   (`SceneTurnContractValidator.ts:257-303`).
 - **`warning`** (flagged, doesn't block) — most prose-quality signals in `SceneCraftValidator`: beat
   count outside the configured range, missing `sceneTakeaways`/`keyMoments`, takeaways disconnected

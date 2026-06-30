@@ -10,7 +10,7 @@ import {
 const scene = (overrides: Partial<SceneBlueprint> = {}): SceneBlueprint => ({
   id: 's1-1',
   name: 'setup scene 1',
-  description: 'Open the episode through its immediate question: rising pressure.',
+  description: 'Open the episode through its immediate question: search pressure.',
   location: 'Vâlcescu Club',
   mood: 'charged',
   purpose: 'transition',
@@ -18,7 +18,7 @@ const scene = (overrides: Partial<SceneBlueprint> = {}): SceneBlueprint => ({
   wantVsNeed: 'Kylie wants entry but needs to learn who is safe.',
   conflictEngine: 'Mika controls the door and the key card.',
   npcsPresent: ['char-mika'],
-  narrativeFunction: 'Open the episode through its immediate question: rising pressure.',
+  narrativeFunction: 'Open the episode through its immediate question: search pressure.',
   keyBeats: [],
   leadsTo: ['s1-2'],
   narrativeRole: 'setup',
@@ -28,7 +28,7 @@ const scene = (overrides: Partial<SceneBlueprint> = {}): SceneBlueprint => ({
 describe('sceneContractBuilders', () => {
   it('detects generic planner scene labels and role-derived turns', () => {
     expect(isGenericScenePlannerText('setup scene 1')).toBe(true);
-    expect(isGenericScenePlannerText('Let the fallout settle into the next pressure: rising pressure.')).toBe(true);
+    expect(isGenericScenePlannerText('Let the fallout settle into the next pressure: search pressure.')).toBe(true);
     expect(isGenericScenePlannerText('Mika hands Kylie the key card at the club door.')).toBe(false);
   });
 
@@ -43,9 +43,9 @@ describe('sceneContractBuilders', () => {
       turnContract: {
         turnId: 'generic-turn',
         source: 'planner',
-        centralTurn: 'Open the episode through its immediate question: rising pressure.',
+        centralTurn: 'Open the episode through its immediate question: search pressure.',
         beforeState: '',
-        turnEvent: 'Open the episode through its immediate question: rising pressure.',
+        turnEvent: 'Open the episode through its immediate question: search pressure.',
         afterState: '',
         handoff: '',
       },
@@ -67,7 +67,7 @@ describe('sceneContractBuilders', () => {
     expect(contract.sequenceIntent.turningPoint).toContain('key card');
   });
 
-  it('strips hook promise stakes treatment labels from derived sequence intent', () => {
+  it('strips you promise stakes treatment labels from derived sequence intent', () => {
     const treatmentCard = `Hook — Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window, her grandmother's gold chain catching the light; promise — reinvention, glamour, a city that owes her a better story; stakes — a FaceTime to her niece Sadie ("are there vampires in Romania?" / "only the boys I'm going to date, baby") that lands as a joke and quietly seeds everything.`;
     const input = scene({
       requiredBeats: [{

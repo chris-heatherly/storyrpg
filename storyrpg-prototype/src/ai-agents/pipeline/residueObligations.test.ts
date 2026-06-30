@@ -67,7 +67,7 @@ function blueprint(): EpisodeBlueprint {
     number: 1,
     title: 'Episode 1',
     synopsis: 'A choice echoes.',
-    arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+    arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
     themes: [],
     scenes: [
       {

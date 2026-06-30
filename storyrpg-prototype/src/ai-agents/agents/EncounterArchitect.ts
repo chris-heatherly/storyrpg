@@ -100,10 +100,8 @@ import {
   StoryAnchors,
   EncounterStoryCircleTarget,
   EncounterStoryCircleTargetEvidence,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import {
   CRAFT_PRESSURE_GUIDANCE,
@@ -252,13 +250,9 @@ export interface EncounterArchitectInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level legacy-structure beat map. */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle beat map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /** Which beat(s) of the season this episode carries. */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle beat(s) this episode carries. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
   /** Episode-level fractal Story Circle from StoryArchitect. */

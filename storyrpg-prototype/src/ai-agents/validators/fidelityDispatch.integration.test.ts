@@ -88,14 +88,14 @@ function minimalStory(): Story {
   } as unknown as Story;
 }
 
-// A season plan whose plotTurn1 beat is anchored to the WRONG episode (authored Ep3,
+// A season plan whose go beat is anchored to the WRONG episode (authored Ep3,
 // assigned Ep5) so StoryCircleAnchorConformanceValidator emits a blocking finding.
 function misanchoredSeasonPlan(): SeasonPlan {
   return {
     episodes: [
-      { episodeNumber: 1, structuralRole: ['hook'] },
-      { episodeNumber: 3, structuralRole: ['rising'] },
-      { episodeNumber: 5, structuralRole: ['plotTurn1'] },
+      { episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'llm' }] },
+      { episodeNumber: 3, storyCircleRole: [{ beat: 'search', roleKind: 'primary', source: 'llm' }] },
+      { episodeNumber: 5, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }] },
     ],
   } as unknown as SeasonPlan;
 }
@@ -103,7 +103,7 @@ function misanchoredSeasonPlan(): SeasonPlan {
 function treatmentAnalysis(): SourceMaterialAnalysis {
   return {
     sourceFormat: 'story_treatment',
-    treatmentSeasonGuidance: { beatEpisodeAnchors: { hook: 1, plotTurn1: 3 } },
+    treatmentSeasonGuidance: { storyCircleBeatEpisodeAnchors: { you: 1, go: 3 } },
     episodeBreakdown: [],
   } as unknown as SourceMaterialAnalysis;
 }

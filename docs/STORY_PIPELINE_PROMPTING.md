@@ -36,8 +36,8 @@ and visual QA/regeneration live in `docs/IMAGE_PIPELINE_RUNTIME.md`.
 ### Analysis / planning path
 
 1. `SourceMaterialAnalyzer` for source-document/IP analysis.
-2. `SeasonPlannerAgent` for season plans and 3-act / 7-point distribution.
-3. `SevenPointCoverageValidator` as deterministic repair feedback for season plans.
+2. `SeasonPlannerAgent` for season plans and Story Circle distribution.
+3. `StoryCircleCoverageValidator` as deterministic repair feedback for season plans.
 
 ### Story generation path
 

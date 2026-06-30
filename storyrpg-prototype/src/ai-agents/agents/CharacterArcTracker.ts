@@ -22,10 +22,8 @@ import { CharacterBible } from './CharacterDesigner';
 import type {
   CharacterArchitecture,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 
 export interface IdentityAxisTarget {
@@ -91,17 +89,9 @@ export interface CharacterArcTrackerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level legacy-structure beat map. */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /**
-   * Structural beat(s) this episode carries. Midpoint episodes should
-   * emit a `turning_point` milestone; Climax episodes should emit
-   * `commitment` or `resolution` milestones.
-   */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle role(s) this episode carries. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 
@@ -265,7 +255,6 @@ Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON
       themes: this.compactValue(plan.themes, { depth: 1, maxArrayItems: 6, maxStringLength: 240 }),
       anchors: this.compactValue(plan.anchors, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
       storyCircle: this.compactValue(plan.storyCircle, { depth: 2, maxArrayItems: 8, maxStringLength: 420 }),
-      legacyStructure: this.compactValue(plan.legacyStructure, { depth: 2, maxArrayItems: 8, maxStringLength: 360 }),
       characterArchitecture: this.compactValue(plan.characterArchitecture, {
         depth: 3,
         maxArrayItems: 8,
@@ -285,7 +274,6 @@ Emit CharacterArcTargets per the REQUIRED JSON STRUCTURE above. Return ONLY JSON
       synopsis: truncatePromptString(episode.synopsis, 420),
       storyCircleRole: this.compactValue(episode.storyCircleRole, { depth: 2, maxArrayItems: 4, maxStringLength: 120 }),
       episodeCircle: this.compactValue(episode.episodeCircle, { depth: 2, maxArrayItems: 8, maxStringLength: 220 }),
-      structuralRole: this.compactValue(episode.structuralRole, { depth: 1, maxArrayItems: 4, maxStringLength: 80 }),
       narrativeFunction: this.compactValue(episode.narrativeFunction, {
         depth: 2,
         maxArrayItems: 6,

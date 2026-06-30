@@ -236,7 +236,6 @@ export interface FinalStoryContractInput {
     episodes?: Array<{
       episodeNumber?: number;
       title?: string;
-      structuralRole?: string[];
     }>;
   };
   incrementalValidationResults?: SceneValidationResult[];

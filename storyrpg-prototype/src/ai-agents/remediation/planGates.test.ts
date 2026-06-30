@@ -239,13 +239,13 @@ describe('Bucket D plan-gate wiring', () => {
     // while the same ledger in default mode stays a 'warning' (flag-off path
     // unchanged).
     //
-    // Genuine violation: episode 2, one unresolved hook from episode 1 whose
+    // Genuine violation: episode 2, one unresolved you from episode 1 whose
     // payoff window covers episode 2, but zero hooks paid off this episode.
     const violatingLedger: SerializedCallbackLedger = {
       version: 1,
       hooks: [
         {
-          id: 'hook-unpaid',
+          id: 'you-unpaid',
           sourceEpisode: 1,
           sourceSceneId: 's1',
           sourceChoiceId: 'c1',

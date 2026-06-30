@@ -30,10 +30,36 @@ const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
 ]);
 
 const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|turns?.{0,80}into)\b/i;
-const PUBLIC_AFTERMARKERS = /\b(?:readership|reads?|viral|views|comments|dashboard|profile|public pressure|public signal|attention spike|audience growth)\b/i;
+const PUBLIC_AFTERMARKERS = /\b(?:readership|reads?|viral|views?|comments?|dashboard|profile|public pressure|public signal|attention spike|audience growth)\b/i;
 const BLOG_DRAFT_MARKERS = /\b(?:[234]\s*a\.?\s*m\.?|[234]\s*am|late night|unable to sleep|writes?|writing|draft|blank page|publish button|publishes|published|codename)\b/i;
 const THREAT_PREREQUISITE_MARKERS = /\b(?:attack|attacked|attacker|ambush|terror|rescue|rescued|rescuer|saved|saves|threat|knife|scream|rough hands|grabbed|pinned)\b/i;
 const LIVE_THREAT_ACTION_MARKERS = /\b(?:attack|attacked|attacker|ambush|knife|scream|rough hands|grab(?:s|bed)?|pinned|corners?|lunges?|chases?|fight back|don'?t scream)\b/i;
+
+function isConstructionActive(slot: string | undefined): boolean {
+  return slot === 'primary_turn' || slot === 'must_stage' || slot === 'must_support';
+}
+
+function activeConstructionIds(scene: SceneBlueprint, source: string): Set<string> | undefined {
+  const obligations = scene.sceneConstructionProfile?.obligations;
+  if (!obligations) return undefined;
+  return new Set(obligations
+    .filter((item) => item.source === source && item.id && isConstructionActive(item.slot))
+    .map((item) => item.id));
+}
+
+function visibleRequiredBeats(scene: SceneBlueprint): NonNullable<SceneBlueprint['requiredBeats']> {
+  const activeIds = activeConstructionIds(scene, 'requiredBeat');
+  return (scene.requiredBeats ?? []).filter((beat) => {
+    if (activeIds) return activeIds.has(beat.id);
+    return beat.tier !== 'seed' && beat.tier !== 'connective';
+  });
+}
+
+function visibleKeyBeats(scene: SceneBlueprint): string[] {
+  const activeIds = activeConstructionIds(scene, 'keyBeat');
+  if (!activeIds) return scene.keyBeats ?? [];
+  return (scene.keyBeats ?? []).filter((_, index) => activeIds.has(`keyBeat:${index}`));
+}
 
 function sceneCueText(scene: SceneBlueprint): string {
   return [
@@ -48,8 +74,8 @@ function sceneCueText(scene: SceneBlueprint): string {
     scene.turnContract?.centralTurn,
     scene.choicePoint?.description,
     ...(scene.choicePoint?.optionHints ?? []),
-    ...(scene.keyBeats ?? []),
-    ...(scene.requiredBeats ?? []).map((beat) => beat.mustDepict),
+    ...visibleKeyBeats(scene),
+    ...visibleRequiredBeats(scene).map((beat) => beat.mustDepict),
   ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n');
 }
 
@@ -95,7 +121,7 @@ function validatePublicAftermathOwnership(blueprint: EpisodeBlueprint): Blueprin
   for (const scene of blueprint.scenes ?? []) {
     if (!isPublicAftermathScene(scene)) continue;
     const ownershipChecks = [
-      ...(scene.requiredBeats ?? []).map((beat) => ({
+      ...visibleRequiredBeats(scene).map((beat) => ({
         id: beat.id,
         text: [beat.mustDepict, beat.sourceTurn].filter(Boolean).join(' '),
       })),

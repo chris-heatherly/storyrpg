@@ -1,6 +1,6 @@
 ---
 name: testing-tooling
-description: Author tests for StoryRPG — Vitest unit tests, Playwright end-to-end tests, the React Native / AsyncStorage stubs, and the `npm run validate` / coverage workflow. Use when writing `*.test.ts`, editing `vitest.config.ts`, `playwright.config.ts`, `test/stubs/**`, `test/e2e/**`, or changing typecheck / lint / test scripts in `package.json`.
+description: Author tests for StoryRPG — Vitest unit tests, Playwright end-to-end tests, React Native / AsyncStorage stubs, reader/generator target typechecks, reader boundary checks, and the `npm run validate` / coverage workflow. Use when writing `*.test.ts`, editing `vitest.config.ts`, `playwright.config.ts`, `test/stubs/**`, `test/e2e/**`, or changing typecheck / lint / test scripts in `package.json`.
 ---
 
 # Testing Tooling
@@ -14,7 +14,9 @@ StoryRPG has two parallel test pyramids:
 | Unit | Vitest 4.x | `vitest.config.ts` | `src/**/*.test.ts` |
 | End-to-end | Playwright | `playwright.config.ts` | `test/e2e/*.spec.ts` |
 
-Plus the typecheck gate — four tsconfigs covered by `npm run validate`.
+Plus the typecheck gate — four tsconfigs covered by `npm run validate`. Reader/generator target
+typechecks are separate scripts (`reader:typecheck`, `generator:typecheck`); `validate:reader` adds
+the reader typecheck, boundary check, and focused reader tests.
 
 This skill is the source of truth for how to author, run, and extend tests. For what to test, see the subsystem-specific skills (`pipeline-validation`, `story-playback`, `image-generation-team`, etc.).
 

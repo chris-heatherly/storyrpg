@@ -22,7 +22,7 @@ function episode(scenes: Scene[]): Episode {
 function blueprint(locations: Record<string, string>): EpisodeBlueprint {
   return {
     episodeId: 'ep', number: 3, title: 'Ep', synopsis: '',
-    arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+    arc: { you: '', need: '', go: '', search: '', find: '', take: '', return: '', change: '' },
     themes: [],
     scenes: Object.entries(locations).map(([id, location]) => ({
       id, name: id, description: id, location, mood: 'tense', purpose: 'bottleneck',

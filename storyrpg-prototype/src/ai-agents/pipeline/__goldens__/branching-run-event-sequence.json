@@ -153,7 +153,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 5594 -> 4989 bytes"
+      "message": "SceneWriter input compacted for scene-1: 14735 -> 14009 bytes"
     },
     {
       "type": "debug",
@@ -168,12 +168,12 @@
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-1"
+      "message": "Wrote 3 beats for scene-1"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-1 written (6 beats)"
+      "message": "Scene scene-1 written (3 beats)"
     },
     {
       "type": "debug",
@@ -188,7 +188,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -223,17 +223,17 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2a: 3457 -> 3394 bytes"
+      "message": "SceneWriter input compacted for scene-2a: 6000 -> 5937 bytes"
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-2a"
+      "message": "Wrote 3 beats for scene-2a"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-2a written (6 beats)"
+      "message": "Scene scene-2a written (3 beats)"
     },
     {
       "type": "debug",
@@ -248,7 +248,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -273,7 +273,7 @@
     {
       "type": "incremental_validation",
       "phase": "scene_complete",
-      "message": "Scene scene-2a: PASSED"
+      "message": "Scene scene-2a: ISSUES FOUND"
     },
     {
       "type": "debug",
@@ -338,7 +338,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-3: 3931 -> 3680 bytes"
+      "message": "SceneWriter input compacted for scene-3: 7773 -> 7245 bytes"
     },
     {
       "type": "debug",
@@ -378,7 +378,7 @@
     {
       "type": "validation_aggregated",
       "phase": "incremental_validation",
-      "message": "Incremental validation complete: 4/4 scenes passed"
+      "message": "Incremental validation complete: 3/4 scenes passed"
     },
     {
       "type": "phase_complete",
@@ -439,6 +439,11 @@
       "message": "Encounter outcome variants: 1 desync(s), 0 variant(s) authored."
     },
     {
+      "type": "debug",
+      "phase": "final_story_contract",
+      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
+    },
+    {
       "type": "checkpoint",
       "phase": "final_story_contract",
       "message": "Final story contract passed (1 episode(s), 4 scene(s))"
@@ -466,7 +471,7 @@
     {
       "type": "debug",
       "phase": "observability",
-      "message": "{\"imageCoverage\":{\"totalBeats\":21,\"beatsWithImages\":0,\"encounterBeatsTotal\":1,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
+      "message": "{\"imageCoverage\":{\"totalBeats\":15,\"beatsWithImages\":0,\"encounterBeatsTotal\":1,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
     }
   ],
   "checkpoints": [

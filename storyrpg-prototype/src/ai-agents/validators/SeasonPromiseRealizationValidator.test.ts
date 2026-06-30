@@ -21,7 +21,7 @@ const guidance: TreatmentSeasonGuidance = {
   centralPressure: 'A beautiful monster mistakes love for ownership and pressures her public voice.',
   playerPromise: 'Choose between being courted and being the author, then watch loyalties and routes shift.',
   emotionalPromise: 'Adoration becomes annihilation, but friendship and straight truth survive.',
-  freshVariationPlan: 'Dating montage, country-house courtship, midpoint flip, blog war, reckoning, and convergence.',
+  freshVariationPlan: 'Dating montage, country-house courtship, find flip, blog war, reckoning, and convergence.',
   typicalEpisodeDeliverables: 'After the pilot: friend conversation, romance encounter, recontextualizing reveal, footing shift, and major route choice.',
   seasonMustResolve: 'Whether Mara keeps her voice, which life she chooses, whether sanctuary held, and what the monster design cost.',
   futureOpenThreads: 'The older monster, the lost letter, the family line, and the coming visit remain future pressure.',
@@ -90,7 +90,7 @@ function plannedSeasonPlan(seasonGuidanceInput: Partial<TreatmentSeasonGuidance>
     tone: 'Champagne fizz on top, blood at the bottom',
     themes: ['voice under pressure'],
     anchors: {},
-    legacyStructure: { hook: 'Mara starts over in the city.' },
+    storyCircle: { you: 'Mara starts over in the city.' },
     seasonPromiseArchitecture: architecture(),
     seasonPromiseContracts: contracts,
     arcs: [],
@@ -129,7 +129,7 @@ function plannedSeasonPlan(seasonGuidanceInput: Partial<TreatmentSeasonGuidance>
         : episodeNumber === 2
         ? 'The glamour darkens as the city shows teeth.'
         : 'The finale makes love, voice, and monstrosity collide.',
-      structuralRole: episodeNumber === 1 ? ['hook'] : episodeNumber === 2 ? ['midpoint'] : ['resolution'],
+      storyCircleRole: episodeNumber === 1 ? ['you'] : episodeNumber === 2 ? ['find'] : ['change'],
       status: 'planned',
       dependsOn: [],
       setupsForEpisodes: [],
@@ -217,7 +217,7 @@ describe('SeasonPromiseRealizationValidator', () => {
 - **Central pressure:** The monster wants her voice quiet.
 - **Player promise:** Choose authoring or being chosen.
 - **Emotional promise:** Sparkle becomes dread, then self-possession.
-- **Fresh variation plan:** Pilot, midpoint flip, finale reckoning.
+- **Fresh variation plan:** Pilot, find flip, finale reckoning.
 - **What a typical episode delivers after the pilot:** Conversation, romance encounter, reveal, cost, route choice.
 - **What the season must resolve:** Voice, sanctuary, freedom, and the monster's design.
 - **What can remain open for future seasons:** The old letter and older monster.

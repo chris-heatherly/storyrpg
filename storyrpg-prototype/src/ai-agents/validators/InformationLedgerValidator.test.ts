@@ -10,7 +10,7 @@ function plan(overrides: Partial<SeasonPlan> = {}): SeasonPlan {
       episodeNumber: index + 1,
       title: `Episode ${index + 1}`,
       synopsis: `Episode ${index + 1}`,
-      narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+      narrativeFunction: { setup: '', conflict: '', resolution: 'change' },
     })),
     informationLedger: [
       {

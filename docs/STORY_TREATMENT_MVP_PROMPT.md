@@ -138,7 +138,7 @@ Each episode should be assigned a Story Circle role:
 - **Fewer than 8 episodes:** fuse adjacent beats only; do not skip beats.
 - **More than 8 episodes:** keep the eight primary beats in order and mark extras as contiguous expansions of the beat they deepen.
 
-Legacy seven-point labels can be included only as optional crosswalk notes when useful for adaptation, but new treatments should not use them as the primary structure.
+Use Story Circle beats as the primary structure. Do not include older structure labels.
 
 ### 4. Protagonist Brief
 

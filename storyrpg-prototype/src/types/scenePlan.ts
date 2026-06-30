@@ -27,7 +27,6 @@ import type {
   EncounterCategory,
   EncounterStoryCircleTarget,
   EncounterStoryCircleTargetEvidence,
-  StructuralRole,
   StoryCircleBeat,
   StoryCircleStructure,
 } from './sourceAnalysis';
@@ -47,9 +46,9 @@ import type { TreatmentEventAtom } from './treatmentEvent';
 export type SceneKind = 'standard' | 'encounter';
 
 /**
- * The scene's dramatic function WITHIN its episode's arc. This is distinct from
- * the legacy-structure structural role, which lives on the episode, not the scene. A
- * scene's role describes how it advances the purpose its episode carries.
+ * The scene's dramatic function WITHIN its episode's arc. The episode's Story
+ * Circle role owns the season-spine position; a scene's role describes how it
+ * advances the pressure its episode carries.
  */
 /**
  * How deep a budgeted choice's consequence reaches, from cheapest to costliest.
@@ -122,6 +121,180 @@ export interface SceneTurnContract {
   turnEvent: string;
   afterState: string;
   handoff: string;
+}
+
+export type ColdOpenMode = 'new_normal' | 'sharp_disruption';
+
+export type ColdOpenArchetype =
+  | 'in_media_res'
+  | 'cryptic_flashback'
+  | 'status_quo_shift'
+  | 'atmospheric_teaser';
+
+export type ColdOpenConceptSource =
+  | 'requiredBeat'
+  | 'sceneTurn'
+  | 'storyCircle'
+  | 'seasonPromise'
+  | 'arcPressure'
+  | 'themePressure'
+  | 'mechanicPressure'
+  | 'relationshipPacing'
+  | 'treatmentField'
+  | 'setupPayoff'
+  | 'choicePressure';
+
+export type ColdOpenConceptRole =
+  | 'central_turn'
+  | 'story_circle'
+  | 'micro_conflict'
+  | 'open_question'
+  | 'pressure'
+  | 'texture'
+  | 'routed_elsewhere';
+
+export interface ColdOpenSelectedConcept {
+  source: ColdOpenConceptSource;
+  id: string;
+  role: ColdOpenConceptRole;
+  text: string;
+}
+
+export interface ColdOpenStoryCircleFulfillment {
+  beats: StoryCircleBeat[];
+  combinedBeats?: StoryCircleBeat[];
+  baseline: string;
+  need?: string;
+  collision: string;
+  sourceContractIds: string[];
+}
+
+export interface ColdOpenBeatBudget {
+  min: number;
+  recommended: number;
+  max: number;
+}
+
+/**
+ * Generator-only cold-open compiler output. This is not a new story layer:
+ * it is a focused view over existing scene/Story Circle/treatment contracts so
+ * SceneWriter can open with one fast dramatic collision instead of treating
+ * every upstream concept as a separate checklist item.
+ */
+export interface ColdOpenProfile {
+  id: string;
+  episodeNumber?: number;
+  sceneId: string;
+  mode: ColdOpenMode;
+  archetype: ColdOpenArchetype;
+  storyCircleBeats: StoryCircleBeat[];
+  storyCircleFulfillment: ColdOpenStoryCircleFulfillment;
+  centralTurn: string;
+  microConflict: string;
+  openQuestion: string;
+  activeCastLimit: number;
+  beatBudget: ColdOpenBeatBudget;
+  exitHook: string;
+  sourceContractIds: string[];
+  selectedConcepts: ColdOpenSelectedConcept[];
+  routedConceptIds?: string[];
+  conflictResolutions?: string[];
+}
+
+export type SceneConstructionSource =
+  | 'requiredBeat'
+  | 'sceneTurn'
+  | 'storyCircle'
+  | 'seasonPromise'
+  | 'stakesArchitecture'
+  | 'arcPressure'
+  | 'themePressure'
+  | 'mechanicPressure'
+  | 'relationshipPacing'
+  | 'treatmentField'
+  | 'branchConsequence'
+  | 'endingRealization'
+  | 'failureModeAudit'
+  | 'characterTreatment'
+  | 'worldTreatment'
+  | 'setupPayoff'
+  | 'choicePressure'
+  | 'signatureMoment'
+  | 'keyBeat'
+  | 'coldOpenProfile';
+
+export type SceneConstructionSlot =
+  | 'primary_turn'
+  | 'must_stage'
+  | 'must_support'
+  | 'texture'
+  | 'metadata_only'
+  | 'route_later'
+  | 'conflict';
+
+export interface SceneConstructionPrimaryTurn {
+  id: string;
+  source: SceneConstructionSource;
+  text: string;
+  beforeState?: string;
+  turnEvent?: string;
+  afterState?: string;
+  handoff?: string;
+  sourceContractIds: string[];
+}
+
+export interface SceneConstructionObligation {
+  source: SceneConstructionSource;
+  id: string;
+  slot: SceneConstructionSlot;
+  text: string;
+  reason: string;
+  mergedInto?: string;
+  hardUnits: number;
+  softUnits: number;
+}
+
+export interface SceneConstructionBeatBudget {
+  min: number;
+  recommended: number;
+  max: number;
+}
+
+export interface SceneConstructionCapacity {
+  hardUnits: number;
+  softUnits: number;
+  totalUnits: number;
+  maxHardUnits: number;
+  maxTotalUnits: number;
+  activeCastCount: number;
+  maxActiveCast: number;
+  activeConflictCount: number;
+  introductionCount: number;
+  explicitTimeCueCount: number;
+  explicitLocationCueCount: number;
+  beatBudget: SceneConstructionBeatBudget;
+}
+
+/**
+ * Generator-only scene construction compiler output. This is a view over
+ * existing scene-plan obligations, not a new story layer. It tells authoring
+ * stages which one turn owns the scene, which upstream contracts actively serve
+ * that turn, and which concepts should stay as texture, metadata, routed work,
+ * or planning conflicts.
+ */
+export interface SceneConstructionProfile {
+  id: string;
+  episodeNumber?: number;
+  sceneId: string;
+  primaryTurn: SceneConstructionPrimaryTurn;
+  obligations: SceneConstructionObligation[];
+  sourceContractIds: string[];
+  activeCast: string[];
+  passiveCast?: string[];
+  capacity: SceneConstructionCapacity;
+  routedObligationIds: string[];
+  conflictDiagnostics: string[];
+  promptGuidance: string[];
 }
 
 export type RelationshipPacingStage =
@@ -819,6 +992,10 @@ export interface PlannedScene {
    * planned scene purpose, role, stakes, encounter, or choice pressure.
    */
   turnContract?: SceneTurnContract;
+  /** Generator-only cold-open profile compiled from existing contracts. */
+  coldOpenProfile?: ColdOpenProfile;
+  /** Generator-only scene construction profile compiled from existing contracts. */
+  sceneConstructionProfile?: SceneConstructionProfile;
 
   /**
    * Relationship pacing contracts for NPC/group bonds this scene is allowed to
@@ -1002,14 +1179,6 @@ export interface SeasonScenePlan {
   /** World/location obligations assigned across the scene plan. */
   worldTreatmentContracts?: WorldTreatmentRealizationContract[];
 }
-
-/**
- * Re-export for callers that build a scene plan from the still-present
- * StructuralRole assignment on episodes. Scenes do not carry a role themselves;
- * this is here purely so scene-plan builders can read the episode's role when
- * authoring `dramaticPurpose`.
- */
-export type { StructuralRole };
 
 // ========================================
 // SEASON BUDGET TARGETS & CONSTANTS

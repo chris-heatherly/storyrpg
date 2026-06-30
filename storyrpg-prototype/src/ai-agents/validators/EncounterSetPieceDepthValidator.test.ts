@@ -18,7 +18,7 @@ function story(encounter: Record<string, unknown>): Story {
 const siegePlan: SeasonScenePlan = {
   scenes: [{
     id: 'treatment-enc-3-1', episodeNumber: 3, order: 0, kind: 'encounter', title: 'Walls',
-    dramaticPurpose: 'x', narrativeRole: 'climax', locations: [], npcsInvolved: [], setsUp: [], paysOff: [],
+    dramaticPurpose: 'x', narrativeRole: 'return', locations: [], npcsInvolved: [], setsUp: [], paysOff: [],
     signatureMoment: 'The siege itself — a sustained defensive set piece (wall breach + repulse) culminating in the choice to evacuate.',
   }],
   byEpisode: { 3: ['treatment-enc-3-1'] },

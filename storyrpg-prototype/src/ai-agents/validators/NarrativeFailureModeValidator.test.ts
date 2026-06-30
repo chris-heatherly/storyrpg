@@ -124,7 +124,7 @@ describe('NarrativeFailureModeValidator', () => {
     const result = new NarrativeFailureModeValidator().validate({
       failureModeAuditContracts: [failureContract({
         contractKind: 'agency_claim',
-        sourceText: 'The climax is avoided as passive because Mara chooses to burn the ledger using the clue she planted.',
+        sourceText: 'The return is avoided as passive because Mara chooses to burn the ledger using the clue she planted.',
       })],
       story: storyWithScene('s1', 'The guards arrive out of nowhere and open the gate while Mara watches.'),
     });
@@ -138,7 +138,7 @@ describe('NarrativeFailureModeValidator', () => {
     const result = new NarrativeFailureModeValidator().validate({
       failureModeAuditContracts: [failureContract({
         contractKind: 'agency_claim',
-        sourceText: 'The climax is avoided as passive because Mara chooses to burn the ledger using the clue she planted.',
+        sourceText: 'The return is avoided as passive because Mara chooses to burn the ledger using the clue she planted.',
       })],
       story: storyWithScene('s1', 'Mara chooses to burn the ledger, uses the clue she planted, and the rescue arrives because of her preparation.'),
     });
@@ -167,7 +167,7 @@ function failureContract(overrides: Partial<FailureModeAuditContract>): FailureM
     code: 'passive_protagonist',
     label: 'Passive protagonist',
     status: 'watch_item',
-    sourceText: 'The climax is avoided as passive because Mara uses the map she earned to open the gate herself.',
+    sourceText: 'The return is avoided as passive because Mara uses the map she earned to open the gate herself.',
     contractKind: 'agency_claim',
     requiredRealization: ['choice', 'scene_turn', 'ending_route', 'mechanic_pressure', 'final_prose'],
     targetEpisodeNumbers: [1],

@@ -9,37 +9,42 @@ description: Orchestrate StoryRPG generation — phases, checkpoint/resume, work
 
 | Pipeline | File | Use Case |
 |---|---|---|
-| EpisodePipeline | `pipeline/EpisodePipeline.ts` | Single episode, sequential scenes |
-| FullStoryPipeline | `pipeline/FullStoryPipeline.ts` | Multi-episode with all phases |
+| FullStoryPipeline | `pipeline/FullStoryPipeline.ts` | The only active text/story orchestration path: source analysis, season planning, per-episode authoring, validation, post-story media, assembly, and save/package output |
+
+`EpisodePipeline.ts` and `ParallelStoryPipeline` have been removed. Do not add new work to a shadow
+pipeline path. Parallelism lives inside `FullStoryPipeline`, extracted phases, dependency helpers,
+provider throttles, and worker queues.
 
 ## Phase System (FullStoryPipeline)
 
-Phases execute sequentially. Each declares prerequisites via `requirePhases()`.
+`FullStoryPipeline` is still the driver, but much of its behavior has been extracted into typed phase
+modules under `pipeline/phases/`. Continue that migration in behavior-preserving steps. Phases that
+still use monolith wrappers are still the active path when the wrapper delegates to the phase.
 
 ```
-Phase 1:   world_building              → WorldBuilder           → WorldBible
-Phase 2:   character_design            → CharacterDesigner       → CharacterBible
-           (optional) character_design_retry on low diversity
-Phase 2.5: npc_validation              → NPCDepthValidator       (optional)
-Phase 3:   episode_architecture        → StoryArchitect          → EpisodeBlueprint
-Phase 3.5: branch_analysis             → BranchManager           → BranchAnalysis
-Phase 4:   content_generation          → SceneWriter + ChoiceAuthor + EncounterArchitect
-Phase 4.5: quick_validation            → IntegratedBestPracticesValidator (optional)
-Phase 5:   qa                          → QARunner + Full Validation (parallel)
-           (looped) qa_repair          → Karpathy-style targeted regeneration (up to N passes)
-Phase 5.5: master_image_generation     → Character sheets + color scripts (cached)
-           images                      → ImageAgentTeam (scene + encounter)
-           (optional) video_generation → VideoDirectorAgent (when EXPO_PUBLIC_VIDEO_GENERATION_ENABLED)
-Phase 6:   assembly                    → Compile final Story object
-           (gate) asset_verification   → walkStoryAssets HTTP check (Tier 1 QA)
-Phase 7:   saving                      → Write outputs to disk
-           (optional) audio_generation → ElevenLabs narration after save
+RunArtifactPhase         → output directory, story id, checkpoints, episode completion writes
+WorldBuildingPhase       → WorldBuilder → WorldBible
+CharacterDesignPhase     → CharacterDesigner → CharacterBible
+NPCDepthValidationPhase  → NPCDepthValidator retry/advisory handling
+EpisodeArchitecturePhase → StoryArchitect → EpisodeBlueprint
+BranchAnalysisPhase      → BranchManager + topology/advisory branch analysis
+ContentGenerationPhase   → SceneWriter + ChoiceAuthor + EncounterArchitect + thread/twist/arc context
+QuickValidationPhase     → fast best-practices validation + bounded targeted repairs
+QAPhase                  → QARunner + full validation + QA repair loop
+MasterImagePhase         → character reference sheets + location master shots
+SceneImagePhase          → storyboard-v2 beat panels + image QA/repair/resume
+EncounterImagePhase      → encounter setup/outcome/storylet visuals
+CoverArtPhase            → poster/cover generation
+VideoPhase               → optional beat video generation
+AssemblyPhase            → runtime Story assembly, structural autofix, asset checks, final scans
+AudioPhase               → optional TTS binding/generation
+BrowserQAPhase           → optional Playwright multi-path QA and image remediation
+SavingPhase              → story package, manifest, diagnostics, output writing
 ```
 
-Evidence: every phase is wrapped in a `measurePhase()` call in `pipeline/FullStoryPipeline.ts`
-(grep `measurePhase(` — the file is ~12k lines and typed, but don't trust hard-coded line numbers).
-`asset_verification` is the `walkStoryAssets` gate; `qa_repair` is the Karpathy regeneration loop;
-telemetry normalizes per-episode labels like `qa_ep_*` and `images_ep_*`. Find each by name, not line.
+Story authoring completes before post-story media. Images/video/audio decorate authored story
+artifacts; do not interleave media generation with story agents unless you are explicitly changing
+that contract. Find phases by filename and event labels, not hard-coded line numbers.
 
 ### Phase Dependency Enforcement
 
@@ -54,19 +59,15 @@ After execution: `markPhaseComplete('content_generation')`.
 
 All phases wrapped in `measurePhase(phaseName, fn)` for telemetry.
 
-## EpisodePipeline (Simplified)
-
-```
-Foundation → Content → Validation → Assembly → Saving
-```
-
-- No world/character building (assumes provided as input)
-- Sequential scene processing (no dependency graph)
-- Auto-fixes choice density if < 50% scenes have choices
-
 ## Concurrency Guidance
 
-The authoritative architecture is now `FullStoryPipeline` plus focused concurrency utilities. Do not introduce or depend on a shadow `ParallelStoryPipeline` path.
+The authoritative architecture is `FullStoryPipeline` plus focused concurrency utilities:
+
+- `BaseAgent` controls LLM request concurrency and retry/circuit-breaker behavior.
+- `providerThrottle.ts` and `providerCapabilities.ts` control image-provider RPM/concurrency.
+- Image/audio phases use local queues and resume/dedup keys.
+- Scene dependency helpers can build topological waves, but correctness and artifact contracts win
+  over parallel speedups.
 
 ## Checkpoint System
 
@@ -102,7 +103,9 @@ interface CheckpointData {
 this.addCheckpoint('Episode Blueprint', blueprintData, true);
 ```
 
-Checkpoints saved to `09-checkpoints.json` in output directory.
+Worker checkpoints and output artifacts are persisted by `proxy/workerLifecycle.js` and the run
+artifact/checkpoint stores. New generated packages write `story.json` plus `manifest.json`; legacy
+watermarks exist for compatibility and diagnostics, not as the primary runtime load path.
 
 ### Resume Support
 
@@ -162,7 +165,7 @@ interface PipelineProgressTelemetry {
 }
 ```
 
-## Worker System (`server/worker-runner.ts`)
+## Worker System (`src/ai-agents/server/worker-runner.ts`)
 
 ### Worker Modes
 
@@ -195,7 +198,7 @@ Uses `setInterval` with `.unref()` to avoid blocking shutdown.
 
 ### Event Forwarding
 
-Worker wraps every emit with a top-level `workerEvent: true` marker so the proxy can distinguish worker output from its own logs. See `ai-agents/server/worker-runner.ts:11-13`:
+Worker wraps every emit with a top-level `workerEvent: true` marker so the proxy can distinguish worker output from its own logs. See `src/ai-agents/server/worker-runner.ts`:
 
 ```typescript
 function emit(type: string, payload: Record<string, unknown> = {}) {
@@ -296,11 +299,11 @@ Dual store reality: the client keeps a local job list; the proxy persists `gener
 
 ## Checklist for Pipeline Changes
 
-1. New phases must declare prerequisites via `requirePhases()`
-2. Call `markPhaseComplete()` after successful execution
-3. Wrap in `measurePhase()` for telemetry
-4. Emit `phase_start`/`phase_complete` events with telemetry
-5. Add checkpoint if phase produces reviewable output
-6. Check cancellation before expensive operations
-7. Update `completedPhases` tracking
-8. If adding parallel execution, use `buildTopologicalWaves()` and handle cycles
+1. Prefer a typed phase or helper extraction over growing `FullStoryPipeline`.
+2. Preserve event names, checkpoint keys, prompt snapshots, and artifact ids during extraction.
+3. Emit `phase_start`/`phase_complete` events with telemetry for user-visible work.
+4. Add checkpoint/artifact writes when the phase produces resumable or reviewable output.
+5. Check cancellation before expensive operations and before starting provider calls.
+6. Keep generated package output centered on `story.json` + `manifest.json`.
+7. If adding parallel execution, use the existing dependency/throttle utilities and handle cycles.
+8. Run focused prompt-snapshot/phase tests plus `npm run typecheck` for orchestration changes.

@@ -30,7 +30,7 @@ flowchart TD
         P0{Adapting source material?}
         P1[SourceMaterialAnalyzer]
         P2[SeasonPlannerAgent]
-        P3[SevenPointCoverageValidator]
+        P3[StoryCircleCoverageValidator]
         P4[SeasonPlan]
     end
 

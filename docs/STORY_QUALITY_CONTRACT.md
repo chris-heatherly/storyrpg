@@ -18,7 +18,7 @@ story and image-quality rules, not the old orchestration model.
   for important moments; reserve structural branches for major turns.
 - **Choice-type mix:** expression, relationship, strategic, and dilemma
   percentages are baseline diagnostics, not a universal quality contract.
-  Treatment intent, season structure, and seven-point episode role may justify
+  Treatment intent, season structure, and Story Circle episode role may justify
   deliberate skew when choices still serve the authored pressure.
 - **Convergent spine:** branches create different experiences between
   bottlenecks, then reconverge at planned anchors without erasing residue.

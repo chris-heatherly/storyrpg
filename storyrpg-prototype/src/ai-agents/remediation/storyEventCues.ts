@@ -57,7 +57,9 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('objectHandoff');
   }
 
-  if (/\b(?:rooftop|roof|terrace|bar|party|table|booth|dance floor|first meet|first meeting|social triangle|podcast|kitchen entrance|notices across)\b/.test(text)) {
+  const socialGroupFormation = /\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\b.{0,100}\b(?:club|circle|crew|group|friends?|allies|companions|table|booth|bar|party)\b/.test(text)
+    || /\b(?:club|circle|crew|group|friends?|allies|companions|table|booth|bar|party)\b.{0,100}\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\b/.test(text);
+  if (socialGroupFormation || /\b(?:rooftop|roof|terrace|bar|party|table|booth|dance floor|first meet|first meeting|social triangle|podcast|kitchen entrance|notices across)\b/.test(text)) {
     cues.add('socialMeet');
   }
 
@@ -66,7 +68,8 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
   const violentGrip = /\b(?:attacker|aggressor|rough hands?|hands?|fingers?)\b.{0,80}\bgrip\b/.test(text)
     || /\bgrip\b.{0,80}\b(?:arm|wrist|throat|coat|collar|bicep|shoulder|skin|bone|pain|bruise|breath|attacker|aggressor)\b/.test(text);
   const liveThreatAction = /\b(?:pinned|attacker|attacks?|attacked|aggressor|knife|scream|freeze|fight back|lunges?|chases?|ambush|threat|rough hands?|grab(?:s|bed)?|don't scream)\b/.test(text)
-    || violentGrip;
+    || violentGrip
+    || /\b(?:can stand|can you stand|asks if (?:she|he|you|they) can stand)\b/.test(text);
   const directThreat = liveThreatAction
     || (!rescueRecap && /\b(?:rescues?|rescued|rescue)\b/.test(text));
   const threatPlace = /\b(?:park|garden|alley|street|shadow)\b/.test(text) && /\b(?:attacker|attacks?|attacked|aggressor|knife|scream|fight|rescues?|rescued|rescue|ambush|threat|danger)\b/.test(text);
@@ -82,11 +85,14 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('friendDebrief');
   }
 
-  if (/\b(?:[234]\s*a\s*m|[234]\s*am|late night|numbers in (?:her|your|their) phone|dictionary|codename|writes|writing|draft|blank page|publish button|publishes|published)\b/.test(text)) {
+  const publicWritingLaunch = /\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b.{0,100}\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b/.test(text)
+    || /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b.{0,100}\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b/.test(text);
+  if (publicWritingLaunch || /\b(?:[234]\s*a\s*m|[234]\s*am|late night|numbers in (?:her|your|their) phone|dictionary|codename|writes|writing|draft|blank page|publish button|publishes|published)\b/.test(text)) {
     cues.add('lateNightWriting');
   }
 
-  const publicBlogAftermath = /\b(?:readership|reads?|viral|views|comments|dashboard|profile|public pressure|public signal|broke the internet|audience growth|attention spike)\b/.test(text)
+  const publicBlogAftermath = (/\b(?:readership|viral|views?|comments?|dashboard|profile|public pressure|public signal|broke the internet|audience growth|attention spike)\b/.test(text)
+    || /\b\d[\d,]*\s+reads?\b/.test(text))
     && !/\b(?:could|might|may|has to|need(?:s)? to|going to|will)\s+(?:go\s+)?viral\b/.test(text)
     && !/\b(?:[234]\s*a\s*m|[234]\s*am|draft|cursor|blank page|publish button|write|writing|writes?|publishes|published)\b/.test(text);
   if (publicBlogAftermath) {

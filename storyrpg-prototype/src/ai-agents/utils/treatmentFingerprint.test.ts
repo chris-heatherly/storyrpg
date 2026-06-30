@@ -2,8 +2,8 @@
  * Unit tests for the treatment version/identity fingerprint (Phase 0 / RC1).
  *
  * The fingerprint must:
- *   - capture episode count + ordered normalized authored titles + Section-7
- *     beat->episode anchors,
+ *   - capture episode count + ordered normalized authored titles + Story Circle
+ *     beat episode anchors,
  *   - normalize whitespace/markdown so a trivially re-saved identical treatment
  *     fingerprints identically (no version-guard false positives),
  *   - detect a re-cut/version swap via title comparison.
@@ -14,7 +14,6 @@ import type { ExtractedTreatment } from './treatmentExtraction';
 import {
   compareTreatmentFingerprints,
   computeTreatmentFingerprint,
-  extractBeatEpisodeAnchors,
   extractStoryCircleBeatEpisodeAnchors,
   normalizeTreatmentTitle,
 } from './treatmentFingerprint';
@@ -68,31 +67,6 @@ describe('normalizeTreatmentTitle', () => {
   });
 });
 
-describe('extractBeatEpisodeAnchors', () => {
-  it('parses Section-7 (EpN) anchors line-by-line', () => {
-    const spine = [
-      'Hook (Ep1): the bargain',
-      'Plot turn 1 (Ep3): the siege',
-      'Pinch 1 (Ep4): the ravine',
-      'Midpoint (Ep6): the reveal',
-      'Pinch 2 (Ep7): betrayal',
-      'Climax (Ep10): the endsong',
-    ].join('\n');
-    expect(extractBeatEpisodeAnchors(spine)).toEqual({
-      hook: 1,
-      plotTurn1: 3,
-      pinch1: 4,
-      midpoint: 6,
-      pinch2: 7,
-      climax: 10,
-    });
-  });
-
-  it('returns an empty map when there is no spine', () => {
-    expect(extractBeatEpisodeAnchors(undefined)).toEqual({});
-  });
-});
-
 describe('extractStoryCircleBeatEpisodeAnchors', () => {
   it('parses Story Circle (EpN) anchors line-by-line', () => {
     const spine = [
@@ -100,7 +74,7 @@ describe('extractStoryCircleBeatEpisodeAnchors', () => {
       'Need (Ep2): the missing truth',
       'Go (Ep3): crossing the threshold',
       'Search (Ep4): adaptive pressure',
-      'Find (Ep5): the midpoint discovery',
+      'Find (Ep5): the find discovery',
       'Take (Ep7): the real price',
       'Return (Ep9): carrying the cost home',
       'Change (Ep10): the new identity',
@@ -121,19 +95,19 @@ describe('extractStoryCircleBeatEpisodeAnchors', () => {
 describe('computeTreatmentFingerprint', () => {
   it('captures count, ordered titles, and anchors', () => {
     const fp = computeTreatmentFingerprint(
-      treatment({ 1: 'Dawn and Discord', 2: 'The Key and the Cage' }, 'Plot turn 1 (Ep3)'),
+      treatment({ 1: 'Dawn and Discord', 2: 'The Key and the Cage' }, 'go (Ep3)'),
     );
     expect(fp.episodeCount).toBe(2);
     expect(fp.normalizedTitles).toEqual(['dawn and discord', 'the key and the cage']);
-    expect(fp.beatEpisodeAnchors).toEqual({ plotTurn1: 3 });
+    expect(fp.storyCircleBeatEpisodeAnchors).toEqual({ go: 3 });
   });
 
   it('fingerprints a trivially re-saved identical treatment identically', () => {
     const canonical = computeTreatmentFingerprint(
-      treatment({ 1: 'Dawn and Discord' }, 'Plot turn 1 (Ep3)'),
+      treatment({ 1: 'Dawn and Discord' }, 'Go (Ep3)'),
     );
     const reSaved = computeTreatmentFingerprint(
-      treatment({ 1: '  **Dawn and Discord**  ' }, ' Plot turn 1 (Ep3) '),
+      treatment({ 1: '  **Dawn and Discord**  ' }, ' Go (Ep3) '),
     );
     expect(compareTreatmentFingerprints(reSaved, canonical).matches).toBe(true);
   });

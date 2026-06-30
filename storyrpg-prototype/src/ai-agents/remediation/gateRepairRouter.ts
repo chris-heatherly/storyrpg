@@ -79,6 +79,7 @@ interface StorySceneLike {
   authoredTreatmentFields?: SceneBlueprint['authoredTreatmentFields'];
   storyCircleBeatContracts?: SceneBlueprint['storyCircleBeatContracts'];
   choicePoint?: SceneBlueprint['choicePoint'];
+  sceneConstructionProfile?: SceneBlueprint['sceneConstructionProfile'];
 }
 
 export interface GateRepairRouterContext {
@@ -373,8 +374,33 @@ function thresholdForScene(scene: StorySceneLike, sceneIndex?: number): Treatmen
   const isEncounter = isEncounterScene(scene);
   const isOpening = sceneIndex === 0 || /s\d+-1$/i.test(scene.id ?? '');
   if (isEncounter) return { hardUnits: 5, totalUnits: 7, profile: 'encounter' };
-  if (isOpening) return { hardUnits: 5, totalUnits: 999, profile: 'opening' };
+  if (isOpening) return { hardUnits: 5, totalUnits: 7.5, profile: 'opening' };
   return { hardUnits: 4, totalUnits: 6, profile: 'standard' };
+}
+
+function constructionSlotIsActive(slot: string | undefined): boolean {
+  return slot === 'primary_turn' || slot === 'must_stage' || slot === 'must_support';
+}
+
+function constructionProfileAllows(scene: StorySceneLike, source: string, id: string | undefined): boolean {
+  const profile = scene.sceneConstructionProfile;
+  if (!profile) return true;
+  return profile.obligations.some((item) =>
+    item.source === source &&
+    (!id || item.id === id) &&
+    constructionSlotIsActive(item.slot),
+  );
+}
+
+function constructionProfileCountsSeparately(scene: StorySceneLike, source: string, id: string | undefined): boolean {
+  const profile = scene.sceneConstructionProfile;
+  if (!profile) return true;
+  const obligation = profile.obligations.find((item) =>
+    item.source === source &&
+    (!id || item.id === id) &&
+    constructionSlotIsActive(item.slot),
+  );
+  return Boolean(obligation && !obligation.mergedInto);
 }
 
 export function analyzeSceneTreatmentDensity(
@@ -385,6 +411,8 @@ export function analyzeSceneTreatmentDensity(
 
   for (const beat of scene.requiredBeats ?? []) {
     if (!beat || beat.tier === 'connective') continue;
+    if (!constructionProfileAllows(scene, 'requiredBeat', beat.id)) continue;
+    if (!constructionProfileCountsSeparately(scene, 'requiredBeat', beat.id)) continue;
     const label = beat.mustDepict || beat.sourceTurn || beat.id;
     if (beat.tier === 'seed' && !isConcreteSeedObligation(label)) {
       pushObligation(obligations, 'abstract_or_hidden_seed', label, 0, 0.5, beat.id);
@@ -400,10 +428,12 @@ export function analyzeSceneTreatmentDensity(
 
   if (scene.signatureMoment) {
     const alreadyCounted = (scene.requiredBeats ?? []).some((beat) => beat.mustDepict === scene.signatureMoment);
-    if (!alreadyCounted) pushObligation(obligations, 'signature_moment', scene.signatureMoment, 1, 1);
+    if (!alreadyCounted && constructionProfileAllows(scene, 'signatureMoment', 'signatureMoment') && constructionProfileCountsSeparately(scene, 'signatureMoment', 'signatureMoment')) {
+      pushObligation(obligations, 'signature_moment', scene.signatureMoment, 1, 1);
+    }
   }
 
-  if (scene.turnContract) {
+  if (scene.turnContract && constructionProfileAllows(scene, 'sceneTurn', scene.turnContract.turnId) && constructionProfileCountsSeparately(scene, 'sceneTurn', scene.turnContract.turnId)) {
     const turnLabel = scene.turnContract.turnEvent || scene.turnContract.centralTurn;
     const duplicatesRequiredBeat = (scene.requiredBeats ?? []).some((beat) =>
       substantiallyDuplicates(turnLabel, beat.mustDepict || beat.sourceTurn),
@@ -415,6 +445,8 @@ export function analyzeSceneTreatmentDensity(
 
   const storyCircleContracts = scene.storyCircleBeatContracts ?? [];
   const additionalStoryCircleUnits = storyCircleContracts.filter((contract) =>
+    constructionProfileAllows(scene, 'storyCircle', contract.id) &&
+    constructionProfileCountsSeparately(scene, 'storyCircle', contract.id) &&
     !isBroadEpisodeCircleContract(contract) &&
     !sceneAlreadyCarriesStructuralBeat(scene, contract)
   ).length;
@@ -423,7 +455,9 @@ export function analyzeSceneTreatmentDensity(
   }
 
   const encounterFields = (scene.authoredTreatmentFields ?? []).filter((contract) =>
-    contract.contractKind === 'encounter_anchor' || contract.contractKind === 'encounter_conflict'
+    constructionProfileAllows(scene, 'treatmentField', contract.id) &&
+    constructionProfileCountsSeparately(scene, 'treatmentField', contract.id) &&
+    (contract.contractKind === 'encounter_anchor' || contract.contractKind === 'encounter_conflict')
   );
   if (encounterFields.length > 0) {
     pushObligation(
@@ -437,6 +471,8 @@ export function analyzeSceneTreatmentDensity(
   }
 
   for (const contract of scene.authoredTreatmentFields ?? []) {
+    if (!constructionProfileAllows(scene, 'treatmentField', contract.id)) continue;
+    if (!constructionProfileCountsSeparately(scene, 'treatmentField', contract.id)) continue;
     const finalProse = contract.requiredRealization?.includes('final_prose');
     const encounterField = contract.contractKind === 'encounter_anchor' || contract.contractKind === 'encounter_conflict';
     if (!encounterField && finalProse) {
@@ -447,14 +483,20 @@ export function analyzeSceneTreatmentDensity(
   const keyBeatText = Array.isArray((scene as { keyBeats?: unknown }).keyBeats)
     ? ((scene as { keyBeats?: unknown[] }).keyBeats ?? []).filter((v): v is string => typeof v === 'string')
     : [];
-  for (const keyBeat of keyBeatText) {
+  for (const [index, keyBeat] of keyBeatText.entries()) {
+    if (!constructionProfileAllows(scene, 'keyBeat', `keyBeat:${index}`)) continue;
+    if (!constructionProfileCountsSeparately(scene, 'keyBeat', `keyBeat:${index}`)) continue;
     if (/\bintroduc(?:e|es|ed|ing)\b/i.test(keyBeat)) {
       pushObligation(obligations, 'character_first_introduction', keyBeat, 0, 0.5);
     }
   }
 
-  if (scene.choicePoint && !isEncounterScene(scene)) {
+  if (scene.choicePoint && !isEncounterScene(scene) && constructionProfileAllows(scene, 'choicePressure', `${scene.id ?? 'scene'}-choice-pressure`)) {
     pushObligation(obligations, 'choice_pressure', scene.choicePoint.description, 1, 1);
+  }
+
+  for (const conflict of scene.sceneConstructionProfile?.conflictDiagnostics ?? []) {
+    pushObligation(obligations, 'scene_construction_conflict', conflict, 99, 99);
   }
 
   const hardUnits = Number(obligations.reduce((sum, item) => sum + item.hardUnits, 0).toFixed(2));
@@ -491,9 +533,7 @@ export function analyzeEpisodeTreatmentDensity(
 export function isTreatmentDensityExpandable(report: TreatmentDensityReport): boolean {
   if (!report.overloaded) return true;
   const hardOverage = Math.max(0, report.hardUnits - report.threshold.hardUnits);
-  const totalOverage = report.threshold.totalUnits >= 900
-    ? 0
-    : Math.max(0, report.totalUnits - report.threshold.totalUnits);
+  const totalOverage = Math.max(0, report.totalUnits - report.threshold.totalUnits);
   if (hardOverage === 0 && totalOverage === 0) {
     if (report.threshold.profile === 'opening' && report.explicitTimeJumpCount >= 2) return false;
     return report.explicitTimeJumpCount < 3;

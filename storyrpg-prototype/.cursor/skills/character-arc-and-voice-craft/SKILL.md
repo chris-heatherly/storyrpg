@@ -104,7 +104,7 @@ The rules its prompt enforces and `ArcDeltaValidator` audits:
   `normalizeTargets()` silently **filters out** any target whose `axis` is not in the valid set, so a
   typo'd axis disappears rather than erroring — get the key exactly right.
 - **Deltas serve the spine, not drift.** Deltas should move the protagonist *toward or away from the
-  season Goal / Stakes* (passed via `seasonAnchors` / `seasonSevenPoint`), not wander randomly. The
+  season Goal / Stakes* and the current Story Circle role, not wander randomly. The
   start-vs-end identity state is compared back to these targets by `ArcDeltaValidator`.
 - **Architecture is pressure, not exposition.** Targets should make the protagonist act from the **Lie**,
   strain toward the **Truth**, expose the **origin pressure**, or force a **Want-vs-Need** choice (the
@@ -186,13 +186,12 @@ The ordered progression and what each phase must do:
 | 4 | `commitment` | Actions consistent with the new identity. |
 | 5 | `resolution` | Final form; relationships restructured. |
 
-Phases align to **structural role** (the 7-point spine owned by `story-structure-rules`): Midpoint
-episodes should emit a `turning_point` milestone; Climax episodes should emit `commitment` or
-`resolution` milestones (the tracker receives this via `episodeStructuralRole: StructuralRole[]`). This
-coupling is why the arc never feels arbitrary — the character's internal pivot is scheduled to land on
-the structural pivot. Milestones must anchor to blueprint scenes (`sceneId` / `beatId`) when possible so
-downstream agents can attach the milestone flag to a concrete moment; if the LLM omits `phase`,
-`normalizeTargets()` defaults it to `'test'`.
+Phases align to the episode's Story Circle role (owned by `story-structure-rules`): `find` episodes
+should emit a `turning_point` milestone; `take`, `return`, and `change` episodes should emit
+`commitment` or `resolution` milestones. This coupling is why the arc never feels arbitrary — the
+character's internal pivot is scheduled to land on the Story Circle pivot. Milestones must anchor to
+blueprint scenes (`sceneId` / `beatId`) when possible so downstream agents can attach the milestone flag
+to a concrete moment; if the LLM omits `phase`, `normalizeTargets()` defaults it to `'test'`.
 
 ## The four relationship dimensions and NPC tiers
 

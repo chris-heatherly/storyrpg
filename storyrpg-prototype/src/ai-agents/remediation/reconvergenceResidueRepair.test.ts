@@ -11,7 +11,7 @@ function failingResult(extra: ResidueValidationResultLike['issues'] = []): Resid
       {
         type: 'missing_branch_residue',
         severity: 'error',
-        message: 'Reconverged branch target s4 has no conditional text, callback hook, or onShow residue to acknowledge the branch path.',
+        message: 'Reconverged branch target s4 has no conditional text, callback you, or onShow residue to acknowledge the branch path.',
         targetSceneId: 's4',
       },
       ...extra,

@@ -6,9 +6,6 @@ import {
   checkStoryCircleCoverage,
   describeStoryCircleDistribution,
   distributeStoryCircle,
-  legacyStructuralRolesToStoryCircleRoles,
-  storyCircleFromLegacyStructure,
-  storyCircleToLegacyStructure,
 } from './storyCircleDistribution';
 import { STORY_CIRCLE_BEATS, type StoryCircleBeat } from '../../types/sourceAnalysis';
 
@@ -81,8 +78,6 @@ describe('distributeStoryCircle', () => {
       .filter((entry) => entry.storyCircleRole.some((role) => role.roleKind === 'expansion'))
       .map((entry) => entry.storyCircleRole[0].beat);
     expect(expanded).toEqual(['search', 'take', 'return']);
-    expect(expanded).not.toContain('rising' as StoryCircleBeat);
-    expect(expanded).not.toContain('falling' as StoryCircleBeat);
   });
 });
 
@@ -133,27 +128,6 @@ describe('storyCircleDistribution helpers', () => {
     expect(checkStoryCircleCoverage(
       Array.from(roles.entries()).map(([episodeNumber, storyCircleRole]) => ({ episodeNumber, storyCircleRole })),
     )).toEqual([]);
-  });
-
-  it('migrates legacy Story Circle structures and roles into Story Circle aliases', () => {
-    const storyCircle = storyCircleFromLegacyStructure({
-      hook: 'Kira clocks the lab routine and the one rule she never breaks.',
-      plotTurn1: 'A sealed door opens and she chooses to step through it.',
-      pinch1: 'Her first plan fails inside the hidden wing.',
-      midpoint: 'She obtains the missing serum.',
-      pinch2: 'The serum saves one life and exposes another to danger.',
-      climax: 'Kira brings the serum back to the public ward under pursuit.',
-      resolution: 'The ward survives, but Kira no longer obeys the old rule.',
-    });
-
-    expect(storyCircle.you).toContain('lab routine');
-    expect(storyCircle.go).toContain('sealed door');
-    expect(storyCircleToLegacyStructure(storyCircle).resolution).toContain('no longer obeys');
-    expect(legacyStructuralRolesToStoryCircleRoles(['hook', 'pinch2']).map((role) => role.beat)).toEqual([
-      'you',
-      'need',
-      'take',
-    ]);
   });
 
   it('keeps the full canonical beat definitions available for prompts', () => {

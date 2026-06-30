@@ -1,13 +1,13 @@
 ---
 name: storyrpg-media-pipeline
-description: Use this skill when working on StoryRPG media generation — image provider adapters, style bible anchors, ArtStyleProfile, reference packs, image QA/retry, Stable Diffusion/LoRA, AND audio narration (ElevenLabs TTS, voice casting, karaoke alignment) and their playback integration.
+description: Use this skill when working on StoryRPG media generation — image provider adapters, style bible anchors, ArtStyleProfile, reference packs, image QA/retry, Stable Diffusion/LoRA, AND audio narration (ElevenLabs/Gemini TTS, deterministic voice casting, alignment where supported) and their playback integration.
 ---
 
 # StoryRPG Media Pipeline (Image + Audio)
 
 StoryRPG renders two media layers after text is finalized: **images** (per-beat/scene/encounter)
-and **audio narration** (TTS with word-level alignment). Both are pipeline phases that degrade
-softly — a missing image or beat audio never fails the run.
+and **audio narration** (provider-aware TTS, with word-level alignment where supported). Both are
+pipeline phases that degrade softly — a missing image or beat audio never fails the run.
 
 ## Image Workflow
 
@@ -18,9 +18,9 @@ softly — a missing image or beat audio never fails the run.
 
 ## Audio Workflow
 
-1. `src/ai-agents/services/voiceCastingService.ts` casts characters to ElevenLabs voices — **deterministic heuristics, no LLM** (keep it that way; same story = same cast).
-2. `src/ai-agents/services/audioGenerationService.ts` pre-renders per-beat TTS via the proxy and stores `audioUrl` + `alignment` on each beat.
-3. `proxy/elevenLabsRoutes.js` holds `ELEVENLABS_API_KEY` and forwards the `with-timestamps` endpoint (needed for karaoke highlighting — never switch to plain TTS).
+1. `src/ai-agents/services/voiceCastingService.ts` casts characters to provider voices — **deterministic heuristics, no LLM** (keep it that way; same story = same cast). Providers are `elevenlabs` and `gemini`.
+2. `src/ai-agents/services/audioGenerationService.ts` pre-renders per-beat TTS via provider-neutral `/audio/tts` and `/audio/batch-generate`, storing `audioUrl`, provider, voice id, and alignment when returned.
+3. `proxy/elevenLabsRoutes.js` still owns the audio routes: `/audio/*` is provider-neutral; legacy `/elevenlabs/*` routes remain for ElevenLabs compatibility.
 
 ## Guardrails
 
@@ -28,14 +28,15 @@ softly — a missing image or beat audio never fails the run.
 - Route every image call through `ProviderThrottle` (`this._throttle.run(provider, task, { dedupKey })`), never call a provider directly. Caps live in `images/providerCapabilities.ts`.
 - No hardcoded endpoints — use `src/config/endpoints.ts`.
 - Voice casting stays deterministic (no LLM, no `Math.random()`); narrator voice is never reused by characters.
-- Audio is idempotent (keyed on `beatId`, `cached: true` on re-render) and soft-fails. If beat text changes post-TTS, the alignment is invalid — regenerate.
+- Audio is idempotent (keyed on `beatId`, `cached: true` on re-render) and soft-fails. ElevenLabs returns alignment for karaoke; Gemini emits WAV audio without alignment. If beat text changes post-TTS, regenerate.
 - Don't regenerate/commit generated images or audio unless explicitly requested.
 
 ## Common Checks
 
-- Providers: nano-banana (Gemini), atlas-cloud, midapi/useapi (Midjourney; `normalizeProvider` aliases useapi→midapi), dall-e, stable-diffusion, placeholder. Per-provider concurrency/interval caps in `providerCapabilities.ts`.
+- Providers: nano-banana (Gemini), atlas-cloud, midapi (Midjourney), stable-diffusion, placeholder, plus historical compatibility names (`useapi` normalizes to `midapi`; `dall-e` remains compatibility-only). Per-provider concurrency/interval caps in `providerCapabilities.ts`.
+- Default image work flows through storyboard-v2 plus `ImageAgentTeam`; `ImageGenerator.ts` is gone.
 - `ArtStyleProfile` resolution, reference pack slot priority (`referenceStrategy.ts`), character identity fingerprints, previous-panel continuity.
-- Audio: `hasAlignment` flag, per-character alignment grouped into word spans, 429 backoff serialized per voice.
+- Audio: `hasAlignment` flag, per-character ElevenLabs alignment grouped into word spans, Gemini voice catalog (`Kore`, `Puck`, etc.), 429 backoff serialized per voice.
 
 ## Verification
 

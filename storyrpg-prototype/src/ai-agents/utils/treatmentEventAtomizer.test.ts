@@ -20,7 +20,7 @@ describe('treatmentEventAtomizer', () => {
       text: [
         'Theme: belonging requires honest risk.',
         'Story Circle need: the protagonist must stop hiding.',
-        'This scene serves the midpoint pressure and sets up a future payoff.',
+        'This scene serves the find pressure and sets up a future payoff.',
         'Major pressure: Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her?',
         'Likely consequence: The blog, Dusk Club, Victor staged courtship, Stela protection, Mika placement, Radu first sighting, and Kylie first authored act all become live season anchors.',
       ].join(' '),

@@ -38,7 +38,7 @@ import {
   buildEpisodeScenes,
   encounterIsCoveredByAuthoredTurns,
   getAuthoredEpisodeEventTexts,
-  legacyStructureTextForEpisode,
+  storyCircleTextForEpisode,
   toSceneEncounter,
   MIN_SCENES_PER_EPISODE,
   promoteCoveredAuthoredEncounters,
@@ -90,7 +90,6 @@ const VALID_TIERS: ReadonlySet<ConsequenceTier> = new Set([
  * setups/payoffs) and asks for an authored scene list per episode.
  */
 export function buildScenePlanPrompt(plan: SeasonPlan): string {
-  const legacyStructure = plan.legacyStructure;
   // Treatment-sourced run: any episode carries authored turns. When true, the
   // authored turns/signature moments/encounter anchors are FIXED required beats
   // and the model dramatizes them — it does not re-design the episode (§5).
@@ -101,8 +100,10 @@ export function buildScenePlanPrompt(plan: SeasonPlan): string {
   const episodeBlocks = [...plan.episodes]
     .sort((a, b) => a.episodeNumber - b.episodeNumber)
     .map((ep) => {
-      const beat = legacyStructureTextForEpisode(plan, ep);
-      const role = ep.structuralRole?.join(' / ') || 'rising/falling buffer';
+      const beat = storyCircleTextForEpisode(plan, ep);
+      const role = ep.storyCircleRole?.map((entry) =>
+        entry.roleKind === 'expansion' ? `${entry.beat} expansion` : entry.beat
+      ).join(' / ') || 'episode Story Circle loop';
       const authoredTurns = ep.treatmentGuidance?.episodeTurns ?? [];
       // Treatment runs: render turns as a NUMBERED required-beat checklist (FIXED,
       // must be depicted in order). Non-treatment runs keep the soft advisory list.
@@ -170,16 +171,17 @@ written later to serve the scene. Encounters ARE scenes (kind:"encounter").`;
 
   return `${framing}
 
-SEASON 7-POINT SPINE (a meta-concept that lives at the season level):
-  hook: ${legacyStructure?.hook ?? ''}
-  plotTurn1: ${legacyStructure?.plotTurn1 ?? ''}
-  pinch1: ${legacyStructure?.pinch1 ?? ''}
-  midpoint: ${legacyStructure?.midpoint ?? ''}
-  pinch2: ${legacyStructure?.pinch2 ?? ''}
-  climax: ${legacyStructure?.climax ?? ''}
-  resolution: ${legacyStructure?.resolution ?? ''}
+SEASON STORY CIRCLE SPINE (the season-long dramatic loop):
+  you: ${plan.storyCircle?.you ?? ''}
+  need: ${plan.storyCircle?.need ?? ''}
+  go: ${plan.storyCircle?.go ?? ''}
+  search: ${plan.storyCircle?.search ?? ''}
+  find: ${plan.storyCircle?.find ?? ''}
+  take: ${plan.storyCircle?.take ?? ''}
+  return: ${plan.storyCircle?.return ?? ''}
+  change: ${plan.storyCircle?.change ?? ''}
 
-Each EPISODE serves exactly ONE of the legacy structural beats (its role). Each SCENE you author must serve the
+Each EPISODE serves its season Story Circle role first. Each SCENE you author must serve the
 purpose its episode's role names. Scenes do NOT carry a legacy-structure label.
 
 EPISODES:
@@ -541,7 +543,7 @@ export function normalizeAuthoredScenePlan(
     const rawScenes = rawByEpisode.get(ep.episodeNumber);
     if (!rawScenes || rawScenes.length === 0) {
       // Gap fill: deterministic scenes for an episode the model skipped.
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
       continue;
     }
     const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger, plan.protagonist);
@@ -553,7 +555,7 @@ export function normalizeAuthoredScenePlan(
     // skipped episode — so adequately-sized authored episodes are untouched and
     // golden parity holds (only fires when the floor is requested AND violated).
     if (normalized.length < minScenesPerEpisode) {
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
       continue;
     }
     scenesByEpisode.set(ep.episodeNumber, normalized);

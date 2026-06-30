@@ -134,6 +134,21 @@ function actionRequirementsFor(moment: string, prose: string): ActionRequirement
   if (/\bvanish(?:es|ed|ing)?\b|\bdisappear(?:s|ed|ing)?\b/.test(needle)) {
     add('vanish', /\b(?:vanish(?:es|ed|ing)?|disappear(?:s|ed|ing)?|gone|melts?\s+into|dissolv(?:e|es|ed|ing)\s+into|reced(?:e|es|ed|ing)\s+into\s+(?:the\s+)?(?:shadow|shadows|dark|darkness|fog|mist|smoke)|lost\s+to)\b/.test(hay));
   }
+  if (/\bquartz\b[\s\S]{0,120}\b(?:ward|warding|consent|protect|protection)\b|\b(?:ward|warding|consent|protect|protection)\b[\s\S]{0,120}\bquartz\b/.test(needle)) {
+    add('quartz-transfer', anyPatternPresent(hay, [
+      /\b(?:quartz|pink(?:ish)?\s+stone|stone)\b[\s\S]{0,120}\b(?:hand|palm|fingers)\b/,
+      /\b(?:hand|palm|fingers)\b[\s\S]{0,120}\b(?:quartz|pink(?:ish)?\s+stone|stone)\b/,
+    ]));
+    add('warding-meaning', /\b(?:ward|warding|protect|protection|warning|apartment|threshold|drafts?)\b/.test(hay));
+  }
+  if (/\b(?:protective|protection|ward|warding)\b[\s\S]{0,120}\b(?:bag|herb|herbs)\b|\b(?:bag|herb|herbs)\b[\s\S]{0,120}\b(?:protective|protection|ward|warding)\b/.test(needle)) {
+    add('protective-herb-bag', anyPatternPresent(hay, [
+      /\b(?:bag|sachet|pouch|muslin)\b[\s\S]{0,140}\b(?:herb|herbs|lavender|pine|rosemary|sage)\b/,
+      /\b(?:herb|herbs|lavender|pine|rosemary|sage)\b[\s\S]{0,140}\b(?:bag|sachet|pouch|muslin)\b/,
+    ]));
+    add('warding-meaning', /\b(?:protect|protection|ward|warding|apartment|drafts?)\b/.test(hay));
+    add('brunch-context', /\b(?:brunch|breakfast|cafe|coffee|table|phone)\b/.test(hay));
+  }
   if (/\bdrops?\s+(?:the\s+)?attacker\b|\bdispatch(?:es|ed)?\s+(?:the\s+)?attacker\b/.test(needle)) {
     add('drop-attacker', anyPatternPresent(hay, [
       /\b(?:drop|drops|dropped|dispatch(?:es|ed)?|knock(?:s|ed)?|throw(?:s|n)?|slam(?:s|med)?)\b[\s\S]{0,80}\b(?:attacker|shadow|figure)\b/,
@@ -255,7 +270,7 @@ export function evaluateMomentRealization(
         depicted: missingClauses.length === 0,
         mode: 'compound-clauses',
         score: matchedClauses.length / clauses.length,
-        missingTokens: [...new Set(missingClauses.flatMap((clause) => contentTokensForRealization(clause, stopwords)))],
+        missingTokens: missingTokensForCompoundClauses(moment, prose, missingClauses, stopwords),
         missingClauses,
         matchedClauses,
       };
@@ -321,4 +336,17 @@ export function evaluateMomentRealization(
     missingClauses: [],
     matchedClauses: [],
   };
+}
+
+function missingTokensForCompoundClauses(
+  moment: string,
+  prose: string,
+  missingClauses: string[],
+  stopwords: Set<string>,
+): string[] {
+  const missing = missingClauses.flatMap((clause) => contentTokensForRealization(clause, stopwords));
+  if (/\bmr\.?\s+midnight\b/i.test(moment) && !/\bmidnight\b/i.test(prose)) {
+    missing.push('midnight');
+  }
+  return [...new Set(missing)];
 }

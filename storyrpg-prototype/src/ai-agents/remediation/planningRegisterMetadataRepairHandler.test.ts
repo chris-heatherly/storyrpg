@@ -46,16 +46,16 @@ function storyWithLeaks(): Story {
           },
           phases: [{
             id: 'phase-1',
-            description: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+            description: 'Escalate the episode pressure through a concrete turn: search pressure.',
           }],
         },
         beats: [{
           id: 'beat-1',
           text: 'Everything. Then continue into the planned scene: Open the episode through its immediate question: Kylie lands in Bucharest, forms the Dusk Club, is attacked in the park, rescued by Victor, meets Radu, and notices Mika watching too much.',
           primaryAction: 'Escalate the episode pressure through a concrete turn: Kylie lands in Bucharest fleeing heartbreak.',
-          visualMoment: 'Let the fallout settle into the next pressure: rising pressure.',
-          emotionalRead: 'Let the fallout settle into the next pressure: rising pressure.',
-          relationshipDynamic: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+          visualMoment: 'Let the fallout settle into the next pressure: search pressure.',
+          emotionalRead: 'Let the fallout settle into the next pressure: search pressure.',
+          relationshipDynamic: 'Escalate the episode pressure through a concrete turn: search pressure.',
           textVariants: [{
             condition: { type: 'flag', flag: 'survived_cismigiu_shadow', value: true },
             text: 'Escalate the episode pressure through a concrete turn: Kylie arrives in Bucharest to start over while hiding from heartbreak.. Surviving Cișmigiu has left your senses too awake.',
@@ -110,7 +110,7 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
   });
 
-  it('rewrites hook/promise/stakes treatment cards as concrete prose obligations', async () => {
+  it('rewrites you/promise/stakes treatment cards as concrete prose obligations', async () => {
     const story = storyWithLeaks();
     const beat = story.episodes[0].scenes[0].beats[0] as any;
     beat.text = 'Hook — Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window; promise — reinvention, glamour, a city that owes her a better story; stakes — a FaceTime to her niece Sadie ("are there vampires in Romania?").';

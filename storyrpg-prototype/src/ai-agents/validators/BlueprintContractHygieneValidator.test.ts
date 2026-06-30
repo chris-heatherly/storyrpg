@@ -7,7 +7,7 @@ function blueprint(scene: Record<string, unknown>): EpisodeBlueprint {
     episodeId: 'ep1',
     title: 'Synthetic',
     synopsis: '',
-    arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+    arc: { you: '', need: '', go: '', search: '', find: '', take: '', return: '', change: '' },
     themes: [],
     scenes: [scene],
     startingSceneId: String(scene.id || 's1'),

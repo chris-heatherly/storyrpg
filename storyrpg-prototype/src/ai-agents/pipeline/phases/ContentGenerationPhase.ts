@@ -56,6 +56,10 @@ import {
 import { RemediationLedgerRecord } from '../../remediation/remediationLedger';
 import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/regenChoicesPolicy';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
+import {
+  buildSceneConstructionPromptView,
+  collectSceneConstructionProfileIssues,
+} from '../../utils/sceneConstructionProfile';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/dependencyGraph';
 import { slugify as idSlugify } from '../../utils/idUtils';
 import { forbiddenNpcNames, introducedNpcIds } from '../../utils/npcIntroductionLedger';
@@ -398,6 +402,35 @@ export class ContentGenerationPhase {
     }
     const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
     const densityEpisodeNumber = episodeNumber ?? brief.episode.number;
+    const sceneConstructionIssues = collectSceneConstructionProfileIssues(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
+    if (outputDirectory) {
+      await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {
+        episodeNumber: densityEpisodeNumber,
+        generatedAt: new Date().toISOString(),
+        issues: sceneConstructionIssues,
+        profiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
+      });
+    }
+    if (sceneConstructionIssues.length > 0) {
+      const summary = sceneConstructionIssues.slice(0, 5).join(' | ');
+      context.emit({
+        type: 'warning',
+        phase: 'scenes',
+        message: `Scene construction guard blocked content generation for ${sceneConstructionIssues.length} conflict(s): ${summary}`,
+        data: { issues: sceneConstructionIssues },
+      });
+      throw new PipelineError(
+        `[SceneConstructionGate] Episode ${densityEpisodeNumber} unsafe scene construction before content generation: ${summary}. Re-run architecture with one primary turn per scene before SceneWriter/EncounterArchitect.`,
+        'episode_architecture',
+        {
+          agent: 'SceneConstructionGate',
+          context: {
+            episodeNumber: densityEpisodeNumber,
+            issues: sceneConstructionIssues,
+          },
+        },
+      );
+    }
     const treatmentDensityReports = analyzeEpisodeTreatmentDensity(blueprint.scenes as never, densityEpisodeNumber);
     const treatmentDensityByScene = new Map(treatmentDensityReports.map((report) => [report.sceneId, report]));
     const overloadedDensityReports = treatmentDensityReports.filter((report) => report.overloaded);
@@ -520,9 +553,7 @@ export class ContentGenerationPhase {
         episodeNumber: ttEpisode,
         seasonAnchors: brief.seasonPlan?.anchors,
         seasonStoryCircle: brief.seasonPlan?.storyCircle,
-        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
         episodeStoryCircleRole: ttSeasonEpisode?.storyCircleRole,
-        episodeStructuralRole: ttSeasonEpisode?.structuralRole,
         priorThreads: openPriorThreads(this.deps.seasonThreadLedger, ttEpisode),
         emitWarning: (message) => context.emit({ type: 'warning', phase: 'content', message }),
       });
@@ -580,9 +611,7 @@ export class ContentGenerationPhase {
         totalEpisodes: brief.seasonPlan?.episodes?.length ?? atEpisode,
         seasonAnchors: brief.seasonPlan?.anchors,
         seasonStoryCircle: brief.seasonPlan?.storyCircle,
-        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
         episodeStoryCircleRole: atSeasonEpisode?.storyCircleRole,
-        episodeStructuralRole: atSeasonEpisode?.structuralRole,
         characterArchitecture: brief.multiEpisode?.sourceAnalysis?.characterArchitecture,
         emitWarning: (message) => context.emit({ type: 'warning', phase: 'content', message }),
       });
@@ -1029,6 +1058,7 @@ export class ContentGenerationPhase {
             .flatMap((s) => s.npcsPresent || []),
         });
         this.pruneUnscopedTreatmentSeedBeats(sceneBlueprint);
+        const sceneRealizationBlueprint = buildSceneConstructionPromptView(sceneBlueprint);
         const densityReport = treatmentDensityByScene.get(sceneBlueprint.id);
         const densityGuidance = densityReport?.overloaded
           ? [
@@ -1152,14 +1182,10 @@ export class ContentGenerationPhase {
           branchContext: branchContextByScene.get(sceneBlueprint.id),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonStoryCircle: brief.seasonPlan?.storyCircle,
-          seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
           episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
             (e) => e.episodeNumber === brief.episode.number,
           )?.storyCircleRole,
           episodeCircle: blueprint.episodeCircle,
-          episodeStructuralRole: brief.seasonPlan?.episodes.find(
-            (e) => e.episodeNumber === brief.episode.number,
-          )?.structuralRole,
           cliffhangerPlan: this.deps.isEpisodeFinalScene(sceneBlueprint, blueprint)
             ? brief.seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number)?.cliffhangerPlan
             : undefined,
@@ -1423,8 +1449,8 @@ export class ContentGenerationPhase {
         sceneContent.settingContext = sceneSettingContext;
         // Carry the authored realization contract WITH the content so every
         // later rewrite pass can verify it isn't paraphrasing a moment away.
-        sceneContent.requiredBeats = sceneBlueprint.requiredBeats;
-        sceneContent.signatureMoment = sceneBlueprint.signatureMoment;
+        sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+        sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
         const infoMarkersAdded = emitSceneInfoMarkersOnBeats(sceneBlueprint, sceneContent.beats);
         if (infoMarkersAdded > 0) {
           context.emit({
@@ -1442,7 +1468,7 @@ export class ContentGenerationPhase {
         // exact missing content words — a retry here costs one scene; the same
         // miss at the final contract costs the whole run (bite-me-g13).
         if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
-          let missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
+          let missing = missingRequiredMoments(sceneRealizationBlueprint, sceneContent.beats);
           if (missing.length > 0) {
             try {
               for (let attempt = 1; attempt <= 2 && missing.length > 0; attempt++) {
@@ -1464,7 +1490,7 @@ export class ContentGenerationPhase {
                   `SceneWriter.execute(${sceneBlueprint.id} realization-retry-${attempt})`,
                 );
                 if (!realizationRetry.success || !realizationRetry.data) continue;
-                const retryMissing = missingRequiredMoments(sceneBlueprint, realizationRetry.data.beats);
+                const retryMissing = missingRequiredMoments(sceneRealizationBlueprint, realizationRetry.data.beats);
                 if (improvesMissingRealization(missing, retryMissing)) {
                   // Retry realized more of the contract — adopt it in place
                   // (sceneContent stays the canonical object the rest of the
@@ -1474,8 +1500,8 @@ export class ContentGenerationPhase {
                   sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
                   sceneContent.locationId = sceneSettingContext.locationId;
                   sceneContent.settingContext = sceneSettingContext;
-                  sceneContent.requiredBeats = sceneBlueprint.requiredBeats;
-                  sceneContent.signatureMoment = sceneBlueprint.signatureMoment;
+                  sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+                  sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
                   missing = retryMissing;
                 }
                 context.emit({
@@ -1497,7 +1523,7 @@ export class ContentGenerationPhase {
                   }),
                 });
                 sceneContent.startingBeatId = sceneContent.beats[0]?.id ?? sceneContent.startingBeatId;
-                missing = missingRequiredMoments(sceneBlueprint, sceneContent.beats);
+                missing = missingRequiredMoments(sceneRealizationBlueprint, sceneContent.beats);
                 const insertedCount = Math.max(0, sceneContent.beats.length - beatCountBeforeRecovery);
                 context.emit({
                   type: missing.length > 0 ? 'warning' : 'debug',
@@ -1674,14 +1700,10 @@ export class ContentGenerationPhase {
               ),
               seasonAnchors: brief.seasonPlan?.anchors,
               seasonStoryCircle: brief.seasonPlan?.storyCircle,
-              seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
               episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
                 (e) => e.episodeNumber === brief.episode.number,
               )?.storyCircleRole,
               episodeCircle: blueprint.episodeCircle,
-              episodeStructuralRole: brief.seasonPlan?.episodes.find(
-                (e) => e.episodeNumber === brief.episode.number,
-              )?.structuralRole,
             };
             // Bounded retry: a transient ChoiceAuthor failure (LLM/parse blip) must not
             // leave a scene choiceless. For a branch point that unrealizes the branch and
@@ -2208,15 +2230,15 @@ export class ContentGenerationPhase {
               revisedContent.sceneName = revisedContent.sceneName || sceneBlueprint.name;
               revisedContent.locationId = sceneSettingContext.locationId;
               revisedContent.settingContext = sceneSettingContext;
-              revisedContent.requiredBeats = sceneBlueprint.requiredBeats;
-              revisedContent.signatureMoment = sceneBlueprint.signatureMoment;
+              revisedContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+              revisedContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
 
               // Realization guard: a POV/voice rewrite must not LOSE an
               // authored moment the current prose depicts — the season-final
               // realization validators block on it and a voice win is not
               // worth a contract abort. Deterministic check, no LLM.
               if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
-                const lost = rewriteLosesRequiredMoment(sceneBlueprint, sceneContent.beats, revisedContent.beats);
+                const lost = rewriteLosesRequiredMoment(sceneRealizationBlueprint, sceneContent.beats, revisedContent.beats);
                 if (lost) {
                   context.emit({
                     type: 'warning',
@@ -2709,14 +2731,10 @@ export class ContentGenerationPhase {
           storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonStoryCircle: brief.seasonPlan?.storyCircle,
-          seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
           episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
             (e) => e.episodeNumber === brief.episode.number,
           )?.storyCircleRole,
           episodeCircle: blueprint.episodeCircle,
-          episodeStructuralRole: brief.seasonPlan?.episodes.find(
-            (e) => e.episodeNumber === brief.episode.number,
-          )?.structuralRole,
         };
 
         const encounterInputSummary = {

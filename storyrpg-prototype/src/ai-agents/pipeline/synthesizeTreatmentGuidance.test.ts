@@ -15,7 +15,6 @@ function episode(num: number, opts: Partial<SeasonEpisode> = {}): SeasonEpisode 
     locations: [],
     estimatedSceneCount: 5,
     estimatedChoiceCount: 3,
-    structuralRole: ['hook'],
     narrativeFunction: { setup: '', conflict: '', resolution: '' },
     status: 'planned',
     dependsOn: [],

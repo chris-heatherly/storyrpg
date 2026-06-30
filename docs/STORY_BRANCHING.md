@@ -454,7 +454,7 @@ Multiple systems validate branch structure:
 - Expression choices with `nextSceneId`
 - Choice type percentages compared with baseline diagnostic targets
 
-By default, expression choices with `nextSceneId` remain error-severity semantic violations. Branch-cap pressure and choice-type percentage skew are telemetry/advisory signals unless a caller explicitly opts into strict policy. Treatments, season structure, and the episode's seven-point role may justify deliberate distribution skew when choices still serve the authored pressure. A **branching penalty** of 15 points per excess branch is still reflected in the quality score.
+By default, expression choices with `nextSceneId` remain error-severity semantic violations. Branch-cap pressure and choice-type percentage skew are telemetry/advisory signals unless a caller explicitly opts into strict policy. Treatments, season structure, and the episode's Story Circle role may justify deliberate distribution skew when choices still serve the authored pressure. A **branching penalty** of 15 points per excess branch is still reflected in the quality score.
 
 ### Branch Manager
 

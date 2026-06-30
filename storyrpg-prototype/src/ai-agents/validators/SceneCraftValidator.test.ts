@@ -271,7 +271,7 @@ describe('SceneCraftValidator', () => {
     expect(result.passed).toBe(true);
   });
 
-  it('warns when a non-final scene ending lacks resolution or forward pressure', () => {
+  it('warns when a non-final scene ending lacks change or forward pressure', () => {
     const result = validator.validateScene(scene({
       beats: [{
         id: 'beat-1',
@@ -397,7 +397,7 @@ describe('SceneCraftValidator', () => {
     expect(result.passed).toBe(true);
   });
 
-  it('allows finale resolution to end on aftermath or legacy instead of a cliffhanger', () => {
+  it('allows finale change to end on aftermath or legacy instead of a cliffhanger', () => {
     const result = validator.validateScene(scene({
       beats: [{
         id: 'beat-1',
@@ -412,7 +412,7 @@ describe('SceneCraftValidator', () => {
     expect(result.passed).toBe(true);
   });
 
-  it('warns only action-heavy episodes when physical danger is absent between inciting incident and climax', () => {
+  it('warns only action-heavy episodes when physical danger is absent between inciting incident and return', () => {
     const quietScenes = [scene({
       beats: [{
         id: 'beat-1',

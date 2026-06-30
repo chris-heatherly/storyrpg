@@ -1,6 +1,6 @@
 # StoryRPG Treatment Prompt - SceneEpisode Version
 
-**Purpose:** Use this prompt guide when workshopping a StoryRPG season made of **sceneEpisodes**. A sceneEpisode is a small playable installment shaped like one strong dramatic scene, not a multi-scene television episode. It still belongs to a season, an act, an arc, and the season seven-point spine, but its internal job is tighter: one entry goal, one central obstacle, one forced choice, one exit shift, and one clear consequence.
+**Purpose:** Use this prompt guide when workshopping a StoryRPG season made of **sceneEpisodes**. A sceneEpisode is a small playable installment shaped like one strong dramatic scene, not a multi-scene television episode. It still belongs to a season, an act, an arc, and the season Story Circle spine, but its internal job is tighter: one entry goal, one central obstacle, one forced choice, one exit shift, and one clear consequence.
 
 This document is for creating a **treatment**, not playable prose. The output should give the StoryRPG generator the raw material it needs: protagonist psychology, season structure, sceneEpisode sequencing, arcs, stakes, information movement, choice pressure, consequences, visual specificity, and exactly 3 alternate season endings.
 
@@ -104,19 +104,20 @@ Recommended scale:
 
 Use a smaller scale when the premise is intimate, contained, or highly choice-dense. Use a larger scale when the season has multiple factions, slow-burn relationships, mystery runway, or several arcs.
 
-### Anchor Distribution
+### Story Circle Distribution
 
-Each seven-point anchor can be carried by one sceneEpisode or a small cluster:
+Each Story Circle beat can be carried by one sceneEpisode or a small cluster:
 
-- **Hook:** 1 sceneEpisode
-- **Plot turn 1:** 1 sceneEpisode, sometimes paired with the preceding pressure sceneEpisode
-- **Pinch 1:** 1 sceneEpisode
-- **Midpoint:** 1-2 sceneEpisodes, because recontextualization may need discovery plus choice
-- **Pinch 2:** 1 sceneEpisode
-- **Climax:** 1-2 sceneEpisodes, because choice and consequence may need separate playable moments
-- **Resolution:** 1 sceneEpisode
+- **You:** 1 sceneEpisode
+- **Need:** 1 sceneEpisode, sometimes paired with the preceding pressure sceneEpisode
+- **Go:** 1 sceneEpisode
+- **Search:** 1-2 sceneEpisodes, because adaptation may need discovery plus choice
+- **Find:** 1-2 sceneEpisodes, because recontextualization may need discovery plus choice
+- **Take:** 1 sceneEpisode
+- **Return:** 1-2 sceneEpisodes, because choice and consequence may need separate playable moments
+- **Change:** 1 sceneEpisode
 
-Buffers should do specific work:
+Expansion sceneEpisodes should do specific work:
 
 - consequence processing
 - relationship fallout
@@ -148,7 +149,7 @@ For sceneEpisode seasons:
 - An arc finale resolves the arc question but hands pressure forward.
 - The season finale resolves the season question and integrates aftermath.
 
-The arc does not replace the 7-point spine. The arc is how a run of sceneEpisodes pressures a facet of the season question.
+The arc does not replace the Story Circle spine. The arc is how a run of sceneEpisodes pressures a facet of the season question.
 
 ## Season Dramatic Question
 
@@ -538,7 +539,7 @@ For each sceneEpisode:
 - SceneEpisode number and title
 - Act
 - Arc
-- Structural role: anchor, fused anchor, buffer, fallout, setup, payoff, reversal, recovery, investigation, relationship pressure, final pressure, climax, or resolution
+- Story Circle role: `you`, `need`, `go`, `search`, `find`, `take`, `return`, `change`, or a purposeful expansion of one of those beats
 - SceneEpisode dramatic question
 - Opening image / hook function
 - Entry goal

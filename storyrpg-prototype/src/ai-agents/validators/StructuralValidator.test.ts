@@ -205,7 +205,7 @@ describe('StructuralValidator.autoFix', () => {
 });
 
 describe('StructuralValidator encounter consequence checks', () => {
-  it('warns when encounter outcomes and costs have no durable consequence hook', () => {
+  it('warns when encounter outcomes and costs have no durable consequence marker', () => {
     const story = makeStory();
     (story.episodes[0].scenes[0] as any).encounter = {
       id: 'enc-1',
@@ -283,7 +283,7 @@ describe('StructuralValidator encounter consequence checks', () => {
     expect(report.issues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          description: expect.stringContaining('has no durable consequence hook'),
+          description: expect.stringContaining('has no durable consequence marker'),
         }),
         expect.objectContaining({
           description: expect.stringContaining('has a cost without mechanical consequences'),

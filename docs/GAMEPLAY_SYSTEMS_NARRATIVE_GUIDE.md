@@ -508,7 +508,7 @@ Technical map:
 
 Gameplay is protected by validators at multiple stages:
 
-- Season stage: seven-point coverage, promise, information, character architecture.
+- Season stage: Story Circle coverage, promise, information, character architecture.
 - Architecture stage: treatment fidelity, dramatic structure, theme pressure, scene turns.
 - Quick validation: NPC depth, choice impact, mechanical storytelling, stat check balance, stakes, choice density/distribution, consequence budget, mechanics leakage.
 - Full validation: skill coverage, skill surface, branch mechanical divergence, Pixar principles, cliffhanger.

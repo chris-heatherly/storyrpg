@@ -28,7 +28,7 @@ describe('PovClarityValidator', () => {
 
   it('passes when the opening beat uses a player template', () => {
     const result = new PovClarityValidator().validateScene(
-      scene('{{player.name}} catches the falling map before Eros can burn it.'),
+      scene('{{player.name}} catches the return map before Eros can burn it.'),
     );
 
     expect(result.passed).toBe(true);

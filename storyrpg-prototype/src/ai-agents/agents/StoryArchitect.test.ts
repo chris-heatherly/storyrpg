@@ -271,6 +271,90 @@ describe('StoryArchitect.buildSeasonPlanDirectivesSection', () => {
   });
 });
 
+describe('StoryArchitect cold-open Story Circle gate', () => {
+  it('fails architecture before content when the cold open has no Story Circle role to fulfill', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      number: 1,
+      title: 'Opening',
+      synopsis: 'The protagonist enters pressure.',
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
+      episodeCircle: {},
+      storyCircleRole: [],
+      themes: [],
+      scenes: [
+        {
+          id: 's1-1',
+          name: 'Opening',
+          description: 'The protagonist reaches the station.',
+          location: 'Station',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'What happens at the station?',
+          wantVsNeed: 'Stay hidden versus ask for help.',
+          conflictEngine: 'The desk clerk recognizes the false name.',
+          npcsPresent: [],
+          narrativeFunction: 'Open the episode pressure.',
+          keyBeats: [],
+          leadsTo: ['s1-2'],
+          choicePoint: {
+            type: 'expression',
+            stakes: { want: 'Stay hidden.', cost: 'Be noticed.', identity: 'Keep control.' },
+            description: 'Choose how to answer the clerk.',
+            optionHints: [],
+          },
+        },
+        {
+          id: 's1-2',
+          name: 'Pressure',
+          description: 'Pressure rises.',
+          location: 'Station',
+          mood: 'tense',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'Can pressure be managed?',
+          wantVsNeed: 'Push through versus listen.',
+          conflictEngine: 'The room closes in.',
+          npcsPresent: [],
+          narrativeFunction: 'Develop pressure.',
+          keyBeats: [],
+          leadsTo: ['s1-3'],
+          choicePoint: {
+            type: 'expression',
+            stakes: { want: 'Move forward.', cost: 'Lose time.', identity: 'Stay composed.' },
+            description: 'Choose how to wait.',
+            optionHints: [],
+          },
+        },
+        {
+          id: 's1-3',
+          name: 'Aftermath',
+          description: 'The consequence lands.',
+          location: 'Street',
+          mood: 'charged',
+          purpose: 'bottleneck',
+          dramaticQuestion: 'What changed?',
+          wantVsNeed: 'Leave safely versus face the truth.',
+          conflictEngine: 'The old route is gone.',
+          npcsPresent: [],
+          narrativeFunction: 'Land the aftermath.',
+          keyBeats: [],
+          leadsTo: [],
+        },
+      ],
+      startingSceneId: 's1-1',
+      bottleneckScenes: ['s1-1', 's1-2', 's1-3'],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    expect(() => (architect as any).validateBlueprint(blueprint, makeInput({ episodeStoryCircleRole: [] })))
+      .toThrow(/ColdOpenStoryCircleGate/);
+  });
+});
+
 describe('StoryArchitect treatment fidelity validation', () => {
   it('flags duplicate staged high-pressure events at blueprint time but allows blog recaps', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
@@ -363,7 +447,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
           requiredBeats: [
             {
               id: 's1-1-hook1',
-              tier: 'hook',
+              tier: 'you',
               mustDepict: 'Kylie arrives in Bucharest and forms the Dusk Club, seeking reinvention and her own byline.',
               sourceTurn: 'Kylie arrives in Bucharest and forms the Dusk Club, seeking reinvention and her own byline.',
             },
@@ -415,7 +499,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
     const rooftop = blueprint.scenes[1];
     const blog = blueprint.scenes[2];
 
-    expect(coldOpen.signatureMoment).not.toContain('rooftop bar');
+    expect(coldOpen.signatureMoment ?? '').not.toContain('rooftop bar');
     expect(coldOpen.requiredBeats.map((beat: any) => beat.id)).toEqual(['s1-1-hook1-arrival']);
     expect(rooftop.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-dusk-club');
     expect(rooftop.signatureMoment).toContain('rooftop bar');
@@ -514,7 +598,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
       episodeId: 'episode-1',
       title: 'Arrival',
       synopsis: 'Kylie arrives in Bucharest.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       themes: [],
       startingSceneId: 'scene-1',
       bottleneckScenes: ['scene-1'],
@@ -732,7 +816,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
       episodeId: 'episode-3',
       title: 'The Bookshop',
       synopsis: 'Kylie meets Stela.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       themes: [],
       startingSceneId: 'scene-1',
       bottleneckScenes: ['scene-1'],
@@ -745,7 +829,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
         themePressure: 'TBD',
         themeAngle: 'TBD',
         openingPromise: {
-          hook: 'TBD',
+          you: 'TBD',
           episodePromise: '',
           activePressure: 'none',
         },
@@ -862,7 +946,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
       episodeId: 'episode-1',
       title: 'Dating After Dusk',
       synopsis: 'Kylie meets friends on a rooftop and Victor saves her.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       themes: [],
       startingSceneId: 'scene-1',
       bottleneckScenes: ['scene-1', 'scene-3'],
@@ -929,7 +1013,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
           wantVsNeed: '',
           conflictEngine: '',
           npcsPresent: [],
-          narrativeFunction: 'Victor hook.',
+          narrativeFunction: 'Victor you.',
           keyBeats: ['Victor’s eyes haunt her.'],
           leadsTo: [],
           choicePoint: {
@@ -970,7 +1054,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
       episodeId: 'episode-1',
       title: 'Arrival',
       synopsis: 'Kylie arrives in Bucharest.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       themes: [],
       startingSceneId: 'scene-1',
       bottleneckScenes: ['scene-1'],
@@ -1052,7 +1136,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
       episodeId: 'episode-5',
       title: 'Cismigiu',
       synopsis: 'Kylie is attacked and rescued.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       themes: [],
       startingSceneId: 'scene-1',
       bottleneckScenes: ['scene-1'],
@@ -1124,7 +1208,7 @@ describe('StoryArchitect scene-graph branch repair', () => {
       episodeId: 'episode-1',
       title: 'Dating After Dusk',
       synopsis: 'Kylie starts over.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       themes: [],
       startingSceneId: 'scene-1',
       bottleneckScenes: [],
@@ -1205,7 +1289,7 @@ describe('StoryArchitect scene-graph branch repair', () => {
     episodeId: 'episode-1',
     title: 'Linear',
     synopsis: '',
-    arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+    arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
     themes: [],
     startingSceneId: 's1',
     bottleneckScenes: [],
@@ -1724,7 +1808,7 @@ describe('StoryArchitect planned encounter repair', () => {
       episodeId: 'episode-1',
       title: 'Night Teeth',
       synopsis: 'Lena is tested.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       scenes: [
         {
           id: 'scene-1',
@@ -1807,7 +1891,7 @@ describe('StoryArchitect planned encounter repair', () => {
       episodeId: 'episode-1',
       title: 'Night Teeth',
       synopsis: 'Lena is tested.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       scenes: [
         {
           id: 'scene-1',
@@ -1881,7 +1965,7 @@ describe('StoryArchitect planned encounter repair', () => {
       episodeId: 'episode-1',
       title: 'Dating After Dusk',
       synopsis: 'Kylie arrives in Bucharest and is attacked in the park.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       scenes: [
         {
           id: 's1-1',
@@ -1993,7 +2077,7 @@ describe('StoryArchitect opening agency requirements', () => {
       episodeId: 'episode-1',
       title: 'Opening',
       synopsis: 'The season begins.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       scenes: [
         {
           id: 'scene-1',
@@ -2329,7 +2413,7 @@ describe('StoryArchitect.classifyBlueprintFailure (validator tiering, B1)', () =
 
   it('mixed hard+advisory is NOT advisoryOnly (hard wins, still blocks)', () => {
     const c = StoryArchitect.classifyBlueprintFailure(
-      '[DramaticStructure] weak midpoint\nBottleneck scene "s3" references a non-existent scene.',
+      '[DramaticStructure] weak find\nBottleneck scene "s3" references a non-existent scene.',
     );
     expect(c.hasAdvisory).toBe(true);
     expect(c.hasHard).toBe(true);
@@ -2396,13 +2480,13 @@ describe('StoryArchitect Story Circle episodeCircle verification (tier 2)', () =
         change: 'Hunter Moon final post in the finale.',
       },
     }), {
-      hook: 'Kylie arrives with two suitcases and her grandmother address.',
-      plotTurn1: 'The staged rescue makes Mr. Midnight public.',
-      pinch1: 'The blog comments turn organized and predatory.',
-      midpoint: 'Kylie realizes attention is a trap as much as a prize.',
-      pinch2: 'Accepting visibility costs privacy.',
-      climax: 'She writes the post anyway.',
-      resolution: 'The viral post makes her a name.',
+      you: 'Kylie arrives with two suitcases and her grandmother address.',
+      go: 'The staged rescue makes Mr. Midnight public.',
+      search: 'The blog comments turn organized and predatory.',
+      find: 'Kylie realizes attention is a trap as much as a prize.',
+      take: 'Accepting visibility costs privacy.',
+      return: 'She writes the post anyway.',
+      change: 'The viral post makes her a name.',
     });
 
     expect(circle.go).toContain('staged rescue');
@@ -2419,13 +2503,13 @@ describe('StoryArchitect Story Circle episodeCircle verification (tier 2)', () =
       episodeTitle: 'Dating After Dusk',
       episodeSynopsis: 'Kylie arrives in Bucharest, survives the Cișmigiu attack, and turns Mr. Midnight into a viral post.',
     }), {
-      hook: 'Kylie arrives with two suitcases and her grandmother address.',
-      plotTurn1: 'The staged rescue makes Mr. Midnight public.',
-      pinch1: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
-      midpoint: "The mirror behind Victor reveals Kylie's lover is a monster.",
-      pinch2: "Radu's confession and Carmen hospitalized make the blog war go hot.",
-      climax: 'On the Hunter Moon, Kylie chooses the Mountain Wife route.',
-      resolution: 'The final post at Casa Stelarum resolves the season.',
+      you: 'Kylie arrives with two suitcases and her grandmother address.',
+      go: 'The staged rescue makes Mr. Midnight public.',
+      search: 'The slow-burn mountain weekend at Casa Lupului offers an honest alternative.',
+      find: "The mirror behind Victor reveals Kylie's lover is a monster.",
+      take: "Radu's confession and Carmen hospitalized make the blog war go hot.",
+      return: 'On the Hunter Moon, Kylie chooses the Mountain Wife route.',
+      change: 'The final post at Casa Stelarum resolves the season.',
     });
 
     const serialized = JSON.stringify(circle);
@@ -2441,7 +2525,7 @@ describe('StoryArchitect Story Circle episodeCircle verification (tier 2)', () =
       number: 1,
       title: 'Dating After Dusk',
       synopsis: '',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       scenes: [
         {
           id: 's1-1',
@@ -2492,7 +2576,7 @@ describe('StoryArchitect Story Circle episodeCircle verification (tier 2)', () =
       number: 1,
       title: 'Dating After Dusk',
       synopsis: '',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       scenes: [{
         id: 's1-rooftop-setup',
         name: 'Rooftop bar at sunset',
@@ -2753,7 +2837,7 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
       number: 2,
       title: 'Mr. Midnight',
       synopsis: 'A date becomes public pressure.',
-      arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
       episodeCircle: {
         you: 'Kylie wants to keep writing.',
         need: 'She needs to separate being wanted from being known.',
@@ -2867,7 +2951,7 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
           {
             ...plannedStandard('s1-6', 1, 'release'),
             title: 'release scene 6',
-            dramaticPurpose: 'Let the fallout settle into the next pressure: rising pressure.',
+            dramaticPurpose: 'Let the fallout settle into the next pressure: search pressure.',
           },
         ],
       } as any,
@@ -2878,7 +2962,7 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
 
     expect(release.name).not.toBe('release scene 6');
     expect(release.turnContract.centralTurn).not.toContain('Let the fallout settle');
-    expect(release.dramaticStructure.changedState).toContain('changed leverage');
+    expect(release.dramaticStructure.changedState).toContain('visible leverage');
     expect(release.sequenceIntent.turningPoint).toBe(release.turnContract.centralTurn);
     expect(release.residue.length).toBeGreaterThan(0);
   });
@@ -3145,7 +3229,7 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
           arcPressureContracts: [wrongEpisodeMidpoint, broadQuestion],
           requiredBeats: [
             {
-              id: 's2-1-arc-pressure-arc-midpoint',
+              id: 's2-1-arc-pressure-arc-find',
               tier: 'authored',
               sourceTurn: midpointText,
               mustDepict: midpointText,
@@ -3410,7 +3494,7 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
             locations: ['Cișmigiu Gardens'],
             npcsInvolved: [],
             authoredTreatmentFields: [{
-              id: 'ending-hook',
+              id: 'ending-you',
               episodeNumber: 1,
               fieldName: 'cliffhanger',
               sourceText: 'Kylie scrolling the Mr. Midnight DM pile at 9am — black roses on the counter, the blog ticking past 84,000 — when her phone buzzes: Stela. Are you home, love? I had a horrible dream. I am coming over with herbs.',

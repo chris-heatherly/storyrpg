@@ -26,9 +26,9 @@ function baseInput(overrides?: Partial<StoryCircleCoverageInput>): StoryCircleCo
     },
     episodes: [
       { episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'llm' }], difficultyTier: 'introduction' },
-      { episodeNumber: 2, storyCircleRole: [{ beat: 'need', roleKind: 'primary', source: 'llm' }], difficultyTier: 'rising' },
-      { episodeNumber: 3, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }], difficultyTier: 'rising' },
-      { episodeNumber: 4, storyCircleRole: [{ beat: 'search', roleKind: 'primary', source: 'llm' }], difficultyTier: 'rising' },
+      { episodeNumber: 2, storyCircleRole: [{ beat: 'need', roleKind: 'primary', source: 'llm' }], difficultyTier: 'search' },
+      { episodeNumber: 3, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }], difficultyTier: 'search' },
+      { episodeNumber: 4, storyCircleRole: [{ beat: 'search', roleKind: 'primary', source: 'llm' }], difficultyTier: 'search' },
       { episodeNumber: 5, storyCircleRole: [{ beat: 'find', roleKind: 'primary', source: 'llm' }], difficultyTier: 'peak' },
       { episodeNumber: 6, storyCircleRole: [{ beat: 'take', roleKind: 'primary', source: 'llm' }], difficultyTier: 'peak' },
       { episodeNumber: 7, storyCircleRole: [{ beat: 'return', roleKind: 'primary', source: 'llm' }], difficultyTier: 'finale' },
@@ -138,7 +138,7 @@ describe('StoryCircleCoverageValidator', () => {
       anchors: baseInput().anchors,
       episodes: [
         { episodeNumber: 1, difficultyTier: 'introduction' },
-        { episodeNumber: 2, difficultyTier: 'rising' },
+        { episodeNumber: 2, difficultyTier: 'search' },
       ],
     } as unknown as SeasonPlan;
 

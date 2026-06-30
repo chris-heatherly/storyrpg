@@ -301,9 +301,6 @@ export function refreshAnalysisFromTreatmentDocument(
     const guidance = treatment.episodes[episodeNumber];
     const summary = treatmentEpisodeSummary(guidance);
     const resolution = treatmentEpisodeResolution(guidance);
-    const structuralRole = guidance.normalizedStructuralRoles?.length
-      ? guidance.normalizedStructuralRoles
-      : existing?.structuralRole;
 
     return {
       ...(existing || {
@@ -330,7 +327,7 @@ export function refreshAnalysisFromTreatmentDocument(
       sourceSummary: summary || existing?.sourceSummary || '',
       estimatedSceneCount: existing?.estimatedSceneCount || 1,
       estimatedChoiceCount: existing?.estimatedChoiceCount || 1,
-      structuralRole,
+      storyCircleRole: existing?.storyCircleRole,
       treatmentGuidance: guidance,
     };
   });
@@ -425,7 +422,7 @@ export function refreshBriefSeasonPlanFromAnalysis(
       estimatedSceneCount: outline.estimatedSceneCount || existing?.estimatedSceneCount || 1,
       estimatedChoiceCount: outline.estimatedChoiceCount || existing?.estimatedChoiceCount || 1,
       narrativeFunction,
-      structuralRole: outline.structuralRole || existing?.structuralRole,
+      storyCircleRole: outline.storyCircleRole || existing?.storyCircleRole,
       treatmentGuidance: guidance || existing?.treatmentGuidance,
       status: existing?.status || 'planned',
       dependsOn: existing?.dependsOn?.length ? existing.dependsOn : previousEpisode,
@@ -443,7 +440,7 @@ export function refreshBriefSeasonPlanFromAnalysis(
     updatedAt: new Date(),
     episodes: alignedEpisodes,
     anchors: analysis.anchors || plan.anchors,
-    legacyStructure: analysis.legacyStructure || plan.legacyStructure,
+    storyCircle: analysis.storyCircle || plan.storyCircle,
     endingMode: analysis.resolvedEndingMode || analysis.detectedEndingMode || plan.endingMode,
     resolvedEndings: analysis.resolvedEndings?.length ? analysis.resolvedEndings : plan.resolvedEndings,
     characterArchitecture: analysis.characterArchitecture || plan.characterArchitecture,

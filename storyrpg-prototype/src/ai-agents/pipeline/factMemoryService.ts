@@ -112,10 +112,10 @@ function collectSourceFacts(envelope: PipelineArtifactEnvelope, record: Record<s
       confidence: 0.85,
     }));
   }
-  for (const [key, value] of Object.entries(record.storyCircle || record.sevenPoint || {})) {
+  for (const [key, value] of Object.entries(record.storyCircle || {})) {
     pushFact(facts, makeFact(envelope, 'story-circle-role', `${key}: ${text(value)}`, {
       subjectId: key,
-      predicate: 'structural-role',
+      predicate: 'story-circle-role',
       value: text(value),
       confidence: 0.82,
     }));
@@ -136,7 +136,7 @@ function collectSourceFacts(envelope: PipelineArtifactEnvelope, record: Record<s
   }
   for (const episode of arrayOfObjects(record.episodeBreakdown)) {
     const number = episode.episodeNumber ?? episode.number;
-    const role = text(episode.storyCircleRole) || text(episode.structuralRole);
+    const role = text(episode.storyCircleRole);
     pushFact(facts, makeFact(envelope, 'episode-canon', `Episode ${number}: ${text(episode.title) || text(episode.summary) || role}`, {
       subjectId: number != null ? `episode-${number}` : subjectId(episode, 'episode'),
       predicate: 'episode-outline',
@@ -145,7 +145,7 @@ function collectSourceFacts(envelope: PipelineArtifactEnvelope, record: Record<s
     if (role) {
       pushFact(facts, makeFact(envelope, 'story-circle-role', `Episode ${number} carries ${role}`, {
         subjectId: number != null ? `episode-${number}` : subjectId(episode, 'episode'),
-        predicate: 'episode-structural-role',
+        predicate: 'episode-story-circle-role',
         value: role,
         confidence: 0.82,
       }));

@@ -9,7 +9,7 @@ import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../agents/BaseAgent';
 import { Episode, Scene, Beat, CliffhangerType, EpisodePlan } from '../../types';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
-import type { StructuralRole } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 
 // ========================================
 // TYPES
@@ -217,7 +217,7 @@ ${planDetails.logline ? `Logline: ${planDetails.logline}` : ''}
 ## Planned Cliffhanger
 Type: ${planDetails.type}
 Intensity: ${planDetails.intensity}
-Structural role: ${planDetails.mappedStructuralRole || 'not specified'}
+Story Circle launch beat: ${planDetails.storyCircleLaunchBeat || 'not specified'}
 Hook: ${planDetails.hook}
 Setup: ${planDetails.setup || 'Not specified'}
 Resolved episode tension: ${planDetails.resolvedEpisodeTension || 'Not specified'}
@@ -370,9 +370,9 @@ Return JSON:
     // Detect cliffhanger type
     let detectedType = this.detectType(lowerText);
     
-    if (this.typeMatchesPlan(detectedType, planDetails.type, planDetails.mappedStructuralRole)) {
+    if (this.typeMatchesPlan(detectedType, planDetails.type, planDetails.storyCircleLaunchBeat)) {
       score += 12;
-      strengths.push(`Matches planned cliffhanger type/role: ${planDetails.type}`);
+      strengths.push(`Matches planned cliffhanger type/Story Circle beat: ${planDetails.type}`);
     } else {
       score -= 8;
       weaknesses.push(`Planned "${planDetails.type}" but detected "${detectedType}"`);
@@ -441,12 +441,12 @@ Return JSON:
     return 'mystery';
   }
 
-  private typeMatchesPlan(detected: CliffhangerType, planned: CliffhangerType, role?: StructuralRole): boolean {
+  private typeMatchesPlan(detected: CliffhangerType, planned: CliffhangerType, beat?: StoryCircleBeat): boolean {
     if (detected === planned) return true;
     if (planned === 'shock' && ['revelation', 'reframe', 'betrayal', 'loss', 'danger'].includes(detected)) return true;
     if (planned === 'emotional_hook' && ['betrayal', 'loss', 'decision', 'transformation'].includes(detected)) return true;
-    if (role === 'midpoint' && ['reframe', 'revelation', 'shock'].includes(detected)) return true;
-    if (role === 'pinch2' && ['emotional_hook', 'loss', 'betrayal', 'danger'].includes(detected)) return true;
+    if (beat === 'find' && ['reframe', 'revelation', 'shock'].includes(detected)) return true;
+    if (beat === 'take' && ['emotional_hook', 'loss', 'betrayal', 'danger'].includes(detected)) return true;
     return false;
   }
 
@@ -471,7 +471,7 @@ Return JSON:
     newOpenQuestion?: string;
     emotionalCharge?: string;
     nextEpisodePressure?: string;
-    mappedStructuralRole?: StructuralRole;
+    storyCircleLaunchBeat?: StoryCircleBeat;
   } {
     if ('hook' in plan && 'newOpenQuestion' in plan) {
       return {
@@ -483,7 +483,7 @@ Return JSON:
         newOpenQuestion: plan.newOpenQuestion,
         emotionalCharge: plan.emotionalCharge,
         nextEpisodePressure: plan.nextEpisodePressure,
-        mappedStructuralRole: plan.mappedStructuralRole,
+        storyCircleLaunchBeat: plan.storyCircleLaunchBeat,
       };
     }
     return {
@@ -554,7 +554,7 @@ Is Finale: ${input.isFinale}
 ## Planned Cliffhanger
 Type: ${details.type}
 Intensity: ${details.intensity || 'medium'}
-Structural role: ${details.mappedStructuralRole || 'not specified'}
+Story Circle launch beat: ${details.storyCircleLaunchBeat || 'not specified'}
 Hook: ${details.hook}
 Setup: ${details.setup || 'Not specified'}
 Resolved episode tension: ${details.resolvedEpisodeTension || 'Not specified'}

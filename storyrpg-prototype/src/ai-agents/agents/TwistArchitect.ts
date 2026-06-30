@@ -18,10 +18,8 @@ import { EpisodeBlueprint } from './StoryArchitect';
 import { SeasonBible, ThreadLedger } from '../../types';
 import type {
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
@@ -65,16 +63,9 @@ export interface TwistArchitectInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level legacy-structure beat map for placing foreshadow + reveal. */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /**
-   * The beat(s) this episode carries. Episodes carrying Midpoint or
-   * Plot Turn 2 are natural homes for the season's biggest twists.
-   */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle role(s) for this episode. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 }

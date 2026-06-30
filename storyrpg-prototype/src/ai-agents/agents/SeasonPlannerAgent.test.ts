@@ -36,15 +36,6 @@ function makeAnalysis() {
       incitingIncident: 'Kylie is attacked and rescued by Victor.',
       climax: 'Kylie chooses what she will become at the Hunter Moon ball.',
     },
-    legacyStructure: {
-      hook: 'Kylie arrives and is attacked.',
-      plotTurn1: 'The blog and Victor courtship begin.',
-      pinch1: 'Victor reaches into her life.',
-      midpoint: 'The mirror reveals Victor.',
-      pinch2: 'Mika and Radu truths collapse trust.',
-      climax: 'The Hunter Moon ball.',
-      resolution: 'Kylie writes the final post.',
-    },
     storyCircle: {
       you: 'Kylie arrives in Bucharest trying to turn performance into safety.',
       need: 'Kylie wants a dazzling new life but needs to keep her voice and selfhood.',
@@ -84,14 +75,14 @@ function makeAnalysis() {
     episodeBreakdown: Array.from({ length: 8 }, (_, index) => {
       const episodeNumber = index + 1;
       const roles = [
-        ['hook'],
-        ['plotTurn1'],
-        ['rising'],
-        ['pinch1'],
-        ['midpoint'],
-        ['pinch2'],
-        ['falling'],
-        ['climax', 'resolution'],
+        ['you'],
+        ['go'],
+        ['search'],
+        ['search'],
+        ['find'],
+        ['take'],
+        ['return'],
+        ['return', 'change'],
       ][index];
       const storyCircleRole = [
         [{ beat: 'you', roleKind: 'primary' }],
@@ -115,9 +106,8 @@ function makeAnalysis() {
         locations: ['Bucharest'],
         estimatedSceneCount: 8,
         estimatedChoiceCount: 4,
-        structuralRole: roles,
         storyCircleRole,
-        narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        narrativeFunction: { setup: '', conflict: '', resolution: '' },
         treatmentGuidance: extracted.episodes[episodeNumber],
       };
     }),
@@ -157,7 +147,7 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(turnouts[0].turnType).toBe('escalation');
   });
 
-  it('re-samples malformed planner JSON before falling back', async () => {
+  it('re-samples malformed planner JSON before return back', async () => {
     const planner = makePlanner();
     let calls = 0;
     (planner as any).callLLM = async () => {
@@ -389,8 +379,15 @@ describe('SeasonPlannerAgent treatment handoff', () => {
         locations: ['Lighthouse'],
         estimatedSceneCount: 6,
         estimatedChoiceCount: 4,
-        structuralRole: extracted.episodes[episodeNumber].normalizedStructuralRoles,
-        narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        storyCircleRole: String(extracted.episodes[episodeNumber].rawStoryCircleRole ?? '')
+          .split(/\s*(?:\+|,|\/|and)\s*/)
+          .filter(Boolean)
+          .map((beat) => ({
+          beat,
+          roleKind: 'primary',
+          source: 'treatment',
+        })) as any,
+        narrativeFunction: { setup: '', conflict: '', resolution: '' },
         treatmentGuidance: extracted.episodes[episodeNumber],
       })),
     } as any;
@@ -438,8 +435,12 @@ describe('SeasonPlannerAgent treatment handoff', () => {
         locations: ['Harbor'],
         estimatedSceneCount: 6,
         estimatedChoiceCount: 4,
-        structuralRole: episodeNumber === 1 ? ['rising'] : ['resolution'],
-        narrativeFunction: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        storyCircleRole: (episodeNumber === 1 ? ['search'] : ['change']).map((beat) => ({
+          beat,
+          roleKind: 'primary',
+          source: 'treatment',
+        })) as any,
+        narrativeFunction: { setup: '', conflict: '', resolution: '' },
         treatmentGuidance: episodeNumber === 1
           ? {
               authoredTitle: 'The Ledger Opens',
@@ -503,8 +504,7 @@ describe('SeasonPlannerAgent treatment handoff', () => {
         locations: ['Harbor'],
         estimatedSceneCount: 1,
         estimatedChoiceCount: 2,
-        structuralRole: ['hook'],
-        narrativeFunction: { setup: 'auction', conflict: 'bid', resolution: 'registry' },
+        narrativeFunction: { setup: '', conflict: '', resolution: '' },
         treatmentGuidance: {
           authoredTitle: 'The Auction Bell',
           dramaticQuestion: 'Will Mara make herself visible to save the ledger?',
@@ -620,7 +620,7 @@ describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
   // A plan with no anchors/storyCircle fails StoryCircleCoverageValidator with errors.
   const brokenPlan = () => ({
     totalEpisodes: 1, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
-    anchors: undefined, legacyStructure: undefined, episodes: [], resolvedEndings: [],
+    anchors: undefined, storyCircle: undefined, episodes: [], resolvedEndings: [],
     warnings: [],
     notes: [],
     scenePlan: testScenePlan(),
@@ -644,7 +644,7 @@ describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
         stakes: 'The test stakes are explicit.',
         goal: 'Reach the end of the test season.',
         incitingIncident: 'The test begins.',
-        climax: 'The final test choice lands.',
+        return: 'The final test choice lands.',
       },
       storyCircle: {
         you: 'A test protagonist begins in a known state.',
@@ -685,15 +685,6 @@ describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
         goal: 'Hold the eastern wall until the relief column arrives.',
         incitingIncident: 'The first assault wave breaches the outer gate at dawn.',
         climax: 'The commander chooses between the wall and the wounded.',
-      },
-      legacyStructure: {
-        hook: 'A soldier wakes to the horns of a siege already underway.',
-        plotTurn1: 'The relief column is days late and the captain is dead.',
-        pinch1: 'Supplies run out and the healers start triaging the living.',
-        midpoint: 'A traitor inside the fort is unmasked on the battlement.',
-        pinch2: 'The eastern wall cracks and the reserve is already spent.',
-        climax: 'The commander chooses between the wall and the wounded.',
-        resolution: 'What remains of the garrison counts its faces at dusk.',
       },
       storyCircle: {
         you: 'A soldier wakes inside the familiar discipline of the fort under siege.',

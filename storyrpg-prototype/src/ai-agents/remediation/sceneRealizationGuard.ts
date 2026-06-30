@@ -216,8 +216,18 @@ function hasConcreteActionRequirement(missing: MissingMoment): boolean {
   return missing.missingTokens.some((token) => CONCRETE_ACTION_REQUIREMENT_TOKENS.has(token));
 }
 
+function stripTitleCaseTimelineProperNouns(value: string): string {
+  return value.replace(/\b(?:[A-Z][a-z0-9'’]+(?:\s+|$)){2,6}/g, (phrase) => {
+    const words = phrase.trim().split(/\s+/);
+    const hasTimelineWord = words.some((word) =>
+      /^(?:Night|Morning|Dawn|Dusk|Sunset|Midnight|Weekend|Later|Earlier|Before|After|Next|Previous|Second|Third|Fourth)$/u.test(word),
+    );
+    return hasTimelineWord ? ' ' : phrase;
+  });
+}
+
 function hasUnsafeDeterministicInsertionCue(moment: string): boolean {
-  const timelineText = moment
+  const timelineText = stripTitleCaseTimelineProperNouns(moment)
     .replace(/\bafter (?:a |the )?public breakup\b/ig, '')
     .replace(/\bafter (?:a |the )?(?:humiliating|cancelled|canceled) (?:engagement|breakup)\b/ig, '');
   return /\b(?:night|morning|dawn|dusk|sunset|midnight|weekend|later|earlier|before|after|next|previous|second|third|fourth|return(?:s|ed)?|again|handoff|transition|[0-9]+\s*(?:am|pm|a\.m\.|p\.m\.))\b/i

@@ -104,6 +104,9 @@ export function buildEncounterEventSignature(texts: Array<string | undefined | n
   const sourceText = texts.filter((text): text is string => Boolean(text?.trim())).join(' ');
   const normalizedTokens = new Set(encounterEventTokens(sourceText));
   const locations = collectMatches(sourceText, LOCATION_ALIASES);
+  if (locations.has('club') && isSocialClubPhrase(sourceText)) {
+    locations.delete('club');
+  }
   const participants = collectMatches(sourceText, PARTICIPANT_ALIASES);
   const pressureActions = collectMatches(sourceText, PRESSURE_ACTIONS);
   const resolutionActions = collectMatches(sourceText, RESOLUTION_ACTIONS);
@@ -124,6 +127,14 @@ export function buildEncounterEventSignature(texts: Array<string | undefined | n
     isReferenceOnly,
     sourceText,
   };
+}
+
+function isSocialClubPhrase(sourceText: string): boolean {
+  const normalized = normalize(sourceText);
+  const hasSocialClubPhrase = /\b(?:weird girls club|our club|dusk club|christening our club|club very exclusive)\b/.test(normalized);
+  if (!hasSocialClubPhrase) return false;
+  const hasVenueCue = /\b(?:valcescu|velvet rope|front line|side entrance|service entrance|key card|keycard|venue|booth|bar|dance floor|inside the club|club door)\b/.test(normalized);
+  return !hasVenueCue;
 }
 
 function intersection<T>(a: Set<T>, b: Set<T>): T[] {

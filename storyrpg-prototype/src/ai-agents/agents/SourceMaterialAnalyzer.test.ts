@@ -173,7 +173,7 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
     expect(extracted.metadata.confidence).toBe('high');
     expect(Object.keys(extracted.episodes)).toHaveLength(2);
     expect(extracted.episodes[1]?.authoredTitle).toBe('The Lantern Job');
-    expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['hook', 'plotTurn1']);
+    expect(extracted.episodes[1]?.rawStoryCircleRole).toBe('you + go');
     expect(extracted.episodes[1]?.episodeTurns).toEqual(
       expect.arrayContaining([
         expect.stringContaining('Mara arrives'),
@@ -185,7 +185,7 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
     expect(extracted.episodes[1]?.endingPressure).toContain('shadow points inland');
     expect(extracted.episodes[1]?.capabilityGrowthGuidance?.join(' ')).toContain('costlier clue');
     expect(extracted.episodes[2]?.authoredTitle).toBe('Breakwater Oath');
-    expect(extracted.episodes[2]?.normalizedStructuralRoles).toEqual(['pinch1']);
+    expect(extracted.episodes[2]?.rawStoryCircleRole).toBe('search');
     expect(extracted.branches[0]?.name).toContain('The Ledger Confession');
     expect(extracted.endings).toHaveLength(3);
     expect(extracted.endings.map((ending) => ending.name)).toEqual(
@@ -207,7 +207,7 @@ describe('SourceMaterialAnalyzer treatment extraction', () => {
     expect(extracted.seasonGuidance?.worldLocationGuidance?.keyLocations?.map((location) => location.name)).toEqual(
       expect.arrayContaining(['Valcescu Club rooftop', 'Cismigiu Park']),
     );
-    expect(extracted.episodes[1]?.rawStructuralRole).toBe('You');
+    expect(extracted.episodes[1]?.rawStoryCircleRole).toBe('You');
     expect(extracted.episodes[1]?.episodeTurns).toEqual(
       expect.arrayContaining([
         expect.stringContaining('two suitcases'),
@@ -255,7 +255,7 @@ Arc 1 asks whether the ledger is evidence or bait.
 
 - **Act:** Act 1
 - **Arc:** The Harbor Debt
-- **Structural role:** Hook + Plot Turn 1
+- **Story Circle role:** you + go
 - **Episode dramatic question:** Will Mara take the ledger case when it threatens Jonas?
 - **Cold open function:** Hook + promise + material stakes.
 - **A pressure lane:** Mara follows the missing ledger.
@@ -364,7 +364,7 @@ If Mara exposes Jonas in Episode 1, Episode 2 begins with guarded access. If she
         plotPoints: [`Beat ${index + 1}`],
         mainCharacters: ['Kylie Marinescu'],
         locations: ['Bucharest'],
-        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
+        narrativeArc: { setup: 'setup', conflict: 'conflict', change: 'change' },
         storyCircleRole: index === 7
           ? [
               { beat: 'you', roleKind: 'primary', source: 'llm' },
@@ -382,7 +382,7 @@ If Mara exposes Jonas in Episode 1, Episode 2 begins with guarded access. If she
 
     expect(checkStoryCircleCoverage(analysis.episodeBreakdown)).toEqual([]);
     expect(analysis.episodeBreakdown[7].storyCircleRole).toEqual([
-      { beat: 'change', roleKind: 'primary', source: 'distribution' },
+      expect.objectContaining({ beat: 'change', roleKind: 'primary', source: 'treatment' }),
     ]);
   });
 
@@ -400,7 +400,7 @@ A StoryRPG branching-narrative season treatment.
 ## 9. Episode Outline
 
 ### Episode 1 — "Dissonance in the Pass"
-- **Act:** I. **Arc:** 1. **Structural role:** HOOK (anchor episode).
+- **Act:** I. **Arc:** 1. **Story Circle role:** you
 - **Dramatic question:** Can a perfect Sentinel keep his contempt intact?
 - **Cold open function:** Dawn over the pass establishes the Lie.
 - **A lane:** The ambush and duel.
@@ -418,7 +418,7 @@ A StoryRPG branching-narrative season treatment.
 - **End-state change:** The mission is no longer routine.
 
 ### Episode 10 — "The Last Keeper"
-- **Act:** III. **Arc:** 3. **Structural role:** Aftermath / final-pressure buffer.
+- **Act:** III. **Arc:** 3. **Story Circle role:** return.
 - **Dramatic question:** Will the protagonist defend the truth against his own people?
 - **Turns:** (1) Sanctuary. (2) Raid. (3) Flight.
 - **Encounter anchor:** The raid on the enclave.
@@ -428,9 +428,9 @@ A StoryRPG branching-narrative season treatment.
 - **Ending turnout:** Both armies hunt them.
 
 ### Episode 11 — "Endsong" (FINALE)
-- **Act:** III. **Arc:** 3. **Structural role:** CLIMAX + RESOLUTION (finale; resolves and integrates).
+- **Act:** III. **Arc:** 3. **Story Circle role:** return + change
 - **Dramatic question:** What will the protagonist freely give?
-- **Turns:** (1) Last refuge. (2) Armies converge. (3) The climax choice. (4) Epilogue.
+- **Turns:** (1) Last refuge. (2) Armies converge. (3) The return choice. (4) Epilogue.
 - **Encounter anchor:** The convergence at the grove and the choice over the artifact.
 - **Major choices (the ending-locking node):**
   - Destroy the artifact and die together.
@@ -481,14 +481,14 @@ A StoryRPG branching-narrative season treatment.
 
     expect(extracted.isTreatment).toBe(true);
     expect(Object.keys(extracted.episodes).map(Number)).toEqual([1, 10, 11]);
-    expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['hook']);
+    expect(extracted.episodes[1]?.rawStoryCircleRole).toBe('you');
     expect(extracted.episodes[1]?.episodeTurns).toHaveLength(3);
     expect(extracted.episodes[1]?.aPressure).toContain('ambush');
     expect(extracted.episodes[1]?.bPressure).toContain('mortal ally');
     expect(extracted.episodes[1]?.cSeed).toContain('old friend');
     expect(extracted.episodes[1]?.majorChoicePressures?.join(' ')).toContain('Pursue the antagonist');
     expect(extracted.episodes[11]?.authoredTitle).toBe('Endsong');
-    expect(extracted.episodes[11]?.normalizedStructuralRoles).toEqual(['climax', 'resolution']);
+    expect(extracted.episodes[11]?.rawStoryCircleRole).toBe('return + change');
     expect(extracted.branches.map((branch) => branch.name)).toEqual(
       expect.arrayContaining([
         expect.stringContaining('Romance Trust Spine'),
@@ -507,7 +507,7 @@ A StoryRPG branching-narrative season treatment.
 ### Episode 1: The Ledger Opens
 - Act: Act 1
 - Arc: Harbor Debt
-- Structural role: buffer (rising buffer toward Pinch 1)
+- Story Circle role: search
 - Structural note: This escalates toward the first pinch without carrying the pinch anchor.
 - Episode dramatic question: Will Mara protect Jonas or the ledger?
 - Episode turns:
@@ -525,7 +525,7 @@ A StoryRPG branching-narrative season treatment.
   - The auctioneer's debt marker.
 - Ending turnout: The ledger page names Mara's father.
 - Resolved episode tension: Mara chooses to take the ledger case.
-- Cliffhanger hook: The red seal appears on her father's locked file.
+- Cliffhanger you: The red seal appears on her father's locked file.
 - Cliffhanger question: Why did Mara's father sign the syndicate ledger?
 - Next episode pressure: The question forces Mara into the closed registry.
 - Cliffhanger setup: The seal appears twice before the final file.
@@ -536,7 +536,7 @@ A StoryRPG branching-narrative season treatment.
 ### Episode 2: The Closed Registry
 - Act: Act 1
 - Arc: Harbor Debt
-- Structural role: Pinch 1
+- Story Circle role: search
 - Episode dramatic question: Can Mara get the record before Jonas does?
 - Ending turnout: The registry door shuts behind her.
 - Resolution / aftermath: The record is found and paid for.
@@ -580,7 +580,7 @@ A StoryRPG branching-narrative season treatment.
     const extracted = extractTreatmentFromMarkdown(cliffhangerTreatment);
 
     expect(extracted.isTreatment).toBe(true);
-    expect(extracted.episodes[1]?.normalizedStructuralRoles).toEqual(['rising']);
+    expect(extracted.episodes[1]?.rawStoryCircleRole).toBe('search');
     expect(extracted.episodes[1]?.structuralNote).toContain('escalates toward');
     expect(extracted.episodes[1]?.episodeTurns).toEqual([
       expect.stringContaining('fish crate'),
@@ -610,7 +610,7 @@ A StoryRPG branching-narrative season treatment.
 
 ### Episode 1: Dating After Dusk
 - **Episode promise:** Kylie tries to start over in Bucharest.
-- **Structural role:** hook
+- **Story Circle role:** you
 
 ## 10. Scene Planning Notes
 
@@ -667,9 +667,9 @@ This is the EPISODE version.
 
 - **Act:** Act 1
 - **Arc:** The Harbor Debt
-- **Structural role:** Hook
+- **Story Circle role:** you
 - **Episode dramatic question:** Will Mara make herself visible to save the ledger?
-- **Opening image / hook function:** The auction bell rings with no one touching it.
+- **Opening image / you function:** The auction bell rings with no one touching it.
 - **Entry goal:** Buy the fish crate quietly.
 - **Obstacle:** The syndicate bids with Jonas's family ring.
 - Forced choice: Publicly challenge the bid or let the crate disappear.
@@ -879,8 +879,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
         plotPoints: ['Plot'],
         mainCharacters: ['Kylie'],
         locations: ['Bucharest'],
-        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
-        structuralRole: ['hook'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', change: 'change' },
       }],
       totalEpisodes: 1,
       breakdownNotes: 'test',
@@ -915,7 +914,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
       storyArcs: [{ name: 'Dusk', description: 'Kylie learns the city.', chapters: 'all' }],
       majorPlotPoints: [
         { description: 'Kylie is attacked and rescued.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
-        { description: 'Kylie confronts Victor.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+        { description: 'Kylie confronts Victor.', type: 'return', importance: 'critical', approximatePosition: 'late' },
       ],
       estimatedScope: { complexity: 'moderate', estimatedEpisodes: 8, reasoning: 'treatment has eight episodes' },
       endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
@@ -929,8 +928,8 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
         plotPoints: [`Plot ${index + 1}`],
         mainCharacters: ['Kylie'],
         locations: ['Bucharest'],
-        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
-        structuralRole: index === 4 ? ['midpoint'] : index === 7 ? ['climax', 'resolution'] : ['rising'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', change: 'change' },
+        storyCircleRole: index === 4 ? ['find'] : index === 7 ? ['return', 'change'] : ['search'],
       })),
       totalEpisodes: 8,
       breakdownNotes: 'eight episodes',
@@ -980,7 +979,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
 - **Final voiceover line:** Some women are loved. Some women are owned.
 
 ### Episode 1: Dating After Dusk
-- **Structural role:** hook
+- **Story Circle role:** you
 - **Episode promise:** Kylie chooses whether to accept Stela's quartz.
 `);
 
@@ -1050,7 +1049,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
       storyArcs: [{ name: 'The Light', description: 'Mara learns what the lighthouse imprisons.', chapters: 'all' }],
       majorPlotPoints: [
         { description: 'The lantern answers with her sister voice.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
-        { description: 'Mara opens the storm door.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+        { description: 'Mara opens the storm door.', type: 'return', importance: 'critical', approximatePosition: 'late' },
       ],
       estimatedScope: { complexity: 'moderate', estimatedEpisodes: 1, reasoning: 'LLM undercounted' },
       endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
@@ -1064,8 +1063,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
         plotPoints: ['Mara arrives'],
         mainCharacters: ['Mara'],
         locations: ['Lighthouse'],
-        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
-        structuralRole: ['rising'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', change: 'change' },
       }],
       totalEpisodes: 1,
       breakdownNotes: 'undercounted',
@@ -1085,8 +1083,8 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
       'The Lantern Job',
       'Breakwater Oath',
     ]);
-    expect(analysis.episodeBreakdown[0].structuralRole).toEqual(expect.arrayContaining(['hook', 'plotTurn1']));
-    expect(analysis.episodeBreakdown[1].structuralRole).toEqual(expect.arrayContaining(['pinch1']));
+    expect(analysis.episodeBreakdown[0].storyCircleRole?.map((role: { beat: string }) => role.beat)).toEqual(expect.arrayContaining(['you', 'go']));
+    expect(analysis.episodeBreakdown[1].storyCircleRole?.map((role: { beat: string }) => role.beat)).toEqual(expect.arrayContaining(['search']));
     expect(analysis.episodeBreakdown[0].treatmentGuidance.encounterCentralConflict).toContain('miracle worth protecting');
     expect(analysis.resolvedEndings).toHaveLength(3);
   });
@@ -1112,7 +1110,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
       storyArcs: [{ name: 'The Light', description: 'Mara learns what the lighthouse imprisons.', chapters: 'all' }],
       majorPlotPoints: [
         { description: 'The lantern answers with her sister voice.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
-        { description: 'Mara opens the storm door.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+        { description: 'Mara opens the storm door.', type: 'return', importance: 'critical', approximatePosition: 'late' },
       ],
       estimatedScope: { complexity: 'moderate', estimatedEpisodes: 1, reasoning: 'LLM undercounted' },
       endingAnalysis: { detectedMode: 'single', reasoning: 'fallback', explicitEndings: [] },
@@ -1126,8 +1124,7 @@ For each episode, provide a title, dramatic question, entry goal, obstacle, forc
         plotPoints: ['Mara arrives'],
         mainCharacters: ['Mara'],
         locations: ['Lighthouse'],
-        narrativeArc: { setup: 'setup', conflict: 'conflict', resolution: 'resolution' },
-        structuralRole: ['rising'],
+        narrativeArc: { setup: 'setup', conflict: 'conflict', change: 'change' },
       }],
       totalEpisodes: 1,
       breakdownNotes: 'undercounted',
@@ -1298,7 +1295,7 @@ describe('SourceMaterialAnalyzer writing style helpers', () => {
       storyArcs: [{ name: 'The Missing Ledger', description: 'Mara follows a debt trail.', chapters: 'all' }],
       majorPlotPoints: [
         { description: 'The ledger vanishes.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
-        { description: 'Mara confronts the harbor boss.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+        { description: 'Mara confronts the harbor boss.', type: 'return', importance: 'critical', approximatePosition: 'late' },
       ],
       estimatedScope: { complexity: 'simple', estimatedEpisodes: 1, reasoning: 'short mystery' },
       writingStyleGuide: {
@@ -1318,8 +1315,7 @@ describe('SourceMaterialAnalyzer writing style helpers', () => {
           plotPoints: ['The ledger vanishes.', 'Mara confronts the harbor boss.'],
           mainCharacters: ['Mara'],
           locations: ['Harbor City'],
-          narrativeArc: { setup: 'The case arrives.', conflict: 'The trail tightens.', resolution: 'The boss is exposed.' },
-          structuralRole: ['hook', 'plotTurn1', 'climax', 'resolution'],
+          narrativeArc: { setup: 'The case arrives.', conflict: 'The trail tightens.', change: 'The boss is exposed.' },
         },
       ],
       totalEpisodes: 1,
@@ -1363,7 +1359,7 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
     storyArcs: [{ name: 'The Missing Ledger', description: 'Mara follows a debt trail.', chapters: 'all' }],
     majorPlotPoints: [
       { description: 'The ledger vanishes.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
-      { description: 'Mara confronts the harbor boss.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+      { description: 'Mara confronts the harbor boss.', type: 'return', importance: 'critical', approximatePosition: 'late' },
     ],
     estimatedScope: { complexity: 'moderate', estimatedEpisodes, reasoning: 'test' },
     endingAnalysis: { detectedMode: 'single', reasoning: 'one mystery solution', explicitEndings: [] },
@@ -1393,8 +1389,7 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
           plotPoints: [`Plot ${n}`],
           mainCharacters: ['Mara'],
           locations: ['Harbor City'],
-          narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
-          structuralRole: ['rising'],
+          narrativeArc: { setup: 's', conflict: 'c', change: 'r' },
         });
       });
 
@@ -1431,8 +1426,7 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
               plotPoints: ['Plot 1'],
               mainCharacters: ['Mara'],
               locations: ['Harbor City'],
-              narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
-              structuralRole: ['hook', 'plotTurn1'],
+              narrativeArc: { setup: 's', conflict: 'c', change: 'r' },
             },
             {
               episodeNumber: 2,
@@ -1442,8 +1436,7 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
               plotPoints: ['Plot 2'],
               mainCharacters: ['Mara'],
               locations: ['Harbor City'],
-              narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
-              structuralRole: ['climax', 'resolution'],
+              narrativeArc: { setup: 's', conflict: 'c', change: 'r' },
             },
           ],
           totalEpisodes: 2,
@@ -1487,8 +1480,7 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
             plotPoints: [`Plot ${i + 1}`],
             mainCharacters: ['Mara'],
             locations: ['Harbor City'],
-            narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
-            structuralRole: ['rising'],
+            narrativeArc: { setup: 's', conflict: 'c', change: 'r' },
           })),
           totalEpisodes: estimatedEpisodes,
           breakdownNotes: 'fallback breakdown',
@@ -1519,7 +1511,7 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
           episodeNumber: n,
           title: `Wrapped ${n}`,
           synopsis: `Synopsis ${n}`,
-          narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+          narrativeArc: { setup: 's', conflict: 'c', change: 'r' },
         },
       });
     });
@@ -1569,7 +1561,7 @@ describe('SourceMaterialAnalyzer named-character sweep', () => {
     storyArcs: [{ name: 'Arc', description: 'The arc.', chapters: 'all' }],
     majorPlotPoints: [
       { description: 'It begins.', type: 'inciting_incident', importance: 'critical', approximatePosition: 'early' },
-      { description: 'It ends.', type: 'climax', importance: 'critical', approximatePosition: 'late' },
+      { description: 'It ends.', type: 'return', importance: 'critical', approximatePosition: 'late' },
     ],
     estimatedScope: { complexity: 'simple', estimatedEpisodes: 1, reasoning: 'short' },
     writingStyleGuide: { source: 'inferred_from_material', summary: 'plain prose' },
@@ -1587,8 +1579,7 @@ describe('SourceMaterialAnalyzer named-character sweep', () => {
         // Per-episode main characters name a best friend the structure pass omitted.
         mainCharacters: ['Avery', 'Bex', 'Damon'],
         locations: ['City'],
-        narrativeArc: { setup: 'a', conflict: 'b', resolution: 'c' },
-        structuralRole: ['hook', 'plotTurn1', 'climax', 'resolution'],
+        narrativeArc: { setup: 'a', conflict: 'b', change: 'c' },
       },
     ],
     totalEpisodes: 1,

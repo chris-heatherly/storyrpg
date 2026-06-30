@@ -12,7 +12,7 @@
  * This module computes a stable, human-readable fingerprint of a parsed treatment:
  *   - the episode count,
  *   - the ordered list of normalized authored episode titles, and
- *   - the Section-7 beat -> episode anchor map (when present).
+ *   - the Story Circle beat -> episode anchor map (when present).
  *
  * Normalization collapses whitespace and strips markdown emphasis / heading
  * punctuation so a trivially re-saved-but-identical treatment fingerprints
@@ -23,11 +23,8 @@
  */
 
 import { STORY_CIRCLE_BEATS } from '../../types/sourceAnalysis';
-import type { StoryCircleBeat, StructuralRole } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 import type { ExtractedTreatment } from './treatmentExtraction';
-
-/** Beats that can carry an explicit `(EpN)` anchor in Section 7. */
-export type AnchorableBeat = Exclude<StructuralRole, 'rising' | 'falling'>;
 
 /** A stable, comparable identity for a parsed treatment. */
 export interface TreatmentFingerprint {
@@ -36,11 +33,11 @@ export interface TreatmentFingerprint {
   /** Authored episode titles, in episode order, each normalized. */
   normalizedTitles: string[];
   /**
-   * Section-7 beat -> episode-number anchors (e.g. `{ plotTurn1: 3 }`). Empty
+   * Story Circle beat -> episode-number anchors (e.g. `{ go: 3 }`). Empty
    * when the treatment does not spell out per-beat episode anchoring. Sorted by
    * beat name so the serialized form is order-independent.
    */
-  beatEpisodeAnchors: Partial<Record<AnchorableBeat, number>>;
+  storyCircleBeatEpisodeAnchors: Partial<Record<StoryCircleBeat, number>>;
   /**
    * A single compact string combining the above — convenient for logging,
    * persisting next to `00-input-brief.json`, and `===` comparison.
@@ -48,25 +45,15 @@ export interface TreatmentFingerprint {
   signature: string;
 }
 
-const BEAT_LABELS: Array<{ beat: AnchorableBeat; pattern: RegExp }> = [
-  { beat: 'hook', pattern: /\bhook\b/i },
-  { beat: 'plotTurn1', pattern: /\bplot\s*turn\s*1\b/i },
-  { beat: 'pinch1', pattern: /\bpinch\s*1\b/i },
-  { beat: 'midpoint', pattern: /\bmid\s*point\b/i },
-  { beat: 'pinch2', pattern: /\bpinch\s*2\b/i },
-  { beat: 'climax', pattern: /\bclimax\b/i },
-  { beat: 'resolution', pattern: /\bresolution\b/i },
-];
-
 const STORY_CIRCLE_BEAT_LABELS: Array<{ beat: StoryCircleBeat; pattern: RegExp }> = [
-  { beat: 'you', pattern: /\byou\b|\bhook\b/i },
+  { beat: 'you', pattern: /\byou\b/i },
   { beat: 'need', pattern: /\bneed\b|\bwant\s*(?:vs\.?|\/)?\s*need\b/i },
-  { beat: 'go', pattern: /\bgo\b|\bplot\s*turn\s*1\b|\bthreshold\b/i },
-  { beat: 'search', pattern: /\bsearch\b|\bpinch\s*1\b/i },
-  { beat: 'find', pattern: /\bfind\b|\bmidpoint\b/i },
-  { beat: 'take', pattern: /\btake\b|\bpinch\s*2\b|\bprice\b/i },
-  { beat: 'return', pattern: /\breturn\b|\bclimax\b/i },
-  { beat: 'change', pattern: /\bchange\b|\bresolution\b/i },
+  { beat: 'go', pattern: /\bgo\b|\bthreshold\b/i },
+  { beat: 'search', pattern: /\bsearch\b/i },
+  { beat: 'find', pattern: /\bfind\b/i },
+  { beat: 'take', pattern: /\btake\b|\bprice\b/i },
+  { beat: 'return', pattern: /\breturn\b/i },
+  { beat: 'change', pattern: /\bchange\b/i },
 ];
 
 /**
@@ -96,35 +83,9 @@ export function normalizeTreatmentTitle(raw: string | undefined | null): string 
 }
 
 /**
- * Extract the Section-7 `(EpN)` beat anchors from the treatment's free-text
- * season spine. The canonical treatment writes lines such as
- * `Plot turn 1 (Ep3)` / `Pinch 1 (Ep4)` / `Midpoint (Ep6)`.
- *
- * Best-effort and forgiving: matches `Ep3`, `Episode 3`, `(Ep 3)`, etc. Returns
- * only beats it can confidently anchor. This is the same free-text source the
- * remediation plan flags (`treatmentExtraction.ts:495` seasonSpine) and is the
- * intended input to the future structured `beatEpisodeAnchors` map (Phase 1).
+ * Extract Story Circle `(EpN)` beat anchors from the treatment's free-text
+ * season spine.
  */
-export function extractBeatEpisodeAnchors(
-  seasonSpine: string | undefined,
-): Partial<Record<AnchorableBeat, number>> {
-  const anchors: Partial<Record<AnchorableBeat, number>> = {};
-  if (!seasonSpine) return anchors;
-  // Scan line-by-line so a beat keyword only binds to an (EpN) on the same line.
-  for (const line of seasonSpine.split(/\r?\n/)) {
-    const epMatch = line.match(/\(?\bEp(?:isode)?\.?\s*#?\s*(\d+)\b\)?/i);
-    if (!epMatch) continue;
-    const episodeNumber = Number(epMatch[1]);
-    if (!Number.isFinite(episodeNumber)) continue;
-    for (const { beat, pattern } of BEAT_LABELS) {
-      if (anchors[beat] === undefined && pattern.test(line)) {
-        anchors[beat] = episodeNumber;
-      }
-    }
-  }
-  return anchors;
-}
-
 export function extractStoryCircleBeatEpisodeAnchors(
   seasonSpine: string | undefined,
 ): Partial<Record<StoryCircleBeat, number>> {
@@ -148,8 +109,8 @@ export function extractStoryCircleBeatEpisodeAnchors(
   ) as Partial<Record<StoryCircleBeat, number>>;
 }
 
-function serializeAnchors(anchors: Partial<Record<AnchorableBeat, number>>): string {
-  const entries = (Object.keys(anchors) as AnchorableBeat[])
+function serializeAnchors(anchors: Partial<Record<StoryCircleBeat, number>>): string {
+  const entries = (Object.keys(anchors) as StoryCircleBeat[])
     .filter((beat) => anchors[beat] !== undefined)
     .sort()
     .map((beat) => `${beat}:${anchors[beat]}`);
@@ -157,9 +118,7 @@ function serializeAnchors(anchors: Partial<Record<AnchorableBeat, number>>): str
 }
 
 /**
- * Compute the fingerprint of a parsed treatment. `markdown` is the raw treatment
- * source (used only to recover the Section-7 anchors when the extracted
- * `seasonGuidance.seasonSpine` is the carrier).
+ * Compute the fingerprint of a parsed treatment.
  */
 export function computeTreatmentFingerprint(
   treatment: Pick<ExtractedTreatment, 'episodes' | 'seasonGuidance'>,
@@ -173,18 +132,18 @@ export function computeTreatmentFingerprint(
     normalizeTreatmentTitle(treatment.episodes[n]?.authoredTitle || `episode ${n}`),
   );
 
-  const beatEpisodeAnchors = extractBeatEpisodeAnchors(treatment.seasonGuidance?.seasonSpine);
+  const storyCircleBeatEpisodeAnchors = extractStoryCircleBeatEpisodeAnchors(treatment.seasonGuidance?.seasonSpine);
 
   const signature = [
     `episodes=${episodeNumbers.length}`,
     `titles=${normalizedTitles.join('|')}`,
-    `anchors=${serializeAnchors(beatEpisodeAnchors)}`,
+    `storyCircleAnchors=${serializeAnchors(storyCircleBeatEpisodeAnchors)}`,
   ].join(';');
 
   return {
     episodeCount: episodeNumbers.length,
     normalizedTitles,
-    beatEpisodeAnchors,
+    storyCircleBeatEpisodeAnchors,
     signature,
   };
 }
@@ -233,10 +192,10 @@ export function compareTreatmentFingerprints(
       differences.push(`episode ${i + 1} title: expected "${e ?? '(none)'}", ingested "${a ?? '(none)'}"`);
     }
   }
-  const expectedAnchors = serializeAnchors(expected.beatEpisodeAnchors);
-  const actualAnchors = serializeAnchors(actual.beatEpisodeAnchors);
+  const expectedAnchors = serializeAnchors(expected.storyCircleBeatEpisodeAnchors);
+  const actualAnchors = serializeAnchors(actual.storyCircleBeatEpisodeAnchors);
   if (expectedAnchors !== actualAnchors) {
-    differences.push(`beat anchors: expected "${expectedAnchors}", ingested "${actualAnchors}"`);
+    differences.push(`Story Circle anchors: expected "${expectedAnchors}", ingested "${actualAnchors}"`);
   }
 
   return { matches: differences.length === 0, differences };

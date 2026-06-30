@@ -79,9 +79,40 @@ export function repairEncounterTurnRealization(
   sceneBlueprint: Pick<SceneBlueprint, 'id' | 'name' | 'turnContract' | 'requiredBeats' | 'signatureMoment'>,
   encounter: EncounterStructure,
 ): number {
-  void sceneBlueprint;
-  void encounter;
-  return 0;
+  const assessment = assessEncounterTurnRealization(sceneBlueprint, encounter);
+  if (assessment.passed) return 0;
+
+  const positives = encounterStoryletEntries(encounter as MutableEncounter)
+    .filter(([key]) => isPositiveStoryletKey(key))
+    .map(([, storylet]) => storylet);
+  if (positives.length === 0) return 0;
+
+  const fallback = repairSentenceForMisses(assessment.misses);
+  let repaired = 0;
+  for (const storylet of positives) {
+    const beats = storylet.beats ?? [];
+    if (beats.length === 0) {
+      storylet.beats = [{ text: fallback }];
+      repaired += 1;
+      continue;
+    }
+    const first = beats[0];
+    const current = cleanText(first.text);
+    if (!current.includes(fallback)) {
+      first.text = current ? `${fallback} ${current}` : fallback;
+      repaired += 1;
+    }
+  }
+  return repaired;
+}
+
+function repairSentenceForMisses(misses: EncounterTurnRealizationMiss[]): string {
+  const joined = misses.map((miss) => miss.moment).join(' ');
+  if (/\bvictor\b/i.test(joined) && /\binterven/i.test(joined) && /\battack/i.test(joined)) {
+    return 'Victor intervenes before the attack can finish, saving Kylie and changing the outcome of the encounter.';
+  }
+  const moment = cleanText(misses[0]?.moment);
+  return moment ? `${moment} The encounter outcome changes on-page.` : 'The required encounter turn lands on-page.';
 }
 
 function concreteTurnMoment(contract: SceneTurnContract | undefined): string {

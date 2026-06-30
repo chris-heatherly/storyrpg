@@ -123,8 +123,8 @@ Client reads story files → Story Engine → Player experience
 | `src/ai-agents/agents/StyleArchitect.ts` | LLM agent that expands arbitrary art-style strings into a structured `ArtStyleProfile`. Falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary. |
 | `src/ai-agents/images/artStyleProfile.ts` | `ArtStyleProfile` interface + heuristic resolvers (`resolveArtStyleProfile`, `buildVerbatimProfile`, `composeCanonicalStyleString`). |
 | `src/ai-agents/images/anchorPrompts.ts` | Shared builders for the three style-bible anchors (character, arc color strip, environment vignette) consumed by both the pipeline and the UI style-setup section. |
-| `src/ai-agents/validators/` | Structural and content validators that run between pipeline stages. Narrative-quality validators include `SetupPayoffValidator` (thread Chekhov's-gun checks), `TwistQualityValidator` (foreshadow-precedes-reveal), `ArcDeltaValidator` (identity delta vs `CharacterArcTracker` targets), `DivergenceValidator` (cosmetic-branching detector backed by `pathSimulator.ts`), `PixarPrinciplesValidator` (stakes triangle / surprise beats), and `SevenPointCoverageValidator` (deterministic gate on season 3-act / 7-point beat coverage, anchor integrity, and difficulty-tier alignment). |
-| `src/ai-agents/utils/sevenPointDistribution.ts` | Pure helpers that map the canonical 7-point beats (`hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`) onto N episodes, describe that distribution for LLM prompts, and verify beat coverage + monotonic order. Consumed by `SeasonPlannerAgent` and `SevenPointCoverageValidator`. |
+| `src/ai-agents/validators/` | Structural and content validators that run between pipeline stages. Narrative-quality validators include `SetupPayoffValidator` (thread Chekhov's-gun checks), `TwistQualityValidator` (foreshadow-precedes-reveal), `ArcDeltaValidator` (identity delta vs `CharacterArcTracker` targets), `DivergenceValidator` (cosmetic-branching detector backed by `pathSimulator.ts`), `PixarPrinciplesValidator` (stakes triangle / surprise beats), and `StoryCircleCoverageValidator` (deterministic gate on season Story Circle coverage, anchor integrity, and difficulty-tier alignment). |
+| `src/ai-agents/utils/storyCircleDistribution.ts` | Pure helpers that map the canonical Story Circle beats (`you`, `need`, `go`, `search`, `find`, `take`, `return`, `change`) onto N episodes, describe that distribution for LLM prompts, and verify beat coverage + monotonic order. Consumed by `SeasonPlannerAgent` and `StoryCircleCoverageValidator`. |
 | `src/ai-agents/services/` | Image generation, audio generation, video generation, and LLM service abstractions. |
 | `src/screens/generator/hooks/useStyleSetup.ts` | React hook that owns the inline Style Setup section's state (expanded profile, anchor slot statuses, handoff payload). |
 | `src/screens/generator/StyleSetupSection.tsx` | UI for the inline style-setup section on `analysis_complete`. |
@@ -232,17 +232,16 @@ PlayerState
 
 Choices can have: conditions (flag/stat gates), consequences (flag/stat changes), stat checks (fiction-first resolution), and branching targets.
 
-### 3-Act / 7-Point Story Structure (load-bearing)
+### Story Circle Structure (load-bearing)
 
-The pipeline honours a structural spine derived from a 3-act / 7-point model:
+The pipeline honours a season-long Story Circle spine:
 
 - `SourceMaterialAnalysis.anchors` — `{ stakes, goal, incitingIncident, climax }`, inferred by `SourceMaterialAnalyzer` when not explicit in the source.
-- `SourceMaterialAnalysis.sevenPoint` — `{ hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution }`.
-- `SourceMaterialAnalysis.episodeBreakdown[i].structuralRole` — which 7-point beat(s) each episode carries, falling back to the deterministic default distribution from `sevenPointDistribution.ts` when missing.
-- `SeasonPlan.anchors` + `SeasonPlan.sevenPoint` carry these forward; `SeasonPlan.episodes[i].structuralRole` drives per-episode difficulty tiers, branch placement, and downstream agent prompts.
-- `EpisodeBlueprint.arc` is a 7-point dictionary — `{ hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution }` — and replaces the old `{ hook, risingAction, climax, resolution }` shape.
-- `SevenPointCoverageValidator` runs against `SeasonPlan` and emits warnings that feed the Karpathy retry loop in `SeasonPlannerAgent`.
-- Downstream agents (`StoryArchitect`, `SceneWriter`, `ChoiceAuthor`, `EncounterArchitect`, `CharacterDesigner`, `BranchManager`, `ThreadPlanner`, `TwistArchitect`, `CharacterArcTracker`) all accept optional `seasonAnchors`, `seasonSevenPoint`, and `episodeStructuralRole` inputs. The shared prompt helper `buildStructuralContextSection` in `src/ai-agents/prompts/storytellingPrinciples.ts` renders these into a consistent block for every agent that cares about narrative structure.
+- `SourceMaterialAnalysis.storyCircle` — `{ you, need, go, search, find, take, return, change }`.
+- `SourceMaterialAnalysis.episodeBreakdown[i].storyCircleRole` — which Story Circle beat(s) each episode carries.
+- `SeasonPlan.anchors` + `SeasonPlan.storyCircle` carry these forward; `SeasonPlan.episodes[i].storyCircleRole` drives per-episode pressure, branch placement, cliffhanger handoff, and downstream agent prompts.
+- `StoryCircleCoverageValidator` runs against `SeasonPlan` and blocks incomplete, non-contiguous, or out-of-order season spines.
+- Downstream agents accept optional `seasonAnchors`, `seasonStoryCircle`, `episodeStoryCircleRole`, and `episodeCircle` inputs. The shared prompt helper `buildStructuralContextSection` in `src/ai-agents/prompts/storytellingPrinciples.ts` renders these into a consistent block for every agent that cares about narrative structure.
 
 ## Conventions and Patterns
 
@@ -279,7 +278,7 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/PARALLEL_GENERATION.md` | Parallel generation status (ParallelStoryPipeline removed; concurrency lives in `FullStoryPipeline`) |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
 | `CLAUDE.md` (root) | Claude Code orientation: non-negotiables + skills index (points back here) |
-| `storyrpg-prototype/.claude/skills/` | Claude Code skills (concise): reader-generator-safety, pipeline-debugging, pipeline-agent-development, pipeline-validation, media-generation, proxy-server, story-playback, testing-tooling, ux-design, integration-expo (PostHog analytics) |
-| `storyrpg-prototype/.cursor/skills/` | Cursor agent skills (deep): pipeline debugging, validation, orchestration, agent development, image generation, audio narration, story playback, proxy server, reader-generator-safety, testing tooling, UX design, story structure rules, analytics-integration, update docs |
+| `storyrpg-prototype/.claude/skills/` | Claude Code skills (concise): reader-generator-safety, pipeline-debugging, pipeline-agent-development, pipeline-validation, story-structure-rules, twist-and-thread-craft, character-arc-and-voice-craft, prose-and-scene-craft, worldbuilding-craft, media-generation, proxy-server, story-playback, testing-tooling, ux-design, integration-expo (PostHog analytics) |
+| `storyrpg-prototype/.cursor/skills/` | Cursor agent skills (deep): pipeline debugging, validation, orchestration, agent development, image generation, audio narration, story playback, proxy server, reader-generator-safety, testing tooling, UX design, story structure rules, prose/character/twist/worldbuilding craft, analytics-integration, update docs |
 | `codex-skills/` | Codex agent skills (grouped, each + `agents/openai.yaml`): pipeline-debugging, pipeline-agent-development, narrative-validation, media-pipeline, proxy-worker, reader-playback, reader-generator-safety, ux-design, analytics-integration, testing-validation |
 | Skill-set sync | The three sets mirror the same topics at different depth. When a skill's facts change, update its counterpart in the other two sets. |

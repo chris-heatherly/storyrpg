@@ -31,10 +31,8 @@ import type { GenerationSettingsConfig } from '../config';
 import type { NarrativeThread, ThreadLedger } from '../../types';
 import type {
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 
@@ -78,9 +76,7 @@ export interface PlanEpisodeThreadsAndTwistParams {
   episodeNumber: number;
   seasonAnchors?: StoryAnchors;
   seasonStoryCircle?: StoryCircleStructure;
-  seasonLegacyStructure?: LegacyStructuralMap;
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
-  episodeStructuralRole?: StructuralRole[];
   /** Open threads from PRIOR episodes (see `openPriorThreads`). */
   priorThreads?: NarrativeThread[];
   /** Fail-open reporter — wired to `this.emit({ type: 'warning', … })`. */
@@ -117,9 +113,7 @@ export async function planEpisodeThreadsAndTwist(
         priorThreads: params.priorThreads?.length ? params.priorThreads : undefined,
         seasonAnchors: params.seasonAnchors,
         seasonStoryCircle: params.seasonStoryCircle,
-        seasonLegacyStructure: params.seasonLegacyStructure,
         episodeStoryCircleRole: params.episodeStoryCircleRole,
-        episodeStructuralRole: params.episodeStructuralRole,
       }),
       timeoutMs,
       `ThreadPlanner.execute(${episodeId})`,
@@ -154,9 +148,7 @@ export async function planEpisodeThreadsAndTwist(
         threadLedger,
         seasonAnchors: params.seasonAnchors,
         seasonStoryCircle: params.seasonStoryCircle,
-        seasonLegacyStructure: params.seasonLegacyStructure,
         episodeStoryCircleRole: params.episodeStoryCircleRole,
-        episodeStructuralRole: params.episodeStructuralRole,
       }),
       timeoutMs,
       `TwistArchitect.execute(${episodeId})`,

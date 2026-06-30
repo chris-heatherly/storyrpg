@@ -37,7 +37,7 @@ function blueprint(scenes: Array<{ id: string; leadsTo: string[]; branches?: boo
     number: 1,
     title: 'Episode 1',
     synopsis: 'Test',
-    arc: { hook: '', plotTurn1: '', pinch1: '', midpoint: '', pinch2: '', climax: '', resolution: '' },
+    arc: { you: '', need: '', go: '', search: '', find: '', take: '', return: '', change: '' },
     themes: [],
     scenes: scenes.map(item => ({
       id: item.id,

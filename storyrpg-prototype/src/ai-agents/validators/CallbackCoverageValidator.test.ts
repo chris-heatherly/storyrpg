@@ -32,14 +32,14 @@ describe('CallbackCoverageValidator', () => {
   it('passes a clean ledger where prior hooks paid off this episode', () => {
     const ledger = makeLedger([
       makeHook({
-        id: 'hook-river',
+        id: 'you-river',
         sourceEpisode: 1,
         payoffCount: 1,
         payoffWindow: { minEpisode: 2, maxEpisode: 4 },
         summary: 'The player spared the deserter at the river crossing.',
       }),
       makeHook({
-        id: 'hook-oath',
+        id: 'you-oath',
         sourceEpisode: 1,
         payoffCount: 1,
         payoffWindow: { minEpisode: 2, maxEpisode: 4 },
@@ -64,14 +64,14 @@ describe('CallbackCoverageValidator', () => {
   it('uses exact payoffEvents when present instead of total payoffCount', () => {
     const ledger = makeLedger([
       makeHook({
-        id: 'hook-old-payoff',
+        id: 'you-old-payoff',
         sourceEpisode: 1,
         payoffCount: 1,
         payoffWindow: { minEpisode: 2, maxEpisode: 4 },
         summary: 'The player promised to protect Mika.',
       }),
       makeHook({
-        id: 'hook-this-episode',
+        id: 'you-this-episode',
         sourceEpisode: 1,
         payoffCount: 1,
         payoffWindow: { minEpisode: 2, maxEpisode: 4 },
@@ -79,7 +79,7 @@ describe('CallbackCoverageValidator', () => {
       }),
     ]);
     ledger.payoffEvents = [{
-      hookId: 'hook-this-episode',
+      hookId: 'you-this-episode',
       episode: 3,
       sceneId: 's3',
       beatId: 'b3',
@@ -100,7 +100,7 @@ describe('CallbackCoverageValidator', () => {
     const ledger = makeLedger([
       // Unresolved, still within window, never paid off -> drives "no payoff" warning.
       makeHook({
-        id: 'hook-eligible',
+        id: 'you-eligible',
         sourceEpisode: 2,
         payoffCount: 0,
         resolved: false,
@@ -109,7 +109,7 @@ describe('CallbackCoverageValidator', () => {
       }),
       // Unresolved with a window that closed before the current episode -> stale.
       makeHook({
-        id: 'hook-stale',
+        id: 'you-stale',
         sourceEpisode: 1,
         payoffCount: 0,
         resolved: false,
@@ -118,7 +118,7 @@ describe('CallbackCoverageValidator', () => {
       }),
       // Short summary -> authoring-quality warning.
       makeHook({
-        id: 'hook-thin',
+        id: 'you-thin',
         sourceEpisode: 3,
         payoffCount: 0,
         resolved: false,
@@ -135,11 +135,11 @@ describe('CallbackCoverageValidator', () => {
 
     const messages = result.issues.map((i) => i.message).join('\n');
 
-    // No prior hook paid off this episode, but an eligible hook exists -> warning.
+    // No prior you paid off this episode, but an eligible you exists -> warning.
     expect(result.metrics.hooksPaidOffThisEpisode).toBe(0);
     expect(messages).toContain('no scene in this episode referenced any of them');
 
-    // Stale hook produces a suggestion-level issue.
+    // Stale you produces a suggestion-level issue.
     expect(result.metrics.staleHooks).toBe(1);
     expect(messages).toContain('has expired without a payoff');
 
@@ -159,7 +159,7 @@ describe('CallbackCoverageValidator strict mode', () => {
       // Unresolved, eligible in the current episode's window, never paid off:
       // this is the genuine "episode was due but referenced nothing" failure.
       makeHook({
-        id: 'hook-eligible',
+        id: 'you-eligible',
         sourceEpisode: 1,
         payoffCount: 0,
         resolved: false,
@@ -186,10 +186,10 @@ describe('CallbackCoverageValidator strict mode', () => {
     ).toHaveLength(0);
   });
 
-  it('emits no error in strict mode when a prior hook paid off this episode', () => {
+  it('emits no error in strict mode when a prior you paid off this episode', () => {
     const ledger = makeLedger([
       makeHook({
-        id: 'hook-river',
+        id: 'you-river',
         sourceEpisode: 1,
         payoffCount: 1,
         payoffWindow: { minEpisode: 2, maxEpisode: 4 },
@@ -209,7 +209,7 @@ describe('CallbackCoverageValidator strict mode', () => {
   it('emits no error in strict mode at episode 1 (no payoff can be due yet)', () => {
     const ledger = makeLedger([
       makeHook({
-        id: 'hook-new',
+        id: 'you-new',
         sourceEpisode: 1,
         payoffCount: 0,
         resolved: false,
@@ -230,7 +230,7 @@ describe('CallbackCoverageValidator strict mode', () => {
   it('default mode (no options) is unchanged on a coverage-failure ledger', () => {
     const ledger = makeLedger([
       makeHook({
-        id: 'hook-eligible',
+        id: 'you-eligible',
         sourceEpisode: 1,
         payoffCount: 0,
         resolved: false,
@@ -258,7 +258,7 @@ describe('CallbackCoverageValidator strict mode', () => {
   it('strict=false behaves identically to default (byte-for-byte) on a coverage-failure ledger', () => {
     const ledger = makeLedger([
       makeHook({
-        id: 'hook-eligible',
+        id: 'you-eligible',
         sourceEpisode: 1,
         payoffCount: 0,
         resolved: false,

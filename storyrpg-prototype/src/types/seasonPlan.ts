@@ -16,11 +16,9 @@ import {
   EndingMode,
   StoryEndingTarget,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleBeat,
   StoryCircleStructure,
   StoryCircleRoleAssignment,
-  StructuralRole,
   CharacterArchitecture,
   ThemeArgumentContract,
 } from './sourceAnalysis';
@@ -58,7 +56,6 @@ export interface CliffhangerPlan {
   newOpenQuestion: string;
   emotionalCharge: string;
   nextEpisodePressure: string;
-  mappedStructuralRole: StructuralRole;
   storyCircleLaunchBeat?: StoryCircleBeat;
   style: 'serialized_tv';
 }
@@ -432,16 +429,6 @@ export interface SeasonPlan {
    * SeasonPlanner can access them without re-reading the analysis blob.
    */
   anchors: StoryAnchors;
-
-  /**
-   * Season-level legacy-structure beat map. Mirrors SourceMaterialAnalysis.legacyStructure
-   * so downstream agents don't need the source analysis to look up the
-   * textual description of a beat carried by a given episode.
-   *
-   * @deprecated Story Circle is the primary structure. This remains for old
-   * artifacts and migration compatibility.
-   */
-  legacyStructure: LegacyStructuralMap;
 
   /**
    * Primary season-level Story Circle beat map. Mirrors

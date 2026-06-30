@@ -26,8 +26,19 @@ function scene(id: string, description: string, leadsTo: string[] = []): SceneBl
 function blueprint(scenes: SceneBlueprint[]): EpisodeBlueprint {
   return {
     id: 'ep1',
+    episodeId: 'ep1',
     title: 'Episode 1',
     synopsis: '',
+    arc: {
+      you: '',
+      need: '',
+      go: '',
+      search: '',
+      find: '',
+      take: '',
+      return: '',
+      change: '',
+    },
     themes: [],
     scenes,
     startingSceneId: scenes[0]?.id,
@@ -90,6 +101,7 @@ describe('validateBlueprintRouteCueOrder', () => {
         requiredBeats: [{
           id: 'late-post',
           tier: 'authored',
+          sourceTurn: 'At 4 a.m., the narrator chooses a codename and publishes the anonymous post.',
           mustDepict: 'At 4 a.m., the narrator chooses a codename and publishes the anonymous post.',
         }],
       },
@@ -116,9 +128,38 @@ describe('validateBlueprintRouteCueOrder', () => {
         requiredBeats: [{
           id: 'viral-proof',
           tier: 'authored',
+          sourceTurn: 'The narrator turns a terrifying rescue into the first viral proof that they can author a new life.',
           mustDepict: 'The narrator turns a terrifying rescue into the first viral proof that they can author a new life.',
         }],
       },
+    ]);
+
+    expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
+  it('ignores metadata-only construction obligations when deriving staged route cues', () => {
+    const bp = blueprint([
+      {
+        ...scene('scene-arrival', 'The protagonist arrives at the station with two bags.', ['scene-social']),
+        keyBeats: [
+          "Introduce the reader's first meeting with the protagonist.",
+          'By evening, the anonymous post has gone viral and the views keep climbing.',
+        ],
+        requiredBeats: [{
+          id: 'future-seed',
+          tier: 'seed',
+          sourceTurn: 'A hidden rescuer staged the initial attack.',
+          mustDepict: 'A hidden rescuer staged the initial attack.',
+        }],
+        sceneConstructionProfile: {
+          obligations: [
+            { source: 'keyBeat', id: 'keyBeat:0', slot: 'metadata_only' },
+            { source: 'keyBeat', id: 'keyBeat:1', slot: 'metadata_only' },
+            { source: 'requiredBeat', id: 'future-seed', slot: 'metadata_only' },
+          ],
+        } as SceneBlueprint['sceneConstructionProfile'],
+      },
+      scene('scene-social', 'A rooftop table meeting makes the social circle visible.'),
     ]);
 
     expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
@@ -142,11 +183,11 @@ describe('validateBlueprintRouteCueOrder', () => {
       scene('scene-arrival', 'The protagonist arrives at the airport with two bags.', ['scene-public-a']),
       {
         ...scene('scene-public-a', 'By evening, the anonymous post has gone viral and the views keep climbing.', ['scene-public-b']),
-        requiredBeats: [{ id: 'required-a', tier: 'authored', mustDepict: 'The public response becomes visible.' }],
+        requiredBeats: [{ id: 'required-a', tier: 'authored', sourceTurn: 'The public response becomes visible.', mustDepict: 'The public response becomes visible.' }],
       },
       {
         ...scene('scene-public-b', 'The readership number climbs until the post becomes a public signal.', ['scene-next']),
-        requiredBeats: [{ id: 'required-b', tier: 'authored', mustDepict: 'The public response creates new pressure.' }],
+        requiredBeats: [{ id: 'required-b', tier: 'authored', sourceTurn: 'The public response creates new pressure.', mustDepict: 'The public response creates new pressure.' }],
       },
       scene('scene-next', 'The next scene starts after the public aftermath.'),
     ]);

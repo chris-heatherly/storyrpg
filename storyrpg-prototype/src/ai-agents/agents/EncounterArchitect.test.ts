@@ -887,7 +887,7 @@ describe('EncounterArchitect tree validation', () => {
         },
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'Critical Moment',
           description: 'Everything comes to a head.',
           setupText: 'The final choice arrives.',
@@ -1190,7 +1190,7 @@ describe('authored anchor (G12)', () => {
     expect(structure.beats.length).toBeGreaterThanOrEqual(3);
     expect(() => (architect as any).validateStructure(structure, sustained)).not.toThrow();
     // The opening beat routes through the escalation beat, which routes to the
-    // resolution — the spine stays connected.
+    // change — the spine stays connected.
     const beatIds = structure.beats.map((b: any) => b.id);
     expect(beatIds).toContain('beat-escalation');
     for (const choice of structure.beats[0].choices) {

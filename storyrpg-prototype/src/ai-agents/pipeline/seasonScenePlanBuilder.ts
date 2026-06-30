@@ -8,7 +8,7 @@
  * later, in the per-episode loop, to serve each scene.
  *
  * v1 is deterministic: it synthesizes the spine from data the season plan
- * already carries (per-episode `structuralRole`, `plannedEncounters`,
+ * already carries (per-episode `storyCircleRole`, `plannedEncounters`,
  * `synopsis`, `treatmentGuidance`, plus season-level `consequenceChains`,
  * `choiceMoments`, and `informationLedger` for the setup/payoff edges). This is
  * path-agnostic — it works for authored-treatment and from-scratch runs alike,
@@ -30,7 +30,6 @@ import type {
   SeasonScenePlan,
   SetupPayoffEdge,
 } from '../../types/scenePlan';
-import type { StructuralRole } from '../../types/sourceAnalysis';
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
 import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldContracts';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
@@ -46,6 +45,7 @@ import {
   buildEncounterEventSignature,
   compareEncounterEventSignatures,
 } from '../utils/encounterEventSignature';
+import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfile';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 
 export const MIN_SCENES_PER_EPISODE = 3;
@@ -89,10 +89,13 @@ function clampSceneCount(n: number, authoredTurnCount = 0): number {
   return Math.max(MIN_SCENES_PER_EPISODE, Math.min(ceiling, desired));
 }
 
-/** Human-readable label for an episode's structural role(s). */
-function roleLabel(roles?: StructuralRole[]): string {
-  if (!roles || roles.length === 0) return 'the episode arc';
-  return roles.join(' / ');
+/** Human-readable label for an episode's Story Circle role(s). */
+function storyCircleRoleLabel(ep: SeasonEpisode): string {
+  const roles = ep.storyCircleRole;
+  if (!roles || roles.length === 0) return 'the episode Story Circle loop';
+  return roles
+    .map((role) => role.roleKind === 'expansion' ? `${role.beat} expansion` : role.beat)
+    .join(' / ');
 }
 
 /**
@@ -133,18 +136,18 @@ type EpisodePlannedEncounter = NonNullable<SeasonEpisode['plannedEncounters']>[n
 
 /**
  * Compose a planning-only dramatic purpose for a scene FRAMING (role + the
- * episode's legacy-structure beat). It no longer folds the authored episode turns into a
+ * episode's Story Circle role). It no longer folds the authored episode turns into a
  * single string — authored turns are now first-class {@link RequiredBeat}s bound
  * to the scene that lands them (see {@link buildEpisodeScenes}). Not player-facing.
  */
 function composeDramaticPurpose(
   role: SceneNarrativeRole,
   ep: SeasonEpisode,
-  legacyStructureText: string | undefined,
+  storyCircleText: string | undefined,
 ): string {
   const structuralPressure = episodeLocalStructuralPressure(ep)
-    || legacyStructureText
-    || `${roleLabel(ep.structuralRole)} pressure`;
+    || storyCircleText
+    || `${storyCircleRoleLabel(ep)} pressure`;
   switch (role) {
     case 'setup':
       return `Open the episode through its immediate question: ${structuralPressure}.`;
@@ -190,7 +193,7 @@ function episodeLocalStructuralPressure(ep: SeasonEpisode): string | undefined {
 }
 
 function composeRoleOnlyDramaticPurpose(role: SceneNarrativeRole, ep: SeasonEpisode): string {
-  const structuralPressure = `${roleLabel(ep.structuralRole)} pressure`;
+  const structuralPressure = `${storyCircleRoleLabel(ep)} pressure`;
   switch (role) {
     case 'setup':
       return `Open the episode through its immediate question: ${structuralPressure}.`;
@@ -1193,20 +1196,20 @@ function inferAuthoredLocationFromText(text: string | undefined, locations: stri
   const declaredMatch = (pattern: RegExp) => locations.find((loc) =>
     pattern.test(loc.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
   );
-  if (/\b(?:park|gardens?)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:park|garden)/);
+  if (/\b(?:cismigiu|park|gardens?)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:park|garden)/) || 'Cișmigiu Gardens';
   }
   if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:rooftop|roof|bar|terrace)/);
+    return declaredMatch(/\b(?:rooftop|roof|bar|terrace)/) || 'Rooftop Bar';
   }
   if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:club|venue|door|entrance)/);
+    return declaredMatch(/\b(?:club|venue|door|entrance)/) || 'Vâlcescu Club';
   }
   if (/\b(?:bookshop|bookstore|quartz|crystal|stone|charm|talisman)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:book|shop|store)/);
+    return declaredMatch(/\b(?:book|shop|store)/) || 'Lumina Books';
   }
   if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:estate|country|maze|garden)/);
+    return declaredMatch(/\b(?:estate|country|maze|garden)/) || "Victor's Estate";
   }
   return undefined;
 }
@@ -1491,17 +1494,16 @@ export function bindAuthoredTurnsToScenes(
   assignTreatmentFieldContractsToScenes(ep, scenes);
 }
 
-/** Resolve the legacy-structure beat text an episode carries (undefined for buffer roles). */
-export function legacyStructureTextForEpisode(plan: SeasonPlan, ep: SeasonEpisode): string | undefined {
-  const role = ep.structuralRole?.[0];
-  if (!role || role === 'rising' || role === 'falling') return undefined;
-  return plan.legacyStructure?.[role];
+/** Resolve the Story Circle beat text an episode carries. */
+export function storyCircleTextForEpisode(plan: SeasonPlan, ep: SeasonEpisode): string | undefined {
+  const beat = ep.storyCircleRole?.[0]?.beat;
+  return beat ? plan.storyCircle?.[beat] : undefined;
 }
 
 /** Build the ordered list of scenes for a single episode. */
 export function buildEpisodeScenes(
   ep: SeasonEpisode,
-  legacyStructureText: string | undefined,
+  storyCircleText: string | undefined,
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
   protagonist?: SeasonPlan['protagonist'],
 ): PlannedScene[] {
@@ -1533,7 +1535,7 @@ export function buildEpisodeScenes(
       order,
       kind: 'standard',
       title: `${role} scene ${order + 1}`,
-      dramaticPurpose: composeDramaticPurpose(role, ep, legacyStructureText),
+      dramaticPurpose: composeDramaticPurpose(role, ep, storyCircleText),
       narrativeRole: role,
       locations: locations.slice(0, 1),
       npcsInvolved: npcs.slice(0, 3),
@@ -1564,7 +1566,7 @@ export function buildEpisodeScenes(
       // treatment (G12 endsong: boilerplate here starved EncounterArchitect).
       dramaticPurpose: enc.description
         ? `${enc.description}${enc.centralConflict ? ` — Central conflict: ${enc.centralConflict}` : ''}`
-        : composeDramaticPurpose('turn', ep, legacyStructureText),
+        : composeDramaticPurpose('turn', ep, storyCircleText),
       narrativeRole: 'turn',
       locations: [inferAuthoredLocationFromText(
         [enc.description, enc.centralConflict, enc.stakes].filter(Boolean).join(' '),
@@ -1608,8 +1610,8 @@ export function buildEpisodeScenes(
   }
 
   const openingScene = scenes.find((scene) => scene.narrativeRole === 'setup') ?? scenes[0];
-  if (ep.treatmentGuidance && openingScene && ep.structuralRole?.includes('hook') && legacyStructureText?.trim()) {
-    const hookText = legacyStructureText.trim();
+  if (ep.treatmentGuidance && openingScene && ep.storyCircleRole?.some((role) => role.beat === 'you') && storyCircleText?.trim()) {
+    const hookText = storyCircleText.trim();
     appendRequiredBeats(openingScene, [
       {
         id: `${openingScene.id}-hook1`,
@@ -1653,16 +1655,11 @@ function payoffSceneId(scenes: PlannedScene[]): string | undefined {
  * `setupPayoffEdges` are derived from the season's cross-episode structures.
  */
 export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
-  const legacyStructure = plan.legacyStructure;
   const episodes = [...plan.episodes].sort((a, b) => a.episodeNumber - b.episodeNumber);
 
   const scenesByEpisode = new Map<number, PlannedScene[]>();
   for (const ep of episodes) {
-    const role = ep.structuralRole?.[0];
-    const legacyStructureText = role && role !== 'rising' && role !== 'falling'
-      ? legacyStructure?.[role]
-      : undefined;
-    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, legacyStructureText, plan.informationLedger, plan.protagonist));
+    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
   }
 
   // Resolve setup/payoff edges from the season's cross-episode structures.
@@ -1741,6 +1738,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     branchConsequenceContracts,
   }, scenes);
   const failureModeAuditContracts = assignFailureModeAuditContractsToScenes(plan, scenes);
+  attachSceneConstructionProfiles(scenes);
 
   return {
     scenes,

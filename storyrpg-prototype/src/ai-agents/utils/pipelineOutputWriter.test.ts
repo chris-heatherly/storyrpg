@@ -405,14 +405,15 @@ describe('deriveRunQualityScore', () => {
       finalStory: story,
       brief: {
         seasonPlan: {
-          legacyStructure: {
-            hook: 'legacy hook',
-            plotTurn1: 'legacy turn',
-            pinch1: 'legacy pinch',
-            midpoint: 'legacy midpoint',
-            pinch2: 'legacy pinch',
-            climax: 'legacy climax',
-            resolution: 'legacy resolution',
+          storyCircle: {
+            you: '',
+            need: '',
+            go: 'legacy turn',
+            search: 'legacy pinch',
+            find: 'legacy find',
+            take: 'legacy pinch',
+            return: 'legacy return',
+            change: 'legacy change',
           },
         },
       },
@@ -420,16 +421,7 @@ describe('deriveRunQualityScore', () => {
     });
 
     expect(result.score).toBeLessThan(70);
-    expect(result.basis.storyCircle.missingBeats).toEqual([
-      'you',
-      'need',
-      'go',
-      'search',
-      'find',
-      'take',
-      'return',
-      'change',
-    ]);
+    expect(result.basis.storyCircle.missingBeats).toEqual(['you', 'need']);
   });
 });
 

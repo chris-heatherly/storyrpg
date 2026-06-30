@@ -124,7 +124,7 @@ describe('CharacterArcTracker normalization', () => {
             synopsis: 'Current pressure.',
             treatmentGuidance: {
               dramaticQuestion: 'Can Kylie trust the attention she is getting?',
-              rawStructuralRole: 'RAW_GUIDANCE_SHOULD_NOT_APPEAR'.repeat(1000),
+              rawStoryCircleRole: 'RAW_GUIDANCE_SHOULD_NOT_APPEAR'.repeat(1000),
               majorChoicePressures: Array.from({ length: 20 }, (_, i) => `choice pressure ${i + 1}`),
             },
           },

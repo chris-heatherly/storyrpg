@@ -162,7 +162,7 @@ Active generation flow:
 
 1. Optional source analysis through `SourceMaterialAnalyzer`.
 2. Optional season planning through `SeasonPlannerAgent`.
-3. Seven-point structural validation through `SevenPointCoverageValidator`.
+3. Story Circle structural validation through `StoryCircleCoverageValidator`.
 4. Shared foundation generation through `WorldBuilder`, `CharacterDesigner`, `NPCDepthValidator`, and `PhaseValidator`.
 5. Episode blueprinting through `StoryArchitect`.
 6. Branch and scene graph planning through `BranchManager`, deterministic topology helpers, and scene graph validators.
@@ -281,7 +281,7 @@ Current families include:
 
 - structural validation
 - phase validation
-- season and seven-point coverage
+- season and Story Circle coverage
 - stakes triangle checks
 - choice density and distribution
 - consequence budget checks

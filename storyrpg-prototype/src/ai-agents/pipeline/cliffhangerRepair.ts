@@ -167,7 +167,7 @@ export async function repairWeakCliffhangerBeforeImages(
   deps.emit({
     type: 'regeneration_triggered',
     phase: 'cliffhanger_repair',
-    message: `Repairing weak ${cliffhangerPlan.mappedStructuralRole} cliffhanger (${analysis.score}/100): ${analysis.suggestions.join('; ')}`,
+    message: `Repairing weak ${cliffhangerPlan.storyCircleLaunchBeat || 'Story Circle'} cliffhanger (${analysis.score}/100): ${analysis.suggestions.join('; ')}`,
   });
 
   const improvement = await withTimeout(

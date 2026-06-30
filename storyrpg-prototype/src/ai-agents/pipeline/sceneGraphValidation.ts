@@ -550,14 +550,10 @@ export class SceneGraphValidation {
         plannedConsequenceTier: plannedConsequenceTiers[sceneBlueprint.id],
         seasonAnchors: brief.seasonPlan?.anchors,
         seasonStoryCircle: brief.seasonPlan?.storyCircle,
-        seasonLegacyStructure: brief.seasonPlan?.legacyStructure,
         episodeStoryCircleRole: brief.seasonPlan?.episodes.find(
           (episodeEntry) => episodeEntry.episodeNumber === brief.episode.number,
         )?.storyCircleRole,
         episodeCircle: blueprint.episodeCircle,
-        episodeStructuralRole: brief.seasonPlan?.episodes.find(
-          (episodeEntry) => episodeEntry.episodeNumber === brief.episode.number,
-        )?.structuralRole,
       }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} scene-graph-branch-repair)`);
 
       if (!repairResult.success || !repairResult.data) {

@@ -24,7 +24,7 @@
 //     inverted"; authored beats "must occur, in order"; connective beats are
 //     soft tissue the model may freely author around.
 
-import type { RequiredBeat } from '../../types/scenePlan';
+import type { ColdOpenProfile, RequiredBeat } from '../../types/scenePlan';
 
 /**
  * Subset of a scene a required-beats section needs. Structurally loose on
@@ -38,15 +38,52 @@ export interface RequiredBeatsSource {
   requiredBeats?: Array<Partial<RequiredBeat> | { tier?: string; mustDepict?: string }>;
   /** A single staged signature device/image the prose MUST show. */
   signatureMoment?: string;
+  /** Generator-only compiled cold-open brief. */
+  coldOpenProfile?: ColdOpenProfile;
 }
 
 const TIER_FRAMING: Record<RequiredBeat['tier'], string> = {
   signature: 'MUST be depicted on-page, exactly as staged — never invert, soften, or omit it',
   authored: 'is the dramatic center of its scene — build setup before it and aftermath/handoff after it; do not drop, re-order, or re-interpret it',
   seed: 'plant this detail on-page if the scene can carry it (a small recurring object, a quiet tell) — advisory, not a fixed turn',
-  coldopen: 'OPEN the episode on this — dramatize the hook and every named character it introduces on-page before moving on; do not skip or summarize it',
+  coldopen: 'OPEN the episode on this as a tight single-scene hook — fulfill the Story Circle cold-open profile if present, dramatize one immediate conflict and open question, limit active cast, move quickly, and end on a reveal, reversal, charged line, or silence',
   connective: 'tie the fixed beats together; you may freely author this connective tissue',
 };
+
+function formatStoryCircleBeats(profile: ColdOpenProfile): string {
+  const beats = profile.storyCircleFulfillment.combinedBeats?.length
+    ? `${profile.storyCircleFulfillment.combinedBeats.join(' + ')} combined`
+    : profile.storyCircleBeats.join(' + ');
+  return beats || 'assigned Story Circle role';
+}
+
+export function buildColdOpenProfileSection(scene: RequiredBeatsSource | undefined): string {
+  const profile = scene?.coldOpenProfile;
+  if (!profile) return '';
+  const supportingConcepts = profile.selectedConcepts
+    .filter((concept) => concept.role === 'pressure' || concept.role === 'texture' || concept.role === 'open_question')
+    .slice(0, 6);
+  const resolutions = profile.conflictResolutions ?? [];
+
+  return `
+### COLD OPEN CONTRACT — single scene, fast hook
+This opening must fulfill its Story Circle role on-page through drama, not labels.
+Keep it one scene with one central collision. Use supporting concepts only when
+they sharpen that collision; do not turn them into an ensemble tour or setup
+checklist. Authoring guidance only — never expose these labels in prose.
+
+- Story Circle role: ${formatStoryCircleBeats(profile)}
+- Mode / archetype: ${profile.mode} / ${profile.archetype}
+- Central turn: ${profile.centralTurn}
+- Story Circle collision: ${profile.storyCircleFulfillment.collision}
+- Micro-conflict: ${profile.microConflict}
+- Open question: ${profile.openQuestion}
+- Active cast target: ${profile.activeCastLimit} active character(s), unless a hard required beat truly demands more
+- Beat budget: aim for ${profile.beatBudget.recommended} quick beats (${profile.beatBudget.min}-${profile.beatBudget.max} allowed)
+- Exit: ${profile.exitHook}
+${supportingConcepts.length ? `- Supporting pressure, not extra scene turns: ${supportingConcepts.map((concept) => concept.text).join(' | ')}\n` : ''}${resolutions.length ? `- Conflict resolution: ${resolutions.join(' ')}\n` : ''}
+`.trimEnd() + '\n';
+}
 
 /**
  * Build the SceneWriter-facing "Required Beats" section. Returns '' when the

@@ -462,7 +462,7 @@ describe('executePhased telemetry', () => {
         },
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'Resolve',
           setupText: 'The confrontation narrows to its consequence.',
           choices: [
@@ -562,7 +562,7 @@ describe('executePhased telemetry', () => {
         },
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'Resolve',
           setupText: 'The confrontation narrows to its consequence.',
           choices: [
@@ -643,7 +643,7 @@ describe('phase-3 conditional choices resolve terminally (no template branch)', 
     }
   });
 
-  it('normalizeStructure does NOT synthesize a template resolution beat for a 1-beat TREE encounter', () => {
+  it('normalizeStructure does NOT synthesize a template change beat for a 1-beat TREE encounter', () => {
     const architect = new EncounterArchitect(config) as any;
     // A valid single-beat tree encounter: choices whose outcomes carry embedded nextSituation.
     const structure = {
@@ -659,7 +659,7 @@ describe('phase-3 conditional choices resolve terminally (no template branch)', 
       }],
     };
     const normalized = architect.normalizeStructure(structure, input);
-    // Should remain a single beat (no synthesized template resolution beat).
+    // Should remain a single beat (no synthesized template change beat).
     expect(normalized.beats).toHaveLength(1);
     const blob = JSON.stringify(normalized);
     expect(blob.includes('This is the moment that decides everything')).toBe(false);

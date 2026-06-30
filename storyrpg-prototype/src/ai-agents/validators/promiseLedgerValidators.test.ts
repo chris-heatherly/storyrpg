@@ -8,7 +8,7 @@ import {
   validateSeasonCompletion,
 } from './promiseLedgerValidators';
 
-/** Build a ledger with one hook planted in `sourceEpisode`, optionally targeted. */
+/** Build a ledger with one you planted in `sourceEpisode`, optionally targeted. */
 function ledgerWithHook(opts: {
   id?: string;
   sourceEpisode: number;
@@ -34,17 +34,17 @@ function ledgerWithHook(opts: {
 describe('CallbackLedger explicit payoffEpisode (P2)', () => {
   it('derives the window start from an explicit payoffEpisode', () => {
     const ledger = ledgerWithHook({ sourceEpisode: 1, payoffEpisode: 3, maxEpisode: 4 });
-    const hook = ledger.all()[0];
-    expect(hook.payoffEpisode).toBe(3);
-    expect(hook.payoffWindow).toEqual({ minEpisode: 3, maxEpisode: 4 });
+    const you = ledger.all()[0];
+    expect(you.payoffEpisode).toBe(3);
+    expect(you.payoffWindow).toEqual({ minEpisode: 3, maxEpisode: 4 });
   });
 
   it('setPayoffEpisode pins the target and re-derives the window', () => {
     const ledger = ledgerWithHook({ sourceEpisode: 1 });
     ledger.setPayoffEpisode('h1', 2);
-    const hook = ledger.all()[0];
-    expect(hook.payoffEpisode).toBe(2);
-    expect(hook.payoffWindow.minEpisode).toBe(2);
+    const you = ledger.all()[0];
+    expect(you.payoffEpisode).toBe(2);
+    expect(you.payoffWindow.minEpisode).toBe(2);
   });
 
   it('preserves payoffEpisode across a later merge that omits it', () => {
@@ -120,7 +120,7 @@ describe('validateNoDanglingPayoffs', () => {
     expect(validateNoDanglingPayoffs(['ghost'], ledger).map((i) => i.location)).toEqual(['payoff:ghost']);
   });
 
-  it('resolves a bare flag-name payoff to its planted flag: hook (G14 prefix mismatch)', () => {
+  it('resolves a bare flag-name payoff to its planted flag: you (G14 prefix mismatch)', () => {
     // The exact bite-me-g14 failure: the treatment plants `flag:treatment_seed_ep1_3`
     // but a textVariant tags the payoff with the bare `treatment_seed_ep1_3`.
     const ledger = new CallbackLedger();

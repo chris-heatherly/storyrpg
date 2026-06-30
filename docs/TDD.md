@@ -305,8 +305,8 @@ StoryRPG_New/
     │   │   │   ├── ThreadPlanner.ts    # Authors the NarrativeThread ledger for setup/payoff tracking
     │   │   │   ├── TwistArchitect.ts   # Schedules per-episode reversal + foreshadow
     │   │   │   ├── CharacterArcTracker.ts # Per-episode identity/relationship milestone targets
-    │   │   │   ├── SeasonPlannerAgent.ts # Season planning (3-act / 7-point structural spine)
-    │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis (anchors, seven-point, episode breakdown)
+    │   │   │   ├── SeasonPlannerAgent.ts # Season planning (Story Circle spine)
+    │   │   │   ├── SourceMaterialAnalyzer.ts # Source analysis (anchors, Story Circle, episode breakdown)
     │   │   │   └── image-team/         # Image generation agents (see below)
     │   │   │
     │   │   ├── pipeline/               # Pipeline orchestrators
@@ -351,7 +351,7 @@ StoryRPG_New/
     │   │   │   ├── BaseValidator.ts
     │   │   │   ├── PhaseValidator.ts             # Structural validation per pipeline phase (e.g. CharacterBible)
     │   │   │   ├── SeasonValidator.ts            # Full-season structural pass
-    │   │   │   ├── SevenPointCoverageValidator.ts # 3-act / 7-point coverage gate
+    │   │   │   ├── StoryCircleCoverageValidator.ts # Story Circle coverage gate
     │   │   │   ├── CallbackOpportunitiesValidator.ts
     │   │   │   ├── CallbackCoverageValidator.ts
     │   │   │   ├── SetupPayoffValidator.ts       # NarrativeThread Chekhov's-gun coverage
@@ -875,8 +875,8 @@ The AI generation pipeline (`src/ai-agents/`) is a multi-agent system that creat
 
 ```
 FullStoryPipeline (orchestrator)
-  ├── SourceMaterialAnalyzer (optional: analyze source documents; emits anchors + seven-point + episode breakdown)
-  ├── SeasonPlannerAgent (optional: plan multi-episode arcs along the 3-act / 7-point spine)
+  ├── SourceMaterialAnalyzer (optional: analyze source documents; emits anchors + Story Circle + episode breakdown)
+  ├── SeasonPlannerAgent (optional: plan multi-episode arcs along the Story Circle spine)
   ├── StyleArchitect (optional: expand free-form art style into an ArtStyleProfile)
   ├── WorldBuilder (create world bible and locations)
   ├── CharacterDesigner (create NPCs with rich profiles)
@@ -1042,7 +1042,7 @@ The validation system operates at multiple levels and — for the final playthro
 | `DivergenceValidator` | Runs a lightweight path simulator; flags cosmetic branching and no-op decision points | Episode-level |
 | `PhaseValidator` | Structural validation of the CharacterBible (and other per-phase artifacts) | Per phase |
 | `SeasonValidator` | Full-season structural pass (episode breakdown, unlock conditions, anchors) | Post season plan |
-| `SevenPointCoverageValidator` | Deterministic gate on 3-act / 7-point beat coverage, anchor integrity, difficulty-tier alignment | Season plan |
+| `StoryCircleCoverageValidator` | Deterministic gate on Story Circle beat coverage, anchor integrity, and episode role alignment | Season plan |
 | `storyAssetWalker.walkStoryAssets()` | HTTP `HEAD`/`GET` every image slot in the story | Post-assembly (Tier 1) |
 | `playwrightQARunner.runPlaywrightQAMultiPath()` | Multi-path browser playthrough coverage | Post-save (Tier 2) |
 | `qaRemediation.remediateImageIssues()` | Re-generate broken images and patch story JSON | Between Tier-2 retries |

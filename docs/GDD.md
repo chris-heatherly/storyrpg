@@ -789,7 +789,7 @@ Story generation happens in phases, with specialized AI agents responsible for e
 - **CharacterDesigner:** Designs NPCs with motivations, voices, relationships
 
 #### Phase 2: Structure
-- **SeasonPlannerAgent:** Plans episode outlines and story arcs along the 3-act / 7-point spine
+- **SeasonPlannerAgent:** Plans episode outlines and story arcs along the Story Circle spine
 - **StoryArchitect:** Creates scene-by-scene structure with branching points and scene blueprints
 - **ThreadPlanner:** Authors the NarrativeThread ledger for setup/payoff and delayed consequences
 - **TwistArchitect:** Schedules each episode's reversal/revelation and its foreshadow beats

@@ -53,7 +53,7 @@ import type {
   ConsequenceTier,
 } from '../../types/scenePlan';
 import type { ChoiceType } from '../../types/choice';
-import type { StructuralRole } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 import { consequenceFlags } from './consequenceFlags';
 import { TAU_CHARGE } from './chargeMap';
 
@@ -89,8 +89,8 @@ type ChoiceKey = 'expression' | 'relationship' | 'strategic' | 'dilemma';
  * or without it. All fields are optional; an empty/absent ctx is the default.
  */
 export interface BudgetContext {
-  /** Episode structuralRole(s) by episode number — the positional axis (Layers A–C). */
-  roleByEpisode?: Record<number, import('../../types/sourceAnalysis').StructuralRole[]>;
+  /** Episode Story Circle beat(s) by episode number — the positional axis (Layers A-C). */
+  roleByEpisode?: Record<number, StoryCircleBeat[]>;
   /** Per-scene aggregated inbound charge (from {@link aggregateCharge}) — the dramatic-charge axis. */
   chargeMap?: Map<string, number>;
   /** The Convergence Ledger backing the charge map (anchors, gate levels, edges). */
@@ -339,35 +339,44 @@ function clampTier(u: PlannedScene, tier: ConsequenceTier): ConsequenceTier {
  * NON-encounter major may go — a durable `branch` needs runway to pay off before
  * the story forces a merge, and tentpole beats are merge points by design.
  *
- *  - **convergent** — hook / midpoint / climax / resolution / falling: a
- *    non-encounter major is capped at `branchlet` (resolution leans `callback`).
- *  - **open-field** — plotTurn1 / pinch1 / rising: a major may reach `branch`.
- *  - **open-field-short** — pinch2: a major reconverges into climax → `branchlet`.
+ *  - **convergent** — you / find / return / change: a
+ *    non-encounter major is capped at `branchlet` (change leans `callback`).
+ *  - **open-field** — need / go / search: a major may reach `branch`.
+ *  - **open-field-short** — take: a major reconverges into return/change → `branchlet`.
  *
  * An unknown / absent role defaults to **open-field** (the permissive middle).
  */
 export type EpisodePosture = 'convergent' | 'open-field' | 'open-field-short';
 
-const POSTURE_BY_ROLE: Record<StructuralRole, EpisodePosture> = {
-  hook: 'convergent',
-  midpoint: 'convergent',
-  climax: 'convergent',
-  resolution: 'convergent',
-  falling: 'convergent',
-  plotTurn1: 'open-field',
-  pinch1: 'open-field',
-  rising: 'open-field',
-  pinch2: 'open-field-short',
+const POSTURE_BY_ROLE: Record<StoryCircleBeat, EpisodePosture> = {
+  you: 'convergent',
+  need: 'open-field',
+  go: 'open-field',
+  search: 'open-field',
+  find: 'convergent',
+  take: 'open-field-short',
+  return: 'convergent',
+  change: 'convergent',
 };
 
+function normalizeBudgetRoles(roles: StoryCircleBeat[] | undefined): StoryCircleBeat[] | undefined {
+  if (!roles?.length) return undefined;
+  const normalized: StoryCircleBeat[] = [];
+  for (const role of roles) {
+    if (!normalized.includes(role)) normalized.push(role);
+  }
+  return normalized;
+}
+
 /**
- * Map an episode's structuralRole(s) to a single posture. When an episode fuses
+ * Map an episode's Story Circle beat(s) to a single posture. When an episode fuses
  * multiple beats we take the most divergence-permissive posture present
  * (open-field > open-field-short > convergent) so a fused open-field beat is not
  * suppressed by a convergent neighbor. No known role → 'open-field'.
  */
-export function episodePosture(roles: StructuralRole[] | undefined): EpisodePosture {
-  if (!roles || roles.length === 0) return 'open-field';
+export function episodePosture(roles: StoryCircleBeat[] | undefined): EpisodePosture {
+  const normalizedRoles = normalizeBudgetRoles(roles);
+  if (!normalizedRoles || normalizedRoles.length === 0) return 'open-field';
   let best: EpisodePosture = 'convergent';
   const rank: Record<EpisodePosture, number> = {
     convergent: 0,
@@ -375,7 +384,7 @@ export function episodePosture(roles: StructuralRole[] | undefined): EpisodePost
     'open-field': 2,
   };
   let seenKnown = false;
-  for (const r of roles) {
+  for (const r of normalizedRoles) {
     const p = POSTURE_BY_ROLE[r];
     if (!p) continue;
     seenKnown = true;
@@ -436,7 +445,7 @@ export interface TierProposal {
 }
 
 /** Resolve the episode role(s) for a unit from ctx.roleByEpisode. */
-function rolesForUnit(u: PlannedScene, ctx?: BudgetContext): StructuralRole[] | undefined {
+function rolesForUnit(u: PlannedScene, ctx?: BudgetContext): StoryCircleBeat[] | undefined {
   return ctx?.roleByEpisode?.[u.episodeNumber];
 }
 
@@ -460,24 +469,25 @@ function postureCeil(posture: EpisodePosture): ConsequenceTier {
  * Layer A:
  *  - expression → callback only (unchanged invariant);
  *  - encounter, branch-point → branch (floor branchlet, ceil branch);
- *  - encounter, non-branch-point → branchlet, escalating to branch at pinch2/climax;
+ *  - encounter, non-branch-point → branchlet, escalating to branch at take/return;
  *  - dilemma → at least branchlet (heavy band);
  *  - relationship/strategic → magnitude ≥ τ ⇒ heavy band, else light band.
  *
- * Layer C: a non-encounter's heavy ceiling is the posture ceiling; resolution
+ * Layer C: a non-encounter's heavy ceiling is the posture ceiling; change
  * leans callback (its preferred light tier is callback, not tint).
  */
 export function proposeTierPositional(
   u: PlannedScene,
-  roles: StructuralRole[] | undefined,
+  roles: StoryCircleBeat[] | undefined,
   majorThreshold: number,
 ): TierProposal {
-  const posture = episodePosture(roles);
+  const storyCircleRoles = normalizeBudgetRoles(roles);
+  const posture = episodePosture(storyCircleRoles);
 
   // --- Encounters (Layer A, Layer D spine population) ----------------------
   if (isEncounter(u)) {
     const escalates =
-      Array.isArray(roles) && (roles.includes('pinch2') || roles.includes('climax'));
+      Array.isArray(storyCircleRoles) && (storyCircleRoles.includes('take') || storyCircleRoles.includes('return'));
     if (isBranchPointEncounter(u)) {
       // Durable forks live at branch.
       return { floor: 'branchlet', ceil: 'branch', preferred: 'branch' };
@@ -511,7 +521,7 @@ export function proposeTierPositional(
 
   // Light band: [callback, tint]. Resolution episodes lean callback (no runway
   // to even tint a fork); everything else prefers tint as its texture default.
-  const leansCallback = Array.isArray(roles) && roles.includes('resolution');
+  const leansCallback = Array.isArray(storyCircleRoles) && storyCircleRoles.includes('change');
   return {
     floor: 'callback',
     ceil: 'tint',
@@ -591,7 +601,7 @@ export function allocateConsequenceTiers(units: PlannedScene[], ctx?: BudgetCont
   // Rule 1 (high inbound charge elevates a unit into the heavy band) and Rule 2 /
   // the hollow-branch ban (a standard-scene unit may stay heavy only if charged or
   // an encounter — uncharged would-be majors are DEMOTED). It takes precedence
-  // over Phase 2 / Phase 1 / the legacy slot machine. Flag off → fall through.
+  // over Phase 2 / Phase 1 / the base allocator. Flag off → fall through.
   if (consequenceFlags().charge) {
     allocateConsequenceTiersCharge(units, ctx);
     return;
@@ -600,7 +610,7 @@ export function allocateConsequenceTiers(units: PlannedScene[], ctx?: BudgetCont
   // Phase 2 (Plan Part 3, Layer D): two-population budget. Active ONLY when the
   // CONSEQUENCE_TWO_POP flag is on. It budgets the encounter spine by invariant
   // and the standard-scene texture against SCENE_CONSEQUENCE_TARGET, so it takes
-  // precedence over the Phase-1 positional path and the legacy slot machine. With
+  // precedence over the Phase-1 positional path and the base allocator. With
   // the flag off, fall through below — byte-identical behavior.
   if (consequenceFlags().twoPop) {
     allocateConsequenceTiersTwoPop(units, ctx);
@@ -609,7 +619,7 @@ export function allocateConsequenceTiers(units: PlannedScene[], ctx?: BudgetCont
 
   // Phase 1 (Plan Part 3, Layers A–C): positional tiering. Active ONLY when the
   // CONSEQUENCE_POSITIONAL flag is on AND an episode-role map is supplied. With
-  // the flag off (or no roleByEpisode), fall through to the legacy slot machine
+  // the flag off (or no roleByEpisode), fall through to the base allocator
   // below — byte-identical behavior.
   if (consequenceFlags().positional && ctx?.roleByEpisode) {
     allocateConsequenceTiersPositional(units, ctx);
@@ -682,7 +692,7 @@ export function allocateConsequenceTiers(units: PlannedScene[], ctx?: BudgetCont
  * `CONSEQUENCE_POSITIONAL`. Each unit gets a [floor, ceil] band + a preferred
  * tier from {@link proposeTierPositional} (positional, posture-capped), then the
  * mix is reconciled toward {@link CONSEQUENCE_TARGET} with the SAME
- * largest-remainder budget as the legacy path — but only WITHIN each unit's band,
+ * largest-remainder budget as the base path — but only WITHIN each unit's band,
  * and flexing the LIGHT (minor) scenes first so authored heavy moments stay heavy.
  *
  * Story-first guardrails (Plan Part 7): positional magnitude reads only authored
@@ -757,10 +767,10 @@ function allocateConsequenceTiersPositional(units: PlannedScene[], ctx: BudgetCo
       );
     for (const u of flexible) {
       if (overBy <= 0) break;
-      // Demote into the LIGHT band: resolution leans callback, else tint. The
+      // Demote into the LIGHT band: change leans callback, else tint. The
       // hard invariants (clampTier) still apply; for a flexible scene-major the
       // floor is callback, so this lands at the requested light tier.
-      const leansCallback = (rolesForUnit(u, ctx) ?? []).includes('resolution');
+      const leansCallback = (rolesForUnit(u, ctx) ?? []).includes('change');
       const demoted = clampTier(u, leansCallback ? 'callback' : 'tint');
       if (TIER_RANK[demoted] < HEAVY) {
         overBy -= weightOf(u);
@@ -826,6 +836,7 @@ function allocateConsequenceTiersCharge(units: PlannedScene[], ctx?: BudgetConte
 
   for (const u of units) {
     const roles = rolesForUnit(u, ctx);
+    const storyCircleRoles = normalizeBudgetRoles(roles);
     const proposal = proposeTierPositional(u, roles, tau);
     const charge = chargeForUnit(u, ctx);
     u.chargeScore = charge;
@@ -846,14 +857,14 @@ function allocateConsequenceTiersCharge(units: PlannedScene[], ctx?: BudgetConte
     // --- Standard non-encounter, non-dilemma unit: charge rules apply ---------
     const positionalHeavy = TIER_RANK[proposal.preferred] >= HEAVY;
     const charged = charge >= TAU_CHARGE;
-    const inResolution = Array.isArray(roles) && roles.includes('resolution');
+    const inResolution = Array.isArray(storyCircleRoles) && storyCircleRoles.includes('change');
 
     if (charged && inResolution) {
-      // Resolution is the terminal aftermath — there is no runway left to
-      // reconverge a fork (Plan Part 3 Layer C: resolution is callback-dominant).
-      // A charged resolution scene discharges as acknowledgment, NOT a new branch.
+      // Change is the terminal aftermath — there is no runway left to
+      // reconverge a fork (Plan Part 3 Layer C: change is callback-dominant).
+      // A charged change scene discharges as acknowledgment, NOT a new branch.
       u.consequenceTier = clampTier(u, 'callback');
-      u.tierRationale = 'charged but in resolution: callback-dominant (no runway, Layer C)';
+      u.tierRationale = 'charged but in change: callback-dominant (no runway, Layer C)';
       continue;
     }
 
@@ -874,7 +885,7 @@ function allocateConsequenceTiersCharge(units: PlannedScene[], ctx?: BudgetConte
       // Rule 2 / hollow-branch ban: a would-be major with no charge behind it is
       // DEMOTED to its light band rather than fabricating a hollow fork (honest
       // under-allocation, Plan Part 7 #3).
-      const leansCallback = Array.isArray(roles) && roles.includes('resolution');
+      const leansCallback = Array.isArray(storyCircleRoles) && storyCircleRoles.includes('change');
       u.consequenceTier = clampTier(u, leansCallback ? 'callback' : 'tint');
       u.tierRationale = 'Rule 2 (hollow-branch ban): under-charged major demoted to light';
     } else {
@@ -892,20 +903,21 @@ function allocateConsequenceTiersCharge(units: PlannedScene[], ctx?: BudgetConte
 /**
  * The encounter-spine invariant tier for one encounter (Plan Part 3, Layer D):
  * branch-point encounters carry the durable fork (`branch`); other encounters
- * are `branchlet`, escalating to `branch` at peak stakes (pinch2 / climax).
+ * are `branchlet`, escalating to `branch` at peak stakes (take / return).
  *
  * Encounters are *meant* to be heavy — they are NOT measured against the
  * scene-texture %; this invariant is their whole budget. `roles` is the episode's
- * structuralRole(s) (from `ctx.roleByEpisode`); when absent, no escalation fires
+ * Story Circle beat(s) (from `ctx.roleByEpisode`); when absent, no escalation fires
  * (a non-branch encounter stays `branchlet`) — deterministic either way. Pure.
  */
 export function encounterSpineTier(
   u: PlannedScene,
-  roles: StructuralRole[] | undefined,
+  roles: StoryCircleBeat[] | undefined,
 ): ConsequenceTier {
   if (isBranchPointEncounter(u)) return 'branch';
+  const storyCircleRoles = normalizeBudgetRoles(roles);
   const escalates =
-    Array.isArray(roles) && (roles.includes('pinch2') || roles.includes('climax'));
+    Array.isArray(storyCircleRoles) && (storyCircleRoles.includes('take') || storyCircleRoles.includes('return'));
   return escalates ? 'branch' : 'branchlet';
 }
 
@@ -937,7 +949,7 @@ export function spineDerivedHeavyPercent(units: PlannedScene[]): number {
  * `CONSEQUENCE_TWO_POP`. Budgets two populations with two policies:
  *
  *  - **Encounter spine** — by invariant only ({@link encounterSpineTier}):
- *    branch-point → `branch`; others → `branchlet` (→ `branch` at pinch2/climax).
+ *    branch-point → `branch`; others → `branchlet` (→ `branch` at take/return).
  *    Encounters are NOT measured against the scene-texture %.
  *  - **Standard-scene texture** — the season % re-expressed over scene-only weight
  *    ({@link SCENE_CONSEQUENCE_TARGET}, e.g. callback 60 / tint 30 / branchlet 8 /

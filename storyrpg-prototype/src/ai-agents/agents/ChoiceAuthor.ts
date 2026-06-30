@@ -32,10 +32,8 @@ import type { RelationshipEvidenceTag, RelationshipSurface, RelationshipValueAxi
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import type { ConsequenceTier, MechanicPressureContract, RelationshipPacingContract } from '../../types/scenePlan';
@@ -161,19 +159,9 @@ export interface ChoiceAuthorInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /**
-   * Season-level legacy-structure beat map. ChoiceAuthor uses it to calibrate
-   * choice weight: choices in the Climax / Pinch beats should be more
-   * consequential than choices in Rising / Hook beats.
-   */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle beat map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /**
-   * Which beat(s) of the season this episode carries.
-   */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle beat(s) this episode carries. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
   /** Episode-level fractal Story Circle from StoryArchitect. */

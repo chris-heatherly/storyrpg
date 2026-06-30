@@ -1,22 +1,25 @@
 ---
 name: pipeline-validation
-description: Use this skill when adding/modifying StoryRPG validators or working with the story-structure contract — the IntegratedBestPracticesValidator orchestrator, standalone structural/phase/season/coverage validators, incremental per-scene validation, StructuralValidator auto-fix, and the 7-point / choice-taxonomy / consequence rules they enforce.
+description: Use this skill when adding/modifying StoryRPG validators or working with the story-structure contract — IntegratedBestPracticesValidator quick/full checks, standalone season/architecture/diagnostic/final validators, validatorRegistry stage/tier/remediation notes, incremental per-scene validation, StructuralValidator auto-fix, and Story Circle / choice-taxonomy / consequence rules.
 ---
 
 # Pipeline Validation
 
-Validators live in `src/ai-agents/validators/`. The set churns (~50 files) — the canonical sources
-of truth are **`validators/index.ts`** (every exported validator + types) and
-**`validatorRegistry.ts`** (the stage → validator → tier dispatch map: which runs in which phase and
-whether it's HARD or advisory). Read those before assuming a validator's name, wiring, or severity.
+Validators live in `src/ai-agents/validators/`. The set churns — the canonical inventory sources are
+**`validators/index.ts`** (every exported validator + types) and **`validatorRegistry.ts`** (the
+stage → validator → tier/remediation manifest). `validatorRegistry.ts` is documentation-grade, not
+the universal live dispatcher, so confirm behavior in the owning call site before editing flow.
 
-- **Orchestrator**: `IntegratedBestPracticesValidator` runs the six best-practice validators
-  (`ChoiceDensity`, `NPCDepth`, `ConsequenceBudget`, `StakesTriangle`, `FiveFactor`,
-  `CallbackOpportunities`) in quick mode (heuristic, no LLM, Phase 4.5) or full mode (LLM scoring, Phase 5).
+- **Best-practices orchestrator**: `IntegratedBestPracticesValidator` owns quick/full checks such as
+  choice density/distribution/impact, NPC depth, consequence budget, stakes triangle, five-factor,
+  callbacks, mechanics leakage, stat balance, skill coverage/surface, branch mechanical divergence,
+  Pixar principles, and cliffhanger quality.
 - **Standalone**: structural integrity (`StructuralValidator` with `autoFix()`), phase correctness
-  (`PhaseValidator`), season (`MicroEpisodeSeasonValidator`, `SeasonPromiseValidator` — the old
-  `SeasonValidator` was removed), coverage (`SevenPointCoverageValidator`), E2E (`playwrightQARunner`),
-  HTTP assets (`storyAssetWalker`), plus many narrative validators.
+  (`PhaseValidator`), season/Story Circle (`StoryCircleCoverageValidator`, `SeasonPromiseValidator`,
+  `StoryCircleAnchorConformanceValidator`), episode architecture (`EpisodeStoryCircleValidator`,
+  `DramaticStructureValidator`, `SceneTurnContractValidator`), fidelity/final-contract validators,
+  E2E (`playwrightQARunner`), HTTP assets (`storyAssetWalker`), plus diagnostics. `SeasonValidator`
+  and `MicroEpisodeSeasonValidator` are not active validators.
 - **Incremental**: `IncrementalValidationRunner` runs per-scene during content generation and returns
   `regenerationRequested: 'scene'|'choices'|'encounter'|'none'`. It also scans ENCOUNTER prose
   (`collectEncounterProseTexts` over storylet/phase beats + clock labels) — encounter scenes carry
@@ -25,7 +28,7 @@ whether it's HARD or advisory). Read those before assuming a validator's name, w
 
 ## The structure contract validators protect
 
-7-point spine in canonical order; branch-and-bottleneck (reconverge, no dead ends/orphans/unreachable);
+Story Circle spine in canonical order; branch-and-bottleneck (reconverge, no dead ends/orphans/unreachable);
 choice taxonomy (`expression`~35% never branches / `relationship` / `strategic` / `dilemma`) with
 ≥50% of scenes having a choicePoint; stakes triangle (want/cost/identity); five-factor; balanced
 consequence budget; encounter-first design with goal/threat clocks and a branching `nextSituation` tree.
@@ -33,9 +36,10 @@ consequence budget; encounter-first design with goal/threat clocks and a branchi
 ## Guardrails
 
 - Don't weaken a validator to pass bad output — tighten the prompt/remediation/data flow instead.
-- New validator: `validate()` returns `{ passed, metrics, issues }`; register in the orchestrator
-  and/or `validatorRegistry.ts`; add config to `ValidationConfig`; if auto-fixable, extend
-  `StructuralValidator.autoFix()`.
+- New validator: `validate()` returns `{ passed, metrics, issues }`; wire it at the owning runtime
+  call site (season, architecture, quick, full, diagnostic, artifact, final), update
+  `validatorRegistry.ts` when it belongs in the gate map, and add config/gates only when runtime
+  policy needs them. Register in `IntegratedBestPracticesValidator` only for quick/full checks.
 
 See also: the Cursor `pipeline-validation` + `story-structure-rules` skills,
 `docs/INCREMENTAL_VALIDATION_PLAN.md`, `docs/STORY_QUALITY_CONTRACT.md`.

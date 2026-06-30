@@ -45,7 +45,7 @@ move, with a `rationale`. The rules its prompt enforces and `ArcDeltaValidator` 
   many targets hit weakly.
 - **Axes must be real.** Every `axis` must be one of the six `IdentityProfile` keys above.
 - **Deltas serve the spine, not drift.** Deltas should move the protagonist *toward or away from the
-  season Goal / Stakes* (passed via `seasonAnchors` / `seasonSevenPoint`), not wander randomly. The
+  season Goal / Stakes* and the current Story Circle role, not wander randomly. The
   start-vs-end identity state is compared back to these targets by `ArcDeltaValidator`.
 - **Architecture is pressure, not exposition.** Targets should make the protagonist act from the **Lie**,
   strain toward the **Truth**, expose the **origin pressure**, or force a **Want-vs-Need** choice (the
@@ -65,9 +65,9 @@ ordered progression and what each phase must do:
 | 4 | `commitment` | Actions consistent with the new identity. |
 | 5 | `resolution` | Final form; relationships restructured. |
 
-Phases align to structural role: Midpoint episodes should emit a `turning_point` milestone; Climax
-episodes should emit `commitment` or `resolution` milestones (`episodeStructuralRole`). Milestones must
-anchor to blueprint scenes (`sceneId` / `beatId`) when possible.
+Phases align to the episode's Story Circle role: `find` episodes should emit a `turning_point`
+milestone; `take`, `return`, and `change` episodes should emit `commitment` or `resolution` milestones.
+Milestones must anchor to blueprint scenes (`sceneId` / `beatId`) when possible.
 
 ## The four relationship dimensions and NPC tiers
 

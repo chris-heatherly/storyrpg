@@ -52,7 +52,7 @@ describe('choiceSkillDisplay', () => {
     expect(getSkillIconName('investigation')).toBe('search');
   });
 
-  it('computes the effective stat value used by encounter resolution', () => {
+  it('computes the effective stat value used by encounter change', () => {
     const display = resolveChoiceSkillDisplay({
       skillKey: 'athletics',
       player: createPlayer(),

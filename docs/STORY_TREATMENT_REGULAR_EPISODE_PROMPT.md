@@ -42,14 +42,14 @@ Each layer has a different job:
 | Season | The complete story unit. It has one season dramatic question framed around the protagonist's Lie. |
 | Act | A broad season phase: setup/disruption, escalation/transformation, confrontation/aftermath. Acts are not the same as arcs. |
 | Arc | A 3-8 episode pressure movement inside the season. It has its own dramatic question and finale but not season-level finality. |
-| Seven-point anchor | One required season-level structural turn: hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution. |
-| Buffer | Purposeful connective pressure between anchors. Buffers are not filler. |
+| Story Circle beat | One required season-level structural turn: you, need, go, search, find, take, return, change. |
+| Expansion beat | Purposeful connective pressure that deepens a Story Circle beat. Expansions are not filler. |
 | Episode | A playable installment with its own dramatic question, internal turn structure, and consequence-bearing end state. |
 | Episode turn | A major planning movement inside an episode. Not a runtime schema. |
 | Scene | A dramatic situation generated later by the pipeline. |
 | Beat | The smallest visible story turn generated later by the pipeline. |
 
-Do not make every episode a separate seven-point season. The seven points are the **season spine**. Each regular episode still needs its own dramatic shape, but it should reinforce the larger order of magnitude: scene -> episode -> arc -> season.
+Do not make every episode a separate season circle. The Story Circle is the **season spine**. Each regular episode still needs its own dramatic shape, but it should reinforce the larger order of magnitude: scene -> episode -> arc -> season.
 
 ## Story Logic Rule: No "And Then"
 
@@ -334,9 +334,9 @@ The finished treatment should stay human-readable Markdown, but the generator al
 
 - Use `## N. Section Name` for every required section.
 - In `## 9. Episode Outline`, every episode must use `### Episode N: Title`. Do not spell out the number. Do not skip numbers. Finale headings may add `(FINALE)` after the title.
-- Put `Act`, `Arc`, `Structural role`, and `Structural note` on separate bullets. Do not combine them on one line.
+- Put `Act`, `Arc`, `Story Circle role`, and `Story Circle note` on separate bullets. Do not combine them on one line.
 - Use bold top-level field labels exactly, such as `- **Episode turns:**`. Put list items only as indented child bullets under that label.
-- `Structural role` must be one or more canonical role tokens only: `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`, `rising`, or `falling`. Put explanatory text like "buffer toward Pinch 1" in `Structural note`, not `Structural role`.
+- `Story Circle role` must be one or more canonical role tokens only: `you`, `need`, `go`, `search`, `find`, `take`, `return`, or `change`. Put explanatory text like "search expansion toward find" in `Story Circle note`, not `Story Circle role`.
 - Use these exact episode field labels: `Episode dramatic question`, `Cold open function`, `A pressure lane`, `B pressure lane`, `C seed`, `Episode turns`, `Synopsis`, `Opening situation`, `Encounter anchor`, `How the encounter manifests the central conflict`, `Stakes layers present in the major scene/encounter`, `Theme angle`, `Lie pressure`, `Encounter buildup`, `Major choice pressure`, `Alternative paths`, `Information movement`, `Consequence seeds`, `Ending turnout`, `Resolved episode tension`, `Cliffhanger hook`, `Cliffhanger question`, `Next episode pressure`, `Cliffhanger setup`, `Cliffhanger type`, `Emotional charge`, and `End-state change`.
 - For non-finale episodes, `Cliffhanger question` is required. It is the question hanging at the end of this episode and should become central pressure for the next episode.
 - For finale episodes, use `Resolution / aftermath` instead of non-finale cliffhanger fields.
@@ -497,8 +497,8 @@ For each episode:
 - Episode number and title, formatted exactly as `### Episode N: Title`
 - Act
 - Arc
-- Structural role: canonical token(s) only: `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`, `rising`, or `falling`
-- Structural note: anchor, fused anchor, or buffer explanation
+- Story Circle role: canonical token(s) only: `you`, `need`, `go`, `search`, `find`, `take`, `return`, or `change`
+- Story Circle note: primary beat, fused beat, or expansion explanation
 - Episode dramatic question
 - Cold open function: hook + promise + optional stakes
 - A pressure lane
@@ -617,7 +617,7 @@ Before finalizing, audit for:
 ```text
 You are creating a compact story treatment for StoryRPG, a choose-your-own-adventure / branching narrative generator that turns a treatment into a visual-novel/RPG season.
 
-This is the REGULAR EPISODE version. A regular episode contains multiple scenes, 3-6 episode turns, 2-4 meaningful choice pressures, one central encounter anchor, and a consequence-bearing ending. The season uses a 3-act / 7-point spine, but every episode should still have its own dramatic question, internal turn structure, protagonist pressure, and changed end state.
+This is the REGULAR EPISODE version. A regular episode contains multiple scenes, 3-6 episode turns, 2-4 meaningful choice pressures, one central encounter anchor, and a consequence-bearing ending. The season uses a Story Circle spine, but every episode should still have its own dramatic question, internal turn structure, protagonist pressure, and changed end state.
 
 Your output is not full story prose. It is the planning document the generator will use to create episodes, scenes, choices, alternate paths, consequences, images, callbacks, information reveals, and exactly 3 alternate season endings.
 
@@ -625,10 +625,10 @@ Core hierarchy:
 - Season -> Acts -> Arcs -> Seven-point anchors + buffers -> Episodes -> Episode turns -> Scenes -> Beats.
 - Acts are broad season phases.
 - Arcs are 3-8 episode pressure movements with their own dramatic questions.
-- Seven-point anchors are the season spine: hook, plotTurn1, pinch1, midpoint, pinch2, climax, resolution.
-- Episodes carry anchor roles, fused anchor roles, or buffer roles.
-- Buffers are purposeful: escalation, consequence processing, relationship development, callbacks, preparation, recovery, investigation, or alternate leverage.
-- Do not give every episode its own separate seven-point season.
+- Story Circle beats are the season spine: you, need, go, search, find, take, return, change.
+- Episodes carry primary Story Circle roles, fused Story Circle roles, or expansion roles.
+- Expansions are purposeful: escalation, consequence processing, relationship development, callbacks, preparation, recovery, investigation, or alternate leverage.
+- Do not give every episode its own separate season circle.
 
 Core rules:
 - Fiction first: never expose stats, dice, meters, levels, thresholds, builds, or game math.
@@ -666,9 +666,9 @@ Create a treatment with these sections:
 Output format contract:
 - Use `## N. Section Name` for required sections.
 - Use `### Episode N: Title` for every episode in section 9. Do not skip episode numbers. The finale may add `(FINALE)`.
-- Put `Act`, `Arc`, `Structural role`, and `Structural note` on separate bullets.
+- Put `Act`, `Arc`, `Story Circle role`, and `Story Circle note` on separate bullets.
 - Use bold top-level field labels exactly, such as `- **Episode turns:**`. Put list items only as indented child bullets under that label.
-- `Structural role` must contain only canonical token(s): `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, `resolution`, `rising`, or `falling`. Put explanatory text like "buffer toward Pinch 1" in `Structural note`.
+- `Story Circle role` must contain only canonical token(s): `you`, `need`, `go`, `search`, `find`, `take`, `return`, or `change`. Put explanatory text like "search expansion toward find" in `Story Circle note`.
 - Use exact parse labels: `Episode dramatic question`, `Cold open function`, `A pressure lane`, `B pressure lane`, `C seed`, `Episode turns`, `Synopsis`, `Opening situation`, `Encounter anchor`, `How the encounter manifests the central conflict`, `Stakes layers present in the major scene/encounter`, `Theme angle`, `Lie pressure`, `Encounter buildup`, `Major choice pressure`, `Alternative paths`, `Information movement`, `Consequence seeds`, `Ending turnout`, `Resolved episode tension`, `Cliffhanger hook`, `Cliffhanger question`, `Next episode pressure`, `Cliffhanger setup`, `Cliffhanger type`, `Emotional charge`, `End-state change`, and finale-only `Resolution / aftermath`.
 - For every non-finale episode, include `Cliffhanger question`; it is the question hanging at the end of the episode and should become central pressure for the next episode.
 - For finale episodes, use `Resolution / aftermath` instead of non-finale cliffhanger fields.

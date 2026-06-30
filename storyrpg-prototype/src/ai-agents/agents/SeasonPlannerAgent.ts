@@ -20,12 +20,9 @@ import {
   EncounterCategory,
   EndingMode,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleBeat,
   StoryCircleStructure,
-  StructuralRole,
-  LEGACY_STRUCTURAL_BEATS,
   TreatmentSeasonGuidance,
 } from '../../types/sourceAnalysis';
 import {
@@ -50,17 +47,12 @@ import {
   ResiduePayoffPolicy,
 } from '../../types/seasonPlan';
 import {
-  distributeLegacyStructure,
-  backfillMissingLegacyBeats,
-} from '../utils/legacyStructureDistribution';
-import {
   STORY_CIRCLE_BEAT_DEFINITION_LINES,
   STORY_CIRCLE_GEOMETRY_PRINCIPLES,
   backfillMissingStoryCircleBeats,
   describeStoryCircleDistribution,
   distributeStoryCircle,
-  legacyStructuralRolesToStoryCircleRoles,
-  storyCircleFromLegacyStructure,
+  storyCircleRoleBeats,
 } from '../utils/storyCircleDistribution';
 import {
   buildEncounterStoryCircleTargetRationale,
@@ -95,7 +87,7 @@ import { InformationLedgerValidator } from '../validators/InformationLedgerValid
 import {
   buildDefaultCliffhangerPlan,
   normalizeCliffhangerPlan,
-  selectMappedStructuralRole,
+  selectCliffhangerStoryCircleBeat,
   shouldForceHighIntensityHook,
 } from '../utils/cliffhangerPlanning';
 import {
@@ -105,7 +97,6 @@ import {
 import { clampSceneCount } from '../../constants/pipeline';
 import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
 import { buildSeasonScenePlan, scenesForEpisode, MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
-import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import { buildScenePlanPrompt, normalizeAuthoredScenePlan } from '../pipeline/authorScenePlan';
 import { synthesizeTreatmentGuidance } from '../pipeline/synthesizeTreatmentGuidance';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
@@ -163,10 +154,8 @@ export interface SeasonPlannerInput {
     pacing?: 'tight' | 'moderate' | 'expansive';
     endingMode?: EndingMode;
     /**
-     * Treatment-fidelity strict mode (Phase 1, Step 1.2). When true, a conflict
-     * between an authored Section-7 beat→episode anchor and the per-episode
-     * structuralRole assignment throws instead of being repaired+logged. Default
-     * OFF (opt-in per run), consistent with the validator-gating pattern.
+     * Treatment-fidelity strict mode. When true, authored Story Circle anchors
+     * are treated as hard constraints by downstream validators.
      */
     strictTreatmentValidation?: boolean;
   };
@@ -180,6 +169,24 @@ export interface SeasonPlannerInput {
    * order is REJECTED (execute throws). Default ON.
    */
   storyCircleBlocking?: boolean;
+}
+
+function textOrFallback(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : fallback;
+}
+
+function defaultStoryCircleFromAnchors(anchors?: Partial<StoryAnchors>): StoryCircleStructure {
+  return {
+    you: textOrFallback(anchors?.stakes, 'The protagonist begins in a recognizable world with a pressure already present.'),
+    need: textOrFallback(anchors?.goal, 'The protagonist wants something concrete before the deeper need becomes visible.'),
+    go: textOrFallback(anchors?.incitingIncident, 'An inciting pressure forces the protagonist across a threshold.'),
+    search: 'The protagonist adapts, tests options, and discovers what the new world demands.',
+    find: 'The protagonist gains a decisive insight, ally, tool, truth, or false victory.',
+    take: 'The apparent gain demands a serious cost and exposes the central pressure.',
+    return: textOrFallback(anchors?.climax, 'The protagonist brings the changed self back into the core conflict.'),
+    change: 'The season resolves into a new equilibrium shaped by what the protagonist has become.',
+  };
 }
 
 // ========================================
@@ -319,12 +326,12 @@ Your plans must define:
       isSceneFirstPlanningEnabled() &&
       seasonPlan.scenePlan
     ) {
-      // Build the positional-axis context (Plan Part 3, Layers A–C): map each
-      // episode number to its structuralRole(s). The allocator/validator read it
+      // Build the positional-axis context: map each episode number to its Story
+      // Circle beat(s). The allocator/validator read it
       // only when CONSEQUENCE_POSITIONAL is on; otherwise behavior is unchanged.
-      const roleByEpisode: Record<number, StructuralRole[]> = {};
+      const roleByEpisode: Record<number, StoryCircleBeat[]> = {};
       for (const ep of seasonPlan.episodes) {
-        roleByEpisode[ep.episodeNumber] = ep.structuralRole ?? [];
+        roleByEpisode[ep.episodeNumber] = storyCircleRoleBeats(ep.storyCircleRole);
       }
       const budgetCtx: BudgetContext = { roleByEpisode };
 
@@ -612,8 +619,7 @@ Your plans must define:
       .join('\n');
 
     const anchors = analysis.anchors;
-    const sp = analysis.legacyStructure;
-    const storyCircle = analysis.storyCircle ?? storyCircleFromLegacyStructure(sp, anchors);
+    const storyCircle = analysis.storyCircle ?? defaultStoryCircleFromAnchors(anchors);
     const anchorBlock = anchors
       ? [
           `- Stakes: ${anchors.stakes}`,
@@ -970,7 +976,7 @@ Return this JSON:
       "newOpenQuestion": "The new question the reader must continue to answer",
       "emotionalCharge": "The dominant feeling: shock, dread, heartbreak, temptation, awe, etc.",
       "nextEpisodePressure": "How this ending pushes into the next episode",
-      "mappedStructuralRole": "hook|plotTurn1|pinch1|midpoint|pinch2|climax|resolution|rising|falling"
+      "storyCircleLaunchBeat": "you|need|go|search|find|take|return|change"
     }
   },
   "difficultyCurve": [
@@ -1690,15 +1696,8 @@ CRITICAL RULES:
       }
     }
 
-    // Build the season's structuralRole map. Prefer the structuralRole
-    // already present on each EpisodeOutline (set by SourceMaterialAnalyzer
-    // when the source material implied one). Otherwise use the default
-    // distribution so compatibility aliases still have full coverage.
-    const defaultDistribution = distributeLegacyStructure(analysis.totalEstimatedEpisodes);
-    const structuralRoleByEpisode = new Map<number, StructuralRole[]>();
-    for (const entry of defaultDistribution) {
-      structuralRoleByEpisode.set(entry.episodeNumber, [...entry.structuralRole]);
-    }
+    // Build the season's Story Circle map. Prefer authored/source analysis
+    // assignments, then backfill the canonical season-long Story Circle.
     const storyCircleRoleByEpisode = new Map<number, StoryCircleRoleAssignment[]>();
     for (const entry of defaultStoryCircleDistribution) {
       storyCircleRoleByEpisode.set(
@@ -1707,42 +1706,14 @@ CRITICAL RULES:
       );
     }
     for (const ep of analysis.episodeBreakdown) {
-      if (ep.structuralRole && ep.structuralRole.length > 0) {
-        structuralRoleByEpisode.set(ep.episodeNumber, [...ep.structuralRole]);
-      }
       if (ep.storyCircleRole && ep.storyCircleRole.length > 0) {
         storyCircleRoleByEpisode.set(ep.episodeNumber, ep.storyCircleRole.map((role) => ({ ...role })));
-      } else if (ep.structuralRole && ep.structuralRole.length > 0) {
-        const migrated = legacyStructuralRolesToStoryCircleRoles(ep.structuralRole);
-        if (migrated.length > 0) storyCircleRoleByEpisode.set(ep.episodeNumber, migrated);
       }
     }
 
-    // Backfill compatibility roles for old artifacts, then backfill direct
-    // Story Circle roles for new generation. Missing Story Circle beats are
-    // assigned to the default distribution episode instead of being discarded.
-    backfillMissingLegacyBeats(structuralRoleByEpisode, defaultDistribution);
+    // Missing Story Circle beats are assigned to the default distribution
+    // episode instead of being discarded.
     backfillMissingStoryCircleBeats(storyCircleRoleByEpisode, defaultStoryCircleDistribution);
-
-    // Step 1.2 (defensive second pass): the LLM planner output can re-introduce
-    // beat drift via per-episode structuralRole. Reconcile the assembled map
-    // against the authored Section-7 anchors — the anchor wins, conflicts are
-    // logged, and in strict mode a conflict throws. Mirrors the reconciliation
-    // SourceMaterialAnalyzer already ran on the analysis upstream.
-    const beatAnchors = analysis.treatmentSeasonGuidance?.beatEpisodeAnchors;
-    if (beatAnchors) {
-      const reconcilable = [...structuralRoleByEpisode.entries()].map(([episodeNumber, structuralRole]) => ({
-        episodeNumber,
-        structuralRole,
-      }));
-      reconcileBeatAnchors(reconcilable, beatAnchors, {
-        strict: preferences?.strictTreatmentValidation ?? false,
-        log: (message) => console.warn(`[SeasonPlannerAgent] Beat-anchor reconciliation: ${message}`),
-      });
-      for (const entry of reconcilable) {
-        structuralRoleByEpisode.set(entry.episodeNumber, entry.structuralRole ?? []);
-      }
-    }
 
     // Build SeasonEpisode objects with encounter data
     const episodes: SeasonEpisode[] = analysis.episodeBreakdown.map(ep => {
@@ -1790,14 +1761,11 @@ CRITICAL RULES:
         .filter(f => f.checkedInEpisodes.includes(ep.episodeNumber))
         .map(f => ({ flag: f.flag, ifTrue: f.description, ifFalse: `No ${f.flag}` }));
 
-      const structuralRole = structuralRoleByEpisode.get(ep.episodeNumber)
-        ?? ep.structuralRole
-        ?? (defaultDistribution.find((e) => e.episodeNumber === ep.episodeNumber)?.structuralRole ?? []);
       const storyCircleRole = storyCircleRoleByEpisode.get(ep.episodeNumber)
         ?? ep.storyCircleRole
         ?? (defaultStoryCircleDistribution.find((e) => e.episodeNumber === ep.episodeNumber)?.storyCircleRole ?? []);
       const fallbackCliffhanger = buildDefaultCliffhangerPlan({
-        episode: { ...ep, structuralRole },
+        episode: { ...ep, storyCircleRole },
         totalEpisodes: analysis.totalEstimatedEpisodes,
         seasonStakes: analysis.anchors?.stakes,
         nextEpisodeTitle: analysis.episodeBreakdown.find(e => e.episodeNumber === ep.episodeNumber + 1)?.title,
@@ -1806,15 +1774,14 @@ CRITICAL RULES:
         episodeCliffhangerMap[ep.episodeNumber],
         fallbackCliffhanger,
       );
-      const mappedRole = selectMappedStructuralRole(structuralRole, ep.episodeNumber);
+      const cliffhangerBeat = selectCliffhangerStoryCircleBeat(storyCircleRole, ep.episodeNumber);
       if (!cliffhangerPlan.storyCircleLaunchBeat && storyCircleRole.length > 0) {
         cliffhangerPlan.storyCircleLaunchBeat = storyCircleRole[storyCircleRole.length - 1]?.beat;
       }
-      if (shouldForceHighIntensityHook(ep.episodeNumber, analysis.totalEstimatedEpisodes, mappedRole)) {
+      if (shouldForceHighIntensityHook(ep.episodeNumber, analysis.totalEstimatedEpisodes, cliffhangerBeat)) {
         cliffhangerPlan.intensity = 'high';
-        cliffhangerPlan.mappedStructuralRole = mappedRole;
         if (cliffhangerPlan.type === 'mystery') {
-          cliffhangerPlan.type = mappedRole === 'midpoint' ? 'reframe' : 'emotional_hook';
+          cliffhangerPlan.type = cliffhangerBeat === 'find' ? 'reframe' : 'emotional_hook';
         }
       }
 
@@ -1823,7 +1790,6 @@ CRITICAL RULES:
         canonEpisodeId: canonEpisodeFact?.id,
         derivedFromFactIds: canonEpisodeFact ? [canonEpisodeFact.id] : undefined,
         storyCircleRole,
-        structuralRole,
         status: 'planned' as const,
         dependsOn: deps,
         setupsForEpisodes: setupsFor,
@@ -1922,7 +1888,6 @@ CRITICAL RULES:
     const storyCircleBeatContracts = analysis.storyCircleBeatContracts ?? buildStoryCircleBeatContracts({
 	      guidance: analysis.treatmentSeasonGuidance,
 	      storyCircle: analysis.storyCircle,
-	      legacyStructure: analysis.legacyStructure,
 	      totalEpisodes: sourceTotalEpisodes,
 	      treatmentSourced: analysis.sourceFormat === 'story_treatment'
 	        || analysis.treatmentMetadata?.detected
@@ -2039,8 +2004,7 @@ CRITICAL RULES:
       themes: analysis.themes,
       arcs,
       anchors: analysis.anchors,
-      storyCircle: analysis.storyCircle ?? storyCircleFromLegacyStructure(analysis.legacyStructure, analysis.anchors),
-      legacyStructure: analysis.legacyStructure,
+      storyCircle: analysis.storyCircle ?? defaultStoryCircleFromAnchors(analysis.anchors),
       themeArgument: analysis.themeArgument,
       seasonPromiseArchitecture,
       seasonPromiseContracts,

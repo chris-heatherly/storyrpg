@@ -37,7 +37,7 @@ export const PLANNING_REGISTER_LEAK_PATTERNS: Array<{ label: string; pattern: Re
   { label: 'Fallback new-stakes scaffold', pattern: /\bThe\s+people\s+nearby\s+reveal\s+new\s+stakes\s+without\s+saying\s+them\s+plainly\b/i },
   { label: 'Generic response choice scaffold', pattern: /\bchoose\s+how\s+(?:the\s+protagonist|they|you|[A-Z][A-Za-z'’-]+)\s+(?:responds?|handles?|approaches?|reacts?)\b/i },
   { label: 'Planning role scene label', pattern: /\b(?:release|development|setup|payoff|turn)\s+scene\s+\d+\b/i },
-  { label: 'Structural beat service', pattern: /\bserves\s+the\s+(?:hook|plotTurn1|pinch1|midpoint|pinch2|climax|resolution)\s+beat\b/i },
+  { label: 'Structural beat service', pattern: /\bserves\s+the\s+(?:you|need|go|search|find|take|return|change)\s+beat\b/i },
   { label: 'Forward pressure', pattern: /\bForward\s+pressure\s*:/i },
   { label: 'Episode pressure instruction', pattern: /\bEscalate\s+the\s+episode\s+pressure\s+through\s+a\s+concrete\s+turn\s*:/i },
   { label: 'Fallout pressure instruction', pattern: /\bLet\s+the\s+fallout\s+settle\s+into\s+the\s+next\s+pressure\s*:/i },

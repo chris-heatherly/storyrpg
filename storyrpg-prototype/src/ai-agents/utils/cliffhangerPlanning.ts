@@ -1,17 +1,17 @@
 import type { CliffhangerType } from '../../types';
 import type { CliffhangerIntensity, CliffhangerPlan } from '../../types/seasonPlan';
-import type { EpisodeOutline, StructuralRole } from '../../types/sourceAnalysis';
+import type { EpisodeOutline, StoryCircleBeat, StoryCircleRoleAssignment } from '../../types/sourceAnalysis';
+import { storyCircleRoleBeats } from './storyCircleDistribution';
 
-const ROLE_PRIORITY: StructuralRole[] = [
-  'midpoint',
-  'pinch2',
-  'plotTurn1',
-  'pinch1',
-  'hook',
-  'climax',
-  'resolution',
-  'rising',
-  'falling',
+const STORY_CIRCLE_CLIFFHANGER_PRIORITY: StoryCircleBeat[] = [
+  'take',
+  'find',
+  'search',
+  'go',
+  'need',
+  'return',
+  'change',
+  'you',
 ];
 
 export interface CliffhangerDefaults {
@@ -22,16 +22,20 @@ export interface CliffhangerDefaults {
   nextEpisodePressure: string;
 }
 
-export function selectMappedStructuralRole(roles: StructuralRole[] | undefined, episodeNumber = 1): StructuralRole {
-  if (episodeNumber === 1 && roles?.includes('hook')) return 'hook';
-  for (const role of ROLE_PRIORITY) {
-    if (roles?.includes(role)) return role;
+export function selectCliffhangerStoryCircleBeat(
+  roles: StoryCircleRoleAssignment[] | undefined,
+  episodeNumber = 1,
+): StoryCircleBeat {
+  const beats = storyCircleRoleBeats(roles);
+  if (episodeNumber === 1 && beats.includes('you')) return 'you';
+  for (const beat of STORY_CIRCLE_CLIFFHANGER_PRIORITY) {
+    if (beats.includes(beat)) return beat;
   }
-  return roles?.[0] || 'rising';
+  return beats[0] || 'search';
 }
 
-export function getCliffhangerDefaultsForRole(
-  role: StructuralRole,
+export function getCliffhangerDefaultsForStoryCircleBeat(
+  beat: StoryCircleBeat,
   episodeNumber: number,
   totalEpisodes: number,
 ): CliffhangerDefaults {
@@ -45,8 +49,8 @@ export function getCliffhangerDefaultsForRole(
     };
   }
 
-  switch (role) {
-    case 'hook':
+  switch (beat) {
+    case 'you':
       return {
         type: 'emotional_hook',
         intensity: 'high',
@@ -54,7 +58,8 @@ export function getCliffhangerDefaultsForRole(
         newOpenQuestion: 'Why is the ordinary world more dangerous or personal than it first appeared?',
         nextEpisodePressure: 'The protagonist must follow the new personal disturbance.',
       };
-    case 'plotTurn1':
+    case 'need':
+    case 'go':
       return {
         type: 'decision',
         intensity: 'high',
@@ -62,7 +67,7 @@ export function getCliffhangerDefaultsForRole(
         newOpenQuestion: 'What will the protagonist sacrifice now that retreat is impossible?',
         nextEpisodePressure: 'The next episode begins from forced commitment or pursuit.',
       };
-    case 'pinch1':
+    case 'search':
       return {
         type: 'betrayal',
         intensity: 'high',
@@ -70,7 +75,7 @@ export function getCliffhangerDefaultsForRole(
         newOpenQuestion: 'How far can the antagonizing force reach, and who is no longer safe?',
         nextEpisodePressure: 'The next episode must deal with a loss, betrayal, or tightened threat.',
       };
-    case 'midpoint':
+    case 'find':
       return {
         type: 'reframe',
         intensity: 'high',
@@ -78,7 +83,7 @@ export function getCliffhangerDefaultsForRole(
         newOpenQuestion: 'What does the central conflict mean now that a core assumption has flipped?',
         nextEpisodePressure: 'The protagonist must act from a new understanding of the stakes.',
       };
-    case 'pinch2':
+    case 'take':
       return {
         type: 'emotional_hook',
         intensity: 'high',
@@ -86,35 +91,26 @@ export function getCliffhangerDefaultsForRole(
         newOpenQuestion: 'What remains of the protagonist after this cost lands?',
         nextEpisodePressure: 'The next episode must reckon with the fallout and force transformation.',
       };
-    case 'climax':
+    case 'return':
       return {
         type: episodeNumber >= totalEpisodes ? 'transformation' : 'danger',
         intensity: episodeNumber >= totalEpisodes ? 'medium' : 'high',
-        emotionalCharge: episodeNumber >= totalEpisodes ? 'catharsis with legacy pressure' : 'high-stakes uncertainty',
+        emotionalCharge: episodeNumber >= totalEpisodes ? 'catharsis with future pressure' : 'high-stakes uncertainty',
         newOpenQuestion: episodeNumber >= totalEpisodes
-          ? 'What legacy or next-season pressure remains after the main conflict closes?'
+          ? 'What future or next-season pressure remains after the main conflict closes?'
           : 'What is the immediate fallout of the climactic outcome?',
         nextEpisodePressure: episodeNumber >= totalEpisodes
           ? 'Only seed future cost if the season is continuing.'
           : 'The next episode must deal with the consequences of the climax.',
       };
-    case 'resolution':
+    case 'change':
       return {
         type: 'mystery',
         intensity: 'medium',
-        emotionalCharge: 'legacy, future cost, or quiet unease',
-        newOpenQuestion: 'What future cost or legacy remains after the main arc resolves?',
+        emotionalCharge: 'future cost or quiet unease',
+        newOpenQuestion: 'What future cost remains after the main arc resolves?',
         nextEpisodePressure: 'Do not reopen the solved main conflict; point to aftermath or next-season pressure.',
       };
-    case 'falling':
-      return {
-        type: 'mystery',
-        intensity: 'medium',
-        emotionalCharge: 'unease after consequence',
-        newOpenQuestion: 'What consequence has not finished unfolding?',
-        nextEpisodePressure: 'The next episode should clarify the cost of what just happened.',
-      };
-    case 'rising':
     default:
       return {
         type: 'mystery',
@@ -129,23 +125,32 @@ export function getCliffhangerDefaultsForRole(
 export function shouldForceHighIntensityHook(
   episodeNumber: number,
   totalEpisodes: number,
-  role: StructuralRole,
+  beat: StoryCircleBeat,
 ): boolean {
   if (episodeNumber === 1) return true;
-  if (role === 'midpoint' || role === 'pinch2') return true;
+  if (beat === 'find' || beat === 'take') return true;
   return totalEpisodes >= 6 && episodeNumber > 1 && episodeNumber < totalEpisodes && (episodeNumber - 1) % 3 === 0;
 }
 
+function nextLoopLaunchBeatFor(
+  beat: StoryCircleBeat,
+  episodeNumber: number,
+  totalEpisodes: number,
+): StoryCircleBeat {
+  if (episodeNumber >= totalEpisodes) return 'change';
+  return beat === 'take' || beat === 'return' || beat === 'change' ? 'need' : 'go';
+}
+
 export function buildDefaultCliffhangerPlan(params: {
-  episode: Pick<EpisodeOutline, 'episodeNumber' | 'title' | 'synopsis' | 'narrativeFunction' | 'structuralRole'>;
+  episode: Pick<EpisodeOutline, 'episodeNumber' | 'title' | 'synopsis' | 'narrativeFunction' | 'storyCircleRole'>;
   totalEpisodes: number;
   seasonStakes?: string;
   nextEpisodeTitle?: string;
 }): CliffhangerPlan {
   const { episode, totalEpisodes, seasonStakes, nextEpisodeTitle } = params;
-  const mappedStructuralRole = selectMappedStructuralRole(episode.structuralRole, episode.episodeNumber);
-  const defaults = getCliffhangerDefaultsForRole(mappedStructuralRole, episode.episodeNumber, totalEpisodes);
-  const forceHigh = shouldForceHighIntensityHook(episode.episodeNumber, totalEpisodes, mappedStructuralRole);
+  const storyCircleBeat = selectCliffhangerStoryCircleBeat(episode.storyCircleRole, episode.episodeNumber);
+  const defaults = getCliffhangerDefaultsForStoryCircleBeat(storyCircleBeat, episode.episodeNumber, totalEpisodes);
+  const forceHigh = shouldForceHighIntensityHook(episode.episodeNumber, totalEpisodes, storyCircleBeat);
   const type = forceHigh && defaults.type === 'mystery' ? 'emotional_hook' : defaults.type;
   const intensity = forceHigh ? 'high' : defaults.intensity;
   const immediateResolution = episode.narrativeFunction?.conflict || episode.synopsis;
@@ -162,7 +167,7 @@ export function buildDefaultCliffhangerPlan(params: {
     newOpenQuestion: defaults.newOpenQuestion,
     emotionalCharge: defaults.emotionalCharge,
     nextEpisodePressure: nextPressure,
-    mappedStructuralRole,
+    storyCircleLaunchBeat: nextLoopLaunchBeatFor(storyCircleBeat, episode.episodeNumber, totalEpisodes),
     style: 'serialized_tv',
   };
 }
@@ -182,7 +187,7 @@ export function normalizeCliffhangerPlan(
     newOpenQuestion: raw?.newOpenQuestion || fallback.newOpenQuestion,
     emotionalCharge: raw?.emotionalCharge || fallback.emotionalCharge,
     nextEpisodePressure: raw?.nextEpisodePressure || fallback.nextEpisodePressure,
-    mappedStructuralRole: raw?.mappedStructuralRole || fallback.mappedStructuralRole,
+    storyCircleLaunchBeat: raw?.storyCircleLaunchBeat || fallback.storyCircleLaunchBeat,
     style: 'serialized_tv',
   };
 }

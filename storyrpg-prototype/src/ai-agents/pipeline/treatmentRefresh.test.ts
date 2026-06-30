@@ -149,7 +149,7 @@ describe('refreshAnalysisFromTreatmentDocument', () => {
         narrativeFunction: {
           setup: 'stale setup',
           conflict: 'stale conflict',
-          resolution: 'stale resolution',
+          change: 'stale change',
         },
       }],
       majorCharacters: [{ id: 'mara', name: 'Mara Vale', importance: 'core' }],

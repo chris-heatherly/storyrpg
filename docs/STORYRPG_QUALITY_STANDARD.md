@@ -118,21 +118,22 @@ A good season is a complete dramatic unit. It may leave future pressure, but it 
 - Does the finale answer, reframe, or resolve the main pressure?
 - Are future hooks earned and optional, rather than a substitute for resolution?
 
-### Seven-point structure
+### Story Circle structure
 
-The seven-point spine is load-bearing: `hook`, `plotTurn1`, `pinch1`, `midpoint`, `pinch2`, `climax`, and `resolution`.
+The Story Circle spine is load-bearing: `you`, `need`, `go`, `search`, `find`, `take`, `return`, and `change`.
 
 **Author standard**
 
 - Carry source anchors forward: stakes, goal, inciting incident, and climax.
-- Map the seven-point beats across the requested episode count.
-- Make each episode serve its assigned structural role.
-- When an episode carries a pinch, pressure the stakes directly.
-- When an episode carries the climax, land the same event promised by the climax anchor.
+- Map the Story Circle beats across the requested episode count.
+- Make each episode serve its assigned Story Circle role first, then its arc pressure.
+- When an episode carries `find`, recontextualize the story pressure.
+- When an episode carries `take`, make the cost visible.
+- When an episode carries `return` or `change`, land the promised climax and changed equilibrium.
 
 **Critic checks**
 
-- Are all seven structural beats present and in monotonic order?
+- Are all eight Story Circle beats present and in monotonic order?
 - Do the beats pressure the same story, or do they feel like disconnected episodes?
 - Does the midpoint recontextualize the problem, not merely raise volume?
 - Does the resolution show what changed?
@@ -830,7 +831,7 @@ Use the validator family that owns the problem:
 - Twist and surprise: `TwistQualityValidator`, `PixarPrinciplesValidator`.
 - Character change: `ArcDeltaValidator`, `SceneCraftValidator`.
 - NPC depth: `NPCDepthValidator`, `CharacterArchitectureValidator`.
-- Seven-point structure: `SevenPointCoverageValidator`, `SevenPointAnchorConformanceValidator`.
+- Story Circle structure: `StoryCircleCoverageValidator`, `StoryCircleAnchorConformanceValidator`.
 - Source/treatment fidelity: `TreatmentFidelityValidator`, quote recall diagnostics.
 - Sequence continuity: `sequencePlanSpecificityAudit`, `sequenceContinuityAudit`, `turnAudit`.
 - Visual defects: storyboard-v2 QA, image defect gates, `VisualQualityJudge`, visual checks.
@@ -863,7 +864,7 @@ A StoryRPG story is quality-complete when all of the following are true:
 1. It is playable from catalog load through episode completion.
 2. It follows the canonical story data model.
 3. It preserves source/treatment requirements.
-4. It has a season promise, central pressure, seven-point structure, episode roles, and a satisfying completion plan.
+4. It has a season promise, central pressure, Story Circle structure, episode roles, and a satisfying completion plan.
 5. Every episode has a question, pressure turn, changed end state, and appropriate forward pressure.
 6. Every scene has objective, obstacle, turn, and exit shift.
 7. Every meaningful choice passes the five-factor test and stakes triangle.
@@ -889,10 +890,10 @@ Use this sequence for any new generated story, repair, or major story-system cha
 
 1. Define the source promise, player role, genre, tone, and style.
 2. Define season anchors: stakes, goal, inciting incident, climax.
-3. Map the seven-point spine.
+3. Map the Story Circle spine.
 4. Define season promise architecture, central pressure, arcs, and information ownership.
 5. Define the protagonist identity pressure and core NPC architecture.
-6. Plan episodes with questions, structural roles, encounters, choice density, relationship beats, and forward pressure.
+6. Plan episodes with questions, Story Circle roles, encounters, choice density, relationship beats, and forward pressure.
 7. Plan scene graphs with bottlenecks, branch zones, transitions, and reconvergence.
 8. Author scenes as turns, not summaries.
 9. Author choices with type, intent, stakes, impact factors, consequence tier, conditions, consequences, and residue.

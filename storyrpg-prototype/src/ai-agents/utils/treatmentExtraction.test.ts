@@ -8,13 +8,13 @@ const TREATMENT_WITH_LITERAL_FACTS = `# Branching-Narrative Season Treatment
 ## 9. Episode Outline
 
 ### Episode 1: Mr. Midnight
-- Structural role: hook
+- Story Circle role: you
 - Episode promise: Kylie learns the blog can change her life.
 - Synopsis: Kylie publishes the Mr. Midnight post; by 6pm it has 80,000 reads and brand deals start appearing in her inbox.
 - Cliffhanger question: who left the black roses?
 
 ### Episode 3: The Name on the Chain
-- Structural role: plotTurn1
+- Story Circle role: go
 - Episode promise: the club glamour starts leaking family history.
 - Synopsis: Marinescu recognizes Kylie's grandmother Veronica by her maiden name and the gold chain in Kylie's bag.
 - Cliffhanger question: why does Victor vanish from the photograph?
@@ -207,7 +207,7 @@ describe('extractTreatmentFromMarkdown lite treatment format', () => {
 
     expect(treatment.episodes[1]?.sourceKind).toBe('authored_lite');
     expect(treatment.episodes[1]?.authoredTitle).toBe('The Sealed Bell');
-    expect(treatment.episodes[1]?.rawStructuralRole).toBe('you + need');
+    expect(treatment.episodes[1]?.rawStoryCircleRole).toBe('you + need');
     expect(treatment.episodes[1]?.synopsis).toContain('Mara finds Jonas');
     expect(treatment.episodes[1]?.episodePromise).toContain('controlled silence');
     expect(treatment.episodes[1]?.encounterCentralConflict).toContain('controlled silence');

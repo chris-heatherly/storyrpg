@@ -136,7 +136,7 @@ export function classifyTreatmentObligation(
 function isCompositeTwoAnchorSignature(normalized: string): boolean {
   return normalized.includes('two anchors')
     && /\b(?:rooftop|roof|terrace|first anchor)\b/.test(normalized)
-    && /\b(?:park|garden|street|alley|second anchor)\b/.test(normalized)
+    && /\b(?:cismigiu|park|garden|street|alley|second anchor)\b/.test(normalized)
     && /\b(?:shadow|scream|rescue|rescues?)\b/.test(normalized);
 }
 

@@ -112,37 +112,32 @@ Technical map:
 
 ## Season-Level Story Structure
 
-StoryRPG uses a season-level 3-act / 7-point structure. This is not visible to the player as labels. It is a planning spine that keeps long-form generated stories coherent.
+StoryRPG uses a season-level Story Circle structure. This is not visible to the player as labels. It is a planning spine that keeps long-form generated stories coherent.
 
-The required seven beats are:
+The required eight beats are:
 
 | Beat | Purpose |
 |---|---|
-| `hook` | Opens the promise, world, central pressure, and player curiosity. |
-| `plotTurn1` | Pushes the protagonist across a threshold into the main story. |
-| `pinch1` | Tightens cost, opposition, threat, or moral pressure. |
-| `midpoint` | Recontextualizes the story and changes what the player thinks is happening. |
-| `pinch2` | Narrows options and makes avoidance or old strategies fail. |
-| `climax` | Forces the decisive confrontation, choice, or irreversible action. |
-| `resolution` | Shows the changed state after the central pressure resolves. |
+| `you` | Establishes the protagonist, normal, pressure field, and current self. |
+| `need` | Names the want/lack underneath the visible goal. |
+| `go` | Pushes the protagonist across the threshold into the story problem. |
+| `search` | Tests adaptation through failed plans, allies, rules, and pressure. |
+| `find` | Delivers the wanted answer, access, intimacy, proof, or apparent win. |
+| `take` | Makes the find cost something visible and irreversible. |
+| `return` | Carries the prize/wound back into the original pressure field. |
+| `change` | Shows the changed state after the loop resolves. |
 
-Two buffer roles also exist:
-
-- `rising`: escalation between named beats before/around the midpoint.
-- `falling`: aftermath and narrowing after midpoint/climax pressure.
-
-The seven-point model matters because the generator needs a shared spine. Without it, AI-generated episodes can become episodic incidents that do not add up to a season.
+The Story Circle model matters because the generator needs a shared dramatic spine. Without it, AI-generated episodes can become episodic incidents that do not add up to a season.
 
 Technical map:
 
-- `StoryAnchors` and `SevenPointStructure` live in `storyrpg-prototype/src/types/sourceAnalysis.ts`.
-- `StructuralRole` defines seven-point roles and buffer roles.
-- `SourceMaterialAnalysis.anchors` and `.sevenPoint` are inferred or authored first.
-- `SeasonPlan.anchors` and `.sevenPoint` carry the structure forward.
-- `SeasonEpisode.structuralRole` tells downstream agents what each episode must carry.
-- `storyrpg-prototype/src/ai-agents/utils/sevenPointDistribution.ts` deterministically maps beats onto any episode count and checks coverage/order.
-- `SevenPointCoverageValidator` blocks incomplete or out-of-order season spines.
-- `SevenPointAnchorConformanceValidator` and realization validators check that authored/treatment beats land in the correct episode and on-page.
+- `StoryAnchors` and `StoryCircleStructure` live in `storyrpg-prototype/src/types/sourceAnalysis.ts`.
+- `SourceMaterialAnalysis.anchors` and `.storyCircle` are inferred or authored first.
+- `SeasonPlan.anchors` and `.storyCircle` carry the structure forward.
+- `SeasonEpisode.storyCircleRole` tells downstream agents what each episode must carry.
+- `storyrpg-prototype/src/ai-agents/utils/storyCircleDistribution.ts` deterministically maps beats onto any episode count and checks coverage/order.
+- `StoryCircleCoverageValidator` blocks incomplete or out-of-order season spines.
+- `StoryCircleAnchorConformanceValidator` and realization validators check that authored/treatment beats land in the correct episode and on-page.
 
 ## Source Analysis and Adaptation Mode
 
@@ -178,7 +173,7 @@ Every episode, scene, choice, and consequence should be legible in relation to t
 Technical map:
 
 - Anchors live in `StoryAnchors`.
-- `buildStructuralContextSection` in `storyrpg-prototype/src/ai-agents/prompts/storytellingPrinciples.ts` injects anchors and seven-point context into downstream agent prompts.
+- `buildStructuralContextSection` in `storyrpg-prototype/src/ai-agents/prompts/storytellingPrinciples.ts` injects anchors and Story Circle context into downstream agent prompts.
 - Agents that consume the structural context include `StoryArchitect`, `SceneWriter`, `ChoiceAuthor`, `EncounterArchitect`, `BranchManager`, `ThreadPlanner`, `TwistArchitect`, `CharacterArcTracker`, and related specialists.
 
 ## Season Promise and Dramatic Engine

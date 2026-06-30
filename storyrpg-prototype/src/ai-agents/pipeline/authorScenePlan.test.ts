@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeAuthoredScenePlan, buildScenePlanPrompt } from './authorScenePlan';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
-import type { StructuralRole } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 
-function episode(num: number, role: StructuralRole[], opts: Partial<SeasonEpisode> = {}): SeasonEpisode {
+function episode(num: number, role: StoryCircleBeat[], opts: Partial<SeasonEpisode> = {}): SeasonEpisode {
   return {
     episodeNumber: num,
     title: `Episode ${num}`,
@@ -16,7 +16,7 @@ function episode(num: number, role: StructuralRole[], opts: Partial<SeasonEpisod
     locations: ['town'],
     estimatedSceneCount: 4,
     estimatedChoiceCount: 3,
-    structuralRole: role,
+    storyCircleRole: role,
     narrativeFunction: { setup: '', conflict: '', resolution: '' },
     status: 'planned',
     dependsOn: [],
@@ -29,7 +29,7 @@ function episode(num: number, role: StructuralRole[], opts: Partial<SeasonEpisod
 
 function plan(episodes: SeasonEpisode[], extra: Partial<SeasonPlan> = {}): SeasonPlan {
   return {
-    legacyStructure: { hook: 'h', plotTurn1: 'p1', pinch1: 'pi1', midpoint: 'm', pinch2: 'pi2', climax: 'c', resolution: 'r' },
+    storyCircle: { you: 'h', go: 'p1', search: 'pi1', find: 'm', take: 'pi2', return: 'c', change: 'r' },
     episodes,
     consequenceChains: [],
     choiceMoments: [],
@@ -40,12 +40,12 @@ function plan(episodes: SeasonEpisode[], extra: Partial<SeasonPlan> = {}): Seaso
 
 describe('normalizeAuthoredScenePlan', () => {
   it('returns null for garbage', () => {
-    expect(normalizeAuthoredScenePlan(null, plan([episode(1, ['hook'])]))).toBeNull();
-    expect(normalizeAuthoredScenePlan({ nope: true }, plan([episode(1, ['hook'])]))).toBeNull();
+    expect(normalizeAuthoredScenePlan(null, plan([episode(1, ['you'])]))).toBeNull();
+    expect(normalizeAuthoredScenePlan({ nope: true }, plan([episode(1, ['you'])]))).toBeNull();
   });
 
   it('normalizes a well-formed authored plan and keeps forward setup/payoff', () => {
-    const p = plan([episode(1, ['hook']), episode(2, ['climax'])]);
+    const p = plan([episode(1, ['you']), episode(2, ['return'])]);
     const raw = {
       episodes: [
         {
@@ -75,7 +75,7 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('preserves raw scene turn contract fields from the LLM-authored plan', () => {
-    const p = plan([episode(1, ['hook'])]);
+    const p = plan([episode(1, ['you'])]);
     const raw = {
       episodes: [{
         episodeNumber: 1,
@@ -107,7 +107,7 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('drops a backward (earlier-episode) setup', () => {
-    const p = plan([episode(1, ['hook']), episode(2, ['climax'])]);
+    const p = plan([episode(1, ['you']), episode(2, ['return'])]);
     const raw = {
       episodes: [
         { episodeNumber: 1, scenes: [{ id: 's1-1', title: 'A', narrativeRole: 'setup' }] },
@@ -120,7 +120,7 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('appends a planned encounter the model dropped, as a kind:encounter scene', () => {
-    const ep = episode(1, ['climax'], {
+    const ep = episode(1, ['return'], {
       plannedEncounters: [
         { id: 'enc-1', type: 'social', description: 'tense parley', difficulty: 'moderate', npcsInvolved: ['rival'], stakes: 'trust', relevantSkills: ['rhetoric'], isBranchPoint: false },
       ],
@@ -138,7 +138,7 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('binds authored turns + the signature device onto the LLM-authored scenes', () => {
-    const ep = episode(1, ['climax'], {
+    const ep = episode(1, ['return'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
         episodeTurns: [
@@ -146,7 +146,7 @@ describe('normalizeAuthoredScenePlan', () => {
           'Aethavyr leaps to the rescue on instinct',
           'Lysandra names him Aethavyr',
         ],
-        visualAnchor: 'Aethavyr leaps from the battlement to catch the falling soldier',
+        visualAnchor: 'Aethavyr leaps from the battlement to catch the return soldier',
       },
       plannedEncounters: [
         { id: 'enc-1', type: 'combat', description: 'wall breach', difficulty: 'hard', npcsInvolved: ['darian'], stakes: 'the wall', relevantSkills: ['combat'], isBranchPoint: true },
@@ -185,7 +185,7 @@ describe('normalizeAuthoredScenePlan', () => {
     // The signature device lands on the encounter anchor as signatureMoment + a
     // tier:'signature' required beat.
     const anchor = scenes.find((s) => s.kind === 'encounter')!;
-    expect(anchor.signatureMoment).toBe('Aethavyr leaps from the battlement to catch the falling soldier');
+    expect(anchor.signatureMoment).toBe('Aethavyr leaps from the battlement to catch the return soldier');
     expect((anchor.requiredBeats ?? []).some((b) => b.tier === 'signature')).toBe(true);
 
     // The release scene stays free of authored content turns.
@@ -194,7 +194,7 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('adds turn-centered standard scenes when authored turns outnumber LLM scenes', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       treatmentGuidance: {
         episodeTurns: ['Turn one at the door', 'Turn two in the bookshop', 'Turn three on the rooftop'],
       },
@@ -222,14 +222,14 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('gap-fills an episode the model omitted with deterministic scenes', () => {
-    const p = plan([episode(1, ['hook']), episode(2, ['climax'])]);
+    const p = plan([episode(1, ['you']), episode(2, ['return'])]);
     const raw = { episodes: [{ episodeNumber: 1, scenes: [{ id: 's1-1', title: 'A', narrativeRole: 'setup' }] }] };
     const sp = normalizeAuthoredScenePlan(raw, p)!;
     expect(sp.byEpisode[2]?.length).toBeGreaterThanOrEqual(3); // deterministic fallback for ep 2
   });
 
   it('preserves an under-sized authored episode when no scene floor is requested (opt-in)', () => {
-    const p = plan([episode(1, ['hook'])]);
+    const p = plan([episode(1, ['you'])]);
     const raw = {
       episodes: [
         {
@@ -249,7 +249,7 @@ describe('normalizeAuthoredScenePlan', () => {
     // bite-me-g13 2026-06-13: the model authored ep1 as setup + encounter (2 scenes),
     // too small to carry a scene-graph branch. With the floor on, that episode is
     // rebuilt from the deterministic spine instead of shipping a branchless episode.
-    const p = plan([episode(1, ['hook'])]);
+    const p = plan([episode(1, ['you'])]);
     const raw = {
       episodes: [
         {
@@ -266,7 +266,7 @@ describe('normalizeAuthoredScenePlan', () => {
   });
 
   it('leaves an adequately-sized authored episode untouched when a scene floor is requested', () => {
-    const p = plan([episode(1, ['hook'])]);
+    const p = plan([episode(1, ['you'])]);
     const raw = {
       episodes: [
         {
@@ -286,7 +286,7 @@ describe('normalizeAuthoredScenePlan', () => {
 
 describe('buildScenePlanPrompt', () => {
   it('includes episodes, the Story Circle spine, and encounter ids', () => {
-    const ep = episode(1, ['climax'], {
+    const ep = episode(1, ['return'], {
       plannedEncounters: [
         { id: 'enc-x', type: 'combat', description: 'duel', difficulty: 'hard', npcsInvolved: [], stakes: 's', relevantSkills: [], isBranchPoint: true },
       ],

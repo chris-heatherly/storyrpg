@@ -40,7 +40,9 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
   `generated-stories/<run>/99-pipeline-errors.json`; cross-run quality/success:
   `generated-stories/quality-ledger.jsonl`.
 - Agents: `src/ai-agents/agents/`  · Validators: `src/ai-agents/validators/`
-- Reader runtime: `src/screens/reader`, `src/stores/gameStore.ts`, `src/engine/`
+- Reader runtime: `apps/reader/ReaderApp.tsx`, `src/screens/ReadingScreen.tsx`,
+  `src/screens/HomeScreen.tsx`, `src/screens/EpisodeSelectScreen.tsx`,
+  `src/screens/reader/ReaderSettingsScreen.tsx`, `src/stores/gameStore.ts`, `src/engine/`
 - Proxy/worker: `proxy-server.js`, `proxy/`, `src/ai-agents/server/worker-runner.ts`
 
 ## Skills index (`storyrpg-prototype/.claude/skills/`)
@@ -52,7 +54,7 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
   validator/abort behavior, and the quality ledger.
 - `pipeline-agent-development` — extending `BaseAgent`, LLM prompting/parsing, converters.
 - `pipeline-validation` — validators + the story-structure contract they enforce.
-- `story-structure-rules` — story-architecture craft: 7-point spine, scene graph,
+- `story-structure-rules` — story-architecture craft: Story Circle spine, scene graph,
   branch-and-bottleneck, choice taxonomy, consequence budget, encounter design.
 - `twist-and-thread-craft` — twist construction, narrative-thread lifecycle,
   foreshadow→reveal timing, path-aware payoffs, reconvergence residue
@@ -68,7 +70,8 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
 - `media-generation` — image providers/LoRA + audio narration (ElevenLabs).
 - `proxy-server` — Express proxy routes, worker lifecycle, and proxy auth-gating.
 - `story-playback` — the deterministic runtime (engine, `gameStore`, fiction-first).
-- `testing-tooling` — Vitest/Playwright, the four tsconfigs, `npm run validate`.
+- `testing-tooling` — Vitest/Playwright, the four main tsconfigs, reader/generator target
+  typechecks, boundary checks, `npm run validate`.
 - `ux-design` — fiction-first UI, theme tokens, shared components.
 - `integration-expo` — PostHog analytics (web + native) and the `phc_` key rule.
 

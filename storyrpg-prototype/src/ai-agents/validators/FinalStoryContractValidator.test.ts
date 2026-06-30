@@ -152,7 +152,7 @@ function validEncounter() {
           },
           {
             id: 'enc-beat-2',
-            phase: 'resolution',
+            phase: 'change',
             name: 'Second Beat',
             setupText: 'The answer demands a cost.',
             choices: [
@@ -734,7 +734,7 @@ describe('FinalStoryContractValidator', () => {
   it('blocks planning-register prose leaked into beats, variants, encounters, and visual metadata', async () => {
     const story = validStory();
     const scene = story.episodes[0].scenes[0] as any;
-    scene.geography = 'Aftermath that resettles stakes; serves the plotTurn1 beat ("The post goes viral.").';
+    scene.geography = 'Aftermath that resettles stakes; serves the go beat ("The post goes viral.").';
     scene.visualMetadata = {
       prompt: 'Introduce Victor on-page with a clear silhouette before the reveal.',
     };
@@ -756,17 +756,17 @@ describe('FinalStoryContractValidator', () => {
     }];
     scene.beats.push({
       id: 'beat-3',
-      text: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+      text: 'Escalate the episode pressure through a concrete turn: search pressure.',
     });
     scene.beats.push({
       id: 'beat-4',
-      text: 'Let the fallout settle into the next pressure: rising pressure.',
+      text: 'Let the fallout settle into the next pressure: search pressure.',
     });
     scene.beats.push({
       id: 'beat-5',
       text: 'The door closes behind you.',
-      primaryAction: 'Let the fallout settle into the next pressure: rising pressure.',
-      visualMoment: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+      primaryAction: 'Let the fallout settle into the next pressure: search pressure.',
+      visualMoment: 'Escalate the episode pressure through a concrete turn: search pressure.',
     });
 
     const report = await new FinalStoryContractValidator().validate({ story });
@@ -1115,7 +1115,7 @@ describe('FinalStoryContractValidator', () => {
         level: 'error',
         message: 'Rule #19: the ending resolves by coincidence instead of protagonist action.',
         location: {},
-        suggestion: 'Rewrite the ending with protagonist-caused resolution.',
+        suggestion: 'Rewrite the ending with protagonist-caused change.',
       }],
       warnings: [],
       suggestions: [],

@@ -2,17 +2,13 @@
  * Story Circle Distribution Helper
  *
  * Deterministically maps the eight Story Circle beats onto any number of
- * episodes or scenes. This is the canonical structural helper
- * for new generation; Story Circle helpers remain only as migration aliases.
+ * episodes or scenes. This is the canonical structural helper for generation.
  */
 
 import type {
-  LegacyStructuralMap,
-  StoryAnchors,
   StoryCircleBeat,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { STORY_CIRCLE_BEATS } from '../../types/sourceAnalysis';
 
@@ -262,79 +258,13 @@ export function backfillMissingStoryCircleBeats(
   return roleByUnit;
 }
 
-export function storyCircleFromLegacyStructure(
-  legacyStructure?: Partial<LegacyStructuralMap>,
-  anchors?: Partial<StoryAnchors>,
-): StoryCircleStructure {
-  const hook = cleanText(legacyStructure?.hook);
-  const plotTurn1 = cleanText(legacyStructure?.plotTurn1);
-  const pinch1 = cleanText(legacyStructure?.pinch1);
-  const midpoint = cleanText(legacyStructure?.midpoint);
-  const pinch2 = cleanText(legacyStructure?.pinch2);
-  const climax = cleanText(legacyStructure?.climax);
-  const resolution = cleanText(legacyStructure?.resolution);
-
-  return {
-    you: hook || cleanText(anchors?.stakes) || 'Known world, normal pressure, identity mask, core value, and personal stake are established.',
-    need: cleanText(anchors?.goal) || plotTurn1 || 'A conscious want and deeper dramatic need create active pressure.',
-    go: plotTurn1 || cleanText(anchors?.incitingIncident) || 'A threshold crossing makes retreat meaningfully harder.',
-    search: pinch1 || 'Adaptation under pressure tests plans, allies, tools, identity, and new rules.',
-    find: midpoint || 'The protagonist gains the wanted thing or apparent victory, revealing the real problem.',
-    take: pinch2 || 'The apparent gain demands a price that answers the protagonist need.',
-    return: climax || 'The protagonist carries the prize and wound back toward the original arena and consequences.',
-    change: resolution || cleanText(anchors?.climax) || 'A new equilibrium proves transformation or tragic refusal.',
-  };
-}
-
-export function storyCircleToLegacyStructure(storyCircle?: Partial<StoryCircleStructure>): LegacyStructuralMap {
-  return {
-    hook: cleanText(storyCircle?.you) || '',
-    plotTurn1: cleanText(storyCircle?.go) || cleanText(storyCircle?.need) || '',
-    pinch1: cleanText(storyCircle?.search) || '',
-    midpoint: cleanText(storyCircle?.find) || '',
-    pinch2: cleanText(storyCircle?.take) || '',
-    climax: cleanText(storyCircle?.return) || '',
-    resolution: cleanText(storyCircle?.change) || '',
-  };
-}
-
-export function legacyStructuralRolesToStoryCircleRoles(
-  roles?: StructuralRole[],
-): StoryCircleRoleAssignment[] {
+export function storyCircleRoleBeats(
+  roles?: StoryCircleRoleAssignment[],
+): StoryCircleBeat[] {
   if (!roles?.length) return [];
-  const mapped: StoryCircleRoleAssignment[] = [];
-  for (const role of roles) {
-    const beats = legacyRoleToStoryCircleBeats(role);
-    for (const beat of beats) {
-      if (!mapped.some((existing) => existing.beat === beat)) {
-        mapped.push({ beat, roleKind: 'primary', source: 'migration' });
-      }
-    }
-  }
-  return mapped;
-}
-
-export function legacyRoleToStoryCircleBeats(role: StructuralRole): StoryCircleBeat[] {
-  switch (role) {
-    case 'hook':
-      return ['you', 'need'];
-    case 'plotTurn1':
-      return ['go'];
-    case 'pinch1':
-      return ['search'];
-    case 'midpoint':
-      return ['find'];
-    case 'pinch2':
-      return ['take'];
-    case 'climax':
-      return ['return'];
-    case 'resolution':
-      return ['change'];
-    case 'rising':
-      return ['search'];
-    case 'falling':
-      return ['return'];
-  }
+  return roles
+    .map((role) => role.beat)
+    .filter((beat, index, beats) => beats.indexOf(beat) === index);
 }
 
 function cleanText(value: unknown): string {

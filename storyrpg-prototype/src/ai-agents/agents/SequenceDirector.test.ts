@@ -103,17 +103,17 @@ describe('SequenceDirector', () => {
     const scene = sceneFor('authored-plan', 'Mara slides the glass across the bar without looking at Ilya.');
     scene.sceneVisualSequencePlan = {
       objective: 'Mara tests whether Ilya will protect her secret without asking for the price.',
-      activity: 'Mara moves the untouched glass from her side of the bar to the exact midpoint between them.',
+      activity: 'Mara moves the untouched glass from her side of the bar to the exact find between them.',
       obstacle: 'The bartender keeps returning to the mirror behind them, making every glance risky.',
       geography: 'A narrow red bar with Mara at the left stool, Ilya at the right stool, the mirror behind the bottles, and the exit behind Mara.',
       movementLine: 'The glass travels left-to-right across the bar while both characters refuse direct eye contact.',
       visualThread: 'the untouched glass becoming a border neither character wants to cross',
       shotRhythm: ['relationship', 'insert', 'reaction'],
-      powerBlocking: 'Mara begins closer to the exit; the glass reaches the midpoint; Ilya ends with his hand stopping short of it.',
+      powerBlocking: 'Mara begins closer to the exit; the glass reaches the find; Ilya ends with his hand stopping short of it.',
       turningPoint: 'Ilya stops the glass with one finger but does not take it.',
       endState: 'The glass sits between them as a visible truce with no trust yet.',
-      anchorZones: ['Mara left of the bar near the exit', 'the glass at the midpoint', 'Ilya right of the bar under the mirror'],
-      boundaryOrThreshold: 'the midpoint of the bar is the trust line neither fully crosses',
+      anchorZones: ['Mara left of the bar near the exit', 'the glass at the find', 'Ilya right of the bar under the mirror'],
+      boundaryOrThreshold: 'the find of the bar is the trust line neither fully crosses',
       // Intentionally weak so SequenceDirector still repairs only this field.
       physicalCarrier: 'tbd',
       rhythmIntent: 'Hold the bar axis but let each panel find the most expressive subject for the changing truce.',

@@ -16,7 +16,7 @@ function infoEntry(overrides: Partial<InformationLedgerEntry> = {}): Information
     introducedEpisode: 2,
     plannedRevealEpisode: 6,
     setupTouchEpisodes: [2],
-    payoffPlan: 'Sylvanor reveals the Starborn lineage in the midpoint.',
+    payoffPlan: 'Sylvanor reveals the Starborn lineage in the find.',
     isBoxQuestion: false,
     ...overrides,
   };
@@ -71,7 +71,7 @@ describe('InformationLedgerScheduleValidator', () => {
         },
         [1, 2, 3, 4, 5, 6],
         // Step 4: the reveal episode's prose actually depicts the fact (Sylvanor / Starborn).
-        { 6: 'At the midpoint, Sylvanor finally reveals his Starborn blood to the court.' },
+        { 6: 'At the find, Sylvanor finally reveals his Starborn blood to the court.' },
       ),
     );
 

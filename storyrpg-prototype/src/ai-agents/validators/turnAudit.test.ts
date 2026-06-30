@@ -25,7 +25,7 @@ describe('fiction-first turn audit', () => {
     }));
   });
 
-  it('flags mechanically relevant turns that have no existing hook', () => {
+  it('flags mechanically relevant turns that have no existing you', () => {
     const issues = auditFictionFirstTurns([
       {
         id: 'beat-evidence',

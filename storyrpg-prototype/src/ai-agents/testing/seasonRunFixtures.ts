@@ -30,7 +30,7 @@ import { requestText, worldBible, characterBible, sceneFixture } from './fullRun
  * what generateMultipleEpisodes and the brief-from-analysis helpers actually
  * read: setting/keyLocations (world brief), protagonist/majorCharacters
  * (character brief), episodeBreakdown + totalEstimatedEpisodes (episode loop),
- * anchors/legacyStructure (season spine context).
+ * anchors/storyCircle (season spine context).
  */
 export function buildSeasonAnalysis(): Record<string, unknown> {
   return {
@@ -58,14 +58,15 @@ export function buildSeasonAnalysis(): Record<string, unknown> {
       incitingIncident: 'The catalogue commission excludes the east wing.',
       climax: 'Mara confronts the family\'s lawyer with the gallery ledger.',
     },
-    legacyStructure: {
-      hook: 'The catalogue commission excludes the east wing.',
-      plotTurn1: 'The portrait swings inward on a hidden passage.',
-      pinch1: 'Edric appears in the library doorway.',
-      midpoint: 'The ledger names the man who sealed the wing.',
-      pinch2: 'The lawyer arrives a day early.',
-      climax: 'Mara confronts the family\'s lawyer with the gallery ledger.',
-      resolution: 'The gate, the cliff path, and the commission\'s true price.',
+    storyCircle: {
+      you: 'The catalogue commission excludes the east wing.',
+      need: 'Mara needs to know what kind of silence she has been hired to preserve.',
+      go: 'The portrait swings inward on a hidden passage.',
+      search: 'Edric appears in the library doorway and forces Mara to improvise.',
+      find: 'The ledger names the man who sealed the wing.',
+      take: 'The lawyer arrives a day early.',
+      return: 'Mara confronts the family\'s lawyer with the gallery ledger.',
+      change: 'The gate, the cliff path, and the commission\'s true price.',
     },
     protagonist: {
       id: 'prot-1',
@@ -121,7 +122,12 @@ export function buildSeasonAnalysis(): Record<string, unknown> {
         locations: ['loc-1', 'loc-2'],
         estimatedSceneCount: 3,
         estimatedChoiceCount: 2,
-        structuralRole: ['hook', 'plotTurn1', 'pinch1'],
+        storyCircleRole: [
+          { beat: 'you', roleKind: 'primary', source: 'distribution' },
+          { beat: 'need', roleKind: 'primary', source: 'distribution' },
+          { beat: 'go', roleKind: 'primary', source: 'distribution' },
+          { beat: 'search', roleKind: 'primary', source: 'distribution' },
+        ],
         narrativeFunction: {
           setup: 'The commission that forbids the one wing worth reading.',
           conflict: 'The hidden passage against the steward guarding it.',
@@ -149,7 +155,12 @@ export function buildSeasonAnalysis(): Record<string, unknown> {
         locations: ['loc-1', 'loc-2'],
         estimatedSceneCount: 3,
         estimatedChoiceCount: 2,
-        structuralRole: ['midpoint', 'pinch2', 'climax', 'resolution'],
+        storyCircleRole: [
+          { beat: 'find', roleKind: 'primary', source: 'distribution' },
+          { beat: 'take', roleKind: 'primary', source: 'distribution' },
+          { beat: 'return', roleKind: 'primary', source: 'distribution' },
+          { beat: 'change', roleKind: 'primary', source: 'distribution' },
+        ],
         narrativeFunction: {
           setup: 'The ledger Mara carried out of the gallery.',
           conflict: 'The lawyer\'s early arrival against Mara\'s half-finished reading of it.',
@@ -614,6 +625,7 @@ function episode2SceneFixture(sceneId: string): string {
       moodProgression: ['hushed', 'cold', 'charged'],
       charactersInvolved: ['prot-1', 'npc-1'],
       keyMoments: ['the second hand', 'the signature', 'Edric on the stairs'],
+      sceneTakeaways: ['The gallery ledger names an outside hand.', 'Edric finds Mara with proof in front of her.'],
       continuityNotes: ['Carries the ledger out of episode 1\'s garden ending.'],
     });
   }
@@ -663,6 +675,7 @@ function episode2SceneFixture(sceneId: string): string {
       moodProgression: ['courteous', 'coiled', 'taut'],
       charactersInvolved: ['prot-1', 'npc-1'],
       keyMoments: ['the unreported rooms', 'the slow tea', 'the held question'],
+      sceneTakeaways: ['The lawyer knows more about the house than Mara reported.', 'Edric signals danger through the tea service.'],
       continuityNotes: ['The lawyer\'s knowledge implies a watcher inside the house.'],
     });
   }
@@ -710,6 +723,7 @@ function episode2SceneFixture(sceneId: string): string {
     moodProgression: ['weighing', 'steady', 'resolved'],
     charactersInvolved: ['prot-1'],
     keyMoments: ['Edric\'s key', 'the coach lamps', 'the ledger closed'],
+    sceneTakeaways: ['Edric left Mara the ring key.', 'Mara closes the ledger and goes to meet the lawyer on her own terms.'],
     continuityNotes: ['Pays off the season\'s ledger promise and the lawyer\'s early arrival.'],
   });
 }
@@ -796,7 +810,7 @@ function ep1ExpressionChoiceSet(): Record<string, unknown> {
         id: 'choice-1',
         text: 'Press him on the part he is leaving out',
         choiceType: 'expression',
-        consequences: [],
+        consequences: [{ type: 'setFlag', flag: 'pressed_edric_for_name', value: true }],
         stakes: {
           want: 'The missing name behind the sealed wing',
           cost: 'Showing him how much you already know',
@@ -814,7 +828,7 @@ function ep1ExpressionChoiceSet(): Record<string, unknown> {
         id: 'choice-2',
         text: 'Accept the half-truth and let him keep his dignity',
         choiceType: 'expression',
-        consequences: [],
+        consequences: [{ type: 'setFlag', flag: 'protected_edric_dignity', value: true }],
         stakes: {
           want: 'An ally tomorrow rather than an answer tonight',
           cost: 'Leaving the one name unspoken',
@@ -918,7 +932,7 @@ function ep2ExpressionChoiceSet(): Record<string, unknown> {
         id: 'choice-1',
         text: 'Answer with cheerful, exact inventory talk',
         choiceType: 'expression',
-        consequences: [],
+        consequences: [{ type: 'setFlag', flag: 'answered_with_inventory', value: true }],
         stakes: {
           want: 'Bore the question to death before it lands',
           cost: 'He learns she can perform under pressure — and remembers it',
@@ -936,7 +950,7 @@ function ep2ExpressionChoiceSet(): Record<string, unknown> {
         id: 'choice-2',
         text: 'Let one true thing slip and watch where it lands',
         choiceType: 'expression',
-        consequences: [],
+        consequences: [{ type: 'setFlag', flag: 'let_truth_slip', value: true }],
         stakes: {
           want: 'Trade a pawn to see how he takes pieces',
           cost: 'A true thing, once given, cannot be refiled',
@@ -967,7 +981,7 @@ function ensureThreeChoiceSurface(base: Record<string, unknown>): void {
     id: `choice-${choices.length + 1}`,
     text: 'Name the cost before you move',
     choiceType: base.choiceType ?? 'expression',
-    consequences: [],
+    consequences: [{ type: 'setFlag', flag: 'named_the_cost', value: true }],
     stakes: {
       want: 'A clean choice made with open eyes',
       cost: 'The moment narrows while you measure it',

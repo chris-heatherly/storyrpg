@@ -1,6 +1,6 @@
 ---
 name: story-structure-rules
-description: Use this skill for StoryRPG story-architecture domain rules — the 3-act/7-point season spine, scene-graph blueprints, branch-and-bottleneck patterns, choice taxonomy + density, the stakes triangle, consequence/five-factor budgets, and encounter design. Reach for it when working on StoryArchitect, ChoiceAuthor, BranchManager, EncounterArchitect, SeasonPlannerAgent, or any story-structure types/validators.
+description: Use this skill for StoryRPG story-architecture domain rules — the Story Circle season spine, story arcs across acts, scene-graph blueprints, branch-and-bottleneck patterns, choice taxonomy + density, the stakes triangle, consequence/five-factor budgets, and encounter design. Reach for it when working on StoryArchitect, ChoiceAuthor, BranchManager, EncounterArchitect, SeasonPlannerAgent, or any story-structure types/validators.
 ---
 
 # Story Structure Rules
@@ -10,31 +10,36 @@ enforce and `pipeline-validation` validators protect — change the rule here an
 together, never one in isolation. (This is the *what to author*; `pipeline-agent-development` is the
 *how to wire an agent*.)
 
-## 3-Act / 7-Point spine (season level)
+## Story Circle Spine (Season Level)
 
-Load-bearing: `SourceMaterialAnalyzer` infers it if source material omits it, `SeasonPlannerAgent`
-distributes it across episodes, `SevenPointCoverageValidator` enforces it in the retry loop.
+Story Circle is supreme. `SourceMaterialAnalyzer` infers it if source material omits it,
+`SeasonPlannerAgent` distributes it across episodes, and Story Circle coverage validators enforce it
+in the retry loop.
 
 **Narrative anchors** — `stakes` (what breaks on failure), `goal` (concrete external goal),
-`incitingIncident` (what breaks the status quo), `climax` (the decisive confrontation; MUST match
-`sevenPoint.climax`).
+`incitingIncident` (what breaks the status quo), `climax` (the decisive confrontation).
 
-**Seven-point structure** — `hook` (ordinary world + core value) → `plotTurn1` (commit to goal;
-Act 1/2 wall) → `pinch1` (stakes escalate, allies falter) → `midpoint` (reaction→action; goal
-reframed) → `pinch2` (everything nearly lost) → `climax` (matches anchor) → `resolution` (new
-equilibrium, core value restated).
+**Story Circle structure** — `you` (ordinary world + starting identity) → `need` (inner/external lack)
+→ `go` (crossing the threshold) → `search` (adaptation under pressure) → `find` (discovery or
+recontextualization) → `take` (costly acquisition) → `return` (bringing the change home) → `change`
+(new equilibrium and identity shift).
 
-**Structural roles** — each `SeasonEpisode.structuralRole` lists the beat(s) it carries:
-`hook | plotTurn1 | pinch1 | midpoint | pinch2 | climax | resolution`, plus `rising | falling`
-buffer episodes. Distribution from `sevenPointDistribution.ts` is deterministic; the LLM may
-override only if the source strongly demands it. Every canonical beat must appear ≥1×, in order.
+**Episode role assignments** — each episode carries one or more Story Circle beats through
+`storyCircleRole`: `you | need | go | search | find | take | return | change`. Distribution from
+`storyCircleDistribution.ts` is deterministic; the LLM may override only if the source strongly
+demands it. Every canonical beat must appear at least once, in order.
+
+## Story Arcs Across Acts
+
+Acts are not a separate structure model. Arcs create pressure bands across acts, with each episode
+playing its role in the season-long Story Circle first and then within the arc second.
 
 ## Scene graph
 
-**EpisodeBlueprint** carries `arc.<beat>` fields (fill only for beats this episode's
-`structuralRole` includes — leave the rest empty; the season carries them elsewhere), `scenes`,
-`startingSceneId`, `bottleneckScenes` (all paths pass through), `suggestedFlags/Scores/Tags`, and
-`narrativePromises` (setup→payoff). `arc.climax` aligns with the season climax anchor.
+**EpisodeBlueprint** carries `arc.<storyCircleBeat>` fields, `scenes`, `startingSceneId`,
+`bottleneckScenes` (all paths pass through), `suggestedFlags/Scores/Tags`, and `narrativePromises`
+(setup→payoff). The episode's Story Circle role is the primary dramatic brief; arc pressure is
+secondary.
 
 **SceneBlueprint** key fields: `purpose: 'bottleneck' | 'branch' | 'transition'`,
 `dramaticQuestion`, `wantVsNeed`, `conflictEngine`, `keyBeats`, optional `choicePoint`,
@@ -42,19 +47,19 @@ override only if the source strongly demands it. Every canonical beat must appea
 `encounterType/Difficulty/Buildup/...`), and `incomingChoiceContext` (for branch scenes: what led
 here). Scene ids are kebab-case (`scene-market`).
 
-## Scene-first planning (season level, opt-in)
+## Scene-first planning (season level, default-on)
 
-Default flow is beat-first: `SeasonPlannerAgent` assigns each episode one 7-point role, then
-`StoryArchitect` *invents* that episode's scenes in the per-episode loop. Scene-first planning
-(flag `SCENE_FIRST_PLANNING=1`, auto-on for `sceneEpisodes` treatments) inverts this so scenes are
-planned at the **season** level alongside episodes.
+Default flow is Story Circle-first: `SeasonPlannerAgent` assigns each episode one or more Story Circle roles, then
+`SeasonPlannerAgent` also builds a season-level scene spine. Scene-first planning is ON by default
+and opt-out via `SCENE_FIRST_PLANNING=0`; do not describe it as a `sceneEpisode`-only mode.
 
-- **Altitude cascade**: season owns the 7-point spine (a meta-concept); each **episode maps to ONE**
-  of the 7 points (`structuralRole`); each **scene serves** the purpose its episode's role names
+- **Altitude cascade**: season owns the Story Circle spine; each **episode maps to Story Circle roles**
+  (`storyCircleRole`); each **scene serves** the purpose its episode's role names
   (`PlannedScene.dramaticPurpose`); **beats serve the scene** and are still generated later, per
-  episode. Scenes do NOT carry a 7-point label.
+  episode. Scenes do NOT carry a competing season-structure label.
 - **`SeasonScenePlan`** (`src/types/scenePlan.ts`) lives on `SeasonPlan.scenePlan`; each episode's
-  slice is `SeasonEpisode.plannedScenes`. Built by `seasonScenePlanBuilder.ts` (deterministic v1).
+  slice is `SeasonEpisode.plannedScenes`. Built by `seasonScenePlanBuilder.ts`, then optionally
+  upgraded by `SeasonPlannerAgent.authorScenePlanLLM` for non-treatment runs.
 - **Encounters are a kind of scene**: a `PlannedScene` with `kind: 'encounter'` carrying
   `PlannedSceneEncounter`. The scene id IS the encounter id. No parallel encounter list — anything
   that reasons over scenes (pacing, the consequence/branch budget) sees encounters by construction.
@@ -64,8 +69,8 @@ planned at the **season** level alongside episodes.
 - **StoryArchitect elaborate-mode**: when `seasonPlanDirectives.plannedScenes` is present, it
   elaborates those scenes into the blueprint (no LLM invention) and routes through the SAME repair
   pipeline. Encounter-kind scenes feed the existing `isEncounter`/`encounterType` dispatch.
-- From-scratch runs get treatment-shaped guidance synthesized (`synthesizeTreatmentGuidance.ts`) so
-  there is one downstream path.
+- Planned scenes can carry `coldOpenProfile` and `sceneConstructionProfile` obligations; the
+  downstream path binds those into required-beat and scene-turn guidance.
 
 ## Branch-and-bottleneck
 

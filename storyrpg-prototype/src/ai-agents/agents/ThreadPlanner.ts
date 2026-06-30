@@ -16,10 +16,8 @@ import { EpisodeBlueprint } from './StoryArchitect';
 import { SeasonBible, NarrativeThread, ThreadLedger } from '../../types';
 import type {
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
@@ -40,18 +38,9 @@ export interface ThreadPlannerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season-level legacy-structure beat map. */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /**
-   * Which beat(s) of the season this episode carries. Determines whether
-   * threads planted in this episode should aim to pay off within the
-   * same episode (Climax / Pinch 2 beats) or defer across episodes
-   * (Hook / Rising beats).
-   */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle role(s) for this episode. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
 }

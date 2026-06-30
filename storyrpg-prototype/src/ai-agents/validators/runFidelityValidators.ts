@@ -31,7 +31,6 @@ import type { SeasonScenePlan, PlannedScene } from '../../types/scenePlan';
 import type {
   SourceMaterialAnalysis,
   TreatmentEpisodeGuidance,
-  LegacyStructuralBeat,
   StoryCircleBeat,
 } from '../../types/sourceAnalysis';
 import type { ExtractedTreatment } from '../utils/treatmentExtraction';
@@ -68,7 +67,6 @@ import {
   StoryCircleAnchorConformanceValidator,
   seasonPlanToStoryCircleAnchorConformanceInput,
 } from './StoryCircleAnchorConformanceValidator';
-import { legacyRoleToStoryCircleBeats } from '../utils/storyCircleDistribution';
 import {
   buildValidationPhaseBaseline,
   fidelityFindingFingerprint,
@@ -133,16 +131,7 @@ function storyCircleBeatEpisodeAnchorsFromAnalysis(
   if (guidance.storyCircleBeatEpisodeAnchors && Object.keys(guidance.storyCircleBeatEpisodeAnchors).length > 0) {
     return guidance.storyCircleBeatEpisodeAnchors;
   }
-  const legacyAnchors = guidance.beatEpisodeAnchors as Partial<Record<LegacyStructuralBeat, number>> | undefined;
-  if (!legacyAnchors || Object.keys(legacyAnchors).length === 0) return undefined;
-  const converted: Partial<Record<StoryCircleBeat, number>> = {};
-  for (const [legacyBeat, episodeNumber] of Object.entries(legacyAnchors)) {
-    if (typeof episodeNumber !== 'number') continue;
-    for (const beat of legacyRoleToStoryCircleBeats(legacyBeat as LegacyStructuralBeat)) {
-      converted[beat] = converted[beat] ?? episodeNumber;
-    }
-  }
-  return Object.keys(converted).length > 0 ? converted : undefined;
+  return undefined;
 }
 
 const PLAN_ONLY_FINAL_VALIDATORS = new Set([
@@ -345,7 +334,7 @@ function scopedFidelityInput(input: RunFidelityValidatorsInput): RunFidelityVali
  * Reconstruct the `ExtractedTreatment`-shaped input the
  * AuthoredEpisodeConformanceValidator needs from the source analysis. The deterministic
  * parser already wrote per-episode `treatmentGuidance` (with `authoredTitle`) onto each
- * `episodeBreakdown` entry and `treatmentSeasonGuidance` (with `beatEpisodeAnchors`) on
+ * `episodeBreakdown` entry and `treatmentSeasonGuidance` on
  * the analysis — this just keys the episodes by number.
  */
 function treatmentFromAnalysis(

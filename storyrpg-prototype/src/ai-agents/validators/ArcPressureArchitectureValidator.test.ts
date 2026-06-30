@@ -132,7 +132,7 @@ describe('ArcPressureArchitectureValidator', () => {
     const result = new ArcPressureArchitectureValidator().validate(source, {
       treatmentSourced: true,
       arcPressureContracts: [{
-        id: 'arc-pressure-arc-1-midpoint',
+        id: 'arc-pressure-arc-1-find',
         source: 'treatment',
         arcId: 'arc-1',
         arcTitle: 'The Broken Map',

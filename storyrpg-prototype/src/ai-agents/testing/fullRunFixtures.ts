@@ -484,6 +484,7 @@ export function sceneFixture(sceneId: string): string {
       moodProgression: ['quiet', 'tense', 'taut'],
       charactersInvolved: ['prot-1', 'npc-1'],
       keyMoments: ['the portrait opens', 'Edric appears'],
+      sceneTakeaways: ['The hidden passage is real.', 'Edric knows about the door and now knows Mara found it.'],
       continuityNotes: ['The scene ends on the unresolved standoff at the passage.'],
     });
   }
@@ -533,6 +534,7 @@ export function sceneFixture(sceneId: string): string {
       moodProgression: ['guarded', 'charged', 'poised'],
       charactersInvolved: ['prot-1', 'npc-1'],
       keyMoments: ['the half-confession', 'the tenth bell'],
+      sceneTakeaways: ['The east wing was sealed by someone outside the family.', 'Edric withholds the name but gives Mara a direction.'],
       continuityNotes: ['Ends on Mara deciding how to receive the half-truth.'],
     });
   }
@@ -580,6 +582,7 @@ export function sceneFixture(sceneId: string): string {
     moodProgression: ['release', 'urgency', 'resolve'],
     charactersInvolved: ['prot-1'],
     keyMoments: ['the garden opens', 'the gate'],
+    sceneTakeaways: ['The passage leads out into the garden.', 'Mara reaches the gate with the house waking behind her.'],
     continuityNotes: ['Carries the residue of how scene-1 ended.'],
   });
 }
@@ -655,7 +658,7 @@ function ensureThreeChoiceSurface(base: { choices: Array<Record<string, unknown>
     id: `choice-${base.choices.length + 1}`,
     text: 'Name the cost before you move',
     choiceType: base.choiceType ?? 'expression',
-    consequences: [],
+    consequences: [{ type: 'setFlag', flag: 'named_the_cost', value: true }],
     stakes: {
       want: 'A clean choice made with open eyes',
       cost: 'The moment narrows while you measure it',
@@ -681,7 +684,7 @@ function expressionChoiceSetFixture(): string {
         id: 'choice-1',
         text: 'Press him on the part he is leaving out',
         choiceType: 'expression',
-        consequences: [],
+        consequences: [{ type: 'setFlag', flag: 'pressed_edric_for_name', value: true }],
         stakes: {
           want: 'The missing name behind the sealed wing',
           cost: 'Showing him how much you already know',
@@ -699,7 +702,7 @@ function expressionChoiceSetFixture(): string {
         id: 'choice-2',
         text: 'Accept the half-truth and let him keep his dignity',
         choiceType: 'expression',
-        consequences: [],
+        consequences: [{ type: 'setFlag', flag: 'protected_edric_dignity', value: true }],
         stakes: {
           want: 'An ally tomorrow rather than an answer tonight',
           cost: 'Leaving the one name unspoken',

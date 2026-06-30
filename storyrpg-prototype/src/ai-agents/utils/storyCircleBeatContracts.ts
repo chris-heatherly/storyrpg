@@ -1,7 +1,5 @@
 import type { SeasonPlan } from '../../types/seasonPlan';
 import type {
-  LegacyStructuralBeat,
-  LegacyStructuralMap,
   StoryCircleBeat,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
@@ -21,25 +19,15 @@ import {
   treatmentFieldTokens,
 } from './treatmentFieldContracts';
 
-const LEGACY_BEAT_BY_STORY_CIRCLE: Partial<Record<StoryCircleBeat, LegacyStructuralBeat>> = {
-  you: 'hook',
-  go: 'plotTurn1',
-  search: 'pinch1',
-  find: 'midpoint',
-  take: 'pinch2',
-  return: 'climax',
-  change: 'resolution',
-};
-
 const BEAT_LABELS: Record<StoryCircleBeat, RegExp[]> = {
-  you: [/\byou\b/i, /\bhook\b/i],
+  you: [/\byou\b/i],
   need: [/\bneed\b/i, /\bwant\s*(?:vs\.?|\/)?\s*need\b/i, /\bprotagonist\s+need\b/i],
-  go: [/\bgo\b/i, /\bplot\s*turn\s*1\b/i, /\binciting\s+threshold\b/i, /\bthreshold\b/i],
-  search: [/\bsearch\b/i, /\bpinch\s*1\b/i],
-  find: [/\bfind\b/i, /\bmidpoint\b/i],
-  take: [/\btake\b/i, /\bpinch\s*2\b/i, /\bprice\b/i],
-  return: [/\breturn\b/i, /\bclimax\b/i],
-  change: [/\bchange\b/i, /\bresolution\b/i],
+  go: [/\bgo\b/i, /\bthreshold\b/i],
+  search: [/\bsearch\b/i],
+  find: [/\bfind\b/i],
+  take: [/\btake\b/i, /\bprice\b/i],
+  return: [/\breturn\b/i],
+  change: [/\bchange\b/i],
 };
 
 const STATE_CHANGE_RE =
@@ -197,15 +185,12 @@ function targetEpisodeFor(
 ): number {
   const explicit = guidance?.storyCircleBeatEpisodeAnchors?.[beat];
   if (explicit) return explicit;
-  const legacyBeat = LEGACY_BEAT_BY_STORY_CIRCLE[beat];
-  const legacyExplicit = legacyBeat ? guidance?.beatEpisodeAnchors?.[legacyBeat] : undefined;
-  return legacyExplicit ?? defaultTargetEpisode(beat, totalEpisodes);
+  return defaultTargetEpisode(beat, totalEpisodes);
 }
 
 export function buildStoryCircleBeatContracts(input: {
   guidance?: TreatmentSeasonGuidance;
   storyCircle?: StoryCircleStructure;
-  legacyStructure?: LegacyStructuralMap;
   totalEpisodes: number;
   treatmentSourced?: boolean;
 }): StoryCircleBeatRealizationContract[] {
@@ -217,10 +202,9 @@ export function buildStoryCircleBeatContracts(input: {
 
   for (const beat of STORY_CIRCLE_BEATS) {
     const authoredText = extractBeatText(input.guidance?.seasonSpine, beat);
-    const legacyBeat = LEGACY_BEAT_BY_STORY_CIRCLE[beat];
     const sourceText = hasAuthoredSpine
       ? authoredText ?? ''
-      : input.storyCircle?.[beat] ?? (legacyBeat ? input.legacyStructure?.[legacyBeat] : '') ?? '';
+      : input.storyCircle?.[beat] ?? '';
     if (!sourceText.trim()) continue;
     const atoms = eventAtoms(sourceText);
     out.push({
@@ -240,7 +224,7 @@ export function buildStoryCircleBeatContracts(input: {
 }
 
 export function buildStoryCircleBeatContractsForPlan(
-  plan: Pick<SeasonPlan, 'storyCircleBeatContracts' | 'storyCircle' | 'legacyStructure' | 'totalEpisodes'> & {
+  plan: Pick<SeasonPlan, 'storyCircleBeatContracts' | 'storyCircle' | 'totalEpisodes'> & {
     treatmentSeasonGuidance?: TreatmentSeasonGuidance;
   },
 ): StoryCircleBeatRealizationContract[] {
@@ -248,7 +232,6 @@ export function buildStoryCircleBeatContractsForPlan(
   return buildStoryCircleBeatContracts({
     guidance: plan.treatmentSeasonGuidance,
     storyCircle: plan.storyCircle,
-    legacyStructure: plan.legacyStructure,
     totalEpisodes: plan.totalEpisodes,
     treatmentSourced: Boolean(plan.treatmentSeasonGuidance?.seasonSpine),
   });
@@ -467,7 +450,7 @@ function requiredBeatFor(contract: StoryCircleBeatRealizationContract, scene: Pl
 }
 
 export function normalizeStoryCircleContractForSceneProse(contract: StoryCircleBeatRealizationContract): StoryCircleBeatRealizationContract[] {
-  if (!contract.requiredRealization.includes('final_prose')) return shouldHardBindSceneContract(contract) ? [contract] : [];
+  if (!(contract.requiredRealization ?? []).includes('final_prose')) return shouldHardBindSceneContract(contract) ? [contract] : [];
 
   const recomputedAtoms = eventAtoms(contract.sourceText);
   const atoms = dedupe(recomputedAtoms.length > 0 ? recomputedAtoms : contract.eventAtoms ?? []);
@@ -514,7 +497,7 @@ function pressureFor(contract: StoryCircleBeatRealizationContract, scene: Planne
 }
 
 export function assignStoryCircleBeatContractsToScenes(
-  plan: Pick<SeasonPlan, 'storyCircleBeatContracts' | 'storyCircle' | 'legacyStructure' | 'totalEpisodes'> & {
+  plan: Pick<SeasonPlan, 'storyCircleBeatContracts' | 'storyCircle' | 'totalEpisodes'> & {
     treatmentSeasonGuidance?: TreatmentSeasonGuidance;
   },
   scenes: PlannedScene[],

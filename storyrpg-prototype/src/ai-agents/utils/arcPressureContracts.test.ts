@@ -64,7 +64,7 @@ describe('arcPressureContracts', () => {
     expect(contracts.filter((contract) => contract.contractKind === 'arc_episode_turnout')).toHaveLength(3);
   });
 
-  it('places a three-episode late-arc crisis in the final episode, not the midpoint opener', () => {
+  it('places a three-episode late-arc crisis in the final episode, not the find opener', () => {
     const contracts = buildArcPressureContracts({
       guidance,
       totalEpisodes: 3,
@@ -147,12 +147,12 @@ describe('arcPressureContracts', () => {
     ];
 
     const contracts = assignArcPressureContractsToScenes(plan, scenes);
-    const midpoint = contracts.find((contract) => contract.contractKind === 'arc_midpoint_recontextualization');
+    const find = contracts.find((contract) => contract.contractKind === 'arc_midpoint_recontextualization');
     const target = scenes.find((candidate) => candidate.id === 's2-2');
 
-    expect(midpoint?.targetSceneIds).toContain('s2-2');
+    expect(find?.targetSceneIds).toContain('s2-2');
     expect(target?.arcPressureContracts?.some((contract) => contract.contractKind === 'arc_midpoint_recontextualization')).toBe(true);
-    expect(target?.requiredBeats?.some((beat) => beat.id.includes('arc-pressure-arc-midpoint'))).toBe(true);
+    expect(target?.requiredBeats?.some((beat) => beat.id.includes('arc-pressure-arc-midpoint-recontextualization'))).toBe(true);
     expect(target?.mechanicPressure?.some((pressure) => pressure.storyPressure.includes('glamorous new life'))).toBe(true);
   });
 

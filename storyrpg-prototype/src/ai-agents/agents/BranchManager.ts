@@ -15,10 +15,8 @@ import { buildBranchSkeleton, type BranchSkeleton } from '../utils/branchTopolog
 import { buildBranchAnnotationJsonSchema } from '../schemas/branchAnnotationSchema';
 import type {
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { buildStructuralContextSection } from '../prompts/storytellingPrinciples';
 
@@ -52,17 +50,9 @@ export interface BranchManagerInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /** Season legacy-structure beat map. */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /**
-   * Structural beat(s) this episode carries. Midpoint and Plot Turn 2
-   * episodes are the best homes for high-cost, high-divergence branches.
-   * Hook / Resolution episodes should keep branches tight.
-   */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle role(s) this episode carries. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
   /** Episode-level fractal Story Circle from StoryArchitect. */

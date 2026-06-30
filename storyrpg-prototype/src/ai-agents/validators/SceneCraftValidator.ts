@@ -1,4 +1,3 @@
-import type { StructuralRole } from '../../types/sourceAnalysis';
 import { SCENE_DEFAULTS } from '../../constants/pipeline';
 import { isActionHeavyGenre } from '../prompts/storytellingPrinciples';
 import type { SceneContent } from '../agents/SceneWriter';
@@ -9,7 +8,6 @@ export interface SceneCraftOptions {
   dialogueHeavy?: boolean;
   isFinalScene?: boolean;
   isFinale?: boolean;
-  episodeStructuralRole?: StructuralRole[];
   minBeatsPerScene?: number;
   maxBeatsPerScene?: number;
   allowedStyleTerms?: string[];
@@ -41,7 +39,7 @@ const CONFLICT_DAMAGE_TERMS = /\b(wound\w*|blood|bruise\w*|damage\w*|pain|trust|
 const SENSORY_PLACE_TEXTURE_TERMS = /\b(rain|wind|smell|scent|taste|salt|smoke|ash|dust|heat|cold|warm|wet|dry|rough|smooth|sticky|metal|stone|wood|glass|cloth|floor|wall|door|window|street|room|hall|corridor|kitchen|forest|river|harbor|market|lamp|shadow|light|sound|noise|silence|echo|thunder|breath|voice|footstep|texture|air|fog|mud|snow|blood|oil|perfume|rot|sweet|bitter)\b/i;
 const GENERIC_DESCRIPTION_TERMS = /\b(beautiful|nice|scary|strange|interesting|very|really|somehow|something about|kind of|sort of|pretty|quite|amazing|weird|bad|good|big|small)\b/i;
 const CONCRETE_DETAIL_TERMS = /\b(grip|hand|wrist|jaw|door|letter|ledger|seal|lamp|knife|blade|glass|stone|blood|rain|smoke|shadow|floor|wall|street|breath|voice|step|fold|open|crack|shatter|splinter|reveal|cost|trust|leverage|secret|choice|risk|danger)\b/i;
-const PLAYER_FACING_CAMERA_TERMS = /\b(cinematic|camera|close-up|closeup|wide shot|medium shot|tracking shot|dolly|pan|zoom|lens|frame|framing|shot composition|cut to|slow motion|rack focus|bokeh)\b/i;
+const PLAYER_FACING_CAMERA_TERMS = /\b(cinematic|camera|close-up|closeup|wide shot|medium shot|tracking shot|dolly|pan|zoom|lens|framing|shot composition|cut to|slow motion|rack focus|bokeh)\b/i;
 const DIALOGUE_PRESSURE_TERMS = /\b(trust|leverage|secret|danger|risk|cost|choice|refus\w*|accus\w*|betray\w*|threat\w*|promise|fear|want|need|debt|wound|damage|leave|stay|run|hide|attack|expose\w*|relationship|reputation|identity|truth|lie)\b/i;
 const STYLE_FIGHTING_TERMS = [
   'cinematic',
@@ -444,7 +442,7 @@ export class SceneCraftValidator extends BaseValidator {
 
     if (options.isFinalScene && beats.length > 0) {
       const finalText = finalBeat.text || '';
-      const isResolution = options.isFinale || options.episodeStructuralRole?.includes('resolution');
+      const isResolution = options.isFinale;
       const hasForwardPressure = FORWARD_PRESSURE_TERMS.test(finalText);
       const hasLegacy = LEGACY_TERMS.test(finalText);
 

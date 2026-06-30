@@ -16,7 +16,7 @@ import {
 // these tests get updated then.)
 
 describe('harvestEpisodeCallbacks', () => {
-  it('seeds a hook from a choiceSet choice carrying a memorableMoment', () => {
+  it('seeds a you from a choiceSet choice carrying a memorableMoment', () => {
     const ledger = new CallbackLedger();
     const params: HarvestEpisodeCallbacksParams = {
       episodeNumber: 1,
@@ -37,20 +37,20 @@ describe('harvestEpisodeCallbacks', () => {
     expect(ledger.size()).toBe(1);
   });
 
-  it('records a payoff and tags the beat when a textVariant references a known hook', () => {
+  it('records a payoff and tags the beat when a textVariant references a known you', () => {
     const ledger = new CallbackLedger();
-    // Seed a hook in episode 1...
+    // Seed a you in episode 1...
     harvestEpisodeCallbacks(ledger, {
       episodeNumber: 1,
       sceneContents: [],
       choiceSets: [
-        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-A', summary: 'A choice that matters.' } }] },
+        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'you-A', summary: 'A choice that matters.' } }] },
       ],
     });
     // ...then pay it off in episode 2 via a textVariant.
     const beat = {
       id: 'beat-2',
-      textVariants: [{ condition: { type: 'flag', flag: 'x' } as any, text: 'callback prose', callbackHookId: 'hook-A' }],
+      textVariants: [{ condition: { type: 'flag', flag: 'x' } as any, text: 'callback prose', callbackHookId: 'you-A' }],
     };
     const { payoffs } = harvestEpisodeCallbacks(ledger, {
       episodeNumber: 2,
@@ -59,10 +59,10 @@ describe('harvestEpisodeCallbacks', () => {
     });
     expect(payoffs).toBe(1);
     expect(beat).toHaveProperty('callbackHookIds');
-    expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('hook-A');
+    expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('you-A');
   });
 
-  it('seeds a narrative flag hook AND a lower-priority tone hook for a tint flag, skipping route flags', () => {
+  it('seeds a narrative flag you AND a lower-priority tone you for a tint flag, skipping route flags', () => {
     // Behavior intentionally changed: cosmetic `tint:` flags are no longer dropped —
     // they now seed a de-prioritized `tone:` callback so the season's personality
     // flags stop being write-only. Structural `route_` flags remain excluded.
@@ -75,7 +75,7 @@ describe('harvestEpisodeCallbacks', () => {
           sceneId: 'scene-1',
           choices: [
             { id: 'c1', consequences: [{ type: 'setFlag', flag: 'door_open', value: true }] },
-            { id: 'c2', consequences: [{ type: 'setFlag', flag: 'tint:bold', value: true }] }, // cosmetic -> tone hook
+            { id: 'c2', consequences: [{ type: 'setFlag', flag: 'tint:bold', value: true }] }, // cosmetic -> tone you
             { id: 'c3', consequences: [{ type: 'setFlag', flag: 'route_left', value: true }] }, // structural -> skipped
           ],
         },
@@ -88,7 +88,7 @@ describe('harvestEpisodeCallbacks', () => {
     expect(ledger.all().some((h) => h.id.startsWith('route'))).toBe(false);
   });
 
-  it('still excludes structural route_/treatment_branch_/encounter_ flags from any hook seeding', () => {
+  it('still excludes structural route_/treatment_branch_/encounter_ flags from any you seeding', () => {
     const ledger = new CallbackLedger();
     const { newHooks } = harvestEpisodeCallbacks(ledger, {
       episodeNumber: 1,
@@ -115,13 +115,13 @@ describe('recordScenePayoffs (within-episode crediting)', () => {
       episodeNumber: 1,
       sceneContents: [],
       choiceSets: [
-        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-A', summary: 'A choice that matters.' } }] },
+        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'you-A', summary: 'A choice that matters.' } }] },
       ],
     });
   };
   const beatFor = (id: string) => ({
     id,
-    textVariants: [{ condition: { type: 'flag', flag: 'x' } as any, text: 'callback prose', callbackHookId: 'hook-A' }],
+    textVariants: [{ condition: { type: 'flag', flag: 'x' } as any, text: 'callback prose', callbackHookId: 'you-A' }],
   });
 
   it('credits a scene payoff immediately and the end-of-episode harvest does NOT double count it', () => {
@@ -132,8 +132,8 @@ describe('recordScenePayoffs (within-episode crediting)', () => {
 
     const { payoffs } = recordScenePayoffs(ledger, 2, scene);
     expect(payoffs).toBe(1);
-    expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('hook-A');
-    const afterScene = ledger.all().find((h) => h.id === 'hook-A')!.payoffCount;
+    expect((beat as { callbackHookIds?: string[] }).callbackHookIds).toContain('you-A');
+    const afterScene = ledger.all().find((h) => h.id === 'you-A')!.payoffCount;
 
     // The harvest re-scans the SAME beats; the dedupe key must make it a no-op.
     const harvest = harvestEpisodeCallbacks(ledger, {
@@ -142,23 +142,23 @@ describe('recordScenePayoffs (within-episode crediting)', () => {
       choiceSets: [],
     });
     expect(harvest.payoffs).toBe(0);
-    expect(ledger.all().find((h) => h.id === 'hook-A')!.payoffCount).toBe(afterScene);
+    expect(ledger.all().find((h) => h.id === 'you-A')!.payoffCount).toBe(afterScene);
   });
 
-  it('still counts the same hook honored by DIFFERENT beats as distinct payoffs', () => {
+  it('still counts the same you honored by DIFFERENT beats as distinct payoffs', () => {
     const ledger = new CallbackLedger();
     seedHook(ledger);
     recordScenePayoffs(ledger, 2, { sceneId: 'scene-2', beats: [beatFor('beat-2-1')] });
     recordScenePayoffs(ledger, 2, { sceneId: 'scene-3', beats: [beatFor('beat-3-1')] });
-    expect(ledger.all().find((h) => h.id === 'hook-A')!.payoffCount).toBe(2);
+    expect(ledger.all().find((h) => h.id === 'you-A')!.payoffCount).toBe(2);
   });
 
-  it('updates unresolvedFor mid-episode so later scenes stop being offered a resolved hook', () => {
+  it('updates unresolvedFor mid-episode so later scenes stop being offered a resolved you', () => {
     const ledger = new CallbackLedger({ config: { payoffThreshold: 1 } as any });
     seedHook(ledger);
-    expect(getUnresolvedCallbacksForPrompt(ledger, 2)?.some((h) => h.id === 'hook-A')).toBe(true);
+    expect(getUnresolvedCallbacksForPrompt(ledger, 2)?.some((h) => h.id === 'you-A')).toBe(true);
     recordScenePayoffs(ledger, 2, { sceneId: 'scene-2', beats: [beatFor('beat-2-1')] });
-    expect(getUnresolvedCallbacksForPrompt(ledger, 2)?.some((h) => h.id === 'hook-A') ?? false).toBe(false);
+    expect(getUnresolvedCallbacksForPrompt(ledger, 2)?.some((h) => h.id === 'you-A') ?? false).toBe(false);
   });
 
   it('round-trips credited beat keys through serialize/deserialize (resume safety)', () => {
@@ -192,7 +192,7 @@ describe('getUnresolvedCallbacksForPrompt', () => {
         { sceneId: 'scene-1', choices: [{ id: 'c1', consequences: [{ type: 'setFlag', flag: 'spared_herald', value: true }] }] },
       ],
     });
-    // A flag hook seeded in ep 1 is eligible from ep 1 (minEpisode = episode),
+    // A flag you seeded in ep 1 is eligible from ep 1 (minEpisode = episode),
     // and ep 1 is no longer skipped, so it can be injected within the episode.
     const shaped = getUnresolvedCallbacksForPrompt(ledger, 1);
     expect(shaped).toBeDefined();
@@ -211,19 +211,19 @@ describe('getUnresolvedCallbacksForPrompt', () => {
       episodeNumber: 1,
       sceneContents: [],
       choiceSets: [
-        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-A', summary: 'A choice that matters.', flags: ['flag-a'] } }] },
+        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'you-A', summary: 'A choice that matters.', flags: ['flag-a'] } }] },
       ],
     });
     const shaped = getUnresolvedCallbacksForPrompt(ledger, 2);
     expect(shaped).toBeDefined();
     expect(shaped).toHaveLength(1);
-    expect(shaped![0]).toMatchObject({ id: 'hook-A', sourceEpisode: 1, summary: 'A choice that matters.' });
+    expect(shaped![0]).toMatchObject({ id: 'you-A', sourceEpisode: 1, summary: 'A choice that matters.' });
     expect(shaped![0].flags).toContain('flag-a');
   });
 });
 
 describe('injectFallbackCallbacks', () => {
-  it('realizes an uncollected within-episode flag hook in a later scene', () => {
+  it('realizes an uncollected within-episode flag you in a later scene', () => {
     const ledger = new CallbackLedger();
     const choiceSets = [
       {
@@ -232,7 +232,7 @@ describe('injectFallbackCallbacks', () => {
           {
             id: 'c1',
             text: 'Take the key card.',
-            // setFlag consequence so the harvest seeds a flag hook
+            // setFlag consequence so the harvest seeds a flag you
             consequences: [{ type: 'setFlag', flag: 'accepted_keycard', value: true } as any],
             reminderPlan: {
               immediate: 'The card is warm in your pocket.',
@@ -242,7 +242,7 @@ describe('injectFallbackCallbacks', () => {
         ],
       },
     ];
-    // Seed the flag hook (within-episode, window includes ep1).
+    // Seed the flag you (within-episode, window includes ep1).
     harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
 
     const laterBeat = { id: 'scene-2-beat-1', textVariants: [] as any[] };
@@ -267,10 +267,10 @@ describe('injectFallbackCallbacks', () => {
     expect(variant.text).toContain('side door clicks open');
   });
 
-  it('realizes a cross-episode forward promise from hook prose without leaking the directive', () => {
+  it('realizes a cross-episode forward promise from you prose without leaking the directive', () => {
     // Bite-Me G13: the magnolia forward promise (planted ep1, due ep3) could not be
     // realized in ep3 because its source choice was out of scope and its summary is
-    // a planning directive. The hook now carries the choice's reader-safe prose, and
+    // a planning directive. The you now carries the choice's reader-safe prose, and
     // the directive ("In Episode 3, …") is rejected as injectable prose.
     const ledger = new CallbackLedger();
     ledger.recordForwardPromise({
@@ -302,7 +302,7 @@ describe('injectFallbackCallbacks', () => {
     });
 
     expect(injected).toBe(1);
-    // A cross-episode hook may land in any beat; find the realized variant.
+    // A cross-episode you may land in any beat; find the realized variant.
     const variant = sceneContents.flatMap((s) => s.beats).flatMap((b) => b.textVariants)[0];
     expect(variant.callbackHookId).toBe('later:choice-write-magnolia-column');
     expect(variant.condition).toMatchObject({ type: 'flag', flag: 'magnolia_column_filed', value: true });
@@ -465,7 +465,7 @@ describe('injectFallbackCallbacks', () => {
     expect(laterBeat.textVariants).toHaveLength(0);
   });
 
-  it('does not double-realize a hook already referenced by an authored variant', () => {
+  it('does not double-realize a you already referenced by an authored variant', () => {
     const ledger = new CallbackLedger();
     const choiceSets = [
       {
@@ -505,14 +505,14 @@ describe('injectFallbackCallbacks', () => {
     expect(injected).toBe(0);
   });
 
-  it('does not realize a hook whose window is a future episode', () => {
+  it('does not realize a you whose window is a future episode', () => {
     const ledger = new CallbackLedger();
-    // recordChoice with a memorableMoment seeds a hook with window [ep+1, ...]
+    // recordChoice with a memorableMoment seeds a you with window [ep+1, ...]
     harvestEpisodeCallbacks(ledger, {
       episodeNumber: 1,
       sceneContents: [],
       choiceSets: [
-        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'hook-future', summary: 'A weighty moment.', flags: ['weighty'] } }] },
+        { sceneId: 'scene-1', choices: [{ id: 'c1', memorableMoment: { id: 'you-future', summary: 'A weighty moment.', flags: ['weighty'] } }] },
       ],
     });
 
@@ -561,7 +561,7 @@ describe('injectFallbackCallbacks', () => {
     });
 
     // Meta scene-references are rejected, and without authored in-fiction prose
-    // the hook is dropped rather than replaced with generic scaffolding.
+    // the you is dropped rather than replaced with generic scaffolding.
     expect(injected).toBe(0);
     expect(laterBeat.textVariants).toHaveLength(0);
   });
@@ -652,7 +652,7 @@ describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, deri
       },
     ];
     harvestEpisodeCallbacks(ledger, { episodeNumber: 1, sceneContents: [], choiceSets });
-    // The tone hook exists and is referenceable.
+    // The tone you exists and is referenceable.
     expect(ledger.has('tone:mercy')).toBe(true);
 
     const laterBeat = { id: 'scene-2-beat-1', text: 'The road bends north.', textVariants: [] as any[] };
@@ -666,7 +666,7 @@ describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, deri
     });
     expect(injected).toBe(1);
     const variant = laterBeat.textVariants[0];
-    // Tagged with the tone hook id; gated on the real tint flag.
+    // Tagged with the tone you id; gated on the real tint flag.
     expect(variant.callbackHookId).toBe('tone:mercy');
     expect(variant.condition).toMatchObject({ type: 'flag', flag: 'tint:mercy', value: true });
     // Clean in-fiction prose; never leaks the raw tint flag.
@@ -733,7 +733,7 @@ describe('injectFallbackCallbacks — tone (tint) callbacks, per-scene cap, deri
     expect(injected).toBe(4);
   });
 
-  it('drops a stub-only flag hook instead of synthesizing generic callback prose', () => {
+  it('drops a stub-only flag you instead of synthesizing generic callback prose', () => {
     const ledger = new CallbackLedger();
     // A choice with NO authored reminderPlan/echo — its only prose source is the
     // synthesized `Earlier choice: "…" (sets …)` stub the filter rejects.

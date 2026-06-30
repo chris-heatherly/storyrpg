@@ -19,10 +19,8 @@ import { Beat, TextVariant, Consequence, TimingMetadata, SceneVisualSequencePlan
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
-  StructuralRole,
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
 import { PovClarityValidator } from '../validators/PovClarityValidator';
@@ -37,7 +35,7 @@ import {
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
 import { canonicalizeHookId, isStructuralFlag } from '../pipeline/callbackLedger';
-import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
+import { buildColdOpenProfileSection, buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import type {
   ArcPressureTreatmentContract,
   MechanicPressureContract,
@@ -50,6 +48,10 @@ import {
   authorFacingMechanicPressureText,
   authorFacingTreatmentFieldText,
 } from '../utils/treatmentFieldContracts';
+import {
+  buildSceneConstructionProfileSection,
+  buildSceneConstructionPromptView,
+} from '../utils/sceneConstructionProfile';
 import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
 import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
@@ -275,19 +277,9 @@ export interface SceneWriterInput {
    */
   seasonAnchors?: StoryAnchors;
 
-  /**
-   * Season-level legacy-structure beat map (from SeasonPlan.legacyStructure). Used to
-   * tell SceneWriter where this scene sits on the season's dramatic curve.
-   */
-  seasonLegacyStructure?: LegacyStructuralMap;
   /** Primary season-level Story Circle beat map. */
   seasonStoryCircle?: StoryCircleStructure;
 
-  /**
-   * Which beat(s) of the season this episode is carrying (from
-   * SeasonEpisode.structuralRole). Drives scene mood / intensity defaults.
-   */
-  episodeStructuralRole?: StructuralRole[];
   /** Primary Story Circle beat(s) this episode carries. */
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
   /** Episode-level fractal Story Circle from StoryArchitect. */
@@ -589,7 +581,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - The final beat of each scene should land a pointed resolution or consequence, then create forward pressure into the next beat, choice, scene, encounter, or episode.
 - Forward pressure may be a cliffhanger, reveal, unresolved cost, emotional rupture, new danger, changed relationship, choice consequence, or handoff.
 - For non-finale episode endings, heighten next-episode pressure. For finale/resolution endings, resolve the central conflict and show aftermath.
-- When a Legacy-Structure Cliffhanger Plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
+- When a cliffhanger plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
 - When characters are in jeopardy or believe they are in jeopardy, dialogue should become more pointed, urgent, interrupted, selective, or stripped down. As fear, danger, exposure, or time pressure increases, reduce explanation and sharpen what characters say.
 - Never write a static meeting where characters only discuss information. If characters talk, ground the conversation in fitting physical activity, spatial pressure, object handling, preparation, travel, hiding, training, repair, cooking, cleaning, fighting, searching, ritual, medical care, escape, or another action appropriate to the circumstances.
 - The physical activity should make the power shift or emotional pressure visible.
@@ -1802,6 +1794,10 @@ Return exactly one complete SceneContent JSON object with:
   }
 
   private buildPrompt(input: SceneWriterInput): string {
+    input = {
+      ...input,
+      sceneBlueprint: buildSceneConstructionPromptView(input.sceneBlueprint),
+    };
     const npcDetails = input.npcs
       .filter(npc => input.sceneBlueprint.npcsPresent.includes(npc.id))
       .map(npc => `
@@ -1917,6 +1913,7 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Want vs Need**: ${input.sceneBlueprint.wantVsNeed}
 - **Conflict Engine**: ${input.sceneBlueprint.conflictEngine}
 - **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
+${buildSceneConstructionProfileSection(input.sceneBlueprint)}
 ${input.sceneBlueprint.turnContract ? `
 ### Scene Turn Contract
 - **Central turn**: ${input.sceneBlueprint.turnContract.centralTurn}
@@ -2015,6 +2012,7 @@ ${input.sceneBlueprint.failureModeAuditContracts.map((c) => `- ${c.label} (${c.s
 - If this is setup/payoff or twist fairness, plant or cash out concrete evidence on-page with an alternate innocent read when appropriate.
 - If this is reset/snowglobe prevention, leave visible state residue in behavior, access, relationship posture, information, route pressure, or aftermath.
 ` : ''}
+${buildColdOpenProfileSection(input.sceneBlueprint)}
 
 ### Key Beats to Hit
 ${input.sceneBlueprint.keyBeats
@@ -2120,9 +2118,9 @@ ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with 
   createdAt: '',
 })))}
 ${input.cliffhangerPlan ? `
-## Legacy-Structure Cliffhanger Plan (CRITICAL if this is the episode's final scene)
+## Story Circle Cliffhanger Plan (CRITICAL if this is the episode's final scene)
 - Style: ${input.cliffhangerPlan.style}
-- Structural role: ${input.cliffhangerPlan.mappedStructuralRole}
+- Next loop launch beat: ${input.cliffhangerPlan.storyCircleLaunchBeat || 'go'}
 - Type: ${input.cliffhangerPlan.type}
 - Intensity: ${input.cliffhangerPlan.intensity}
 - Hook to deliver: ${input.cliffhangerPlan.hook}

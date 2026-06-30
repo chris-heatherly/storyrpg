@@ -63,7 +63,7 @@ describe('CharacterArchitectureValidator', () => {
     expect(result.metrics.arcsLinkedToIdentityPressure).toBe(1);
   });
 
-  it('requires protagonist Lie, origin pressure, Truth, Want, Need, and active climax choice', () => {
+  it('requires protagonist Lie, origin pressure, Truth, Want, Need, and active return choice', () => {
     const result = new CharacterArchitectureValidator().validate({
       characterArchitecture: architecture({
         protagonist: {

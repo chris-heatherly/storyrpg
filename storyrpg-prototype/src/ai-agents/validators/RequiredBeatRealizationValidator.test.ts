@@ -658,7 +658,7 @@ describe('RequiredBeatRealizationValidator', () => {
     expect(result.issues.some((i) => i.severity === 'warning' && /Cold open not found/.test(i.message))).toBe(true);
   });
 
-  it('WS1.3 GATE on: a dropped cold open escalates to a blocking error (g17 dropped Sadie hook)', () => {
+  it('WS1.3 GATE on: a dropped cold open escalates to a blocking error (g17 dropped Sadie you)', () => {
     const prev = process.env.GATE_COLD_OPEN_REALIZATION;
     process.env.GATE_COLD_OPEN_REALIZATION = '1';
     try {

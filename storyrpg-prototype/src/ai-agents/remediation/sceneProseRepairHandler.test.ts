@@ -400,7 +400,7 @@ describe('buildSceneProseRepairHandler', () => {
 
     expect(clusterResult.changed).toBe(true);
     expect(story.episodes[1].scenes[1].beats[0].text).toContain('Three terrible dates provide blog material');
-    expect(story.episodes[1].scenes[1].beats[0].text).toContain('Mika pushes you to finally visit Vâlcescu Club');
+    expect(story.episodes[1].scenes[1].beats[0].text).toContain('Mika pushes Kylie to finally visit Vâlcescu Club');
   });
 
   it('preserves locked planned prose deterministically after a cluster rewrite drops it', async () => {

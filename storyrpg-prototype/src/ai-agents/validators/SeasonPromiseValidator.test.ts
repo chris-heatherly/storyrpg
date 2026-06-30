@@ -34,22 +34,26 @@ function plan(overrides: Partial<SeasonPlan> = {}): SeasonPlan {
         episodeNumber: 1,
         synopsis: 'The map wakes and promises a hidden harbor if Mara trusts the crew.',
         narrativeFunction: {
-          setup: 'Mara and the crew discover the map.',
-          conflict: 'Trusting the crew risks losing control.',
+          setup: 'The map wakes.',
+          conflict: 'Mara must decide whether to trust the crew.',
           resolution: 'Mara keeps the map secret.',
         },
       },
       {
         episodeNumber: 2,
         synopsis: 'The Admiralty closes in.',
-        narrativeFunction: { setup: 'Pressure rises.', conflict: 'The crew fractures.', resolution: 'Mara loses leverage.' },
+        narrativeFunction: {
+          setup: 'The Admiralty closes in.',
+          conflict: 'Mara tries to preserve control.',
+          resolution: 'Mara loses leverage.',
+        },
       },
       {
         episodeNumber: 3,
         synopsis: 'Mara chooses whether to share the final route.',
         narrativeFunction: {
-          setup: 'The harbor opens.',
-          conflict: 'The route requires shared command.',
+          setup: 'The final route becomes possible.',
+          conflict: 'Mara must choose control or trust.',
           resolution: 'Mara answers the trust question and the crew is changed.',
         },
       },

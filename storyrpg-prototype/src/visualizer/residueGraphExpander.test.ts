@@ -435,7 +435,7 @@ describe('residueGraphExpander', () => {
     expect(graph.nodes.some((node) => node.type === 'tint' && node.synthetic?.flag === 'tint:mercy')).toBe(true);
   });
 
-  it('creates callback source/payoff nodes and only links matching hook ids', () => {
+  it('creates callback source/payoff nodes and only links matching you ids', () => {
     const graph = expand(makeResidueStory());
 
     const source = graph.nodes.find((node) => node.type === 'callback-source');

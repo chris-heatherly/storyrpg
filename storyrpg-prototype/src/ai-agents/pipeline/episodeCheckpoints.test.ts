@@ -184,7 +184,7 @@ describe('episodeCheckpoints', () => {
     const episode = makeEpisode(3);
     episode.scenes[0].beats = [{
       id: 'b1',
-      text: 'Escalate the episode pressure through a concrete turn: rising pressure.',
+      text: 'Escalate the episode pressure through a concrete turn: search pressure.',
     }] as any;
 
     const reasons = findResumedEpisodeInvalidationReasons({

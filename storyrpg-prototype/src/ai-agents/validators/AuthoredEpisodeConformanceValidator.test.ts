@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SeasonEpisode } from '../../types/seasonPlan';
-import type { StructuralRole, TreatmentEpisodeGuidance } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat, StoryCircleRoleAssignment, TreatmentEpisodeGuidance } from '../../types/sourceAnalysis';
 import type { ExtractedTreatment } from '../utils/treatmentExtraction';
 import { AuthoredEpisodeConformanceValidator } from './AuthoredEpisodeConformanceValidator';
 
 function seasonEpisode(
   episodeNumber: number,
   title: string,
-  structuralRole?: StructuralRole[],
+  storyCircleRole?: StoryCircleBeat[],
 ): SeasonEpisode {
+  const roleAssignments: StoryCircleRoleAssignment[] | undefined = storyCircleRole?.map((beat) => ({
+    beat,
+    roleKind: 'primary',
+    source: 'treatment',
+  }));
   return {
     episodeNumber,
     title,
@@ -22,7 +27,7 @@ function seasonEpisode(
     locations: [],
     estimatedSceneCount: 4,
     estimatedChoiceCount: 3,
-    structuralRole,
+    storyCircleRole: roleAssignments,
     narrativeFunction: { setup: '', conflict: '', resolution: '' },
     status: 'planned',
     dependsOn: [],
@@ -44,14 +49,14 @@ function treatment(
   };
 }
 
-// Canonical ENDSONG-style three-episode slice with a Section-7 anchor for plotTurn1.
+// Canonical ENDSONG-style three-episode slice.
 const AUTHORED = treatment(
   {
     1: { authoredTitle: 'Dawn and Discord' },
     2: { authoredTitle: 'The Key and the Cage' },
     3: { authoredTitle: 'The Siege Tightens' },
   },
-  'Hook (Ep1)\nPlot turn 1 (Ep3)',
+  'You (Ep1)\nGo (Ep3)',
 );
 
 describe('AuthoredEpisodeConformanceValidator', () => {
@@ -60,9 +65,9 @@ describe('AuthoredEpisodeConformanceValidator', () => {
       treatment: AUTHORED,
       seasonPlan: {
         episodes: [
-          seasonEpisode(1, 'Dawn and Discord', ['hook']),
-          seasonEpisode(2, '**The Key and the Cage**', ['rising']),
-          seasonEpisode(3, 'The Siege Tightens', ['plotTurn1']),
+          seasonEpisode(1, 'Dawn and Discord', ['you']),
+          seasonEpisode(2, '**The Key and the Cage**', ['search']),
+          seasonEpisode(3, 'The Siege Tightens', ['go']),
         ],
       },
     });
@@ -71,8 +76,6 @@ describe('AuthoredEpisodeConformanceValidator', () => {
     expect(result.issues).toHaveLength(0);
     expect(result.metrics.titleMatches).toBe(3);
     expect(result.metrics.titleMismatches).toBe(0);
-    expect(result.metrics.anchorChecks).toBe(2);
-    expect(result.metrics.anchorMismatches).toBe(0);
   });
 
   it('fails when an authored episode was re-titled (re-cut), not expanded', () => {
@@ -81,9 +84,9 @@ describe('AuthoredEpisodeConformanceValidator', () => {
       seasonPlan: {
         episodes: [
           // The ENDSONG defect: re-cut title that the old fuzzy 0.5 check let pass.
-          seasonEpisode(1, 'Dawn in Silvermist Valley', ['hook']),
-          seasonEpisode(2, 'The Key and the Cage', ['rising']),
-          seasonEpisode(3, 'The Siege Tightens', ['plotTurn1']),
+          seasonEpisode(1, 'Dawn in Silvermist Valley', ['you']),
+          seasonEpisode(2, 'The Key and the Cage', ['search']),
+          seasonEpisode(3, 'The Siege Tightens', ['go']),
         ],
       },
     });
@@ -107,10 +110,10 @@ describe('AuthoredEpisodeConformanceValidator', () => {
       treatment: authored,
       seasonPlan: {
         episodes: [
-          seasonEpisode(1, 'Dawn and Discord', ['hook']),
-          seasonEpisode(2, 'The Key and the Cage', ['rising']),
+          seasonEpisode(1, 'Dawn and Discord', ['you']),
+          seasonEpisode(2, 'The Key and the Cage', ['search']),
           // Generator kept the title but dropped the editorial "(FINALE)" suffix.
-          seasonEpisode(3, 'Endsong', ['climax']),
+          seasonEpisode(3, 'Endsong', ['return']),
         ],
       },
     });
@@ -126,7 +129,7 @@ describe('AuthoredEpisodeConformanceValidator', () => {
     });
     const result = new AuthoredEpisodeConformanceValidator().validate({
       treatment: authored,
-      seasonPlan: { episodes: [seasonEpisode(1, 'A Wholly Different Finale', ['climax'])] },
+      seasonPlan: { episodes: [seasonEpisode(1, 'A Wholly Different Finale', ['return'])] },
     });
 
     expect(result.valid).toBe(false);
@@ -138,8 +141,8 @@ describe('AuthoredEpisodeConformanceValidator', () => {
       treatment: AUTHORED,
       seasonPlan: {
         episodes: [
-          seasonEpisode(1, 'Dawn and Discord', ['hook']),
-          seasonEpisode(2, 'The Key and the Cage', ['rising', 'plotTurn1']),
+          seasonEpisode(1, 'Dawn and Discord', ['you']),
+          seasonEpisode(2, 'The Key and the Cage', ['search', 'go']),
         ],
       },
     });
@@ -147,26 +150,6 @@ describe('AuthoredEpisodeConformanceValidator', () => {
     expect(result.valid).toBe(false);
     expect(result.issues.some((issue) =>
       issue.message.includes('has 2 episode(s)') && issue.message.includes('has 3')
-    )).toBe(true);
-  });
-
-  it('fails when an authored Section-7 beat is relocated off its anchored episode', () => {
-    const result = new AuthoredEpisodeConformanceValidator().validate({
-      treatment: AUTHORED,
-      seasonPlan: {
-        episodes: [
-          seasonEpisode(1, 'Dawn and Discord', ['hook']),
-          // plotTurn1 wrongly placed on Ep2 instead of authored Ep3.
-          seasonEpisode(2, 'The Key and the Cage', ['plotTurn1']),
-          seasonEpisode(3, 'The Siege Tightens', ['rising']),
-        ],
-      },
-    });
-
-    expect(result.valid).toBe(false);
-    expect(result.metrics.anchorMismatches).toBe(1);
-    expect(result.issues.some((issue) =>
-      issue.message.includes('Beat "plotTurn1" is authored on episode 3')
     )).toBe(true);
   });
 

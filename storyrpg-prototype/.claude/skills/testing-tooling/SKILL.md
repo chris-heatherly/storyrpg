@@ -1,6 +1,6 @@
 ---
 name: testing-tooling
-description: Use this skill when authoring StoryRPG tests or touching the test setup — Vitest unit tests, Playwright e2e, the react-native/AsyncStorage stubs, tsconfig/typecheck, and the npm run validate / coverage workflow.
+description: Use this skill when authoring StoryRPG tests or touching the test setup — Vitest unit tests, Playwright e2e, the react-native/AsyncStorage stubs, target-specific reader/generator typechecks, tsconfig/typecheck, npm run validate, boundary checks, and coverage workflow.
 ---
 
 # Testing Tooling
@@ -15,6 +15,8 @@ Two test pyramids: **Vitest** unit (`src/**/*.test.ts` and `proxy/**/*.test.ts`,
 validate (needs a running server). Two extra typecheck configs — `tsconfig.reader.json` /
 `tsconfig.generator.json` — run via `reader:typecheck` / `generator:typecheck`, separate from the
 main `typecheck` (so reader-only type errors won't surface until you run those or `validate:reader`).
+For reader bundle/deploy changes, add `check:reader-boundary` or `verify:reader`; for monolith-risk
+pipeline extractions, add `check:monolith-size`.
 
 ## Vitest environment
 

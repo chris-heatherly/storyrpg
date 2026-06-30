@@ -12,14 +12,14 @@ import type { Story } from '../../types/story';
 const story = { episodes: [] } as unknown as Story;
 
 /**
- * A season plan with a beat anchored to the WRONG episode (plotTurn1 authored for
+ * A season plan with a beat anchored to the WRONG episode (go authored for
  * Ep3 but assigned to Ep5) so StoryCircleAnchorConformanceValidator emits a blocking
  * finding when its gate is enabled.
  */
 function misanchoredSeasonPlan(): SeasonPlan {
   return {
     episodes: [
-      { episodeNumber: 1, structuralRole: ['hook'] },
+      { episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'llm' }] },
       { episodeNumber: 3, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }] },
       { episodeNumber: 5, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }] },
     ],
@@ -37,7 +37,7 @@ function treatmentAnalysis(): SourceMaterialAnalysis {
 /** A treatment plan whose INFO ledger has a reveal that never lands (no reveal flag/prose). */
 function ledgerSeasonPlan(): SeasonPlan {
   return {
-    episodes: [{ episodeNumber: 1, structuralRole: ['hook'] }],
+    episodes: [{ episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'llm' }] }],
     informationLedger: [
       { id: 'info-A', label: 'The steward is the informant', description: 'The steward fed the enemy the route.', plannedRevealEpisode: 1, setupTouchEpisodes: [], introducedEpisode: 1 },
     ],
@@ -284,11 +284,11 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
       seasonPlan: {
         ...ledgerSeasonPlan(),
         episodes: [
-          { episodeNumber: 1, structuralRole: ['hook'] },
-          { episodeNumber: 8, structuralRole: ['resolution'] },
+          { episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'llm' }] },
+          { episodeNumber: 8, storyCircleRole: [{ beat: 'change', roleKind: 'primary', source: 'llm' }] },
         ],
         seasonPromiseContracts: [{
-          id: 'season-resolution',
+          id: 'season-change',
           sourceText: 'Kylie must resolve whether chosen safety is worth the price of authorship.',
           contractKind: 'season_resolution_obligation',
           requiredRealization: ['final_prose'],
@@ -319,7 +319,7 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
       } as unknown as Story,
       seasonPlan: {
         ...ledgerSeasonPlan(),
-        episodes: [{ episodeNumber: 1, structuralRole: ['hook'] }],
+        episodes: [{ episodeNumber: 1, storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'llm' }] }],
         seasonPromiseContracts: [{
           id: 'episode-one-pressure',
           sourceText: 'Kylie must feel the cost of mistaking Victor for safety.',
@@ -442,7 +442,7 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     } as unknown as Story;
     const scopedPlan = {
       ...ledgerSeasonPlan(),
-      episodes: [{ episodeNumber: 2, structuralRole: ['plotTurn1'] }],
+      episodes: [{ episodeNumber: 2, storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'llm' }] }],
       characterTreatmentContracts: [characterContract],
       scenePlan: {
         scenes: [{ id: 's2-1', episodeNumber: 2, order: 1 }],

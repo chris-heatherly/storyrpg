@@ -5,9 +5,9 @@ description: Domain rules for StoryRPG story architecture including scene graphs
 
 # Story Structure Rules
 
-## 3-Act / 7-Point Story Structure (season-level spine)
+## Story Circle Story Structure (season-level spine)
 
-Every generated season is anchored by a 3-act / 7-point model. The structure is **load-bearing**: `SourceMaterialAnalyzer` infers it if the source material does not supply it, `SeasonPlannerAgent` distributes it across episodes, and `SevenPointCoverageValidator` enforces it in the Karpathy retry loop.
+Every generated season is anchored by the 8-beat Story Circle. The structure is **load-bearing**: `SourceMaterialAnalyzer` infers it if the source material does not supply it, `SeasonPlannerAgent` distributes it across episodes, and Story Circle coverage validators enforce it in the retry loop. Story Circle is supreme: arcs create story arcs across acts, with each episode serving the season-long Story Circle first and the arc pressure second.
 
 ### Narrative Anchors
 
@@ -16,34 +16,34 @@ interface StoryAnchors {
   stakes: string;            // What will break if the protagonist fails?
   goal: string;              // The concrete external goal.
   incitingIncident: string;  // The event that breaks the protagonist's status quo.
-  climax: string;            // The decisive confrontation. MUST match sevenPoint.climax.
+  climax: string;            // The decisive confrontation.
 }
 ```
 
-### Seven-Point Structure
+### Story Circle Structure
 
 ```typescript
-interface SevenPointStructure {
-  hook: string;        // Ordinary world + core value introduced.
-  plotTurn1: string;   // Protagonist commits to the goal; Act 1/Act 2 wall.
-  pinch1: string;      // First major pressure — stakes escalate, allies falter.
-  midpoint: string;    // Shift from reaction to action; new information reframes the goal.
-  pinch2: string;      // Second major pressure — everything nearly lost.
-  climax: string;      // Decisive confrontation. MUST match anchors.climax.
-  resolution: string;  // New equilibrium; core value restated.
+interface StoryCircleStructure {
+  you: string;     // Ordinary world + starting identity.
+  need: string;    // Inner/external lack made urgent.
+  go: string;      // Threshold crossing.
+  search: string;  // Adaptation under pressure.
+  find: string;    // Discovery or recontextualization.
+  take: string;    // Costly acquisition.
+  return: string;  // Bring change home.
+  change: string;  // New equilibrium and identity shift.
 }
 ```
 
-### Per-Episode Structural Roles
+### Per-Episode Story Circle Roles
 
 ```typescript
-type StructuralRole =
-  | 'hook' | 'plotTurn1' | 'pinch1' | 'midpoint'
-  | 'pinch2' | 'climax' | 'resolution'
-  | 'rising' | 'falling';  // buffer episodes between named beats
+type StoryCircleBeat =
+  | 'you' | 'need' | 'go' | 'search'
+  | 'find' | 'take' | 'return' | 'change';
 ```
 
-Each `SeasonEpisode.structuralRole` lists the beat(s) that episode carries. The default distribution from `sevenPointDistribution.ts` is deterministic; the LLM may override if the source strongly demands it. `SevenPointCoverageValidator` guarantees every canonical beat appears at least once, in canonical order.
+Each `SeasonEpisode.storyCircleRole` lists the beat(s) that episode carries. The default distribution from `storyCircleDistribution.ts` is deterministic; the LLM may override if the source strongly demands it. Story Circle coverage guarantees every canonical beat appears at least once, in canonical order.
 
 ## Scene Graph Structure
 
@@ -54,16 +54,9 @@ interface EpisodeBlueprint {
   episodeId: string;
   title: string;
   synopsis: string;
-  arc: {
-    hook: string;        // fill only if this episode carries the 'hook' beat
-    plotTurn1: string;
-    pinch1: string;
-    midpoint: string;
-    pinch2: string;
-    climax: string;
-    resolution: string;
-  };
-  structuralRole?: StructuralRole[];  // which 7-point beat(s) this episode carries
+  arc: StoryCircleStructure;
+  storyCircleRole?: StoryCircleRoleAssignment[];
+  arcPressureBand?: string;
   themes: string[];
   scenes: SceneBlueprint[];
   startingSceneId: string;
@@ -75,7 +68,7 @@ interface EpisodeBlueprint {
 }
 ```
 
-Fill each `arc.<beat>` field only when the episode's `structuralRole` includes that beat. Leave other beats empty — the season carries them elsewhere. `arc.climax` and `arc.plotTurn2` (fused into `climax`) should align with the season Climax anchor.
+Fill `arc.<beat>` fields as the episode-local expression of the Story Circle. Arc pressure bands are secondary and should not override the episode's Story Circle role.
 
 ### SceneBlueprint
 
@@ -106,33 +99,35 @@ interface SceneBlueprint {
 }
 ```
 
-## Scene-First Planning (season level, opt-in)
+## Scene-First Planning (season level, default-on)
 
-The default flow is **beat-first**: `SeasonPlannerAgent` assigns each episode one 7-point role, and
-`StoryArchitect` *invents* that episode's scenes in the per-episode loop (scenes don't exist until
-then). **Scene-first planning** (env flag `SCENE_FIRST_PLANNING=1`; auto-on for authored
-`sceneEpisodes` treatments) inverts this so episodes **and their scenes** are planned together at the
-season level.
+The default flow is **Story Circle-first**: `SeasonPlannerAgent` assigns each episode one or more Story Circle roles, and
+it also builds a season-level scene spine. **Scene-first planning** is ON by default and opt-out via
+`SCENE_FIRST_PLANNING=0`; it is not a `sceneEpisode`-only mode. `StoryArchitect` elaborates planned
+scenes into episode blueprints when `seasonPlanDirectives.plannedScenes` is present.
 
 ### Altitude cascade
 
 ```
-SEASON   → owns the 7-point structure (meta-concept) + the episode/scene plan
-EPISODE  → maps to exactly ONE of the 7 points (its structuralRole)
+SEASON   → owns the Story Circle structure + the episode/scene plan
+EPISODE  → maps to Story Circle role(s)
 SCENE    → serves the purpose its episode's role names (PlannedScene.dramaticPurpose)
 BEAT     → serves its scene (still generated later, in the per-episode loop)
 ```
 
-Scenes do **not** carry a 7-point label; they inherit their dramatic brief from their episode's role.
+Scenes do **not** carry a competing season-structure label; they inherit their dramatic brief from the episode's Story Circle role.
 
 ### The artifacts
 
 - **`SeasonScenePlan`** (`src/types/scenePlan.ts`) on `SeasonPlan.scenePlan`; per-episode slice on
-  `SeasonEpisode.plannedScenes`. Built deterministically by `seasonScenePlanBuilder.ts` (v1) from
-  data the season plan already carries (`structuralRole`, `plannedEncounters`, synopsis,
-  `treatmentGuidance`, plus consequence chains / choice moments / information ledger).
+  `SeasonEpisode.plannedScenes`. Built by `seasonScenePlanBuilder.ts` from data the season plan
+  already carries (`storyCircleRole`, `plannedEncounters`, synopsis, `treatmentGuidance`, plus
+  consequence chains / choice moments / information ledger), then optionally upgraded by
+  `SeasonPlannerAgent.authorScenePlanLLM` for non-treatment runs.
 - **`PlannedScene`**: `kind: 'standard' | 'encounter'`, `narrativeRole`
   (`setup | development | turn | payoff | release`), `dramaticPurpose`, `setsUp[]`, `paysOff[]`.
+  Current plans may also carry `coldOpenProfile` and `sceneConstructionProfile` obligations that
+  feed required-beat and scene-turn guidance downstream.
 - **Encounters are a kind of scene**: `kind: 'encounter'` with a `PlannedSceneEncounter` sub-object;
   the scene id **is** the encounter id. No separate encounter list — pacing and the
   consequence/branch budget see encounters by construction.

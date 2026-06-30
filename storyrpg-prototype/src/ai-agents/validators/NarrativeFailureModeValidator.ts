@@ -251,8 +251,27 @@ export class NarrativeFailureModeValidator extends BaseValidator {
   }
 
   private detectRepetitiveMotif(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
-    void sceneContents;
-    return [];
+    const motifUses: Array<{ sceneId: string; beatId?: string; text: string }> = [];
+    for (const scene of sceneContents) {
+      for (const beat of scene.beats ?? []) {
+        const text = typeof beat.text === 'string' ? beat.text : '';
+        if (!text) continue;
+        if (/\braises?\s+(?:her|his|their|your|a|the)?\s*glass\b/i.test(text) || /\bglasses?\s+click/i.test(text) || /\bglass\s+clicked\b/i.test(text)) {
+          motifUses.push({ sceneId: scene.sceneId, beatId: beat.id, text });
+        }
+      }
+    }
+
+    if (motifUses.length < 2) return [];
+
+    return [{
+      code: 'repetitive_toast_motif',
+      severity: 'error',
+      message: `[Repetitive motif] Toast/glass choreography appears in ${motifUses.length} beats without a clear new turn.`,
+      location: motifUses.map((use) => use.beatId ? `${use.sceneId}.${use.beatId}` : use.sceneId).join(', '),
+      suggestion: 'Keep at most one toast/glass beat unless the repetition changes meaning through new pressure, revelation, or consequence.',
+      source: 'prose_style_consistency',
+    }];
   }
 
   private detectTenseDrift(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {

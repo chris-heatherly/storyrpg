@@ -95,7 +95,7 @@ describe('StoryCircleAnchorConformanceValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('also carried by Ep4'))).toBe(true);
   });
 
-  it('does not migrate legacy structuralRole carriers when storyCircleRole is absent', () => {
+  it('does not migrate legacy storyCircleRole carriers when storyCircleRole is absent', () => {
     const result = new StoryCircleAnchorConformanceValidator().validate({
       storyCircleBeatEpisodeAnchors: { go: 2 },
       episodes: [

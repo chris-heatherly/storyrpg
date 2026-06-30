@@ -84,9 +84,9 @@ describe('buildReaderFacingFallbackChoiceOptions', () => {
   it('does not turn quoted planning metadata into "what was just said" choices', () => {
     const options = buildReaderFacingFallbackChoiceOptions({
       choiceBeatText:
-        'Aftermath that resettles stakes; serves the hook beat ("Kylie unpacks in Bucharest, fleeing public heartbreak.").',
+        'Aftermath that resettles stakes; serves the you beat ("Kylie unpacks in Bucharest, fleeing public heartbreak.").',
       dramaticPurpose:
-        'Aftermath that resettles stakes; serves the hook beat ("Kylie unpacks in Bucharest, fleeing public heartbreak.").',
+        'Aftermath that resettles stakes; serves the you beat ("Kylie unpacks in Bucharest, fleeing public heartbreak.").',
       sceneName: 'release scene 6',
     });
 
@@ -95,7 +95,7 @@ describe('buildReaderFacingFallbackChoiceOptions', () => {
       'Wait long enough to read the danger.',
       'Ask what is really at stake.',
     ]);
-    expect(options.join(' ')).not.toMatch(/what was just said|Aftermath|serves the hook beat|release scene/i);
+    expect(options.join(' ')).not.toMatch(/what was just said|Aftermath|serves the you beat|release scene/i);
   });
 
   it('does not split mixed treatment decision prose into stale choices for a completed beat', () => {
@@ -116,7 +116,7 @@ describe('buildReaderFacingFallbackChoiceOptions', () => {
         "The no-profile account writes: Ileana is missing. She was at his last party. Don't go.",
       choiceBeatVisualMoment: 'Extreme close-up on the anonymous warning message.',
       dramaticPurpose:
-        'Aftermath that resettles stakes; serves the plotTurn1 beat ("The post goes viral.").',
+        'Aftermath that resettles stakes; serves the go beat ("The post goes viral.").',
       sceneName: 'release scene 6',
     });
 

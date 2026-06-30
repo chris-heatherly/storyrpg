@@ -97,6 +97,11 @@
     },
     {
       "type": "debug",
+      "phase": "artifacts",
+      "message": "Saved revisioned planning artifacts for source analysis."
+    },
+    {
+      "type": "debug",
       "phase": "content",
       "message": "Episode outlines ready"
     },
@@ -173,7 +178,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 5788 -> 4545 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16120 -> 14676 bytes"
     },
     {
       "type": "debug",
@@ -188,12 +193,12 @@
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-1"
+      "message": "Wrote 3 beats for scene-1"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-1 written (6 beats)"
+      "message": "Scene scene-1 written (3 beats)"
     },
     {
       "type": "debug",
@@ -208,7 +213,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -233,7 +238,7 @@
     {
       "type": "incremental_validation",
       "phase": "scene_complete",
-      "message": "Scene scene-1: ISSUES FOUND"
+      "message": "Scene scene-1: PASSED"
     },
     {
       "type": "debug",
@@ -248,17 +253,17 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2: 4491 -> 4380 bytes"
+      "message": "SceneWriter input compacted for scene-2: 8677 -> 8203 bytes"
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-2"
+      "message": "Wrote 3 beats for scene-2"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-2 written (6 beats)"
+      "message": "Scene scene-2 written (3 beats)"
     },
     {
       "type": "debug",
@@ -273,7 +278,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -298,7 +303,7 @@
     {
       "type": "incremental_validation",
       "phase": "scene_complete",
-      "message": "Scene scene-2: ISSUES FOUND"
+      "message": "Scene scene-2: PASSED"
     },
     {
       "type": "debug",
@@ -313,7 +318,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-3: 3502 -> 3255 bytes"
+      "message": "SceneWriter input compacted for scene-3: 7182 -> 6690 bytes"
     },
     {
       "type": "debug",
@@ -353,7 +358,7 @@
     {
       "type": "validation_aggregated",
       "phase": "incremental_validation",
-      "message": "Incremental validation complete: 1/3 scenes passed"
+      "message": "Incremental validation complete: 3/3 scenes passed"
     },
     {
       "type": "phase_complete",
@@ -368,7 +373,7 @@
     {
       "type": "debug",
       "phase": "episode_1_callbacks",
-      "message": "Callback ledger: +6 new hook(s), +0 authored payoff(s), +2 auto-realized this episode; 3 total"
+      "message": "Callback ledger: +12 new hook(s), +0 authored payoff(s), +2 auto-realized this episode; 6 total"
     },
     {
       "type": "checkpoint",
@@ -397,8 +402,18 @@
     },
     {
       "type": "debug",
+      "phase": "episode_1_artifacts",
+      "message": "Saved 5 revisioned episode planning artifact(s)."
+    },
+    {
+      "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Episode 1 contract has 24 blocker(s); attempting episode-local repair before completion."
+      "message": "Episode 1 contract has 25 blocker(s); attempting episode-local repair before completion."
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_contract_ep_1",
+      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
     },
     {
       "type": "debug",
@@ -408,7 +423,7 @@
     {
       "type": "checkpoint",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract repair routing: scene_cluster_rewrite:1, diagnostic_stop:23"
+      "message": "Final contract repair routing: scene_cluster_rewrite:1, diagnostic_stop:24"
     },
     {
       "type": "debug",
@@ -503,7 +518,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-4: 6303 -> 5357 bytes"
+      "message": "SceneWriter input compacted for scene-4: 17438 -> 16477 bytes"
     },
     {
       "type": "debug",
@@ -518,12 +533,12 @@
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-4"
+      "message": "Wrote 3 beats for scene-4"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-4 written (6 beats)"
+      "message": "Scene scene-4 written (3 beats)"
     },
     {
       "type": "debug",
@@ -538,7 +553,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -578,17 +593,17 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-5: 4353 -> 4264 bytes"
+      "message": "SceneWriter input compacted for scene-5: 7640 -> 7553 bytes"
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-5"
+      "message": "Wrote 3 beats for scene-5"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-5 written (6 beats)"
+      "message": "Scene scene-5 written (3 beats)"
     },
     {
       "type": "debug",
@@ -603,7 +618,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-6"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -643,7 +658,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-6: 3771 -> 3682 bytes"
+      "message": "SceneWriter input compacted for scene-6: 8189 -> 8117 bytes"
     },
     {
       "type": "debug",
@@ -698,7 +713,7 @@
     {
       "type": "debug",
       "phase": "episode_2_callbacks",
-      "message": "Callback ledger: +6 new hook(s), +0 authored payoff(s), +3 auto-realized this episode; 7 total"
+      "message": "Callback ledger: +10 new hook(s), +0 authored payoff(s), +5 auto-realized this episode; 12 total"
     },
     {
       "type": "checkpoint",
@@ -713,7 +728,7 @@
     {
       "type": "warning",
       "phase": "episode_2_narrative_diagnostics",
-      "message": "Narrative diagnostics warning: setup_payoff:passed(100), twist_quality:warning(80), arc_delta:skipped, divergence:passed(100), callback_coverage:warning(0), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
+      "message": "Narrative diagnostics warning: setup_payoff:passed(100), twist_quality:warning(80), arc_delta:skipped, divergence:passed(100), callback_coverage:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
     },
     {
       "type": "debug",
@@ -727,13 +742,23 @@
     },
     {
       "type": "debug",
+      "phase": "episode_2_artifacts",
+      "message": "Saved 5 revisioned episode planning artifact(s)."
+    },
+    {
+      "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Episode 2 contract has 23 blocker(s); attempting episode-local repair before completion."
+      "message": "Episode 2 contract has 24 blocker(s); attempting episode-local repair before completion."
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_contract_ep_2",
+      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
     },
     {
       "type": "checkpoint",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract repair routing: diagnostic_stop:23"
+      "message": "Final contract repair routing: diagnostic_stop:24"
     },
     {
       "type": "checkpoint",
@@ -763,12 +788,27 @@
     {
       "type": "warning",
       "phase": "season_canon_completion",
+      "message": "[advisory] Promise \"Earlier choice: \"Press him on the part he is leaving out\" (sets pressed_edric_for_name).\" (flag:pressed_edric_for_name) is still open at season end — never paid off or abandoned."
+    },
+    {
+      "type": "warning",
+      "phase": "season_canon_completion",
       "message": "[advisory] Promise \"The relentless in how you have been moving carries into this moment too.\" (tone:relentless) is still open at season end — never paid off or abandoned."
     },
     {
       "type": "warning",
       "phase": "season_canon_completion",
+      "message": "[advisory] Promise \"Earlier choice: \"Accept the half-truth and let him keep his dignity\" (sets protected_edric_dignity).\" (flag:protected_edric_dignity) is still open at season end — never paid off or abandoned."
+    },
+    {
+      "type": "warning",
+      "phase": "season_canon_completion",
       "message": "[advisory] Promise \"You let the moment come to you, unhurried as you have become.\" (tone:patience) is still open at season end — never paid off or abandoned."
+    },
+    {
+      "type": "warning",
+      "phase": "season_canon_completion",
+      "message": "[advisory] Promise \"Earlier choice: \"Name the cost before you move\" (sets named_the_cost).\" (flag:named_the_cost) is still open at season end — never paid off or abandoned."
     },
     {
       "type": "warning",
@@ -788,7 +828,17 @@
     {
       "type": "warning",
       "phase": "season_canon_completion",
+      "message": "[advisory] Promise \"Earlier choice: \"Answer with cheerful, exact inventory talk\" (sets answered_with_inventory).\" (flag:answered_with_inventory) is still open at season end — never paid off or abandoned."
+    },
+    {
+      "type": "warning",
+      "phase": "season_canon_completion",
       "message": "[advisory] Promise \"The opaque in how you have been moving carries into this moment too.\" (tone:opaque) is still open at season end — never paid off or abandoned."
+    },
+    {
+      "type": "warning",
+      "phase": "season_canon_completion",
+      "message": "[advisory] Promise \"Earlier choice: \"Let one true thing slip and watch where it lands\" (sets let_truth_slip).\" (flag:let_truth_slip) is still open at season end — never paid off or abandoned."
     },
     {
       "type": "warning",

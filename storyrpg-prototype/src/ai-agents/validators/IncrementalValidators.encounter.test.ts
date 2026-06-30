@@ -108,7 +108,7 @@ describe('IncrementalEncounterValidator', () => {
         } as any,
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'Aftershock',
           description: 'The room holds the consequence.',
           setupText: 'No one can take back what was said.',
@@ -185,7 +185,7 @@ describe('IncrementalEncounterValidator', () => {
         } as any,
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'Fallback',
           description: 'Unused',
           setupText: 'Unused',
@@ -252,7 +252,7 @@ describe('IncrementalEncounterValidator', () => {
         } as any,
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'The answer',
           description: 'The emotional fallout lands.',
           setupText: 'No one says what matters most.',
@@ -319,7 +319,7 @@ describe('IncrementalEncounterValidator', () => {
         } as any,
         {
           id: 'beat-2',
-          phase: 'resolution',
+          phase: 'change',
           name: 'Resolution',
           description: 'A valid close.',
           setupText: 'The encounter closes.',

@@ -18,13 +18,13 @@ describe('applySpinePlantMap', () => {
     expect(ledger.all()[0].payoffEpisode).toBe(3);
   });
 
-  it('resolves a flag entry to the flag:<flag> hook id', () => {
+  it('resolves a flag entry to the flag:<flag> you id', () => {
     const ledger = ledgerWith('flag:lysandra_trusted');
     const result = applySpinePlantMap(ledger, { entries: [{ flag: 'lysandra_trusted', payoffEpisode: 2, payoffEpisodeLatest: 4 }] });
     expect(result.applied).toBe(1);
-    const hook = ledger.all()[0];
-    expect(hook.payoffEpisode).toBe(2);
-    expect(hook.payoffWindow).toEqual({ minEpisode: 2, maxEpisode: 4 });
+    const you = ledger.all()[0];
+    expect(you.payoffEpisode).toBe(2);
+    expect(you.payoffWindow).toEqual({ minEpisode: 2, maxEpisode: 4 });
   });
 
   it('reports unmatched entries without throwing', () => {

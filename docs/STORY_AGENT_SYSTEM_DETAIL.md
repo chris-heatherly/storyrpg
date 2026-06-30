@@ -125,8 +125,8 @@ Always respond with valid JSON that matches the requested schema.
 | **Twist Architect** | `TwistArchitect.ts` | Schedules per-episode reversal/revelation with the required foreshadow beat(s) | 0.75 |
 | **Character Arc Tracker** | `CharacterArcTracker.ts` | Per-episode identity/relationship milestone targets consumed by `ArcDeltaValidator` | 0.7 |
 | **Style Architect** | `StyleArchitect.ts` | Expands arbitrary art-style strings into a structured `ArtStyleProfile`; falls back to `buildVerbatimProfile` so unknown styles never inherit cinematic vocabulary | 0.7 |
-| **Season Planner** | `SeasonPlannerAgent.ts` | Season-level planning along the 3-act / 7-point spine (authoritative; replaces the old `SeasonArchitect`) | 0.7 |
-| **Source Material Analyzer** | `SourceMaterialAnalyzer.ts` | IP analysis for adapted properties; emits anchors, seven-point, and episode breakdown | 0.6 |
+| **Season Planner** | `SeasonPlannerAgent.ts` | Season-level planning along the Story Circle spine (authoritative; replaces the old `SeasonArchitect`) | 0.7 |
+| **Source Material Analyzer** | `SourceMaterialAnalyzer.ts` | IP analysis for adapted properties; emits anchors, Story Circle, and episode breakdown | 0.6 |
 
 #### QA and Analysis Agents
 
@@ -204,7 +204,7 @@ The `FullStoryPipeline` (`src/ai-agents/pipeline/FullStoryPipeline.ts`) is the a
 ```
 1. Source Material Analysis (if adapting IP)
      ↓
-2. Season Planning (optional, with 3-act / 7-point validation)
+2. Season Planning (optional, with Story Circle validation)
      ↓
 3. World Building (World Builder → World Bible)
      ↓
@@ -784,7 +784,7 @@ interface GenerationSettingsConfig {
 - `src/ai-agents/agents/CharacterArcTracker.ts` — Per-episode identity/relationship milestones
 - `src/ai-agents/agents/StyleArchitect.ts` — Art-style string → ArtStyleProfile expansion
 - `src/ai-agents/agents/SceneCritic.ts` — Optional Phase-9 subtext/reversals rewrite
-- `src/ai-agents/agents/SeasonPlannerAgent.ts` — Season planning along the 3-act / 7-point spine
+- `src/ai-agents/agents/SeasonPlannerAgent.ts` — Season planning along the Story Circle spine
 
 ### 17.2.1 Validator & QA Files
 

@@ -111,8 +111,7 @@ function firstScene(blueprint: EpisodeBlueprint): SceneBlueprint | undefined {
 function isFinale(blueprint: EpisodeBlueprint, options: EpisodePressureArchitectureOptions): boolean {
   return Boolean(
     options.isFinale ||
-    blueprint.structuralRole?.includes('resolution') ||
-    blueprint.structuralRole?.includes('climax'),
+    blueprint.storyCircleRole?.some((role) => role.beat === 'return' || role.beat === 'change'),
   );
 }
 

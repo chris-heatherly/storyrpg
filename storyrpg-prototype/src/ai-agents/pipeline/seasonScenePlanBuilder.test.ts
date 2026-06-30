@@ -8,11 +8,11 @@ import {
 } from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
-import type { StructuralRole } from '../../types/sourceAnalysis';
+import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 
 function episode(
   episodeNumber: number,
-  structuralRole: StructuralRole[],
+  storyCircleRole: StoryCircleBeat[],
   opts: Partial<SeasonEpisode> = {},
 ): SeasonEpisode {
   return {
@@ -27,7 +27,7 @@ function episode(
     locations: ['town'],
     estimatedSceneCount: 5,
     estimatedChoiceCount: 3,
-    structuralRole,
+    storyCircleRole,
     narrativeFunction: { setup: '', conflict: '', resolution: '' },
     status: 'planned',
     dependsOn: [],
@@ -40,14 +40,15 @@ function episode(
 
 function plan(episodes: SeasonEpisode[], extra: Partial<SeasonPlan> = {}): SeasonPlan {
   return {
-    legacyStructure: {
-      hook: 'Ordinary world',
-      plotTurn1: 'Inciting incident',
-      pinch1: 'First setback',
-      midpoint: 'Reversal',
-      pinch2: 'Crisis',
-      climax: 'Confrontation',
-      resolution: 'Aftermath',
+    storyCircle: {
+      you: '',
+      need: '',
+      go: 'Inciting incident',
+      search: 'First setback',
+      find: 'Reversal',
+      take: 'Crisis',
+      return: 'Confrontation',
+      change: 'Aftermath',
     },
     episodes,
     consequenceChains: [],
@@ -59,7 +60,7 @@ function plan(episodes: SeasonEpisode[], extra: Partial<SeasonPlan> = {}): Seaso
 
 describe('buildSeasonScenePlan', () => {
   it('enumerates scenes per episode at the season level', () => {
-    const p = plan([episode(1, ['hook']), episode(2, ['midpoint'])]);
+    const p = plan([episode(1, ['you']), episode(2, ['find'])]);
     const sp = buildSeasonScenePlan(p);
 
     expect(sp.scenes.length).toBeGreaterThan(0);
@@ -70,7 +71,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('uses episode-local treatment pressure before global Story Circle event prose', () => {
-    const ep = episode(3, ['plotTurn1'], {
+    const ep = episode(3, ['go'], {
       title: 'The Weekend',
       synopsis: "Kylie crosses the threshold into Victor's isolated country estate.",
       locations: ["Victor's Estate"],
@@ -102,14 +103,15 @@ describe('buildSeasonScenePlan', () => {
     });
 
     const sp = buildSeasonScenePlan(plan([ep], {
-      legacyStructure: {
-        hook: 'Kylie unpacking in Lipscani.',
-        plotTurn1: 'The attack in the park and the rescue by Victor, pulling her into the supernatural web.',
-        pinch1: 'First setback',
-        midpoint: 'Reversal',
-        pinch2: 'Crisis',
-        climax: 'Confrontation',
-        resolution: 'Aftermath',
+      storyCircle: {
+        you: '',
+        need: '',
+        go: 'The attack in the park and the rescue by Victor, pulling her into the supernatural web.',
+        search: 'First setback',
+        find: 'Reversal',
+        take: 'Crisis',
+        return: 'Confrontation',
+        change: 'Aftermath',
       },
     }));
     const standardSceneText = scenesForEpisode(sp, 3)
@@ -127,7 +129,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('represents encounters as kind:"encounter" scenes whose id is the encounter id', () => {
-    const ep = episode(1, ['climax'], {
+    const ep = episode(1, ['return'], {
       plannedEncounters: [
         {
           id: 'enc-showdown',
@@ -156,7 +158,7 @@ describe('buildSeasonScenePlan', () => {
     const longDescription =
       'The siege itself — a sustained defensive set piece (wall breach + repulse) culminating in the strategic choice to evacuate.';
     const centralConflict = "Aethavyr's flawless-protector image is eroded by an unwinnable situation.";
-    const ep = episode(3, ['climax'], {
+    const ep = episode(3, ['return'], {
       plannedEncounters: [
         {
           id: 'treatment-enc-3-1',
@@ -186,7 +188,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('wires forward setup/payoff edges from consequence chains', () => {
-    const p = plan([episode(1, ['hook']), episode(2, ['midpoint']), episode(3, ['climax'])], {
+    const p = plan([episode(1, ['you']), episode(2, ['find']), episode(3, ['return'])], {
       consequenceChains: [
         {
           id: 'chain-1',
@@ -210,7 +212,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('binds each authored episode turn to a scene as a required beat (no single-string fold)', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
         episodeTurns: [
@@ -248,7 +250,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('infers turn contracts for non-treatment planned scenes', () => {
-    const sp = buildSeasonScenePlan(plan([episode(1, ['hook'])]));
+    const sp = buildSeasonScenePlan(plan([episode(1, ['you'])]));
     const scenes = scenesForEpisode(sp, 1);
 
     expect(scenes.length).toBeGreaterThan(0);
@@ -262,7 +264,7 @@ describe('buildSeasonScenePlan', () => {
       'After a failed date montage, she finally goes to the velvet club for a two-hour conversation.',
       'Later her cab breaks down on a mountain road and a stranger fixes it before an anonymous warning arrives.',
     ].join(' ');
-    const ep = episode(2, ['plotTurn1'], {
+    const ep = episode(2, ['go'], {
       synopsis: broadSynopsis,
       locations: ['city'],
     });
@@ -275,7 +277,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('paces first-meeting treatment relationship turns below earned friendship', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       mainCharacters: ['kylie', 'mika', 'stela'],
       treatmentGuidance: {
         episodeTurns: [
@@ -295,7 +297,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('does not advance repeated group mentions past acquaintance without relationship-choice evidence', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 5,
       mainCharacters: ['protagonist', 'ally-a', 'ally-b'],
       treatmentGuidance: {
@@ -319,7 +321,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('does not create relationship pacing contracts for the protagonist', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       mainCharacters: ['Kylie Marinescu', 'Mika Dragan'],
       treatmentGuidance: {
         episodeTurns: [
@@ -337,7 +339,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('produces a signature device on the anchor scene from the visual anchor', () => {
-    const ep = episode(1, ['climax'], {
+    const ep = episode(1, ['return'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
         episodeTurns: ['The duel begins'],
@@ -375,7 +377,7 @@ describe('buildSeasonScenePlan', () => {
     // The bite-me treatment schema authors per-episode beats via "Major choice
     // pressure" + "Encounter anchor" and carries no "Episode turns" section, so
     // episodeTurns/visualAnchor parse empty. The binding must still engage.
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
         episodeTurns: [],
@@ -404,7 +406,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('budgets enough scenes to carry more authored turns than the estimate', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 3,
       treatmentGuidance: {
         episodeTurns: Array.from({ length: 9 }, (_, i) => `Turn ${i + 1}`),
@@ -443,7 +445,7 @@ describe('buildSeasonScenePlan', () => {
       richScene('s1-2', 'American Shoes', 'Mika adopts Kylie at the door of the Vâlcescu Club and swaps her shoes.', 'Vâlcescu Club door'),
       richScene('s1-3', 'The Stone That Wants You', 'At the Lipscani bookshop Stela presses rose quartz into Kylie\'s hand.', 'Lumina Books, Lipscani'),
     ];
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       treatmentGuidance: {
         episodeTurns: [
           'Mika adopts Kylie at the door of the Vâlcescu Club and swaps out her American shoes.',
@@ -464,7 +466,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('binds concrete cold-open beats and consequence seeds without treatment labels (WS1.3)', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,
       treatmentGuidance: {
         episodeTurns: ['Mika adopts Kylie at the Vâlcescu Club door.'],
@@ -491,7 +493,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('pins a scene setting to the location its authored turn names (no collapse-to-first)', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,
       locations: ['Kylie\'s Lipscani Apartment', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Lumina Books'],
       treatmentGuidance: {
@@ -513,7 +515,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('pins fallback major-choice pressure scenes to named locations', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 5,
       locations: ['Kylie\'s Lipscani Apartment', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Lumina Books'],
       treatmentGuidance: {
@@ -535,7 +537,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('infers authored Bite Me venues when episode locations only name the apartment', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 5,
       locations: ['Kylie\'s Lipscani Apartment'],
       treatmentGuidance: {
@@ -565,14 +567,15 @@ describe('buildSeasonScenePlan', () => {
       ],
     });
     const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], {
-      legacyStructure: {
-        hook: 'Kylie arrives in Bucharest, forms the Dusk Club with her friends, and seeks romance.',
-        plotTurn1: '',
-        pinch1: '',
-        midpoint: '',
-        pinch2: '',
-        climax: '',
-        resolution: '',
+      storyCircle: {
+        you: '',
+        need: '',
+        go: '',
+        search: '',
+        find: '',
+        take: '',
+        return: '',
+        change: '',
       },
     })), 1);
     const keyCardScene = scenes.find((s) =>
@@ -581,8 +584,7 @@ describe('buildSeasonScenePlan', () => {
     const openingScene = scenes.find((s) => s.narrativeRole === 'setup');
     const rooftop = scenes.find((s) => s.id === 'treatment-enc-1-1');
     const cismigiu = scenes.find((s) => s.id === 'treatment-enc-1-2');
-
-    expect(openingScene?.requiredBeats?.some((beat) => beat.mustDepict.includes('forms the Dusk Club'))).toBe(true);
+    expect(openingScene?.requiredBeats?.some((beat) => beat.mustDepict.includes('forms the Dusk Club'))).toBe(false);
     expect(keyCardScene?.locations).toEqual(['Vâlcescu Club']);
     expect(rooftop?.locations).toEqual(['Rooftop Bar']);
     expect(cismigiu?.locations).toEqual(['Cișmigiu Gardens']);
@@ -614,7 +616,7 @@ describe('buildSeasonScenePlan', () => {
     ];
     expect(encounterIsCoveredByAuthoredTurns(biteEncounter, authoredTurns)).toBe(true);
 
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 7,
       locations: ["Kylie's Lipscani Apartment", 'Vâlcescu Club', 'Lumina Books', 'Rooftop Bar', 'Cișmigiu Gardens'],
       mainCharacters: ['Kylie', 'Mika', 'Stela', 'Victor', 'Radu'],
@@ -638,7 +640,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('keeps an uncovered planned encounter as a standalone encounter scene', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       treatmentGuidance: {
         episodeTurns: ['Mika gives Kylie a key card at the club.', 'Stela sells Kylie a chunk of rose quartz.'],
       },
@@ -674,7 +676,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('distributes information-ledger entries touching the episode as advisory seed beats', () => {
-    const ep = episode(1, ['hook'], { estimatedSceneCount: 4, treatmentGuidance: { episodeTurns: ['A turn.'] } });
+    const ep = episode(1, ['you'], { estimatedSceneCount: 4, treatmentGuidance: { episodeTurns: ['A turn.'] } });
     const informationLedger = [
       { id: 'INFO-E', label: 'The blog is the thing Victor cannot control; he keeps his face out of every frame', description: 'An unphotographable man.', introducedEpisode: 1, setupTouchEpisodes: [2, 3] },
       { id: 'INFO-C', label: "Victor's Nature", description: 'Victor is a strigoi who casts no reflection.', introducedEpisode: 1, setupTouchEpisodes: [3, 4] },
@@ -690,7 +692,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('emits no seed beats when the treatment carries no cold open / consequence seeds (golden-stable)', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       treatmentGuidance: { episodeTurns: ['A single turn.'] },
     });
     const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
@@ -698,7 +700,7 @@ describe('buildSeasonScenePlan', () => {
   });
 
   it('slices edges that touch a given episode', () => {
-    const p = plan([episode(1, ['hook']), episode(2, ['climax'])], {
+    const p = plan([episode(1, ['you']), episode(2, ['return'])], {
       consequenceChains: [
         {
           id: 'c',
@@ -720,7 +722,7 @@ describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bit
   } as unknown as PlannedScene);
 
   it('binds authored turns ONLY to standard scenes, never the encounter anchor', () => {
-    const ep = episode(3, ['midpoint'], {
+    const ep = episode(3, ['find'], {
       treatmentGuidance: {
         episodeTurns: [
           'At the club the night locks into place.',
@@ -743,7 +745,7 @@ describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bit
   });
 
   it('folds composite treatment encounters into the authored scene that owns the event', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 6,
       locations: ['Lipscani', 'Rooftop Bar', 'Cismigiu Gardens'],
       treatmentGuidance: {
@@ -787,7 +789,7 @@ describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bit
 
 describe('mechanic pressure contracts', () => {
   it('turns treatment mechanics such as key cards and quartz into story-pressure contracts', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       locations: ['Vâlcescu Club', 'Lumina Books'],
       mainCharacters: ['mika', 'stela'],
       treatmentGuidance: {
@@ -806,7 +808,7 @@ describe('mechanic pressure contracts', () => {
   });
 
   it('adds pressure contracts to non-treatment choice scenes', () => {
-    const ep = episode(1, ['hook'], {
+    const ep = episode(1, ['you'], {
       estimatedSceneCount: 3,
       synopsis: 'A decision about the locked archive changes what the player can learn.',
     } as Partial<SeasonEpisode>);

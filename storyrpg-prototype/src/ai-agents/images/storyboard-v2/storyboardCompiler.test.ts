@@ -244,7 +244,7 @@ describe('compileStoryboardScenePacket', () => {
         beats: [
           {
             id: 'b1',
-            text: 'A Pedestrian dodges the falling sign while Mara reaches for the curb.',
+            text: 'A Pedestrian dodges the return sign while Mara reaches for the curb.',
             speaker: 'Mara',
             visibleCharacterIds: ['Pedestrian'],
           },

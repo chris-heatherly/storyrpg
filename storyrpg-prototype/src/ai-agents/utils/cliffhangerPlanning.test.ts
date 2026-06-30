@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDefaultCliffhangerPlan,
-  getCliffhangerDefaultsForRole,
+  getCliffhangerDefaultsForStoryCircleBeat,
 } from './cliffhangerPlanning';
-import type { EpisodeOutline, StructuralRole } from '../../types/sourceAnalysis';
+import type { EpisodeOutline, StoryCircleBeat } from '../../types/sourceAnalysis';
 
-function episode(role: StructuralRole, episodeNumber = 2): EpisodeOutline {
+function episode(beat: StoryCircleBeat, episodeNumber = 2): EpisodeOutline {
   return {
     episodeNumber,
     title: `Episode ${episodeNumber}`,
@@ -19,7 +19,7 @@ function episode(role: StructuralRole, episodeNumber = 2): EpisodeOutline {
     locations: [],
     estimatedSceneCount: 4,
     estimatedChoiceCount: 2,
-    structuralRole: [role],
+    storyCircleRole: [{ beat, roleKind: 'primary', source: 'distribution' }],
     narrativeFunction: {
       setup: 'The protagonist enters pressure.',
       conflict: 'The antagonist corners the protagonist.',
@@ -29,21 +29,11 @@ function episode(role: StructuralRole, episodeNumber = 2): EpisodeOutline {
 }
 
 describe('cliffhangerPlanning', () => {
-  it('maps all structural roles to a default cliffhanger style', () => {
-    const roles: StructuralRole[] = [
-      'hook',
-      'plotTurn1',
-      'pinch1',
-      'midpoint',
-      'pinch2',
-      'climax',
-      'resolution',
-      'rising',
-      'falling',
-    ];
+  it('maps all Story Circle beats to a default cliffhanger style', () => {
+    const roles: StoryCircleBeat[] = ['you', 'need', 'go', 'search', 'find', 'take', 'return', 'change'];
 
     for (const role of roles) {
-      const defaults = getCliffhangerDefaultsForRole(role, 2, 8);
+      const defaults = getCliffhangerDefaultsForStoryCircleBeat(role, 2, 8);
       expect(defaults.type).toBeTruthy();
       expect(defaults.intensity).toBeTruthy();
       expect(defaults.newOpenQuestion.length).toBeGreaterThan(20);
@@ -52,25 +42,25 @@ describe('cliffhangerPlanning', () => {
 
   it('forces episode 1 to a high-intensity shock ending', () => {
     const plan = buildDefaultCliffhangerPlan({
-      episode: episode('hook', 1),
+      episode: episode('you', 1),
       totalEpisodes: 8,
       seasonStakes: 'The city survives.',
     });
 
     expect(plan.type).toBe('shock');
     expect(plan.intensity).toBe('high');
-    expect(plan.mappedStructuralRole).toBe('hook');
+    expect(plan.storyCircleLaunchBeat).toBe('go');
   });
 
-  it('makes midpoint and pinch2 sharper than ordinary buffer episodes', () => {
-    const midpoint = buildDefaultCliffhangerPlan({ episode: episode('midpoint', 4), totalEpisodes: 8 });
-    const pinch2 = buildDefaultCliffhangerPlan({ episode: episode('pinch2', 6), totalEpisodes: 8 });
-    const rising = buildDefaultCliffhangerPlan({ episode: episode('rising', 3), totalEpisodes: 8 });
+  it('keeps search, find, and take cliffhangers at high pressure', () => {
+    const find = buildDefaultCliffhangerPlan({ episode: episode('find', 4), totalEpisodes: 8 });
+    const take = buildDefaultCliffhangerPlan({ episode: episode('take', 6), totalEpisodes: 8 });
+    const search = buildDefaultCliffhangerPlan({ episode: episode('search', 3), totalEpisodes: 8 });
 
-    expect(midpoint.intensity).toBe('high');
-    expect(midpoint.type).toBe('reframe');
-    expect(pinch2.intensity).toBe('high');
-    expect(pinch2.type).toBe('emotional_hook');
-    expect(rising.intensity).toBe('medium');
+    expect(find.intensity).toBe('high');
+    expect(find.type).toBe('reframe');
+    expect(take.intensity).toBe('high');
+    expect(take.type).toBe('emotional_hook');
+    expect(search.intensity).toBe('high');
   });
 });

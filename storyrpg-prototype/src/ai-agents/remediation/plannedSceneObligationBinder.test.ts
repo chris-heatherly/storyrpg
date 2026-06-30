@@ -778,6 +778,110 @@ describe('planned scene obligation binder', () => {
     });
   });
 
+  it('splits composite cold-open beats into content-agnostic scene-sized obligations', () => {
+    const broadBeat = {
+      id: 's1-1-coldopen-composite',
+      sourceTurn: 'A traveler arrives in a new city with two suitcases, gathers allies at a rooftop table, and writes the public account at 3am.',
+      mustDepict: 'A traveler arrives in a new city with two suitcases, gathers allies at a rooftop table, and writes the public account at 3am.',
+      tier: 'coldopen' as const,
+    };
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-arrival-cold-open',
+        order: 0,
+        title: 'Opening arrival',
+        dramaticPurpose: 'A traveler arrives in a new city with two suitcases.',
+        locations: ['Station'],
+        requiredBeats: [broadBeat],
+      }),
+      scene({
+        id: 's1-social-table',
+        order: 1,
+        title: 'Rooftop table',
+        dramaticPurpose: 'The traveler gathers allies at a rooftop table.',
+        locations: ['Rooftop'],
+      }),
+      scene({
+        id: 's1-late-writing',
+        order: 2,
+        title: '3am public account',
+        dramaticPurpose: 'At 3am, the traveler writes the public account.',
+        locations: ['Room'],
+      }),
+    ], { episodeNumber: 1 });
+
+    const openingText = (result.scenes.find((item) => item.id === 's1-arrival-cold-open')?.requiredBeats ?? [])
+      .map((beat) => beat.mustDepict)
+      .join(' ');
+    const socialText = (result.scenes.find((item) => item.id === 's1-social-table')?.requiredBeats ?? [])
+      .map((beat) => beat.mustDepict)
+      .join(' ');
+    const writingText = (result.scenes.find((item) => item.id === 's1-late-writing')?.requiredBeats ?? [])
+      .map((beat) => beat.mustDepict)
+      .join(' ');
+
+    expect(openingText).toContain('arrives in a new city');
+    expect(openingText).not.toContain('gathers allies');
+    expect(openingText).not.toContain('writes the public account');
+    expect(socialText).toContain('gathers allies');
+    expect(writingText).toContain('writes the public account');
+    expect(result.report.decisions.some((decision) =>
+      decision.contractId === broadBeat.id &&
+      decision.action === 'rebound' &&
+      decision.reason.includes('Broad arrival/social-identity beat was split')
+    )).toBe(true);
+  });
+
+  it('rebounds Story Circle-derived social and writing atoms to their matching planned scenes', () => {
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-arrival-cold-open',
+        order: 0,
+        title: 'Opening arrival',
+        dramaticPurpose: 'A traveler arrives in a new city with two suitcases.',
+        locations: ['Station'],
+        requiredBeats: [
+          {
+            id: 's1-1-hook1',
+            sourceTurn: 'A traveler arrives in a new city with two suitcases.',
+            mustDepict: 'A traveler arrives in a new city with two suitcases.',
+            tier: 'coldopen',
+          },
+          {
+            id: 's1-1-story-circle-you-social',
+            sourceTurn: 'The traveler forms a new circle at a rooftop table.',
+            mustDepict: 'The traveler forms a new circle at a rooftop table.',
+            tier: 'authored',
+          },
+          {
+            id: 's1-1-story-circle-you-public-account',
+            sourceTurn: 'The traveler starts a public account under a codename.',
+            mustDepict: 'The traveler starts a public account under a codename.',
+            tier: 'authored',
+          },
+        ],
+      }),
+      scene({
+        id: 's1-social-table',
+        order: 1,
+        title: 'Rooftop table',
+        dramaticPurpose: 'At a rooftop table, the traveler gathers allies.',
+        locations: ['Rooftop'],
+      }),
+      scene({
+        id: 's1-late-writing',
+        order: 2,
+        title: '3am public account',
+        dramaticPurpose: 'At 3am, the traveler writes the public account under a codename.',
+        locations: ['Room'],
+      }),
+    ], { episodeNumber: 1 });
+
+    expect(result.scenes.find((item) => item.id === 's1-arrival-cold-open')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-hook1']);
+    expect(result.scenes.find((item) => item.id === 's1-social-table')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-story-circle-you-social']);
+    expect(result.scenes.find((item) => item.id === 's1-late-writing')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-story-circle-you-public-account']);
+  });
+
   it('rebalances concrete scene obligations out of a synthetic encounter before density gating', () => {
     const result = rebindPlannedSceneObligations([
       scene({
@@ -1509,7 +1613,7 @@ describe('planned scene obligation binder', () => {
         locations: ['Vâlcescu Club'],
         requiredBeats: [
           {
-            id: 'treatment-enc-2-1-Story Circle-plotTurn1',
+            id: 'treatment-enc-2-1-Story Circle-go',
             sourceTurn: 'Dating After Dusk goes viral. Kylie finally goes to the club and speaks with Victor; days later her cab breaks down and a chef in a hand-knit sweater fixes it, whom she nicknames The Mountain.',
             mustDepict: 'Dating After Dusk goes viral. Kylie finally goes to the club and speaks with Victor; days later her cab breaks down and a chef in a hand-knit sweater fixes it, whom she nicknames The Mountain.',
             tier: 'authored',
@@ -1558,7 +1662,7 @@ describe('planned scene obligation binder', () => {
       's2-1-coldopen1-action-3',
     ]);
     expect(opening?.turnContract?.centralTurn).not.toContain('cab breaks down');
-    expect(road?.requiredBeats?.map((beat) => beat.id)).toContain('treatment-enc-2-1-Story Circle-plotTurn1-part-3');
+    expect(road?.requiredBeats?.map((beat) => beat.id)).toContain('treatment-enc-2-1-Story Circle-go-part-3');
     expect(road?.authoredTreatmentFields?.map((field) => field.id)).toContain('ep2-road-pressure');
     expect(result.scenes.flatMap((item) => item.requiredBeats ?? []).map((beat) => beat.id)).not.toContain('treatment-enc-2-1-arc-pressure-arc-late-crisis');
   });
@@ -2060,8 +2164,8 @@ describe('planned scene obligation binder', () => {
   });
 
   it('scrubs stale arc-pressure bindings during final validation rebinding', () => {
-    const midpoint = arcPressure(
-      'arc-midpoint',
+    const find = arcPressure(
+      'arc-find',
       'arc_midpoint_recontextualization',
       [2],
       ['s2-1'],
@@ -2087,12 +2191,12 @@ describe('planned scene obligation binder', () => {
         episodeNumber: 2,
         title: 'Blog metrics',
         dramaticPurpose: 'The blog numbers climb before Victor pulls Kylie deeper toward the club.',
-        arcPressureContracts: [midpoint, lateCrisis, broadQuestion],
+        arcPressureContracts: [find, lateCrisis, broadQuestion],
         requiredBeats: [
           {
-            id: 's2-1-arc-pressure-arc-midpoint',
-            sourceTurn: midpoint.sourceText,
-            mustDepict: midpoint.sourceText,
+            id: 's2-1-arc-pressure-arc-find',
+            sourceTurn: find.sourceText,
+            mustDepict: find.sourceText,
             tier: 'authored',
           },
           {
@@ -2104,13 +2208,13 @@ describe('planned scene obligation binder', () => {
         ],
         mechanicPressure: [
           {
-            id: `${midpoint.id}-pressure`,
+            id: `${find.id}-pressure`,
             source: 'treatment',
             domain: 'information',
-            mechanicRef: { flag: midpoint.id },
+            mechanicRef: { flag: find.id },
             function: 'intensify',
-            storyPressure: midpoint.sourceText,
-            evidenceRequired: [midpoint.sourceText],
+            storyPressure: find.sourceText,
+            evidenceRequired: [find.sourceText],
             visibleResidue: ['changed interpretation'],
             allowedPayoffs: ['reframe'],
             blockedPayoffs: ['summary'],
@@ -2147,9 +2251,9 @@ describe('planned scene obligation binder', () => {
     ], { episodeNumber: 2 });
 
     const rebound = result.scenes.find((item) => item.id === 's2-1');
-    expect(rebound?.arcPressureContracts?.map((contract) => contract.id)).toEqual(['arc-midpoint']);
-    expect(rebound?.requiredBeats?.map((beat) => beat.id)).toEqual(['s2-1-arc-pressure-arc-midpoint']);
-    expect(rebound?.mechanicPressure?.map((pressure) => pressure.id)).toEqual(['arc-midpoint-pressure']);
+    expect(rebound?.arcPressureContracts?.map((contract) => contract.id)).toEqual(['arc-find']);
+    expect(rebound?.requiredBeats?.map((beat) => beat.id)).toEqual(['s2-1-arc-pressure-arc-find']);
+    expect(rebound?.mechanicPressure?.map((pressure) => pressure.id)).toEqual(['arc-find-pressure']);
   });
 
   it('keeps public-post aftermath helpers from owning rescue or late-night publishing prerequisites', () => {

@@ -40,7 +40,6 @@ const highShockPlan: CliffhangerPlan = {
   newOpenQuestion: 'Why was the mentor connected to the enemy all along?',
   emotionalCharge: 'shock and betrayal',
   nextEpisodePressure: 'The next episode must investigate the mentor.',
-  mappedStructuralRole: 'hook',
   style: 'serialized_tv',
 };
 

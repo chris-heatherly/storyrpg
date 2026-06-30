@@ -226,7 +226,7 @@ describe('ImageGenerationService OpenAI safety rewrite', () => {
 
     expect((service as any).isOpenAiModerationBlock(400, JSON.stringify({
       error: {
-        message: "Invalid size '3840x3408'. Requested resolution exceeds the current pixel budget.",
+        message: "Invalid size '3840x3408'. Requested change exceeds the current pixel budget.",
         type: 'image_generation_user_error',
         param: 'size',
         code: 'invalid_value',

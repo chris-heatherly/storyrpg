@@ -9,6 +9,7 @@ import {
   arcPressureContractTargetsScene,
   isSceneBoundArcPressureKind,
 } from '../utils/arcPressureContracts';
+import { attachColdOpenProfiles } from '../utils/coldOpenProfile';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import {
   analyzeEpisodeTreatmentDensity,
@@ -99,6 +100,7 @@ const LOCATION_KEYWORDS = [
   'rooftop',
   'terrace',
   'park',
+  'cismigiu',
   'gardens',
   'venue',
   'club',
@@ -277,6 +279,7 @@ function sceneHasTimeCueMatch(scene: PlannedScene, sourceText: string): boolean 
   const patterns = [
     /night (?:one|two|three|four|\d+)/g,
     /\b\d+\s*(?:am|pm)\b/g,
+    /\b\d+\s+\d+\b/g,
     /\b(?:morning|dawn|dusk|sunset|midnight|noon|afternoon|evening)\b/g,
   ];
   return patterns.some((pattern) => {
@@ -352,7 +355,7 @@ function isLedgerOnlyBeat(beat: RequiredBeat): boolean {
 
 function splitTimeChainedBeat(beat: RequiredBeat): string[] {
   const text = (beat.mustDepict || beat.sourceTurn || '').trim();
-  if (beat.tier === 'coldopen' || explicitTimeCues(text).length < 2) return [text].filter(Boolean);
+  if (explicitTimeCues(text).length < 2) return [text].filter(Boolean);
   const protectedText = text.replace(/\bMr\.\s+/g, 'Mr__DOT__');
   const parts = protectedText
     .split(/\s*;\s+|(?<=\.)\s+(?=[A-Z])|\s+(?=\bby\s+(?:night|morning|dawn|dusk|sunset|midnight|\d+\s*(?:am|pm)|\d+:))/i)
@@ -442,7 +445,7 @@ function targetForBroadTurnoutPart(part: string, scenes: PlannedScene[], sourceS
   return fallbackNonArrivalScene(scenes, sourceScene);
 }
 
-const ACTION_VERB_RE = /\b(?:accepts?|adopts?|asks?|assaults?|attacks?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|finds?|follows?|forms?|gives?|hands?|interrupts?|kisses?|launches?|leaps?|leaves?|names?|offers?|opens?|pins?|presses?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|turns?|vanishes?|walks?|warns?|writes?)\b/i;
+const ACTION_VERB_RE = /\b(?:accepts?|adopts?|arrives?|asks?|assaults?|attacks?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|finds?|follows?|forms?|gathers?|gives?|hands?|interrupts?|kisses?|lands?|launches?|leaps?|leaves?|names?|offers?|opens?|pins?|presses?|publishes?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|trades?|turns?|unpacks?|vanishes?|walks?|warns?|writes?)\b/i;
 
 function protectQuotedCommas(text: string): string {
   return text.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (match) => match.replace(/,/g, '__COMMA__'));
@@ -475,7 +478,7 @@ function splitActionSeries(text: string): string[] {
 
 function splitActionChainedBeat(beat: RequiredBeat): string[] {
   const text = (beat.mustDepict || beat.sourceTurn || '').trim();
-  if (!text || beat.tier === 'seed' || beat.tier === 'connective' || beat.tier === 'coldopen') return [text].filter(Boolean);
+  if (!text || beat.tier === 'seed' || beat.tier === 'connective') return [text].filter(Boolean);
   const sameSceneParts = splitActionSeries(text)
     .map((part) => part.trim().replace(/[;,]\s*$/, ''))
     .filter((part) => part.length >= 16);
@@ -583,6 +586,15 @@ function isSpecificSocialMeetSeed(text: string): boolean {
 
 function bestSceneForBeat(text: string, scenes: PlannedScene[], excludeRequiredBeatId?: string): PlannedScene | undefined {
   const sourceCues = eventCues(text);
+  const normalizedText = normalize(text);
+  if (normalizedText.includes('cismigiu')) {
+    const cismigiuMatches = scenes.filter((scene) => normalize(sceneSpecificText(scene, excludeRequiredBeatId)).includes('cismigiu'));
+    if (cismigiuMatches.length > 0) {
+      return cismigiuMatches
+        .map((scene) => ({ scene, score: scoreSceneForBeat(text, scene, excludeRequiredBeatId) }))
+        .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+    }
+  }
   if (sourceCues.has('arrival')) {
     const arrivalMatches = scenes.filter((scene) => primarySceneCues(scene).has('arrival'));
     if (arrivalMatches.length > 0) {
@@ -634,7 +646,7 @@ function bestSceneForBeat(text: string, scenes: PlannedScene[], excludeRequiredB
         .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
     }
   }
-  if (sourceCues.has('socialMeet') && isSpecificSocialMeetSeed(text)) {
+  if (sourceCues.has('socialMeet')) {
     const rooftopMatches = scenes.filter((scene) => {
       const cues = primarySceneCues(scene);
       return cues.has('socialMeet') && !cues.has('venueDoor');
@@ -756,7 +768,11 @@ function sanitizePlanningRegisterBeatText(value: string | undefined): string | u
     .replace(/\s{2,}/g, ' ')
     .trim()
     .replace(/,\s*$/, '');
-  if (!cleaned || isPlanningRegisterText(cleaned)) return undefined;
+  if (!cleaned) return undefined;
+  const concreteEventText = eventCues(cleaned).size > 0
+    || explicitTimeCues(cleaned).length > 0
+    || ACTION_VERB_RE.test(cleaned);
+  if (isPlanningRegisterText(cleaned) && !concreteEventText) return undefined;
   return cleaned;
 }
 
@@ -1813,6 +1829,15 @@ function primaryCueTargetForOverloadBeat(
       .filter((candidate) => candidate.episodeNumber === scene.episodeNumber && primarySceneCues(candidate).has('arrival'))
       .sort((a, b) => scoreSceneForBeat(text, b, beat.id) - scoreSceneForBeat(text, a, beat.id) || a.order - b.order)[0];
   }
+  if (hasCue(text, 'socialMeet') && !primarySceneCues(scene).has('socialMeet')) {
+    return scenes
+      .filter((candidate) => {
+        if (candidate.episodeNumber !== scene.episodeNumber) return false;
+        const cues = primarySceneCues(candidate);
+        return cues.has('socialMeet') && !cues.has('venueDoor');
+      })
+      .sort((a, b) => scoreSceneForBeat(text, b, beat.id) - scoreSceneForBeat(text, a, beat.id) || a.order - b.order)[0];
+  }
   return undefined;
 }
 
@@ -2080,6 +2105,19 @@ export function rebindPlannedSceneObligations(
     const target = bestSceneForContract(contract, scenes);
     if (!target) {
       for (const scene of boundScenes) removeContract(scene, contract.id);
+      if (CHOICE_KINDS.has(contract.contractKind)) {
+        contract.targetSceneIds = [];
+        decisions.push({
+          action: 'ledgered',
+          issueKind: 'ledger_scope_pollution',
+          contractId: contract.id,
+          contractKind: contract.contractKind,
+          episodeNumber: contract.episodeNumber,
+          fromSceneId: from?.id,
+          reason: 'Choice-pressure obligation had no safe choice-bearing scene target, so it remains plan-level instead of blocking or overloading prose.',
+        });
+        continue;
+      }
       contract.targetSceneIds = [];
       decisions.push({
         action: 'unresolved',
@@ -2209,7 +2247,7 @@ export function rebindPlannedSceneObligations(
 
       if (beat.tier === 'coldopen') {
         const sourceCues = eventCues(text);
-        if (!sourceCues.has('arrival') && sourceCues.size > 0) {
+        if (!sourceCues.has('arrival') && sourceCues.size === 1) {
           const target = primaryCueTargetForOverloadBeat(scenes, scene, beat) ?? bestSceneForBeat(text, scenes, beat.id);
           if (
             target
@@ -2234,8 +2272,6 @@ export function rebindPlannedSceneObligations(
             continue;
           }
         }
-        kept.push(beat);
-        continue;
       }
 
       const parts = splitTimeChainedBeat(beat);
@@ -2426,6 +2462,7 @@ export function rebindPlannedSceneObligations(
   evictInvalidBlogAftermathOwnership(scenes, decisions);
   orderSyntheticBlogAftermathScenes(scenes, decisions);
   renormalizeSceneOrders(scenes);
+  attachColdOpenProfiles(scenes, { episodeNumber: options.episodeNumber });
 
   const beatBudgetRecommendations = scenes
     .map((scene) => ({ scene, hard: estimateHardUnits(scene), total: estimateTotalUnits(scene) }))

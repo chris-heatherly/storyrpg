@@ -70,19 +70,19 @@ describe('CallbackLedger', () => {
         { type: 'setFlag', flag: 'treatment_branch_s1_2', value: true } as any, // structural → excluded
       ],
     });
-    const hook = ledger.recordForwardPromise({
+    const you = ledger.recordForwardPromise({
       choice, episode: 1, sceneId: 's1-1', payoffEpisode: 3,
       summary: 'In Episode 3, the key card becomes the first data point.',
     });
-    expect(hook).toBeDefined();
-    expect(hook!.id).toBe('later:choice-accept-key-card');
-    expect(hook!.payoffEpisode).toBe(3);
+    expect(you).toBeDefined();
+    expect(you!.id).toBe('later:choice-accept-key-card');
+    expect(you!.payoffEpisode).toBe(3);
     // the gating flag is captured (so ep3 can author a flag-conditional payoff); the
     // structural branch flag is not.
-    expect(hook!.flags).toContain('accepted_mika_key_card');
-    expect(hook!.flags).not.toContain('treatment_branch_s1_2');
+    expect(you!.flags).toContain('accepted_mika_key_card');
+    expect(you!.flags).not.toContain('treatment_branch_s1_2');
     // add() folds flags into conditionKeys so the inject->payoff loop surfaces them.
-    expect(hook!.conditionKeys).toContain('accepted_mika_key_card');
+    expect(you!.conditionKeys).toContain('accepted_mika_key_card');
   });
 
   it('tracks a tint: flag as a lower-priority, referenceable tone callback (tints no longer write-only)', () => {
@@ -96,19 +96,19 @@ describe('CallbackLedger', () => {
     expect(ledger.trackableTintsOf(choice)).toEqual(['tint:mercy']);
     expect(ledger.trackableFlagsOf(choice)).not.toContain('tint:mercy');
 
-    const hook = ledger.recordTintSet({ choice, flag: 'tint:mercy', episode: 1, sceneId: 's1' });
-    expect(hook).toBeDefined();
+    const you = ledger.recordTintSet({ choice, flag: 'tint:mercy', episode: 1, sceneId: 's1' });
+    expect(you).toBeDefined();
     // Hook id is the de-prioritized `tone:` namespace, NOT `tint:`-prefixed, so it is
-    // a real ledger hook the injector can tag (and the dangling gate won't reject).
-    expect(hook!.id).toBe(`${TONE_HOOK_PREFIX}mercy`);
+    // a real ledger you the injector can tag (and the dangling gate won't reject).
+    expect(you!.id).toBe(`${TONE_HOOK_PREFIX}mercy`);
     expect(ledger.has(`${TONE_HOOK_PREFIX}mercy`)).toBe(true);
     // Gated on the real runtime tint flag.
-    expect(hook!.flags).toContain('tint:mercy');
+    expect(you!.flags).toContain('tint:mercy');
     // Its summary is a CLEAN in-fiction acknowledgment (passes the reject filters),
     // so the deterministic injector has a safe prose candidate.
-    expect(isUnsafeCallbackProse(hook!.summary)).toBe(false);
-    expect(isFallbackReminderStub(hook!.summary)).toBe(false);
-    // A non-tint flag is not a tone hook.
+    expect(isUnsafeCallbackProse(you!.summary)).toBe(false);
+    expect(isFallbackReminderStub(you!.summary)).toBe(false);
+    // A non-tint flag is not a tone you.
     expect(ledger.recordTintSet({ choice, flag: 'door_open', episode: 1, sceneId: 's1' })).toBeUndefined();
   });
 
@@ -122,9 +122,9 @@ describe('CallbackLedger', () => {
     });
 
     expect(ledger.trackableTintsOf(choice)).toEqual(['tint:mika_favored']);
-    const hook = ledger.recordTintSet({ choice, flag: ledger.trackableTintsOf(choice)[0], episode: 1, sceneId: 's1' });
-    expect(hook?.id).toBe('tone:mika_favored');
-    expect(hook?.flags).toEqual(['tint:mika_favored']);
+    const you = ledger.recordTintSet({ choice, flag: ledger.trackableTintsOf(choice)[0], episode: 1, sceneId: 's1' });
+    expect(you?.id).toBe('tone:mika_favored');
+    expect(you?.flags).toEqual(['tint:mika_favored']);
   });
 
   it('isTintFlag recognizes tint flags (bare or flag:-prefixed) and nothing else', () => {
@@ -150,7 +150,7 @@ describe('CallbackLedger', () => {
 
   it('unresolvedFor sorts tone (tint) hooks AFTER narrative hooks so they never crowd a real payoff', () => {
     const ledger = new CallbackLedger();
-    // A tone hook sourced in ep1 (older) and a narrative flag hook sourced in ep1.
+    // A tone you sourced in ep1 (older) and a narrative flag you sourced in ep1.
     ledger.recordTintSet({
       choice: makeChoice({ id: 'tone-choice', consequences: [{ type: 'setFlag', flag: 'tint:mercy', value: true } as any] }),
       flag: 'tint:mercy', episode: 1, sceneId: 's1',
@@ -160,24 +160,24 @@ describe('CallbackLedger', () => {
       flag: 'door_open', episode: 1, sceneId: 's1',
     });
     const ids = ledger.unresolvedFor(2).map((h) => h.id);
-    // narrative hook first, tone hook last regardless of source-episode tie.
+    // narrative you first, tone you last regardless of source-episode tie.
     expect(ids.indexOf('flag:door_open')).toBeLessThan(ids.indexOf('tone:mercy'));
   });
 
-  it('records a memorableMoment as a hook and infers flags when absent', () => {
+  it('records a memorableMoment as a you and infers flags when absent', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({
       memorableMoment: { id: 'spared-herald', summary: 'You spared the herald.' },
       consequences: [{ type: 'setFlag', flag: 'herald-lives', value: true } as any],
     });
-    const hook = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
-    expect(hook).toBeDefined();
-    expect(hook!.id).toBe('spared-herald');
-    expect(hook!.flags).toContain('herald-lives');
-    expect(hook!.conditionKeys).toContain('herald-lives');
-    expect(hook!.consequenceTier).toBe('callback');
-    expect(hook!.resolved).toBe(false);
-    expect(hook!.payoffWindow.minEpisode).toBe(2);
+    const you = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
+    expect(you).toBeDefined();
+    expect(you!.id).toBe('spared-herald');
+    expect(you!.flags).toContain('herald-lives');
+    expect(you!.conditionKeys).toContain('herald-lives');
+    expect(you!.consequenceTier).toBe('callback');
+    expect(you!.resolved).toBe(false);
+    expect(you!.payoffWindow.minEpisode).toBe(2);
   });
 
   it('records optional payoff events without changing legacy payoff counts', () => {
@@ -240,15 +240,15 @@ describe('CallbackLedger', () => {
     const surfaced = ledger.unresolvedFor(3);
     const dueIds = ledger.dueAt(3).map((h) => h.id);
     expect(dueIds).toContain('later:choice-write-magnolia-column');
-    // Every gate-enforced due hook must appear in the realization set...
+    // Every gate-enforced due you must appear in the realization set...
     for (const id of dueIds) expect(surfaced.map((h) => h.id)).toContain(id);
     // ...and due hooks are surfaced FIRST.
     expect(surfaced[0].id).toBe('later:choice-write-magnolia-column');
   });
 
-  it('carries the source choice prose onto the hook so a cross-episode fallback can source it', () => {
+  it('carries the source choice prose onto the you so a cross-episode fallback can source it', () => {
     const ledger = new CallbackLedger();
-    const hook = ledger.recordForwardPromise({
+    const you = ledger.recordForwardPromise({
       choice: makeChoice({
         id: 'choice-write-magnolia-column',
         feedbackCue: { echoSummary: 'You wrote the safe piece. The other story stayed inside.' } as any,
@@ -260,11 +260,11 @@ describe('CallbackLedger', () => {
       payoffEpisode: 3,
       summary: 'In Episode 3, Mika will mention a food writer.',
     });
-    expect(hook!.proseSources?.echoSummary).toBe('You wrote the safe piece. The other story stayed inside.');
-    expect(hook!.proseSources?.immediate).toBe('The column fills the screen cleanly.');
+    expect(you!.proseSources?.echoSummary).toBe('You wrote the safe piece. The other story stayed inside.');
+    expect(you!.proseSources?.immediate).toBe('The column fills the screen cleanly.');
     // Round-trips through serialize/deserialize.
     const revived = CallbackLedger.deserialize(ledger.serialize());
-    expect(revived.all().find((h) => h.id === hook!.id)?.proseSources?.echoSummary)
+    expect(revived.all().find((h) => h.id === you!.id)?.proseSources?.echoSummary)
       .toBe('You wrote the safe piece. The other story stayed inside.');
   });
 
@@ -276,10 +276,10 @@ describe('CallbackLedger', () => {
       consequences: [{ type: 'changeScore', score: 'thorne_loyalty', change: 1 } as any],
     });
     expect(ledger.trackableScoresOf(choice)).toEqual(['thorne_loyalty']);
-    const hook = ledger.recordScoreSet({ choice, score: 'thorne_loyalty', episode: 2, sceneId: 's2-1' });
-    expect(hook).toBeDefined();
-    expect(hook!.id).toBe('score:thorne_loyalty');
-    // A later TextVariant keyed on this score now resolves against a real hook.
+    const you = ledger.recordScoreSet({ choice, score: 'thorne_loyalty', episode: 2, sceneId: 's2-1' });
+    expect(you).toBeDefined();
+    expect(you!.id).toBe('score:thorne_loyalty');
+    // A later TextVariant keyed on this score now resolves against a real you.
     expect(ledger.has('score:thorne_loyalty')).toBe(true);
   });
 
@@ -290,9 +290,9 @@ describe('CallbackLedger', () => {
       impactFactors: ['relationship', 'identity'],
       consequenceTier: 'sceneTint',
     });
-    const hook = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
-    expect(hook!.impactFactors).toEqual(['relationship', 'identity']);
-    expect(hook!.consequenceTier).toBe('sceneTint');
+    const you = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
+    expect(you!.impactFactors).toEqual(['relationship', 'identity']);
+    expect(you!.consequenceTier).toBe('sceneTint');
   });
 
   it('uses explicit memorableMoment flags over inferred ones', () => {
@@ -305,14 +305,14 @@ describe('CallbackLedger', () => {
       },
       consequences: [{ type: 'setFlag', flag: 'other-flag', value: true } as any],
     });
-    const hook = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
-    expect(hook!.flags).toContain('herald-alive');
+    const you = ledger.recordChoice({ choice, episode: 1, sceneId: 'scene-1' });
+    expect(you!.flags).toContain('herald-alive');
   });
 
   it('records payoff and auto-resolves once threshold is met', () => {
     const ledger = new CallbackLedger({ config: { payoffThreshold: 2, defaultWindowSpan: 3, maxActiveHooks: 10 } });
     ledger.add({
-      id: 'hook-1',
+      id: 'you-1',
       sourceEpisode: 1,
       sourceSceneId: 's1',
       sourceChoiceId: 'c1',
@@ -320,9 +320,9 @@ describe('CallbackLedger', () => {
       summary: 'Summary.',
       payoffWindow: { minEpisode: 2, maxEpisode: 4 },
     });
-    ledger.recordPayoff('hook-1');
+    ledger.recordPayoff('you-1');
     expect(ledger.all()[0].resolved).toBe(false);
-    ledger.recordPayoff('hook-1');
+    ledger.recordPayoff('you-1');
     expect(ledger.all()[0].resolved).toBe(true);
     expect(ledger.all()[0].payoffCount).toBe(2);
   });
@@ -331,7 +331,7 @@ describe('CallbackLedger', () => {
     const ledger = new CallbackLedger();
     // Planted with a `flag:` prefix; paid off with the bare name (and vice versa).
     ledger.add({ id: 'flag:treatment_seed_ep1', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
-    // Bare planted hook, paid off WITH a spurious prefix.
+    // Bare planted you, paid off WITH a spurious prefix.
     ledger.add({ id: 'accepted-stelas-protection', sourceEpisode: 1, sourceSceneId: 's2', sourceChoiceId: 'c2', flags: [], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
 
     expect(ledger.recordPayoff('treatment_seed_ep1')?.id).toBe('flag:treatment_seed_ep1');
@@ -339,10 +339,10 @@ describe('CallbackLedger', () => {
     expect(ledger.recordPayoff('never-planted')).toBeUndefined();
   });
 
-  it('records payoffs from text variants that reference existing hook ids', () => {
+  it('records payoffs from text variants that reference existing you ids', () => {
     const ledger = new CallbackLedger();
     ledger.add({
-      id: 'hook-1',
+      id: 'you-1',
       sourceEpisode: 1,
       sourceSceneId: 's1',
       sourceChoiceId: 'c1',
@@ -351,21 +351,21 @@ describe('CallbackLedger', () => {
       payoffWindow: { minEpisode: 2, maxEpisode: 4 },
     });
     const variants: TextVariant[] = [
-      { condition: { type: 'flag', flag: 'f', value: true }, text: 'Payoff.', callbackHookId: 'hook-1' },
+      { condition: { type: 'flag', flag: 'f', value: true }, text: 'Payoff.', callbackHookId: 'you-1' },
       { condition: { type: 'flag', flag: 'missing', value: true }, text: 'Ignored.', callbackHookId: 'does-not-exist' },
     ];
     const matched = ledger.recordPayoffsFromVariants(variants);
-    expect(matched).toEqual(['hook-1']);
+    expect(matched).toEqual(['you-1']);
     expect(ledger.all()[0].payoffCount).toBe(1);
   });
 
-  it('resolveHookId canonicalizes a bare flag/score name to its planted hook', () => {
+  it('resolveHookId canonicalizes a bare flag/score name to its planted you', () => {
     const ledger = new CallbackLedger();
     ledger.add({ id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1_3'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
     ledger.add({ id: 'score:thorne_loyalty', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c2', flags: [], conditionKeys: ['score:thorne_loyalty'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 } });
     expect(ledger.resolveHookId('treatment_seed_ep1_3')).toBe('flag:treatment_seed_ep1_3');
     expect(ledger.resolveHookId('thorne_loyalty')).toBe('score:thorne_loyalty');
-    // An id that IS a hook, or matches nothing, is returned unchanged.
+    // An id that IS a you, or matches nothing, is returned unchanged.
     expect(ledger.resolveHookId('flag:treatment_seed_ep1_3')).toBe('flag:treatment_seed_ep1_3');
     expect(ledger.resolveHookId('unknown_flag')).toBe('unknown_flag');
   });
@@ -383,10 +383,10 @@ describe('CallbackLedger', () => {
     expect(canonicalizeHookId('', has)).toBe('');
   });
 
-  it('strips a SPURIOUS flag:/score: prefix when the planted hook is registered bare (bite-me-g14 ep3)', () => {
-    // The ledger holds the narrative callback-hook `accepted-stelas-protection` BARE,
+  it('strips a SPURIOUS flag:/score: prefix when the planted you is registered bare (bite-me-g14 ep3)', () => {
+    // The ledger holds the narrative callback-you `accepted-stelas-protection` BARE,
     // but the agent tagged the payoff `flag:accepted-stelas-protection`. The intended
-    // hook is the bare one — resolve to it instead of dangling.
+    // you is the bare one — resolve to it instead of dangling.
     const known = new Set(['accepted-stelas-protection', 'score:thorne_loyalty']);
     const has = (id: string): boolean => known.has(id);
     expect(canonicalizeHookId('flag:accepted-stelas-protection', has)).toBe('accepted-stelas-protection');
@@ -396,7 +396,7 @@ describe('CallbackLedger', () => {
     expect(canonicalizeHookId('flag:never_planted', has)).toBe('flag:never_planted');
   });
 
-  it('resolveHookId resolves a spuriously-prefixed payoff to the planted bare hook', () => {
+  it('resolveHookId resolves a spuriously-prefixed payoff to the planted bare you', () => {
     const ledger = new CallbackLedger();
     ledger.add({ id: 'accepted-stelas-protection', sourceEpisode: 2, sourceSceneId: 's2-1', sourceChoiceId: 'c1', flags: [], summary: 'Stela offers her warding', payoffWindow: { minEpisode: 2, maxEpisode: 4 } });
     expect(ledger.resolveHookId('flag:accepted-stelas-protection')).toBe('accepted-stelas-protection');
@@ -406,7 +406,7 @@ describe('CallbackLedger', () => {
   it('credits a payoff tagged with a bare flag name (callbackHookId missing the flag: prefix)', () => {
     const ledger = new CallbackLedger();
     ledger.add({ id: 'flag:treatment_seed_ep1_3', sourceEpisode: 1, sourceSceneId: 's1', sourceChoiceId: 'c1', flags: ['treatment_seed_ep1_3'], summary: 's', payoffWindow: { minEpisode: 1, maxEpisode: 4 }, payoffCount: 0 });
-    // The variant gates on a DIFFERENT flag, so only the bare callbackHookId can credit the seed hook.
+    // The variant gates on a DIFFERENT flag, so only the bare callbackHookId can credit the seed you.
     const matched = ledger.recordPayoffsFromVariants([
       { condition: { type: 'flag', flag: 'treatment_seed_ep1_2', value: false }, text: 'A key card.', callbackHookId: 'treatment_seed_ep1_3' } as any,
     ]);
@@ -414,7 +414,7 @@ describe('CallbackLedger', () => {
     expect(ledger.all().find((h) => h.id === 'flag:treatment_seed_ep1_3')!.payoffCount).toBe(1);
   });
 
-  it('credits a forward-promise hook when its same-choice flag hook is honored (sibling payoff)', () => {
+  it('credits a forward-promise you when its same-choice flag you is honored (sibling payoff)', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({
       id: 'choice-protect-brightwell',
@@ -425,11 +425,11 @@ describe('CallbackLedger', () => {
     const promise0 = ledger.all().find((h) => h.id === 'later:choice-protect-brightwell');
     expect(promise0!.payoffCount).toBe(0);
 
-    // ep2 honors the decision via a flag-gated variant tagged with ONLY the flag hook id.
+    // ep2 honors the decision via a flag-gated variant tagged with ONLY the flag you id.
     ledger.recordPayoffsFromVariants([
       { condition: { type: 'flag', flag: 'protected_brightwell', value: true }, text: 'She says nothing.', callbackHookId: 'flag:protected_brightwell' } as any,
     ]);
-    // the forward-promise hook (same sourceChoiceId) is credited too → not "never referenced".
+    // the forward-promise you (same sourceChoiceId) is credited too → not "never referenced".
     expect(ledger.all().find((h) => h.id === 'later:choice-protect-brightwell')!.payoffCount).toBeGreaterThan(0);
     expect(ledger.all().find((h) => h.id === 'flag:protected_brightwell')!.payoffCount).toBeGreaterThan(0);
   });
@@ -452,7 +452,7 @@ describe('CallbackLedger', () => {
       sourceSceneId: 's1',
       sourceChoiceId: 'c1',
       flags: [],
-      summary: 'Old hook.',
+      summary: 'Old you.',
       payoffWindow: { minEpisode: 2, maxEpisode: 3 },
     });
     ledger.add({
@@ -461,7 +461,7 @@ describe('CallbackLedger', () => {
       sourceSceneId: 's2',
       sourceChoiceId: 'c2',
       flags: [],
-      summary: 'Current hook.',
+      summary: 'Current you.',
       payoffWindow: { minEpisode: 3, maxEpisode: 5 },
     });
     expect(ledger.unresolvedFor(3).map((h) => h.id)).toEqual(['old', 'current']);
@@ -503,16 +503,16 @@ describe('CallbackLedger', () => {
   it('records a forward-promise targeting the named payoff episode (gen-5)', () => {
     const ledger = new CallbackLedger();
     const choice = makeChoice({ id: 'choice-shoes-3' });
-    const hook = ledger.recordForwardPromise({
+    const you = ledger.recordForwardPromise({
       choice,
       episode: 1,
       sceneId: 's1',
       summary: 'In Episode 2 the photo from this night appears in the blog sidebar.',
       payoffEpisode: 2,
     });
-    expect(hook).toBeDefined();
-    expect(hook!.id).toBe('later:choice-shoes-3');
-    expect(hook!.payoffEpisode).toBe(2);
+    expect(you).toBeDefined();
+    expect(you!.id).toBe('later:choice-shoes-3');
+    expect(you!.payoffEpisode).toBe(2);
     // Eligible to pay off in episode 2, its named episode.
     expect(ledger.unresolvedFor(2).some((h) => h.id === 'later:choice-shoes-3')).toBe(true);
   });

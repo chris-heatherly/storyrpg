@@ -2,7 +2,6 @@ import type {
   EndingStateDriverType,
   EncounterStoryCircleTarget,
   StoryEndingTarget,
-  StructuralRole,
   TreatmentBranchGuidance,
   TreatmentEpisodeGuidance,
   TreatmentSeasonGuidance,
@@ -10,7 +9,7 @@ import type {
   WorldLocationTreatmentGuidance,
   WorldLocationTreatmentLocationGuidance,
 } from '../../types/sourceAnalysis';
-import { extractBeatEpisodeAnchors, extractStoryCircleBeatEpisodeAnchors } from './treatmentFingerprint';
+import { extractStoryCircleBeatEpisodeAnchors } from './treatmentFingerprint';
 import { parseInformationLedgerGuidance } from './informationLedgerContracts';
 
 export interface ExtractedTreatment {
@@ -44,11 +43,10 @@ const TREATMENT_MARKERS = [
   /storyrpg treatment prompt/i,
   /regular episode version/i,
   /storyrpg structure model/i,
-  /3-act\s*\/\s*legacy-structure season spine/i,
+  /Story Circle Season Spine/i,
   /choose-your-own-adventure/i,
   /^#{3,5}\s+(?:Episode\s+|Scene\s+|Ep\.?\s+|E\s*)?\d+/im,
   /\bEpisode Outline\b/i,
-  /\*\*Structural role(?:\s*:\s*anchor, fused anchors, or buffer)?(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Story Circle role(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Entry goal(?:\s*\([^)]*\))?:\*\*/i,
   /\*\*Forced choice(?:\s*\([^)]*\))?:\*\*/i,
@@ -257,44 +255,6 @@ function cleanAuthoredTitle(raw: string | undefined): string {
     .trim();
 }
 
-export function normalizeTreatmentStructuralRoles(raw: string | undefined): StructuralRole[] {
-  if (!raw) return [];
-  const lower = raw.toLowerCase();
-  const roles: StructuralRole[] = [];
-  const add = (role: StructuralRole) => {
-    if (!roles.includes(role)) roles.push(role);
-  };
-  const leadingBufferRole = lower.match(/^\s*(rising|falling|buffer)\b/);
-  if (leadingBufferRole) {
-    const value = leadingBufferRole[1];
-    if (value === 'falling') return ['falling'];
-    if (value === 'rising') return ['rising'];
-    return /falling|final-pressure|final pressure|processing|recovery/.test(lower) ? ['falling'] : ['rising'];
-  }
-  if (/\bbuffer\b/.test(lower)) {
-    if (/falling|final-pressure|final pressure|processing|recovery/.test(lower)) return ['falling'];
-    return ['rising'];
-  }
-  if (/\brising\b/.test(lower)) return ['rising'];
-  if (/\bfalling|final-pressure|final pressure|processing|recovery/.test(lower)) return ['falling'];
-  if (/\byou\b/.test(lower)) add('hook');
-  if (/\bgo\b/.test(lower)) add('plotTurn1');
-  if (/\bsearch\b/.test(lower)) add('pinch1');
-  if (/\bfind\b/.test(lower)) add('midpoint');
-  if (/\btake\b/.test(lower)) add('pinch2');
-  if (/\breturn\b/.test(lower)) add('climax');
-  if (/\bchange\b/.test(lower)) add('resolution');
-  if (/\bhook\b/.test(lower)) add('hook');
-  if (/plot\s*turn\s*1|plotturn1|inciting|commitment/.test(lower)) add('plotTurn1');
-  if (/pinch\s*1|first\s+pinch/.test(lower)) add('pinch1');
-  if (/midpoint|mirror|reversal/.test(lower)) add('midpoint');
-  if (/pinch\s*2|second\s+pinch|crisis/.test(lower)) add('pinch2');
-  if (/climax|final confrontation/.test(lower)) add('climax');
-  if (/resolution|aftermath|legacy/.test(lower)) add('resolution');
-  if (/rising|buffer|setup|escalat/.test(lower) && roles.length === 0) add('rising');
-  return roles;
-}
-
 function normalizeCliffhangerType(raw: string | undefined): TreatmentEpisodeGuidance['cliffhangerType'] | undefined {
   const normalized = raw?.toLowerCase().replace(/[^a-z]+/g, '_').replace(/^_+|_+$/g, '');
   const aliases: Record<string, TreatmentEpisodeGuidance['cliffhangerType']> = {
@@ -412,12 +372,12 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
   for (const guidance of splitByMatches(normalizedSection, EPISODE_HEADING_RE, (match, body) => {
     const episodeNumber = Number(match[1] || match[3]);
     const authoredTitle = cleanAuthoredTitle(match[2] || match[4]);
-    const rawStructuralRole = getBulletValue(body, 'Story Circle role')
+    const rawStoryCircleRole = getBulletValue(body, 'Story Circle role')
       || getBulletValueWithLabelPrefix(body, 'Story Circle role')
       || getAllBulletValues(body, 'Story Circle role')[0]
-      || getBulletValue(body, 'Structural role')
-      || getBulletValueWithLabelPrefix(body, 'Structural role')
-      || getAllBulletValues(body, 'Structural role')[0];
+      || getBulletValue(body, 'Episode Story Circle role')
+      || getBulletValueWithLabelPrefix(body, 'Episode Story Circle role')
+      || getAllBulletValues(body, 'Episode Story Circle role')[0];
     const structuralNote = getFlexibleBulletValue(body, ['Structural note', 'Role note']);
     const encounterAnchors = [
       ...getAllBulletValues(body, 'Encounter anchor'),
@@ -486,8 +446,7 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
       guidance: {
         sourceKind: highLevelDescription || majorPressure || likelyConsequence ? 'authored_lite' : undefined,
         authoredTitle: authoredTitle || undefined,
-        rawStructuralRole,
-        normalizedStructuralRoles: normalizeTreatmentStructuralRoles(rawStructuralRole),
+        rawStoryCircleRole,
         structuralNote,
         dramaticQuestion: getFlexibleBulletValue(body, ['Episode dramatic question', 'Dramatic question']) || majorPressure,
         episodePromise: getBulletValue(body, 'Episode promise') || majorPressure,
@@ -1275,9 +1234,6 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
       'story circle season spine',
       'season story circle',
       'story circle spine',
-      '3-act / legacy-structure season spine',
-      'legacy-structure season spine',
-      '3-act / 7-point season spine',
     ]),
     arcPlan,
     arcGuidance,
@@ -1289,13 +1245,6 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
     failureModeAudit,
     failureModeAuditGuidance,
   };
-  // Step 1.1: decompose the Section-7 free-text spine (e.g. `Plot turn 1 (Ep3)`)
-  // into a structured beat→episode anchor map. Reuses the Phase-0 parser so the
-  // map and the version fingerprint stay in lockstep.
-  const beatEpisodeAnchors = extractBeatEpisodeAnchors(sections.seasonSpine);
-  if (Object.keys(beatEpisodeAnchors).length > 0) {
-    sections.beatEpisodeAnchors = beatEpisodeAnchors;
-  }
   const storyCircleBeatEpisodeAnchors = extractStoryCircleBeatEpisodeAnchors(sections.seasonSpine);
   if (Object.keys(storyCircleBeatEpisodeAnchors).length > 0) {
     sections.storyCircleBeatEpisodeAnchors = storyCircleBeatEpisodeAnchors;
@@ -1310,7 +1259,7 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
   if (arcGuidance) sections.rawSectionSummary.push('arcGuidance');
   if (scenePlanningGuidance) sections.rawSectionSummary.push('scenePlanningGuidance');
   if (failureModeAuditGuidance) sections.rawSectionSummary.push('failureModeAuditGuidance');
-  return sections.rawSectionSummary.length > 0 || Object.keys(beatEpisodeAnchors).length > 0 ? sections : undefined;
+  return sections.rawSectionSummary.length > 0 || Object.keys(storyCircleBeatEpisodeAnchors).length > 0 ? sections : undefined;
 }
 
 function appendUnique(values: string[] | undefined, value: string | undefined): string[] | undefined {
@@ -1451,8 +1400,7 @@ export function validateExtractedTreatment(
     ) {
       warnings.push(`Episode ${episodeNumber} parsed without a dramatic question, promise, synopsis, or entry goal.`);
     }
-    const isFinale = episodeNumber === episodeNumbers[episodeNumbers.length - 1]
-      || guidance.normalizedStructuralRoles?.includes('resolution');
+    const isFinale = episodeNumber === episodeNumbers[episodeNumbers.length - 1];
     if (
       !isFinale
       && !guidance.cliffhangerQuestion

@@ -21,7 +21,7 @@ describe('requiredMomentFromMessage', () => {
   });
 
   it('extracts the quoted moment from a cold-open finding', () => {
-    const msg = 'Cold open not found on-page in episode 1 (scene "s1-1"): "A FaceTime to her niece Sadie about vampires in Romania". The episode-opening hook was dropped.';
+    const msg = 'Cold open not found on-page in episode 1 (scene "s1-1"): "A FaceTime to her niece Sadie about vampires in Romania". The episode-opening you was dropped.';
     expect(requiredMomentFromMessage(msg)).toBe('A FaceTime to her niece Sadie about vampires in Romania');
   });
 
@@ -33,7 +33,7 @@ describe('requiredMomentFromMessage', () => {
 
   it('extracts the quoted moment from a SceneTurn Story Circle event finding', () => {
     const moment = 'Kylie lands in Bucharest fleeing heartbreak, starts a blog, and is rescued by a mysterious man in the park.';
-    const msg = `Scene "s1-1" carries Story Circle hook structurally but does not dramatize its authored beat event on-page: "${moment}".`;
+    const msg = `Scene "s1-1" carries Story Circle you structurally but does not dramatize its authored beat event on-page: "${moment}".`;
     expect(requiredMomentFromMessage(msg)).toBe(moment);
   });
 
@@ -60,7 +60,7 @@ describe('requiredMomentFromMessage', () => {
     expect(requiredMomentFromMessage(msg)).toBe('this one wants to be with you, love');
   });
 
-  it('ignores quoted scene ids when falling back to the final quoted span', () => {
+  it('ignores quoted scene ids when return back to the final quoted span', () => {
     const msg = 'Authored required beat is missing from scene "treatment-enc-1-1": "The attacker speaks before the rescue."';
     expect(requiredMomentFromMessage(msg)).toBe('The attacker speaks before the rescue.');
   });

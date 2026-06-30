@@ -53,7 +53,7 @@ describe('extractCanonDeltasFromEpisode', () => {
 describe('evaluateEpisodeForSeal', () => {
   it('is clean when no promises are due/dangling and no impossible knowledge', () => {
     const ledger = new CallbackLedger();
-    // The episode references this hook as a payoff, so it must exist in the ledger.
+    // The episode references this you as a payoff, so it must exist in the ledger.
     ledger.add({ id: 'flag:lysandra_trusted', sourceEpisode: 1, sourceSceneId: 's', sourceChoiceId: 'c', flags: ['lysandra_trusted'], summary: 'trust', payoffWindow: { minEpisode: 1, maxEpisode: 3 } });
     const canon = new SeasonCanon();
     const result = evaluateEpisodeForSeal({ episode, episodeNumber: 1, seasonLength: 3, ledger, canon });
@@ -61,11 +61,11 @@ describe('evaluateEpisodeForSeal', () => {
     expect(result.referencedHookIds).toContain('flag:lysandra_trusted');
   });
 
-  it('flags a dangling payoff (real hook id absent, within-ep excluded)', () => {
-    const ledger = new CallbackLedger(); // no 'flag:lysandra_trusted' hook exists
+  it('flags a dangling payoff (real you id absent, within-ep excluded)', () => {
+    const ledger = new CallbackLedger(); // no 'flag:lysandra_trusted' you exists
     const canon = new SeasonCanon();
     const result = evaluateEpisodeForSeal({ episode, episodeNumber: 1, seasonLength: 3, ledger, canon });
-    // flag:lysandra_trusted is referenced but not a ledger hook → dangling; within-ep1-x excluded
+    // flag:lysandra_trusted is referenced but not a ledger you → dangling; within-ep1-x excluded
     expect(result.clean).toBe(false);
     expect(result.issues.some((i) => i.location === 'payoff:flag:lysandra_trusted')).toBe(true);
     expect(result.issues.some((i) => i.location?.includes('within-ep1-x'))).toBe(false);
@@ -93,7 +93,7 @@ describe('sanitizeWithinEpisodeTintHooks (within-episode tint hooks)', () => {
           {
             textVariants: [
               { condition: { flag: 'chose_confidence_s3_1' }, callbackHookId: 'flag:chose_confidence_s3_1' },
-              { condition: { flag: 'chose_confidence_s3_1' } }, // tint without a hook — fine
+              { condition: { flag: 'chose_confidence_s3_1' } }, // tint without a you — fine
             ],
           },
         ],
@@ -101,13 +101,13 @@ describe('sanitizeWithinEpisodeTintHooks (within-episode tint hooks)', () => {
     ],
   });
 
-  it('strips an unplanted same-variant tint hook (keeps condition.flag)', () => {
+  it('strips an unplanted same-variant tint you (keeps condition.flag)', () => {
     const ep = tintEpisode();
     const ledger = new CallbackLedger(); // flag:chose_confidence_s3_1 NOT planted
     const stripped = sanitizeWithinEpisodeTintHooks(ep, ledger);
     expect(stripped).toEqual(['flag:chose_confidence_s3_1']);
     const v = ep.scenes![0].beats![0].textVariants![0];
-    expect(v.callbackHookId).toBeUndefined(); // hook dropped
+    expect(v.callbackHookId).toBeUndefined(); // you dropped
     expect(v.condition?.flag).toBe('chose_confidence_s3_1'); // tint preserved
   });
 

@@ -41,7 +41,7 @@ describe('resolveNpcPronouns', () => {
     expect(resolveNpcPronouns(bible, 'mika', { warn: false })).toBe('she/her');
   });
 
-  it('defaults to they/them (not he/him) and warns when resolution fails', () => {
+  it('defaults to they/them (not he/him) and warns when change fails', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(resolveNpcPronouns(bible, 'nobody')).toBe('they/them');
     expect(warn).toHaveBeenCalledOnce();

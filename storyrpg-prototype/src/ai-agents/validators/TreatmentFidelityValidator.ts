@@ -161,13 +161,14 @@ function blueprintText(blueprint: EpisodeBlueprint): string {
   return [
     blueprint.title,
     blueprint.synopsis,
-    blueprint.arc?.hook,
-    blueprint.arc?.plotTurn1,
-    blueprint.arc?.pinch1,
-    blueprint.arc?.midpoint,
-    blueprint.arc?.pinch2,
-    blueprint.arc?.climax,
-    blueprint.arc?.resolution,
+    blueprint.arc?.you,
+    blueprint.arc?.need,
+    blueprint.arc?.go,
+    blueprint.arc?.search,
+    blueprint.arc?.find,
+    blueprint.arc?.take,
+    blueprint.arc?.return,
+    blueprint.arc?.change,
     ...(blueprint.themes || []),
     ...(blueprint.suggestedFlags || []).map((flag) => `${flag.name} ${flag.description}`),
     ...(blueprint.suggestedScores || []).map((score) => `${score.name} ${score.description}`),
@@ -401,7 +402,7 @@ export class TreatmentFidelityValidator {
         || guidance.authoredCliffhanger;
       const cliffhangerHaystack = [
         finalSceneText(input.blueprint),
-        input.blueprint.arc?.resolution,
+        input.blueprint.arc?.change,
       ].filter(Boolean).join(' ');
       if (!hasCloseMatch(endingPressure, cliffhangerHaystack, 0.4)) {
         issues.push(

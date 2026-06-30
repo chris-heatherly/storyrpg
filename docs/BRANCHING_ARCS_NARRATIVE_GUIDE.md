@@ -319,17 +319,18 @@ Technical map:
 
 Branches must serve the season's dramatic structure. They are not random side roads.
 
-Branching by seven-point role:
+Branching by Story Circle role:
 
-| Structural role | Strong branch function |
+| Story Circle role | Strong branch function |
 |---|---|
-| Hook | Establish player posture, first values, and the promise of agency. |
-| Plot Turn 1 | Commit the protagonist to a route, alliance, debt, or irreversible threshold. |
-| Pinch 1 | Make a prior choice cost something. |
-| Midpoint | Recontextualize route assumptions or reveal the hidden meaning of a choice. |
-| Pinch 2 | Narrow options and force branch residue to matter. |
-| Climax | Let repeated identity/relationship/route patterns decide the available ending logic. |
-| Resolution | Show the changed world and protagonist state. |
+| You | Establish player posture, first values, and the promise of agency. |
+| Need | Make the player feel the lack beneath the visible goal. |
+| Go | Commit the protagonist to a route, alliance, debt, or irreversible threshold. |
+| Search | Make prior choices cost something while testing adaptation. |
+| Find | Recontextualize route assumptions or reveal the hidden meaning of a choice. |
+| Take | Narrow options and force branch residue to matter. |
+| Return | Let repeated identity/relationship/route patterns decide the available ending logic. |
+| Change | Show the changed world and protagonist state. |
 
 Branching by scene role:
 
@@ -341,7 +342,7 @@ Branching by scene role:
 
 Technical map:
 
-- `SeasonEpisode.structuralRole` guides agents.
+- `SeasonEpisode.storyCircleRole` guides agents.
 - `SceneNarrativeRole` in `scenePlan.ts` describes a scene's function within its episode.
 - `StoryArchitect` plans choice points, branches, encounter scenes, and structural beat realization.
 - `SceneWriter` turns the plan into beats, variants, and visible pressure.

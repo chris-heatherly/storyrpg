@@ -48,7 +48,7 @@ function protagonistGuidance() {
 
 ## Episode Outline
 ### Episode 1: Doorway
-- **Structural role:** Hook
+- **Story Circle role:** you
 - **Episode promise:** Kylie tries to start over.
 - **Cliffhanger question:** Who is watching her?
 `);
@@ -121,7 +121,7 @@ function assignedPlan(selectedContracts = contracts()): SeasonPlan {
   const scenes = [
     plannedScene('s1-1', 1, 0, 'Kylie arrives as an observer who orders second, watches the room, and starts the blog under Veronica pressure.'),
     plannedScene('s2-1', 2, 0, 'Kylie tests the lie that being chosen by a beautiful man means safety.'),
-    plannedScene('s3-1', 3, 0, 'Kylie faces the climax choice: keep her voice and blog or give Victor the story.'),
+    plannedScene('s3-1', 3, 0, 'Kylie faces the return choice: keep her voice and blog or give Victor the story.'),
   ];
   const plan = {
     totalEpisodes: 3,
@@ -163,7 +163,7 @@ function assignedPlan(selectedContracts = contracts()): SeasonPlan {
       episodeNumber,
       title: `Episode ${episodeNumber}`,
       synopsis: `Episode ${episodeNumber}`,
-      structuralRole: episodeNumber === 1 ? ['hook'] : episodeNumber === 2 ? ['midpoint'] : ['resolution'],
+      storyCircleRole: episodeNumber === 1 ? ['you'] : episodeNumber === 2 ? ['find'] : ['change'],
       status: 'planned',
       dependsOn: [],
       setupsForEpisodes: [],
@@ -312,7 +312,7 @@ describe('CharacterTreatmentRealizationValidator', () => {
     expect(result.issues[0].message).toContain('not realized');
   });
 
-  it('passes final-story validation when prose stages baseline, lie pressure, and climax choice', () => {
+  it('passes final-story validation when prose stages baseline, lie pressure, and return choice', () => {
     const selected = contracts().filter((contract) =>
       ['starting_identity', 'lie_pressure', 'climax_choice'].includes(contract.contractKind)
     );

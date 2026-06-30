@@ -20,7 +20,6 @@ import {
   PlotPoint,
   EndingMode,
   StoryAnchors,
-  LegacyStructuralMap,
   StoryCircleRoleAssignment,
   StoryCircleStructure,
   StorySchemaAbstraction,
@@ -31,21 +30,14 @@ import {
   CharacterArchitecture,
   CharacterArcMode,
   TreatmentSeasonGuidance,
-  StructuralRole,
-  LEGACY_STRUCTURAL_BEATS,
   STORY_CIRCLE_BEATS,
 } from '../../types/sourceAnalysis';
-import {
-  distributeLegacyStructure,
-  checkLegacyStructureCoverage,
-} from '../utils/legacyStructureDistribution';
 import {
   STORY_CIRCLE_BEAT_DEFINITION_LINES,
   STORY_CIRCLE_GEOMETRY_PRINCIPLES,
   checkStoryCircleCoverage,
   describeStoryCircleDistribution,
   distributeStoryCircle,
-  storyCircleFromLegacyStructure,
 } from '../utils/storyCircleDistribution';
 import { clampSceneCount } from '../../constants/pipeline';
 import {
@@ -65,7 +57,6 @@ import { buildEndingRealizationContracts } from '../utils/endingRealizationContr
 import { buildFailureModeAuditContracts } from '../utils/failureModeAuditContracts';
 import { extractTreatmentFromMarkdown, looksLikeTreatmentMarkdown } from '../utils/treatmentExtraction';
 import { buildLockedStoryCanon } from '../utils/sourceCanonBuilder';
-import { reconcileBeatAnchors } from '../pipeline/beatAnchorReconciliation';
 import {
   BRANCH_AND_BOTTLENECK,
   STAKES_TRIANGLE,
@@ -260,14 +251,6 @@ interface StoryStructureAnalysis {
    */
   anchors?: StoryAnchors;
   /**
-   * 3-act / legacy-structure beat map inferred from the source material. Same
-   * optional-with-backfill contract as {@link anchors}.
-   *
-   * @deprecated New responses should provide `storyCircle`; this remains as a
-   * migration alias.
-   */
-  legacyStructure?: LegacyStructuralMap;
-  /**
    * Eight-beat Story Circle map inferred from the source material. This is the
    * primary macro structure for new pipeline output.
    */
@@ -318,13 +301,6 @@ interface EpisodeBreakdownEntry {
     conflict: string;
     resolution: string;
   };
-  /**
-   * LLM-assigned legacy-structure beat(s) this episode carries. Optional because
-   * older LLM responses predate the field; backfilled by
-   * {@link SourceMaterialAnalyzer.assembleAnalysis} from the default
-   * distribution table when absent.
-   */
-  structuralRole?: StructuralRole[];
   storyCircleRole?: StoryCircleRoleAssignment[];
 }
 
@@ -355,7 +331,6 @@ interface SingleEpisodeBreakdownResponse {
     conflict?: string;
     resolution?: string;
   };
-  structuralRole?: StructuralRole[];
   storyCircleRole?: StoryCircleRoleAssignment[];
 }
 
@@ -425,7 +400,6 @@ existing SourceMaterialAnalysis, SeasonPlan, Episode, Scene, Beat, Choice, and
 Encounter contracts.
 
 - Preserve StoryRPG's anchors and storyCircle fields as the authoritative macro structure.
-- Keep legacyStructure only as a deprecated compatibility alias for older checkpoints.
 - Use PascalCase names for reusable variables.
 - Include variables such as ProtagonistRole, Stakes, Goal, IncitingIncident,
   AntagonizingForce, CoreValue, EmotionalAnchor, Temptation, FalseVictory,
@@ -745,15 +719,6 @@ ${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
     "return": "<source-specific realization of \`return\`; must satisfy the full \`return\` definition above>",
     "change": "<source-specific realization of \`change\`; must satisfy the full \`change\` definition above>"
   },
-  "legacyStructure": {
-    "hook": "<ordinary world that introduces the protagonist and the core value at stake>",
-    "plotTurn1": "<the inciting incident / world-disruption — must match the incitingIncident anchor above>",
-    "pinch1": "<first major setback against the antagonizing force; protagonist on the defensive>",
-    "midpoint": "<commitment / reversal / path-to-victory discovered; protagonist moves from reactive to proactive>",
-    "pinch2": "<crisis and transformation culmination; everything seems lost>",
-    "climax": "<decisive confrontation — must match the climax anchor above>",
-    "resolution": "<aftermath + legacy; ordinary world changed>"
-  },
   "schemaAbstraction": {
     "archetype": "<core reusable archetype, e.g. Temptation and Moral Cost, Forbidden Love, Coming of Age>",
     "adaptationMode": "<source_faithful/inspired_by/original>",
@@ -879,21 +844,16 @@ Return ONLY valid JSON.
     );
 
     const episodeNumbers = Array.from({ length: estimatedEpisodes }, (_, i) => i + 1);
-    const defaultDistribution = distributeLegacyStructure(estimatedEpisodes);
 
     try {
       const entries = await mapOrderedWithConcurrency(
         episodeNumbers,
         PER_EPISODE_BREAKDOWN_CONCURRENCY,
         async (episodeNumber) => {
-          const suggestedRoles = defaultDistribution
-            .find((entry) => entry.episodeNumber === episodeNumber)?.structuralRole
-            ?? ['rising'];
           const prompt = this.buildSingleEpisodePrompt(
             sharedContext,
             episodeNumber,
             estimatedEpisodes,
-            suggestedRoles,
           );
           // callLLM falls back to this.activeAbortSignal (set in execute()), so
           // a whole-analysis timeout/abort cancels in-flight per-episode calls.
@@ -1007,7 +967,6 @@ ${buildTreatmentInputNotice(sourceText)}`;
     sharedContext: string,
     episodeNumber: number,
     totalEpisodes: number,
-    suggestedRoles: StructuralRole[],
   ): string {
     const suggestedStoryCircleRoles = distributeStoryCircle(totalEpisodes)
       .find((entry) => entry.episodeNumber === episodeNumber)
@@ -1089,7 +1048,6 @@ Return ONLY valid JSON for this single episode.
         resolution: typeof arc.resolution === 'string' ? arc.resolution : '',
       },
       storyCircleRole: normalizeStoryCircleRoleAssignments(src.storyCircleRole),
-      structuralRole: Array.isArray(src.structuralRole) ? src.structuralRole : undefined,
     };
   }
 
@@ -1252,7 +1210,7 @@ Return ONLY valid JSON.
             guidance.endStateChange,
           ].filter(Boolean) as string[];
           if (existing) {
-            const treatmentStoryCircleRole = treatmentStoryCircleRoles(guidance.rawStructuralRole);
+            const treatmentStoryCircleRole = treatmentStoryCircleRoles(guidance.rawStoryCircleRole);
             return {
               ...existing,
               title: guidance.authoredTitle || existing.title,
@@ -1270,9 +1228,6 @@ Return ONLY valid JSON.
               storyCircleRole: treatmentStoryCircleRole.length > 0
                 ? treatmentStoryCircleRole
                 : normalizeStoryCircleRoleAssignments(existing.storyCircleRole),
-              structuralRole: guidance.normalizedStructuralRoles?.length
-                ? guidance.normalizedStructuralRoles
-                : existing.structuralRole,
             };
           }
           return {
@@ -1288,21 +1243,12 @@ Return ONLY valid JSON.
               conflict: guidance.encounterCentralConflict || guidance.encounterAnchors?.[0] || guidance.episodePromise || guidance.dramaticQuestion || 'Treatment conflict',
               resolution: guidance.resolutionAftermath || guidance.endingPressure || guidance.endStateChange || guidance.authoredCliffhanger || 'Treatment resolution',
             },
-            storyCircleRole: treatmentStoryCircleRoles(guidance.rawStructuralRole),
-            structuralRole: guidance.normalizedStructuralRoles?.length ? guidance.normalizedStructuralRoles : undefined,
+            storyCircleRole: treatmentStoryCircleRoles(guidance.rawStoryCircleRole),
           };
         })
       : breakdown.episodes;
 
-    // Default structuralRole distribution — used as a fallback when the LLM
-    // did not tag an episode with its own structuralRole array, and as the
-    // seed when the LLM's coverage is incomplete.
-    const defaultDistribution = distributeLegacyStructure(totalEpisodes);
     const defaultStoryCircleDistribution = distributeStoryCircle(totalEpisodes);
-    const defaultRoleFor = (episodeNumber: number): StructuralRole[] => {
-      const entry = defaultDistribution.find((e) => e.episodeNumber === episodeNumber);
-      return entry ? [...entry.structuralRole] : ['rising'];
-    };
     const defaultStoryCircleRoleFor = (episodeNumber: number): StoryCircleRoleAssignment[] => {
       const entry = defaultStoryCircleDistribution.find((e) => e.episodeNumber === episodeNumber);
       return entry ? entry.storyCircleRole.map((role) => ({ ...role })) : [];
@@ -1320,14 +1266,6 @@ Return ONLY valid JSON.
         charactersInvolved: ep.mainCharacters,
       }));
 
-      // Pull an LLM-assigned structuralRole if present, otherwise backfill
-      // from the default distribution. Invalid values are filtered out so
-      // downstream validators see a clean StructuralRole[] only.
-      const llmRoles = Array.isArray(ep.structuralRole)
-        ? ep.structuralRole.filter((r): r is StructuralRole =>
-            typeof r === 'string' && (LEGACY_STRUCTURAL_BEATS as readonly string[]).concat(['rising', 'falling']).includes(r))
-        : [];
-      const structuralRole = llmRoles.length > 0 ? llmRoles : defaultRoleFor(ep.episodeNumber);
       const llmStoryCircleRoles = normalizeStoryCircleRoleAssignments(ep.storyCircleRole);
       const storyCircleRole = llmStoryCircleRoles.length > 0
         ? llmStoryCircleRoles
@@ -1346,24 +1284,10 @@ Return ONLY valid JSON.
         estimatedSceneCount: clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
         estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
         storyCircleRole,
-        structuralRole,
         narrativeFunction: ep.narrativeArc,
         treatmentGuidance: treatment.episodes[ep.episodeNumber],
       };
     });
-
-    // If coverage is incomplete, rewrite the distribution to the default so
-    // every beat is guaranteed to land somewhere. This is a safety net for
-    // LLMs that drop beats when the episode count is tight.
-    const coverageIssues = checkLegacyStructureCoverage(episodeOutlines);
-    if (coverageIssues.length > 0) {
-      for (const outline of episodeOutlines) {
-        const fallbackRoles = defaultRoleFor(outline.episodeNumber);
-        outline.structuralRole = treatment.isTreatment
-          ? [...new Set([...(outline.structuralRole || []), ...fallbackRoles])]
-          : fallbackRoles;
-      }
-    }
 
     const storyCircleCoverageIssues = checkStoryCircleCoverage(episodeOutlines);
     if (storyCircleCoverageIssues.length > 0) {
@@ -1382,32 +1306,15 @@ Return ONLY valid JSON.
       }
     }
 
-    // Step 1.2: reconcile the authored Section-7 beat→episode anchors against
-    // the per-episode structuralRole assignments. The Section-7 anchor is the
-    // spine of record — on conflict we move the beat onto the anchored episode
-    // and log; in strict mode the conflict throws.
-    if (treatment.isTreatment && treatmentSeasonGuidance?.beatEpisodeAnchors) {
-      reconcileBeatAnchors(episodeOutlines, treatmentSeasonGuidance.beatEpisodeAnchors, {
-        strict: input.preferences?.strictTreatmentValidation ?? false,
-        log: (message) => console.warn(`[SourceMaterialAnalyzer] Beat-anchor reconciliation: ${message}`),
-      });
-    }
-
-    // Anchors + legacyStructure: prefer the LLM's, fall back to plot-point
+    // Anchors + Story Circle: prefer the LLM's, fall back to plot-point
     // inference using approximatePosition labels from the structure pass.
     const anchors: StoryAnchors = structure.anchors && hasAllAnchorFields(structure.anchors)
       ? structure.anchors
       : inferAnchorsFromStructure(structure);
 
-    const deprecatedLegacyStructure = legacyStructureFromDeprecatedField(structure);
-    const legacyStructure: LegacyStructuralMap = structure.legacyStructure && hasAllBeatFields(structure.legacyStructure)
-      ? structure.legacyStructure
-      : deprecatedLegacyStructure && hasAllBeatFields(deprecatedLegacyStructure)
-        ? deprecatedLegacyStructure
-      : inferLegacyStructureFromSource(structure, anchors);
     const storyCircle: StoryCircleStructure = structure.storyCircle && hasAllStoryCircleFields(structure.storyCircle)
       ? structure.storyCircle
-      : storyCircleFromLegacyStructure(legacyStructure, anchors);
+      : inferStoryCircleFromSource(structure, anchors);
 
     // Convert story arcs with episode ranges
     const storyArcs: StoryArc[] = structure.storyArcs.map((arc, idx) => ({
@@ -1566,7 +1473,6 @@ Return ONLY valid JSON.
     const storyCircleBeatContracts = buildStoryCircleBeatContracts({
       guidance: treatmentSeasonGuidance,
       storyCircle,
-      legacyStructure: legacyStructure,
       totalEpisodes,
       treatmentSourced: treatment.isTreatment,
     });
@@ -1617,12 +1523,10 @@ Return ONLY valid JSON.
 
       anchors,
       storyCircle,
-      legacyStructure,
       schemaAbstraction: normalizeSchemaAbstraction(structure.schemaAbstraction, anchors),
       themeArgument: normalizeThemeArgument(structure.themeArgument, {
         themes: structure.themes,
         anchors,
-        legacyStructure,
         schemaAbstraction: structure.schemaAbstraction,
       }),
       writingStyleGuide: normalizeWritingStyleGuide(
@@ -2138,28 +2042,16 @@ Respond with JSON only:
 }
 
 // ---------------------------------------------------------------------------
-// Anchor + legacyStructure inference helpers
+// Anchor + Story Circle inference helpers
 //
-// When the LLM drops the anchors / legacyStructure blocks (older models,
-// truncated responses, aggressive compression), we fall back to deriving
-// them from the existing `protagonist.arc`, `storyArcs`, and
-// `majorPlotPoints` fields. This keeps Path A's "legacy-structures are always
-// first-class" guarantee intact without requiring a second LLM call.
+// When the LLM drops the anchors / Story Circle blocks, we fall back to
+// deriving them from the existing `protagonist.arc`, `storyArcs`, and
+// `majorPlotPoints` fields without requiring a second LLM call.
 // ---------------------------------------------------------------------------
 
 function hasAllAnchorFields(anchors: Partial<StoryAnchors> | undefined): anchors is StoryAnchors {
   if (!anchors) return false;
   return !!(anchors.stakes && anchors.goal && anchors.incitingIncident && anchors.climax);
-}
-
-function hasAllBeatFields(sp: Partial<LegacyStructuralMap> | undefined): sp is LegacyStructuralMap {
-  if (!sp) return false;
-  return LEGACY_STRUCTURAL_BEATS.every((b) => typeof sp[b] === 'string' && (sp[b] as string).trim().length > 0);
-}
-
-function legacyStructureFromDeprecatedField(input: StoryStructureAnalysis): Partial<LegacyStructuralMap> | undefined {
-  const deprecatedKey = ['seven', 'Point'].join('');
-  return (input as unknown as Record<string, Partial<LegacyStructuralMap> | undefined>)[deprecatedKey];
 }
 
 function hasAllStoryCircleFields(sc: Partial<StoryCircleStructure> | undefined): sc is StoryCircleStructure {
@@ -2186,10 +2078,10 @@ function inferAnchorsFromStructure(structure: StoryStructureAnalysis): StoryAnch
   };
 }
 
-function inferLegacyStructureFromSource(
+function inferStoryCircleFromSource(
   structure: StoryStructureAnalysis,
   anchors: StoryAnchors,
-): LegacyStructuralMap {
+): StoryCircleStructure {
   const plotPoints = structure.majorPlotPoints || [];
   const byTypeOrPosition = (typeHint: string, positionHint?: number): string | undefined => {
     const typed = plotPoints.find((p) => (p.type || '').toLowerCase().includes(typeHint));
@@ -2205,13 +2097,14 @@ function inferLegacyStructureFromSource(
   const primaryArcDesc = structure.storyArcs?.[0]?.description || '';
 
   return {
-    hook: byTypeOrPosition('opening', 0) || `${protagonistName} in the ordinary world before the story begins. ${primaryArcDesc}`.trim(),
-    plotTurn1: anchors.incitingIncident,
-    pinch1: byTypeOrPosition('rising', 0.35) || `First major setback against the antagonizing force; ${protagonistName} is forced on the defensive.`,
-    midpoint: byTypeOrPosition('midpoint', 0.5) || `${protagonistName} commits fully to the goal after a revelation or reversal.`,
-    pinch2: byTypeOrPosition('twist', 0.7) || `Crisis that appears to undo everything ${protagonistName} has gained; the final transformation begins here.`,
-    climax: anchors.climax,
-    resolution: byTypeOrPosition('resolution', 1) || `The aftermath and legacy of the climax; the ordinary world is visibly changed.`,
+    you: byTypeOrPosition('opening', 0) || `${protagonistName} in the ordinary world before the story begins. ${primaryArcDesc}`.trim(),
+    need: anchors.goal,
+    go: anchors.incitingIncident,
+    search: byTypeOrPosition('rising', 0.35) || `${protagonistName} tests approaches and learns the new pressure system.`,
+    find: byTypeOrPosition('midpoint', 0.5) || `${protagonistName} commits fully to the goal after a revelation or reversal.`,
+    take: byTypeOrPosition('twist', 0.7) || `Crisis that appears to undo everything ${protagonistName} has gained; the final transformation begins here.`,
+    return: anchors.climax,
+    change: byTypeOrPosition('resolution', 1) || `The aftermath and legacy of the climax; the ordinary world is visibly changed.`,
   };
 }
 
@@ -2446,7 +2339,6 @@ export function normalizeThemeArgument(
   context: {
     themes: string[];
     anchors: StoryAnchors;
-    legacyStructure: LegacyStructuralMap;
     schemaAbstraction?: StorySchemaAbstraction;
   },
 ): ThemeArgumentContract {
@@ -2497,7 +2389,7 @@ export function normalizeThemeArgument(
     climaxResonantEvent: cleanText(raw?.climaxResonantEvent || context.anchors.climax),
     retroactiveReframe: cleanText(
       raw?.retroactiveReframe
-        || `Earlier choices are re-read as preparation for ${context.legacyStructure.climax}.`,
+        || `Earlier choices are re-read as preparation for ${context.anchors.climax}.`,
     ),
     aestheticEmotionTarget: cleanText(
       raw?.aestheticEmotionTarget

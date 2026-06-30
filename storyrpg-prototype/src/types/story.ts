@@ -450,7 +450,7 @@ export interface EpisodePlan {
   episodeNumber: number;
   title: string;
   logline: string;
-  seasonAct: 1 | 2 | 3;
+  arcPressureBand: 'opening' | 'escalation' | 'confrontation' | 'aftermath';
   isTentpole: boolean;
   isMidseasonPivot: boolean;
   isFinale: boolean;

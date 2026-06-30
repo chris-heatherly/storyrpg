@@ -148,7 +148,7 @@ describe('SignatureDevicePresenceValidator', () => {
   });
 
   it('FAIL: an inverted/negated signature ("he didn\'t ...") is a blocking error', () => {
-    const sig = 'Aethavyr leaps from the battlement to save the falling child';
+    const sig = 'Aethavyr leaps from the battlement to save the return child';
     const result = run({
       plan: plan([
         plannedScene('s2-3', 2, {
@@ -161,7 +161,7 @@ describe('SignatureDevicePresenceValidator', () => {
         episode(2, [
           generatedScene('s2-3', [
             // Keywords present, but negated — the RC5 inversion failure mode.
-            beat('b1', 'Aethavyr stood on the battlement and did not leap to save the falling child.'),
+            beat('b1', 'Aethavyr stood on the battlement and did not leap to save the return child.'),
           ]),
         ]),
       ]),
@@ -287,7 +287,7 @@ describe('SignatureDevicePresenceValidator', () => {
   });
 
   it('dedupes a signature carried as BOTH signatureMoment and an encounter required beat', () => {
-    const sig = 'Aethavyr leaps from the battlement to save the falling child';
+    const sig = 'Aethavyr leaps from the battlement to save the return child';
     const result = run({
       plan: plan([plannedScene('s2-3', 2, {
         signatureMoment: sig,

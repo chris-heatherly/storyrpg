@@ -88,10 +88,9 @@ Rules the prompt enforces:
 - **Reuse existing reveal threads.** If a `NarrativeThread` already carries a revelation, set
   `threadId` instead of inventing a new one — this keeps the twist and the thread ledger reconciling
   to the same plant/payoff beats so both validators agree.
-- Twists SHOULD reframe a season anchor (especially `StoryAnchors.stakes` or `.goal`). Midpoint /
-  Plot Turn 2 episodes (`episodeStructuralRole` includes `midpoint` or the fused Plot-Turn-2/`climax`)
-  are the natural homes for the season's biggest twists, because the 7-point Midpoint is precisely the
-  "shift from reaction to action; new information reframes the goal" beat.
+- Twists SHOULD reframe a season anchor (especially `StoryAnchors.stakes` or `.goal`). `find` and `take`
+  episodes are the natural homes for the season's biggest twists, because the Story Circle discovery and
+  cost beats are where new information changes what the player thinks the story is about.
 
 ### Example: a foreshadow -> reveal pairing
 

@@ -8,7 +8,7 @@ description: Work on the StoryRPG image generation subsystem — the ImageAgentT
 ## Architecture Overview
 
 ```
-Pipeline Phase 5.5 (images)
+Post-story media phases
   ├── Master Images: character references + color scripts
   ├── Scene Images: beat-level illustrations
   └── Encounter Images: encounter sequence visuals
@@ -21,9 +21,12 @@ ImageAgentTeam (coordination)
   └── Video / training: VideoDirectorAgent, LoraTrainingAgent
 
 ImageGenerationService (provider abstraction)
-  └── Providers: nano-banana (Gemini), atlas-cloud, midapi / useapi (Midjourney), dall-e, stable-diffusion, placeholder
-     Note: `normalizeProvider()` aliases 'useapi' → 'midapi' (grep `normalizeProvider` in `imageGenerationService.ts`)
+  └── Providers: nano-banana (Gemini), atlas-cloud, midapi (Midjourney), stable-diffusion, placeholder
+      Compatibility: `useapi` aliases to `midapi`; `dall-e` remains a historical surface
 ```
+
+Default image work flows through storyboard-v2 plus `ImageAgentTeam`; `ImageGenerator.ts` has been
+removed. Images run after story authoring, per-episode QA, and episode failure gates.
 
 ## ImageAgentTeam (`agents/image-team/ImageAgentTeam.ts`)
 
@@ -94,8 +97,8 @@ async generateImage(prompt: string, options?: ImageGenOptions): Promise<Generate
 Provider switch routes to:
 - `generateWithNanoBanana()` - Gemini API
 - `generateWithAtlasCloud()` - Atlas Cloud
-- `generateWithUseAPI()` - Midjourney via UseAPI
-- `generateWithDallE()` - OpenAI DALL-E
+- MidAPI/Midjourney generation path (legacy `useapi` input normalizes to `midapi`)
+- DALL-E compatibility path where still wired
 - `generateWithStableDiffusion()` - Stable Diffusion
 - `generateWithPlaceholder()` - Development placeholder
 
@@ -140,19 +143,17 @@ Current matrix:
 | Provider | Views generated | Composite | Expressions | Body vocab | Silhouette | Scene refs | Cap |
 |---|---|---|---|---|---|---|---|
 | nano-banana / atlas-cloud | front, 3q, profile | yes (→ style anchor) | yes | yes | yes | all views + face | 10/16 |
-| dall-e (gpt-image-2) | front only | no | no | no | no | front + face | 2 |
+| dall-e compatibility | front only | no | no | no | no | front + face | 2 |
 | midapi (Midjourney) | front, 3q, profile | yes (→ --cref) | no (dropped by filter) | no | no | composite + style anchor | 2 |
 | stable-diffusion | front, 3q, profile | yes | yes | yes | yes | all views (IP-Adapter) | 4 |
 | placeholder | — | — | — | — | — | none | 0 |
 
-Key invariant: user-facing toggles (`generateExpressionSheets`, `generateBodyVocabulary`) can only *narrow* the strategy — they never override it upward. This is how gpt-image-2 runs the trimmed 1-view path even when a user has the expression-sheet toggle on; the toggle is effectively a no-op for that provider. The UI surfaces this with an "Ignored when provider is DALL-E" hint.
+Key invariant: user-facing toggles (`generateExpressionSheets`, `generateBodyVocabulary`) can only *narrow* the strategy — they never override it upward. Compatibility providers with fewer reference inputs stay on the trimmed path even when a richer reference toggle is enabled.
 
 The strategy is consumed in two places:
 
-1. `FullStoryPipeline.generateCharacterReferenceSheet` — gates *which LLM planners and image calls run up front* during the master-refs phase. For gpt-image-2, this skips the expression/body-vocab/silhouette planners entirely and passes `{ allowedViews: ['front'], generateComposite: false }` into `ImageAgentTeam.generateFullCharacterReferences`.
-2. `filterRefsForProvider` in `referencePackBuilder.ts` — partitions the built reference pack into what the provider actually gets vs what's stripped. For dall-e this keeps only the front view, face crop, and user-provided photos, capped to 2 refs.
-
-Telemetry: `generateWithDallE` logs `[DALL-E] dispatch model=... endpoint=/images/edits vs /images/generations identifier=... N refs` on every call, so you can confirm at a glance whether the trimmed reference path is reaching the provider.
+1. `FullStoryPipeline.generateCharacterReferenceSheet` / `MasterImagePhase` — gates which planners and image calls run up front during the master-refs phase.
+2. `filterRefsForProvider` in `referencePackBuilder.ts` — partitions the built reference pack into what the provider actually gets vs what's stripped.
 
 ## Concurrency & Rate Limiting
 
@@ -180,8 +181,8 @@ Current defaults live in `src/ai-agents/images/providerCapabilities.ts` (see `PR
 |---|---|---|---|
 | `nano-banana` (Gemini) | 6 | 1000 | 60 |
 | `atlas-cloud` | 4 | 1500 | 40 |
-| `midapi` / `useapi` (Midjourney) | 2 | 3000 | 20 |
-| `dall-e` | 3 | 2000 | 30 |
+| `midapi` (Midjourney; legacy `useapi` alias) | 2 | 3000 | 20 |
+| `dall-e` compatibility | 3 | 2000 | 30 |
 | `stable-diffusion` | 1 | 0 | — |
 | `placeholder` | 16 | 0 | — |
 
@@ -216,7 +217,7 @@ Three layers prevent redundant generation:
 
 ## Pipeline Integration
 
-Image generation runs in Phase 5.5 with three sub-phases:
+Image generation runs after text authoring/episode QA with three sub-phases:
 
 1. **master_images**: Character reference sheets + color scripts (cached for reuse)
 2. **episode_image_generation**: Per-beat illustrations using storyboard plans

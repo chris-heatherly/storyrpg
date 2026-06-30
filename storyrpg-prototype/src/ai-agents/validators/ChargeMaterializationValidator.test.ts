@@ -183,7 +183,7 @@ describe('ChargeMaterializationValidator — hollow branch', () => {
       ledger([e]),
       ctx(
         1,
-        // trust rising, but the promised crossing is a betrayal (falling).
+        // trust search, but the promised crossing is a betrayal (return).
         [{ sceneId: 'payoff', consequences: [{ type: 'relationship', npcId: 'vale', dimension: 'trust', change: +10 }] }],
         { [edgeKey(e)]: { dimension: 'vale:trust', direction: -1 } },
       ),

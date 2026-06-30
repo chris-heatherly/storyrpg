@@ -120,7 +120,6 @@ function storyCircleContractsFromInput(input: TreatmentFieldUtilizationInput): S
     ?? buildStoryCircleBeatContracts({
       guidance: input.sourceAnalysis?.treatmentSeasonGuidance,
       storyCircle: input.seasonPlan?.storyCircle ?? input.sourceAnalysis?.storyCircle,
-      legacyStructure: input.seasonPlan?.legacyStructure ?? input.sourceAnalysis?.legacyStructure,
       totalEpisodes: input.seasonPlan?.totalEpisodes ?? input.sourceAnalysis?.totalEstimatedEpisodes ?? 1,
       treatmentSourced: input.treatmentSourced ?? input.sourceAnalysis?.sourceFormat === 'story_treatment',
     });

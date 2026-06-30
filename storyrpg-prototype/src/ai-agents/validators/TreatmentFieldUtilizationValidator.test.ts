@@ -52,7 +52,6 @@ function analysis(treatmentGuidance: TreatmentEpisodeGuidance = guidance): Sourc
       episodeNumber: 1,
       title: 'The Locked Wing',
       synopsis: 'Mara tests the archive door.',
-      structuralRole: ['hook'],
       treatmentGuidance,
     }],
     totalEstimatedEpisodes: 2,
@@ -74,7 +73,7 @@ function plannedSeasonPlan(treatmentGuidance: TreatmentEpisodeGuidance = guidanc
     tone: 'tense',
     themes: ['truth costs comfort'],
     anchors: {},
-    legacyStructure: { hook: 'Mara finds the locked wing.' },
+    storyCircle: { you: 'Mara finds the locked wing.' },
     arcs: [],
     endingMode: 'single',
     resolvedEndings: [],
@@ -106,7 +105,6 @@ function plannedSeasonPlan(treatmentGuidance: TreatmentEpisodeGuidance = guidanc
       episodeNumber: 1,
       title: 'The Locked Wing',
       synopsis: 'Mara tests the archive door.',
-      structuralRole: ['hook'],
       status: 'planned',
       dependsOn: [],
       setupsForEpisodes: [2],
@@ -130,13 +128,12 @@ function plannedSeasonPlan(treatmentGuidance: TreatmentEpisodeGuidance = guidanc
       cliffhangerPlan: {
         type: 'reveal',
         intensity: 'high',
-        hook: 'The portrait opens by itself.',
+        you: 'The portrait opens by itself.',
         setup: 'The portrait hinge clicked earlier.',
         resolvedEpisodeTension: 'Mara knows the wing is real.',
         newOpenQuestion: 'Who unlocked it from inside?',
         emotionalCharge: 'dread',
         nextEpisodePressure: 'The household starts hunting the missing key.',
-        mappedStructuralRole: 'hook',
         style: 'serialized_tv',
       },
     }],
@@ -181,18 +178,19 @@ function finalStoryForScene(sceneId: string, text: string): Story {
 function storyCirclePlan(): SeasonPlan {
   const plan = plannedSeasonPlan();
   Object.assign(plan, {
-    legacyStructure: {
-      hook: 'Mara opens the portrait and the archive starts hunting her.',
-      plotTurn1: 'Mara crosses the locked threshold.',
-      pinch1: 'The steward narrows the exits.',
-      midpoint: 'The ledger names her family and changes the rules.',
-      pinch2: 'Edric betrays her to protect the wing.',
-      climax: 'Mara chooses between burning the ledger and claiming the name.',
-      resolution: 'Mara leaves with the key and a new enemy.',
+    storyCircle: {
+      you: '',
+      need: '',
+      go: 'Mara crosses the locked threshold.',
+      search: 'The steward narrows the exits.',
+      find: 'The ledger names her family and changes the rules.',
+      take: 'Edric betrays her to protect the wing.',
+      return: 'Mara chooses between burning the ledger and claiming the name.',
+      change: 'Mara leaves with the key and a new enemy.',
     },
     treatmentSeasonGuidance: {
-      seasonSpine: '- **Hook:** Mara opens the portrait and the archive starts hunting her.',
-      beatEpisodeAnchors: { hook: 1 },
+      seasonSpine: '- **You:** Mara opens the portrait and the archive starts hunting her.',
+      storyCircleBeatEpisodeAnchors: { you: 1 },
     },
   });
   plan.storyCircleBeatContracts = undefined;
@@ -330,7 +328,7 @@ function stakesTreatmentMarkdown() {
 
 ### Episode 1: Pilot
 - **Episode promise:** Kylie tries to start over.
-- **Structural role:** hook
+- **Story Circle role:** you
 - **Entry goal:** Kylie wants one good night.
 `;
 }
@@ -364,11 +362,11 @@ function branchEndingTreatmentMarkdown() {
 - **Final voiceover line:** I wrote it in my own name.
 
 ### Episode 1: Quartz
-- **Structural role:** hook
+- **Story Circle role:** you
 - **Episode promise:** Kylie chooses what to do with Stela's quartz.
 
 ### Episode 2: Sanctuary
-- **Structural role:** resolution
+- **Story Circle role:** change
 - **Episode promise:** The apartment's threshold reveals what the quartz choice changed.
 `;
 }
@@ -498,7 +496,7 @@ describe('TreatmentFieldUtilizationValidator', () => {
 ## 4. World And Location Brief
 - **World premise:** Modern Greyharbor with a hidden magical household underneath.
 - **Time period:** Now. Phones, posts, and security cameras.
-- **Technology/magic/supernatural rules, if any:** Kept quiet until the midpoint.
+- **Technology/magic/supernatural rules, if any:** Kept quiet until the find.
   - Ghosts cannot cross iron thresholds unless invited by blood.
 - **Power structures:** The Hale Household controls the archive.
 - **Rules that create drama:**

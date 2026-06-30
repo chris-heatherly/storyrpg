@@ -25,25 +25,26 @@ function scene(id: string, episodeNumber: number, order: number, role: PlannedSc
 }
 
 describe('storyCircleBeatContracts', () => {
-  it('builds authored contracts from Section 7 beat text', () => {
+  it('builds authored contracts from Story Circle beat text', () => {
     const contracts = buildStoryCircleBeatContracts({
       totalEpisodes: 8,
       treatmentSourced: true,
       guidance: {
         seasonSpine: `
-- **Hook:** Avery is pinned to a tree, rescued by Night Signal, and the post does 80,000 reads.
-- **Midpoint:** Avery sees herself alone in Rowan's mirror; Morgan confesses two truths; the genre changes; the blog skips a day.
+- **You:** Avery is pinned to a tree, rescued by Night Signal, and the post does 80,000 reads.
+- **Find:** Avery sees herself alone in Rowan's mirror; Morgan confesses two truths; the genre changes; the blog changes shape.
         `,
-        beatEpisodeAnchors: { hook: 1, midpoint: 5 },
+        storyCircleBeatEpisodeAnchors: { you: 1, find: 5 },
       },
-      legacyStructure: {
-        hook: 'fallback hook',
-        plotTurn1: '',
-        pinch1: '',
-        midpoint: 'fallback midpoint',
-        pinch2: '',
-        climax: '',
-        resolution: '',
+      storyCircle: {
+        you: '',
+        need: '',
+        go: '',
+        search: '',
+        find: 'fallback find',
+        take: '',
+        return: '',
+        change: '',
       },
     });
 
@@ -58,18 +59,19 @@ describe('storyCircleBeatContracts', () => {
   it('assigns beat contracts to scenes, required beats, and pressure metadata', () => {
     const plan = {
       totalEpisodes: 8,
-      legacyStructure: {
-        hook: 'hook',
-        plotTurn1: 'turn',
-        pinch1: 'pinch',
-        midpoint: 'Avery sees herself alone in Rowan mirror and the genre changes.',
-        pinch2: 'pinch2',
-        climax: 'climax',
-        resolution: 'resolution',
+      storyCircle: {
+        you: '',
+        need: '',
+        go: 'turn',
+        search: 'pinch',
+        find: 'Avery sees herself alone in Rowan mirror and the genre changes.',
+        take: 'take',
+        return: 'return',
+        change: 'change',
       },
       treatmentSeasonGuidance: {
-        seasonSpine: '- **Midpoint:** Avery sees herself alone in Rowan mirror and the genre changes.',
-        beatEpisodeAnchors: { midpoint: 5 },
+        seasonSpine: '- **Find:** Avery sees herself alone in Rowan mirror and the genre changes.',
+        storyCircleBeatEpisodeAnchors: { find: 5 },
       },
     } as unknown as SeasonPlan;
     const scenes = [
@@ -87,22 +89,23 @@ describe('storyCircleBeatContracts', () => {
     expect(target?.mechanicPressure?.some((pressure) => pressure.id.includes('story-circle-find'))).toBe(true);
   });
 
-  it('does not hard-bind legacy Story Circle prose when Story Circle already owns the authored beat', () => {
+  it('does not hard-bind duplicate Story Circle prose when Story Circle already owns the authored beat', () => {
     const hookText = "Avery lands in port city with two suitcases and her grandmother's address; by night three she's at a rooftop bar.";
     const plan = {
       totalEpisodes: 8,
-      legacyStructure: {
-        hook: hookText,
-        plotTurn1: '',
-        pinch1: '',
-        midpoint: '',
-        pinch2: '',
-        climax: '',
-        resolution: '',
+      storyCircle: {
+        you: '',
+        need: '',
+        go: '',
+        search: '',
+        find: '',
+        take: '',
+        return: '',
+        change: '',
       },
       treatmentSeasonGuidance: {
-        seasonSpine: `- **Hook:** ${hookText}`,
-        beatEpisodeAnchors: { hook: 1 },
+        seasonSpine: `- **You:** ${hookText}`,
+        storyCircleBeatEpisodeAnchors: { you: 1 },
       },
     } as unknown as SeasonPlan;
     const scenes = [
@@ -135,14 +138,15 @@ describe('storyCircleBeatContracts', () => {
       "The protagonist's ordinary world is reinvention-as-performance. They arrive in the port city with two bags and an old address, gather a new circle over bitter drinks, and protect themself the way they always have — by observing, ordering second, and writing the piece later. Opening promise: a wounded newcomer gets a glamorous new life and their own byline. The staged rescue and the viral anonymous post close the beat by making them a name.";
     const plan = {
       totalEpisodes: 8,
-      legacyStructure: {
-        hook: broadYou,
-        plotTurn1: '',
-        pinch1: '',
-        midpoint: '',
-        pinch2: '',
-        climax: '',
-        resolution: '',
+      storyCircle: {
+        you: '',
+        need: '',
+        go: '',
+        search: '',
+        find: '',
+        take: '',
+        return: '',
+        change: '',
       },
       treatmentSeasonGuidance: {
         seasonSpine: `- **You (Ep1):** ${broadYou}`,

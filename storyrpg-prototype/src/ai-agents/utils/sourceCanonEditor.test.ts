@@ -48,15 +48,6 @@ function analysis(): SourceMaterialAnalysis {
       incitingIncident: 'The lantern speaks in her sister\'s voice.',
       climax: 'Mara rings the bell during the storm confession.',
     },
-    legacyStructure: {
-      hook: storyCircle.you,
-      plotTurn1: storyCircle.go,
-      pinch1: storyCircle.search,
-      midpoint: storyCircle.find,
-      pinch2: storyCircle.take,
-      climax: storyCircle.return,
-      resolution: storyCircle.change,
-    },
     storyCircle,
     episodeBreakdown: [
       {
@@ -72,7 +63,6 @@ function analysis(): SourceMaterialAnalysis {
         estimatedSceneCount: 4,
         estimatedChoiceCount: 3,
         storyCircleRole: [{ beat: 'you', roleKind: 'primary', source: 'distribution' }],
-        structuralRole: ['hook'],
         narrativeFunction: {
           setup: 'Mara works alone.',
           conflict: 'The lantern speaks.',
@@ -92,7 +82,6 @@ function analysis(): SourceMaterialAnalysis {
         estimatedSceneCount: 4,
         estimatedChoiceCount: 3,
         storyCircleRole: [{ beat: 'go', roleKind: 'primary', source: 'distribution' }],
-        structuralRole: ['plotTurn1'],
         narrativeFunction: {
           setup: 'Mara leaves the tower.',
           conflict: 'The harbor demands a name.',

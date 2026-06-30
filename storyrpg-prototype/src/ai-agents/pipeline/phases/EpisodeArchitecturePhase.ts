@@ -145,9 +145,7 @@ export class EpisodeArchitecturePhase {
       seasonPlanDirectives,
       seasonAnchors: seasonPlan?.anchors,
       seasonStoryCircle: seasonPlan?.storyCircle,
-      seasonLegacyStructure: seasonPlan?.legacyStructure,
       episodeStoryCircleRole: seasonEpisode?.storyCircleRole,
-      episodeStructuralRole: seasonEpisode?.structuralRole,
       cliffhangerPlan: seasonEpisode?.cliffhangerPlan,
       // Characters this episode is planned to introduce — the blueprint gives
       // each an on-page introduction beat (uncontextualized-character fix).

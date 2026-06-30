@@ -454,7 +454,7 @@ export class StructuralValidator {
             if (outcomeConsequences.length === 0 && costConsequences.length === 0) {
               issues.push(this.createIssue('warning', 'missing_required_field',
                 { ...loc, choiceId: choice.id },
-                `Encounter outcome ${path}/${choice.id}/${tier} has no durable consequence hook`,
+                `Encounter outcome ${path}/${choice.id}/${tier} has no durable consequence marker`,
                 'consequences', 'outcome.consequences or cost.consequences'));
             }
             if (outcome.cost && costConsequences.length === 0) {

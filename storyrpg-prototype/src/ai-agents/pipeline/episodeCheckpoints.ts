@@ -87,6 +87,7 @@ export async function writeEpisodeCompletion(options: {
   save: ArtifactSaver;
   shadowArtifacts?: EpisodeShadowArtifactOptions;
   lock?: EpisodeCompletionLockEvidence;
+  validation?: ArtifactValidationSummary;
 }): Promise<EpisodeCompletionWatermark> {
   const { episode, episodeNumber, title, save, shadowArtifacts } = options;
   const assembledArtifact = episodeAssembledArtifact(episodeNumber);
@@ -98,6 +99,7 @@ export async function writeEpisodeCompletion(options: {
       title,
       save,
       ...shadowArtifacts,
+      validation: options.validation ?? shadowArtifacts.validation,
     })
     : undefined;
   const watermark: EpisodeCompletionWatermark = {

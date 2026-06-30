@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { lockGeneratedEpisodeArtifact } from './episodeLocking';
 import type { Episode } from '../../types';
 
+const passingValidation = {
+  passed: true,
+  gate: 'incremental_contract_ep_2',
+  issues: [],
+};
+
 function makeEpisode(): Episode {
   return {
     number: 2,
@@ -20,7 +26,10 @@ describe('lockGeneratedEpisodeArtifact', () => {
       episode: makeEpisode(),
       hasEpisodeBrief: true,
       writeWatermark: true,
-      validateRuntimeContract: vi.fn(async () => { order.push('validate'); }),
+      validateRuntimeContract: vi.fn(async () => {
+        order.push('validate');
+        return passingValidation;
+      }),
       sealCanon: vi.fn(async () => {
         order.push('seal');
         return {
@@ -28,7 +37,10 @@ describe('lockGeneratedEpisodeArtifact', () => {
           seasonCanonArtifact: 'season-canon.json',
         };
       }),
-      writeCompletion: vi.fn(async () => { order.push('write'); }),
+      writeCompletion: vi.fn(async (_lock, validation) => {
+        order.push('write');
+        expect(validation).toBe(passingValidation);
+      }),
     });
 
     expect(order).toEqual(['validate', 'seal', 'write']);
@@ -66,7 +78,7 @@ describe('lockGeneratedEpisodeArtifact', () => {
       episode: makeEpisode(),
       hasEpisodeBrief: false,
       writeWatermark: true,
-      validateRuntimeContract: vi.fn(async () => undefined),
+      validateRuntimeContract: vi.fn(async () => passingValidation),
       sealCanon: vi.fn(async () => ({ canonSealed: true })),
       writeCompletion: vi.fn(async () => undefined),
     })).rejects.toThrow(/cannot be locked without an episode brief/);
@@ -81,7 +93,7 @@ describe('lockGeneratedEpisodeArtifact', () => {
       episode: makeEpisode(),
       hasEpisodeBrief: true,
       writeWatermark: false,
-      validateRuntimeContract: vi.fn(async () => undefined),
+      validateRuntimeContract: vi.fn(async () => passingValidation),
       sealCanon: vi.fn(async () => ({ canonSealed: true })),
       writeCompletion,
     });

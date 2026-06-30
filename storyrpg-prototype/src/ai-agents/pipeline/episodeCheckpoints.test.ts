@@ -223,6 +223,11 @@ describe('episodeCheckpoints', () => {
       episodeNumber: 2,
       title: 'Two',
       save: store.save,
+      validation: {
+        passed: true,
+        gate: 'incremental_contract_ep_2',
+        issues: [{ validator: 'FinalStoryContractValidator', severity: 'warning', message: 'advisory', code: 'scene_turn' }],
+      },
       lock: {
         runtimeContractPassed: true,
         canonSealed: true,
@@ -249,6 +254,16 @@ describe('episodeCheckpoints', () => {
     expect(watermark.artifacts?.contextOut?.path).toBe('artifacts/episodes/002/context-out.rev1.json');
     expect(loadCompletedEpisode(2, store.load)?.episode.number).toBe(2);
     const artifactStore = new ArtifactRevisionStore({ save: store.save, load: store.load });
+    const runtimeEpisode = artifactStore.loadCurrent('runtime-episode', 2);
+    const validationReport = artifactStore.loadCurrent('validation-report', 2);
+    expect(runtimeEpisode?.validation.gate).toBe('incremental_contract_ep_2');
+    expect(runtimeEpisode?.validation.issues[0]?.code).toBe('scene_turn');
+    expect(validationReport?.payload).toMatchObject({
+      validation: {
+        gate: 'incremental_contract_ep_2',
+        issues: [{ code: 'scene_turn' }],
+      },
+    });
     expect(artifactStore.loadCurrentRef('context-in', 2)?.path).toBe('artifacts/episodes/002/context-in.rev1.json');
     expect(artifactStore.loadCurrentRef('runtime-episode', 2)?.path).toBe('artifacts/episodes/002/runtime-episode.rev1.json');
     expect(artifactStore.loadCurrentRef('validation-report', 2)?.path).toBe('artifacts/episodes/002/validation-report.rev1.json');

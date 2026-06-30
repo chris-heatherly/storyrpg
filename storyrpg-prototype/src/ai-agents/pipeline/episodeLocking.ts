@@ -1,4 +1,5 @@
 import type { Episode } from '../../types';
+import type { ArtifactValidationSummary } from './artifacts';
 import type { EpisodeCompletionLockEvidence } from './episodeCheckpoints';
 
 export interface LockGeneratedEpisodeInput {
@@ -7,9 +8,9 @@ export interface LockGeneratedEpisodeInput {
   episode: Episode;
   hasEpisodeBrief: boolean;
   writeWatermark: boolean;
-  validateRuntimeContract: () => Promise<void>;
+  validateRuntimeContract: () => Promise<ArtifactValidationSummary>;
   sealCanon: () => Promise<EpisodeCompletionLockEvidence | undefined>;
-  writeCompletion: (lock: EpisodeCompletionLockEvidence) => Promise<void>;
+  writeCompletion: (lock: EpisodeCompletionLockEvidence, validation: ArtifactValidationSummary) => Promise<void>;
 }
 
 export async function lockGeneratedEpisodeArtifact(
@@ -19,7 +20,7 @@ export async function lockGeneratedEpisodeArtifact(
     throw new Error(`Episode ${input.episodeNumber} cannot be locked without an episode brief for incremental contract validation.`);
   }
 
-  await input.validateRuntimeContract();
+  const validation = await input.validateRuntimeContract();
   const canonLockEvidence = await input.sealCanon();
   const lockEvidence: EpisodeCompletionLockEvidence = {
     ...(canonLockEvidence ?? {}),
@@ -27,7 +28,7 @@ export async function lockGeneratedEpisodeArtifact(
     incrementalContractArtifact: `episode-${input.episodeNumber}-incremental-contract.json`,
   };
   if (input.writeWatermark) {
-    await input.writeCompletion(lockEvidence);
+    await input.writeCompletion(lockEvidence, validation);
   }
   return lockEvidence;
 }

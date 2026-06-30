@@ -142,7 +142,7 @@ import {
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { resolveEpisodeParallelism } from './episodeScheduling';
 import { lockGeneratedEpisodeArtifact } from './episodeLocking';
-import type { ArtifactRef } from './artifacts';
+import type { ArtifactRef, ArtifactValidationSummary } from './artifacts';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
@@ -6654,7 +6654,7 @@ export class FullStoryPipeline {
       hasEpisodeBrief: Boolean(episodeBrief),
       writeWatermark,
       validateRuntimeContract: async () => {
-        await this.validateEpisodeIncrementally({
+        return this.validateEpisodeIncrementally({
           episodeNumber,
           episode,
           episodeBrief: episodeBrief!,
@@ -6672,11 +6672,12 @@ export class FullStoryPipeline {
         characterBible,
         outputDirectory,
       }),
-      writeCompletion: (lock) => artifactRuntime.writeEpisodeCompletion({
+      writeCompletion: (lock, validation) => artifactRuntime.writeEpisodeCompletion({
         episode,
         episodeNumber,
         title,
         lock,
+        validation,
       }).then(() => undefined),
     });
   }
@@ -6793,7 +6794,7 @@ export class FullStoryPipeline {
     qaReport?: QAReport;
     bestPracticesReport?: ComprehensiveValidationReport;
     outputDirectory: string;
-  }): Promise<boolean> {
+  }): Promise<ArtifactValidationSummary> {
     const { episodeNumber: i, episode, episodeBrief, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
     try {
       const protagonistId = episodeBrief.protagonist?.id;
@@ -6917,7 +6918,7 @@ export class FullStoryPipeline {
           report.blockingIssues.slice(0, 3).map(issue => issue.message).join('; '),
         );
       }
-      return report.passed && report.blockingIssues.length === 0;
+      return this.toArtifactValidationSummary(`incremental_contract_ep_${i}`, report);
     } catch (err) {
       this.emit({
         type: 'error',
@@ -6926,6 +6927,40 @@ export class FullStoryPipeline {
       });
       throw err;
     }
+  }
+
+  private toArtifactValidationSummary(
+    gate: string,
+    report: Pick<FinalStoryContractReport, 'passed' | 'blockingIssues' | 'warnings'>,
+  ): ArtifactValidationSummary {
+    return {
+      passed: report.passed && report.blockingIssues.length === 0,
+      gate,
+      issues: [
+        ...report.blockingIssues.map((issue) => ({
+          validator: issue.validator || 'FinalStoryContractValidator',
+          severity: 'error' as const,
+          message: issue.message,
+          code: issue.type,
+          path: [
+            issue.episodeNumber != null ? `episode:${issue.episodeNumber}` : undefined,
+            issue.sceneId ? `scene:${issue.sceneId}` : undefined,
+            issue.beatId ? `beat:${issue.beatId}` : undefined,
+          ].filter(Boolean).join('/'),
+        })),
+        ...report.warnings.map((issue) => ({
+          validator: issue.validator || 'FinalStoryContractValidator',
+          severity: 'warning' as const,
+          message: issue.message,
+          code: issue.type,
+          path: [
+            issue.episodeNumber != null ? `episode:${issue.episodeNumber}` : undefined,
+            issue.sceneId ? `scene:${issue.sceneId}` : undefined,
+            issue.beatId ? `beat:${issue.beatId}` : undefined,
+          ].filter(Boolean).join('/'),
+        })),
+      ],
+    };
   }
 
   private async generateEpisodeFromOutline(params: {

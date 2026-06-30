@@ -2,6 +2,7 @@ import type { Episode } from '../../../types';
 import {
   ArtifactRevisionStore,
   type ArtifactRef,
+  type ArtifactValidationSummary,
   type PipelineArtifact,
   type SaveArtifactInput,
 } from '../artifacts';
@@ -48,6 +49,7 @@ export interface RunArtifactRuntime {
     episodeNumber: number;
     title: string;
     lock?: EpisodeCompletionLockEvidence;
+    validation?: ArtifactValidationSummary;
   }) => Promise<EpisodeCompletionWatermark>;
 }
 

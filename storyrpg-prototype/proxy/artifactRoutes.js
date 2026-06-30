@@ -104,6 +104,74 @@ function summarizeCurrentIndex(runDir, episodeNumber) {
   };
 }
 
+function completionWatermarkPath(runDir, episodeNumber) {
+  return path.join(runDir, 'checkpoints', `episode-${episodeNumber}-complete.json`);
+}
+
+function summarizeEpisodeLock(runDir, episodeNumber, status) {
+  const watermark = readJsonIfExists(completionWatermarkPath(runDir, episodeNumber));
+  const lock = watermark?.lock || {};
+  const runtimeContractPassed = lock.runtimeContractPassed === true;
+  const canonRequired = typeof lock.seasonCanonArtifact === 'string' && lock.seasonCanonArtifact.length > 0;
+  const canonSealed = lock.canonSealed === true || (!canonRequired && lock.canonSealed !== false);
+  const locked = runtimeContractPassed && canonSealed && status === 'clean';
+  const reasons = [];
+  if (!watermark) reasons.push('missing completion watermark');
+  if (!runtimeContractPassed) reasons.push('runtime contract not confirmed');
+  if (canonRequired && lock.canonSealed !== true) reasons.push('canon seal not confirmed');
+  if (status !== 'clean') reasons.push(`artifact graph is ${status}`);
+  return {
+    locked,
+    runtimeContractPassed,
+    canonSealed: lock.canonSealed,
+    incrementalContractArtifact: lock.incrementalContractArtifact,
+    seasonCanonArtifact: lock.seasonCanonArtifact,
+    reasons,
+  };
+}
+
+function summarizeContextOutObligations(runDir, episodeNumber) {
+  const contextOutRef = loadCurrentIndex(runDir, episodeNumber).artifacts?.['context-out'];
+  const contextOut = contextOutRef ? loadArtifactRef(runDir, contextOutRef) : null;
+  const obligations = Array.isArray(contextOut?.payload?.unresolvedObligations)
+    ? contextOut.payload.unresolvedObligations
+    : [];
+  const byKind = obligations.reduce((acc, obligation) => {
+    const kind = typeof obligation?.kind === 'string' ? obligation.kind : 'unknown';
+    acc[kind] = (acc[kind] || 0) + 1;
+    return acc;
+  }, {});
+  return {
+    unresolvedCount: obligations.length,
+    byKind,
+  };
+}
+
+function summarizeSeasonCanon(runDir) {
+  const canon = readJsonIfExists(path.join(runDir, 'season-canon.json'));
+  if (!canon || canon.version !== 1) {
+    return {
+      present: false,
+      sealedEpisodeCount: 0,
+      sealedEpisodes: [],
+      worldFactCount: 0,
+      knowledgeCount: 0,
+      relationshipCount: 0,
+      numericViolationCount: 0,
+    };
+  }
+  return {
+    present: true,
+    storyId: canon.storyId,
+    sealedEpisodeCount: Array.isArray(canon.sealedEpisodes) ? canon.sealedEpisodes.length : 0,
+    sealedEpisodes: Array.isArray(canon.sealedEpisodes) ? canon.sealedEpisodes : [],
+    worldFactCount: Array.isArray(canon.worldFacts) ? canon.worldFacts.length : 0,
+    knowledgeCount: Array.isArray(canon.knowledge) ? canon.knowledge.length : 0,
+    relationshipCount: Array.isArray(canon.relationships) ? canon.relationships.length : 0,
+    numericViolationCount: Array.isArray(canon.numericViolations) ? canon.numericViolations.length : 0,
+  };
+}
+
 function listEpisodeNumbers(runDir) {
   const episodesDir = path.join(runDir, 'artifacts', 'episodes');
   if (!fs.existsSync(episodesDir)) return [];
@@ -118,13 +186,19 @@ function scanArtifactRun(storiesDir, runId) {
   const runDir = resolveInside(storiesDir, runId);
   if (!runDir || !fs.existsSync(path.join(runDir, 'artifacts'))) return null;
   const globals = summarizeCurrentIndex(runDir);
-  const episodes = listEpisodeNumbers(runDir).map((episodeNumber) => ({
-    episodeNumber,
-    ...summarizeCurrentIndex(runDir, episodeNumber),
-  }));
+  const episodes = listEpisodeNumbers(runDir).map((episodeNumber) => {
+    const summary = summarizeCurrentIndex(runDir, episodeNumber);
+    return {
+      episodeNumber,
+      ...summary,
+      lock: summarizeEpisodeLock(runDir, episodeNumber, summary.status),
+      obligations: summarizeContextOutObligations(runDir, episodeNumber),
+    };
+  });
   return {
     runId,
     status: rollupStatus([globals, ...episodes]),
+    canon: summarizeSeasonCanon(runDir),
     globals,
     episodes,
   };

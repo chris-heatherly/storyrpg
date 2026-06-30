@@ -39,6 +39,7 @@ export interface RunArtifactRuntime {
     runId?: string;
   }) => Promise<PipelineArtifact<T>>;
   refFor: <T>(artifact: PipelineArtifact<T>) => ArtifactRef;
+  setGlobalUpstreamRefs: (refs: ArtifactRef[]) => void;
   shadowArtifactsFor: (episodeNumber: number) => EpisodeShadowArtifactOptions;
   writeEpisodeCompletion: (options: {
     episode: Episode;
@@ -70,6 +71,7 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
     const save: ArtifactSaver = (name, data) => this.deps.save(outputDirectory, name, data);
     const load: ArtifactLoader = <T,>(name: string) => this.deps.load<T>(outputDirectory, name);
     const artifactStore = new ArtifactRevisionStore({ save, load });
+    let globalUpstreamRefs: ArtifactRef[] = [];
 
     const runtime: RunArtifactRuntime = {
       outputDirectory,
@@ -83,10 +85,14 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
         runId: artifactInput.runId ?? runId,
       }),
       refFor: (artifact) => artifactStore.refFor(artifact),
+      setGlobalUpstreamRefs: (refs) => {
+        globalUpstreamRefs = [...refs];
+      },
       shadowArtifactsFor: (episodeNumber) => ({
         storyId,
         runId,
         load,
+        upstream: globalUpstreamRefs,
         onError: (error) => context.emit({
           type: 'warning',
           phase: `episode_${episodeNumber}_artifacts`,

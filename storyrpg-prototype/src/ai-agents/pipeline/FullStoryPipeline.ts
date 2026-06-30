@@ -142,6 +142,7 @@ import {
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { resolveEpisodeParallelism } from './episodeScheduling';
 import { lockGeneratedEpisodeArtifact } from './episodeLocking';
+import type { ArtifactRef } from './artifacts';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
@@ -5549,11 +5550,12 @@ export class FullStoryPipeline {
       const outputDirectory = artifactRuntime.outputDirectory;
       this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
 
-      await this.persistPlanningArtifacts({
+      const planningArtifactRefs = await this.persistPlanningArtifacts({
         artifactRuntime,
         sourceAnalysis: filteredAnalysis,
         seasonPlan: baseBrief.seasonPlan,
       });
+      artifactRuntime.setGlobalUpstreamRefs(planningArtifactRefs);
 
       // Season Canon (P4) resume: rehydrate sealed canon + ledger from disk so a
       // later partial run skips re-sealing already-sealed episodes and reads prior
@@ -6431,7 +6433,7 @@ export class FullStoryPipeline {
     artifactRuntime: RunArtifactRuntime;
     sourceAnalysis: SourceMaterialAnalysis;
     seasonPlan?: SeasonPlan;
-  }): Promise<void> {
+  }): Promise<ArtifactRef[]> {
     const { artifactRuntime, sourceAnalysis, seasonPlan } = params;
     const savedKinds = ['source analysis'];
     const sourceAnalysisArtifact = await artifactRuntime.saveArtifact({
@@ -6440,7 +6442,9 @@ export class FullStoryPipeline {
       status: 'valid',
       provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
     });
-    const upstream = [artifactRuntime.refFor(sourceAnalysisArtifact)];
+    const sourceAnalysisRef = artifactRuntime.refFor(sourceAnalysisArtifact);
+    const upstream = [sourceAnalysisRef];
+    const planningRefs = [sourceAnalysisRef];
 
     if (sourceAnalysis.sourceCanon) {
       const sourceCanonArtifact = await artifactRuntime.saveArtifact({
@@ -6450,18 +6454,21 @@ export class FullStoryPipeline {
         upstream,
         provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
       });
-      upstream.push(artifactRuntime.refFor(sourceCanonArtifact));
+      const sourceCanonRef = artifactRuntime.refFor(sourceCanonArtifact);
+      upstream.push(sourceCanonRef);
+      planningRefs.push(sourceCanonRef);
       savedKinds.push('source canon');
     }
 
     if (seasonPlan) {
-      await artifactRuntime.saveArtifact({
+      const seasonPlanArtifact = await artifactRuntime.saveArtifact({
         kind: 'season-plan',
         payload: seasonPlan,
         status: 'valid',
         upstream,
         provenance: { phase: 'season_planning', agent: 'SeasonPlannerAgent' },
       });
+      planningRefs.push(artifactRuntime.refFor(seasonPlanArtifact));
       savedKinds.push('season plan');
     }
 
@@ -6470,6 +6477,7 @@ export class FullStoryPipeline {
       phase: 'artifacts',
       message: `Saved revisioned planning artifacts for ${savedKinds.join(', ')}.`,
     });
+    return planningRefs;
   }
 
   /**

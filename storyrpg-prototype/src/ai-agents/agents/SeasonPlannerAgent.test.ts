@@ -593,10 +593,37 @@ describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
     delete process.env.GATE_ARC_PRESSURE;
   });
 
+  const testScenePlan = (episodeCount = 1) => {
+    const scenes = Array.from({ length: episodeCount }, (_, index) => {
+      const episodeNumber = index + 1;
+      return {
+        id: `s${episodeNumber}-1`,
+        episodeNumber,
+        order: 0,
+        kind: 'standard',
+        title: `Episode ${episodeNumber} Opening`,
+        dramaticPurpose: 'Open the test episode.',
+        narrativeRole: 'setup',
+        locations: [],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+      };
+    });
+    return {
+      scenes,
+      byEpisode: Object.fromEntries(scenes.map((scene) => [scene.episodeNumber, [scene.id]])),
+      setupPayoffEdges: [],
+    };
+  };
+
   // A plan with no anchors/storyCircle fails StoryCircleCoverageValidator with errors.
   const brokenPlan = () => ({
     totalEpisodes: 1, arcs: [], encounterPlan: { totalEncounters: 0 }, crossEpisodeBranches: [],
     anchors: undefined, legacyStructure: undefined, episodes: [], resolvedEndings: [],
+    warnings: [],
+    notes: [],
+    scenePlan: testScenePlan(),
   });
 
   it('throws (blocks) when the season spine is incomplete', async () => {
@@ -606,6 +633,35 @@ describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
     await expect(
       planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, storyCircleBlocking: true }),
     ).rejects.toThrow(/StoryCircleGate/);
+  });
+
+  it('throws when scene-first planning is enabled but the season plan has no scene spine', async () => {
+    const planner = makePlanner();
+    (planner as any).callLLM = async () => '{}';
+    (planner as any).buildSeasonPlan = () => ({
+      ...brokenPlan(),
+      anchors: {
+        stakes: 'The test stakes are explicit.',
+        goal: 'Reach the end of the test season.',
+        incitingIncident: 'The test begins.',
+        climax: 'The final test choice lands.',
+      },
+      storyCircle: {
+        you: 'A test protagonist begins in a known state.',
+        need: 'They need a real scene spine.',
+        go: 'The plan moves into generation.',
+        search: 'The plan searches for scene support.',
+        find: 'The missing scene spine is discovered.',
+        take: 'The pipeline pays the cost of missing structure.',
+        return: 'The plan returns to the gate.',
+        change: 'The run stops instead of inventing scenes downstream.',
+      },
+      scenePlan: undefined,
+    });
+
+    await expect(
+      planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, storyCircleBlocking: false }),
+    ).rejects.toThrow(/ScenePlanGate/);
   });
 
   it('does NOT throw when storyCircleBlocking is off (advisory)', async () => {
@@ -660,6 +716,9 @@ describe('SeasonPlannerAgent Story Circle spine gate (tier 1)', () => {
         { episodeNumber: 8, storyCircleRole: [{ beat: 'change', roleKind: 'primary' }] },
       ],
       resolvedEndings: [],
+      warnings: [],
+      notes: [],
+      scenePlan: testScenePlan(8),
     });
     const result = await planner.execute({ sourceAnalysis: makeAnalysis() as any, preferences: {}, storyCircleBlocking: true });
     expect(result.success).toBe(true);

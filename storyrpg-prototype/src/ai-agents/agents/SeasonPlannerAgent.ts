@@ -445,6 +445,28 @@ Your plans must define:
       }
     }
 
+    // Scene-first planning is a new-run contract: downstream episode architecture
+    // should elaborate the season-owned scene spine, not silently fall back to
+    // inventing episode-local scenes. Keep warnings advisory, but block missing
+    // or structurally invalid scene plans before any episode generation starts.
+    if (isSceneFirstPlanningEnabled()) {
+      if (!seasonPlan.scenePlan) {
+        throw new Error(
+          '[ScenePlanGate] Scene-first planning is enabled but SeasonPlanner produced no SeasonScenePlan. ' +
+          'Repair season planning instead of falling back to episode-local scene invention.',
+        );
+      }
+      const sceneSpineGate = new SceneSpineValidator().validate(seasonPlan.scenePlan);
+      const sceneSpineErrors = sceneSpineGate.issues.filter((i) => i.severity === 'error');
+      if (sceneSpineErrors.length > 0) {
+        throw new Error(
+          `[ScenePlanGate] Season scene spine failed the blocking gate (${sceneSpineErrors.length} issue(s)): ` +
+            sceneSpineErrors.map((i) => i.message).join('; ') +
+            '. Repair the SeasonScenePlan before episode generation.',
+        );
+      }
+    }
+
     // Story Circle spine GATE (tier 1, default ON / opt-out). A season whose
     // eight-beat Story Circle spine is incomplete, out of canonical order, or
     // non-contiguous must not generate.

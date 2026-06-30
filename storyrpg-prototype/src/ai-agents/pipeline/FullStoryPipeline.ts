@@ -141,6 +141,7 @@ import {
 } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { resolveEpisodeParallelism } from './episodeScheduling';
+import { lockGeneratedEpisodeArtifact } from './episodeLocking';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
@@ -182,7 +183,7 @@ import { SavingPhase } from './phases/SavingPhase';
 import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import { AudioPhase } from './phases/AudioPhase';
 import { BrowserQAPhase } from './phases/BrowserQAPhase';
-import { RunArtifactPhase } from './phases/RunArtifactPhase';
+import { RunArtifactPhase, type RunArtifactRuntime } from './phases/RunArtifactPhase';
 import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import { MasterImagePhase } from './phases/MasterImagePhase';
 import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePhase';
@@ -5548,6 +5549,12 @@ export class FullStoryPipeline {
       const outputDirectory = artifactRuntime.outputDirectory;
       this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
 
+      await this.persistPlanningArtifacts({
+        artifactRuntime,
+        sourceAnalysis: filteredAnalysis,
+        seasonPlan: baseBrief.seasonPlan,
+      });
+
       // Season Canon (P4) resume: rehydrate sealed canon + ledger from disk so a
       // later partial run skips re-sealing already-sealed episodes and reads prior
       // facts. Best-effort — absent/corrupt artifacts just start fresh.
@@ -5719,29 +5726,20 @@ export class FullStoryPipeline {
               previousSummary: baseBrief.episode.previousSummary,
             });
             if (generatedEpisode.episode) {
-              const incrementalPassed = generatedEpisode.episodeBrief
-                ? await this.validateEpisodeIncrementally({
-                  episodeNumber: spec.episodeNumber,
-                  episode: generatedEpisode.episode,
-                  episodeBrief: generatedEpisode.episodeBrief,
-                  characterBible,
-                  qaReport: generatedEpisode.qaReport,
-                  bestPracticesReport: generatedEpisode.bestPracticesReport,
-                  outputDirectory,
-                })
-                : false;
-              if (incrementalPassed) {
-                await artifactRuntime.writeEpisodeCompletion({
-                  episode: generatedEpisode.episode,
-                  episodeNumber: spec.episodeNumber,
-                  title: spec.outline.title,
-                  lock: {
-                    runtimeContractPassed: true,
-                    incrementalContractArtifact: `episode-${spec.episodeNumber}-incremental-contract.json`,
-                    canonSealed: false,
-                  },
-                });
-              }
+              await this.lockGeneratedEpisode({
+                episodeNumber: spec.episodeNumber,
+                title: spec.outline.title,
+                episode: generatedEpisode.episode,
+                episodeBrief: generatedEpisode.episodeBrief,
+                baseBrief,
+                analysis,
+                characterBible,
+                qaReport: generatedEpisode.qaReport,
+                bestPracticesReport: generatedEpisode.bestPracticesReport,
+                outputDirectory,
+                artifactRuntime,
+                writeWatermark: true,
+              });
             }
             completedEpisodeCount += 1;
             if (this.generationPlan) {
@@ -5840,44 +5838,25 @@ export class FullStoryPipeline {
           episodeResults.push(generated.result);
           if (generated.qaReport) episodeQAReports.push(generated.qaReport);
           if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
-          const canonLockEvidence = generated.episode
-            ? await this.sealGeneratedEpisodeForCanon({
-              episodeNumber: i,
-              episode: generated.episode,
-              baseBrief,
-              analysis,
-              characterBible,
-              outputDirectory,
-            })
-            : undefined;
           // WS1a: watermark only after content + canon seal both succeeded, so
           // a resume never rehydrates an episode that failed its season gate.
           // (In run-graph mode the artifact store writes the same watermark
           // when the step's output persists — same files, same ordering.)
           if (generated.episode) {
-            const incrementalPassed = generated.episodeBrief
-              ? await this.validateEpisodeIncrementally({
-                episodeNumber: i,
-                episode: generated.episode,
-                episodeBrief: generated.episodeBrief,
-                characterBible,
-                qaReport: generated.qaReport,
-                bestPracticesReport: generated.bestPracticesReport,
-                outputDirectory,
-              })
-              : false;
-            if (opts.writeWatermark && incrementalPassed) {
-              await artifactRuntime.writeEpisodeCompletion({
-                episode: generated.episode,
-                episodeNumber: i,
-                title: spec.outline.title,
-                lock: {
-                  ...(canonLockEvidence ?? {}),
-                  runtimeContractPassed: true,
-                  incrementalContractArtifact: `episode-${i}-incremental-contract.json`,
-                },
-              });
-            }
+            await this.lockGeneratedEpisode({
+              episodeNumber: i,
+              title: spec.outline.title,
+              episode: generated.episode,
+              episodeBrief: generated.episodeBrief,
+              baseBrief,
+              analysis,
+              characterBible,
+              qaReport: generated.qaReport,
+              bestPracticesReport: generated.bestPracticesReport,
+              outputDirectory,
+              artifactRuntime,
+              writeWatermark: opts.writeWatermark,
+            });
           }
           completedEpisodeCount += 1;
           if (this.generationPlan) {
@@ -6446,6 +6425,119 @@ export class FullStoryPipeline {
         duration: Date.now() - startTime,
       };
     }
+  }
+
+  private async persistPlanningArtifacts(params: {
+    artifactRuntime: RunArtifactRuntime;
+    sourceAnalysis: SourceMaterialAnalysis;
+    seasonPlan?: SeasonPlan;
+  }): Promise<void> {
+    const { artifactRuntime, sourceAnalysis, seasonPlan } = params;
+    const savedKinds = ['source analysis'];
+    const sourceAnalysisArtifact = await artifactRuntime.saveArtifact({
+      kind: 'source-analysis',
+      payload: sourceAnalysis,
+      status: 'valid',
+      provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
+    });
+    const upstream = [artifactRuntime.refFor(sourceAnalysisArtifact)];
+
+    if (sourceAnalysis.sourceCanon) {
+      const sourceCanonArtifact = await artifactRuntime.saveArtifact({
+        kind: 'source-canon',
+        payload: sourceAnalysis.sourceCanon,
+        status: 'valid',
+        upstream,
+        provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
+      });
+      upstream.push(artifactRuntime.refFor(sourceCanonArtifact));
+      savedKinds.push('source canon');
+    }
+
+    if (seasonPlan) {
+      await artifactRuntime.saveArtifact({
+        kind: 'season-plan',
+        payload: seasonPlan,
+        status: 'valid',
+        upstream,
+        provenance: { phase: 'season_planning', agent: 'SeasonPlannerAgent' },
+      });
+      savedKinds.push('season plan');
+    }
+
+    this.emit({
+      type: 'debug',
+      phase: 'artifacts',
+      message: `Saved revisioned planning artifacts for ${savedKinds.join(', ')}.`,
+    });
+  }
+
+  /**
+   * The episode lock boundary: an episode becomes resumable only after its
+   * runtime contract passes, then its facts are sealed into canon, then the
+   * completion watermark is written. Keeping this order prevents failed
+   * episode-local repairs from polluting downstream canon.
+   */
+  private async lockGeneratedEpisode(params: {
+    episodeNumber: number;
+    title: string;
+    episode: Episode;
+    episodeBrief?: FullCreativeBrief;
+    baseBrief: FullCreativeBrief;
+    analysis: SourceMaterialAnalysis;
+    characterBible: CharacterBible;
+    qaReport?: QAReport;
+    bestPracticesReport?: ComprehensiveValidationReport;
+    outputDirectory: string;
+    artifactRuntime: RunArtifactRuntime;
+    writeWatermark: boolean;
+  }): Promise<EpisodeCompletionLockEvidence> {
+    const {
+      episodeNumber,
+      title,
+      episode,
+      episodeBrief,
+      baseBrief,
+      analysis,
+      characterBible,
+      qaReport,
+      bestPracticesReport,
+      outputDirectory,
+      artifactRuntime,
+      writeWatermark,
+    } = params;
+    return lockGeneratedEpisodeArtifact({
+      episodeNumber,
+      title,
+      episode,
+      hasEpisodeBrief: Boolean(episodeBrief),
+      writeWatermark,
+      validateRuntimeContract: async () => {
+        await this.validateEpisodeIncrementally({
+          episodeNumber,
+          episode,
+          episodeBrief: episodeBrief!,
+          characterBible,
+          qaReport,
+          bestPracticesReport,
+          outputDirectory,
+        });
+      },
+      sealCanon: () => this.sealGeneratedEpisodeForCanon({
+        episodeNumber,
+        episode,
+        baseBrief,
+        analysis,
+        characterBible,
+        outputDirectory,
+      }),
+      writeCompletion: (lock) => artifactRuntime.writeEpisodeCompletion({
+        episode,
+        episodeNumber,
+        title,
+        lock,
+      }).then(() => undefined),
+    });
   }
 
   /**

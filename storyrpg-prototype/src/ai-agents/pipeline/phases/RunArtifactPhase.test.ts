@@ -82,6 +82,44 @@ describe('RunArtifactPhase', () => {
     expect(store.files.has('generated-stories/run/artifacts/episodes/001/context-out.rev1.json')).toBe(true);
   });
 
+  it('writes global pipeline artifacts with defaults and current refs', async () => {
+    const store = makeStore();
+    const phase = new RunArtifactPhase({
+      createOutputDirectory: vi.fn(async () => 'generated-stories/run'),
+      ensureDirectory: vi.fn(),
+      save: store.save,
+      load: store.load,
+    });
+    const runtime = await phase.run({ storyTitle: 'Story' }, makeContext());
+
+    const sourceAnalysis = await runtime.saveArtifact({
+      kind: 'source-analysis',
+      payload: { totalEstimatedEpisodes: 2 },
+      status: 'valid',
+      provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
+    });
+    const seasonPlan = await runtime.saveArtifact({
+      kind: 'season-plan',
+      payload: { episodes: [{ episodeNumber: 1 }] },
+      status: 'valid',
+      upstream: [runtime.refFor(sourceAnalysis)],
+      provenance: { phase: 'season_planning', agent: 'SeasonPlannerAgent' },
+    });
+
+    expect(sourceAnalysis.storyId).toBe('story');
+    expect(sourceAnalysis.runId).toBe('run');
+    expect(seasonPlan.upstream).toEqual([runtime.refFor(sourceAnalysis)]);
+    expect(store.files.has('generated-stories/run/artifacts/source-analysis.rev1.json')).toBe(true);
+    expect(store.files.has('generated-stories/run/artifacts/season-plan.rev1.json')).toBe(true);
+    expect(store.files.get('generated-stories/run/artifacts/current.json')).toMatchObject({
+      version: 1,
+      artifacts: {
+        'source-analysis': { revision: 1 },
+        'season-plan': { revision: 1 },
+      },
+    });
+  });
+
   it('derives a stable run id from absolute and relative paths', () => {
     expect(deriveRunId('/tmp/generated-stories/run-a/', 'fallback')).toBe('run-a');
     expect(deriveRunId('generated-stories/run-b', 'fallback')).toBe('run-b');

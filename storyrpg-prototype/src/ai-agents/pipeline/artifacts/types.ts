@@ -2,6 +2,7 @@ export type ArtifactStatus = 'draft' | 'valid' | 'invalid' | 'stale' | 'supersed
 
 export type ArtifactKind =
   | 'source-analysis'
+  | 'source-canon'
   | 'season-plan'
   | 'season-canon'
   | 'world-bible'

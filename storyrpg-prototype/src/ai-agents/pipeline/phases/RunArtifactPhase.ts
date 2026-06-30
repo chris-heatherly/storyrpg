@@ -1,4 +1,10 @@
 import type { Episode } from '../../../types';
+import {
+  ArtifactRevisionStore,
+  type ArtifactRef,
+  type PipelineArtifact,
+  type SaveArtifactInput,
+} from '../artifacts';
 import { slugify as idSlugify } from '../../utils/idUtils';
 import type { PipelineContext, PipelinePhase } from './index';
 import {
@@ -28,6 +34,11 @@ export interface RunArtifactRuntime {
   runId: string;
   save: ArtifactSaver;
   load: ArtifactLoader;
+  saveArtifact: <T>(input: Omit<SaveArtifactInput<T>, 'storyId' | 'runId'> & {
+    storyId?: string;
+    runId?: string;
+  }) => Promise<PipelineArtifact<T>>;
+  refFor: <T>(artifact: PipelineArtifact<T>) => ArtifactRef;
   shadowArtifactsFor: (episodeNumber: number) => EpisodeShadowArtifactOptions;
   writeEpisodeCompletion: (options: {
     episode: Episode;
@@ -58,6 +69,7 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
     const runId = deriveRunId(outputDirectory, storyId);
     const save: ArtifactSaver = (name, data) => this.deps.save(outputDirectory, name, data);
     const load: ArtifactLoader = <T,>(name: string) => this.deps.load<T>(outputDirectory, name);
+    const artifactStore = new ArtifactRevisionStore({ save, load });
 
     const runtime: RunArtifactRuntime = {
       outputDirectory,
@@ -65,6 +77,12 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
       runId,
       save,
       load,
+      saveArtifact: (artifactInput) => artifactStore.saveRevision({
+        ...artifactInput,
+        storyId: artifactInput.storyId ?? storyId,
+        runId: artifactInput.runId ?? runId,
+      }),
+      refFor: (artifact) => artifactStore.refFor(artifact),
       shadowArtifactsFor: (episodeNumber) => ({
         storyId,
         runId,

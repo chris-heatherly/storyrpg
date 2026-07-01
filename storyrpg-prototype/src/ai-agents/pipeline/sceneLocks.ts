@@ -1,4 +1,11 @@
 import type { Episode } from '../../types';
+import type {
+  RequiredBeat,
+  SceneConstructionProfile,
+  SceneEventOwnershipProfile,
+  SceneTurnContract,
+  StoryCircleBeatRealizationContract,
+} from '../../types/scenePlan';
 import type { SceneValidationResult } from '../validators/IncrementalValidators';
 import type { ArtifactValidationIssue, ArtifactValidationSummary } from './artifacts';
 
@@ -29,6 +36,21 @@ export interface EpisodeSceneLockReport {
 
 interface ExpectedScene {
   id: string;
+  name?: string;
+  beats?: unknown[];
+  encounter?: unknown;
+  charactersInvolved?: unknown[];
+  npcsPresent?: unknown[];
+  requiredBeats?: RequiredBeat[];
+  turnContract?: SceneTurnContract;
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
+  sceneConstructionProfile?: SceneConstructionProfile;
+  sceneEventOwnership?: SceneEventOwnershipProfile;
+  authoredTreatmentFields?: unknown[];
+  signatureMoment?: unknown;
+  isEncounter?: unknown;
+  encounterType?: unknown;
+  encounterDescription?: unknown;
 }
 
 export function sceneLockArtifactName(episodeNumber: number): string {
@@ -75,14 +97,28 @@ export function buildEpisodeSceneLockReport(params: {
   episodeNumber: number;
   episode: Episode;
   validationResults: SceneValidationResult[];
+  blueprintScenes?: ExpectedScene[];
   generatedAt?: string;
 }): EpisodeSceneLockReport {
   const generatedAt = params.generatedAt ?? new Date().toISOString();
-  const expectedScenes = expectedScenesForEpisode(params.episode);
+  const expectedScenes = expectedScenesForEpisode(params.episode, params.blueprintScenes);
   const locks = expectedScenes
     .map((scene) => latestSceneResult(params.validationResults, params.episodeNumber, scene.id))
     .filter((result): result is SceneValidationResult => Boolean(result))
-    .map((result) => buildSceneLockEvidence(result, generatedAt));
+    .map((result) => {
+      const lock = buildSceneLockEvidence(result, generatedAt);
+      const scene = expectedScenes.find((candidate) => candidate.id === result.sceneId);
+      const structuralIssues = scene ? sceneLockStructuralIssues(scene, params.episodeNumber) : [];
+      if (structuralIssues.length > 0) {
+        lock.validation.issues.push(...structuralIssues);
+        lock.validation.passed = false;
+        lock.passed = false;
+        lock.issueCount = lock.validation.issues.length;
+        lock.blockingIssueCount = lock.validation.issues.filter((issue) => issue.severity === 'error').length;
+        lock.warningCount = lock.validation.issues.filter((issue) => issue.severity === 'warning').length;
+      }
+      return lock;
+    });
 
   const lockedSceneIds = new Set(locks.map((lock) => lock.sceneId));
   const missingIssues = expectedScenes
@@ -141,12 +177,70 @@ export function mergeArtifactValidationSummaries(
   };
 }
 
-function expectedScenesForEpisode(episode: Episode): ExpectedScene[] {
+function expectedScenesForEpisode(episode: Episode, blueprintScenes: ExpectedScene[] = []): ExpectedScene[] {
+  const blueprintById = new Map(blueprintScenes
+    .map((scene) => [String(scene.id ?? '').trim(), scene] as const)
+    .filter(([id]) => id.length > 0));
   return (episode.scenes ?? [])
-    .map((scene) => ({
-      id: String(scene.id ?? '').trim(),
-    }))
+    .map((scene) => {
+      const id = String(scene.id ?? '').trim();
+      const blueprint = blueprintById.get(id);
+      return {
+        ...blueprint,
+        ...(scene as unknown as ExpectedScene),
+        id,
+        sceneConstructionProfile: blueprint?.sceneConstructionProfile ?? (scene as unknown as ExpectedScene).sceneConstructionProfile,
+        sceneEventOwnership: blueprint?.sceneEventOwnership ?? (scene as unknown as ExpectedScene).sceneEventOwnership,
+        turnContract: blueprint?.turnContract ?? (scene as unknown as ExpectedScene).turnContract,
+        requiredBeats: blueprint?.requiredBeats ?? (scene as unknown as ExpectedScene).requiredBeats,
+        storyCircleBeatContracts: blueprint?.storyCircleBeatContracts ?? (scene as unknown as ExpectedScene).storyCircleBeatContracts,
+      };
+    })
     .filter((scene) => scene.id.length > 0);
+}
+
+function sceneLockStructuralIssues(scene: ExpectedScene, episodeNumber: number): ArtifactValidationIssue[] {
+  if (!sceneRequiresReaderProse(scene) || sceneHasReaderProse(scene)) return [];
+  return [{
+    validator: 'SceneLockGate',
+    severity: 'error',
+    message: `Episode ${episodeNumber} scene ${scene.id} owns reader-facing obligations but emitted no prose beats.`,
+    code: 'empty_owned_scene_prose',
+    path: `episodes[${episodeNumber}].scenes[${scene.id}].beats`,
+  }];
+}
+
+function sceneRequiresReaderProse(scene: ExpectedScene): boolean {
+  if (cleanLockText(scene.turnContract?.centralTurn || scene.turnContract?.turnEvent)) return true;
+  if ((scene.sceneEventOwnership?.ownedEvents ?? []).length > 0) return true;
+  if ((scene.storyCircleBeatContracts ?? []).length > 0) return true;
+  if ((scene.authoredTreatmentFields ?? []).length > 0) return true;
+  if (cleanLockText(scene.signatureMoment)) return true;
+  if (scene.isEncounter || cleanLockText(scene.encounterType) || cleanLockText(scene.encounterDescription) || scene.encounter) return true;
+  if ((scene.charactersInvolved ?? []).length > 0 || (scene.npcsPresent ?? []).length > 0) return true;
+  if ((scene.requiredBeats ?? []).some((beat) =>
+    beat.tier === 'authored'
+    || beat.tier === 'signature'
+    || beat.tier === 'coldopen'
+    || cleanLockText(beat.mustDepict || beat.sourceTurn)
+  )) {
+    return true;
+  }
+  return Boolean((scene.sceneConstructionProfile?.obligations ?? []).some((obligation) =>
+    obligation.slot === 'primary_turn' || obligation.slot === 'must_stage'
+  ));
+}
+
+function sceneHasReaderProse(scene: ExpectedScene): boolean {
+  return (scene.beats ?? []).some((beat) => {
+    if (!beat || typeof beat !== 'object') return false;
+    const record = beat as Record<string, unknown>;
+    return Boolean(cleanLockText(record.text) || cleanLockText(record.content));
+  });
+}
+
+function cleanLockText(value: unknown): string {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
 function latestSceneResult(

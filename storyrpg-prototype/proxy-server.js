@@ -38,7 +38,7 @@ const { registerArtifactRoutes } = require('./proxy/artifactRoutes');
 const { createWorkerLifecycle } = require('./proxy/workerLifecycle');
 const { registerGenerationJobRoutes } = require('./proxy/generationJobRoutes');
 const { createRuntimeLayout } = require('./proxy/runtimePaths');
-const { getStoryStorageMode, getGcsBucketName, getGcsPublicBaseUrl, mapProxyPathToGcsObjectPath } = require('./proxy/gcsConfig');
+const { createGeneratedStoriesStatic } = require('./proxy/generatedStoriesStatic');
 const { registerAuthRoutes } = require('./proxy/authRoutes');
 const { createCorsOptions, createExposureGuard } = require('./proxy/proxyGuards');
 
@@ -67,56 +67,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Static file serving for generated-stories (permissive CORS so web build works)
-app.use('/generated-stories', (req, res, next) => {
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.set('Access-Control-Allow-Headers', '*');
-  res.set('Access-Control-Allow-Private-Network', 'true');
-  res.set('Cross-Origin-Resource-Policy', 'cross-origin');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
-  const mode = getStoryStorageMode();
-  if (mode === 'gcs') {
-    const bucket = getGcsBucketName();
-    if (!bucket) return res.status(500).send('GCS_BUCKET_NAME is required when STORY_STORAGE_MODE=gcs');
-
-    // Redirect proxy-style paths to GCS objects.
-    // /generated-stories/<runDir>/...  ->  https://storage.googleapis.com/<bucket>/stories/<runDir>/...
-    const proxyPath = `generated-stories/${req.path.replace(/^\/+/, '')}`;
-    const objectPath = mapProxyPathToGcsObjectPath(proxyPath);
-    if (!objectPath) return res.status(404).send('Not found');
-
-    const publicBase = getGcsPublicBaseUrl();
-    const url = `${publicBase}/${objectPath}`.replace(/([^:]\/)\/+/g, '$1');
-    return res.redirect(302, url);
-  }
-
-  const filePathWithinDir = req.path;
-  let fullPath = path.join(STORIES_DIR, filePathWithinDir);
-
-  if (!fs.existsSync(fullPath)) return res.status(404).send('File not found');
-
-  let contentType = 'application/octet-stream';
-  if (fullPath.endsWith('.png')) contentType = 'image/png';
-  else if (fullPath.endsWith('.jpg') || fullPath.endsWith('.jpeg')) contentType = 'image/jpeg';
-  else if (fullPath.endsWith('.webp')) contentType = 'image/webp';
-  else if (fullPath.endsWith('.mp4')) contentType = 'video/mp4';
-  else if (fullPath.endsWith('.webm')) contentType = 'video/webm';
-  else if (fullPath.endsWith('.json')) contentType = 'application/json';
-  else if (fullPath.endsWith('.mp3')) contentType = 'audio/mpeg';
-  res.set('Content-Type', contentType);
-
-  const stream = fs.createReadStream(fullPath);
-  stream.on('error', (err) => {
-    console.error(`[Proxy] Stream error: ${err.message}`);
-    if (!res.headersSent) res.status(500).send('Error');
-  });
-  stream.pipe(res);
-});
+// Static file serving for generated-stories (permissive CORS so web build works).
+// Path resolution is confined to STORIES_DIR — see proxy/generatedStoriesStatic.js.
+app.use('/generated-stories', createGeneratedStoriesStatic({ storiesDir: STORIES_DIR }));
 
 // CORS allowlist (localhost always allowed; external origins must be in
 // PROXY_ALLOWED_ORIGINS unless PROXY_ALLOW_ALL_ORIGINS=1). See L1 in

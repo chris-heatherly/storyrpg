@@ -195,7 +195,7 @@ describe('sceneEventOwnership', () => {
     const issues = attachSceneEventOwnershipProfiles(scenes);
 
     expect(issues).toEqual([]);
-    expect(scenes[0].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['arrival', 'socialMeet']);
+    expect(scenes[0].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['arrival']);
     expect(scenes[1].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['arrival']);
   });
 
@@ -238,6 +238,97 @@ describe('sceneEventOwnership', () => {
 
     expect(issues).toEqual([]);
     expect(scenes[1].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['socialMeet']);
+  });
+
+  it('does not let broad support text own later threat or blog events', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 's1-arrival',
+        sceneConstructionProfile: constructionProfile(
+          's1-arrival',
+          'The traveler arrives in the city with two suitcases and an old address.',
+          [
+            {
+              source: 'sceneTurn',
+              id: 's1-arrival-turn',
+              slot: 'primary_turn',
+              text: 'The traveler arrives in the city with two suitcases and an old address.',
+              reason: 'One scene, one dramatic turn.',
+              hardUnits: 1,
+              softUnits: 0,
+            },
+            {
+              source: 'mechanicPressure',
+              id: 'episode-summary-pressure',
+              slot: 'must_support',
+              text: 'The traveler arrives in the city, meets a new circle at a rooftop bar, is attacked in the park, writes a post at 4am, and goes viral by evening.',
+              reason: 'Broad episode pressure.',
+              hardUnits: 0.25,
+              softUnits: 0,
+            },
+          ],
+        ),
+      },
+      {
+        id: 's1-park',
+        isEncounter: true,
+        sceneConstructionProfile: constructionProfile(
+          's1-park',
+          'In the park, an attacker corners the traveler before help arrives.',
+        ),
+      },
+      {
+        id: 's1-blog',
+        sceneConstructionProfile: constructionProfile(
+          's1-blog',
+          'At 4am the traveler writes the first anonymous public post under a codename.',
+        ),
+      },
+    ];
+
+    const issues = attachSceneEventOwnershipProfiles(scenes);
+
+    expect(issues).toEqual([]);
+    expect(scenes[0].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['arrival']);
+    expect(scenes[1].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['threatEncounter']);
+    expect(scenes[2].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['lateNightWriting']);
+  });
+
+  it('allows concrete non-abstract support only when it matches the primary turn cue', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 's1-social',
+        sceneConstructionProfile: constructionProfile(
+          's1-social',
+          'The traveler meets the new circle at the rooftop bar.',
+          [
+            {
+              source: 'sceneTurn',
+              id: 's1-social-turn',
+              slot: 'primary_turn',
+              text: 'The traveler meets the new circle at the rooftop bar.',
+              reason: 'One scene, one dramatic turn.',
+              hardUnits: 1,
+              softUnits: 0,
+            },
+            {
+              source: 'requiredBeat',
+              id: 'same-social-detail',
+              slot: 'must_support',
+              text: 'At the rooftop bar, the group gathers around the traveler.',
+              reason: 'Concrete same-turn support.',
+              hardUnits: 0,
+              softUnits: 0,
+            },
+          ],
+        ),
+      },
+    ];
+
+    const issues = attachSceneEventOwnershipProfiles(scenes);
+
+    expect(issues).toEqual([]);
+    expect(scenes[0].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['socialMeet']);
   });
 
   it('does not let stale raw turn text override a normalized construction profile', () => {

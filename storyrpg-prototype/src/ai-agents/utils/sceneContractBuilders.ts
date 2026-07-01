@@ -51,6 +51,7 @@ const GENERIC_TURN_RE =
   /\b(?:open the episode through its immediate question|escalate the episode pressure|let the fallout settle into the next pressure|reverse or reveal something the scene can no longer hide|pay off an earlier setup|rising pressure|falling pressure)\b/i;
 
 const REQUIRED_BEAT_TIERS = new Set(['signature', 'authored', 'coldopen']);
+const KEY_BEAT_STAGE_RE = /^(?:REST|RISK|LEVERAGE|PEAK|CONSEQUENCE):/i;
 
 function firstMeaningful(values: Array<unknown>): string {
   for (const value of values) {
@@ -71,6 +72,18 @@ function trimSentence(value: string, max = 140): string {
   if (text.length <= max) return text;
   const softBreak = text.slice(0, max).replace(/\s+\S*$/, '');
   return `${softBreak || text.slice(0, max)}...`;
+}
+
+function normalizeKeyBeat(value: string): string {
+  return cleanText(stripStructuralTreatmentLabels(value)).replace(/\s+/g, ' ').trim();
+}
+
+function keyBeatFingerprint(value: string): string {
+  return normalizeKeyBeat(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .slice(0, 120);
 }
 
 export function isGenericScenePlannerText(value: unknown): boolean {
@@ -198,6 +211,51 @@ function deriveStakesLayers(scene: SceneBlueprint, turn: string, personalStake: 
   };
 }
 
+function buildSceneStakesLadder(
+  scene: SceneBlueprint,
+  derivation: SceneContractDerivation,
+): string[] {
+  const existing = (Array.isArray(scene.keyBeats) ? scene.keyBeats : [])
+    .map(normalizeKeyBeat)
+    .filter((beat) => beat && !isGenericScenePlannerText(beat));
+  const result: string[] = [];
+  const fingerprints = new Set<string>();
+  const add = (beat: string, options: { trusted?: boolean } = {}): void => {
+    const normalized = normalizeKeyBeat(beat);
+    if (!normalized || (!options.trusted && isGenericScenePlannerText(normalized))) return;
+    const fingerprint = keyBeatFingerprint(normalized);
+    if (fingerprint && fingerprints.has(fingerprint)) return;
+    fingerprints.add(fingerprint || normalized.toLowerCase());
+    result.push(normalized);
+  };
+
+  for (const beat of existing) add(beat);
+
+  const question = derivation.dramaticStructure.question || derivation.turnContract.beforeState;
+  const personalStake = derivation.personalStake || derivation.stakesLayers.identity || derivation.stakesLayers.material || derivation.concreteTurn;
+  const leverage = derivation.concreteTurn || derivation.dramaticStructure.turn;
+  const peak = derivation.dramaticStructure.pressurePeak || derivation.turnContract.turnEvent || leverage;
+  const consequence = derivation.dramaticStructure.changedState || derivation.turnContract.afterState;
+
+  if (!result.some((beat) => /^REST:/i.test(beat))) {
+    add(`REST: ${trimSentence(question, 150)} establishes what feels stable, desired, or controlled before pressure changes it.`, { trusted: true });
+  }
+  if (!result.some((beat) => /^RISK:/i.test(beat))) {
+    add(`RISK: ${trimSentence(personalStake, 150)} names the concrete cost, trust, reputation, access, safety, or identity pressure now exposed.`, { trusted: true });
+  }
+  if (!result.some((beat) => /^LEVERAGE:/i.test(beat))) {
+    add(`LEVERAGE: ${trimSentence(leverage, 150)} narrows the protagonist's options and changes who holds information, access, or social power.`, { trusted: true });
+  }
+  if (!result.some((beat) => /^PEAK:/i.test(beat))) {
+    add(`PEAK: ${trimSentence(peak, 150)} forces a visible choice, reveal, refusal, commitment, or irreversible cost.`, { trusted: true });
+  }
+  if (!result.some((beat) => /^CONSEQUENCE:/i.test(beat))) {
+    add(`CONSEQUENCE: ${trimSentence(consequence, 150)} leaves a harder, more public, more intimate, or more dangerous next pressure.`, { trusted: true });
+  }
+
+  return result;
+}
+
 export function deriveSceneContract(scene: SceneBlueprint, context: SceneContractContext = {}): SceneContractDerivation {
   const { source, text } = deriveConcreteTurn(scene, context);
   const role = context.role || scene.narrativeRole;
@@ -316,11 +374,6 @@ export function applySceneContract(scene: SceneBlueprint, context: SceneContract
   scene.conflictEngine = scene.conflictEngine || derivation.sequenceIntent.obstacle || derivation.concreteTurn;
   scene.narrativeFunction = scene.narrativeFunction || derivation.concreteTurn;
   scene.dramaticPurpose = scene.dramaticPurpose || derivation.concreteTurn;
-  if (scene.keyBeats.length === 0) {
-    scene.keyBeats.push(`PEAK: ${derivation.concreteTurn}`);
-  }
-  if (!scene.keyBeats.some((beat) => /\bPEAK:/i.test(beat))) {
-    scene.keyBeats.push(`PEAK: ${derivation.concreteTurn}`);
-  }
+  scene.keyBeats = buildSceneStakesLadder(scene, derivation);
   return derivation;
 }

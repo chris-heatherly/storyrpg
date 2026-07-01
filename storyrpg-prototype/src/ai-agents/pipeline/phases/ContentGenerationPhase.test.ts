@@ -364,24 +364,20 @@ describe('ContentGenerationPhase treatment density gate', () => {
     } as never;
     const blueprint = {
       scenes: [{
-        id: 'treatment-enc-1-1',
-        isEncounter: true,
-        encounter: { id: 'treatment-enc-1-1' },
+        id: 's1-overloaded',
+        isEncounter: false,
         requiredBeats: [
-          { id: 'rb1', tier: 'authored', mustDepict: 'Fog gathers around Kylie at 1am.' },
-          { id: 'rb2', tier: 'authored', mustDepict: 'A shadow moves behind the trees.' },
-          { id: 'rb3', tier: 'authored', mustDepict: 'A scream cuts through the park.' },
-          { id: 'rb4', tier: 'authored', mustDepict: 'Victor intervenes before the attacker reaches her.' },
+          { id: 'rb1', tier: 'authored', mustDepict: 'At the station, the traveler receives the sealed invitation.' },
+          { id: 'rb2', tier: 'authored', mustDepict: 'At the rooftop bar, the traveler joins the table.' },
         ],
         authoredTreatmentFields: [
-          { id: 'enc1', sourceText: 'The attack encounter establishes the supernatural threat.', contractKind: 'encounter_anchor', requiredRealization: ['encounter', 'final_prose'] },
-          { id: 'enc2', sourceText: 'The attacker can be resisted but not defeated.', contractKind: 'encounter_conflict', requiredRealization: ['encounter', 'final_prose'] },
+          { id: 'route1', sourceText: 'The station invitation and rooftop table are separate playable events.', contractKind: 'pressure_lane', requiredRealization: ['final_prose'] },
         ],
         turnContract: {
           turnId: 'turn',
-          centralTurn: 'Kylie becomes prey.',
-          turnEvent: 'The rescue changes her understanding of Bucharest.',
-          handoff: 'The next morning, she questions what happened.',
+          centralTurn: 'At the station, the traveler receives the sealed invitation.',
+          turnEvent: 'At the station, the traveler receives the sealed invitation.',
+          handoff: 'Move to the social venue later.',
         },
         choicePoint: {
           type: 'tactical',

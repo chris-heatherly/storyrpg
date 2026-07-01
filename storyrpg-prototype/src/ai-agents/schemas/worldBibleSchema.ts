@@ -70,6 +70,10 @@ export function buildWorldBibleJsonSchema(): StructuredJsonSchema {
   return {
     name: 'world_bible',
     description: 'World bible for generated story settings.',
+    // WorldBuilder runs on the planning tier (config forces maxTokens 32000 because
+    // the default is too small and truncates mid-JSON). Match that here so the
+    // structured call isn't clamped back to the 8192 default by structuredMaxTokens().
+    maxOutputTokens: 32000,
     schema: {
       type: 'object',
       additionalProperties: true,
@@ -112,6 +116,9 @@ export function buildWorldLocationsJsonSchema(): StructuredJsonSchema {
   return {
     name: 'world_locations',
     description: 'Missing world-bible locations.',
+    // Runs on the planning tier alongside the full world bible; keep the same cap
+    // so the structured call isn't clamped to the 8192 default.
+    maxOutputTokens: 32000,
     schema: {
       type: 'object',
       additionalProperties: false,

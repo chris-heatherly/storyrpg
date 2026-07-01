@@ -12,9 +12,12 @@ function scene(overrides: Partial<SceneOwnershipPreflightScene>): SceneOwnership
     locations: overrides.locations ?? ['Station'],
     requiredBeats: overrides.requiredBeats,
     treatmentAtomIds: overrides.treatmentAtomIds,
+    ownedChronologyKeys: overrides.ownedChronologyKeys,
     storyCircleBeatContracts: overrides.storyCircleBeatContracts,
     coldOpenProfile: overrides.coldOpenProfile,
     turnContract: overrides.turnContract,
+    sceneEventOwnership: overrides.sceneEventOwnership,
+    sceneConstructionProfile: overrides.sceneConstructionProfile,
   };
 }
 
@@ -63,8 +66,8 @@ describe('SceneOwnershipPreflightValidator', () => {
           requiredBeats: [{
             id: 'threat',
             tier: 'authored',
-            sourceTurn: 'In the park, an attacker corners the protagonist.',
-            mustDepict: 'In the park, an attacker corners the protagonist.',
+            sourceTurn: 'In the park, an attacker attacks the protagonist.',
+            mustDepict: 'In the park, an attacker attacks the protagonist.',
           }],
         }),
       ],
@@ -72,6 +75,170 @@ describe('SceneOwnershipPreflightValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.map((issue) => issue.message).join(' ')).toContain('encounter/threat cue');
+  });
+
+  it('allows concrete encounter cues on encounter-capable scenes', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 's1-threat',
+          kind: 'encounter',
+          requiredBeats: [{
+            id: 'threat',
+            tier: 'authored',
+            sourceTurn: 'In the park, an attacker attacks the protagonist.',
+            mustDepict: 'In the park, an attacker attacks the protagonist.',
+          }],
+        }),
+      ],
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
+  it('blocks abstract encounter shells when a concrete encounter owner exists', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 's1-threat',
+          order: 0,
+          kind: 'encounter',
+          sceneEventOwnership: {
+            id: 's1-threat-events',
+            episodeNumber: 1,
+            sceneId: 's1-threat',
+            ownedEvents: [{
+              key: 'cue:threatEncounter',
+              cue: 'threatEncounter',
+              text: 'An attacker corners the protagonist in the park.',
+              sourceContractIds: ['atom-threat'],
+            }],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: ['atom-threat'],
+            diagnostics: [],
+            promptGuidance: [],
+          },
+        }),
+        scene({
+          id: 's1-abstract-encounter',
+          order: 1,
+          kind: 'encounter',
+          dramaticPurpose: 'Can the protagonist accept the cost of starting over?',
+          turnContract: {
+            turnId: 'abstract-turn',
+            source: 'encounter',
+            centralTurn: 'Can the protagonist accept the cost of starting over?',
+            beforeState: 'Unsettled.',
+            turnEvent: 'Can the protagonist accept the cost?',
+            afterState: 'Still unresolved.',
+            handoff: 'The pressure lingers.',
+          },
+          sceneEventOwnership: {
+            id: 's1-abstract-events',
+            episodeNumber: 1,
+            sceneId: 's1-abstract-encounter',
+            ownedEvents: [],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: [],
+            diagnostics: [],
+            promptGuidance: [],
+          },
+        }),
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.message).join(' ')).toContain('abstract encounter shell');
+  });
+
+  it('allows an encounter shell when it owns a distinct playable event', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 's1-threat',
+          order: 0,
+          kind: 'encounter',
+          sceneEventOwnership: {
+            id: 's1-threat-events',
+            episodeNumber: 1,
+            sceneId: 's1-threat',
+            ownedEvents: [{
+              key: 'cue:threatEncounter',
+              cue: 'threatEncounter',
+              text: 'An attacker corners the protagonist in the park.',
+              sourceContractIds: ['atom-threat'],
+            }],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: ['atom-threat'],
+            diagnostics: [],
+            promptGuidance: [],
+          },
+        }),
+        scene({
+          id: 's1-social-encounter',
+          order: 1,
+          kind: 'encounter',
+          treatmentAtomIds: ['atom-social'],
+          requiredBeats: [{
+            id: 'social',
+            tier: 'authored',
+            sourceTurn: 'The protagonist meets a guide and is invited inside.',
+            mustDepict: 'The protagonist meets a guide and is invited inside.',
+          }],
+        }),
+      ],
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
+  it('collapses location aliases before multi-location blocking', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 's1-park',
+          locations: ['Cismigiu Gardens'],
+          requiredBeats: [{
+            id: 'park-action',
+            tier: 'authored',
+            sourceTurn: 'Through Cismigiu, the protagonist notices a shadow.',
+            mustDepict: 'Through Cismigiu, the protagonist notices a shadow.',
+          }],
+        }),
+      ],
+    });
+
+    expect(result.issues.map((issue) => issue.message).join(' ')).not.toContain('multiple major location');
+  });
+
+  it('treats city cues as containers rather than conflicting locations', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 's1-club',
+          locations: ['Valcescu Club'],
+          requiredBeats: [{
+            id: 'club-action',
+            tier: 'authored',
+            sourceTurn: 'In Bucharest, the protagonist enters the Valcescu Club.',
+            mustDepict: 'In Bucharest, the protagonist enters the Valcescu Club.',
+          }],
+        }),
+      ],
+    });
+
+    expect(result.issues.map((issue) => issue.message).join(' ')).not.toContain('multiple major location');
   });
 
   it('requires the episode Story Circle role to have a scene owner', () => {

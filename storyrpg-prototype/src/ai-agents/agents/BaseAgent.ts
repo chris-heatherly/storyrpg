@@ -149,7 +149,7 @@ function toGeminiResponseSchema(schema: Record<string, unknown>): Record<string,
   return stripUnsupported(schema) as Record<string, unknown>;
 }
 
-function structuredMaxTokens(configured: number, schema: StructuredJsonSchema | undefined, defaultCap: number): number {
+export function structuredMaxTokens(configured: number, schema: StructuredJsonSchema | undefined, defaultCap: number): number {
   const configuredValue = Number.isFinite(configured) && configured > 0 ? configured : defaultCap;
   const schemaCap = Number.isFinite(schema?.maxOutputTokens) && (schema?.maxOutputTokens ?? 0) > 0
     ? schema!.maxOutputTokens!

@@ -9,6 +9,10 @@ export function buildSceneContentJsonSchema(maxBeats: number): StructuredJsonSch
   return {
     name: 'scene_content',
     description: 'Complete playable scene content with prose beats and visual contract fields.',
+    // SceneWriter is the heaviest structured output; the config default is 16384
+    // (config.ts A/B evidence: 8192 truncates mid-JSON on both providers). Without
+    // this cap, structuredMaxTokens() clamps the call back to the 8192 default.
+    maxOutputTokens: 16384,
     schema: {
       type: 'object',
       additionalProperties: true,

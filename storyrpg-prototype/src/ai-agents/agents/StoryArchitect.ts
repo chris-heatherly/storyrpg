@@ -112,7 +112,7 @@ import {
   pickBlueprintSafeText,
   sanitizeBlueprintText,
 } from '../utils/blueprintTextHygiene';
-import { collectSceneConstructionProfileIssues } from '../utils/sceneConstructionProfile';
+import { applySceneConstructionProfilesToScenes } from '../utils/sceneConstructionProfile';
 import {
   attachSceneEventOwnershipProfiles,
 } from '../utils/sceneEventOwnership';
@@ -135,6 +135,7 @@ import {
  */
 const BRANCH_FLOOR_2_MIN_SCENES = 6;
 const MAX_BINDER_SPLIT_SCENE_CAP_EXTENSION = 4;
+export const EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION = 'episode-scene-ownership-v2';
 
 // Input types
 export interface StoryArchitectInput {
@@ -699,6 +700,13 @@ export interface EpisodeBlueprint {
   scenes: SceneBlueprint[];
   startingSceneId: string;
   treatmentBindingReport?: PlannedSceneBindingReport;
+  sceneOwnershipStamp?: {
+    version: string;
+    finalizedAt: string;
+    source: 'story_architect' | 'pipeline_resume' | 'pipeline_preflight';
+    issues: string[];
+    drainedRequiredBeatIds: string[];
+  };
 
   // Branch structure
   bottleneckScenes: string[]; // Scene IDs that all paths must pass through
@@ -1348,6 +1356,93 @@ export class StoryArchitect extends BaseAgent {
           `[StoryArchitect] Repaired planned encounter "${plannedEncounter.id}" by binding it to scene "${matchedScene.id}"`
         );
       }
+    }
+  }
+
+  private hydrateIncompleteEncounterContracts(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters || [];
+    for (const scene of blueprint.scenes) {
+      if (!scene.isEncounter) continue;
+
+      const plannedEncounter = plannedEncounters.find((encounter) =>
+        scene.plannedEncounterId === encounter.id || this.sceneMatchesPlannedEncounter(scene, encounter)
+      ) || plannedEncounters.find((encounter) => this.findSceneForPlannedEncounter(blueprint, encounter)?.id === scene.id);
+      if (plannedEncounter) {
+        this.applyPlannedEncounterToScene(scene, plannedEncounter);
+      }
+
+      const encounterType = this.normalizeEncounterType(
+        scene.encounterType || (scene as SceneBlueprint & { encounter?: { type?: string } }).encounter?.type || plannedEncounter?.type,
+      );
+      const description = scene.encounterDescription?.trim()
+        || (scene as SceneBlueprint & { encounter?: { description?: string } }).encounter?.description
+        || plannedEncounter?.description
+        || scene.description
+        || scene.turnContract?.centralTurn
+        || scene.name
+        || 'The encounter forces a decisive response.';
+      const centralConflict = scene.encounterCentralConflict?.trim()
+        || (scene as SceneBlueprint & { encounter?: { centralConflict?: string } }).encounter?.centralConflict
+        || plannedEncounter?.centralConflict
+        || scene.turnContract?.turnEvent
+        || description;
+      const stakes = scene.encounterStakes?.trim()
+        || plannedEncounter?.stakes
+        || `The outcome of ${description} changes the protagonist's immediate safety, trust, and next available choice.`;
+      const difficulty = scene.encounterDifficulty || this.normalizeEncounterDifficulty(plannedEncounter?.difficulty);
+      const existingSkills = scene.encounterRelevantSkills?.filter((skill) => skill.trim()) || [];
+      const nestedSkills = (scene as SceneBlueprint & { encounter?: { relevantSkills?: string[] } }).encounter?.relevantSkills || [];
+      const relevantSkills = Array.from(new Set([
+        ...existingSkills,
+        ...nestedSkills,
+        ...(plannedEncounter?.relevantSkills || []),
+        ...this.defaultSkillsForEncounterType(encounterType),
+      ])).slice(0, 5);
+
+      scene.encounterType = encounterType;
+      scene.encounterStyle = scene.encounterStyle || this.inferEncounterStyle(encounterType, description);
+      scene.encounterDescription = description;
+      scene.encounterCentralConflict = centralConflict;
+      scene.encounterStakes = stakes;
+      scene.encounterDifficulty = difficulty;
+      scene.encounterRelevantSkills = relevantSkills;
+      scene.encounterBuildup = scene.encounterBuildup?.trim()
+        || plannedEncounter?.encounterBuildup
+        || `Earlier scenes establish why ${description} is unavoidable and personal.`;
+      scene.encounterBeatPlan = this.buildEncounterBeatPlan({
+        id: plannedEncounter?.id || scene.plannedEncounterId || scene.id,
+        type: encounterType,
+        description,
+        centralConflict,
+        stakes,
+        difficulty,
+        relevantSkills,
+        storyCircleTarget: plannedEncounter?.storyCircleTarget || scene.encounterStoryCircleTarget,
+        storyCircleTargetRationale: plannedEncounter?.storyCircleTargetRationale || scene.encounterStoryCircleTargetRationale,
+        storyCircleTargetEvidence: plannedEncounter?.storyCircleTargetEvidence || scene.encounterStoryCircleTargetEvidence,
+        aftermathConsequence: plannedEncounter?.aftermathConsequence,
+        encounterBuildup: plannedEncounter?.encounterBuildup,
+        encounterSetupContext: plannedEncounter?.encounterSetupContext,
+        npcsInvolved: plannedEncounter?.npcsInvolved ?? [],
+        isBranchPoint: plannedEncounter?.isBranchPoint ?? scene.purpose === 'branch',
+      }, scene.encounterBeatPlan);
+      scene.encounterStoryCircleTarget = normalizeEncounterStoryCircleTarget(
+        scene.encounterStoryCircleTarget || plannedEncounter?.storyCircleTarget,
+        blueprint.storyCircleRole,
+        [description, stakes, centralConflict, scene.description].filter(Boolean).join(' '),
+      );
+      scene.encounterStoryCircleTargetRationale = scene.encounterStoryCircleTargetRationale
+        || plannedEncounter?.storyCircleTargetRationale
+        || buildEncounterStoryCircleTargetRationale(
+          scene.encounterStoryCircleTarget,
+          blueprint.storyCircleRole,
+          description,
+        );
+      scene.encounterStoryCircleTargetEvidence = scene.encounterStoryCircleTargetEvidence || plannedEncounter?.storyCircleTargetEvidence;
+      scene.encounterSetupContext = Array.from(new Set([
+        ...(scene.encounterSetupContext || []),
+        ...(plannedEncounter?.encounterSetupContext || []),
+      ]));
     }
   }
 
@@ -3406,6 +3501,15 @@ Remember: The encounter is the heart. Design outward from it.
         }
         scene.authoredTreatmentFields = remaining;
       }
+      if (scene.signatureMoment) {
+        const signatureTarget = this.sortedEventCues(scene.signatureMoment)
+          .map((cue) => this.sceneForEventCue(scenes, cue, scene))
+          .find((candidate): candidate is SceneBlueprint => Boolean(candidate && candidate !== scene));
+        if (signatureTarget) {
+          signatureTarget.signatureMoment = signatureTarget.signatureMoment || scene.signatureMoment;
+          scene.signatureMoment = undefined;
+        }
+      }
     }
   }
 
@@ -3748,11 +3852,12 @@ Remember: The encounter is the heart. Design outward from it.
     currentLocation: string | undefined,
     additionalHints: Array<string | undefined> = [],
   ): string | undefined {
-    const authoredText = requiredBeats
+    const authoredRawText = requiredBeats
       .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
       .map((beat) => beat.mustDepict || beat.sourceTurn || '')
       .concat(additionalHints.map((hint) => hint || ''))
-      .join(' ')
+      .join(' ');
+    const authoredText = authoredRawText
       .toLowerCase()
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '');
@@ -3765,6 +3870,8 @@ Remember: The encounter is the heart. Design outward from it.
     if (/\bapartment\b|\bwalk\s*up\b/.test(authoredText)) {
       return currentLocation;
     }
+    const namedLocation = this.extractNamedAuthoredLocation(authoredRawText);
+    if (namedLocation) return namedLocation;
     if (/\b(?:park|gardens?)\b/.test(authoredText)) {
       return 'Park';
     }
@@ -3783,6 +3890,16 @@ Remember: The encounter is the heart. Design outward from it.
     return undefined;
   }
 
+  private extractNamedAuthoredLocation(text: string): string | undefined {
+    const locationNoun = '(?:Apartment|Archive|Bar|Bookshop|Bookstore|Books|Club|Courtyard|Estate|Gardens?|Hotel|House|Library|Market|Office|Park|Rooftop|Station|Studio|Venue|bookshop|bookstore|bar|club|gardens?|park|venue)';
+    const properChunk = "[A-ZÀ-ÖØ-ÞȘȚĂÂÎÉÈÊËÁÀÄÖÜÓÒÍÌÚÙÇ][\\p{L}0-9'’.-]*";
+    const pattern = new RegExp(
+      `\\b(?:at|inside|outside|into|through|to|from|of|near|within)\\s+(?:the\\s+|a\\s+|an\\s+)?(${properChunk}(?:\\s+${properChunk}){0,3}\\s+${locationNoun})\\b`,
+      'u',
+    );
+    return text.match(pattern)?.[1]?.replace(/[.,;:!?]+$/, '').trim();
+  }
+
   async execute(input: StoryArchitectInput, retryCount: number = 0): Promise<AgentResponse<EpisodeBlueprint>> {
     const maxRetries = 2;
 
@@ -3797,6 +3914,7 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
       this.repairSceneGraphBranchCoverage(blueprint);
+      this.hydrateIncompleteEncounterContracts(blueprint, input);
       this.repairPlannedSequentialReachability(blueprint);
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
@@ -4229,6 +4347,7 @@ REQUIREMENTS:
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
       this.repairSceneGraphBranchCoverage(blueprint);
+      this.hydrateIncompleteEncounterContracts(blueprint, input);
       this.repairPlannedSequentialReachability(blueprint);
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
@@ -5949,8 +6068,15 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
   }
 
   private applySceneConstructionProfiles(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
+    finalizeEpisodeSceneOwnership(blueprint.scenes as never, {
+      episodeNumber: input.episodeNumber,
+      storyCircleRole: input.episodeStoryCircleRole ?? blueprint.storyCircleRole,
+    });
     normalizeRelationshipPacingStages(blueprint.scenes);
-    const issues = collectSceneConstructionProfileIssues(blueprint.scenes, { episodeNumber: input.episodeNumber });
+    const construction = applySceneConstructionProfilesToScenes(blueprint.scenes, { episodeNumber: input.episodeNumber });
+    const issues = construction.diagnostics
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
     for (const scene of blueprint.scenes ?? []) {
       const budget = scene.sceneConstructionProfile?.capacity.beatBudget;
       if (budget?.recommended) {
@@ -5968,7 +6094,15 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     const preflightIssues = preflight.issues
       .filter((issue) => issue.severity === 'error')
       .map((issue) => issue.message);
-    return [...issues, ...ownershipIssues, ...preflightIssues];
+    const allIssues = [...issues, ...ownershipIssues, ...preflightIssues];
+    blueprint.sceneOwnershipStamp = {
+      version: EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION,
+      finalizedAt: new Date().toISOString(),
+      source: 'story_architect',
+      issues: allIssues,
+      drainedRequiredBeatIds: construction.applications.flatMap((application) => application.drainedRequiredBeatIds),
+    };
+    return allIssues;
   }
 
   private buildTreatmentDensityDiagnostics(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Record<string, unknown> {
@@ -6031,6 +6165,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     // Story Circle VERIFICATION (tier 2). Every episode completes a local loop
     // and carries at least one macro season beat through scene-bound contracts.
     this.bindEpisodeCircleContracts(blueprint, input);
+    this.applySceneContractsToPlannedBlueprint(blueprint, input);
     const coldOpenIssues = collectColdOpenProfileIssues(blueprint.scenes ?? [], {
       episodeNumber: input.episodeNumber,
       storyCircleRole: blueprint.storyCircleRole,
@@ -6168,6 +6303,9 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         );
       }
     }
+
+    this.repairPlannedEncounterCoverage(blueprint, input);
+    this.hydrateIncompleteEncounterContracts(blueprint, input);
 
     const encounterScenes = blueprint.scenes.filter(scene => scene.isEncounter);
     const minEncounters = this.getMinEncountersForBlueprint(blueprint.scenes.length, input);

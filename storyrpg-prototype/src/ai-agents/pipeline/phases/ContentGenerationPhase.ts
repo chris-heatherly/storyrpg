@@ -58,9 +58,10 @@ import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import {
   buildSceneConstructionPromptView,
-  collectSceneConstructionProfileIssues,
+  applySceneConstructionProfilesToScenes,
 } from '../../utils/sceneConstructionProfile';
 import { attachSceneEventOwnershipProfiles } from '../../utils/sceneEventOwnership';
+import { finalizeEpisodeSceneOwnership } from '../../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacingStagePolicy';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/dependencyGraph';
 import { slugify as idSlugify } from '../../utils/idUtils';
@@ -474,22 +475,16 @@ export class ContentGenerationPhase {
         message: `Merged ${mergedPublicAftermathScenes} duplicate public-aftermath scene(s) before scene prose generation`,
       });
     }
-    const routeCueIssues = validateBlueprintRouteCueOrder(blueprint);
-    if (routeCueIssues.length > 0) {
-      throw new PipelineError(
-        `Blueprint route cue preflight failed with ${routeCueIssues.length} issue(s): ${routeCueIssues.slice(0, 3).map((issue) => issue.message).join('; ')}`,
-        'content_generation',
-        {
-          context: {
-            failureKind: 'blueprint_route_cue_preflight',
-            issues: routeCueIssues,
-          },
-        },
-      );
-    }
     const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
     const densityEpisodeNumber = episodeNumber ?? brief.episode.number;
-    const sceneConstructionIssues = collectSceneConstructionProfileIssues(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
+    finalizeEpisodeSceneOwnership(blueprint.scenes as never, {
+      episodeNumber: densityEpisodeNumber,
+      storyCircleRole: brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === densityEpisodeNumber)?.storyCircleRole,
+    });
+    const sceneConstruction = applySceneConstructionProfilesToScenes(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
+    const sceneConstructionIssues = sceneConstruction.diagnostics
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
     const sceneEventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: densityEpisodeNumber })
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
@@ -500,6 +495,8 @@ export class ContentGenerationPhase {
     }).issues
       .filter((issue) => issue.severity === 'error')
       .map((issue) => issue.message);
+    const routeCueIssues = validateBlueprintRouteCueOrder(blueprint);
+    const routeCueIssueMessages = routeCueIssues.map((issue) => issue.message);
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {
         episodeNumber: densityEpisodeNumber,
@@ -507,6 +504,8 @@ export class ContentGenerationPhase {
         issues: sceneConstructionIssues,
         eventOwnershipIssues: sceneEventOwnershipIssues,
         sceneOwnershipPreflightIssues,
+        routeCueIssues,
+        sceneConstructionApplications: sceneConstruction.applications,
         profiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
         eventOwnershipProfiles: blueprint.scenes.map((scene) => scene.sceneEventOwnership),
       });
@@ -515,6 +514,7 @@ export class ContentGenerationPhase {
       ...sceneConstructionIssues,
       ...sceneEventOwnershipIssues,
       ...sceneOwnershipPreflightIssues,
+      ...routeCueIssueMessages,
     ];
     if (preProseConstructionIssues.length > 0) {
       const summary = preProseConstructionIssues.slice(0, 5).join(' | ');
@@ -1040,6 +1040,9 @@ export class ContentGenerationPhase {
         const hasRequiredChoice = !sceneBlueprint.choicePoint || Boolean(resumedChoice);
         const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType) || Boolean(resumedEncounter && resumedEncounterTurn?.passed);
         if (resumedScene && hasRequiredChoice && hasRequiredEncounter) {
+          if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
+            this.ensureEncounterBridgeBeat(sceneBlueprint, resumedScene);
+          }
           sceneContents.push(resumedScene);
           if (resumedChoice) choiceSets.push(resumedChoice);
           if (resumedEncounter) encounters.set(sceneBlueprint.id, resumedEncounter);
@@ -1133,8 +1136,8 @@ export class ContentGenerationPhase {
           sceneId: sceneBlueprint.id,
           sceneName: sceneBlueprint.name,
           locationId: sceneSettingContext.locationId,
-          beats: [], // Empty - encounter beats come from EncounterArchitect
-          startingBeatId: '', // Will be set from encounter structure
+          beats: [this.buildEncounterBridgeBeat(sceneBlueprint)],
+          startingBeatId: `${sceneBlueprint.id}-encounter-bridge`,
           moodProgression: [sceneBlueprint.mood],
           charactersInvolved: sceneBlueprint.npcsPresent,
           keyMoments: [sceneBlueprint.encounterDescription || sceneBlueprint.description],
@@ -3376,6 +3379,50 @@ export class ContentGenerationPhase {
     await this.deps.runSceneCriticPass(sceneContents, characterBible);
 
     return { sceneContents, choiceSets, encounters };
+  }
+
+  private ensureEncounterBridgeBeat(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
+    if (content.beats?.some((beat) => String(beat.text || beat.content || '').trim())) return;
+    const bridgeBeat = this.buildEncounterBridgeBeat(sceneBlueprint);
+    content.beats = [bridgeBeat];
+    content.startingBeatId = bridgeBeat.id;
+  }
+
+  private buildEncounterBridgeBeat(sceneBlueprint: SceneBlueprint): GeneratedBeat {
+    const sourceText = [
+      sceneBlueprint.turnContract?.turnEvent,
+      sceneBlueprint.encounterDescription,
+      sceneBlueprint.description,
+      sceneBlueprint.turnContract?.centralTurn,
+    ].map((value) => String(value || '').replace(/\s+/g, ' ').trim()).find(Boolean)
+      || 'The confrontation closes in, demanding action now.';
+    const clipped = sourceText.length > 260
+      ? `${sourceText.slice(0, 260).replace(/\s+\S*$/, '')}.`
+      : sourceText.replace(/[;:]\s*$/, '.');
+    const text = /[.!?]$/.test(clipped)
+      ? `The moment arrives before you can prepare for it: ${clipped}`
+      : `The moment arrives before you can prepare for it: ${clipped}.`;
+    return {
+      id: `${sceneBlueprint.id}-encounter-bridge`,
+      text,
+      primaryAction: sceneBlueprint.encounterDescription || sceneBlueprint.turnContract?.turnEvent || sceneBlueprint.description,
+      emotionalRead: sceneBlueprint.mood || 'Tension rises into immediate pressure.',
+      mustShowDetail: sceneBlueprint.encounterDescription || sceneBlueprint.description,
+      visualMoment: sceneBlueprint.encounterDescription || sceneBlueprint.description,
+      dramaticIntent: {
+        characterObjectives: {
+          protagonist: sceneBlueprint.dramaticPurpose || sceneBlueprint.turnContract?.centralTurn || 'Survive the encounter as it begins.',
+        },
+        obstacle: sceneBlueprint.encounterDescription || sceneBlueprint.turnContract?.turnEvent || 'The pressure becomes immediate.',
+        statusBefore: sceneBlueprint.turnContract?.beforeState,
+        statusAfter: sceneBlueprint.turnContract?.afterState,
+        subtext: 'The encounter is happening now, not being summarized after the fact.',
+        visibleTurn: sceneBlueprint.turnContract?.turnEvent || sceneBlueprint.encounterDescription || 'The scene crosses into active pressure.',
+        visualSubtextCue: sceneBlueprint.encounterDescription || sceneBlueprint.description,
+      },
+      intensityTier: 'dominant',
+      shotType: 'action',
+    };
   }
 
   private pruneUnscopedTreatmentSeedBeats(sceneBlueprint: SceneBlueprint): void {

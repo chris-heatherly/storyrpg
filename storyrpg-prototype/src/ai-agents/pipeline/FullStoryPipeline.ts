@@ -30,7 +30,12 @@ import {
 import { TEXT_LIMITS } from '../../constants/validation';
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
-import { StoryArchitect, EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
+import {
+  StoryArchitect,
+  EpisodeBlueprint,
+  SceneBlueprint,
+  EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION,
+} from '../agents/StoryArchitect';
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
@@ -157,6 +162,7 @@ import { renderSourceCanonPrompt } from '../utils/sourceCanonPrompt';
 import { createRunState, type PipelineRunState } from './runState';
 import { sealAndPersistEpisode } from './seasonSealOrchestration';
 import { validateSeasonCompletion } from '../validators/promiseLedgerValidators';
+import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
 import { runPlanTimeFidelityChecks, runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
 import {
   buildEpisodeSceneLockReport,
@@ -174,6 +180,10 @@ import {
 } from './contextAssembly';
 import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 import { extractEpisodeKnowledge, collectReferencedFlags, episodeProseCorpus } from './knowledgeExtraction';
+import { applySceneConstructionProfilesToScenes } from '../utils/sceneConstructionProfile';
+import { attachSceneEventOwnershipProfiles } from '../utils/sceneEventOwnership';
+import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
+import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 
 import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
 
@@ -1596,12 +1606,29 @@ export class FullStoryPipeline {
   }
 
   private assertSceneDependencyInvariants(blueprint: EpisodeBlueprint, sceneContents: SceneContent[]): void {
-    const generatedIds = new Set(sceneContents.map((scene) => scene.sceneId));
+    const generatedById = new Map(sceneContents.map((scene) => [scene.sceneId, scene]));
+    const generatedIds = new Set(generatedById.keys());
     for (const scene of blueprint.scenes) {
       if (!generatedIds.has(scene.id)) {
         throw new PipelineError(
           `Invariant violation: missing generated scene for blueprint scene "${scene.id}"`,
           'content_generation'
+        );
+      }
+      const generatedScene = generatedById.get(scene.id);
+      if (this.sceneBlueprintRequiresReaderProse(scene) && !this.sceneContentHasReaderProse(generatedScene)) {
+        throw new PipelineError(
+          `Invariant violation: scene "${scene.id}" owns reader-facing obligations but generated no prose beats`,
+          'content_generation',
+          {
+            context: {
+              sceneId: scene.id,
+              sceneName: scene.name,
+              ownedEvents: scene.sceneEventOwnership?.ownedEvents?.map((event) => event.cue) ?? [],
+              isEncounter: scene.isEncounter,
+              encounterType: scene.encounterType,
+            },
+          }
         );
       }
       for (const nextSceneId of scene.leadsTo || []) {
@@ -1615,6 +1642,33 @@ export class FullStoryPipeline {
         }
       }
     }
+  }
+
+  private sceneBlueprintRequiresReaderProse(scene: SceneBlueprint): boolean {
+    if (String(scene.turnContract?.centralTurn || scene.turnContract?.turnEvent || '').trim()) return true;
+    if ((scene.sceneEventOwnership?.ownedEvents ?? []).length > 0) return true;
+    if ((scene.storyCircleBeatContracts ?? []).length > 0) return true;
+    if ((scene.authoredTreatmentFields ?? []).length > 0) return true;
+    if (String(scene.signatureMoment || '').trim()) return true;
+    if (scene.isEncounter || scene.encounterType || String(scene.encounterDescription || '').trim()) return true;
+    if ((scene.npcsPresent ?? []).length > 0) return true;
+    if ((scene.requiredBeats ?? []).some((beat) =>
+      beat.tier === 'authored'
+      || beat.tier === 'signature'
+      || beat.tier === 'coldopen'
+      || String(beat.mustDepict || beat.sourceTurn || '').trim()
+    )) {
+      return true;
+    }
+    return Boolean((scene.sceneConstructionProfile?.obligations ?? []).some((obligation) =>
+      obligation.slot === 'primary_turn' || obligation.slot === 'must_stage'
+    ));
+  }
+
+  private sceneContentHasReaderProse(scene: SceneContent | undefined): boolean {
+    return Boolean(scene?.beats?.some((beat) =>
+      String(beat.text || beat.content || '').replace(/\s+/g, ' ').trim().length > 0
+    ));
   }
 
   private assertEpisodeOrderingInvariants(
@@ -2009,6 +2063,51 @@ export class FullStoryPipeline {
       return data;
     }
     return undefined;
+  }
+
+  private finalizeEpisodeBlueprintSceneOwnershipForPipeline(params: {
+    blueprint: EpisodeBlueprint;
+    episodeNumber: number;
+    source: 'pipeline_resume' | 'pipeline_preflight';
+    storyCircleRole?: EpisodeBlueprint['storyCircleRole'];
+  }): { issues: string[]; wasStale: boolean; drainedRequiredBeatIds: string[] } {
+    const { blueprint, episodeNumber, source, storyCircleRole } = params;
+    const wasStale = blueprint.sceneOwnershipStamp?.version !== EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION;
+    finalizeEpisodeSceneOwnership(blueprint.scenes as never, {
+      episodeNumber,
+      storyCircleRole: storyCircleRole ?? blueprint.storyCircleRole,
+    });
+    normalizeRelationshipPacingStages(blueprint.scenes as never);
+    const construction = applySceneConstructionProfilesToScenes(blueprint.scenes, { episodeNumber });
+    const sceneConstructionIssues = construction.diagnostics
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
+    const eventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber })
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
+    const preflightIssues = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber,
+      storyCircleRole: storyCircleRole ?? blueprint.storyCircleRole,
+      scenes: blueprint.scenes,
+    }).issues
+      .filter((issue) => issue.severity === 'error')
+      .map((issue) => issue.message);
+    const issues = [...sceneConstructionIssues, ...eventOwnershipIssues, ...preflightIssues];
+    const drainedRequiredBeatIds = construction.applications.flatMap((application) => application.drainedRequiredBeatIds);
+    blueprint.sceneOwnershipStamp = {
+      version: EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION,
+      finalizedAt: new Date().toISOString(),
+      source,
+      issues,
+      drainedRequiredBeatIds,
+    };
+    for (const scene of blueprint.scenes ?? []) {
+      const budget = scene.sceneConstructionProfile?.capacity.beatBudget;
+      if (budget?.recommended) {
+        scene.recommendedBeatCount = Math.max(scene.recommendedBeatCount ?? 0, budget.recommended);
+      }
+    }
+    return { issues, wasStale, drainedRequiredBeatIds };
   }
 
   private loadContinuationStory(
@@ -3360,18 +3459,45 @@ export class FullStoryPipeline {
       this.emit({ type: 'phase_start', phase: 'architecture', message: 'Phase 3: Creating episode blueprint' });
       this.requirePhases('episode_architecture', ['world_building', 'character_design']);
       const resumedEpisodeBlueprint = this.getResumeOutput<EpisodeBlueprint>(resumeCheckpoint, 'episode_blueprint');
-      let episodeBlueprint: EpisodeBlueprint = resumedEpisodeBlueprint
-        ? resumedEpisodeBlueprint
-        : await this.measurePhase('episode_architecture', () => this.runEpisodeArchitecture(brief, worldBible, characterBible));
+      let acceptedResumedEpisodeBlueprint = false;
+      let episodeBlueprint: EpisodeBlueprint | undefined = resumedEpisodeBlueprint;
+      if (episodeBlueprint) {
+        const finalization = this.finalizeEpisodeBlueprintSceneOwnershipForPipeline({
+          blueprint: episodeBlueprint,
+          episodeNumber: brief.episode.number,
+          source: 'pipeline_resume',
+          storyCircleRole: episodeBlueprint.storyCircleRole,
+        });
+        if (finalization.wasStale) {
+          this.emit({
+            type: 'debug',
+            phase: 'architecture',
+            message: `Normalized stale resumed episode blueprint ownership (${finalization.drainedRequiredBeatIds.length} required beat(s) drained).`,
+          });
+        }
+        if (finalization.issues.length > 0) {
+          this.invalidatedResumeEpisodes.add(brief.episode.number);
+          this.emit({
+            type: 'warning',
+            phase: 'architecture',
+            message: `Invalidated resumed episode blueprint for Episode ${brief.episode.number}: ${finalization.issues.slice(0, 4).join(' | ')}`,
+          });
+          episodeBlueprint = undefined;
+        } else {
+          acceptedResumedEpisodeBlueprint = true;
+        }
+      }
+      episodeBlueprint = episodeBlueprint
+        ?? await this.measurePhase('episode_architecture', () => this.runEpisodeArchitecture(brief, worldBible, characterBible));
       this.markPhaseComplete('episode_architecture');
-      if (resumedEpisodeBlueprint) {
+      if (acceptedResumedEpisodeBlueprint) {
         this.emit({ type: 'debug', phase: 'architecture', message: 'Resumed from durable episode blueprint checkpoint' });
       } else {
         this.addCheckpoint('Episode Blueprint', episodeBlueprint, true);
       }
 
       // Phase validation with retry loop for episode architecture
-      if (this.phaseValidator.isEnabled() && !resumedEpisodeBlueprint) {
+      if (this.phaseValidator.isEnabled() && !acceptedResumedEpisodeBlueprint) {
         let archValidation = this.phaseValidator.validateEpisodeBlueprint(episodeBlueprint, worldBible, characterBible);
         let archRetryCount = 0;
         const archMaxRetries = this.phaseValidator.getMaxRetries();
@@ -5748,6 +5874,7 @@ export class FullStoryPipeline {
                 episodeNumber: spec.episodeNumber,
                 title: spec.outline.title,
                 episode: generatedEpisode.episode,
+                blueprint: generatedEpisode.blueprint,
                 episodeBrief: generatedEpisode.episodeBrief,
                 baseBrief,
                 analysis,
@@ -5877,6 +6004,7 @@ export class FullStoryPipeline {
               episodeNumber: i,
               title: spec.outline.title,
               episode: generated.episode,
+              blueprint: generated.blueprint,
               episodeBrief: generated.episodeBrief,
               baseBrief,
               analysis,
@@ -6628,6 +6756,7 @@ export class FullStoryPipeline {
     episodeNumber: number;
     title: string;
     episode: Episode;
+    blueprint?: EpisodeBlueprint;
     episodeBrief?: FullCreativeBrief;
     baseBrief: FullCreativeBrief;
     analysis: SourceMaterialAnalysis;
@@ -6642,6 +6771,7 @@ export class FullStoryPipeline {
       episodeNumber,
       title,
       episode,
+      blueprint,
       episodeBrief,
       baseBrief,
       analysis,
@@ -6663,6 +6793,7 @@ export class FullStoryPipeline {
         const sceneLockReport = buildEpisodeSceneLockReport({
           episodeNumber,
           episode,
+          blueprintScenes: blueprint?.scenes,
           validationResults: this.allSceneValidationResults.length > 0
             ? this.allSceneValidationResults
             : this.sceneValidationResults,
@@ -7049,14 +7180,42 @@ export class FullStoryPipeline {
       };
 
       const blueprintPath = this.episodeCheckpointFile(i, 'blueprint');
-      const canHydrateEpisodeResume = !this.invalidatedResumeEpisodes.has(i);
-      const blueprint = (canHydrateEpisodeResume
+      let canHydrateEpisodeResume = !this.invalidatedResumeEpisodes.has(i);
+      const resumedBlueprint = canHydrateEpisodeResume
         ? this.loadResumeUnit<EpisodeBlueprint>(
           outputDirectory,
           `episode_blueprint:episode-${i}`,
           blueprintPath,
         )
-        : undefined)
+        : undefined;
+      let blueprint = resumedBlueprint;
+      if (blueprint) {
+        const finalization = this.finalizeEpisodeBlueprintSceneOwnershipForPipeline({
+          blueprint,
+          episodeNumber: i,
+          source: 'pipeline_resume',
+          storyCircleRole: blueprint.storyCircleRole
+            ?? episodeBrief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === i)?.storyCircleRole,
+        });
+        if (finalization.wasStale) {
+          this.emit({
+            type: 'debug',
+            phase: 'resume',
+            message: `Normalized stale resumed episode ${i} blueprint ownership (${finalization.drainedRequiredBeatIds.length} required beat(s) drained).`,
+          });
+        }
+        if (finalization.issues.length > 0) {
+          canHydrateEpisodeResume = false;
+          this.invalidatedResumeEpisodes.add(i);
+          this.emit({
+            type: 'warning',
+            phase: 'resume',
+            message: `Invalidated resumed episode ${i} blueprint after ownership preflight: ${finalization.issues.slice(0, 4).join(' | ')}`,
+          });
+          blueprint = undefined;
+        }
+      }
+      blueprint = blueprint
         || await this.measurePhase(`episode_${i}_architecture`, () => this.runEpisodeArchitecture(episodeBrief, worldBible, characterBible));
       await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, blueprint);
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, blueprint);

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { SceneConstructionSceneLike } from './sceneConstructionProfile';
 import {
   attachSceneConstructionProfiles,
+  applySceneConstructionProfilesToScenes,
   buildSceneConstructionPromptView,
   buildSceneConstructionProfileSection,
   collectSceneConstructionProfileIssues,
@@ -568,6 +569,95 @@ describe('sceneConstructionProfile compiler', () => {
     expect(issues.join(' ')).not.toContain('major location cue');
   });
 
+  it('does not fail multi-location construction from same-turn support context alone', () => {
+    const profile = compileSceneConstructionProfile({
+      id: 's1-venue',
+      order: 1,
+      location: 'Rooftop Bar',
+      turnContract: {
+        turnId: 'venue-turn',
+        source: 'planner',
+        centralTurn: 'At the rooftop bar, the traveler notices a stranger near the service door.',
+        beforeState: 'The room feels anonymous.',
+        turnEvent: 'At the rooftop bar, the traveler notices a stranger near the service door.',
+        afterState: 'The stranger has become a question.',
+        handoff: 'Move into the walk home.',
+      },
+      authoredTreatmentFields: [{
+        id: 'context-route',
+        episodeNumber: 1,
+        fieldName: 'Context',
+        sourceText: 'The traveler came from the station, reaches the rooftop bar, and later walks through the park.',
+        contractKind: 'pressure_lane',
+        requiredRealization: ['final_prose'],
+        targetSceneIds: ['s1-venue'],
+        blockingLevel: 'treatment',
+      }],
+    });
+
+    expect(profile.conflictDiagnostics.join(' ')).not.toContain('major location cue');
+  });
+
+  it('does not count city containers or aliases as multi-location overload', () => {
+    const issues = collectSceneConstructionProfileIssues([{
+      id: 's1-park',
+      order: 1,
+      locations: ['Cismigiu Gardens'],
+      turnContract: {
+        turnId: 'park-turn',
+        source: 'planner',
+        centralTurn: 'In Bucharest, the protagonist walks through Cismigiu.',
+        beforeState: 'The city feels anonymous.',
+        turnEvent: 'In Bucharest, the protagonist walks through Cismigiu.',
+        afterState: 'The park feels watchful.',
+        handoff: 'Carry the unease forward.',
+      },
+      requiredBeats: [{
+        id: 'park-signal',
+        tier: 'authored',
+        sourceTurn: 'Through Cismigiu Gardens, a shadow crosses the path.',
+        mustDepict: 'Through Cismigiu Gardens, a shadow crosses the path.',
+      }],
+    }]);
+
+    expect(issues.join(' ')).not.toContain('major location cue');
+  });
+
+  it('routes broad multi-event support out of active required prompt view', () => {
+    const scene: SceneConstructionSceneLike = {
+      id: 's1-arrival',
+      episodeNumber: 1,
+      turnContract: {
+        turnId: 'arrival-turn',
+        source: 'planner',
+        centralTurn: 'The traveler arrives in the city with two suitcases.',
+        beforeState: 'The traveler is still outside the city.',
+        turnEvent: 'The traveler arrives in the city with two suitcases.',
+        afterState: 'The city has become personal.',
+        handoff: 'Move toward the social threshold.',
+      },
+      mechanicPressure: [{
+        id: 'broad-episode-pressure',
+        source: 'treatment',
+        domain: 'information',
+        function: 'plant',
+        mechanicRef: {},
+        storyPressure: 'The traveler arrives, meets a circle at a rooftop bar, is attacked in the park, writes a post at 4am, and goes viral by evening.',
+        evidenceRequired: ['show the public signal on-page'],
+        visibleResidue: [],
+        allowedPayoffs: [],
+        blockedPayoffs: [],
+      }],
+    };
+
+    const profile = compileSceneConstructionProfile(scene);
+    scene.sceneConstructionProfile = profile;
+    const view = buildSceneConstructionPromptView(scene);
+
+    expect(profile.obligations.find((item) => item.id === 'broad-episode-pressure')?.slot).toBe('metadata_only');
+    expect(view.mechanicPressure ?? []).toEqual([]);
+  });
+
   it('keeps cold-open premise pressure out of hard required-beat enforcement', () => {
     const scene: SceneConstructionSceneLike = {
       id: 's1-1',
@@ -643,6 +733,108 @@ describe('sceneConstructionProfile compiler', () => {
     expect(view.storyCircleBeatContracts?.map((contract) => contract.id)).toEqual(
       expect.arrayContaining(['episode-circle-you', 'episode-circle-need']),
     );
+  });
+
+  it('mutates resumed scene contracts so routed broad beats do not reach preflight', () => {
+    const scene: SceneConstructionSceneLike = {
+      id: 's1-1',
+      episodeNumber: 1,
+      order: 1,
+      turnContract: {
+        turnId: 'arrival-turn',
+        source: 'planner',
+        centralTurn: 'A traveler arrives at the inherited apartment with two suitcases.',
+        beforeState: 'The traveler is still outside the threshold.',
+        turnEvent: 'A traveler arrives at the inherited apartment with two suitcases.',
+        afterState: 'The threshold becomes unavoidable.',
+        handoff: 'Move to the social threshold later.',
+      },
+      requiredBeats: [
+        {
+          id: 'arrival',
+          tier: 'authored',
+          sourceTurn: 'A traveler arrives at the inherited apartment with two suitcases.',
+          mustDepict: 'A traveler arrives at the inherited apartment with two suitcases.',
+        },
+        {
+          id: 'project-logline',
+          tier: 'authored',
+          sourceTurn: 'She starts Dating After Dusk.',
+          mustDepict: 'She starts Dating After Dusk.',
+        },
+      ],
+    };
+
+    const result = applySceneConstructionProfilesToScenes([scene], { episodeNumber: 1 });
+
+    expect(result.applications[0].drainedRequiredBeatIds).toContain('project-logline');
+    expect(scene.requiredBeats?.map((beat) => beat.id)).toEqual(['arrival']);
+    expect(scene.nonCopyableContext?.map((item) => item.id)).toContain('demoted-required-beat:project-logline');
+  });
+
+  it('drains non-opening cold-open required beats from resumed blueprints', () => {
+    const scenes: SceneConstructionSceneLike[] = [
+      {
+        id: 's1-cold-open',
+        episodeNumber: 1,
+        order: 0,
+        coldOpenProfile: {
+          id: 'cold-open:1:s1-cold-open',
+          episodeNumber: 1,
+          sceneId: 's1-cold-open',
+          mode: 'new_normal',
+          archetype: 'status_quo_shift',
+          storyCircleBeats: ['you', 'need'],
+          storyCircleFulfillment: {
+            beats: ['you', 'need'],
+            baseline: 'A traveler arrives wounded.',
+            need: 'The traveler needs to act.',
+            collision: 'Arrival forces action.',
+            sourceContractIds: ['you', 'need'],
+          },
+          centralTurn: 'A traveler reaches the city threshold.',
+          microConflict: 'The traveler wants anonymity, but the threshold demands action.',
+          openQuestion: 'Will the traveler cross?',
+          activeCastLimit: 1,
+          beatBudget: { min: 6, recommended: 8, max: 10 },
+          exitHook: 'End on the threshold.',
+          sourceContractIds: ['you', 'need'],
+          selectedConcepts: [],
+        },
+        requiredBeats: [{
+          id: 'opening-arrival',
+          tier: 'coldopen',
+          sourceTurn: 'A traveler reaches the city threshold.',
+          mustDepict: 'A traveler reaches the city threshold.',
+        }],
+      },
+      {
+        id: 's1-later',
+        episodeNumber: 1,
+        order: 1,
+        turnContract: {
+          turnId: 'later-turn',
+          source: 'planner',
+          centralTurn: 'A guide opens the next door.',
+          beforeState: 'The traveler is alone.',
+          turnEvent: 'A guide opens the next door.',
+          afterState: 'The traveler has a way forward.',
+          handoff: 'Enter the next scene.',
+        },
+        requiredBeats: [{
+          id: 'duplicate-cold-open',
+          tier: 'coldopen',
+          sourceTurn: 'A traveler reaches the city threshold.',
+          mustDepict: 'A traveler reaches the city threshold.',
+        }],
+      },
+    ];
+
+    const result = applySceneConstructionProfilesToScenes(scenes, { episodeNumber: 1 });
+
+    expect(result.applications[1].drainedRequiredBeatIds).toContain('duplicate-cold-open');
+    expect(scenes[1].requiredBeats).toEqual([]);
+    expect(scenes[1].nonCopyableContext?.map((item) => item.id)).toContain('demoted-required-beat:duplicate-cold-open');
   });
 
   it('renders one focused construction contract for the prompt', () => {

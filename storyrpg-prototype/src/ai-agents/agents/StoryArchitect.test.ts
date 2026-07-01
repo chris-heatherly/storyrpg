@@ -426,36 +426,36 @@ describe('StoryArchitect treatment fidelity validation', () => {
     expect((architect as any).isCompositeSeedBundleBeat(beat, `${beat.sourceTurn} ${beat.mustDepict}`)).toBe(true);
   });
 
-  it('splits two-anchor rooftop plus Cișmigiu signature beats before scene writing', () => {
+  it('detects composite social plus encounter signature beats before scene writing', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
-    const text = 'Two anchors, light then dark — the rooftop bar at sunset where the Dusk Club locks into place and Kylie catches both men watching her; then Cișmigiu at 1am, eight seconds of fog, a shadow, a scream, and a rescue.';
+    const text = 'Two anchors, light then dark — the rooftop bar at sunset where the social circle locks into place; then the gardens at 1am, eight seconds of fog, a shadow, a scream, and a rescue.';
 
-    expect((architect as any).isTwoAnchorRooftopEncounterBeat(text)).toBe(true);
+    expect((architect as any).sortedEventCues(text)).toEqual(['socialMeet', 'threatEncounter']);
   });
 
-  it('rebounds broad cold-open obligations to social and blog scenes before density validation', () => {
+  it('rebounds broad cold-open obligations to matching scene owners before density validation', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const blueprint: any = {
       scenes: [
         {
           id: 's1-arrival-cold-open',
           name: 'Arrival Cold Open',
-          description: 'Kylie arrives in Bucharest with two suitcases.',
-          location: 'Lipscani',
-          narrativeFunction: 'Kylie reaches Bucharest and tries to reinvent herself.',
-          signatureMoment: 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+          description: 'The protagonist arrives in a new city with two suitcases.',
+          location: 'Station',
+          narrativeFunction: 'The protagonist reaches a new city and tries to reinvent themself.',
+          signatureMoment: 'At the rooftop bar at sunset, the circle locks into place while the protagonist notices who is watching.',
           requiredBeats: [
             {
               id: 's1-1-hook1',
               tier: 'you',
-              mustDepict: 'Kylie arrives in Bucharest and forms the Dusk Club, seeking reinvention and her own byline.',
-              sourceTurn: 'Kylie arrives in Bucharest and forms the Dusk Club, seeking reinvention and her own byline.',
+              mustDepict: 'The protagonist arrives in the city, gathers a social circle at a rooftop bar, and writes a post after midnight.',
+              sourceTurn: 'The protagonist arrives in the city, gathers a social circle at a rooftop bar, and writes a post after midnight.',
             },
             {
               id: 's1-1-story-circle-you-part-1',
               tier: 'authored',
-              mustDepict: '(Ep1): Kylie’s ordinary world is reinvention-as-performance.',
-              sourceTurn: '(Ep1): Kylie’s ordinary world is reinvention-as-performance.',
+              mustDepict: '(Ep1): The ordinary world is reinvention-as-performance.',
+              sourceTurn: '(Ep1): The ordinary world is reinvention-as-performance.',
             },
             {
               id: 's1-1-story-circle-you-part-3',
@@ -467,7 +467,7 @@ describe('StoryArchitect treatment fidelity validation', () => {
           authoredTreatmentFields: [
             {
               id: 'field-viral',
-              sourceText: 'by 6pm it has 80,000 reads. Kylie arrives in Bucharest, christening the Dusk Club, then writes a post.',
+              sourceText: 'At the rooftop bar the group gathers; at 4am the protagonist writes a post.',
               label: 'final prose',
               targetSceneIds: ['s1-arrival-cold-open'],
             },
@@ -475,8 +475,8 @@ describe('StoryArchitect treatment fidelity validation', () => {
         },
         {
           id: 's1-rooftop-setup',
-          name: 'Dusk Club Rooftop',
-          description: 'The Dusk Club is christened over negronis at a rooftop bar.',
+          name: 'Rooftop Social Turn',
+          description: 'The social circle forms over drinks at a rooftop bar.',
           location: 'Rooftop Bar',
           requiredBeats: [],
           keyBeats: [],
@@ -484,8 +484,8 @@ describe('StoryArchitect treatment fidelity validation', () => {
         {
           id: 's1-blog-aftermath',
           name: 'Blog Aftermath',
-          description: 'Kylie writes the first viral Mr. Midnight post.',
-          location: 'Lipscani Apartment',
+          description: 'The protagonist writes the first viral post.',
+          location: 'Apartment',
           requiredBeats: [],
           authoredTreatmentFields: [],
         },
@@ -493,18 +493,17 @@ describe('StoryArchitect treatment fidelity validation', () => {
     };
 
     (architect as any).repairBroadArrivalRequiredBeats(blueprint);
-    (architect as any).repairRooftopSetupDensity(blueprint);
 
     const coldOpen = blueprint.scenes[0];
     const rooftop = blueprint.scenes[1];
     const blog = blueprint.scenes[2];
 
     expect(coldOpen.signatureMoment ?? '').not.toContain('rooftop bar');
-    expect(coldOpen.requiredBeats.map((beat: any) => beat.id)).toEqual(['s1-1-hook1-arrival']);
-    expect(rooftop.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-dusk-club');
+    expect(coldOpen.requiredBeats.map((beat: any) => beat.id)).toEqual(['s1-1-hook1-event-arrival']);
+    expect(rooftop.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-event-socialMeet');
     expect(rooftop.signatureMoment).toContain('rooftop bar');
-    expect(blog.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-byline');
-    expect(blog.authoredTreatmentFields.map((field: any) => field.id)).toContain('field-viral');
+    expect(blog.requiredBeats.map((beat: any) => beat.id)).toContain('s1-1-hook1-event-lateNightWriting');
+    expect(blueprint.scenes.slice(1).flatMap((scene: any) => scene.authoredTreatmentFields ?? []).map((field: any) => field.id)).toContain('field-viral');
     expect(coldOpen.authoredTreatmentFields ?? []).toEqual([]);
   });
 
@@ -546,11 +545,12 @@ describe('StoryArchitect treatment fidelity validation', () => {
     const release = blueprint.scenes[2];
     expect(release.requiredBeats ?? []).toEqual([]);
     expect(blueprint.scenes[0].requiredBeats.map((beat: any) => beat.id)).toEqual([
-      's1-1-story-circle-you-part-2-arrival',
+      's1-1-story-circle-you-part-2-event-arrival',
+      's1-1-story-circle-you-part-2-event-socialMeet',
     ]);
   });
 
-  it('removes seed and spoiler prompt pollution from rooftop setup while keeping the signature', () => {
+  it('keeps signature beats while demoting composite seed bundles out of active beats', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const blueprint: any = {
       scenes: [
@@ -558,29 +558,32 @@ describe('StoryArchitect treatment fidelity validation', () => {
           id: 's1-rooftop-setup',
           name: 'Rooftop bar at sunset',
           description: 'The rooftop meeting turns the city from possibility into visible romantic and social pressure.',
-          location: 'Vâlcescu Club',
-          signatureMoment: 'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+          location: 'Rooftop Bar',
+          signatureMoment: 'At the rooftop bar at sunset, the circle locks into place while the protagonist notices who is watching.',
           keyBeats: [
-            'Mika\'s half-second of stillness',
-            'the black roses and cream-stock card delivered impossibly fast',
-            'Mika is a succubus bound to Victor\'s coven by a 57-year contract, acting as his lure and spy.',
-            'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+            'A friend has a half-second of stillness',
+            'a strange card is delivered impossibly fast',
+            'A hidden ally is bound to an antagonist by a long contract, acting as lure and spy.',
+            'At the rooftop bar at sunset, the circle locks into place while the protagonist notices who is watching.',
           ],
           requiredBeats: [
-            { id: 'seed-1', tier: 'seed', mustDepict: 'Mika\'s half-second of stillness', sourceTurn: 'Mika\'s half-second of stillness' },
-            { id: 'seed-2', tier: 'seed', mustDepict: 'the black roses and cream-stock card delivered impossibly fast', sourceTurn: 'the black roses and cream-stock card delivered impossibly fast' },
-            { id: 'seed-3', tier: 'seed', mustDepict: 'Mika is a succubus bound to Victor\'s coven by a 57-year contract, acting as his lure and spy.', sourceTurn: 'Mika is a succubus bound to Victor\'s coven by a 57-year contract, acting as his lure and spy.' },
+            { id: 'seed-1', tier: 'seed', mustDepict: 'A friend has a half-second of stillness', sourceTurn: 'A friend has a half-second of stillness' },
+            { id: 'seed-2', tier: 'seed', mustDepict: 'a strange card is delivered impossibly fast', sourceTurn: 'a strange card is delivered impossibly fast' },
+            { id: 'seed-3', tier: 'seed', mustDepict: 'A hidden ally is bound to an antagonist by a long contract, acting as lure and spy.', sourceTurn: 'A hidden ally is bound to an antagonist by a long contract, acting as lure and spy.' },
           ],
         },
       ],
     };
 
-    (architect as any).repairRooftopSetupDensity(blueprint);
+    (architect as any).repairBroadArrivalRequiredBeats(blueprint);
 
     expect(blueprint.scenes[0].keyBeats).toEqual([
-      'At the rooftop bar at sunset, the Dusk Club locks into place and Kylie catches both men watching her.',
+      'A friend has a half-second of stillness',
+      'a strange card is delivered impossibly fast',
+      'A hidden ally is bound to an antagonist by a long contract, acting as lure and spy.',
+      'At the rooftop bar at sunset, the circle locks into place while the protagonist notices who is watching.',
     ]);
-    expect(blueprint.scenes[0].requiredBeats).toEqual([]);
+    expect(blueprint.scenes[0].requiredBeats).toHaveLength(3);
   });
 
   it('repairs authored branchlet and seed residue into blueprint memory fields before validation', () => {
@@ -1959,6 +1962,110 @@ describe('StoryArchitect planned encounter repair', () => {
     ]));
   });
 
+  it('hydrates graph-repaired encounter shells before strict validation', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      seasonPlanDirectives: {
+        plannedEncounters: [{
+          id: 'enc-generic-1',
+          type: 'social',
+          description: 'Confrontation with masked attacker in a public garden while the guide watches from shadows',
+          difficulty: 'hard',
+          npcsInvolved: ['masked_attacker', 'guide'],
+          stakes: 'The protagonist must decide whether to fight, flee, or freeze when faced with a predatory threat.',
+          storyCircleTarget: 'take',
+          storyCircleTargetRationale: 'The garden attack demands a cost for crossing into the dangerous world.',
+          storyCircleTargetEvidence: {
+            episodeStoryCircleRole: ['take'],
+            episodeQuestion: 'Will the protagonist pay the price of knowing what stalks them?',
+            protagonistChange: 'The protagonist can no longer treat the threat as ordinary danger.',
+            cliffhangerHandoff: 'next_need',
+          },
+          relevantSkills: ['resolve', 'empathy'],
+          encounterBuildup: 'The prior scenes establish the guide as a watcher and the garden as a place of threat.',
+          encounterSetupContext: ['flag:noticed_guide — the guide reacts if the protagonist clocks them before the attack'],
+          isBranchPoint: true,
+        }],
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Night Crossing',
+      synopsis: 'The protagonist is tested.',
+      storyCircleRole: ['take'],
+      arc: { you: '', go: '', search: '', find: '', take: '', return: '', change: '' },
+      scenes: [
+        {
+          id: 'scene-1',
+          name: 'Venue Exit',
+          description: 'The protagonist leaves the venue with the guide watching.',
+          location: 'venue',
+          mood: 'uneasy',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['guide'],
+          narrativeFunction: 'Moves the protagonist toward the garden.',
+          keyBeats: ['The guide watches the protagonist from a distance.'],
+          leadsTo: ['scene-2'],
+        },
+        {
+          id: 'scene-2',
+          name: 'The Garden Attack',
+          description: 'A masked attacker corners the protagonist in a public garden while the guide watches from shadows.',
+          location: 'public garden',
+          mood: 'terrifying',
+          purpose: 'branch',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['masked_attacker'],
+          narrativeFunction: 'The predatory threat tests the protagonist.',
+          keyBeats: ['The protagonist must decide whether to fight, flee, or freeze.'],
+          leadsTo: ['scene-3', 'treatment-enc-1-1'],
+          isEncounter: true,
+          encounterDescription: 'A garden confrontation with the masked attacker.',
+        },
+        {
+          id: 'scene-3',
+          name: 'Aftermath',
+          description: 'The consequences settle.',
+          location: 'public garden',
+          mood: 'shaken',
+          purpose: 'bottleneck',
+          dramaticQuestion: '',
+          wantVsNeed: '',
+          conflictEngine: '',
+          npcsPresent: ['guide'],
+          narrativeFunction: 'Aftermath.',
+          keyBeats: ['The guide steps from the shadows.'],
+          leadsTo: [],
+        },
+      ],
+      startingSceneId: 'scene-1',
+      bottleneckScenes: ['scene-1', 'scene-3'],
+      themes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+    };
+
+    (architect as any).hydrateIncompleteEncounterContracts(blueprint, input);
+
+    expect(blueprint.scenes[1]).toMatchObject({
+      isEncounter: true,
+      plannedEncounterId: 'enc-generic-1',
+      encounterType: 'social',
+      encounterStakes: expect.stringContaining('fight, flee, or freeze'),
+      encounterBuildup: expect.stringContaining('prior scenes'),
+      encounterStoryCircleTarget: 'take',
+    });
+    expect(blueprint.scenes[1].encounterBeatPlan.length).toBeGreaterThanOrEqual(3);
+    expect(blueprint.scenes[1].encounterRelevantSkills).toEqual(expect.arrayContaining(['resolve', 'empathy']));
+  });
+
   it('does not promote an incompatible authored-turn scene over the real planned encounter', () => {
     const architect = new StoryArchitect(config);
     const blueprint: any = {
@@ -3119,7 +3226,7 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
 
     expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
-    expect(blueprint.scenes[1].location).toBe('Lumina Books');
+    expect(blueprint.scenes[1].location).toBe('Bookshop');
     expect(blueprint.scenes[2].location).toBe('Cișmigiu Gardens');
   });
 

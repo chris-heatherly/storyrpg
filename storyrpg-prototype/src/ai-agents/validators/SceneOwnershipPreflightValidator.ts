@@ -1,7 +1,8 @@
-import type { RequiredBeat, SceneEventOwnershipProfile, SceneTurnContract, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
+import type { RequiredBeat, SceneConstructionProfile, SceneEventOwnershipProfile, SceneTurnContract, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import type { StoryCircleRoleAssignment } from '../../types/sourceAnalysis';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import { detectPrimaryStoryEventCues } from '../remediation/storyEventCues';
+import { uniqueMajorLocationCues } from '../utils/sceneLocationCues';
 import { BaseValidator, buildFailureResult, buildSuccessResult, type ValidationIssue, type ValidationResult } from './BaseValidator';
 
 export interface SceneOwnershipPreflightScene {
@@ -27,6 +28,7 @@ export interface SceneOwnershipPreflightScene {
   turnContract?: SceneTurnContract;
   storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   sceneEventOwnership?: SceneEventOwnershipProfile;
+  sceneConstructionProfile?: SceneConstructionProfile;
 }
 
 export interface SceneOwnershipPreflightInput {
@@ -37,20 +39,9 @@ export interface SceneOwnershipPreflightInput {
 
 const HARD_TIERS = new Set<RequiredBeat['tier']>(['authored', 'signature', 'coldopen']);
 const TIME_CUE_RE = /\b(?:night (?:one|two|three|four|\d+)|\d+\s*(?:am|pm)|morning|dawn|dusk|sunset|midnight|noon|afternoon|evening|later|earlier|next (?:day|morning|night)|previous (?:day|night)|same night|the next day)\b/gi;
-const LOCATION_RE = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+(?:the\s+|a\s+|an\s+)?([A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,3}|[a-z][a-z0-9'’-]*(?:\s+[a-z][a-z0-9'’-]*){0,2}\s+(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|market|office|studio|library|bookshop|bookstore|rooftop|courtyard))/g;
 
 function cleanText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function normalize(value: unknown): string {
-  return cleanText(value)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function beatText(beat: RequiredBeat): string {
@@ -72,25 +63,64 @@ function uniqueTimeCues(texts: string[]): string[] {
 }
 
 function uniqueLocationCues(scene: SceneOwnershipPreflightScene, texts: string[]): string[] {
-  const locations = new Set([scene.location, ...(scene.locations ?? [])].map(normalize).filter(Boolean));
-  for (const text of texts) {
-    for (const match of text.matchAll(LOCATION_RE)) {
-      const location = normalize(match[1]);
-      if (location) locations.add(location);
-    }
-  }
-  return [...locations];
+  return uniqueMajorLocationCues([scene.location, ...(scene.locations ?? []), ...texts]);
 }
 
 function sceneOwnsEncounterCue(scene: SceneOwnershipPreflightScene): boolean {
+  if (scene.sceneEventOwnership) {
+    return (scene.sceneEventOwnership.ownedEvents ?? []).some((event) => event.cue === 'threatEncounter');
+  }
+  const profile = scene.sceneConstructionProfile;
+  if (profile) {
+    const texts = profile.obligations
+      .filter((obligation) => obligation.slot === 'primary_turn' || obligation.slot === 'must_stage')
+      .map((obligation) => obligation.text)
+      .filter(Boolean);
+    return texts.some((text) => detectPrimaryStoryEventCues(text).has('threatEncounter'));
+  }
   const texts = [
-    scene.dramaticPurpose,
-    scene.description,
     scene.turnContract?.centralTurn,
     scene.turnContract?.turnEvent,
-    ...(scene.requiredBeats ?? []).map(beatText),
+    ...(scene.requiredBeats ?? []).filter((beat) => HARD_TIERS.has(beat.tier)).map(beatText),
   ].map(cleanText).filter(Boolean);
   return texts.some((text) => detectPrimaryStoryEventCues(text).has('threatEncounter'));
+}
+
+function sceneHasMustStageObligation(scene: SceneOwnershipPreflightScene): boolean {
+  if ((scene.requiredBeats ?? []).some((beat) => HARD_TIERS.has(beat.tier) && beatText(beat))) return true;
+  return Boolean((scene.sceneConstructionProfile?.obligations ?? []).some((obligation) =>
+    obligation.slot === 'must_stage'
+    || (obligation.slot === 'primary_turn' && detectPrimaryStoryEventCues(obligation.text).size > 0)
+  ));
+}
+
+function encounterCueText(scene: SceneOwnershipPreflightScene): string {
+  return [
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+    scene.description,
+    scene.dramaticPurpose,
+    scene.sceneConstructionProfile?.primaryTurn?.text,
+    ...(scene.sceneConstructionProfile?.obligations ?? [])
+      .filter((obligation) => obligation.slot === 'primary_turn' || obligation.slot === 'must_stage')
+      .map((obligation) => obligation.text),
+  ].map(cleanText).filter(Boolean).join(' ');
+}
+
+function isQuestionOnlyText(text: string): boolean {
+  return /\?$/.test(text) || /^(?:can|will|would|could|should|what|why|how|whether)\b/i.test(text);
+}
+
+function isAbstractEncounterShell(scene: SceneOwnershipPreflightScene): boolean {
+  if (scene.kind !== 'encounter' && !scene.isEncounter) return false;
+  if ((scene.sceneEventOwnership?.ownedEvents ?? []).length > 0) return false;
+  if ((scene.treatmentAtomIds ?? []).length > 0 || (scene.ownedChronologyKeys ?? []).length > 0) return false;
+  if (sceneHasMustStageObligation(scene)) return false;
+  const text = encounterCueText(scene);
+  if (!text) return true;
+  const cues = detectPrimaryStoryEventCues(text);
+  if (cues.size > 0) return false;
+  return isQuestionOnlyText(text) || !/\b(?:arrives?|meets?|enters?|attacks?|confronts?|escapes?|discovers?|takes?|gives?|hands?|walks?|writes?|publishes?|reveals?|refuses?|chooses?|finds?|follows?)\b/i.test(text);
 }
 
 function sceneHasRole(scene: SceneOwnershipPreflightScene, beat: string): boolean {
@@ -177,6 +207,20 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
           `Scene "${sceneId}" owns a concrete encounter/threat cue but is not an encounter-capable scene.`,
           sceneId,
           'Route concrete encounter obligations to an encounter scene or split the scene before prose generation.',
+        ));
+      }
+    }
+
+    const concreteEncounterOwners = scenes.filter(sceneOwnsEncounterCue);
+    if (concreteEncounterOwners.length > 0) {
+      const ownerIds = concreteEncounterOwners.map((scene) => scene.id ?? 'scene').join(', ');
+      for (const scene of scenes) {
+        if (!isAbstractEncounterShell(scene)) continue;
+        const sceneId = scene.id ?? 'scene';
+        issues.push(this.error(
+          `Scene "${sceneId}" is an abstract encounter shell while concrete encounter ownership belongs to ${ownerIds}.`,
+          sceneId,
+          'Demote this shell to pressure/context, merge its pressure into the concrete encounter owner, or give it a distinct playable event before prose generation.',
         ));
       }
     }

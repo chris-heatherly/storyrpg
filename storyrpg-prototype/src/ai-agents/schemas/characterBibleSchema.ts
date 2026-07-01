@@ -9,6 +9,10 @@ export function buildCharacterBibleJsonSchema(_maxCharacters: number): Structure
   return {
     name: 'character_bible',
     description: 'Lean character bible contract for the requested cast.',
+    // CharacterDesigner runs on the planning tier (config forces maxTokens 32000 to
+    // avoid mid-JSON truncation). Match that so structuredMaxTokens() doesn't clamp
+    // the structured call back to the 8192 default.
+    maxOutputTokens: 32000,
     schema: {
       type: 'object',
       additionalProperties: true,

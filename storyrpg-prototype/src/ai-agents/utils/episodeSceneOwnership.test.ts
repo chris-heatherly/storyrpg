@@ -60,9 +60,9 @@ describe('episodeSceneOwnership finalizer', () => {
     const result = finalizeEpisodeSceneOwnership(scenes);
 
     expect(result.routedObligations.map((item) => item.id)).toContain('coldopen-guide');
-    expect(scenes[1].requiredBeats?.map((beat) => beat.tier)).toEqual(['authored']);
-    expect(scenes[1].requiredBeats?.[0].id).toBe('coldopen-guide');
-    expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
+    expect(scenes[1].requiredBeats).toBeUndefined();
+    expect(scenes[0].requiredBeats?.map((beat) => beat.id)).toContain('coldopen-guide');
+    expect(scenes[0].treatmentAtomIds?.length).toBeGreaterThan(0);
   });
 
   it('assigns concrete encounter atoms to encounter scenes instead of standard setup scenes', () => {
@@ -100,6 +100,183 @@ describe('episodeSceneOwnership finalizer', () => {
 
     expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
     expect(scenes[0].sourceContextIds?.length).toBeGreaterThan(0);
+    expect(scenes[0].requiredBeats).toBeUndefined();
+    expect((scenes[1] as unknown as { encounterStakes?: string }).encounterStakes).toContain('immediate safety');
+    expect((scenes[1] as unknown as { encounterBuildup?: string }).encounterBuildup).toContain('personal');
+    expect((scenes[1] as unknown as { encounterBeatPlan?: string[] }).encounterBeatPlan?.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('upgrades the concrete threat scene when the existing encounter owner is abstract', () => {
+    const scenes = [
+      scene({
+        id: 's1-arrival',
+        order: 0,
+        title: 'Arrival',
+        dramaticPurpose: 'The protagonist arrives in the city.',
+      }),
+      scene({
+        id: 's1-walk-home',
+        order: 1,
+        kind: 'standard',
+        title: 'Walk home',
+        dramaticPurpose: 'Walking through the park, the protagonist is attacked and must survive.',
+        locations: ['Park'],
+        requiredBeats: [{
+          id: 'live-threat',
+          tier: 'authored',
+          sourceTurn: 'Walking through the park, an attacker attacks the protagonist before a stranger intervenes.',
+          mustDepict: 'Walking through the park, an attacker attacks the protagonist before a stranger intervenes.',
+        }],
+      }),
+      scene({
+        id: 'treatment-enc-1-1',
+        order: 2,
+        kind: 'encounter',
+        title: 'Abstract encounter pressure',
+        dramaticPurpose: 'Can the protagonist feel wanted while the city watches?',
+        encounter: {
+          type: 'social',
+          difficulty: 'moderate',
+          relevantSkills: ['composure'],
+          description: 'Can the protagonist feel wanted while the city watches?',
+          centralConflict: 'Can the protagonist feel wanted while the city watches?',
+          isBranchPoint: true,
+        },
+      }),
+    ];
+
+    finalizeEpisodeSceneOwnership(scenes);
+
+    expect(scenes[1].kind).toBe('encounter');
+    expect((scenes[1] as unknown as { isEncounter?: boolean }).isEncounter).toBe(true);
+    expect(scenes[1].encounter?.description).toContain('attacker attacks');
+    expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
+    expect((scenes[1] as unknown as { encounterStakes?: string }).encounterStakes).toContain('immediate safety');
+    expect((scenes[1] as unknown as { encounterBuildup?: string }).encounterBuildup).toContain('personal');
+    expect((scenes[1] as unknown as { encounterBeatPlan?: string[] }).encounterBeatPlan?.length).toBeGreaterThanOrEqual(3);
+    expect(scenes[2].treatmentAtomIds ?? []).toEqual([]);
+  });
+
+  it('finalizes blueprint-like scenes using the caller episode number', () => {
+    const scenes = [
+      {
+        id: 's1-arrival',
+        kind: 'standard',
+        title: 'Arrival',
+        dramaticPurpose: 'The traveler arrives in the city.',
+        narrativeRole: 'setup',
+        locations: ['Station'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+      },
+      {
+        id: 's1-threat',
+        kind: 'standard',
+        title: 'Threat',
+        dramaticPurpose: 'Walking through the park, the traveler is attacked and must survive.',
+        narrativeRole: 'turn',
+        locations: ['Park'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+        requiredBeats: [{
+          id: 'threat',
+          tier: 'authored',
+          sourceTurn: 'Walking through the park, an attacker attacks the traveler before help arrives.',
+          mustDepict: 'Walking through the park, an attacker attacks the traveler before help arrives.',
+        }],
+      },
+    ] as unknown as PlannedScene[];
+
+    finalizeEpisodeSceneOwnership(scenes, { episodeNumber: 1 });
+
+    expect(scenes.map((item) => item.episodeNumber)).toEqual([1, 1]);
+    expect(scenes.map((item) => item.order)).toEqual([0, 1]);
+    expect(scenes[1].kind).toBe('encounter');
+    expect((scenes[1] as unknown as { isEncounter?: boolean }).isEncounter).toBe(true);
+    expect((scenes[1] as unknown as { encounterStakes?: string }).encounterStakes).toContain('immediate safety');
+    expect((scenes[1] as unknown as { encounterBuildup?: string }).encounterBuildup).toContain('personal');
+    expect((scenes[1] as unknown as { encounterBeatPlan?: string[] }).encounterBeatPlan?.length).toBeGreaterThanOrEqual(3);
+    expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
+  });
+
+  it('keeps routed playable atoms as context only in the source scene', () => {
+    const scenes = [
+      scene({
+        id: 's1-arrival',
+        order: 0,
+        title: 'Arrival',
+        dramaticPurpose: 'The protagonist arrives in the city.',
+        requiredBeats: [{
+          id: 'broad-chain',
+          tier: 'authored',
+          sourceTurn: 'The protagonist arrives with two suitcases and then is attacked in the park.',
+          mustDepict: 'The protagonist arrives with two suitcases and then is attacked in the park.',
+        }],
+      }),
+      scene({
+        id: 's1-park',
+        order: 1,
+        kind: 'standard',
+        title: 'Park threat',
+        dramaticPurpose: 'In the park, an attacker attacks the protagonist.',
+        locations: ['Park'],
+      }),
+    ];
+
+    finalizeEpisodeSceneOwnership(scenes);
+
+    expect(scenes[0].requiredBeats).toBeUndefined();
+    expect(scenes[0].sourceContextIds?.length).toBeGreaterThan(0);
+    expect(scenes[1].kind).toBe('encounter');
+    expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
+  });
+
+  it('is idempotent: re-finalizing the same scene graph preserves routed ownership (C2)', () => {
+    const scenes = [
+      scene({
+        id: 's1-arrival',
+        order: 0,
+        title: 'Arrival',
+        dramaticPurpose: 'The protagonist arrives in the city.',
+        requiredBeats: [{
+          id: 'broad-chain',
+          tier: 'authored',
+          sourceTurn: 'The protagonist arrives with two suitcases and then is attacked in the park.',
+          mustDepict: 'The protagonist arrives with two suitcases and then is attacked in the park.',
+        }],
+      }),
+      scene({
+        id: 's1-park',
+        order: 1,
+        kind: 'standard',
+        title: 'Park threat',
+        dramaticPurpose: 'In the park, an attacker attacks the protagonist.',
+        locations: ['Park'],
+      }),
+    ];
+
+    finalizeEpisodeSceneOwnership(scenes);
+    // Routed ownership landed on the park scene, and the source contract was
+    // drained off the arrival scene.
+    expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
+    expect(scenes[0].requiredBeats).toBeUndefined();
+
+    // Snapshot the enumerable scene state (the persisted shape) after the first
+    // finalize. Before the idempotency guard, a second finalize would run
+    // clearStaleOwnership and then fail to re-derive the drained atom, wiping
+    // scenes[1].treatmentAtomIds to undefined.
+    const afterFirst = JSON.parse(JSON.stringify(scenes));
+
+    finalizeEpisodeSceneOwnership(scenes);
+
+    expect(scenes[1].treatmentAtomIds?.length).toBeGreaterThan(0);
+    expect(JSON.parse(JSON.stringify(scenes))).toEqual(afterFirst);
+
+    // A third pass is also a no-op.
+    finalizeEpisodeSceneOwnership(scenes);
+    expect(JSON.parse(JSON.stringify(scenes))).toEqual(afterFirst);
   });
 
   it('feeds owned treatment atoms into the focused construction prompt', () => {

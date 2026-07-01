@@ -149,6 +149,98 @@ describe('sceneContractBuilders', () => {
     expect(input.keyBeats.some((beat) => beat.startsWith('PEAK:'))).toBe(true);
   });
 
+  it('hydrates a complete stakes ladder for opening scenes with empty key beats', () => {
+    const input = scene({
+      id: 's1-arrival-cold-open',
+      name: 'arrival cold open',
+      location: 'New City Apartment',
+      narrativeRole: 'setup',
+      keyBeats: [],
+      requiredBeats: [{
+        id: 'rb-cold-open',
+        tier: 'coldopen',
+        sourceTurn: 'The protagonist arrives alone and tries to make reinvention look effortless.',
+        mustDepict: 'The protagonist arrives alone and turns a private call into proof that reinvention has a cost.',
+      }],
+      coldOpenProfile: {
+        id: 'cold-open-profile-s1',
+        sceneId: 's1-arrival-cold-open',
+        mode: 'new_normal',
+        archetype: 'status_quo_shift',
+        storyCircleBeats: ['you', 'need'],
+        storyCircleFulfillment: {
+          beats: ['you', 'need'],
+          combinedBeats: ['you', 'need'],
+          baseline: 'The protagonist arrives alone and tries to make reinvention look effortless.',
+          need: 'The protagonist needs the move to mean more than escape.',
+          collision: 'Private reinvention collides with the need to prove the move has meaning.',
+          sourceContractIds: ['story-circle-you', 'story-circle-need'],
+        },
+        centralTurn: 'Private reinvention collides with the need to prove the move has meaning.',
+        microConflict: 'A private call exposes the cost of making the move look effortless.',
+        openQuestion: 'Can reinvention survive its first public test?',
+        activeCastLimit: 2,
+        beatBudget: { min: 4, recommended: 5, max: 7 },
+        exitHook: 'End on the first consequence of making reinvention public.',
+        sourceContractIds: ['story-circle-you', 'story-circle-need'],
+        selectedConcepts: [],
+        routedConceptIds: [],
+      },
+    });
+
+    applySceneContract(input, {
+      sceneIndex: 0,
+      nextSceneId: 's1-1',
+      episodeSynopsis: 'A fresh start becomes public pressure.',
+    });
+
+    expect(input.keyBeats.length).toBeGreaterThanOrEqual(5);
+    expect(input.keyBeats.map((beat) => beat.split(':')[0])).toEqual([
+      'REST',
+      'RISK',
+      'LEVERAGE',
+      'PEAK',
+      'CONSEQUENCE',
+    ]);
+    expect(input.keyBeats.join('\n')).toMatch(/risk|cost|leverage|narrows|consequence|pressure/i);
+  });
+
+  it('replaces generic single-peak repair beats with a full stakes ladder', () => {
+    const forcedReaction = 'The protagonist must decide whether private proof becomes public danger.';
+    const input = scene({
+      id: 's1-4',
+      name: 'release scene 4',
+      location: 'Apartment',
+      narrativeRole: 'release',
+      dramaticQuestion: '',
+      wantVsNeed: '',
+      conflictEngine: '',
+      description: '',
+      narrativeFunction: '',
+      keyBeats: [`PEAK: ${forcedReaction}`],
+      turnContract: {
+        turnId: 's1-4-turn',
+        source: 'planner',
+        centralTurn: forcedReaction,
+        beforeState: 'The episode fallout is still private.',
+        turnEvent: forcedReaction,
+        afterState: 'The consequence becomes public enough to reshape the next choice.',
+        handoff: 'Close on the next pressure.',
+      },
+    });
+
+    applySceneContract(input, {
+      sceneIndex: 3,
+      episodeSynopsis: 'A private rescue becomes public pressure.',
+      role: 'release',
+    });
+
+    expect(input.keyBeats.length).toBeGreaterThanOrEqual(5);
+    expect(input.keyBeats.filter((beat) => /^PEAK:/i.test(beat))).toHaveLength(1);
+    expect(input.keyBeats.join('\n')).toMatch(/REST:|RISK:|LEVERAGE:|PEAK:|CONSEQUENCE:/);
+    expect(input.keyBeats.join('\n')).toMatch(/cost|public|danger|consequence|pressure/i);
+  });
+
   it('derives a complete three-layer stakes stack for planned major scenes', () => {
     const input = scene({
       name: 'Kylie arrives in Bucharest',

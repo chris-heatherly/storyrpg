@@ -134,4 +134,121 @@ describe('FullStoryPipeline episode failure policy', () => {
       rmSync(outputDirectory, { recursive: true, force: true });
     }
   });
+
+  it('normalizes stale resumed blueprints before content generation gates run', async () => {
+    const pipeline = await makePipeline('fail_fast');
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      title: 'Episode 1',
+      synopsis: 'Test episode.',
+      arc: {},
+      themes: [],
+      startingSceneId: 's1-cold-open',
+      bottleneckScenes: [],
+      suggestedFlags: [],
+      suggestedScores: [],
+      suggestedTags: [],
+      narrativePromises: [],
+      scenes: [
+        {
+          id: 's1-cold-open',
+          episodeNumber: 1,
+          order: 0,
+          name: 'Cold open',
+          description: 'A traveler reaches the city threshold.',
+          location: 'Station',
+          mood: 'charged',
+          purpose: 'transition',
+          dramaticQuestion: 'Will the traveler cross?',
+          wantVsNeed: 'The traveler wants anonymity but needs action.',
+          conflictEngine: 'The threshold demands action.',
+          npcsPresent: [],
+          narrativeFunction: 'A traveler reaches the city threshold.',
+          keyBeats: [],
+          leadsTo: ['s1-guide'],
+          coldOpenProfile: {
+            id: 'cold-open:1:s1-cold-open',
+            episodeNumber: 1,
+            sceneId: 's1-cold-open',
+            mode: 'new_normal',
+            archetype: 'status_quo_shift',
+            storyCircleBeats: ['you', 'need'],
+            storyCircleFulfillment: {
+              beats: ['you', 'need'],
+              baseline: 'A traveler arrives wounded.',
+              need: 'The traveler needs to act.',
+              collision: 'Arrival forces action.',
+              sourceContractIds: ['you', 'need'],
+            },
+            centralTurn: 'A traveler reaches the city threshold.',
+            microConflict: 'The traveler wants anonymity, but the threshold demands action.',
+            openQuestion: 'Will the traveler cross?',
+            activeCastLimit: 1,
+            beatBudget: { min: 6, recommended: 8, max: 10 },
+            exitHook: 'End on the threshold.',
+            sourceContractIds: ['you', 'need'],
+            selectedConcepts: [],
+          },
+          requiredBeats: [{
+            id: 'opening-arrival',
+            tier: 'coldopen',
+            sourceTurn: 'A traveler reaches the city threshold.',
+            mustDepict: 'A traveler reaches the city threshold.',
+          }],
+        },
+        {
+          id: 's1-guide',
+          episodeNumber: 1,
+          order: 1,
+          name: 'Guide',
+          description: 'A guide opens the next door.',
+          location: 'Station',
+          mood: 'charged',
+          purpose: 'transition',
+          dramaticQuestion: 'Will the traveler accept help?',
+          wantVsNeed: 'The traveler wants control but needs help.',
+          conflictEngine: 'The guide has terms.',
+          npcsPresent: [],
+          narrativeFunction: 'A guide opens the next door.',
+          keyBeats: [],
+          leadsTo: [],
+          turnContract: {
+            turnId: 'guide-turn',
+            source: 'planner',
+            centralTurn: 'A guide opens the next door.',
+            beforeState: 'The traveler is alone.',
+            turnEvent: 'A guide opens the next door.',
+            afterState: 'The traveler has a way forward.',
+            handoff: 'Enter the next threshold.',
+          },
+          requiredBeats: [
+            {
+              id: 'duplicate-cold-open',
+              tier: 'coldopen',
+              sourceTurn: 'A traveler reaches the city threshold.',
+              mustDepict: 'A traveler reaches the city threshold.',
+            },
+            {
+              id: 'project-logline',
+              tier: 'authored',
+              sourceTurn: 'She starts Dating After Dusk.',
+              mustDepict: 'She starts Dating After Dusk.',
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = pipeline.finalizeEpisodeBlueprintSceneOwnershipForPipeline({
+      blueprint,
+      episodeNumber: 1,
+      source: 'pipeline_resume',
+    });
+
+    expect(result.wasStale).toBe(true);
+    expect(result.issues).toEqual([]);
+    expect(result.drainedRequiredBeatIds).toEqual(expect.arrayContaining(['project-logline']));
+    expect(blueprint.sceneOwnershipStamp.version).toBe('episode-scene-ownership-v2');
+    expect(blueprint.scenes[1].requiredBeats).toEqual([]);
+  });
 });

@@ -112,6 +112,116 @@ describe('sceneLocks', () => {
     }));
   });
 
+  it('fails when an owned scene has a lock but emits no reader-facing prose beats', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: {
+        number: 2,
+        title: 'Two',
+        scenes: [{
+          id: 's2-owned',
+          name: 'Owned Empty Scene',
+          beats: [],
+          startingBeatId: '',
+          turnContract: {
+            turnId: 'turn-1',
+            source: 'treatment',
+            centralTurn: 'The protagonist meets the guide and crosses the threshold.',
+            beforeState: 'Alone outside.',
+            turnEvent: 'The guide arrives.',
+            afterState: 'No longer alone.',
+            handoff: 'They enter the next location.',
+          },
+          sceneEventOwnership: {
+            id: 's2-owned-event-ownership',
+            episodeNumber: 2,
+            sceneId: 's2-owned',
+            ownedEvents: [{
+              key: 'cue:socialMeet',
+              cue: 'socialMeet',
+              text: 'The protagonist meets the guide.',
+              sourceContractIds: ['turn-1'],
+            }],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: ['turn-1'],
+            diagnostics: [],
+            promptGuidance: [],
+          },
+        }],
+      } as unknown as Episode,
+      validationResults: [sceneValidation('s2-owned')],
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.validation.issues).toContainEqual(expect.objectContaining({
+      validator: 'SceneLockGate',
+      severity: 'error',
+      code: 'empty_owned_scene_prose',
+      path: 'episodes[2].scenes[s2-owned].beats',
+    }));
+  });
+
+  it('uses blueprint ownership metadata when assembled scenes lost generator-only profile fields', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: {
+        number: 2,
+        title: 'Two',
+        scenes: [{ id: 's2-blueprint-owned', name: 'Runtime Empty', beats: [], startingBeatId: '' }],
+      } as unknown as Episode,
+      blueprintScenes: [{
+        id: 's2-blueprint-owned',
+        sceneConstructionProfile: {
+          id: 'profile',
+          episodeNumber: 2,
+          sceneId: 's2-blueprint-owned',
+          primaryTurn: {
+            id: 'primary',
+            source: 'sceneTurn',
+            text: 'The scene stages a concrete threshold turn.',
+            sourceContractIds: ['primary'],
+          },
+          obligations: [{
+            source: 'sceneTurn',
+            id: 'primary',
+            slot: 'primary_turn',
+            text: 'The scene stages a concrete threshold turn.',
+            reason: 'One scene, one dramatic turn.',
+            hardUnits: 1,
+            softUnits: 0,
+          }],
+          sourceContractIds: ['primary'],
+          activeCast: [],
+          capacity: {
+            hardUnits: 1,
+            softUnits: 0,
+            totalUnits: 1,
+            maxHardUnits: 3,
+            maxTotalUnits: 5,
+            activeCastCount: 0,
+            maxActiveCast: 3,
+            activeConflictCount: 1,
+            introductionCount: 0,
+            explicitTimeCueCount: 0,
+            explicitLocationCueCount: 0,
+            beatBudget: { min: 2, recommended: 3, max: 5 },
+          },
+          routedObligationIds: [],
+          conflictDiagnostics: [],
+          promptGuidance: [],
+        },
+      }],
+      validationResults: [sceneValidation('s2-blueprint-owned')],
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.validation.issues.map((issue) => issue.code)).toContain('empty_owned_scene_prose');
+  });
+
   it('names the durable scene lock sidecar and merges validation summaries', () => {
     expect(sceneLockArtifactName(3)).toBe('episode-3-scene-locks.json');
 

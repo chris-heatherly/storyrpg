@@ -23,6 +23,8 @@ import type {
 } from '../../types/scenePlan';
 import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
+import { uniqueMajorLocationCues } from './sceneLocationCues';
+import { atomizeTreatmentText } from './treatmentEventAtomizer';
 
 export interface SceneConstructionChoicePoint {
   type?: string;
@@ -86,6 +88,12 @@ export interface SceneConstructionSceneLike {
   choicePoint?: SceneConstructionChoicePoint;
   hasChoice?: boolean;
   recommendedBeatCount?: number;
+}
+
+export interface SceneConstructionApplicationResult {
+  sceneId?: string;
+  drainedRequiredBeatIds: string[];
+  demotedContextIds: string[];
 }
 
 export interface SceneConstructionProfileOptions {
@@ -232,23 +240,7 @@ function hasMultipleTimeCues(value: unknown): boolean {
 }
 
 function locationCueCount(scene: SceneConstructionSceneLike, activeTexts: string[]): number {
-  const primaryDeclaredLocation = scene.location || scene.locations?.[0];
-  const declared = new Set([primaryDeclaredLocation].map(normalize).filter(Boolean));
-  const rawText = activeTexts.join(' ');
-  const activeLocations = new Set(declared);
-  const capitalizedVenueMatches = rawText.match(/\b(?:at|in|inside|outside|to|from)\s+(?:the\s+|a\s+|an\s+)?(?:[A-ZÀ-Ž][A-Za-zÀ-ž'’-]+(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž'’-]+){0,2}\s+)?(?:Apartment|Archive|Bar|Bookshop|Bookstore|Cafe|Café|Club|Dock|Estate|Garden|Hotel|House|Library|Market|Museum|Office|Park|Rooftop|Shop|Station|Studio|Venue)\b/g) ?? [];
-  const categoryVenueMatches = rawText.match(/\b(?:at|in|inside|outside|to|from)\s+(?:the\s+|a\s+|an\s+)?(?:apartment|archive|bar|bookshop|bookstore|cafe|café|club|dock|estate|garden|hotel|house|library|market|museum|office|park|rooftop|shop|station|studio|venue)\b/gi) ?? [];
-  const namedPlaceMatches = [...capitalizedVenueMatches, ...categoryVenueMatches];
-  const normalizeLocationMatch = (match: string) => normalize(match.replace(/^(?:at|in|inside|outside|to|from)\s+(?:the\s+|a\s+|an\s+)?/i, ''));
-  for (const match of namedPlaceMatches) {
-    const candidate = normalizeLocationMatch(match);
-    if (!candidate) continue;
-    const alreadyCovered = [...activeLocations].some((existing) =>
-      existing === candidate || existing.includes(candidate) || candidate.includes(existing),
-    );
-    if (!alreadyCovered) activeLocations.add(candidate);
-  }
-  return activeLocations.size;
+  return uniqueMajorLocationCues([scene.location, scene.locations?.[0], activeTexts.join(' ')]).length;
 }
 
 function beatText(beat: RequiredBeat | undefined): string {
@@ -257,6 +249,38 @@ function beatText(beat: RequiredBeat | undefined): string {
 
 function isHardRequiredBeat(beat: RequiredBeat | undefined): boolean {
   return Boolean(beat && (beat.tier === 'authored' || beat.tier === 'signature' || beat.tier === 'coldopen'));
+}
+
+function isBroadLedgerOnlyRequiredBeat(scene: SceneConstructionSceneLike, beat: RequiredBeat): boolean {
+  if (beat.tier === 'signature' || !isHardRequiredBeat(beat)) return false;
+  const text = beatText(beat);
+  if (!text) return false;
+  const atoms = atomizeTreatmentText({
+    episodeNumber: scene.episodeNumber ?? 1,
+    text,
+    sourceSection: `requiredBeat:${beat.id}`,
+    idPrefix: `${scene.id ?? 'scene'}-${beat.id}`,
+  });
+  return atoms.length > 0 && atoms.every((atom) => atom.ownershipIntent === 'ledger_only');
+}
+
+function addDemotedRequiredBeatContext(scene: SceneConstructionSceneLike, beat: RequiredBeat, reason: string): string | undefined {
+  const text = beatText(beat);
+  if (!text) return undefined;
+  const id = `demoted-required-beat:${beat.id}`;
+  scene.sourceContextIds = Array.from(new Set([...(scene.sourceContextIds ?? []), id]));
+  if (!(scene.nonCopyableContext ?? []).some((item) => item.id === id)) {
+    scene.nonCopyableContext = [
+      ...(scene.nonCopyableContext ?? []),
+      {
+        id,
+        sourceText: text,
+        eventText: text,
+        sourceSection: reason,
+      },
+    ];
+  }
+  return id;
 }
 
 function isStoryCircleDerivedId(id: string | undefined): boolean {
@@ -852,11 +876,11 @@ function conflictDiagnostics(
   if (totalUnits > maxTotal && !(scene.kind === 'encounter' || scene.isEncounter) && (scene.recommendedBeatCount ?? 0) < Math.ceil(totalUnits) + 1) {
     diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has ${totalUnits} active construction units, above ${maxTotal}, without enough beat budget.`);
   }
-  const locationCount = locationCueCount(scene, activeTexts);
+  const activePrimaryLike = obligations.filter((item) => item.slot === 'primary_turn' || item.slot === 'must_stage');
+  const locationCount = locationCueCount(scene, activePrimaryLike.map((item) => item.text));
   if (locationCount >= 2 && !(scene.kind === 'encounter' || scene.isEncounter)) {
     diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has active obligations tied to ${locationCount} major location cue(s); split or route location changes before prose.`);
   }
-  const activePrimaryLike = obligations.filter((item) => item.slot === 'primary_turn' || item.slot === 'must_stage');
   const nonDuplicateStageTexts = activePrimaryLike
     .map((item) => item.text)
     .filter((text, index, arr) => arr.findIndex((candidate) => substantiallyDuplicates(candidate, text)) === index);
@@ -1099,6 +1123,95 @@ export function buildSceneConstructionPromptView<T extends SceneConstructionScen
       : scene.keyBeats,
     choicePoint: choiceActive ? stripRoutedChoicePoint(scene.choicePoint as ChoicePointLike | undefined, profile) as T['choicePoint'] : undefined,
   };
+}
+
+function openingSceneIds<T extends SceneConstructionSceneLike>(scenes: T[]): Set<string | undefined> {
+  const byEpisode = new Map<number | string, T[]>();
+  scenes.forEach((scene, index) => {
+    const key = scene.episodeNumber ?? 'episode';
+    const list = byEpisode.get(key) ?? [];
+    const fallbackOrder = scene.order ?? index;
+    list.push({ ...scene, order: fallbackOrder });
+    byEpisode.set(key, list);
+  });
+  const ids = new Set<string | undefined>();
+  for (const list of byEpisode.values()) {
+    const first = [...list].sort((a, b) =>
+      (a.order ?? 999) - (b.order ?? 999) || cleanText(a.id).localeCompare(cleanText(b.id)),
+    )[0];
+    ids.add(first?.id);
+  }
+  return ids;
+}
+
+export function applySceneConstructionProfileToScene<T extends SceneConstructionSceneLike>(
+  scene: T,
+  options: { isOpeningScene?: boolean } = {},
+): SceneConstructionApplicationResult {
+  const result: SceneConstructionApplicationResult = {
+    sceneId: scene.id,
+    drainedRequiredBeatIds: [],
+    demotedContextIds: [],
+  };
+  if (!scene.sceneConstructionProfile) {
+    scene.sceneConstructionProfile = compileSceneConstructionProfile(scene, { episodeNumber: scene.episodeNumber });
+  }
+  const promptView = buildSceneConstructionPromptView(scene);
+  scene.npcsPresent = promptView.npcsPresent;
+  scene.npcsInvolved = promptView.npcsInvolved;
+  scene.signatureMoment = promptView.signatureMoment;
+  scene.storyCircleBeatContracts = promptView.storyCircleBeatContracts;
+  scene.relationshipPacing = promptView.relationshipPacing;
+  scene.mechanicPressure = promptView.mechanicPressure;
+  scene.authoredTreatmentFields = promptView.authoredTreatmentFields;
+  scene.seasonPromiseContracts = promptView.seasonPromiseContracts;
+  scene.stakesArchitectureContracts = promptView.stakesArchitectureContracts;
+  scene.arcPressureContracts = promptView.arcPressureContracts;
+  scene.branchConsequenceContracts = promptView.branchConsequenceContracts;
+  scene.endingRealizationContracts = promptView.endingRealizationContracts;
+  scene.failureModeAuditContracts = promptView.failureModeAuditContracts;
+  scene.characterTreatmentContracts = promptView.characterTreatmentContracts;
+  scene.worldTreatmentContracts = promptView.worldTreatmentContracts;
+  scene.keyBeats = promptView.keyBeats;
+  scene.choicePoint = promptView.choicePoint;
+
+  const nextRequiredBeats: RequiredBeat[] = [];
+  for (const beat of promptView.requiredBeats ?? []) {
+    const demotionReasons: string[] = [];
+    if (beat.tier === 'coldopen' && !options.isOpeningScene) {
+      demotionReasons.push('non-opening scene cannot own cold-open required beats');
+    }
+    if (isBroadLedgerOnlyRequiredBeat(scene, beat)) {
+      demotionReasons.push('broad/logline treatment text remains support or ledger metadata');
+    }
+
+    if (demotionReasons.length > 0) {
+      result.drainedRequiredBeatIds.push(beat.id);
+      const contextId = addDemotedRequiredBeatContext(scene, beat, demotionReasons.join('; '));
+      if (contextId) result.demotedContextIds.push(contextId);
+      continue;
+    }
+    nextRequiredBeats.push(beat);
+  }
+  scene.requiredBeats = nextRequiredBeats;
+  return result;
+}
+
+export function applySceneConstructionProfilesToScenes<T extends SceneConstructionSceneLike>(
+  scenes: T[],
+  options: SceneConstructionProfileOptions = {},
+): {
+  diagnostics: SceneConstructionProfileDiagnostic[];
+  applications: SceneConstructionApplicationResult[];
+} {
+  const diagnostics = attachSceneConstructionProfiles(scenes, options);
+  const openingIds = openingSceneIds(scenes);
+  const applications = scenes.map((scene) =>
+    applySceneConstructionProfileToScene(scene, {
+      isOpeningScene: Boolean(scene.coldOpenProfile) || openingIds.has(scene.id),
+    }),
+  );
+  return { diagnostics, applications };
 }
 
 export function buildSceneConstructionProfileSection(scene: SceneConstructionSceneLike | undefined): string {

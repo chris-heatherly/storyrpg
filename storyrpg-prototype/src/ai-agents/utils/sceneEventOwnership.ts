@@ -19,6 +19,8 @@ export interface SceneEventOwnershipSceneLike {
   id?: string;
   episodeNumber?: number;
   order?: number;
+  kind?: string;
+  isEncounter?: boolean;
   name?: string;
   title?: string;
   description?: string;
@@ -195,11 +197,11 @@ function ownershipCuesForSource(
     return [source.text as SceneEventOwnershipCue];
   }
   const cues = cuesFor(source.text);
-  if (source.slot === 'primary_turn' || primaryCues.size === 0) return cues;
+  if (source.slot === 'primary_turn' || source.slot === 'must_stage') return cues;
+  if (source.slot !== 'must_support' || cues.length === 0 || primaryCues.size === 0) return [];
+  if (isAbstractSupportSource(source)) return [];
   const filtered = cues.filter((cue) => primaryCues.has(cue));
-  if (filtered.length === 0 && isAbstractSupportSource(source)) return [];
-  if (cues.length <= 1) return cues;
-  return filtered.length > 0 ? filtered : cues;
+  return filtered.length === cues.length ? filtered : [];
 }
 
 function isAbstractSupportSource(source: OwnershipSourceText): boolean {

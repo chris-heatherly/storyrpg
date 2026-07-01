@@ -2389,4 +2389,38 @@ describe('planned scene obligation binder', () => {
     expect(writing?.requiredBeats?.map((beat) => beat.id)).toContain('late-post');
     expect((helper?.order ?? 0) > (writing?.order ?? Number.POSITIVE_INFINITY)).toBe(true);
   });
+
+  it('drains cold-open beats from non-opening scenes by retiering them as scene-local authored obligations', () => {
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-cold-open',
+        order: 0,
+        title: 'Cold open',
+        dramaticPurpose: 'The protagonist arrives in a new city with visible private pressure.',
+        locations: ['Station'],
+      }),
+      scene({
+        id: 's1-guide',
+        order: 1,
+        title: 'Guide meeting',
+        dramaticPurpose: 'The protagonist meets a local guide at the station.',
+        locations: ['Station'],
+        requiredBeats: [{
+          id: 'coldopen-guide',
+          sourceTurn: 'The protagonist meets a local guide at the station.',
+          mustDepict: 'The protagonist meets a local guide at the station.',
+          tier: 'coldopen',
+        }],
+      }),
+    ], { episodeNumber: 1 });
+
+    const guide = result.scenes.find((item) => item.id === 's1-guide');
+    expect(guide?.requiredBeats?.map((beat) => beat.tier)).toEqual(['authored']);
+    expect(guide?.requiredBeats?.[0].id).toBe('coldopen-guide');
+    expect(result.report.decisions.some((decision) =>
+      decision.contractId === 'coldopen-guide'
+      && decision.action === 'rebound'
+      && decision.reason.includes('Non-opening scenes cannot own cold-open beats')
+    )).toBe(true);
+  });
 });

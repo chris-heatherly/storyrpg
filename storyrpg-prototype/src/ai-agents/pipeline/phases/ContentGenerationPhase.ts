@@ -79,6 +79,7 @@ import {
   SceneValidationResult,
   aggregateValidationResults,
 } from '../../validators';
+import { SceneOwnershipPreflightValidator } from '../../validators/SceneOwnershipPreflightValidator';
 import { scanEncounterTemplateProse } from '../../validators/EncounterQualityValidator';
 import { CallbackLedger } from '../callbackLedger';
 import {
@@ -492,17 +493,29 @@ export class ContentGenerationPhase {
     const sceneEventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: densityEpisodeNumber })
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
+    const sceneOwnershipPreflightIssues = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: densityEpisodeNumber,
+      storyCircleRole: brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === densityEpisodeNumber)?.storyCircleRole,
+      scenes: blueprint.scenes,
+    }).issues
+      .filter((issue) => issue.severity === 'error')
+      .map((issue) => issue.message);
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {
         episodeNumber: densityEpisodeNumber,
         generatedAt: new Date().toISOString(),
         issues: sceneConstructionIssues,
         eventOwnershipIssues: sceneEventOwnershipIssues,
+        sceneOwnershipPreflightIssues,
         profiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
         eventOwnershipProfiles: blueprint.scenes.map((scene) => scene.sceneEventOwnership),
       });
     }
-    const preProseConstructionIssues = [...sceneConstructionIssues, ...sceneEventOwnershipIssues];
+    const preProseConstructionIssues = [
+      ...sceneConstructionIssues,
+      ...sceneEventOwnershipIssues,
+      ...sceneOwnershipPreflightIssues,
+    ];
     if (preProseConstructionIssues.length > 0) {
       const summary = preProseConstructionIssues.slice(0, 5).join(' | ');
       context.emit({

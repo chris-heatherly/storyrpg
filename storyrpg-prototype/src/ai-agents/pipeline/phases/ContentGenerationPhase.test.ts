@@ -400,7 +400,7 @@ describe('ContentGenerationPhase treatment density gate', () => {
       .rejects.toMatchObject({
         name: 'PipelineError',
         phase: 'episode_architecture',
-        agent: 'TreatmentDensityGate',
+        agent: 'SceneConstructionGate',
       });
     expect(calls).toEqual([]);
     expect(emitted.some((event) => event.message?.includes('blocked content generation'))).toBe(true);

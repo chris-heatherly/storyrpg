@@ -21,6 +21,7 @@ import type {
   StoryCircleBeatRealizationContract,
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
+import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 
 export interface SceneConstructionChoicePoint {
@@ -61,6 +62,9 @@ export interface SceneConstructionSceneLike {
   npcsInvolved?: string[];
   keyBeats?: string[];
   requiredBeats?: RequiredBeat[];
+  treatmentAtomIds?: string[];
+  sourceContextIds?: string[];
+  nonCopyableContext?: Array<Pick<TreatmentEventAtom, 'id' | 'sourceText' | 'eventText' | 'sourceSection'>>;
   signatureMoment?: string;
   turnContract?: SceneTurnContract;
   coldOpenProfile?: ColdOpenProfile;
@@ -507,6 +511,33 @@ function initialObligations(scene: SceneConstructionSceneLike, primary: SceneCon
   }
   if (scene.signatureMoment) {
     pushObligation(obligations, 'signatureMoment', 'signatureMoment', scene.signatureMoment, 'must_stage', 'Signature moment is binding when assigned to this scene.', 1, 0);
+  }
+  const atomContextById = new Map((scene.nonCopyableContext ?? []).map((atom) => [atom.id, atom]));
+  for (const atomId of scene.treatmentAtomIds ?? []) {
+    const atom = atomContextById.get(atomId);
+    pushObligation(
+      obligations,
+      'treatmentAtom',
+      atomId,
+      atom?.eventText || atom?.sourceText || atomId,
+      'must_stage',
+      'Primary treatment event atom belongs to this scene and must be staged here, not merely mentioned elsewhere.',
+      1,
+      0,
+    );
+  }
+  for (const atomId of scene.sourceContextIds ?? []) {
+    const atom = atomContextById.get(atomId);
+    pushObligation(
+      obligations,
+      'treatmentAtom',
+      atomId,
+      atom?.eventText || atom?.sourceText || atomId,
+      'metadata_only',
+      'Treatment atom is context for implication or continuity only; do not stage it as a new event here.',
+      0,
+      0.25,
+    );
   }
   for (const contract of scene.storyCircleBeatContracts ?? []) {
     pushObligation(obligations, 'storyCircle', contract.id, contract.eventAtoms?.join(' | ') || contract.sourceText, 'must_support', 'Story Circle contract must be fulfilled through the scene turn.', 0.75, 0);

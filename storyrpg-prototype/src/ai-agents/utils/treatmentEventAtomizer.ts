@@ -19,12 +19,15 @@ const NON_PLAYABLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'story circle summary', pattern: /\b(?:story circle|you\s*->\s*need|go\s*->\s*search|find\s*->\s*take|return\s*->\s*change)\b/i },
   { label: 'abstract dramatic question', pattern: /^(?:can|will|what|who|whether|how)\b[^.!?]{10,}\?$/i },
   { label: 'future payoff bundle', pattern: /\b(?:future payoff|payoff window|callback|later episode|next episode|season-long|eventual)\b/i },
+  { label: 'choice menu list', pattern: /\b(?:canonical|choice menu|option hints?|what name do you give|scream\s*,\s*run\s*,\s*freeze|(?:^|[,;])\s*or\s+[^.!?]+)\b/i },
   { label: 'planning register verb', pattern: /\b(?:establishing|establishes|serves|pressure|residue|turn|anchors?|proof that|demonstrates|sets up|pays off)\b/i },
   { label: 'craft instruction', pattern: /\b(?:dramatize|show that|reveal that|explore|underline|symbolize|signal|foreshadow)\b/i },
   { label: 'summary-only phrasing', pattern: /\b(?:as a|with the intent to|in order to|must learn to|struggles with)\b/i },
 ];
 
 const PLAYABLE_FIELD_LABEL = /^\**(?:high-level description|description|sequence|episode events?|scene events?)\**\s*:\s*/i;
+const LEDGER_ONLY_CONTEXT_RE = /\b(?:future payoff|payoff window|callback|later episode|next episode|season-long|eventual|information ledger|ending state|possible ending|route math|downstream)\b/i;
+const SUPPORT_CONTEXT_RE = /\b(?:theme|premise|thesis|audience promise|tonal promise|wants?|needs?|lie|wound|lack|desire|fear|pressure|relationship|trust|intimacy|belonging|identity|baseline|normal)\b/i;
 
 const ACTION_PATTERNS: Array<{ type: TreatmentEventType; pattern: RegExp }> = [
   { type: 'arrival', pattern: /\b(?:arrives?|enters?|returns?|comes to|reaches|lands at)\b/i },
@@ -115,7 +118,10 @@ function eventCueMetadata(
   playable: boolean,
 ): Pick<TreatmentEventAtom, 'eventCues' | 'dramaticPriority' | 'sceneKindHint' | 'ownershipIntent'> {
   if (!playable) {
-    return { ownershipIntent: 'ledger_only', dramaticPriority: 0 };
+    return {
+      ownershipIntent: supportIntentForContext(eventText),
+      dramaticPriority: 0,
+    };
   }
   const cueSet = detectPrimaryStoryEventCues(eventText);
   const cues = Array.from(cueSet) as StoryEventCue[];
@@ -127,6 +133,12 @@ function eventCueMetadata(
     sceneKindHint: cueSet.has('threatEncounter') ? 'encounter' : 'standard',
     ownershipIntent: 'must_stage',
   };
+}
+
+function supportIntentForContext(text: string): TreatmentEventAtom['ownershipIntent'] {
+  if (LEDGER_ONLY_CONTEXT_RE.test(text)) return 'ledger_only';
+  if (SUPPORT_CONTEXT_RE.test(text)) return 'may_support';
+  return 'ledger_only';
 }
 
 export function inferEventType(text: string): TreatmentEventType {

@@ -721,6 +721,60 @@ function isEpisodeOpeningScene(scene: PlannedScene, scenes: PlannedScene[]): boo
   return episodeScenes[0]?.id === scene.id;
 }
 
+function sceneOwningColdOpenBeat(scene: PlannedScene, scenes: PlannedScene[], beat: RequiredBeat): PlannedScene {
+  if (beat.tier !== 'coldopen' || isEpisodeOpeningScene(scene, scenes)) return scene;
+  const text = beatText(beat);
+  const target = primaryCueTargetForOverloadBeat(scenes, scene, beat) ?? bestSceneForBeat(text, scenes, beat.id);
+  return target ?? scenes
+    .filter((candidate) => candidate.episodeNumber === scene.episodeNumber)
+    .sort((a, b) => a.order - b.order)[0] ?? scene;
+}
+
+function retierColdOpenBeatForOwner(beat: RequiredBeat, owner: PlannedScene, scenes: PlannedScene[]): RequiredBeat {
+  if (beat.tier !== 'coldopen' || isEpisodeOpeningScene(owner, scenes)) return beat;
+  return {
+    ...beat,
+    tier: 'authored',
+  };
+}
+
+function drainNonOpeningColdOpenBeats(
+  scenes: PlannedScene[],
+  decisions: PlannedSceneBindingDecision[],
+): void {
+  const additions = new Map<string, RequiredBeat[]>();
+  for (const scene of scenes) {
+    if (isEpisodeOpeningScene(scene, scenes)) continue;
+    const kept: RequiredBeat[] = [];
+    for (const beat of scene.requiredBeats ?? []) {
+      if (beat.tier !== 'coldopen') {
+        kept.push(beat);
+        continue;
+      }
+      const owner = sceneOwningColdOpenBeat(scene, scenes, beat);
+      additions.set(owner.id, [
+        ...(additions.get(owner.id) ?? []),
+        retierColdOpenBeatForOwner(beat, owner, scenes),
+      ]);
+      decisions.push({
+        action: 'rebound',
+        issueKind: 'wrong_scene_binding',
+        contractId: beat.id,
+        contractKind: 'pressure_lane',
+        episodeNumber: scene.episodeNumber,
+        fromSceneId: scene.id,
+        toSceneId: owner.id,
+        reason: 'Non-opening scenes cannot own cold-open beats; the beat was routed to the opening owner or retiered as a scene-local authored obligation for the best matching scene.',
+      });
+    }
+    replaceRequiredBeats(scene, kept);
+  }
+  for (const scene of scenes) {
+    const moved = additions.get(scene.id) ?? [];
+    if (moved.length > 0) scene.requiredBeats = [...(scene.requiredBeats ?? []), ...moved];
+  }
+}
+
 function isStoryCircleDerivedBeat(beat: RequiredBeat): boolean {
   return /\b(?:story-circle|episode-circle)\b/i.test(beat.id);
 }
@@ -816,7 +870,10 @@ function bestSceneForContract(
   if (scored[0]?.score >= 0.28) return scored[0].scene;
 
   if (CHOICE_KINDS.has(contract.contractKind)) {
-    return sameEpisode.find((scene) => scene.hasChoice) ?? sameEpisode.find((scene) => scene.narrativeRole === 'turn');
+    return sameEpisode.find((scene) => scene.hasChoice)
+      ?? sameEpisode.find((scene) => scene.narrativeRole === 'turn')
+      ?? sameEpisode.find((scene) => contract.targetSceneIds?.includes(scene.id))
+      ?? sameEpisode[0];
   }
   return sameEpisode.find((scene) => scene.narrativeRole !== 'release') ?? sameEpisode[0];
 }
@@ -1617,6 +1674,26 @@ function dedupeAuthoredTreatmentFieldsAgainstSceneBeats(
           episodeNumber: scene.episodeNumber,
           fromSceneId: scene.id,
           reason: 'Choice field mixes multiple scene/time beats; the choice/consequence remains, but final prose stays scene-local.',
+        });
+        kept.push({
+          ...field,
+          requiredRealization: (field.requiredRealization ?? []).filter((item) => item !== 'final_prose'),
+        });
+        continue;
+      }
+      if (
+        field.contractKind === 'major_choice_pressure'
+        && field.requiredRealization?.includes('final_prose')
+        && scene.narrativeRole === 'release'
+      ) {
+        decisions.push({
+          action: 'ledgered',
+          issueKind: 'valid_dense_scene_needs_more_beats',
+          contractId: field.id,
+          contractKind: field.contractKind,
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          reason: 'Choice pressure on a release/helper scene keeps choice/consequence ownership, but final prose stays scene-local to avoid density overload.',
         });
         kept.push({
           ...field,
@@ -2562,6 +2639,7 @@ export function rebindPlannedSceneObligations(
     }
   }
 
+  drainNonOpeningColdOpenBeats(scenes, decisions);
   dedupeRequiredBeats(scenes, decisions);
   // Story-specific split passes were removed; treatment atom ownership and generic
   // density/chronology rules are the authoritative content-agnostic path.

@@ -53,4 +53,18 @@ describe('treatmentEventAtomizer', () => {
     });
     expect(atoms[2].dramaticPriority).toBeGreaterThan(atoms[0].dramaticPriority ?? 0);
   });
+
+  it('separates support pressure from ledger-only context without making either playable', () => {
+    const atoms = atomizeTreatmentText({
+      episodeNumber: 1,
+      text: [
+        'Theme: belonging requires honest risk.',
+        'The protagonist needs to stop observing from a distance.',
+        'Future payoff: the invitation is confirmed in a later episode.',
+      ].join(' '),
+    });
+
+    expect(atoms.map((atom) => atom.isPlayableEvent)).toEqual([false, false, false]);
+    expect(atoms.map((atom) => atom.ownershipIntent)).toEqual(['may_support', 'may_support', 'ledger_only']);
+  });
 });

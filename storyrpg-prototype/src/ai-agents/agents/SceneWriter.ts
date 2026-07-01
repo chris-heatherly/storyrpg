@@ -483,20 +483,26 @@ function joinPromptList(value: unknown, separator = ', ', fallback = ''): string
 }
 
 function buildTreatmentEventPromptSections(scene: SceneBlueprint): string {
+  const contextById = new Map((scene.nonCopyableContext || []).map((atom) => [atom.id, atom]));
+  const atomText = (id: string): string => {
+    const atom = contextById.get(id);
+    return atom?.eventText || atom?.sourceText || id;
+  };
+  const ownedAtoms = (scene.treatmentAtomIds || []).map((id) => `${id}: ${atomText(id)}`);
   const mustDramatize = [
     ...(scene.requiredBeats || []).map((beat) => beat.mustDepict).filter(Boolean),
-    ...(scene.treatmentAtomIds || []).map((id) => `Treatment atom ${id}`),
+    ...ownedAtoms,
   ];
   const continuity = [
     ...(scene.ownedChronologyKeys || []).map((key) => `Chronology key already owned here: ${key}`),
-    ...(scene.sourceContextIds || []).map((id) => `Context atom available for continuity only: ${id}`),
+    ...(scene.sourceContextIds || []).map((id) => `Context atom available for continuity only: ${id}: ${atomText(id)}`),
   ];
   const nonCopyable = scene.nonCopyableContext || [];
   if (mustDramatize.length === 0 && continuity.length === 0 && nonCopyable.length === 0) return '';
   return `
 ### Treatment Event Boundary
-#### Must Dramatize
-${mustDramatize.length ? mustDramatize.map((item) => `- ${item}`).join('\n') : '- No treatment event atoms assigned to this scene.'}
+#### Primary Owned Facts
+${mustDramatize.length ? mustDramatize.map((item) => `- ${item}`).join('\n') : '- No primary treatment facts assigned to this scene.'}
 
 #### Continuity Context
 ${continuity.length ? continuity.map((item) => `- ${item}`).join('\n') : '- None.'}
@@ -504,7 +510,7 @@ ${continuity.length ? continuity.map((item) => `- ${item}`).join('\n') : '- None
 #### Non-Copyable Source Context
 ${nonCopyable.length ? nonCopyable.map((item) => `- ${item.id}: ${item.sourceText || item.eventText}`).join('\n') : '- None.'}
 
-Invariant: non-copyable context may shape implication, tone, and subtext, but must not be quoted, paraphrased, summarized, or turned into beat prose, choice text, visual metadata, or scene takeaways.
+Invariant: primary owned facts are the only treatment facts this scene may newly stage. Continuity and non-copyable context may shape implication, tone, and subtext, but must not be quoted, paraphrased, summarized, or turned into beat prose, choice text, visual metadata, or scene takeaways.
 `;
 }
 

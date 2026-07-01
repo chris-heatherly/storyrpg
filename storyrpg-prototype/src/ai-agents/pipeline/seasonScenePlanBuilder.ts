@@ -47,6 +47,7 @@ import {
 } from '../utils/encounterEventSignature';
 import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfile';
 import { attachSceneEventOwnershipProfiles } from '../utils/sceneEventOwnership';
+import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 
@@ -1740,6 +1741,12 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     branchConsequenceContracts,
   }, scenes);
   const failureModeAuditContracts = assignFailureModeAuditContractsToScenes(plan, scenes);
+  for (const ep of episodes) {
+    finalizeEpisodeSceneOwnership(scenes, {
+      episodeNumber: ep.episodeNumber,
+      storyCircleRole: ep.storyCircleRole,
+    });
+  }
   normalizeRelationshipPacingStages(scenes);
   attachSceneConstructionProfiles(scenes);
   attachSceneEventOwnershipProfiles(scenes);

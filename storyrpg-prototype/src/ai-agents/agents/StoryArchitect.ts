@@ -77,6 +77,7 @@ import { SceneTurnContractValidator } from '../validators/SceneTurnContractValid
 import { EpisodePressureArchitectureValidator } from '../validators/EpisodePressureArchitectureValidator';
 import { EpisodeStoryCircleValidator } from '../validators/EpisodeStoryCircleValidator';
 import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
+import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
 import {
   analyzeEpisodeTreatmentDensity,
   describeTreatmentDensityReport,
@@ -115,6 +116,7 @@ import { collectSceneConstructionProfileIssues } from '../utils/sceneConstructio
 import {
   attachSceneEventOwnershipProfiles,
 } from '../utils/sceneEventOwnership';
+import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import {
   detectPrimaryStoryEventCues,
@@ -3147,6 +3149,16 @@ Remember: The encounter is the heart. Design outward from it.
       (input.seasonPlanDirectives?.plannedScenes ?? []),
       { episodeNumber: input.episodeNumber },
     );
+    const ownership = finalizeEpisodeSceneOwnership(binding.scenes, {
+      episodeNumber: input.episodeNumber,
+      storyCircleRole: input.episodeStoryCircleRole,
+    });
+    if (ownership.routedObligations.length > 0 || ownership.diagnostics.length > 0) {
+      console.info(
+        `[StoryArchitect] Episode scene ownership finalizer episode ${input.episodeNumber}: ` +
+        `${ownership.routedObligations.length} routed obligation(s), ${ownership.diagnostics.length} diagnostic(s)`,
+      );
+    }
     const planned = binding.scenes
       .slice()
       .sort((a, b) => a.order - b.order);
@@ -3243,10 +3255,15 @@ Remember: The encounter is the heart. Design outward from it.
         // Carry authored required beats (scene-level + any encounter-level staged
         // beats) and the signature moment so SceneWriter can depict them in order.
         requiredBeats,
+        treatmentAtomIds: p.treatmentAtomIds,
+        ownedChronologyKeys: p.ownedChronologyKeys,
+        sourceContextIds: p.sourceContextIds,
+        nonCopyableContext: p.nonCopyableContext,
         signatureMoment,
         turnContract,
         coldOpenProfile: p.coldOpenProfile,
         sceneConstructionProfile: p.sceneConstructionProfile,
+        sceneEventOwnership: p.sceneEventOwnership,
         relationshipPacing: p.relationshipPacing,
         mechanicPressure: arcPressureBinding.mechanicPressure,
         authoredTreatmentFields: p.authoredTreatmentFields,
@@ -5943,7 +5960,15 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     const ownershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: input.episodeNumber })
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
-    return [...issues, ...ownershipIssues];
+    const preflight = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: input.episodeNumber,
+      storyCircleRole: input.episodeStoryCircleRole,
+      scenes: blueprint.scenes,
+    });
+    const preflightIssues = preflight.issues
+      .filter((issue) => issue.severity === 'error')
+      .map((issue) => issue.message);
+    return [...issues, ...ownershipIssues, ...preflightIssues];
   }
 
   private buildTreatmentDensityDiagnostics(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Record<string, unknown> {

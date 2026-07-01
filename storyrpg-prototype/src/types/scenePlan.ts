@@ -203,6 +203,7 @@ export interface ColdOpenProfile {
 
 export type SceneConstructionSource =
   | 'requiredBeat'
+  | 'treatmentAtom'
   | 'sceneTurn'
   | 'storyCircle'
   | 'seasonPromise'

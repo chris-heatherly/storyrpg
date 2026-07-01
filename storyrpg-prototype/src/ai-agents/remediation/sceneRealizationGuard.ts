@@ -28,6 +28,11 @@ import { missingMomentTokens, momentDepicted } from './realizationScoring';
 /** The contract surface both SceneBlueprint and (tagged) SceneContent carry. */
 export interface SceneContractSource {
   requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
+  storyCircleBeatContracts?: Array<{
+    beat?: string;
+    sourceText?: string;
+    requiredRealization?: string[];
+  }>;
   signatureMoment?: string;
   choicePoint?: { setsTreatmentSeeds?: string[] };
   encounterSetupContext?: string[];
@@ -64,6 +69,8 @@ export interface InsertMissingMomentOptions {
    * to cluster or blueprint repair instead of deterministic one-scene insertion.
    */
   allowTimelineCuedInsertion?: boolean;
+  /** Default false. Cold-open moments should only be deterministically inserted into the opening scene. */
+  allowColdOpenInsertion?: boolean;
   /** Default false. Overloaded scenes should escalate, not accept more prose. */
   sceneDensityOverloaded?: boolean;
   onSkip?: (missing: MissingMoment, reason: string) => void;
@@ -136,6 +143,18 @@ export function requiredMomentsFor(source: SceneContractSource | undefined): Req
       moment,
       tier,
       validator: tier === 'signature' ? 'SignatureDevicePresenceValidator' : 'RequiredBeatRealizationValidator',
+    });
+  }
+  for (const contract of source.storyCircleBeatContracts ?? []) {
+    const moment = contract.sourceText?.trim();
+    if (!moment) continue;
+    const required = contract.requiredRealization ?? [];
+    if (!required.includes('final_prose') || !required.includes('scene_turn')) continue;
+    if (moments.some((m) => m.moment === moment)) continue;
+    moments.push({
+      moment,
+      tier: `storyCircle:${contract.beat ?? 'beat'}`,
+      validator: 'RequiredBeatRealizationValidator',
     });
   }
   const signature = source.signatureMoment?.trim();
@@ -310,6 +329,10 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
   const safeMissing = missing.filter((m) => {
     if (momentDepicted(m.validator, m.moment, currentProse)) {
       options.onSkip?.(m, 'moment is already depicted in current prose');
+      return false;
+    }
+    if (/^coldopen\b/i.test(m.tier) && !options.allowColdOpenInsertion) {
+      options.onSkip?.(m, 'cold-open moment belongs in the opening scene');
       return false;
     }
     if (isTerseActionSummary(m.moment) && !hasConcreteActionRequirement(m)) {

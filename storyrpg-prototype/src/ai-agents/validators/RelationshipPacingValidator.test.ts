@@ -96,6 +96,31 @@ describe('RelationshipPacingValidator', () => {
     expect(result.issues.filter((issue) => issue.message.includes('direct phone/contact access')).length).toBeGreaterThanOrEqual(2);
   });
 
+  it('allows later private contact after a same-scene speaker introduction', () => {
+    const result = validator.validate({
+      story: story([
+        scene('s1-1', '', [contract({ npcId: 'mika', targetStage: 'acquaintance' })], {
+          beats: [
+            beat('s1-1-b1', '"You made it," she says, already moving toward the door.', { speaker: 'Mika' }),
+            beat('s1-1-b2', 'Mika offers the key card like a test, not a promise.'),
+            beat('s1-1-b3', 'She points toward the street.', {
+              choices: [{
+                id: 'c1',
+                text: 'Ask for a slower start.',
+                outcomeTexts: {
+                  success: 'Mika promises to text you the address once you have unpacked.',
+                },
+              }],
+            }),
+          ],
+        }),
+      ]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('direct phone/contact access'))).toBe(false);
+  });
+
   it('allows private text after the NPC has been introduced on-page', () => {
     const result = validator.validate({
       story: story([

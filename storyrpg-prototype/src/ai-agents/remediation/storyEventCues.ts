@@ -8,7 +8,8 @@ export type StoryEventCue =
   | 'friendDebrief'
   | 'lateNightWriting'
   | 'blogAftermath'
-  | 'endingAftermath';
+  | 'endingAftermath'
+  | 'walkHome';
 
 export const STORY_EVENT_CUE_ORDER: Partial<Record<StoryEventCue, number>> = {
   arrival: 10,
@@ -16,6 +17,7 @@ export const STORY_EVENT_CUE_ORDER: Partial<Record<StoryEventCue, number>> = {
   objectHandoff: 30,
   socialMeet: 40,
   threatEncounter: 50,
+  walkHome: 60,
   lateNightWriting: 70,
   blogAftermath: 80,
 };
@@ -28,6 +30,15 @@ export function normalizeEventCueText(value: string | undefined): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function hasPublicWritingActionCueText(text: string): boolean {
+  const writingObject = /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title)\b/;
+  const concreteWritingAction = /\b(?:writes?|wrote|drafts?|drafted|types?|typed|posts|posted|publishes|published|publish|chooses?\s+(?:a\s+)?codename|chooses?\s+(?:a\s+)?title)\b/;
+  const explicitWritingMoment = /\b(?:[234]\s*a\s*m|[234]\s*am|late night|unable to sleep|numbers in (?:her|your|their) phone|dictionary|draft|blank page|publish button)\b/;
+  return concreteWritingAction.test(text) && writingObject.test(text)
+    || (explicitWritingMoment.test(text) && (concreteWritingAction.test(text) || writingObject.test(text)))
+    || (/\b(?:publish|published|publishes)\b/.test(text) && writingObject.test(text));
 }
 
 export function detectStoryEventCues(value: string | undefined): Set<StoryEventCue> {
@@ -77,6 +88,10 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('threatEncounter');
   }
 
+  if (/\b(?:walks?|takes?|escorts?|sees?)\b.{0,80}\b(?:you|her|him|them|the protagonist)?\s*home\b/.test(text)) {
+    cues.add('walkHome');
+  }
+
   if (hasRoadBreakdownCueText(text)) {
     cues.add('roadBreakdown');
   }
@@ -87,7 +102,7 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
 
   const publicWritingLaunch = /\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b.{0,100}\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b/.test(text)
     || /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b.{0,100}\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b/.test(text);
-  if (publicWritingLaunch || /\b(?:[234]\s*a\s*m|[234]\s*am|late night|numbers in (?:her|your|their) phone|dictionary|codename|writes|writing|draft|blank page|publish button|publishes|published)\b/.test(text)) {
+  if (publicWritingLaunch || hasPublicWritingActionCueText(text)) {
     cues.add('lateNightWriting');
   }
 

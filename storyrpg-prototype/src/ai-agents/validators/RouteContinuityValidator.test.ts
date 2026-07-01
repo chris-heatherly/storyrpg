@@ -343,4 +343,561 @@ describe('RouteContinuityValidator', () => {
 
     expect(result.issues.map((issue) => issue.type)).not.toContain('role_fidelity_violation');
   });
+
+  it('uses event ownership to block active restaging of an earlier owned route event', () => {
+    const story = makeStory([
+      {
+        id: 'door-owner',
+        name: 'Door Owner',
+        startingBeatId: 'door-beat',
+        sceneEventOwnership: {
+          id: 'door-owner-event-ownership',
+          sceneId: 'door-owner',
+          ownedEvents: [{
+            key: 'cue:venueDoor',
+            cue: 'venueDoor',
+            text: 'A host hands over a private club key card at the side entrance.',
+            sourceContractIds: ['door-turn'],
+          }],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['door-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'door-beat',
+          text: 'A host hands you a private club key card at the side entrance.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Later Consequence',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [{
+            key: 'cue:venueDoor',
+            cue: 'venueDoor',
+            text: 'A host hands over a private club key card at the side entrance.',
+            sourceContractIds: ['door-turn'],
+          }],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [{
+            key: 'cue:venueDoor',
+            cue: 'venueDoor',
+            text: 'A host hands over a private club key card at the side entrance.',
+            sourceContractIds: ['door-turn'],
+          }],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'The private club door opens for you again, and the host pulls you through the side entrance as if this is the first invitation.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).toContain('route_duplicate_event');
+    expect(result.issues.some((issue) => issue.message.includes('restages venueDoor'))).toBe(true);
+  });
+
+  it('allows ownership-aware recap of an earlier event when prose is clearly aftermath', () => {
+    const ownedEvent = {
+      key: 'cue:venueDoor',
+      cue: 'venueDoor' as const,
+      text: 'A host sends a private club invitation.',
+      sourceContractIds: ['door-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'door-owner',
+        name: 'Door Owner',
+        startingBeatId: 'door-beat',
+        sceneEventOwnership: {
+          id: 'door-owner-event-ownership',
+          sceneId: 'door-owner',
+          ownedEvents: [ownedEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['door-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'door-beat',
+          text: 'A host sends a private club invitation.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Later Consequence',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [ownedEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [ownedEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'After the private club invitation, the blog comments spike and turn the earlier door into public aftermath.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('uses scene event ownership to ignore non-owned cold-open cue words during chronology checks', () => {
+    const story = makeStory([
+      {
+        id: 'cold-open',
+        name: 'Opening Arrival',
+        startingBeatId: 'cold-beat',
+        sceneEventOwnership: {
+          id: 'cold-open-event-ownership',
+          sceneId: 'cold-open',
+          ownedEvents: [{
+            key: 'cue:arrival',
+            cue: 'arrival',
+            text: 'Mara arrives in the city with two suitcases.',
+            sourceContractIds: ['arrival-turn'],
+          }],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['arrival-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'cold-beat',
+          text: 'Mara arrives in the city with two suitcases. The question is what she will write, and what hunts in the dark.',
+          nextSceneId: 'club',
+          choices: [],
+        }],
+        leadsTo: ['club'],
+      },
+      {
+        id: 'club',
+        name: 'First Table',
+        startingBeatId: 'club-beat',
+        sceneEventOwnership: {
+          id: 'club-event-ownership',
+          sceneId: 'club',
+          ownedEvents: [{
+            key: 'cue:socialMeet',
+            cue: 'socialMeet',
+            text: 'Mara meets the table at the club.',
+            sourceContractIds: ['social-turn'],
+          }],
+          incomingContext: [{
+            key: 'cue:arrival',
+            cue: 'arrival',
+            text: 'Mara arrives in the city with two suitcases.',
+            sourceContractIds: ['arrival-turn'],
+          }],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['social-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'club-beat',
+          text: 'At the club table, two strangers meet Mara over dark drinks.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_chronology_violation');
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('treats static luggage or address mentions after a social scene as arrival context, not a new arrival', () => {
+    const arrivalEvent = {
+      key: 'cue:arrival',
+      cue: 'arrival' as const,
+      text: 'Mara arrives in the city with two suitcases.',
+      sourceContractIds: ['arrival-turn'],
+    };
+    const socialEvent = {
+      key: 'cue:socialMeet',
+      cue: 'socialMeet' as const,
+      text: 'Mara meets the night-table circle over drinks.',
+      sourceContractIds: ['social-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'opening',
+        name: 'Opening Arrival',
+        startingBeatId: 'opening-beat',
+        sceneEventOwnership: {
+          id: 'opening-event-ownership',
+          sceneId: 'opening',
+          ownedEvents: [arrivalEvent, socialEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['arrival-turn', 'social-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'opening-beat',
+          text: 'The taxi drops Mara at the curb with two suitcases. Three weeks later, the table gathers around her over dark drinks.',
+          nextSceneId: 'booth',
+          choices: [],
+        }],
+        leadsTo: ['booth'],
+      },
+      {
+        id: 'booth',
+        name: 'Booth Context',
+        startingBeatId: 'booth-beat',
+        sceneEventOwnership: {
+          id: 'booth-event-ownership',
+          sceneId: 'booth',
+          ownedEvents: [arrivalEvent],
+          incomingContext: [arrivalEvent, socialEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['arrival-context'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'booth-beat',
+          text: 'At the velvet booth, the suitcases tucked beside you and the old address in your pocket are context, not a fresh entrance.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_chronology_violation');
+  });
+
+  it('allows threat-event memory in a later aftermath scene without treating it as restaging', () => {
+    const ownedEvent = {
+      key: 'cue:threatEncounter',
+      cue: 'threatEncounter' as const,
+      text: 'A masked figure attacks Mara and Avery rescues her.',
+      sourceContractIds: ['threat-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'threat-owner',
+        name: 'Threat Owner',
+        startingBeatId: 'threat-beat',
+        sceneEventOwnership: {
+          id: 'threat-owner-event-ownership',
+          sceneId: 'threat-owner',
+          ownedEvents: [ownedEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['threat-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'threat-beat',
+          text: 'A masked figure attacks Mara under the bridge, and Avery rescues her before the knife reaches her coat.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Aftermath',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [ownedEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [ownedEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'The memory of the attack is still raw, but tonight Mara writes about the rescue instead of replaying it.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('allows a later creative-processing recap of a threat event', () => {
+    const ownedEvent = {
+      key: 'cue:threatEncounter',
+      cue: 'threatEncounter' as const,
+      text: 'A masked figure attacks Mara and Avery rescues her.',
+      sourceContractIds: ['threat-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'threat-owner',
+        name: 'Threat Owner',
+        startingBeatId: 'threat-beat',
+        sceneEventOwnership: {
+          id: 'threat-owner-event-ownership',
+          sceneId: 'threat-owner',
+          ownedEvents: [ownedEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['threat-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'threat-beat',
+          text: 'A masked figure attacks Mara under the bridge, and Avery rescues her before the knife reaches her coat.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Writing Aftermath',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [ownedEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [ownedEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'The attack in the park, the impossible rescue, feels like a fever dream you have to write down.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('allows short noun-fragment rescue memories in a later writing scene', () => {
+    const ownedEvent = {
+      key: 'cue:threatEncounter',
+      cue: 'threatEncounter' as const,
+      text: 'A masked figure attacks Mara and Avery rescues her.',
+      sourceContractIds: ['threat-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'threat-owner',
+        name: 'Threat Owner',
+        startingBeatId: 'threat-beat',
+        sceneEventOwnership: {
+          id: 'threat-owner-event-ownership',
+          sceneId: 'threat-owner',
+          ownedEvents: [ownedEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['threat-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'threat-beat',
+          text: 'A masked figure attacks Mara under the bridge, and Avery rescues her before the knife reaches her coat.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Writing Aftermath',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [ownedEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [ownedEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'Back in your room, the memory of the attack stays sharp. But the rescue. That is something else. You write about the sudden dark and the man who appeared from the fog.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('allows a distinct later danger escalation without treating it as the prior attack restaged', () => {
+    const ownedEvent = {
+      key: 'cue:threatEncounter',
+      cue: 'threatEncounter' as const,
+      text: 'A masked figure attacks Mara under the bridge, and Avery rescues her from the knife.',
+      sourceContractIds: ['threat-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'threat-owner',
+        name: 'Threat Owner',
+        startingBeatId: 'threat-beat',
+        sceneEventOwnership: {
+          id: 'threat-owner-event-ownership',
+          sceneId: 'threat-owner',
+          ownedEvents: [ownedEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['threat-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'threat-beat',
+          text: 'A masked figure attacks Mara under the bridge, and Avery rescues her from the knife.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Club Escalation',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [ownedEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [ownedEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'At the velvet club, a bouncer grabs your arm. Radu saves you from being thrown into the alley, but his resentment is obvious.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('still blocks a later scene that replays the same owned attack and rescue', () => {
+    const ownedEvent = {
+      key: 'cue:threatEncounter',
+      cue: 'threatEncounter' as const,
+      text: 'A masked figure attacks Mara under the bridge, and Avery rescues her from the knife.',
+      sourceContractIds: ['threat-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'threat-owner',
+        name: 'Threat Owner',
+        startingBeatId: 'threat-beat',
+        sceneEventOwnership: {
+          id: 'threat-owner-event-ownership',
+          sceneId: 'threat-owner',
+          ownedEvents: [ownedEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['threat-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'threat-beat',
+          text: 'A masked figure attacks Mara under the bridge, and Avery rescues her from the knife.',
+          nextSceneId: 'later',
+          choices: [],
+        }],
+        leadsTo: ['later'],
+      },
+      {
+        id: 'later',
+        name: 'Restaged Threat',
+        startingBeatId: 'later-beat',
+        sceneEventOwnership: {
+          id: 'later-event-ownership',
+          sceneId: 'later',
+          ownedEvents: [],
+          incomingContext: [ownedEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [ownedEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'later-beat',
+          text: 'Under the same bridge, the masked figure attacks Mara again and Avery rescues her from the knife as if the first scene never happened.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).toContain('route_duplicate_event');
+  });
 });

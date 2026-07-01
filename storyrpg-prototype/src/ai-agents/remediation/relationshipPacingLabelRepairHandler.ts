@@ -7,6 +7,10 @@ type MutableRecord = Record<string, unknown>;
 const RELATIONSHIP_VALIDATORS = new Set(['RelationshipPacingValidator', 'RelationshipArcLedgerValidator']);
 
 const LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bfor\s+the\s+([A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group))\b/gi, 'for whatever this $1 becomes'],
+  [/\bthe\s+([A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group))'s\s+trust\b/gi, 'this fragile circle\'s trust'],
+  [/\bthe\s+(club|circle|crew|group)'s\s+trust\b/gi, 'this fragile circle\'s trust'],
+  [/\b([A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group))\s+is\s+real\b/gi, '$1 is still a dare'],
   [/\b(?:the\s+)?[A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group)\s+is\s+now\b/gi, 'the name stays provisional as'],
   [/\binner circle\b/gi, 'people moving around him'],
   [/\binside the circle\b/gi, 'near the edge of the circle'],
@@ -21,7 +25,9 @@ const LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bbond with history\b/gi, 'beginning with a little history'],
   [/\btrusts completely\b/gi, 'takes a small risk'],
   [/\bfriend group\b/gi, 'fragile new circle'],
+  [/\bfriendship\b/gi, 'guarded warmth'],
   [/\bnew friends\b/gi, 'new companions'],
+  [/\bmy friends\b/gi, 'these companions'],
   [/\bfriends\b/gi, 'companions'],
   [/\bfriend\b/gi, 'ally'],
 ];
@@ -95,6 +101,8 @@ function permittedStagesByScene(
     );
     const fallback: RelationshipPacingStage | undefined = /\bbeyond acquaintance before any player relationship choice\b/i.test(text)
       ? 'acquaintance'
+      : /\bonly permits (?:a\s+)?provisional spark\b/i.test(text)
+      ? 'spark'
       : /\badvances past provisional spark\b/i.test(text)
       ? 'spark'
       : undefined;
@@ -125,6 +133,11 @@ function rewriteStringField(record: MutableRecord, key: string): number {
 function rewriteChoice(choice: MutableRecord): number {
   let rewritten = 0;
   for (const key of ['text', 'lockedText', 'reactionText']) rewritten += rewriteStringField(choice, key);
+
+  const stakes = choice.stakes;
+  if (stakes && typeof stakes === 'object' && !Array.isArray(stakes)) {
+    for (const key of ['want', 'cost', 'identity']) rewritten += rewriteStringField(stakes as MutableRecord, key);
+  }
 
   const outcomeTexts = choice.outcomeTexts;
   if (outcomeTexts && typeof outcomeTexts === 'object' && !Array.isArray(outcomeTexts)) {

@@ -268,6 +268,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   const [recentChoiceEcho, setRecentChoiceEcho] = useState<{
     summary?: string;
     progress?: string;
+    consequences?: AppliedConsequence[];
     targetSceneId?: string;
     targetBeatId?: string;
     tier?: ChoiceOutcomeTier;
@@ -1155,7 +1156,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const echoTarget = resolveEchoTarget(result.nextBeatId, result.nextSceneId);
       const consequenceSentence = buildChoiceConsequenceSentence(applied);
       const processedChoiceText = processTemplate(choice.text, player, currentStory);
-      const progressText = consequenceSentence;
+      const progressText = visible.length > 0 ? undefined : consequenceSentence;
       const recapSummary = sanitizeReaderLine(
         choice.feedbackCue?.echoSummary || choice.reminderPlan?.immediate
       ) || sentenceFromChoiceText(processedChoiceText) || processedChoiceText;
@@ -1181,13 +1182,14 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           consequences: visible.slice(0, 3),
         },
       ]);
-      if (echoSummary || echoProgress) {
+      if (echoSummary || echoProgress || visible.length > 0) {
         setRecentChoiceEcho({
           // Prefer only authored, well-formed acknowledgment prose. Do not
           // synthesize generic reaction copy here; story reaction belongs in the
           // generated beat text or in authored feedback fields.
           summary: echoSummary,
           progress: echoProgress,
+          consequences: visible.slice(0, 3),
           targetSceneId: echoTarget?.sceneId,
           targetBeatId: echoTarget?.beatId,
           tier: result.resolution?.tier as ChoiceOutcomeTier | undefined,
@@ -1901,7 +1903,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           }
         }}
       >
-        {(activeChoiceEcho?.summary || activeChoiceEcho?.progress) && (
+        {(activeChoiceEcho?.summary || activeChoiceEcho?.progress || activeChoiceEcho?.consequences?.length) && (
           <View
             style={[
               styles.storyletOutcomeEchoPanel,
@@ -1917,6 +1919,9 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
             )}
             {!!activeChoiceEcho.progress && (
               <Text style={styles.echoProgressText}>{activeChoiceEcho.progress}</Text>
+            )}
+            {!!activeChoiceEcho.consequences?.length && (
+              <ConsequenceBadgeList consequences={activeChoiceEcho.consequences} layout="inline" maxVisible={3} />
             )}
           </View>
         )}

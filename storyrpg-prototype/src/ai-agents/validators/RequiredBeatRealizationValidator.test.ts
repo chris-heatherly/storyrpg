@@ -748,4 +748,57 @@ describe('RequiredBeatRealizationValidator', () => {
       else process.env.GATE_TREATMENT_SEED_REALIZATION = prev;
     }
   });
+
+  it('uses the scene construction profile to ignore required beats routed out of the scene', () => {
+    const p = plannedScene('s1-1', 1, {
+      requiredBeats: [
+        requiredBeat('rb-active', 'Avery opens the locked side door for Mara.', 'authored'),
+        requiredBeat('rb-routed', 'Mara starts the citywide investigation from the newsroom.', 'authored'),
+      ],
+    });
+    p.sceneConstructionProfile = {
+      id: 'scp-s1-1',
+      sceneId: 's1-1',
+      episodeNumber: 1,
+      primaryTurn: {
+        id: 'turn',
+        source: 'requiredBeat',
+        text: 'Avery opens the locked side door for Mara.',
+        sourceContractIds: ['rb-active'],
+      },
+      obligations: [
+        { source: 'requiredBeat', id: 'rb-active', slot: 'must_stage', text: 'Avery opens the locked side door for Mara.', reason: 'active', hardUnits: 1, softUnits: 0 },
+        { source: 'requiredBeat', id: 'rb-routed', slot: 'route_later', text: 'Mara starts the citywide investigation from the newsroom.', reason: 'separate scene', hardUnits: 1, softUnits: 0 },
+      ],
+      sourceContractIds: ['rb-active', 'rb-routed'],
+      activeCast: ['Avery', 'Mara'],
+      capacity: {
+        hardUnits: 1,
+        softUnits: 0,
+        totalUnits: 1,
+        maxHardUnits: 2,
+        maxTotalUnits: 3,
+        activeCastCount: 2,
+        maxActiveCast: 3,
+        activeConflictCount: 1,
+        introductionCount: 0,
+        explicitTimeCueCount: 0,
+        explicitLocationCueCount: 1,
+        beatBudget: { min: 3, recommended: 4, max: 6 },
+      },
+      routedObligationIds: ['rb-routed'],
+      conflictDiagnostics: [],
+      promptGuidance: [],
+    };
+
+    const result = run({
+      plan: plan([p]),
+      story: story([episode(1, [generatedScene('s1-1', [
+        beat('b1', 'Avery opens the locked side door for Mara and slips her inside before the rain reaches the threshold.'),
+      ])])]),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
 });

@@ -17,7 +17,7 @@ import { ReferencedEventPresenceValidator } from './ReferencedEventPresenceValid
 import { ChoiceTypePlanConformanceValidator } from './ChoiceTypePlanConformanceValidator';
 import { ConsequenceTierPlanConformanceValidator } from './ConsequenceTierPlanConformanceValidator';
 import type { SeasonChoicePlan } from '../pipeline/seasonChoicePlan';
-import type { ConsequenceTier } from '../../types/scenePlan';
+import type { ConsequenceTier, SeasonScenePlan } from '../../types/scenePlan';
 import { SkillPlanConformanceValidator } from './SkillPlanConformanceValidator';
 import type { SeasonSkillPlan } from '../pipeline/seasonSkillPlan';
 import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, normalizeEncounterOutcomeFlags } from '../utils/encounterOutcomeFlags';
@@ -99,6 +99,33 @@ function locationSetsCompatible(planned: Set<string>, staged: Set<string>): bool
   const sharedLocation = [...planned].some((location) => staged.has(location));
   if (sharedLocation) return true;
   return planned.has('club') && staged.has('rooftop');
+}
+
+const GENERIC_LOCATION_TOKENS = new Set([
+  'apartment', 'boulevard', 'club', 'courtyard', 'estate', 'garden', 'gardens',
+  'house', 'manor', 'park', 'path', 'rooftop', 'sidewalk', 'street', 'terrace',
+  'venue', 'villa',
+]);
+
+function normalizedLocationText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ș/g, 's')
+    .replace(/ț/g, 't')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function plannedLocationNamedInStagedText(plannedLocation: string, stagedText: string): boolean {
+  const plannedTokens = normalizedLocationText(plannedLocation)
+    .split(' ')
+    .filter((token) => token.length >= 4 && !GENERIC_LOCATION_TOKENS.has(token));
+  if (plannedTokens.length === 0) return false;
+  const staged = ` ${normalizedLocationText(stagedText)} `;
+  return plannedTokens.some((token) => staged.includes(` ${token} `));
 }
 
 interface FidelitySeverityMetadata {
@@ -233,6 +260,7 @@ export interface FinalStoryContractInput {
   requestedEpisodeNumbers?: number[];
   sourceSeasonPlan?: {
     totalEpisodes?: number;
+    scenePlan?: SeasonScenePlan;
     episodes?: Array<{
       episodeNumber?: number;
       title?: string;
@@ -589,6 +617,7 @@ export class FinalStoryContractValidator {
     {
       const ledgerResult = new TreatmentEventLedgerValidator().validate({
         story: input.story,
+        scenePlan: input.sourceSeasonPlan?.scenePlan,
         treatmentSourced: input.treatmentSourced,
         requestedEpisodeNumbers: input.requestedEpisodeNumbers,
       });
@@ -1339,6 +1368,7 @@ export class FinalStoryContractValidator {
       const plannedSignature = buildEncounterEventSignature([plannedLocation]);
       if (plannedSignature.locations.size === 0 || entry.eventOnlySignature.locations.size === 0) continue;
       if (locationSetsCompatible(plannedSignature.locations, entry.eventOnlySignature.locations)) continue;
+      if (plannedLocationNamedInStagedText(plannedLocation, entry.eventOnlySignature.sourceText)) continue;
       issues.push({
         type: 'scene_location_event_mismatch',
         severity: 'error',

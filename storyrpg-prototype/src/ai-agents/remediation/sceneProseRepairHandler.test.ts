@@ -272,6 +272,52 @@ describe('buildSceneProseRepairHandler', () => {
     expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('stairwell');
   });
 
+  it('requires active planned Story Circle moments to clear before accepting a rewrite', async () => {
+    const reportedMoment = 'Avery opens the locked side door for Mara.';
+    const plannedMoment = 'Mara pockets the brass key before crossing the threshold.';
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{ id: 'b1', text: 'Avery opens the locked side door for Mara.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const emitted: string[] = [];
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      emit: (message) => emitted.push(message),
+      plannedMomentSources: new Map([[
+        's2-1',
+        {
+          storyCircleBeatContracts: [{
+            beat: 'you',
+            sourceText: plannedMoment,
+            requiredRealization: ['scene_turn', 'final_prose'],
+          }],
+        },
+      ]]),
+      requirePredictedClear: true,
+    });
+    const story = makeStory();
+    const original = (story as any).episodes[1].scenes[0].beats[0].text;
+
+    const result = await handler({
+      story,
+      blockingIssues: [momentIssue('s2-1', 2, reportedMoment)],
+    });
+
+    expect(result.changed).toBe(false);
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('ACTIVE PLANNED MOMENTS');
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('brass key');
+    expect((story as any).episodes[1].scenes[0].beats[0].text).toBe(original);
+    expect(emitted.join('\n')).toContain('restored s2-1');
+  });
+
   it('carries previously repaired authored moments into later repair notes for the same scene', async () => {
     const firstMoment = 'Kylie opens the blue door with the brass key before dawn.';
     const secondMoment = 'Mika waits on the landing with a folded club invitation.';
@@ -826,6 +872,30 @@ describe('buildSceneProseRepairHandler', () => {
 
     expect(result.changed).toBe(true);
     expect(story.episodes[1].scenes[0].beats[0].text).toContain('this one wants to be with you, love');
+  });
+
+  it('does not append a noun-fragment required-beat fallback', async () => {
+    const fragment = "her grandmother's address";
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's2-1',
+          rewrittenBeats: [{ id: 'b1', text: 'You arrive with two suitcases and a phone going dark.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      allowRequiredBeatFallback: () => true,
+    });
+    const story = makeStory();
+
+    await handler({ story, blockingIssues: [momentIssue('s2-1', 2, fragment)] });
+
+    expect(story.episodes[1].scenes[0].beats[0].text).not.toContain(fragment);
   });
 
   it('reports a SceneTurn repair as succeeded only after every listed splinter is on-page', async () => {

@@ -221,23 +221,18 @@ function pushObligation(
   obligations.push({ kind, label: clean, hardUnits, totalUnits, source });
 }
 
-function countExplicitTimeJumps(scene: StorySceneLike): number {
-  const texts: string[] = [
-    scene.name,
-    ...(scene.requiredBeats ?? [])
-      .filter((beat) => beat.tier !== 'seed' || isConcreteSeedObligation(textOf(beat)))
-      .map(textOf),
-    scene.signatureMoment,
-    textOf(scene.turnContract),
-    ...(scene.authoredTreatmentFields ?? [])
-      .filter((field) =>
-        (field.requiredRealization?.includes('final_prose') ?? true)
-        && field.contractKind !== 'encounter_anchor'
-        && field.contractKind !== 'encounter_conflict'
-        && field.contractKind !== 'encounter_buildup'
-      )
-      .map(textOf),
-  ].filter((part): part is string => Boolean(part));
+function compiledPrimaryTurnText(scene: StorySceneLike): string | undefined {
+  const primaryTurn = scene.sceneConstructionProfile?.primaryTurn;
+  if (!primaryTurn?.text) return undefined;
+  const turnId = scene.turnContract?.turnId;
+  if (!turnId) return primaryTurn.text;
+  const sourceIds = primaryTurn.sourceContractIds ?? [];
+  return primaryTurn.id === turnId || sourceIds.includes(turnId)
+    ? primaryTurn.text
+    : undefined;
+}
+
+function countExplicitTimeCuesInTexts(texts: string[]): number {
   const joined = texts.join(' ')
     .toLowerCase()
     .replace(/\bdating after dusk\b/g, 'dating after title')
@@ -266,6 +261,32 @@ function countExplicitTimeJumps(scene: StorySceneLike): number {
     if (meridiem === 'am' && hour >= 5 && hour <= 11) unique.delete('morning');
   }
   return unique.size;
+}
+
+function countExplicitTimeJumps(scene: StorySceneLike): number {
+  const texts: string[] = [
+    scene.name,
+    ...(scene.requiredBeats ?? [])
+      .filter((beat) => beat.tier !== 'seed' || isConcreteSeedObligation(textOf(beat)))
+      .map(textOf),
+    scene.signatureMoment,
+    compiledPrimaryTurnText(scene) || textOf(scene.turnContract),
+    ...(scene.authoredTreatmentFields ?? [])
+      .filter((field) =>
+        (field.requiredRealization?.includes('final_prose') ?? true)
+        && field.contractKind !== 'encounter_anchor'
+        && field.contractKind !== 'encounter_conflict'
+        && field.contractKind !== 'encounter_buildup'
+      )
+      .map(textOf),
+  ].filter((part): part is string => Boolean(part));
+  return countExplicitTimeCuesInTexts(texts);
+}
+
+function hasSingleObligationTimeJump(report: TreatmentDensityReport): boolean {
+  return report.obligations.some((obligation) =>
+    countExplicitTimeCuesInTexts([obligation.label]) >= 2
+  );
 }
 
 function textPartsOf(value: unknown): string[] {
@@ -434,7 +455,7 @@ export function analyzeSceneTreatmentDensity(
   }
 
   if (scene.turnContract && constructionProfileAllows(scene, 'sceneTurn', scene.turnContract.turnId) && constructionProfileCountsSeparately(scene, 'sceneTurn', scene.turnContract.turnId)) {
-    const turnLabel = scene.turnContract.turnEvent || scene.turnContract.centralTurn;
+    const turnLabel = compiledPrimaryTurnText(scene) || scene.turnContract.turnEvent || scene.turnContract.centralTurn;
     const duplicatesRequiredBeat = (scene.requiredBeats ?? []).some((beat) =>
       substantiallyDuplicates(turnLabel, beat.mustDepict || beat.sourceTurn),
     );
@@ -535,7 +556,8 @@ export function isTreatmentDensityExpandable(report: TreatmentDensityReport): bo
   const hardOverage = Math.max(0, report.hardUnits - report.threshold.hardUnits);
   const totalOverage = Math.max(0, report.totalUnits - report.threshold.totalUnits);
   if (hardOverage === 0 && totalOverage === 0) {
-    if (report.threshold.profile === 'opening' && report.explicitTimeJumpCount >= 2) return false;
+    if (report.explicitTimeJumpCount >= 2 && report.threshold.profile !== 'encounter' && report.obligations.length > 0) return false;
+    if (report.explicitTimeJumpCount >= 2 && hasSingleObligationTimeJump(report)) return false;
     return report.explicitTimeJumpCount < 3;
   }
   if (report.explicitTimeJumpCount >= 2) return false;

@@ -1,4 +1,9 @@
 import type { TreatmentEventAtom, TreatmentEventType } from '../../types/treatmentEvent';
+import {
+  detectPrimaryStoryEventCues,
+  STORY_EVENT_CUE_ORDER,
+  type StoryEventCue,
+} from '../remediation/storyEventCues';
 
 export interface TreatmentAtomizerInput {
   episodeNumber: number;
@@ -8,7 +13,7 @@ export interface TreatmentAtomizerInput {
 }
 
 const NON_PLAYABLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
-  { label: 'episode analysis label', pattern: /^\**(?:major pressure|likely consequence|story circle role|high-level description)\**\s*:/i },
+  { label: 'episode analysis label', pattern: /^\**(?:major pressure|likely consequence|story circle role)\**\s*:/i },
   { label: 'theme or premise card', pattern: /\b(?:theme|premise|thesis|audience promise|tonal promise)\b/i },
   { label: 'want need lie wound language', pattern: /\b(?:want|need|lie|wound|lack|desire|fear)\b/i },
   { label: 'story circle summary', pattern: /\b(?:story circle|you\s*->\s*need|go\s*->\s*search|find\s*->\s*take|return\s*->\s*change)\b/i },
@@ -19,15 +24,17 @@ const NON_PLAYABLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'summary-only phrasing', pattern: /\b(?:as a|with the intent to|in order to|must learn to|struggles with)\b/i },
 ];
 
+const PLAYABLE_FIELD_LABEL = /^\**(?:high-level description|description|sequence|episode events?|scene events?)\**\s*:\s*/i;
+
 const ACTION_PATTERNS: Array<{ type: TreatmentEventType; pattern: RegExp }> = [
   { type: 'arrival', pattern: /\b(?:arrives?|enters?|returns?|comes to|reaches|lands at)\b/i },
   { type: 'departure', pattern: /\b(?:leaves?|flees?|escapes?|walks out|drives away|departs)\b/i },
-  { type: 'meeting', pattern: /\b(?:meets?|joins?|encounters?|runs into|is introduced to)\b/i },
+  { type: 'meeting', pattern: /\b(?:meets?|joins?|forms?|gathers?|assembles?|encounters?|runs into|is introduced to)\b/i },
   { type: 'conversation', pattern: /\b(?:asks?|tells?|confesses?|argues?|admits?|calls?|texts?|answers?)\b/i },
   { type: 'discovery', pattern: /\b(?:finds?|discovers?|notices?|learns?|uncovers?|realizes?)\b/i },
-  { type: 'conflict', pattern: /\b(?:attacks?|fights?|confronts?|threatens?|chases?|ambushes?|accuses?)\b/i },
+  { type: 'conflict', pattern: /\b(?:attacks?|attacked|fights?|confronts?|threatens?|chases?|ambushes?|ambushed|rescues?|rescued|accuses?)\b/i },
   { type: 'choice', pattern: /\b(?:chooses?|decides?|must choose|has to decide)\b/i },
-  { type: 'aftermath', pattern: /\b(?:afterward|aftermath|fallout|consequence|goes public|goes viral|spreads)\b/i },
+  { type: 'aftermath', pattern: /\b(?:afterward|aftermath|fallout|consequence|goes public|goes viral|spreads|writes?|drafts?|posts?|publishes?|starts?\s+(?:a\s+)?blog)\b/i },
   { type: 'reveal', pattern: /\b(?:reveals?|exposes?|confirms?|shows?)\b/i },
   { type: 'relationship_shift', pattern: /\b(?:trusts?|betrays?|befriends?|rejects?|forgives?|protects?)\b/i },
   { type: 'state_change', pattern: /\b(?:becomes?|changes?|loses?|gains?|is wounded|is trapped|is freed)\b/i },
@@ -43,12 +50,14 @@ export function atomizeTreatmentText(input: TreatmentAtomizerInput): TreatmentEv
   const atoms: TreatmentEventAtom[] = [];
   let order = 0;
   for (const sentence of sourceSentences) {
-    const fragments = splitCompoundSentence(sentence);
+    const atomSentence = stripPlayableFieldLabel(sentence);
+    const fragments = splitCompoundSentence(atomSentence);
     for (const fragment of fragments) {
       const trimmed = normalizeWhitespace(fragment);
       if (!trimmed) continue;
       const playable = isPlayableTreatmentEvent(trimmed);
       const eventText = playable ? concreteEventText(trimmed) : trimmed;
+      const metadata = eventCueMetadata(eventText, playable);
       order += 1;
       atoms.push({
         id: `${input.idPrefix || `ep${input.episodeNumber}`}-atom-${order}`,
@@ -64,6 +73,7 @@ export function atomizeTreatmentText(input: TreatmentAtomizerInput): TreatmentEv
         realizationMode: playable ? 'dramatize' : 'context_only',
         sourceSection: input.sourceSection,
         isPlayableEvent: playable,
+        ...metadata,
       });
     }
   }
@@ -86,13 +96,37 @@ export function splitTreatmentSentences(text: string): string[] {
 
 export function splitCompoundSentence(sentence: string): string[] {
   const normalized = normalizeWhitespace(sentence);
-  if (!CONNECTOR_SPLIT.test(normalized)) return [normalized];
-  const fragments = normalized.split(CONNECTOR_SPLIT).map((part) => part.trim()).filter(Boolean);
+  const commaThenSplit = normalized.replace(/\s*,\s*(?=(?:then|afterward|afterwards|before|while|as)\b)/gi, ' ');
+  if (!CONNECTOR_SPLIT.test(commaThenSplit)) return [normalized];
+  const fragments = commaThenSplit.split(CONNECTOR_SPLIT).map((part) => part.trim()).filter(Boolean);
   if (fragments.length <= 1) return [normalized];
   return fragments.map((fragment, index) => {
     if (index === 0) return fragment;
     return /^[A-Z]/.test(fragment) ? fragment : fragment.replace(/^([a-z])/, (match) => match.toUpperCase());
   });
+}
+
+function stripPlayableFieldLabel(text: string): string {
+  return normalizeWhitespace(text.replace(PLAYABLE_FIELD_LABEL, ''));
+}
+
+function eventCueMetadata(
+  eventText: string,
+  playable: boolean,
+): Pick<TreatmentEventAtom, 'eventCues' | 'dramaticPriority' | 'sceneKindHint' | 'ownershipIntent'> {
+  if (!playable) {
+    return { ownershipIntent: 'ledger_only', dramaticPriority: 0 };
+  }
+  const cueSet = detectPrimaryStoryEventCues(eventText);
+  const cues = Array.from(cueSet) as StoryEventCue[];
+  const cuePriority = cues.reduce((max, cue) => Math.max(max, STORY_EVENT_CUE_ORDER[cue] ?? 0), 0);
+  const dramaticPriority = cuePriority + (cueSet.has('threatEncounter') ? 40 : 0);
+  return {
+    eventCues: cues,
+    dramaticPriority,
+    sceneKindHint: cueSet.has('threatEncounter') ? 'encounter' : 'standard',
+    ownershipIntent: 'must_stage',
+  };
 }
 
 export function inferEventType(text: string): TreatmentEventType {

@@ -1,4 +1,5 @@
 import type { Beat, Choice, Episode, Scene, Story } from '../../types';
+import type { SceneOwnedEvent } from '../../types/scenePlan';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { READER_PROSE_LEAK_PATTERNS, STRUCTURAL_SCAFFOLDING_PATTERNS } from '../constants/metaProse';
 import {
@@ -38,6 +39,7 @@ interface CueHit {
   order: number;
   scene: Scene;
   sceneIndex: number;
+  text: string;
 }
 
 interface TextField {
@@ -77,7 +79,10 @@ const ROUTE_CUE_PATTERNS: Record<'walkHome', RegExp[]> = {
   ],
 };
 
-const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about)\b/i;
+const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|write(?:s|ing)? about)\b/i;
+const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
+const ACTIVE_RESTAGE_MARKERS = /\b(?:attacks?|rescues?|saves?|pulls?|drags?|carries|blocks?|lunges?|strikes?|chases?|grabs?|hands?|offers?|presses?|meets?|introduces?|arrives?|walks?)\b/i;
+const ACTIVE_ARRIVAL_MARKERS = /\b(?:arriv(?:e|es|ed|ing)|lands?|landed|unpacks?|unpacked|taxi\s+(?:leaves?|drops?)|cab\s+(?:leaves?|drops?)|steps?\s+(?:off|out)|airport|station|dock)\b/i;
 
 const UNSAFE_ROUTE_FALLBACK_PATTERNS: Array<{ label: string; pattern: RegExp; suggestion: string }> = [
   {
@@ -127,6 +132,17 @@ const UNSAFE_ROUTE_FALLBACK_PATTERNS: Array<{ label: string; pattern: RegExp; su
   },
 ];
 
+const CUE_WINDOW_PATTERNS: Partial<Record<RouteCue, RegExp>> = {
+  arrival: /\b(?:arriv(?:e|es|ed|ing)|suitcases?|address|passport|airport|station)\b/i,
+  venueDoor: /\b(?:door|threshold|entrance|key\s*card|card|bouncer|host)\b/i,
+  objectHandoff: /\b(?:hands?|offers?|gives?|slides?|passes?|key\s*card|card|object)\b/i,
+  socialMeet: /\b(?:meets?|introduces?|table|booth|friends?|group|club)\b/i,
+  threatEncounter: /\b(?:attack(?:s|ed|ing)?|threat|danger|rescue(?:s|d)?|save(?:s|d)?|lunges?|chases?|grabs?)\b/i,
+  lateNightWriting: /\b(?:writes?|typing|draft|post|blog|late\s+night|notebook|laptop)\b/i,
+  blogAftermath: PUBLIC_BLOG_AFTERMATH_MARKERS,
+  walkHome: /\b(?:walks?|guides?|escorts?|home)\b/i,
+};
+
 function isTerminalSceneTarget(id: string | undefined): boolean {
   return !!id && TERMINAL_SCENE_TARGETS.has(id.trim().toLowerCase());
 }
@@ -138,6 +154,14 @@ function normalizeText(value: string | undefined): string {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+function sentenceWindows(text: string): string[] {
+  return text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
 }
 
 function pushText(fields: TextField[], path: string, text: unknown, sceneId?: string, beatId?: string): void {
@@ -224,22 +248,103 @@ function sceneCueHits(scene: Scene, sceneIndex: number): CueHit[] {
   const hits: CueHit[] = [];
   for (const cue of detectPrimaryStoryEventCues(routeText)) {
     if (cue === 'roadBreakdown' || cue === 'friendDebrief' || cue === 'endingAftermath') continue;
-    hits.push({ cue, order: ROUTE_CUE_ORDER[cue], scene, sceneIndex });
+    hits.push({ cue, order: ROUTE_CUE_ORDER[cue], scene, sceneIndex, text: routeText });
   }
   if (ROUTE_CUE_PATTERNS.walkHome.some((pattern) => pattern.test(routeText))) {
-    hits.push({ cue: 'walkHome', order: ROUTE_CUE_ORDER.walkHome, scene, sceneIndex });
+    hits.push({ cue: 'walkHome', order: ROUTE_CUE_ORDER.walkHome, scene, sceneIndex, text: routeText });
   }
   return hits.sort((a, b) => a.order - b.order);
+}
+
+function distinctiveRouteTokens(value: string | undefined): Set<string> {
+  const stopwords = new Set([
+    'about', 'after', 'again', 'before', 'being', 'could', 'every', 'first', 'from',
+    'have', 'into', 'night', 'scene', 'still', 'that', 'their', 'there', 'thing',
+    'this', 'through', 'under', 'what', 'when', 'where', 'with', 'without', 'your',
+    'home', 'walks', 'walking', 'rescues', 'rescued', 'rescue', 'saves', 'saved',
+    'attacks', 'attacked', 'attack', 'threat', 'danger',
+  ]);
+  return new Set(normalizeText(value)
+    .split(' ')
+    .filter((token) => token.length >= 5 && !stopwords.has(token)));
+}
+
+function threatActionSignature(value: string | undefined): { attack: boolean; rescue: boolean } {
+  const text = normalizeText(value);
+  return {
+    attack: /\b(?:attack|attacker|attacked|attacks|aggressor|ambush|knife|scream|lunges|chases)\b/.test(text),
+    rescue: /\b(?:rescue|rescues|rescued|save|saves|saved|intervenes|protects|protected)\b/.test(text),
+  };
+}
+
+function threatRestagesEarlierEvent(earlierText: string | undefined, currentText: string | undefined): boolean {
+  const earlier = threatActionSignature(earlierText);
+  const current = threatActionSignature(currentText);
+  if (earlier.attack && !current.attack) return false;
+  if (earlier.rescue && !current.rescue && !current.attack) return false;
+
+  const earlierTokens = distinctiveRouteTokens(earlierText);
+  const currentTokens = distinctiveRouteTokens(currentText);
+  let shared = 0;
+  for (const token of earlierTokens) {
+    if (currentTokens.has(token)) shared += 1;
+    if (shared >= 2) return true;
+  }
+  return false;
+}
+
+function duplicateSensitiveHitRestagesEarlier(previous: CueHit, current: CueHit): boolean {
+  if (current.cue !== 'threatEncounter') return true;
+  return threatRestagesEarlierEvent(previous.text, current.text);
+}
+
+function forbiddenHitRestagesEarlier(hit: CueHit, event: SceneOwnedEvent | undefined): boolean {
+  if (hit.cue !== 'threatEncounter') return true;
+  return threatRestagesEarlierEvent(event?.text, hit.text);
 }
 
 function isRecapOnlyCue(scene: Scene, cue: RouteCue): boolean {
   if (cue === 'blogAftermath') return false;
   const text = [
-    scene.name,
     ...collectReaderFacingTexts(scene),
     ...collectEncounterMetaTexts(scene),
   ].join(' ');
-  return RECAP_MARKERS.test(text) && PUBLIC_BLOG_AFTERMATH_MARKERS.test(text);
+  const pattern = CUE_WINDOW_PATTERNS[cue];
+  const windows = pattern
+    ? sentenceWindows(text).filter((window) => pattern.test(window))
+    : sentenceWindows(text);
+  if (windows.length === 0) return false;
+  if (cue === 'arrival' && windows.every((window) => !ACTIVE_ARRIVAL_MARKERS.test(window))) {
+    return true;
+  }
+  return windows.every((window) =>
+    (RECAP_MARKERS.test(window) || SUMMARY_MEMORY_MARKERS.test(window))
+    && !(ACTIVE_RESTAGE_MARKERS.test(window) && !SUMMARY_MEMORY_MARKERS.test(window))
+  );
+}
+
+function ownershipEventsFor(scene: Scene, key: 'ownedEvents' | 'incomingContext' | 'forbiddenRestageEvents'): SceneOwnedEvent[] {
+  return scene.sceneEventOwnership?.[key] ?? [];
+}
+
+function ownershipHasCue(scene: Scene, key: 'ownedEvents' | 'incomingContext' | 'forbiddenRestageEvents', cue: RouteCue): boolean {
+  return ownershipEventsFor(scene, key).some((event) => event.cue === cue);
+}
+
+function forbiddenOwnershipEvent(scene: Scene, cue: RouteCue): SceneOwnedEvent | undefined {
+  return ownershipEventsFor(scene, 'forbiddenRestageEvents').find((event) => event.cue === cue);
+}
+
+function isOwnedByThisScene(scene: Scene, cue: RouteCue): boolean {
+  return ownershipHasCue(scene, 'ownedEvents', cue);
+}
+
+function hasEventOwnershipProfile(scene: Scene): boolean {
+  return Boolean(scene.sceneEventOwnership);
+}
+
+function isIncomingContextOnly(scene: Scene, cue: RouteCue): boolean {
+  return ownershipHasCue(scene, 'incomingContext', cue) && !isOwnedByThisScene(scene, cue);
 }
 
 function extractRequiredRescuer(obligationText: string): string | undefined {
@@ -460,8 +565,37 @@ export class RouteContinuityValidator {
         const scene = sceneMap.get(sceneId);
         if (!scene) return [];
         const sceneIndex = (episode.scenes || []).findIndex((candidate) => candidate.id === scene.id);
-        return sceneCueHits(scene, sceneIndex).filter((hit) => !isRecapOnlyCue(scene, hit.cue));
+        return sceneCueHits(scene, sceneIndex).filter((hit) => {
+          if (hasEventOwnershipProfile(scene) && !isOwnedByThisScene(scene, hit.cue)) {
+            const forbidden = forbiddenOwnershipEvent(scene, hit.cue);
+            return Boolean(forbidden) && forbiddenHitRestagesEarlier(hit, forbidden);
+          }
+          if (isIncomingContextOnly(scene, hit.cue) && isRecapOnlyCue(scene, hit.cue)) return false;
+          return !isRecapOnlyCue(scene, hit.cue);
+        });
       });
+
+      const forbiddenRestage = cueHits.find((hit) =>
+        !isOwnedByThisScene(hit.scene, hit.cue)
+        && Boolean(forbiddenOwnershipEvent(hit.scene, hit.cue))
+        && forbiddenHitRestagesEarlier(hit, forbiddenOwnershipEvent(hit.scene, hit.cue))
+      );
+      if (forbiddenRestage) {
+        const event = forbiddenOwnershipEvent(forbiddenRestage.scene, forbiddenRestage.cue);
+        issues.push({
+          type: 'route_duplicate_event',
+          severity: 'error',
+          message:
+            `Reader route ${route.join(' -> ')} restages ${forbiddenRestage.cue} in "${forbiddenRestage.scene.id}" after that event was already owned earlier. ` +
+            `Later scenes may carry aftermath or residue only${event?.text ? `: "${event.text.slice(0, 180)}"` : ''}.`,
+          episodeId: episode.id,
+          episodeNumber: episode.number,
+          sceneId: forbiddenRestage.scene.id,
+          validator: 'RouteContinuityValidator',
+          suggestion: 'Rewrite the later scene as consequence, memory, public reaction, changed access, or distinct escalation instead of replaying the owned event.',
+        });
+        continue;
+      }
 
       for (let index = 1; index < cueHits.length; index += 1) {
         const previous = cueHits[index - 1];
@@ -491,6 +625,7 @@ export class RouteContinuityValidator {
           continue;
         }
         if (first.scene.id === hit.scene.id) continue;
+        if (!duplicateSensitiveHitRestagesEarlier(first, hit)) continue;
         issues.push({
           type: 'route_duplicate_event',
           severity: 'error',

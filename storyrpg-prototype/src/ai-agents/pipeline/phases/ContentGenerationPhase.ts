@@ -60,6 +60,8 @@ import {
   buildSceneConstructionPromptView,
   collectSceneConstructionProfileIssues,
 } from '../../utils/sceneConstructionProfile';
+import { attachSceneEventOwnershipProfiles } from '../../utils/sceneEventOwnership';
+import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacingStagePolicy';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/dependencyGraph';
 import { slugify as idSlugify } from '../../utils/idUtils';
 import { forbiddenNpcNames, introducedNpcIds } from '../../utils/npcIntroductionLedger';
@@ -333,6 +335,82 @@ export class ContentGenerationPhase {
     return recommendedBeatCount >= Math.ceil(report.totalUnits) + 1;
   }
 
+  private buildVoiceProfiles(
+    sceneBlueprint: SceneBlueprint,
+    characterBible: CharacterBible,
+  ): CharacterVoiceProfile[] {
+    return (sceneBlueprint.npcsPresent || [])
+      .map(npcId => {
+        const profile = resolveCharacterProfile(characterBible.characters, npcId);
+        if (profile && profile.voiceProfile) {
+          return {
+            id: profile.id,
+            name: profile.name,
+            voiceProfile: profile.voiceProfile,
+          };
+        }
+        return null;
+      })
+      .filter((p): p is CharacterVoiceProfile => p !== null);
+  }
+
+  private async recordResumedSceneValidation(params: {
+    sceneBlueprint: SceneBlueprint;
+    sceneContent: SceneContent;
+    choiceSet?: ChoiceSet;
+    encounter?: EncounterStructure;
+    characterBible: CharacterBible;
+    episodeNumber: number;
+    encounterValidationEnabled: boolean;
+    context: PipelineContext;
+  }): Promise<void> {
+    if (!this.deps.incrementalValidator) return;
+
+    const {
+      sceneBlueprint,
+      sceneContent,
+      choiceSet,
+      encounter,
+      characterBible,
+      episodeNumber,
+      encounterValidationEnabled,
+      context,
+    } = params;
+    const voiceProfiles = this.buildVoiceProfiles(sceneBlueprint, characterBible);
+    let sceneValidation = await this.deps.incrementalValidator.validateScene(
+      sceneContent,
+      choiceSet,
+      voiceProfiles,
+      undefined,
+    );
+    sceneValidation.episodeNumber = episodeNumber;
+
+    if (encounter && encounterValidationEnabled) {
+      const encounterValidation = this.deps.incrementalValidator.validators.encounter.validateEncounter(encounter);
+      sceneValidation = {
+        sceneId: sceneBlueprint.id,
+        episodeNumber,
+        sceneName: sceneBlueprint.name,
+        encounter: encounterValidation,
+        overallPassed: encounterValidation.passed,
+        regenerationRequested: encounterValidation.passed ? 'none' : 'encounter',
+        validationTimeMs: 0,
+      };
+    }
+
+    this.deps.recordSceneValidationResult(sceneValidation);
+    context.emit({
+      type: 'incremental_validation',
+      phase: encounter ? 'resumed_encounter' : 'resumed_scene',
+      message: `Resumed scene ${sceneBlueprint.id}: ${sceneValidation.overallPassed ? 'PASSED' : 'ISSUES FOUND'}`,
+      data: {
+        sceneId: sceneBlueprint.id,
+        episodeNumber,
+        regenerationRequested: sceneValidation.regenerationRequested,
+      },
+    });
+  }
+
   async run(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -362,6 +440,14 @@ export class ContentGenerationPhase {
     // clone/checkpoint reload). Empty slice → default mix.
     const episodeSlice = episodeTypeCounts(this.deps.seasonChoicePlan, episodeNumber ?? 1);
     const choiceTypePlan = assignChoiceTypes(blueprint.scenes as never, undefined, episodeSlice);
+    const relationshipPolicyChanges = normalizeRelationshipPacingStages(blueprint.scenes as never);
+    if (relationshipPolicyChanges > 0) {
+      context.emit({
+        type: 'debug',
+        phase: 'content_generation',
+        message: `Normalized ${relationshipPolicyChanges} relationship-pacing contract(s) against earned-stage policy`,
+      });
+    }
     const relationshipPacingReconciled = reconcileRelationshipPacingWithChoiceTypes(blueprint.scenes as never);
     if (relationshipPacingReconciled > 0) {
       context.emit({
@@ -403,30 +489,36 @@ export class ContentGenerationPhase {
     const plannedConsequenceTiers = plannedConsequenceTiersByScene(brief.seasonPlan);
     const densityEpisodeNumber = episodeNumber ?? brief.episode.number;
     const sceneConstructionIssues = collectSceneConstructionProfileIssues(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
+    const sceneEventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: densityEpisodeNumber })
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {
         episodeNumber: densityEpisodeNumber,
         generatedAt: new Date().toISOString(),
         issues: sceneConstructionIssues,
+        eventOwnershipIssues: sceneEventOwnershipIssues,
         profiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
+        eventOwnershipProfiles: blueprint.scenes.map((scene) => scene.sceneEventOwnership),
       });
     }
-    if (sceneConstructionIssues.length > 0) {
-      const summary = sceneConstructionIssues.slice(0, 5).join(' | ');
+    const preProseConstructionIssues = [...sceneConstructionIssues, ...sceneEventOwnershipIssues];
+    if (preProseConstructionIssues.length > 0) {
+      const summary = preProseConstructionIssues.slice(0, 5).join(' | ');
       context.emit({
         type: 'warning',
         phase: 'scenes',
-        message: `Scene construction guard blocked content generation for ${sceneConstructionIssues.length} conflict(s): ${summary}`,
-        data: { issues: sceneConstructionIssues },
+        message: `Scene construction guard blocked content generation for ${preProseConstructionIssues.length} conflict(s): ${summary}`,
+        data: { issues: preProseConstructionIssues },
       });
       throw new PipelineError(
-        `[SceneConstructionGate] Episode ${densityEpisodeNumber} unsafe scene construction before content generation: ${summary}. Re-run architecture with one primary turn per scene before SceneWriter/EncounterArchitect.`,
+        `[SceneConstructionGate] Episode ${densityEpisodeNumber} unsafe scene construction before content generation: ${summary}. Re-run architecture with one primary turn and one owner per route event before SceneWriter/EncounterArchitect.`,
         'episode_architecture',
         {
           agent: 'SceneConstructionGate',
           context: {
             episodeNumber: densityEpisodeNumber,
-            issues: sceneConstructionIssues,
+            issues: preProseConstructionIssues,
           },
         },
       );
@@ -938,6 +1030,27 @@ export class ContentGenerationPhase {
           sceneContents.push(resumedScene);
           if (resumedChoice) choiceSets.push(resumedChoice);
           if (resumedEncounter) encounters.set(sceneBlueprint.id, resumedEncounter);
+          if (resumedEncounter && this.deps.incrementalValidator) {
+            const conditionIssues = this.deps.incrementalValidator.checkEncounterChoiceConditions(resumedEncounter);
+            if (conditionIssues.length > 0) {
+              context.emit({
+                type: 'warning',
+                phase: 'encounter',
+                message: `Resumed encounter ${sceneBlueprint.id}: ${conditionIssues.length} flag chronology issue(s) — ${conditionIssues.map(issue => issue.detail).join('; ')}`,
+              });
+            }
+            this.deps.trackEncounterFlagConsequences(resumedEncounter);
+          }
+          await this.recordResumedSceneValidation({
+            sceneBlueprint,
+            sceneContent: resumedScene,
+            choiceSet: resumedChoice,
+            encounter: resumedEncounter,
+            characterBible,
+            episodeNumber: episodeNumber ?? brief.episode.number,
+            encounterValidationEnabled: Boolean(incrementalConfig.encounterValidation),
+            context,
+          });
           contentWorkCompleted += 1 + (resumedChoice ? 1 : 0) + (resumedEncounter ? 1 : 0);
           finalizedScenes.add(sceneBlueprint.id);
           if (this.deps.generationPlan) {
@@ -1070,7 +1183,7 @@ export class ContentGenerationPhase {
           : '';
 
         const sceneWriterInput = {
-          sceneBlueprint,
+          sceneBlueprint: sceneRealizationBlueprint,
           storyContext: {
             title: brief.story.title,
             genre: brief.story.genre,
@@ -1084,7 +1197,7 @@ export class ContentGenerationPhase {
             description: protagonistProfile?.fullBackground || brief.protagonist.description,
             physicalDescription: protagonistProfile?.physicalDescription,
           },
-          npcs: sceneBlueprint.npcsPresent.map(npcId => {
+          npcs: sceneRealizationBlueprint.npcsPresent.map(npcId => {
             const profile = resolveCharacterProfile(characterBible.characters, npcId);
             // Prevention: append the capability constraint so the writer never
             // depicts a non-combatant fighting (Season Canon, Phase B).
@@ -1105,16 +1218,16 @@ export class ContentGenerationPhase {
           notYetIntroducedNames: forbiddenNpcNames({
             roster: rosterNpcs,
             introduced: introducedBeforeScene,
-            sceneCastIds: sceneBlueprint.npcsPresent,
+            sceneCastIds: sceneRealizationBlueprint.npcsPresent,
           }),
           // Diegetic timeline handoff: previous scene's time/place + whether this
           // scene's planned time/location differ (transition acknowledgment required).
-          sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneBlueprint),
+          sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneRealizationBlueprint),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
           // Step 2 (info-ledger): resolve the INFO ids assigned to this scene to their
           // authored fact text so SceneWriter plants/reveals/pays off each phase on-page.
-          setupDirectives: (sceneBlueprint.setsUpInfoIds ?? [])
+          setupDirectives: (sceneRealizationBlueprint.setsUpInfoIds ?? [])
             .map((infoId) => {
               const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
               const touch = entry?.setupTouchDetails?.find((detail) => detail.episodeNumber === (brief.episode?.number ?? 1));
@@ -1122,7 +1235,7 @@ export class ContentGenerationPhase {
               return fact ? { infoId, fact } : undefined;
             })
             .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
-          revealDirectives: (sceneBlueprint.revealsInfoIds ?? [])
+          revealDirectives: (sceneRealizationBlueprint.revealsInfoIds ?? [])
             .map((infoId) => {
               const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
               const fact = entry?.factualAtoms?.filter((atom) => atom.phase === 'reveal').map((atom) => atom.text).join('; ')
@@ -1131,7 +1244,7 @@ export class ContentGenerationPhase {
               return fact ? { infoId, fact } : undefined;
             })
             .filter((d): d is { infoId: string; fact: string } => Boolean(d)),
-          payoffDirectives: (sceneBlueprint.paysOffInfoIds ?? [])
+          payoffDirectives: (sceneRealizationBlueprint.paysOffInfoIds ?? [])
             .map((infoId) => {
               const entry = brief.seasonPlan?.informationLedger?.find((e) => e.id === infoId);
               const fact = entry?.factualAtoms?.filter((atom) => atom.phase === 'payoff').map((atom) => atom.text).join('; ')
@@ -1147,19 +1260,19 @@ export class ContentGenerationPhase {
           forbiddenReveals: buildForbiddenReveals(
             brief.seasonPlan?.informationLedger,
             brief.episode?.number ?? 1,
-            [...(sceneBlueprint.revealsInfoIds ?? []), ...(sceneBlueprint.paysOffInfoIds ?? [])],
+            [...(sceneRealizationBlueprint.revealsInfoIds ?? []), ...(sceneRealizationBlueprint.paysOffInfoIds ?? [])],
           ),
           // B1 (Season Canon read-back): serve the sealed canon as authoritative
           // "do not contradict" context so prior-episode facts constrain this prose.
           establishedCanon: this.deps.establishedCanonForPrompt(brief.episode?.number),
           unresolvedCallbacks: mergeUnresolvedForScene(this.deps.getUnresolvedCallbacksForPrompt(brief.episode?.number), episodePlants, brief.episode?.number ?? 1),
-          targetBeatCount: this.deps.getTargetBeatCountForScene(sceneBlueprint),
-          dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
+          targetBeatCount: this.deps.getTargetBeatCountForScene(sceneRealizationBlueprint),
+          dialogueHeavy: sceneRealizationBlueprint.npcsPresent.length > 0,
           previousSceneSummary: previousScene
             ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
             : undefined,
           nextSceneContext,
-          incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
+          incomingChoiceContext: sceneRealizationBlueprint.incomingChoiceContext,
           // W4 prevention: if an encounter routes into this scene, hand the writer the
           // encounter's outcomes + their pre-seeded state flags so it authors
           // outcome-conditioned variants natively (the scene reflects what happened).
@@ -1170,15 +1283,15 @@ export class ContentGenerationPhase {
           ),
           // B1 prevention: if the prior scene shares this scene's location, tell the
           // writer to continue the visit rather than re-stage an arrival (dual-first-entry).
-          continueInLocation: buildContinueInLocation(blueprint, sceneBlueprint),
+          continueInLocation: buildContinueInLocation(blueprint, sceneRealizationBlueprint),
           sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
           episodeEncounterContext: primaryEncounterContext && !sceneBlueprint.isEncounter
             ? {
                 ...primaryEncounterContext,
-                encounterBuildup: sceneBlueprint.encounterBuildup || 'Foreshadow the encounter stakes without depicting or resolving the encounter event itself.',
+                encounterBuildup: sceneRealizationBlueprint.encounterBuildup || 'Foreshadow the encounter stakes without depicting or resolving the encounter event itself.',
               }
             : undefined,
-          memoryContext: await this.memoryContextFor('SceneWriter', 'scene-authoring', brief, sceneBlueprint, ['episode-blueprint']),
+          memoryContext: await this.memoryContextFor('SceneWriter', 'scene-authoring', brief, sceneRealizationBlueprint, ['episode-blueprint']),
           branchContext: branchContextByScene.get(sceneBlueprint.id),
           seasonAnchors: brief.seasonPlan?.anchors,
           seasonStoryCircle: brief.seasonPlan?.storyCircle,
@@ -1515,6 +1628,7 @@ export class ContentGenerationPhase {
                 const beatCountBeforeRecovery = sceneContent.beats.length;
                 insertMissingMomentBeats(sceneBlueprint.id, sceneContent.beats, missing, {
                   sceneDensityOverloaded: densityReport ? isUnsafeTreatmentDensityReport(densityReport) : false,
+                  allowColdOpenInsertion: i === 0 || Boolean(sceneBlueprint.coldOpenProfile),
                   onSkip: (m, reason) => context.emit({
                     type: 'warning',
                     phase: 'scenes',
@@ -1601,8 +1715,8 @@ export class ContentGenerationPhase {
         );
 
         // Choice Author (for non-encounter scenes with choice points)
-        context.emit({ type: 'debug', phase: 'scenes', message: `Scene ${sceneBlueprint.id} choicePoint: ${sceneBlueprint.choicePoint ? `YES (${sceneBlueprint.choicePoint.type})` : 'NO'}` });
-        if (sceneBlueprint.choicePoint) {
+        context.emit({ type: 'debug', phase: 'scenes', message: `Scene ${sceneBlueprint.id} choicePoint: ${sceneRealizationBlueprint.choicePoint ? `YES (${sceneRealizationBlueprint.choicePoint.type})` : 'NO'}` });
+        if (sceneRealizationBlueprint.choicePoint) {
           let choicePointBeat = sceneResult.data!.beats.find(b => b.isChoicePoint);
           context.emit({ type: 'debug', phase: 'choices', message: `Looking for choicePoint beat in ${sceneResult.data!.beats.length} beats... Found: ${choicePointBeat ? choicePointBeat.id : 'NONE'}` });
 
@@ -1622,7 +1736,7 @@ export class ContentGenerationPhase {
               message: `Creating choices for ${sceneBlueprint.name}`,
             });
             const seasonResiduePlan = brief.seasonPlan?.residuePlan || [];
-            const assignedResidueIds = new Set(sceneBlueprint.choicePoint?.residueObligationIds || []);
+            const assignedResidueIds = new Set(sceneRealizationBlueprint.choicePoint?.residueObligationIds || []);
             const outgoingResidueObligations = seasonResiduePlan.filter((obligation) => assignedResidueIds.has(obligation.id));
             const dueResidueObligations = seasonResiduePlan.filter((obligation) =>
               sceneBlueprint.residueObligationIds?.includes(obligation.id) &&
@@ -1630,7 +1744,7 @@ export class ContentGenerationPhase {
             );
 
             const choiceAuthorInput: ChoiceAuthorInput = {
-              sceneBlueprint,
+              sceneBlueprint: sceneRealizationBlueprint,
               beatText: choicePointBeat.text,
               beatId: choicePointBeat.id,
               storyContext: {
@@ -1638,13 +1752,13 @@ export class ContentGenerationPhase {
                 genre: brief.story.genre,
                 tone: brief.story.tone,
                 userPrompt: brief.userPrompt,
-                worldContext: this.deps.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
+                worldContext: this.deps.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneRealizationBlueprint.location)?.fullDescription),
               },
               protagonistInfo: {
                 name: brief.protagonist.name,
                 pronouns: brief.protagonist.pronouns,
               },
-              npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
+              npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneRealizationBlueprint.npcsPresent, characterBible),
               availableFlags: blueprint.suggestedFlags,
               availableScores: blueprint.suggestedScores,
               availableTags: blueprint.suggestedTags,
@@ -1664,16 +1778,16 @@ export class ContentGenerationPhase {
                   description: scene?.description || '',
                 };
               }),
-              optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
+              optionCount: sceneRealizationBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-authoring', brief, sceneBlueprint, ['choice-set']),
+              memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-authoring', brief, sceneRealizationBlueprint, ['choice-set']),
               storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
               growthTemplates: (() => {
                 // Attach the episode-level growth template to the FIRST
                 // strategic choice point (the development scene anchor).
                 if (!episodeGrowthTemplate || growthTemplateAttached) return undefined;
-                const isStrategic = sceneBlueprint.choicePoint?.type === 'strategic';
-                const isTransition = sceneBlueprint.purpose === 'transition';
+                const isStrategic = sceneRealizationBlueprint.choicePoint?.type === 'strategic';
+                const isTransition = sceneRealizationBlueprint.purpose === 'transition';
                 if (isStrategic && isTransition) {
                   growthTemplateAttached = true;
                   return episodeGrowthTemplate;
@@ -1686,7 +1800,7 @@ export class ContentGenerationPhase {
                 const leadsToDistinct = new Set(sceneBlueprint.leadsTo || []).size;
                 return {
                   role: bc.role,
-                  isBranchPoint: leadsToDistinct > 1 || ((sceneBlueprint.choicePoint?.type as string) === 'branching'),
+                  isBranchPoint: leadsToDistinct > 1 || ((sceneRealizationBlueprint.choicePoint?.type as string) === 'branching'),
                   expectedBranches: leadsToDistinct > 1 ? leadsToDistinct : undefined,
                   reconvergenceTargets: bc.incomingBranchIds,
                   stateReconciliationHints: bc.stateReconciliationNotes,
@@ -1887,7 +2001,7 @@ export class ContentGenerationPhase {
 
                     // Regenerate with guidance
                     const revisedChoiceResult = await withTimeout(this.deps.choiceAuthor.execute({
-                      sceneBlueprint,
+                      sceneBlueprint: sceneRealizationBlueprint,
                       beatText: choicePointBeat.text,
                       beatId: choicePointBeat.id,
                       storyContext: {
@@ -1895,13 +2009,13 @@ export class ContentGenerationPhase {
                         genre: brief.story.genre,
                         tone: brief.story.tone,
                         userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these stakes issues: ${currentStakesResult.issues.map(i => i.issue).join('; ')}`,
-                        worldContext: this.deps.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
+                        worldContext: this.deps.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneRealizationBlueprint.location)?.fullDescription),
                       },
                       protagonistInfo: {
                         name: brief.protagonist.name,
                         pronouns: brief.protagonist.pronouns,
                       },
-                      npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
+                      npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneRealizationBlueprint.npcsPresent, characterBible),
                       availableFlags: blueprint.suggestedFlags,
                       availableScores: blueprint.suggestedScores,
                       availableTags: blueprint.suggestedTags,
@@ -1909,9 +2023,9 @@ export class ContentGenerationPhase {
                         const scene = blueprint.scenes.find(s => s.id === id);
                         return { id, name: scene?.name || id, description: scene?.description || '' };
                       }),
-                      optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
+                      optionCount: sceneRealizationBlueprint.choicePoint?.optionHints?.length || 3,
                       sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                      memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-stakes-repair', brief, sceneBlueprint, ['choice-set']),
+                      memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-stakes-repair', brief, sceneRealizationBlueprint, ['choice-set']),
                       storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
                     }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
 
@@ -2343,7 +2457,7 @@ export class ContentGenerationPhase {
 
                 try {
                   const revisedChoiceResult = await withTimeout(this.deps.choiceAuthor.execute({
-                    sceneBlueprint,
+                    sceneBlueprint: sceneRealizationBlueprint,
                     beatText: regenChoicePointBeat.text,
                     beatId: regenChoicePointBeat.id,
                     storyContext: {
@@ -2351,13 +2465,13 @@ export class ContentGenerationPhase {
                       genre: brief.story.genre,
                       tone: brief.story.tone,
                       userPrompt: `${brief.userPrompt || ''}\n\nCRITICAL CHOICE FIXES REQUIRED — the choice set failed stakes validation. Fix these issues:\n${stakesIssueDescriptions}`,
-                      worldContext: this.deps.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneBlueprint.location)?.fullDescription),
+                      worldContext: this.deps.buildCompactWorldContext(worldBible, worldBible.locations.find(l => l.id === sceneRealizationBlueprint.location)?.fullDescription),
                     },
                     protagonistInfo: {
                       name: brief.protagonist.name,
                       pronouns: brief.protagonist.pronouns,
                     },
-                    npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneBlueprint.npcsPresent, characterBible),
+                    npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneRealizationBlueprint.npcsPresent, characterBible),
                     availableFlags: blueprint.suggestedFlags,
                     availableScores: blueprint.suggestedScores,
                     availableTags: blueprint.suggestedTags,
@@ -2365,9 +2479,9 @@ export class ContentGenerationPhase {
                       const scene = blueprint.scenes.find(s => s.id === id);
                       return { id, name: scene?.name || id, description: scene?.description || '' };
                     }),
-                    optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
+                    optionCount: sceneRealizationBlueprint.choicePoint?.optionHints?.length || 3,
                     sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-                    memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-regeneration', brief, sceneBlueprint, ['choice-set']),
+                    memoryContext: await this.memoryContextFor('ChoiceAuthor', 'choice-regeneration', brief, sceneRealizationBlueprint, ['choice-set']),
                     storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
                   }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen-choices-${choicesRegenAttempt})`);
 

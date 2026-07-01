@@ -239,7 +239,7 @@ function explicitContracts(input: {
   const structuralLevel: WorldTreatmentRealizationContract['blockingLevel'] = input.treatmentSourced ? 'structural' : 'warning';
   const base = { source: 'treatment' as const, totalEpisodes: input.totalEpisodes };
 
-  push(out, { ...base, fieldName: 'World premise', sourceText: guidance.worldPremise, contractKind: 'world_premise', blockingLevel: structuralLevel });
+  push(out, { ...base, fieldName: 'World premise', sourceText: guidance.worldPremise, contractKind: 'world_premise', blockingLevel: 'warning' });
   push(out, { ...base, fieldName: 'Time period', sourceText: guidance.timePeriod, contractKind: 'time_period', blockingLevel: 'warning' });
   for (const rule of guidance.supernaturalRules ?? []) {
     push(out, { ...base, fieldName: 'Technology/magic/supernatural rules', sourceText: rule, contractKind: 'supernatural_rule', blockingLevel: LOAD_BEARING_RE.test(rule) ? treatmentLevel : 'warning' });

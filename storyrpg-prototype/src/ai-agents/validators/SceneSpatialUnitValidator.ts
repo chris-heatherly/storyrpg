@@ -17,6 +17,7 @@ interface LocationHit {
 
 const MICRO_LOCATION_RE = /\b(?:door|doorway|threshold|hall|hallway|corridor|stairs?|stairwell|sidewalk|street|road|car|cab|taxi|bridge|path|entrance|exit|gate|line|queue)\b/i;
 const FUTURE_HANDOFF_RE = /\b(?:toward|to|for|near|points?\s+(?:you\s+)?toward|suggests?|mentions?|names?|tells?\s+you\s+about|invites?\s+you\s+to|later\s+at|tomorrow\s+at)\b/i;
+const DEPARTURE_CONTEXT_RE = /\b(?:leav(?:e|es|ing|t)|back\s+from|away\s+from|fades?|fading|recedes?|behind\s+you|behind\s+her|behind\s+him|behind\s+them)\b/i;
 const ACTIVE_LOCATION_RE = /\b(?:at|inside|outside|behind|within|into|through|across|under|beside|on|in)\b[^.!?]{0,80}$|^\s*[^.!?]{0,80}\b(?:arrives?|appears?|waits?|stands?|looks?|says?|asks?|hands?|offers?|presses?|closes?|walks?|leads?|follows?|clocks?|pulls?|blocks?|meets?|introduces?)\b/i;
 const MEANINGFUL_ACTION_RE = /\b(?:says?|asks?|answers?|hands?|offers?|presses?|takes?|gives?|closes?|walks?|leads?|follows?|clocks?|starts?|meets?|introduces?|appears?|waits?|stands?|looks?|smiles?|touches?|pulls?|blocks?|warns?|reveals?|finds?|discovers?|attacks?|rescues?|chooses?|decides?)\b/i;
 const NAMED_VENUE_RE = /\b([A-ZÀ-Ž][A-Za-zÀ-ž'’-]+(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž'’-]+){0,3}\s+(?:Apartment|Apartments|Books|Bookshop|Bookstore|Club|Gardens?|Park|Bar|Rooftop|Store|House|Estate|Market|Hotel|Cafe|Café|Church|Museum|Station|Square|Theatre|Theater|Library))\b/g;
@@ -29,6 +30,7 @@ function normalize(value: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/^the\s+/, '')
+    .replace(/^(?:loc|location)\s+/, '')
     .trim();
 }
 
@@ -81,7 +83,10 @@ function locationHits(text: string, locations: string[]): LocationHit[] {
     const phrase = normalize(location);
     const comparableIndex = comparableText.indexOf(phrase);
     const window = sentenceWindow(comparableText, comparableIndex >= 0 ? comparableIndex : match.index);
-    const active = ACTIVE_LOCATION_RE.test(window) || (MEANINGFUL_ACTION_RE.test(window) && !FUTURE_HANDOFF_RE.test(window));
+    const departureContext = DEPARTURE_CONTEXT_RE.test(window);
+    const active = !departureContext && (
+      ACTIVE_LOCATION_RE.test(window) || (MEANINGFUL_ACTION_RE.test(window) && !FUTURE_HANDOFF_RE.test(window))
+    );
     hits.push({ location, index: comparableIndex >= 0 ? comparableIndex : match.index, active });
   }
   return hits;

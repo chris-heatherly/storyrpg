@@ -54,6 +54,7 @@ import type { Episode, Scene, Story } from '../../types/story';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { concreteSeedDepicted } from '../utils/concreteSeedRealization';
+import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 
 /** Verbatim substring (normalized) OR sufficient content-word overlap. */
@@ -191,7 +192,8 @@ interface AuthoredBeatExpectation {
 function collectStandardBeats(plan: SeasonScenePlan, tier: RequiredBeat['tier']): AuthoredBeatExpectation[] {
   const out: AuthoredBeatExpectation[] = [];
   const seen = new Set<string>();
-  for (const scene of plan.scenes) {
+  for (const rawScene of plan.scenes) {
+    const scene = buildSceneConstructionPromptView(rawScene);
     if (scene.kind === 'encounter') continue;
     for (const beat of scene.requiredBeats || []) {
       if (beat.tier !== tier || !beat.mustDepict?.trim()) continue;

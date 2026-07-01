@@ -31,7 +31,7 @@ const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
 
 const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|turns?.{0,80}into)\b/i;
 const PUBLIC_AFTERMARKERS = /\b(?:readership|reads?|viral|views?|comments?|dashboard|profile|public pressure|public signal|attention spike|audience growth)\b/i;
-const BLOG_DRAFT_MARKERS = /\b(?:[234]\s*a\.?\s*m\.?|[234]\s*am|late night|unable to sleep|writes?|writing|draft|blank page|publish button|publishes|published|codename)\b/i;
+const BLOG_DRAFT_MARKERS = /\b(?:[234]\s*a\.?\s*m\.?|[234]\s*am|late night|unable to sleep|draft|blank page|publish button|publishes|published|codename)\b|(?:\b(?:writes?|writing|drafts?)\b.{0,100}\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title)\b)|(?:\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title)\b.{0,100}\b(?:writes?|writing|drafts?)\b)/i;
 const THREAT_PREREQUISITE_MARKERS = /\b(?:attack|attacked|attacker|ambush|terror|rescue|rescued|rescuer|saved|saves|threat|knife|scream|rough hands|grabbed|pinned)\b/i;
 const LIVE_THREAT_ACTION_MARKERS = /\b(?:attack|attacked|attacker|ambush|knife|scream|rough hands|grab(?:s|bed)?|pinned|corners?|lunges?|chases?|fight back|don'?t scream)\b/i;
 

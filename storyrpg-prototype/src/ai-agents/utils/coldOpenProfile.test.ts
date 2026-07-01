@@ -93,6 +93,36 @@ describe('coldOpenProfile compiler', () => {
     expect(profile?.conflictResolutions).toContain('Combined Story Circle you + need into one immediate cold-open collision instead of separate checklist beats.');
   });
 
+  it('does not let broad episode-scale need text overload the cold-open collision', () => {
+    const profile = compileColdOpenProfile({
+      id: 's1-1',
+      episodeNumber: 1,
+      requiredBeats: [{
+        id: 'arrival-pressure',
+        tier: 'coldopen',
+        sourceTurn: 'The traveler arrives at the station with one sealed bag.',
+        mustDepict: 'The traveler arrives at the station with one sealed bag.',
+      }],
+    }, {
+      episodeNumber: 1,
+      storyCircleRole: [
+        { beat: 'you', roleKind: 'primary' },
+        { beat: 'need', roleKind: 'expansion' },
+      ],
+      episodeCircle: {
+        you: 'The traveler arrives at the station, forms a public alliance at noon, writes a public account at 3am, and publishes the evidence by evening.',
+        need: 'The traveler needs to form the public alliance at noon, write the public account at 3am, and publish the evidence by evening.',
+      },
+    });
+
+    expect(profile?.storyCircleFulfillment.baseline).toContain('arrives at the station');
+    expect(profile?.storyCircleFulfillment.need).toBeUndefined();
+    expect(profile?.storyCircleFulfillment.collision).toContain('immediately pressured');
+    expect(profile?.storyCircleFulfillment.collision).not.toContain('public alliance');
+    expect(profile?.storyCircleFulfillment.collision).not.toContain('3am');
+    expect(profile?.storyCircleFulfillment.collision).not.toContain('by evening');
+  });
+
   it('attaches only to opening scenes and reports missing Story Circle roles', () => {
     const scenes: ColdOpenSceneLike[] = [
       {

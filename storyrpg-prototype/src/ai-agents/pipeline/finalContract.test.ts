@@ -7,6 +7,7 @@ import {
   applySceneTurnWarningRepairOutcome,
   allowsCompactRequiredBeatFallback,
   downgradeNonBlockingTreatmentObligations,
+  guardLlmContractRepairForArchitecture,
   repairChoiceResiduePlanningRegisterLeakage,
   repairDiceMetaphorMechanicsLeakage,
   repairRelationshipChoiceMovement,
@@ -15,6 +16,7 @@ import {
   selectFinalContractPlannedChoiceTypes,
   sceneTurnWarningsForRepair,
 } from './finalContract';
+import { runFinalContractRepair, type ContractRepairReport } from '../remediation/finalContractRepair';
 
 function storyWithBeat(text: string): Story {
   return {
@@ -54,6 +56,66 @@ const passingReport = {
 } as unknown as FinalStoryContractReport;
 
 describe('scene-turn warning repair helpers', () => {
+  it('defers LLM repair only while current blockers still require architecture repair', async () => {
+    const localStory = storyWithBeat('You step into the room.');
+    const architecturalIssue = {
+      validator: 'ArchitecturalValidator',
+      sceneId: 'scene-a',
+      message: 'Requires episode replan.',
+    };
+    const localIssue = {
+      validator: 'SceneTurnRealizationValidator',
+      sceneId: 'scene-a',
+      message: 'Scene "scene-a" carries Story Circle you structurally but does not dramatize its authored beat event on-page: "Avery arrives with the sealed letter.".',
+    };
+    const firstReport: ContractRepairReport = { passed: false, blockingIssues: [architecturalIssue, localIssue] };
+    const secondReport: ContractRepairReport = { passed: false, blockingIssues: [localIssue] };
+    const finalReport: ContractRepairReport = { passed: true, blockingIssues: [] };
+    const emitted: string[] = [];
+    let deterministicCalls = 0;
+    let llmCalls = 0;
+
+    const guardedLlm = guardLlmContractRepairForArchitecture(
+      ({ story }) => {
+        llmCalls += 1;
+        return { story, changed: true };
+      },
+      (issue) => ({
+        kind: issue.validator === 'ArchitecturalValidator' ? 'episode_replan' : 'same_scene_retry',
+        validator: issue.validator,
+        episodeNumber: issue.episodeNumber,
+        sceneIds: issue.sceneId ? [issue.sceneId] : [],
+        reason: issue.validator === 'ArchitecturalValidator' ? 'Requires architecture.' : 'Localized prose miss.',
+        attemptBudget: issue.validator === 'ArchitecturalValidator' ? 1 : 2,
+        qualityFloor: { overall: 70, voice: 70, stakes: 70, rejectDrop: 8 },
+        unsafeForProsePatch: issue.validator === 'ArchitecturalValidator',
+      }),
+      (message) => emitted.push(message),
+    );
+
+    const outcome = await runFinalContractRepair({
+      story: localStory,
+      initialReport: firstReport,
+      handlers: [
+        ({ story: currentStory, blockingIssues }) => {
+          deterministicCalls += 1;
+          return {
+            story: currentStory,
+            changed: blockingIssues.some((issue) => issue.validator === 'ArchitecturalValidator'),
+          };
+        },
+        guardedLlm,
+      ],
+      revalidate: async () => deterministicCalls === 1 ? secondReport : finalReport,
+      maxAttempts: 3,
+    });
+
+    expect(outcome.passed).toBe(true);
+    expect(outcome.attempts).toBe(2);
+    expect(llmCalls).toBe(1);
+    expect(emitted.some((message) => message.includes('skipped this round'))).toBe(true);
+  });
+
   it('prefers the run-scoped choice-type contract over stale season-plan scene types', () => {
     const seasonPlan = {
       scenePlan: {
@@ -455,5 +517,6 @@ describe('content-agnostic final-contract prose repairs', () => {
     expect(scene.beats[0].choices[0].relationshipValueEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ npcId: 'char-jordan-vale', axis: 'trust' }),
     ]));
+    expect(scene.beats[0].choices[0].relationshipValueEvidence?.[0]).not.toHaveProperty('intendedSurface');
   });
 });

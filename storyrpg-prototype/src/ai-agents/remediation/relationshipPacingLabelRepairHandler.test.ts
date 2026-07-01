@@ -159,6 +159,49 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
+  it('recognizes final-contract provisional spark wording as a relationship cap', async () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: [{
+        validator: 'RelationshipArcLedgerValidator',
+        type: 'treatment_fidelity_violation',
+        sceneId: scene.id,
+        severity: 'error',
+        message: `Scene "${scene.id}" treats group "new-circle" as settled membership while the ledger only permits a provisional spark.`,
+        suggestion: 'Keep the group name as a joke, dare, or fragile invitation until individual relationships and a group-defining choice earn membership.',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(scene.relationshipPacing?.map((contract) => contract.targetStage)).toEqual(['spark', 'spark']);
+  });
+
+  it('rewrites group trust claims as provisional circle language', async () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    scene.beats[0].text = 'The Dusk Club is real now, and a refusal would damage the club\'s trust.';
+    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    expect(initial.valid).toBe(false);
+
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: initial.issues.map((issue) => ({
+        validator: 'RelationshipPacingValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: issue.severity,
+        message: issue.message,
+        suggestion: issue.suggestion,
+      })),
+    });
+
+    expect(result.changed).toBe(true);
+    expect(scene.beats[0].text).toContain('still a dare');
+    expect(scene.beats[0].text).toContain('fragile circle');
+  });
+
   it('downgrades unearned relationship labels in scene headers', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1] as any;
@@ -186,6 +229,47 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(result.changed).toBe(true);
     expect(scene.name).toBe('ally debrief');
     expect(scene.title).toBe('ally debrief');
+    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+  });
+
+  it('downgrades friend-priority and friendship residue in choices and reactions', async () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    const beat = scene.beats[0];
+    beat.text = 'Mika and Stela invite you into a provisional circle.';
+    beat.textVariants = [];
+    beat.choices = [{
+      id: 'protect-the-circle',
+      text: 'Choose your best friend over the stranger.',
+      stakes: {
+        want: 'Keep the table warm.',
+        cost: 'Ignore the stranger.',
+        identity: 'My friends are my priority; strangers can wait.',
+      },
+      reactionText: 'The warmth of friendship is a welcome shield.',
+      nextSceneId: 's1-6',
+    } as any];
+
+    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    expect(initial.valid).toBe(false);
+
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: initial.issues.map((issue) => ({
+        validator: 'RelationshipPacingValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: issue.severity,
+        message: issue.message,
+        suggestion: issue.suggestion,
+      })),
+    });
+
+    expect(result.changed).toBe(true);
+    const choice = beat.choices?.[0] as any;
+    expect(choice.text).toContain('sharp new ally');
+    expect(choice.stakes.identity).toContain('these companions');
+    expect(choice.reactionText).toContain('guarded warmth');
     expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 

@@ -1095,7 +1095,11 @@ function toQualityFinding(finding: SidecarFinding, mappedDomain?: QualityDomainI
 }
 
 function addFinding(domain: DomainAccumulator, finding: QualityFinding): void {
-  if (domain.findings.some((existing) => existing.id === finding.id)) {
+  const semanticKey = qualityFindingSemanticKey(finding);
+  if (domain.findings.some((existing) =>
+    existing.id === finding.id ||
+    qualityFindingSemanticKey(existing) === semanticKey
+  )) {
     return;
   }
   domain.findings.push(finding);
@@ -1126,6 +1130,23 @@ function addFinding(domain: DomainAccumulator, finding: QualityFinding): void {
   } else {
     concept.suggestions += 1;
   }
+}
+
+function qualityFindingSemanticKey(finding: QualityFinding): string {
+  return [
+    finding.severity,
+    finding.validator ?? '',
+    finding.location ?? '',
+    finding.conceptId ?? '',
+    normalizeFindingMessage(finding.message),
+  ].join('|');
+}
+
+function normalizeFindingMessage(message: string): string {
+  return message
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function finalizeDomainScore(domain: DomainAccumulator): QualityDomainScore {

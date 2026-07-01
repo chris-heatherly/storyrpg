@@ -12,6 +12,7 @@ import {
   isSceneBoundArcPressureKind,
 } from '../utils/arcPressureContracts';
 import { isGenericScenePlannerText } from '../utils/sceneContractBuilders';
+import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
@@ -134,18 +135,24 @@ function contractFor(scene: Scene, planned?: PlannedScene): SceneTurnContract | 
 }
 
 function storyCircleContractsFor(scene: Scene, planned?: PlannedScene): StoryCircleBeatRealizationContract[] {
+  const plannedView = planned ? buildSceneConstructionPromptView(planned) : undefined;
   const byId = new Map<string, StoryCircleBeatRealizationContract>();
-  for (const contract of planned?.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
-  for (const contract of scene.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
+  for (const contract of plannedView?.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
+  if (!planned?.sceneConstructionProfile) {
+    for (const contract of scene.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
+  }
   return Array.from(byId.values()).filter((contract) => contract.requiredRealization.includes('final_prose'));
 }
 
 function arcPressureContractsFor(scene: Scene, episodeNumber: number, planned?: PlannedScene): ArcPressureTreatmentContract[] {
+  const plannedView = planned ? buildSceneConstructionPromptView(planned) : undefined;
   const byId = new Map<string, ArcPressureTreatmentContract>();
   const sceneContracts = scene.arcPressureContracts;
-  const sourceContracts = sceneContracts !== undefined
+  const sourceContracts = planned?.sceneConstructionProfile
+    ? plannedView?.arcPressureContracts ?? []
+    : sceneContracts !== undefined
     ? sceneContracts
-    : planned?.arcPressureContracts ?? [];
+    : plannedView?.arcPressureContracts ?? [];
   for (const contract of sourceContracts) byId.set(contract.id, contract);
   return Array.from(byId.values()).filter((contract) =>
     isSceneBoundArcPressureKind(contract.contractKind)

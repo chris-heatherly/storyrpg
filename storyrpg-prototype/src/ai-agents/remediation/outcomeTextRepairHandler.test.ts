@@ -10,6 +10,8 @@ import type { Story } from '../../types/story';
 const STUB_SUCCESS = FALLBACK_OUTCOME_TEXT_POOLS.success[0];
 const STUB_PARTIAL = FALLBACK_OUTCOME_TEXT_POOLS.partial[0];
 const REAL = 'She presses the bell and the door gives; inside, the corridor smells of cold wax.';
+const REAL_PARTIAL = 'The bell rings unanswered, but a light shifts behind the frosted glass.';
+const REAL_FAILURE = 'The door stays shut, and the hall seems colder than before.';
 
 function storyWith(choices: any[]): Story {
   return { episodes: [{ number: 1, scenes: [{ id: 's1', name: 'The Door', beats: [{ id: 'b1', choices }] }] }] } as unknown as Story;
@@ -21,13 +23,22 @@ describe('collectStubOutcomeChoices', () => {
   it('finds choices with stub tiers and reports exactly which tiers are stubs', () => {
     const story = storyWith([
       { id: 'c1', text: 'Knock', stakes: { want: 'get in' }, outcomeTexts: { success: STUB_SUCCESS, partial: STUB_PARTIAL, failure: REAL } },
-      { id: 'c2', text: 'Leave', outcomeTexts: { success: REAL, partial: REAL, failure: REAL } }, // all authored
+      { id: 'c2', text: 'Leave', outcomeTexts: { success: REAL, partial: REAL_PARTIAL, failure: REAL_FAILURE } }, // all authored and distinct
     ]);
     const targets = collectStubOutcomeChoices(story);
     expect(targets).toHaveLength(1);
     expect(targets[0].choice.id).toBe('c1');
     expect(targets[0].needTiers).toEqual(['success', 'partial']); // failure is real
     expect(targets[0].sceneName).toBe('The Door');
+  });
+
+  it('finds choices whose authored tiers are identical', () => {
+    const story = storyWith([
+      { id: 'c1', text: 'Knock', outcomeTexts: { success: REAL, partial: REAL, failure: 'The lock holds, and the hall seems colder than before.' } },
+    ]);
+    const targets = collectStubOutcomeChoices(story);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].needTiers).toEqual(['success', 'partial']);
   });
 
   it('also walks choices nested inside encounter beats', () => {
@@ -70,8 +81,22 @@ describe('buildOutcomeTextRepairHandler', () => {
     expect((agent.reauthorOutcomeTexts as any)).toHaveBeenCalledOnce();
   });
 
+  it('re-authors duplicate authored tiers with distinct prose', async () => {
+    const story = storyWith([
+      { id: 'c1', text: 'Knock', stakes: { want: 'get in', cost: 'be heard' }, outcomeTexts: { success: REAL, partial: REAL, failure: 'The door stays shut.' } },
+    ]);
+    const agent = mockAgent(async ({ needTiers }) => Object.fromEntries(needTiers.map((t) => [t, `${t}: ${REAL}`])));
+    const handler = buildOutcomeTextRepairHandler({ author: () => agent });
+    const result = await handler({ story, blockingIssues: [] });
+
+    expect(result.changed).toBe(true);
+    const choice: any = (result.story as any).episodes[0].scenes[0].beats[0].choices[0];
+    expect(choice.outcomeTexts.success).not.toBe(choice.outcomeTexts.partial);
+    expect((agent.reauthorOutcomeTexts as any)).toHaveBeenCalledOnce();
+  });
+
   it('is a no-op when nothing is stubbed', async () => {
-    const story = storyWith([{ id: 'c1', text: 'Knock', outcomeTexts: { success: REAL, partial: REAL, failure: REAL } }]);
+    const story = storyWith([{ id: 'c1', text: 'Knock', outcomeTexts: { success: REAL, partial: REAL_PARTIAL, failure: REAL_FAILURE } }]);
     const agent = mockAgent(async () => ({}));
     const result = await buildOutcomeTextRepairHandler({ author: () => agent })({ story, blockingIssues: [] });
     expect(result.changed).toBe(false);

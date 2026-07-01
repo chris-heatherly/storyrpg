@@ -1263,6 +1263,88 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.beats[0].nextBeatId).toBe('beat-2');
     expect(normalized.beats[1].nextBeatId).toBe('beat-3');
     expect(normalized.beats[2].nextBeatId).toBeUndefined();
+    expect(normalized.beats[0].text).toMatch(/\byou\b/i);
+    expect(normalized.beats[1].text).toMatch(/\byou\b/i);
+    expect(normalized.beats[0].text).not.toMatch(/\bLyralei\b.+\bshe\b/i);
+    expect(normalized.beats[1].text).not.toMatch(/\bLyralei\b.+\bshe\b/i);
+  });
+
+  it('anchors synthetic lead-ins from third-person scene summaries to player POV', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic',
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0,
+    });
+
+    const normalized = (writer as any).normalizeContent(
+      {
+        sceneId: 'scene-rescue',
+        sceneName: 'The Rescue in the Park',
+        beats: [
+          {
+            id: 'collapsed-beat',
+            text: 'The rooftop bar fades behind you as the trees close in.',
+            isChoicePoint: true,
+          },
+        ],
+        startingBeatId: 'collapsed-beat',
+        moodProgression: ['uneasy'],
+        charactersInvolved: ['Kylie Marinescu', 'Victor Valcescu'],
+        keyMoments: ['The rescue in the fog'],
+        sceneTakeaways: ['The city is not safe.'],
+        continuityNotes: [],
+      },
+      {
+        sceneBlueprint: {
+          id: 'scene-rescue',
+          name: 'The Rescue in the Park',
+          description: 'Walking home through the park, she is attacked and rescued by the impossibly handsome stranger.',
+          location: 'park',
+          mood: 'dangerous',
+          purpose: 'branch',
+          narrativeFunction: 'The rescue turns glamour into danger.',
+          dramaticQuestion: 'How does the city answer when Kylie is alone?',
+          wantVsNeed: 'Feel wanted vs stay safe',
+          conflictEngine: 'The city narrows around Kylie before Victor intervenes.',
+          npcsPresent: ['Victor Valcescu'],
+          keyBeats: [
+            'Walking home through the park, she is attacked and rescued by the impossibly handsome stranger.',
+          ],
+          leadsTo: ['scene-next'],
+          choicePoint: {
+            type: 'dilemma',
+            description: 'How do you respond to the rescue?',
+            stakes: {
+              want: 'Reach safety',
+              cost: 'Owe attention to a dangerous stranger',
+              identity: 'Observer versus participant',
+            },
+            optionHints: ['Thank him', 'Question him'],
+          },
+        },
+        storyContext: {
+          title: 'Test Story',
+          genre: 'paranormal romance',
+          tone: 'dangerous',
+          worldContext: 'A city with teeth.',
+        },
+        protagonistInfo: {
+          name: 'Kylie Marinescu',
+          pronouns: 'she/her',
+          description: 'A writer starting over.',
+        },
+        npcs: [],
+        targetBeatCount: 5,
+        dialogueHeavy: false,
+      }
+    );
+
+    expect(normalized.beats).toHaveLength(3);
+    expect(normalized.beats[0].text).toContain('You are walking home through the park');
+    expect(normalized.beats[0].text).not.toMatch(/\bshe\b/i);
+    expect(normalized.beats[1].text).toMatch(/\byou\b/i);
   });
 
   it('promotes a turn beat to dominant when the writer returns no dominant beat', () => {

@@ -46,6 +46,8 @@ import {
   compareEncounterEventSignatures,
 } from '../utils/encounterEventSignature';
 import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfile';
+import { attachSceneEventOwnershipProfiles } from '../utils/sceneEventOwnership';
+import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 
 export const MIN_SCENES_PER_EPISODE = 3;
@@ -1738,7 +1740,9 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     branchConsequenceContracts,
   }, scenes);
   const failureModeAuditContracts = assignFailureModeAuditContractsToScenes(plan, scenes);
+  normalizeRelationshipPacingStages(scenes);
   attachSceneConstructionProfiles(scenes);
+  attachSceneEventOwnershipProfiles(scenes);
 
   return {
     scenes,

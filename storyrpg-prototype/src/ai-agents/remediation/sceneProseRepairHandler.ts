@@ -41,7 +41,7 @@ import type { ContractRepairHandler, ContractRepairReport } from './finalContrac
 import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
 import { missingMomentTokens, requiredMomentFromMessage } from './realizationScoring';
 import type { RepairDirective } from './gateRepairRouter';
-import { requiredMomentsFor, type SceneContractSource, type RequiredMoment } from './sceneRealizationGuard';
+import { missingRequiredMoments, requiredMomentsFor, type SceneContractSource, type RequiredMoment } from './sceneRealizationGuard';
 
 /**
  * Validators whose blocking findings are fixable by a localized scene-prose
@@ -489,10 +489,39 @@ function realizedRequiredMomentLabels(
     .map(requiredMomentLabel);
 }
 
-/** Predict the re-validation: does the scene's prose now depict every flagged moment? */
-function allMomentsDepicted(scene: RepairableStoryScene, issues: RepairableIssue[]): boolean {
+function plannedSourceMomentsDepicted(scene: RepairableStoryScene, plannedSource?: SceneContractSource): boolean {
+  const moments = requiredMomentsFor(plannedSource);
+  if (moments.length === 0) return true;
   const prose = sceneProseForScoring(scene);
-  return issues.every((issue) => {
+  return moments.every((moment) => evaluateMomentRealization(moment.validator, moment.moment, prose).depicted);
+}
+
+function plannedMissingMomentNotes(scene: RepairableStoryScene, plannedSource?: SceneContractSource): string {
+  const missing = missingRequiredMoments(
+    plannedSource,
+    repairableBeatsFor(scene) as Array<{ text?: string; setupText?: string; escalationText?: string; textVariants?: Array<{ text?: string }> }>,
+  );
+  if (missing.length === 0) return '';
+  return [
+    '',
+    'ACTIVE PLANNED MOMENTS: the scene-construction contract still requires these moments on-page. Fold them into the same scene turn as concrete action, dialogue, sensory detail, or immediate consequence. Do not paste them as summary sentences.',
+    ...missing.map((moment) => {
+      const missingTokens = moment.missingTokens.length > 0
+        ? ` Missing content words: ${moment.missingTokens.join(', ')}.`
+        : '';
+      return `- [${moment.tier}] ${moment.moment}${missingTokens}`;
+    }),
+  ].join('\n');
+}
+
+/** Predict the re-validation: does the scene's prose now depict every flagged and active planned moment? */
+function allMomentsDepicted(
+  scene: RepairableStoryScene,
+  issues: RepairableIssue[],
+  plannedSource?: SceneContractSource,
+): boolean {
+  const prose = sceneProseForScoring(scene);
+  return plannedSourceMomentsDepicted(scene, plannedSource) && issues.every((issue) => {
     const moment = requiredMomentFromMessage(issue.message);
     if (!moment) return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
     if (issue.validator === 'TreatmentEventLedgerValidator') {
@@ -554,6 +583,13 @@ function fictionFacingRequiredBeatSentence(moment: string): string {
   return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }
 
+function isSafeRequiredBeatFallbackSentence(sentence: string): boolean {
+  const tokens = contentTokensForRealization(sentence, stopwordsForRealization('RequiredBeatRealizationValidator'));
+  return tokens.length >= 4
+    || /["'“”‘’][^"'“”‘’]{8,}["'“”‘’]/.test(sentence)
+    || (/\byou\b/i.test(sentence) && /,\s*[a-z][a-z'’.-]{2,}\.?$/i.test(sentence));
+}
+
 function compactSceneTurnFragments(moment: string, prose: string): string[] {
   const fragments = missingRequiredBeatFragmentsForRepair(moment, prose);
   return fragments.filter((fragment) => {
@@ -578,6 +614,7 @@ function appendRequiredBeatFallback(scene: RepairableStoryScene, issues: Repaira
     const fragments = missingRequiredBeatFragmentsForRepair(moment, sceneProseForScoring(scene));
     for (const fragment of (fragments.length > 0 ? fragments : [moment])) {
       const sentence = fictionFacingRequiredBeatSentence(fragment);
+      if (!isSafeRequiredBeatFallbackSentence(sentence)) continue;
       if (isPlanningRegisterText(sentence)) continue;
       if (normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) continue;
       beat.text = `${beat.text.trim()} ${sentence}`.trim();
@@ -585,6 +622,7 @@ function appendRequiredBeatFallback(scene: RepairableStoryScene, issues: Repaira
     }
     if (fragments.length > 0 || !requiredBeatFullyLandedForRepair(moment, sceneProseForScoring(scene))) {
       const sentence = fictionFacingRequiredBeatSentence(moment);
+      if (!isSafeRequiredBeatFallbackSentence(sentence)) continue;
       if (isPlanningRegisterText(sentence)) continue;
       if (!normalizeRealizationText(beat.text).includes(normalizeRealizationText(sentence))) {
         beat.text = `${beat.text.trim()} ${sentence}`.trim();
@@ -806,13 +844,14 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         let lostRequiredMomentsForRetry: string[] = [];
         for (let attempt = 1; attempt <= 2 && !predictedClear; attempt++) {
           const beats = repairableBeatsFor(scene); // re-read: attempt 2 sees attempt 1's merge
+          const plannedNotes = plannedMissingMomentNotes(scene, plannedSource);
           const retryNotes = lostRequiredMomentsForRetry.length > 0
             ? `\n\nPREVIOUS REWRITE WAS REJECTED because it deleted these already-realized required moments. This retry must keep them explicitly on-page while adding the missing repair:\n- ${lostRequiredMomentsForRetry.join('\n- ')}`
             : '';
           const critique = await withTimeout(
             critic.execute({
               scene: adaptSceneForCritic(scene, beats),
-              directorNotes: `${buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene))}${preservationNotes}${retryNotes}`,
+              directorNotes: `${buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene))}${plannedNotes}${preservationNotes}${retryNotes}`,
             }),
             PIPELINE_TIMEOUTS.llmAgent,
             `SceneCritic.contractRepair(${sceneId}#${attempt})`,
@@ -856,7 +895,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
               }
             }
           }
-          predictedClear = allMomentsDepicted(scene, issues);
+          predictedClear = allMomentsDepicted(scene, issues, plannedSource);
           if (!predictedClear && attempt === 1) {
             opts.emit?.(`Scene-prose contract repair: ${sceneId} still missing authored content after rewrite — retrying with the remaining checklist.`);
           }
@@ -873,7 +912,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         const fallbackAppended = appendRequiredBeatFallback(scene, fallbackIssues);
         if (fallbackAppended > 0) {
           sceneMerged += fallbackAppended;
-          predictedClear = allMomentsDepicted(scene, issues);
+          predictedClear = allMomentsDepicted(scene, issues, plannedSource);
           opts.emit?.(
             `Scene-prose contract repair: appended ${fallbackAppended} required beat fallback(s) in ${sceneId}` +
             ` (${predictedClear ? 'now depicts every flagged moment' : 'authored content STILL incomplete'}).`,

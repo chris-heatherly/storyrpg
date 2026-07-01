@@ -708,4 +708,82 @@ describe('SceneTurnRealizationValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues.some((issue) => issue.message.includes('Equinox weekend'))).toBe(false);
   });
+
+  it('uses the scene construction profile to ignore Story Circle contracts routed out of the scene', () => {
+    const active = storyCircleContract({
+      id: 'story-circle-active-door',
+      beat: 'you',
+      sourceText: 'Mara is shut out until Avery opens the locked side door.',
+      eventAtoms: ['Avery opens the locked side door'],
+    });
+    const routed = storyCircleContract({
+      id: 'story-circle-routed-newsroom',
+      beat: 'need',
+      sourceText: 'Mara starts the citywide investigation from the newsroom.',
+      eventAtoms: ['Mara starts the citywide investigation'],
+    });
+    const planned = {
+      ...plan().scenes[0],
+      storyCircleBeatContracts: [active, routed],
+      sceneConstructionProfile: {
+        id: 'scp-s1-1',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+        primaryTurn: {
+          id: 'turn',
+          source: 'storyCircle' as const,
+          text: 'Mara is shut out until Avery opens the locked side door.',
+          sourceContractIds: [active.id],
+        },
+        obligations: [
+          { source: 'storyCircle' as const, id: active.id, slot: 'must_stage' as const, text: active.sourceText, reason: 'active', hardUnits: 1, softUnits: 0 },
+          { source: 'storyCircle' as const, id: routed.id, slot: 'route_later' as const, text: routed.sourceText, reason: 'separate scene', hardUnits: 1, softUnits: 0 },
+        ],
+        sourceContractIds: [active.id, routed.id],
+        activeCast: ['Mara', 'Avery'],
+        capacity: {
+          hardUnits: 1,
+          softUnits: 0,
+          totalUnits: 1,
+          maxHardUnits: 2,
+          maxTotalUnits: 3,
+          activeCastCount: 2,
+          maxActiveCast: 3,
+          activeConflictCount: 1,
+          introductionCount: 0,
+          explicitTimeCueCount: 0,
+          explicitLocationCueCount: 1,
+          beatBudget: { min: 3, recommended: 4, max: 6 },
+        },
+        routedObligationIds: [routed.id],
+        conflictDiagnostics: [],
+        promptGuidance: [],
+      },
+    };
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          turnContract: turnContract({
+            centralTurn: 'Mara is shut out until Avery opens the locked side door.',
+            turnEvent: 'Avery opens the locked side door.',
+          }),
+          storyCircleBeatContracts: [active, routed],
+          beats: [
+            beat('b1', 'Before Avery arrives, Mara waits outside the locked side door in the rain.', { sequenceIntent: { beatRole: 'setup' } }),
+            beat('b2', 'Avery opens the locked side door for Mara.', { sequenceIntent: { beatRole: 'turn' } }),
+            beat('b3', 'Afterward, Mara steps inside with new access and a worse question.', { sequenceIntent: { beatRole: 'aftermath' } }),
+          ],
+        }),
+      ]),
+      scenePlan: {
+        ...plan(),
+        scenes: [planned],
+      },
+      enforceStructuralStoryCircle: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('citywide investigation'))).toBe(false);
+  });
 });

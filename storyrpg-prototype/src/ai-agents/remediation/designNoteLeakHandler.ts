@@ -28,12 +28,18 @@ function isMetaParagraph(paragraph: string, meta: Set<string>): boolean {
   return meta.has(normalized) || metaLeakPatterns.some((pattern) => pattern.test(paragraph));
 }
 
-function stripMetaParagraphs(text: unknown, meta: Set<string>): string | undefined {
+const GENERIC_REPAIRED_META_TEXT = 'The consequence settles into the room, changing what the next choice can cost.';
+
+function stripMetaParagraphs(text: unknown, meta: Set<string>, fallback = GENERIC_REPAIRED_META_TEXT): string | undefined {
   if (typeof text !== 'string') return undefined;
   const paragraphs = text.split(/\n{2,}/);
-  if (paragraphs.length <= 1) return undefined;
+  if (paragraphs.length <= 1) {
+    if (!isMetaParagraph(text, meta)) return undefined;
+    return fallback;
+  }
   const kept = paragraphs.filter((paragraph) => !isMetaParagraph(paragraph, meta));
-  if (kept.length === paragraphs.length || kept.length === 0) return undefined;
+  if (kept.length === paragraphs.length) return undefined;
+  if (kept.length === 0) return fallback;
   return kept.join('\n\n').trim();
 }
 
@@ -89,8 +95,9 @@ export function buildDesignNoteLeakStripHandler(): ContractRepairHandler {
             beat.textVariants = beat.textVariants.filter(
               (v: { text?: unknown }) => {
                 if (!v || typeof v.text !== 'string') return true;
-                const cleanedVariantText = stripMetaParagraphs(v.text, meta);
+                const cleanedVariantText = stripMetaParagraphs(v.text, meta, '');
                 if (cleanedVariantText !== undefined) {
+                  if (!cleanedVariantText.trim()) return false;
                   v.text = cleanedVariantText;
                   rewritten += 1;
                   return true;

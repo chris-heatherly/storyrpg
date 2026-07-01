@@ -220,6 +220,7 @@ function buildStoryIndexes(story: Story): StoryIndexes {
 
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [player, setPlayer] = useState<PlayerState>(createInitialPlayerState());
+  const playerRef = useRef(player);
   const [currentStory, setCurrentStory] = useState<Story | null>(null);
   const [currentEpisode, setCurrentEpisode] = useState<Episode | null>(null);
   const [currentScene, setCurrentScene] = useState<Scene | null>(null);
@@ -237,6 +238,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Track if we should persist (don't persist during initial load)
   const shouldPersist = useRef(false);
+
+  useEffect(() => {
+    playerRef.current = player;
+  }, [player]);
   
   // Load persisted state on mount
   useEffect(() => {
@@ -462,6 +467,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     initialState.relationships = relationships;
 
+    playerRef.current = initialState;
     setPlayer(initialState);
     storyIndexesRef.current = buildStoryIndexes(story);
     setCurrentStory(story);
@@ -674,7 +680,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       fear: 'fears you less',
     };
 
-    setPlayer(prevPlayer => {
+    const computeNextPlayer = (prevPlayer: PlayerState): PlayerState => {
       const newPlayer = { ...prevPlayer };
 
       for (const rawConsequence of consequences) {
@@ -959,16 +965,31 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         heart_head: ['Led by heart', 'Led by reason'],
         honest_deceptive: ['More honest', 'More deceptive'],
       };
+      const IDENTITY_HINTS: Record<string, string> = {
+        'More merciful': 'Mercy comes easier after what happened.',
+        'More just': 'A sharper sense of justice settles into you.',
+        'More idealistic': 'Your hope holds its ground.',
+        'More pragmatic': 'You feel more willing to choose what works.',
+        'More cautious': 'Caution lingers at the edge of your next breath.',
+        Bolder: 'A bolder part of you steps forward.',
+        'More independent': 'You feel more prepared to stand on your own.',
+        'More of a leader': 'The part of you others follow grows clearer.',
+        'Led by heart': 'Your heart keeps its hand on the wheel.',
+        'Led by reason': 'Reason settles over you like a steadying hand.',
+        'More honest': 'The truth feels easier to carry.',
+        'More deceptive': 'A practiced mask settles more easily into place.',
+      };
       for (const dim of Object.keys(IDENTITY_LABELS) as Array<keyof IdentityProfile>) {
         const shift = (newPlayer.identityProfile[dim] ?? 0) - (prevProfile[dim] ?? 0);
         if (Math.abs(shift) >= 3) {
           const [negLabel, posLabel] = IDENTITY_LABELS[dim];
+          const label = shift > 0 ? posLabel : negLabel;
           applied.push({
             type: 'identity',
-            label: shift > 0 ? posLabel : negLabel,
-            direction: shift > 0 ? 'up' : 'down',
+            label,
+            direction: 'neutral',
             magnitude: Math.abs(shift) >= 10 ? 'major' : 'moderate',
-            narrativeHint: `${shift > 0 ? posLabel : negLabel} — your choices are shaping who you become.`,
+            narrativeHint: IDENTITY_HINTS[label],
             scope: 'self',
             linger: true,
           });
@@ -976,7 +997,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
 
       return newPlayer;
-    });
+    };
+
+    const nextPlayer = computeNextPlayer(playerRef.current);
+    playerRef.current = nextPlayer;
+    setPlayer(nextPlayer);
 
     return applied;
   }, []);

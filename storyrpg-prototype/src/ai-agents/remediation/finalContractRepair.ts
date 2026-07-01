@@ -211,6 +211,71 @@ function buildDramaticIntentMetadataHygieneHandler(): ContractRepairHandler {
   };
 }
 
+function isSyntheticColdOpenFallbackBeat(beat: { id?: string }): boolean {
+  const id = String(beat.id ?? '');
+  return /\bauthored\b/i.test(id) && /\bcoldopen\b/i.test(id);
+}
+
+function removeSyntheticColdOpenFallbackBeats(scene: { startingBeatId?: string; beats?: Array<MutableRecord & { id?: string; nextBeatId?: string }> }): number {
+  const beats = scene.beats ?? [];
+  const removeIds = new Set(beats.filter(isSyntheticColdOpenFallbackBeat).map((beat) => beat.id).filter((id): id is string => Boolean(id)));
+  if (removeIds.size === 0) return 0;
+
+  const nextByRemovedId = new Map<string, string | undefined>();
+  for (const beat of beats) {
+    if (beat.id && removeIds.has(beat.id)) nextByRemovedId.set(beat.id, beat.nextBeatId);
+  }
+
+  for (const beat of beats) {
+    while (beat.nextBeatId && removeIds.has(beat.nextBeatId)) {
+      beat.nextBeatId = nextByRemovedId.get(beat.nextBeatId);
+    }
+  }
+
+  scene.beats = beats.filter((beat) => !beat.id || !removeIds.has(beat.id));
+  if (scene.startingBeatId && removeIds.has(scene.startingBeatId)) {
+    scene.startingBeatId = scene.beats[0]?.id;
+  }
+  return removeIds.size;
+}
+
+function buildColdOpenFallbackRouteRepairHandler(): ContractRepairHandler {
+  return ({ story, blockingIssues }) => {
+    const routeIssues = blockingIssues.filter((issue) =>
+      issue.validator === 'RouteContinuityValidator'
+      && (issue.type === 'route_chronology_violation' || issue.type === 'route_duplicate_event')
+      && issue.sceneId
+    );
+    if (routeIssues.length === 0) return { story, changed: false };
+
+    const sceneIds = new Set(routeIssues.map((issue) => issue.sceneId).filter((id): id is string => Boolean(id)));
+    let removed = 0;
+    for (const episode of (story as Story).episodes ?? []) {
+      const openingSceneId = episode.startingSceneId || episode.scenes?.[0]?.id;
+      for (const scene of episode.scenes ?? []) {
+        if (!scene.id || !sceneIds.has(scene.id) || scene.id === openingSceneId) continue;
+        removed += removeSyntheticColdOpenFallbackBeats(scene as unknown as { startingBeatId?: string; beats?: Array<MutableRecord & { id?: string; nextBeatId?: string }> });
+      }
+    }
+
+    if (removed <= 0) return { story, changed: false };
+    return {
+      story,
+      changed: true,
+      record: {
+        rule: 'final_contract_coldopen_fallback_route_cleanup',
+        scope: 'scene',
+        attempted: removed,
+        succeeded: true,
+        degraded: false,
+        blocked: false,
+        attempts: 1,
+        details: `Removed ${removed} synthetic cold-open fallback beat(s) from non-opening scene(s) flagged by route continuity.`,
+      },
+    };
+  };
+}
+
 /**
  * Run the repair loop. Stops when the report passes, `maxAttempts` is hit, the
  * `budget` predicate denies another round, or a full round changes nothing.
@@ -326,6 +391,7 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // surrounding sentence is otherwise diegetic ("the player opposite you").
     // Rewrite the visible prose in-place instead of weakening the leakage gate.
     buildPlayerFacingProseRepairHandler(),
+    buildColdOpenFallbackRouteRepairHandler(),
     buildDramaticIntentMetadataHygieneHandler(),
     // Planning-register leak in metadata fields: strip authoring directives from
     // beat/scene metadata that image planning and the reader may consume, without

@@ -31,4 +31,26 @@ describe('treatmentEventAtomizer', () => {
     expect(atoms.every((atom) => !atom.isPlayableEvent)).toBe(true);
     expect(atoms.every((atom) => atom.realizationMode === 'context_only')).toBe(true);
   });
+
+  it('treats high-level descriptions as playable event text instead of planning-only context', () => {
+    const atoms = atomizeTreatmentText({
+      episodeNumber: 1,
+      text: [
+        'High-level description: The protagonist arrives in a new city with one suitcase, then meets a small club at a rooftop bar.',
+        'Walking home through the park, the protagonist is attacked and rescued by a stranger.',
+        'At 4am the protagonist writes the first public blog post.',
+      ].join(' '),
+      sourceSection: 'Episode 1',
+    });
+
+    expect(atoms.map((atom) => atom.isPlayableEvent)).toEqual([true, true, true, true]);
+    expect(atoms.map((atom) => atom.eventType)).toEqual(['arrival', 'meeting', 'conflict', 'aftermath']);
+    expect(atoms[0].eventText).not.toMatch(/high-level description/i);
+    expect(atoms[2].eventCues).toContain('threatEncounter');
+    expect(atoms[2]).toMatchObject({
+      sceneKindHint: 'encounter',
+      ownershipIntent: 'must_stage',
+    });
+    expect(atoms[2].dramaticPriority).toBeGreaterThan(atoms[0].dramaticPriority ?? 0);
+  });
 });

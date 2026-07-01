@@ -165,6 +165,28 @@ describe('validateBlueprintRouteCueOrder', () => {
     expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
   });
 
+  it('does not reorder routes when arrival prose mentions writing as identity posture', () => {
+    const bp = blueprint([
+      {
+        ...scene('scene-arrival', 'The protagonist arrives at the station with two bags.', ['scene-social']),
+        requiredBeats: [{
+          id: 'observer-posture',
+          tier: 'authored',
+          sourceTurn: 'The protagonist uses their writing to watch others rather than participate.',
+          mustDepict: 'The protagonist uses their writing to watch others rather than participate.',
+        }],
+        sceneConstructionProfile: {
+          obligations: [
+            { source: 'requiredBeat', id: 'observer-posture', slot: 'must_stage' },
+          ],
+        } as SceneBlueprint['sceneConstructionProfile'],
+      },
+      scene('scene-social', 'A rooftop table meeting makes the social circle visible.'),
+    ]);
+
+    expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
   it('flags a public aftermath route that precedes its late-night writing prerequisite', () => {
     const bp = blueprint([
       scene('scene-social', 'A rooftop bar meeting makes the social triangle visible.', ['scene-aftermath']),

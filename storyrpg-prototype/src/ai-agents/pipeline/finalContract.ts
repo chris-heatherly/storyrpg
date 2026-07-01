@@ -34,7 +34,7 @@ import {
 import type { ComprehensiveValidationReport } from '../../types/validation';
 import { runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
-import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairReport } from '../remediation/finalContractRepair';
+import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairHandler, type ContractRepairReport } from '../remediation/finalContractRepair';
 import { GateRepairRouter } from '../remediation/gateRepairRouter';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
@@ -63,6 +63,7 @@ import {
   canonicalizeStoryRelationshipConsequences,
 } from '../utils/witnessNpcResolver';
 import { normalizeChoiceSetStatChecks, normalizeStoryStatChecks } from '../utils/statCheckNormalization';
+import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { PipelineError } from './errors';
 import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
@@ -74,15 +75,48 @@ type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[nu
 
 function plannedMomentSourcesFromScenePlan(scenePlan: SeasonScenePlan | undefined) {
   if (!scenePlan?.scenes?.length) return undefined;
-  const out = new Map<string, { requiredBeats?: Array<{ tier?: string; mustDepict?: string }>; signatureMoment?: string }>();
+  const out = new Map<string, {
+    requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
+    storyCircleBeatContracts?: Array<{ beat?: string; sourceText?: string; requiredRealization?: string[] }>;
+    signatureMoment?: string;
+  }>();
   for (const scene of scenePlan.scenes) {
     if (!scene.id) continue;
+    const promptView = buildSceneConstructionPromptView(scene);
     out.set(scene.id, {
-      requiredBeats: scene.requiredBeats,
-      signatureMoment: (scene as { signatureMoment?: string }).signatureMoment,
+      requiredBeats: promptView.requiredBeats,
+      storyCircleBeatContracts: promptView.storyCircleBeatContracts,
+      signatureMoment: (promptView as { signatureMoment?: string }).signatureMoment,
     });
   }
   return out;
+}
+
+function architecturalRepairBlockersFor(
+  issues: ContractRepairReport['blockingIssues'],
+  routeIssue: (issue: ContractRepairReport['blockingIssues'][number]) => ReturnType<GateRepairRouter['routeIssue']>,
+): ContractRepairReport['blockingIssues'] {
+  return issues.filter((issue) => {
+    const route = routeIssue(issue);
+    return route.kind === 'blueprint_rebalance'
+      || route.kind === 'episode_replan'
+      || route.kind === 'diagnostic_stop';
+  });
+}
+
+export function guardLlmContractRepairForArchitecture(
+  handler: ContractRepairHandler,
+  routeIssue: (issue: ContractRepairReport['blockingIssues'][number]) => ReturnType<GateRepairRouter['routeIssue']>,
+  emit: (message: string) => void,
+): ContractRepairHandler {
+  return (ctx) => {
+    const blockers = architecturalRepairBlockersFor(ctx.blockingIssues, routeIssue);
+    if (blockers.length > 0) {
+      emit(`Final contract LLM repair skipped this round because ${blockers.length} blocker(s) still require blueprint, route, or relationship architecture repair first.`);
+      return { story: ctx.story, changed: false };
+    }
+    return handler(ctx);
+  };
 }
 
 function countSceneTurnWarnings(report: Pick<FinalStoryContractReport, 'warnings'>): number {
@@ -526,7 +560,6 @@ export function repairRelationshipChoiceMovement(story: Story): number {
               npcId,
               axis: 'trust',
               evidenceTags: ['respected_agency'],
-              intendedSurface: 'mutual_aid',
               reason: `The choice "${String(choice.text || 'relationship choice')}" visibly changes the relationship surface.`,
             },
           ];
@@ -907,6 +940,23 @@ export class FinalContract {
         } as any);
       }
       const routeIssue = (issue: ContractRepairReport['blockingIssues'][number]) => repairRouter.routeIssue(issue);
+      const initialArchitecturalRepairBlockers = architecturalRepairBlockersFor(
+        report.blockingIssues as ContractRepairReport['blockingIssues'],
+        routeIssue,
+      );
+      if (initialArchitecturalRepairBlockers.length > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Final contract repair will defer LLM prose/outcome repair while ${initialArchitecturalRepairBlockers.length} blocker(s) require blueprint, route, or relationship architecture repair first.`,
+        } as any);
+      }
+      const guardLlmHandler = (handler: ContractRepairHandler): ContractRepairHandler =>
+        guardLlmContractRepairForArchitecture(
+          handler,
+          routeIssue,
+          (message) => this.deps.emit({ type: 'debug', phase: input.phase, message } as any),
+        );
       const allowRequiredBeatFallback = (issue: ContractRepairReport['blockingIssues'][number]) => {
         const route = repairRouter.routeIssue(issue);
         return route.kind === 'same_scene_retry'
@@ -919,7 +969,7 @@ export class FinalContract {
       const handlers = buildDeterministicContractHandlers();
       if (isGateEnabled('GATE_FINAL_CONTRACT_SCENE_REGEN')) {
         handlers.push(
-          buildSceneProseRepairHandler({
+          guardLlmHandler(buildSceneProseRepairHandler({
             critic: () => {
               try {
                 return this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
@@ -933,12 +983,12 @@ export class FinalContract {
             allowRequiredBeatFallback,
             plannedMomentSources,
             requirePredictedClear: true,
-          }),
+          })),
         );
       }
       if (isGateEnabled('GATE_SCENE_TURN_CLUSTER_REPAIR')) {
         handlers.push(
-          buildSceneClusterRepairHandler({
+          guardLlmHandler(buildSceneClusterRepairHandler({
             critic: () => {
               try {
                 return this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
@@ -952,12 +1002,12 @@ export class FinalContract {
             routeIssue,
             allowRequiredBeatFallback,
             plannedMomentSources,
-          }),
+          })),
         );
       }
       if (isGateEnabled('GATE_FINAL_CONTRACT_OUTCOME_REGEN')) {
         handlers.push(
-          buildOutcomeTextRepairHandler({
+          guardLlmHandler(buildOutcomeTextRepairHandler({
             author: () => {
               try {
                 return new ChoiceAuthor(this.deps.config.agents.choiceAuthor);
@@ -967,7 +1017,7 @@ export class FinalContract {
               }
             },
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
-          }),
+          })),
         );
       }
       // SceneCritic can fix one contract finding while reintroducing deterministic

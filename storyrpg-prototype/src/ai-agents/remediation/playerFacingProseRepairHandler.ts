@@ -20,6 +20,26 @@ function hasPlayerReferenceBlocker(
   return issues.some((issue) => /\bthe\s+player\b/i.test(`${issue.message ?? ''} ${issue.suggestion ?? ''}`));
 }
 
+function unsafeFallbackIssues(
+  issues: Parameters<ContractRepairHandler>[0]['blockingIssues'],
+): Parameters<ContractRepairHandler>[0]['blockingIssues'] {
+  return issues.filter((issue) => issue.type === 'unsafe_fallback_prose' && issue.sceneId);
+}
+
+function extractQuotedFragment(value: string | undefined): string | undefined {
+  const match = /"([^"]{2,})"/.exec(value ?? '');
+  return match?.[1]?.trim();
+}
+
+function normalize(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 export function repairPlayerReferenceProse(value: unknown): { value: unknown; changed: boolean } {
   if (typeof value !== 'string' || !/\b(?:the\s+player|player's)\b/i.test(value)) return { value, changed: false };
   let next = value;
@@ -68,12 +88,49 @@ function rewriteReaderFacingFields(value: unknown): number {
   return rewritten;
 }
 
+function removeUnsafeFallbackBeats(story: Story, blockingIssues: Parameters<ContractRepairHandler>[0]['blockingIssues']): number {
+  let removed = 0;
+  const issues = unsafeFallbackIssues(blockingIssues);
+  if (issues.length === 0) return 0;
+  for (const episode of story.episodes ?? []) {
+    for (const scene of episode.scenes ?? []) {
+      const sceneIssues = issues.filter((issue) => issue.sceneId === scene.id);
+      if (sceneIssues.length === 0 || !Array.isArray(scene.beats)) continue;
+      const unsafeByBeat = new Map<string, Set<string>>();
+      for (const issue of sceneIssues) {
+        if (!issue.beatId) continue;
+        const fragment = extractQuotedFragment(issue.message);
+        if (!fragment) continue;
+        const set = unsafeByBeat.get(issue.beatId) ?? new Set<string>();
+        set.add(normalize(fragment));
+        unsafeByBeat.set(issue.beatId, set);
+      }
+      if (unsafeByBeat.size === 0) continue;
+      const before = scene.beats.length;
+      scene.beats = scene.beats.filter((beat) => {
+        const unsafe = unsafeByBeat.get(beat.id);
+        if (!unsafe) return true;
+        const fields = [beat.text, beat.visualMoment, beat.primaryAction]
+          .map(normalize)
+          .filter(Boolean);
+        if (fields.length === 0) return true;
+        return !fields.every((field) => unsafe.has(field));
+      });
+      removed += before - scene.beats.length;
+    }
+  }
+  return removed;
+}
+
 export function buildPlayerFacingProseRepairHandler(): ContractRepairHandler {
   return ({ story, blockingIssues }) => {
-    if (!hasPlayerReferenceBlocker(blockingIssues)) return { story, changed: false };
+    const shouldRepairPlayerReferences = hasPlayerReferenceBlocker(blockingIssues);
+    const shouldRepairUnsafeFallbacks = unsafeFallbackIssues(blockingIssues).length > 0;
+    if (!shouldRepairPlayerReferences && !shouldRepairUnsafeFallbacks) return { story, changed: false };
 
-    const rewritten = rewriteReaderFacingFields(story as Story);
-    if (rewritten === 0) return { story, changed: false };
+    const rewritten = shouldRepairPlayerReferences ? rewriteReaderFacingFields(story as Story) : 0;
+    const removedFallbackBeats = shouldRepairUnsafeFallbacks ? removeUnsafeFallbackBeats(story as Story, blockingIssues) : 0;
+    if (rewritten + removedFallbackBeats === 0) return { story, changed: false };
 
     return {
       story,
@@ -81,12 +138,12 @@ export function buildPlayerFacingProseRepairHandler(): ContractRepairHandler {
       record: {
         rule: 'final_contract_player_reference_prose',
         scope: 'season',
-        attempted: rewritten,
+        attempted: rewritten + removedFallbackBeats,
         succeeded: true,
         degraded: false,
         blocked: false,
         attempts: 1,
-        details: `Rewrote ${rewritten} reader-facing "the player" reference(s) into in-fiction prose`,
+        details: `Rewrote ${rewritten} reader-facing "the player" reference(s) and removed ${removedFallbackBeats} unsafe fallback beat(s)`,
       },
     };
   };

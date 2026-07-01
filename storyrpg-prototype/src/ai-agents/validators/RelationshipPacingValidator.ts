@@ -184,6 +184,12 @@ function resolveNpcKey(value: string | undefined, aliases: Map<string, string>):
   return aliases.get(key) ?? key;
 }
 
+function valueMatchesNpcAlias(value: string | undefined, aliases: string[]): boolean {
+  const key = normalizedKey(value);
+  if (!key) return false;
+  return aliases.some((alias) => normalizedKey(alias) === key);
+}
+
 function npcAliasesForContract(story: Story, contract: RelationshipPacingContract, aliases: Map<string, string>): string[] {
   const contractNpcKey = resolveNpcKey(contract.npcId, aliases);
   if (!contractNpcKey) return [];
@@ -228,6 +234,14 @@ function hasOnPageIntroductionEvidence(text: string, aliases: string[]): boolean
   if (!alias) return false;
   return new RegExp(`\\b(?:meet|meets|met|introduce(?:s|d)?|appears?|arrives?|stands?|waits?|press(?:es|ed)?|hands?|offers?|raises?|smiles?|leans?|looks?|touch(?:es|ed)?|places?|says?|asks?|murmurs?|laughs?|waves?|opens?|holds?)\\b[^.!?]{0,120}\\b(?:${alias})\\b`, 'i').test(text)
     || new RegExp(`\\b(?:${alias})\\b[^.!?]{0,120}\\b(?:meet|meets|met|introduce(?:s|d)?|appears?|arrives?|stands?|waits?|press(?:es|ed)?|hands?|offers?|raises?|smiles?|leans?|looks?|touch(?:es|ed)?|places?|says?|asks?|murmurs?|laughs?|waves?|opens?|holds?)\\b`, 'i').test(text);
+}
+
+function beatHasOnPageSpeaker(beat: Beat, aliases: string[]): boolean {
+  const raw = beat as Beat & { speaker?: string; speakerName?: string; speakerId?: string; characterId?: string };
+  return valueMatchesNpcAlias(raw.speaker, aliases)
+    || valueMatchesNpcAlias(raw.speakerName, aliases)
+    || valueMatchesNpcAlias(raw.speakerId, aliases)
+    || valueMatchesNpcAlias(raw.characterId, aliases);
 }
 
 function contractKey(contract: RelationshipPacingContract, aliases?: Map<string, string>): string | undefined {
@@ -326,7 +340,9 @@ export class RelationshipPacingValidator extends BaseValidator {
                 suggestion: 'Introduce the NPC in person, show how numbers/contact access are exchanged, or rewrite the beat as public venue discovery rather than texting/calling an unmet character.',
               });
             }
-            if (hasOnPageIntroductionEvidence(localText, npcAliases)) introducedInScene = true;
+            if (beatHasOnPageSpeaker(beat, npcAliases) || hasOnPageIntroductionEvidence(localText, npcAliases)) {
+              introducedInScene = true;
+            }
           }
         }
 
@@ -409,7 +425,7 @@ export class RelationshipPacingValidator extends BaseValidator {
         if (key) seenScenes.set(key, (seenScenes.get(key) ?? 0) + 1);
         if (key && contract.npcId) {
           const npcAliases = npcAliasesForContract(input.story, contract, aliases);
-          if ((ref.scene.beats ?? []).some((beat) => hasOnPageIntroductionEvidence(beatText(beat), npcAliases))) {
+          if ((ref.scene.beats ?? []).some((beat) => beatHasOnPageSpeaker(beat, npcAliases) || hasOnPageIntroductionEvidence(beatText(beat), npcAliases))) {
             introducedScenes.set(key, (introducedScenes.get(key) ?? 0) + 1);
           }
         }

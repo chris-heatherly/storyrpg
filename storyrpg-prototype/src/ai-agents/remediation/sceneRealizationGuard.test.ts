@@ -32,6 +32,23 @@ describe('requiredMomentsFor', () => {
     ]);
   });
 
+  it('enforces full Story Circle final-prose contracts at scene time', () => {
+    const moments = requiredMomentsFor({
+      requiredBeats: [
+        { tier: 'authored', mustDepict: 'wounded observer with two suitcases' },
+      ],
+      storyCircleBeatContracts: [{
+        beat: 'you',
+        sourceText: 'Kylie arrives in Bucharest as a wounded observer with two suitcases and her grandmother address.',
+        requiredRealization: ['scene_turn', 'final_prose'],
+      }],
+    });
+
+    expect(moments.map((m) => m.moment)).toContain(
+      'Kylie arrives in Bucharest as a wounded observer with two suitcases and her grandmother address.',
+    );
+  });
+
   it('returns [] for scenes with no contract (from-scratch runs unaffected)', () => {
     expect(requiredMomentsFor(undefined)).toEqual([]);
     expect(requiredMomentsFor({})).toEqual([]);
@@ -114,6 +131,23 @@ describe('requiredMomentsFor', () => {
 });
 
 describe('missingRequiredMoments', () => {
+  it('catches the full Story Circle moment even when a fragment landed', () => {
+    const missing = missingRequiredMoments(
+      {
+        storyCircleBeatContracts: [{
+          beat: 'you',
+          sourceText: 'Kylie arrives in Bucharest as a wounded observer with two suitcases and her grandmother address.',
+          requiredRealization: ['scene_turn', 'final_prose'],
+        }],
+      },
+      [{ id: 'b1', text: 'wounded observer with two suitcases.' }],
+    );
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0].tier).toBe('storyCircle:you');
+    expect(missing[0].missingTokens).toEqual(expect.arrayContaining(['kylie', 'bucharest', 'grandmother']));
+  });
+
   it('does not enforce routed construction obligations as hidden scene realization requirements', () => {
     const scene = {
       id: 's1-1',
@@ -323,6 +357,33 @@ describe('insertMissingMomentBeats', () => {
 
     expect(skipped).toEqual([]);
     expect(beats.some((beat) => beat.text?.includes('Kylie Marinescu arrives in Bucharest'))).toBe(true);
+  });
+
+  it('skips deterministic cold-open recovery unless the caller marks the scene as opening-capable', () => {
+    const beats = [
+      { id: 'b1', text: 'The club booth is already full of noise.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The choice waits.', isChoicePoint: true, choices: [{ id: 'c1' }] },
+    ];
+    const missing = [{
+      moment: 'Mara arrives in the city with two suitcases and an old address',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'coldopen',
+      missingTokens: ['mara', 'arrives', 'suitcases'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-1', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.tier}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.id)).toEqual(['b1', 'b2']);
+    expect(skipped).toEqual(['coldopen:cold-open moment belongs in the opening scene']);
+
+    insertMissingMomentBeats('s1-arrival-cold-open', beats, missing, {
+      allowColdOpenInsertion: true,
+    });
+
+    expect(beats.some((beat) => beat.id?.includes('authored-coldopen'))).toBe(true);
   });
 
   it('does not treat title-cased project and group names as unsafe timeline cues', () => {

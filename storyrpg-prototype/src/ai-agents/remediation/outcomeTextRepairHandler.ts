@@ -53,6 +53,31 @@ export interface StubOutcomeTarget {
 
 const TIERS: OutcomeTier[] = ['success', 'partial', 'failure'];
 
+function normalizeOutcomeText(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function duplicateOutcomeTiers(choice: ChoiceLike): Set<OutcomeTier> {
+  const byText = new Map<string, OutcomeTier[]>();
+  for (const tier of TIERS) {
+    const normalized = normalizeOutcomeText(choice.outcomeTexts?.[tier]);
+    if (!normalized) continue;
+    byText.set(normalized, [...(byText.get(normalized) ?? []), tier]);
+  }
+  const duplicates = new Set<OutcomeTier>();
+  for (const tiers of byText.values()) {
+    if (tiers.length <= 1) continue;
+    tiers.forEach((tier) => duplicates.add(tier));
+  }
+  const label = normalizeOutcomeText(choice.text);
+  if (label) {
+    for (const tier of TIERS) {
+      if (normalizeOutcomeText(choice.outcomeTexts?.[tier]) === label) duplicates.add(tier);
+    }
+  }
+  return duplicates;
+}
+
 /**
  * Best-effort setting hint for the re-author prompt. Assembled scenes carry no
  * structured `location`, so derive an establishing snippet from the scene's first
@@ -85,7 +110,8 @@ export function collectStubOutcomeChoices(story: Story): StubOutcomeTarget[] {
     const obj = node as Record<string, unknown>;
     if (obj.outcomeTexts && typeof obj.outcomeTexts === 'object') {
       const choice = obj as ChoiceLike;
-      const needTiers = TIERS.filter((t) => isFallbackOutcomeText(choice.outcomeTexts?.[t]));
+      const duplicates = duplicateOutcomeTiers(choice);
+      const needTiers = TIERS.filter((t) => isFallbackOutcomeText(choice.outcomeTexts?.[t]) || duplicates.has(t));
       if (needTiers.length > 0 && (choice.text || choice.id)) {
         targets.push({ choice, sceneName, sceneLocation, needTiers });
       }

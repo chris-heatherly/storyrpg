@@ -1,9 +1,16 @@
 import type { Beat, Scene, Story } from '../../types';
-import type { StoryCircleBeatRealizationContract } from '../../types/scenePlan';
+import type { PlannedScene, SceneOwnedEvent, SeasonScenePlan, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
+import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
+import { buildEncounterEventSignature } from '../utils/encounterEventSignature';
+import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { BaseValidator } from './BaseValidator';
 
-export type TreatmentEventLedgerStatus = 'missing' | 'summary_only';
+export type TreatmentEventLedgerStatus =
+  | 'missing'
+  | 'summary_only'
+  | 'owned_event_missing'
+  | 'encounter_priority_mismatch';
 
 export interface TreatmentEventLedgerFinding {
   status: TreatmentEventLedgerStatus;
@@ -24,6 +31,7 @@ export interface TreatmentEventLedgerResult {
 
 export interface TreatmentEventLedgerInput {
   story: Story;
+  scenePlan?: SeasonScenePlan;
   treatmentSourced?: boolean;
   requestedEpisodeNumbers?: number[];
   generatedEpisodeNumbers?: number[];
@@ -31,6 +39,22 @@ export interface TreatmentEventLedgerInput {
 
 const SUMMARY_ONLY_RE =
   /\b(?:two\s+weeks?|three\s+weeks?|weeks?\s+ago|days?\s+ago|earlier|before\s+tonight|back\s+then|once|remembered|recalled|memory|backstory|it\s+was\s+on\s+one\s+of\s+those|had\s+(?:appeared|intervened|rescued|saved|happened|been|come|gone|left|met|found|started|landed))\b/i;
+
+const ENFORCED_OWNERSHIP_CUES = new Set<StoryEventCue>([
+  'arrival',
+  'venueDoor',
+  'objectHandoff',
+  'socialMeet',
+  'threatEncounter',
+  'roadBreakdown',
+  'friendDebrief',
+  'lateNightWriting',
+  'blogAftermath',
+  'endingAftermath',
+  'walkHome',
+]);
+
+const ABSTRACT_ENCOUNTER_RE = /^(?:can|will|whether|how|what)\b/i;
 
 function textOfBeat(beat: Beat): string {
   const rawVariants = (beat as { textVariants?: unknown }).textVariants;
@@ -185,6 +209,56 @@ function episodeLevelDirectRealization(contract: StoryCircleBeatRealizationContr
     && atoms.every((atom) => ledgerMomentDepicted(atom, filteredProse));
 }
 
+function storyCircleContractsFor(scene: Scene, planned?: PlannedScene): StoryCircleBeatRealizationContract[] {
+  if (planned?.sceneConstructionProfile) {
+    return buildSceneConstructionPromptView(planned).storyCircleBeatContracts ?? [];
+  }
+  const byId = new Map<string, StoryCircleBeatRealizationContract>();
+  for (const contract of planned?.storyCircleBeatContracts ?? []) byId.set(contract.id, contract);
+  for (const contract of scene.storyCircleBeatContracts || []) byId.set(contract.id, contract);
+  return Array.from(byId.values());
+}
+
+function plannedSceneProseEvidence(planned: PlannedScene): string {
+  return [
+    planned.title,
+    planned.dramaticPurpose,
+    planned.stakes,
+    planned.encounter?.description,
+    planned.encounter?.centralConflict,
+    ...(planned.requiredBeats ?? []).map((beat) => beat.mustDepict),
+    ...(planned.sceneEventOwnership?.ownedEvents ?? []).map((event) => event.text),
+  ].filter(Boolean).join(' ');
+}
+
+function finalSceneById(story: Story): Map<string, { scene: Scene; episode: NonNullable<Story['episodes']>[number] }> {
+  const out = new Map<string, { scene: Scene; episode: NonNullable<Story['episodes']>[number] }>();
+  for (const episode of story.episodes || []) {
+    for (const scene of episode.scenes || []) out.set(scene.id, { scene, episode });
+  }
+  return out;
+}
+
+function realizedOwnedCues(scene: Scene): Set<StoryEventCue> {
+  return detectPrimaryStoryEventCues(readerFacingSceneProse(scene));
+}
+
+function ownedCueMissing(event: SceneOwnedEvent, realized: Set<StoryEventCue>): boolean {
+  if (!ENFORCED_OWNERSHIP_CUES.has(event.cue)) return false;
+  return !realized.has(event.cue);
+}
+
+function isAbstractEncounter(planned: PlannedScene): boolean {
+  const central = planned.encounter?.centralConflict?.trim() || planned.encounter?.description?.trim() || planned.dramaticPurpose || '';
+  const signature = buildEncounterEventSignature([central, planned.stakes]);
+  return ABSTRACT_ENCOUNTER_RE.test(central)
+    || (signature.pressureActions.size === 0 && signature.resolutionActions.size === 0);
+}
+
+function isEncounterScene(planned: PlannedScene): boolean {
+  return planned.kind === 'encounter' || Boolean(planned.encounter);
+}
+
 export class TreatmentEventLedgerValidator extends BaseValidator {
   constructor() {
     super('TreatmentEventLedgerValidator');
@@ -193,6 +267,67 @@ export class TreatmentEventLedgerValidator extends BaseValidator {
   validate(input: TreatmentEventLedgerInput): TreatmentEventLedgerResult {
     const findings: TreatmentEventLedgerFinding[] = [];
     const activeEpisodes = activeEpisodeSet(input);
+    const plannedById = new Map((input.scenePlan?.scenes ?? []).map((scene) => [scene.id, scene]));
+    const finalById = finalSceneById(input.story);
+
+    for (const planned of input.scenePlan?.scenes ?? []) {
+      if (typeof planned.episodeNumber === 'number' && activeEpisodes && !activeEpisodes.has(planned.episodeNumber)) {
+        continue;
+      }
+      const found = finalById.get(planned.id);
+      if (!found) continue;
+      const realized = realizedOwnedCues(found.scene);
+      for (const event of planned.sceneEventOwnership?.ownedEvents ?? []) {
+        if (!ownedCueMissing(event, realized)) continue;
+        const severity: 'error' | 'warning' = input.treatmentSourced ? 'error' : 'warning';
+        findings.push({
+          status: 'owned_event_missing',
+          severity,
+          episodeId: found.episode.id,
+          episodeNumber: found.episode.number ?? planned.episodeNumber,
+          sceneId: found.scene.id,
+          contractId: event.sourceContractIds[0] ?? event.key,
+          sourceText: event.text,
+          message:
+            `Treatment event ownership miss in scene "${found.scene.id}": planned cue "${event.cue}" is owned here but not depicted as reader-facing action: "${event.text}".`,
+          suggestion:
+            'Regenerate the owning scene so it stages the owned treatment event on-page; do not satisfy it through incoming context, recap, or a later scene.',
+        });
+      }
+    }
+
+    for (const episodeNumber of new Set((input.scenePlan?.scenes ?? []).map((scene) => scene.episodeNumber))) {
+      if (activeEpisodes && !activeEpisodes.has(episodeNumber)) continue;
+      const plannedEpisodeScenes = (input.scenePlan?.scenes ?? []).filter((scene) => scene.episodeNumber === episodeNumber);
+      const threatOwner = plannedEpisodeScenes.find((scene) =>
+        !isEncounterScene(scene)
+        && (scene.sceneEventOwnership?.ownedEvents ?? []).some((event) => event.cue === 'threatEncounter')
+      );
+      if (!threatOwner) continue;
+      const abstractEncounter = plannedEpisodeScenes.find((scene) =>
+        isEncounterScene(scene)
+        && !(scene.sceneEventOwnership?.ownedEvents ?? []).some((event) => event.cue === 'threatEncounter')
+        && isAbstractEncounter(scene)
+      );
+      if (!abstractEncounter) continue;
+      const threatText = (threatOwner.sceneEventOwnership?.ownedEvents ?? [])
+        .filter((event) => event.cue === 'threatEncounter')
+        .map((event) => event.text)
+        .join(' ');
+      const severity: 'error' | 'warning' = input.treatmentSourced ? 'error' : 'warning';
+      findings.push({
+        status: 'encounter_priority_mismatch',
+        severity,
+        episodeNumber,
+        sceneId: abstractEncounter.id,
+        contractId: `${abstractEncounter.id}:encounter-priority`,
+        sourceText: threatText || plannedSceneProseEvidence(threatOwner),
+        message:
+          `Treatment encounter priority mismatch in episode ${episodeNumber}: concrete threat/encounter event is owned by standard scene "${threatOwner.id}" while encounter scene "${abstractEncounter.id}" carries only abstract pressure.`,
+        suggestion:
+          'Promote the concrete threat/encounter event into the encounter scene, or remove the abstract encounter shell so the planned encounter slot stages the treatment event.',
+      });
+    }
 
     for (const episode of input.story.episodes || []) {
       if (typeof episode.number === 'number' && activeEpisodes && !activeEpisodes.has(episode.number)) {
@@ -201,7 +336,7 @@ export class TreatmentEventLedgerValidator extends BaseValidator {
       const episodeProse = readerFacingEpisodeProse(episode.scenes || []);
       for (const scene of episode.scenes || []) {
         const prose = readerFacingSceneProse(scene);
-        for (const contract of scene.storyCircleBeatContracts || []) {
+        for (const contract of storyCircleContractsFor(scene, plannedById.get(scene.id))) {
           if (!contract.requiredRealization.includes('final_prose')) continue;
           if (!isMustDramatize(contract, input.treatmentSourced)) continue;
           if (!inActiveEpisodeScope(episode.number, contract, activeEpisodes)) continue;

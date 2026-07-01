@@ -58,6 +58,16 @@ function episode(): Episode {
   } as unknown as Episode;
 }
 
+function episodeWithChoiceFlag(flag: string): Episode {
+  const ep = episode();
+  ep.scenes[0].beats[0].choices = [{
+    id: 'c-extra',
+    text: 'Keep the card.',
+    consequences: [{ type: 'setFlag', flag, value: true }],
+  }] as any;
+  return ep;
+}
+
 describe('ResidueObligationValidator', () => {
   it('reports due planned residue that was created but not paid', () => {
     const result = new ResidueObligationValidator().validate({
@@ -103,5 +113,47 @@ describe('ResidueObligationValidator', () => {
 
     expect(result.metrics.futureWindow).toEqual(['residue:blog_priority']);
     expect(result.metrics.missingIncoming).toEqual([]);
+  });
+
+  it('does not classify callback-ledgered choice flags as unplanned residue debt', () => {
+    const result = new ResidueObligationValidator().validate({
+      episode: episodeWithChoiceFlag('kept_the_card'),
+      seasonResiduePlan: [obligation({ sourceEpisodeNumber: 2, targetEpisodeNumbers: [3] })],
+      callbackLedger: {
+        version: 1,
+        hooks: [{
+          id: 'flag:kept_the_card',
+          sourceEpisode: 1,
+          sourceSceneId: 's1',
+          sourceChoiceId: 'c-extra',
+          flags: ['kept_the_card'],
+          conditionKeys: ['kept_the_card'],
+          impactFactors: [],
+          consequenceTier: 'callback',
+          summary: 'Earlier choice is tracked for callback.',
+          payoffWindow: { minEpisode: 1, maxEpisode: 3 },
+          payoffCount: 0,
+          resolved: false,
+          createdAt: '2026-01-01T00:00:00Z',
+        }],
+      } as any,
+      episodeNumber: 1,
+      generatedThroughEpisode: 1,
+    });
+
+    expect(result.metrics.unplannedConsequentialFlags).toEqual([]);
+    expect(result.issues.some((issue) => issue.message.includes('kept_the_card'))).toBe(false);
+  });
+
+  it('still reports consequential choice flags that are neither planned nor ledgered', () => {
+    const result = new ResidueObligationValidator().validate({
+      episode: episodeWithChoiceFlag('kept_the_card'),
+      seasonResiduePlan: [obligation({ sourceEpisodeNumber: 2, targetEpisodeNumbers: [3] })],
+      episodeNumber: 1,
+      generatedThroughEpisode: 1,
+    });
+
+    expect(result.metrics.unplannedConsequentialFlags).toEqual(['kept_the_card']);
+    expect(result.issues.some((issue) => issue.message.includes('kept_the_card'))).toBe(true);
   });
 });

@@ -30,6 +30,9 @@ const STORY_CIRCLE_BEATS: StoryCircleBeat[] = [
   'change',
 ];
 
+const ACTION_RE = /\b(?:arrives?|asks?|attacks?|breaks?|burns?|calls?|chooses?|closes?|confronts?|discovers?|enters?|exposes?|finds?|follows?|forces?|forms?|gathers?|hands?|hides?|launches?|leaves?|opens?|publishes?|rescues?|reveals?|starts?|takes?|threatens?|turns?|walks?|writes?)\b/gi;
+const TIME_CUE_RE = /\b(?:night (?:one|two|three|four|\d+)|\d+\s*(?:am|pm)|morning|dawn|dusk|sunset|midnight|noon|afternoon|evening|later|earlier|next (?:day|morning|night)|previous (?:day|night))\b/gi;
+
 export interface ColdOpenSceneLike {
   id?: string;
   episodeNumber?: number;
@@ -89,6 +92,32 @@ function cleanText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
+function normalize(value: unknown): string {
+  return cleanText(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(?:char|character|npc|id)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokens(value: unknown): string[] {
+  return normalize(value).split(' ').filter((token) => token.length >= 4);
+}
+
+function tokenOverlap(left: unknown, right: unknown): number {
+  const leftTokens = Array.from(new Set(tokens(left)));
+  const rightTokens = Array.from(new Set(tokens(right)));
+  if (leftTokens.length === 0 || rightTokens.length === 0) return 0;
+  const rightSet = new Set(rightTokens);
+  const hits = leftTokens.filter((token) =>
+    rightSet.has(token) || rightTokens.some((candidate) => candidate.startsWith(token) || token.startsWith(candidate)),
+  );
+  return hits.length / leftTokens.length;
+}
+
 function clip(value: string, max = 240): string {
   const text = cleanText(value);
   if (text.length <= max) return text;
@@ -144,6 +173,54 @@ function sceneFallbackText(scene: ColdOpenSceneLike): string {
     || scene.name
     || scene.title
   );
+}
+
+function localColdOpenEvidence(scene: ColdOpenSceneLike, centralTurn?: string): string {
+  return [
+    centralTurn,
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+    requiredBeatText(firstHardRequiredBeat(scene)),
+    scene.dramaticQuestion,
+    scene.dramaticPurpose,
+    scene.conflictEngine,
+    scene.description,
+    scene.title,
+    scene.name,
+  ].map(cleanText).filter(Boolean).join(' ');
+}
+
+function isEpisodeScaleSource(text: string): boolean {
+  const clean = cleanText(text);
+  if (!clean) return false;
+  const actionCount = clean.match(ACTION_RE)?.length ?? 0;
+  const timeCount = clean.match(TIME_CUE_RE)?.length ?? 0;
+  const clauseCount = clean
+    .split(/\s*(?:,|;|\band\b|\bthen\b|\bwhile\b|\bafter\b|\bbefore\b)\s*/i)
+    .filter((part) => part.trim().length >= 16)
+    .length;
+  return timeCount >= 2 || (clean.length > 160 && actionCount >= 3) || (clauseCount >= 4 && actionCount >= 3);
+}
+
+function sceneLocalStoryCircleText(
+  beat: StoryCircleBeat,
+  scene: ColdOpenSceneLike,
+  options: ColdOpenProfileOptions,
+  centralTurn?: string,
+): string {
+  const raw = sourceTextForBeat(beat, scene, options);
+  if (!raw) return '';
+  if (!isEpisodeScaleSource(raw)) return raw;
+  const evidence = localColdOpenEvidence(scene, centralTurn);
+  if (tokenOverlap(raw, evidence) >= 0.28) return raw;
+  const atom = (scene.storyCircleBeatContracts ?? [])
+    .find((contract) => contract.beat === beat)
+    ?.eventAtoms
+    ?.find((candidate) => {
+      const text = cleanText(candidate);
+      return text && !isEpisodeScaleSource(text) && (tokenOverlap(text, evidence) >= 0.22 || tokenOverlap(evidence, text) >= 0.22);
+    });
+  return cleanText(atom);
 }
 
 function centralTurnFor(scene: ColdOpenSceneLike, storyCircleTexts: string[]): string {
@@ -264,9 +341,9 @@ function compileStoryCircleFulfillment(
   beats: StoryCircleBeat[],
   centralTurn: string,
 ): ColdOpenProfile['storyCircleFulfillment'] {
-  const youText = sourceTextForBeat('you', scene, options);
-  const needText = sourceTextForBeat('need', scene, options);
-  const firstRoleText = beats.map((beat) => sourceTextForBeat(beat, scene, options)).find(Boolean);
+  const youText = sceneLocalStoryCircleText('you', scene, options, centralTurn);
+  const needText = sceneLocalStoryCircleText('need', scene, options, centralTurn);
+  const firstRoleText = beats.map((beat) => sceneLocalStoryCircleText(beat, scene, options, centralTurn)).find(Boolean);
   const baseline = clip(youText || firstRoleText || sceneFallbackText(scene) || centralTurn);
   const need = beats.includes('need') ? clip(needText || scene.wantVsNeed || scene.personalStake || scene.stakes || '') : undefined;
   const collision = beats.includes('you') && beats.includes('need')
@@ -324,7 +401,7 @@ export function compileColdOpenProfile(
   if (beats.length === 0) return undefined;
 
   const storyCircleTexts = beats
-    .map((beat) => ({ beat, text: sourceTextForBeat(beat, scene, options) }))
+    .map((beat) => ({ beat, text: sceneLocalStoryCircleText(beat, scene, options) }))
     .filter((item) => item.text);
   const centralTurn = centralTurnFor(scene, storyCircleTexts.map((item) => item.text));
   const mode = modeFor([centralTurn, scene.description, scene.dramaticPurpose, scene.narrativeFunction].join(' '));

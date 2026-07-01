@@ -208,6 +208,22 @@ describe('Assembly timeline persistence', () => {
             allowedPayoffs: ['access route'],
             blockedPayoffs: ['instant friendship'],
           }],
+          sceneEventOwnership: {
+            id: 's1-event-ownership',
+            sceneId: 's1',
+            ownedEvents: [{
+              key: 'cue:venueDoor',
+              cue: 'venueDoor',
+              text: 'Mika gives Kylie the card.',
+              sourceContractIds: ['s1-turn'],
+            }],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: ['s1-turn'],
+            diagnostics: [],
+            promptGuidance: [],
+          },
         }],
       } as any,
       [{
@@ -230,6 +246,7 @@ describe('Assembly timeline persistence', () => {
     expect(episode.scenes[0].turnContract?.centralTurn).toBe('Mika hands Kylie the side-door key card.');
     expect(episode.scenes[0].relationshipPacing?.[0].targetStage).toBe('spark');
     expect(episode.scenes[0].mechanicPressure?.[0].storyPressure).toContain('access leverage');
+    expect(episode.scenes[0].sceneEventOwnership?.ownedEvents?.[0]?.cue).toBe('venueDoor');
     expect(episode.episodeCircle).toEqual(episodeCircle);
   });
 

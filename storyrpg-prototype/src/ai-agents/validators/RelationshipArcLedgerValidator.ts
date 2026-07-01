@@ -17,9 +17,14 @@ export interface RelationshipArcLedgerInput {
   treatmentSourced?: boolean;
 }
 
-const HIGH_STAGE_LABEL_RE = /\b(?:friends?|friendship|best\s+friend|trusted\s+ally|trusts?\s+(?:you|her|him|them)\s+completely|intimate|inner\s+circle|one\s+of\s+us|family|soulmate)\b/i;
+const HIGH_STAGE_LABEL_RE = /\b(?:friends?|friendship|best\s+friend|trusted\s+ally|trusts?\s+(?:you|her|him|them)\s+completely|intimate|inner\s+circle|one\s+of\s+us|family|soulmate)\b/ig;
 const PRIVATE_ACCESS_RE = /\b(?:text(?:ed|s|ing)?|message(?:d|s|ing)?|dm(?:ed|s|ing)?|call(?:ed|s|ing)?|phone(?:s|d)?|number|contact|reply|replies|buzz(?:es|ed)?)\b/i;
-const GROUP_IDENTITY_RE = /\b(?:dusk\s+club|club|crew|circle|group)\b[^.!?]{0,180}\b(?:is|are|becomes?|complete|official|real|inside|belong|one\s+of\s+us|friends?)\b/i;
+const GROUP_IDENTITY_RE = new RegExp([
+  String.raw`\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b[^.!?\n]{0,140}\b(?:complete|official|real|inside|belong(?:s|ed|ing)?|one\s+of\s+us|friends?|members?|membership|settled|permanent|unbreakable)\b`,
+  String.raw`\b(?:is|are|becomes?|became)\s+(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable)\b[^.!?\n]{0,80}\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b`,
+  String.raw`\b(?:club|crew|circle|group)\b[^.!?\n]{0,80}\b(?:is|are|becomes?|became)\s+(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable)\b`,
+].join('|'), 'i');
+const PROVISIONAL_GROUP_CONTEXT_RE = /\b(?:joke|dare|fragile|provisional|not\s+official|not\s+real\s+yet|invitation|almost|maybe|promise|becoming|could\s+become|whatever\s+(?:this|it)\s+becomes)\b/i;
 const VISIBLE_CALLBACK_RE = /\b(?:remember|remembers|remembered|last\s+time|because\s+you|after\s+what\s+you|the\s+promise|the\s+warning|the\s+favor|what\s+happened|again|still)\b/i;
 
 function contractSubjectKey(contract: RelationshipPacingContract): string | undefined {
@@ -56,6 +61,52 @@ function hasMajorPositiveEvidence(entry: RelationshipArcLedgerEntry): boolean {
     || tag === 'protected_player'
     || tag === 'respected_agency'
   );
+}
+
+function sentenceWindows(text: string): string[] {
+  return text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function hasSettledGroupLanguage(text: string): boolean {
+  return sentenceWindows(text).some((window) =>
+    GROUP_IDENTITY_RE.test(window) && !PROVISIONAL_GROUP_CONTEXT_RE.test(window)
+  );
+}
+
+function isFamilyRelationshipClaim(text: string, index: number): boolean {
+  const start = Math.max(0, index - 56);
+  const end = Math.min(text.length, index + 80);
+  const window = text.slice(start, end).toLowerCase();
+  return /\b(?:like|as|found|chosen|feels?\s+like)\s+family\b/.test(window)
+    || /\bfamily\s+(?:now|already|forever|by choice|for tonight)\b/.test(window)
+    || /\b(?:part|member)\s+of\s+(?:the|our|their|your|his|her)\s+family\b/.test(window);
+}
+
+function hasHighStageRelationshipLabel(text: string): boolean {
+  HIGH_STAGE_LABEL_RE.lastIndex = 0;
+  for (const match of text.matchAll(HIGH_STAGE_LABEL_RE)) {
+    if (match[0].toLowerCase() === 'family' && !isFamilyRelationshipClaim(text, match.index ?? 0)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function effectiveTargetStage(contract: RelationshipPacingContract, entry: RelationshipArcLedgerEntry): RelationshipPacingStage {
+  if (contract.groupId) {
+    if (entry.relationshipChoiceSceneIds.length === 0) return 'spark';
+    if (stageRank(contract.startStage) <= stageRank('spark') && stageRank(contract.targetStage) > stageRank('acquaintance')) {
+      return 'acquaintance';
+    }
+  } else if (stageRank(contract.startStage) <= stageRank('unmet') && stageRank(contract.targetStage) > stageRank('spark')) {
+    return 'spark';
+  }
+  return contract.targetStage;
 }
 
 export class RelationshipArcLedgerValidator extends BaseValidator {
@@ -110,20 +161,22 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
         const loc = `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${contract.id}`;
         if (!entry) continue;
 
-        if (stageRank(contract.targetStage) > stageRank(entry.currentStage)) {
+        const targetStage = effectiveTargetStage(contract, entry);
+
+        if (stageRank(targetStage) > stageRank(entry.currentStage)) {
           pushIssue(this.error(
-            `Scene "${ref.scene.id}" targets ${contract.targetStage} for ${contract.npcId ?? contract.groupId}, but the deterministic relationship ledger only permits ${entry.currentStage}.`,
+            `Scene "${ref.scene.id}" targets ${targetStage} for ${contract.npcId ?? contract.groupId}, but the deterministic relationship ledger only permits ${entry.currentStage}.`,
             loc,
             'Lower the scene target stage or add prior full scenes, relationship choices, stat movement, and evidence tags that earn the higher stage.',
-          ), `contract:target:${ref.episodeNumber}:${ref.scene.id}:${key}:${contract.targetStage}:${entry.currentStage}`);
+          ), `contract:target:${ref.episodeNumber}:${ref.scene.id}:${key}:${targetStage}:${entry.currentStage}`);
         }
 
-        if (stageRank(contract.targetStage) > stageRank('acquaintance') && entry.relationshipChoiceSceneIds.length === 0) {
+        if (stageRank(targetStage) > stageRank('acquaintance') && entry.relationshipChoiceSceneIds.length === 0) {
           pushIssue(this.error(
             `Scene "${ref.scene.id}" advances ${contract.npcId ?? contract.groupId} beyond acquaintance before any player relationship choice targets them.`,
             loc,
             'Insert a relationship choice before claiming ally/friend/trusted/intimate movement.',
-          ), `contract:choice:${ref.episodeNumber}:${ref.scene.id}:${key}:${contract.targetStage}`);
+          ), `contract:choice:${ref.episodeNumber}:${ref.scene.id}:${key}:${targetStage}`);
         }
 
         const consequences = relationshipConsequencesForScene(ref.scene).filter(({ consequence }) =>
@@ -151,7 +204,7 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
         }
       }
 
-      if (HIGH_STAGE_LABEL_RE.test(text)) {
+      if (hasHighStageRelationshipLabel(text)) {
         for (const contract of contracts) {
           const key = contractSubjectKey(contract);
           const entry = key ? ledger.byKey.get(key) : undefined;
@@ -172,7 +225,7 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
         }
       }
 
-      if (GROUP_IDENTITY_RE.test(text)) {
+      if (hasSettledGroupLanguage(text)) {
         const groupEntries = ledger.entries.filter((entry) => entry.subject.subjectType === 'group');
         for (const entry of groupEntries) {
           if (stageRank(entry.currentStage) <= stageRank('spark')) {

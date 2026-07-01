@@ -46,6 +46,20 @@ describe('detectStoryEventCues', () => {
     expect(cues.has('blogAftermath')).toBe(false);
   });
 
+  it('does not treat writing as an identity posture as a late-night writing event', () => {
+    const cues = detectStoryEventCues('The protagonist uses their writing to watch others rather than participate.');
+
+    expect(cues.has('lateNightWriting')).toBe(false);
+  });
+
+  it('does not treat a blog or writing as a defensive identity posture as a writing-event owner', () => {
+    const cues = detectPrimaryStoryEventCues(
+      'The protagonist arrives as a wounded observer, hiding behind a codenamed blog and using writing to curate life from a safe distance.',
+    );
+
+    expect(cues.has('lateNightWriting')).toBe(false);
+  });
+
   it('detects inflected attack and rescue wording as a threat encounter', () => {
     const cues = detectStoryEventCues('Walking home through the park, the protagonist is attacked and rescued by a stranger.');
 

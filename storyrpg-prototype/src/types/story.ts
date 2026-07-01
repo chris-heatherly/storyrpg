@@ -23,6 +23,7 @@ import type {
   FailureModeAuditContract,
   MechanicPressureContract,
   RelationshipPacingContract,
+  SceneEventOwnershipProfile,
   SceneTurnContract,
   SeasonPromiseRealizationContract,
   StoryCircleBeatRealizationContract,
@@ -90,6 +91,13 @@ export interface Scene {
    * earned payoffs.
    */
   mechanicPressure?: MechanicPressureContract[];
+
+  /**
+   * Generator-only event ownership metadata. Playback ignores this; route
+   * validators use it to distinguish an event staged by its owner scene from
+   * later recap, aftermath, or accidental duplicate staging.
+   */
+  sceneEventOwnership?: SceneEventOwnershipProfile;
 
   /**
    * Generator-only treatment-field obligations assigned to this scene. Playback

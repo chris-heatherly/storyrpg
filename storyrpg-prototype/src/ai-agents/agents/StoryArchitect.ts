@@ -62,6 +62,7 @@ import type {
   MechanicPressureContract,
   RelationshipPacingContract,
   SceneConstructionProfile,
+  SceneEventOwnershipProfile,
   SceneTurnContract,
   SeasonPromiseRealizationContract,
   StoryCircleBeatRealizationContract,
@@ -111,6 +112,15 @@ import {
   sanitizeBlueprintText,
 } from '../utils/blueprintTextHygiene';
 import { collectSceneConstructionProfileIssues } from '../utils/sceneConstructionProfile';
+import {
+  attachSceneEventOwnershipProfiles,
+} from '../utils/sceneEventOwnership';
+import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
+import {
+  detectPrimaryStoryEventCues,
+  STORY_EVENT_CUE_ORDER,
+  type StoryEventCue,
+} from '../remediation/storyEventCues';
 
 /**
  * Smallest episode (by scene count) that should be asked to carry a SECOND
@@ -534,6 +544,7 @@ export interface SceneBlueprint {
   turnContract?: SceneTurnContract;
   coldOpenProfile?: ColdOpenProfile;
   sceneConstructionProfile?: SceneConstructionProfile;
+  sceneEventOwnership?: SceneEventOwnershipProfile;
   relationshipPacing?: RelationshipPacingContract[];
   mechanicPressure?: MechanicPressureContract[];
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
@@ -3333,72 +3344,45 @@ Remember: The encounter is the heart. Design outward from it.
 
   private repairBroadArrivalRequiredBeats(blueprint: EpisodeBlueprint): void {
     const scenes = blueprint.scenes ?? [];
-    const rooftop = scenes.find((scene) =>
-      /\b(?:rooftop|dusk club|valcescu|vâlcescu)\b/i.test([
-        scene.id,
-        scene.name,
-        scene.description,
-        scene.location,
-      ].filter(Boolean).join(' '))
-      && !/\b(?:cold open|cold-open|arrival)\b/i.test([scene.id, scene.name].filter(Boolean).join(' '))
-    ) || scenes.find((scene) =>
-      /\b(?:rooftop|dusk club|valcescu|vâlcescu)\b/i.test([
-        scene.id,
-        scene.name,
-        scene.description,
-        scene.location,
-      ].filter(Boolean).join(' '))
-    );
-    const blog = scenes.find((scene) =>
-      /\b(?:blog|post|midnight|aftermath|viral|readership|dashboard)\b/i.test([
-        scene.id,
-        scene.name,
-        scene.description,
-        scene.location,
-      ].filter(Boolean).join(' '))
-    );
-
     for (const scene of scenes) {
       const kept: NonNullable<SceneBlueprint['requiredBeats']> = [];
       for (const beat of scene.requiredBeats ?? []) {
         const text = `${beat.sourceTurn || ''} ${beat.mustDepict || ''}`;
-        if (/\b(?:arrival|dusk-club|byline)$/.test(beat.id || '')) {
+        if (/\b(?:event|cue)-[a-z-]+$/i.test(beat.id || '')) {
           kept.push(beat);
           continue;
         }
         if (this.isAbstractStoryCirclePromiseBeat(beat, text)) {
           continue;
         }
-        if (!this.isCompositeSeedBundleBeat(beat, text) && !this.isTwoAnchorRooftopEncounterBeat(text) && !this.isBroadArrivalBundleBeat(text)) {
+        const beatCues = this.sortedEventCues(text);
+        if (!this.isCompositeSeedBundleBeat(beat, text) && beatCues.length < 2) {
           kept.push(beat);
           continue;
         }
-        if (/\barrives?\b|\btwo suitcases\b|\bgrandmother\b|\baddress\b/i.test(text)) {
-          kept.push({ ...beat, id: `${beat.id}-arrival`, mustDepict: this.arrivalSlice(text), sourceTurn: this.arrivalSlice(text) });
-        }
-        if (rooftop && /\b(?:dusk club|rooftop|negronis|watching her|both men)\b/i.test(text)) {
-          rooftop.requiredBeats = [
-            ...(rooftop.requiredBeats ?? []),
-            { ...beat, id: `${beat.id}-dusk-club`, mustDepict: this.duskClubSlice(text), sourceTurn: this.duskClubSlice(text) },
-          ];
-        }
-        if (blog && /\b(?:blog|post|readership|byline|writes?|viral|midnight)\b/i.test(text)) {
-          blog.requiredBeats = [
-            ...(blog.requiredBeats ?? []),
-            { ...beat, id: `${beat.id}-byline`, mustDepict: this.blogSlice(text), sourceTurn: this.blogSlice(text) },
-          ];
+        for (const cue of beatCues) {
+          const target = this.sceneForEventCue(scenes, cue, scene) ?? scene;
+          const sliced = this.sliceForEventCue(text, cue);
+          const nextBeat = {
+            ...beat,
+            id: `${beat.id}-event-${cue}`,
+            mustDepict: sliced,
+            sourceTurn: sliced,
+          };
+          if (target === scene) kept.push(nextBeat);
+          else target.requiredBeats = [...(target.requiredBeats ?? []), nextBeat];
         }
       }
       scene.requiredBeats = kept;
-      if (scene.signatureMoment && rooftop && scene !== rooftop && /\brooftop bar\b/i.test(scene.signatureMoment)) {
-        rooftop.signatureMoment = scene.signatureMoment;
-        scene.signatureMoment = undefined;
-      }
-      if (scene.authoredTreatmentFields?.length && blog && scene !== blog) {
+      if (scene.authoredTreatmentFields?.length) {
         const remaining = [];
         for (const field of scene.authoredTreatmentFields) {
-          if (/\b(?:blog|post|readership|viral|midnight)\b/i.test(field.sourceText || '')) {
-            blog.authoredTreatmentFields = [...(blog.authoredTreatmentFields ?? []), field];
+          const fieldCues = this.sortedEventCues(field.sourceText || '');
+          const target = fieldCues
+            .map((cue) => this.sceneForEventCue(scenes, cue, scene))
+            .find((candidate): candidate is SceneBlueprint => Boolean(candidate && candidate !== scene));
+          if (target) {
+            target.authoredTreatmentFields = [...(target.authoredTreatmentFields ?? []), field];
           } else {
             remaining.push(field);
           }
@@ -3411,50 +3395,46 @@ Remember: The encounter is the heart. Design outward from it.
   private isAbstractStoryCirclePromiseBeat(beat: { id?: string; tier?: string }, text: string): boolean {
     return beat.tier === 'authored'
       && /\bstory-circle\b/i.test(beat.id || '')
-      && /\b(?:ordinary world|opening promise|promise:|desire, intimacy, and predation|known world)\b/i.test(text)
-      && !/\b(?:arrives?|two suitcases|grandmother|dusk club|rooftop|negronis|blog|post|midnight|attack|rescue|choice)\b/i.test(text);
+      && /\b(?:ordinary world|opening promise|promise:|known world|baseline|new normal)\b/i.test(text)
+      && this.sortedEventCues(text).length === 0;
   }
 
   private isCompositeSeedBundleBeat(beat: { tier?: string }, text: string): boolean {
-    return beat.tier === 'seed' && (text.split(';').length >= 4 || [
-      /\bquartz\b/i,
-      /\bkey card\b/i,
-      /\brougher man\b/i,
-      /\bblack roses\b/i,
-      /\breadership\b/i,
-    ].filter((pattern) => pattern.test(text)).length >= 3);
+    return beat.tier === 'seed' && (text.split(';').length >= 4 || this.sortedEventCues(text).length >= 2);
   }
 
-  private isTwoAnchorRooftopEncounterBeat(text: string): boolean {
-    return /\brooftop\b/i.test(text) && /\b(?:cismigiu|cișmigiu)\b/i.test(text) && /\b(?:then|;|two anchors)\b/i.test(text);
+  private sortedEventCues(text: string): StoryEventCue[] {
+    return [...detectPrimaryStoryEventCues(text)]
+      .sort((a, b) => (STORY_EVENT_CUE_ORDER[a] ?? 999) - (STORY_EVENT_CUE_ORDER[b] ?? 999));
   }
 
-  private isBroadArrivalBundleBeat(text: string): boolean {
-    return /\b(?:arrives?|two suitcases|grandmother)\b/i.test(text)
-      && /\b(?:Dusk Club|negronis|observing|byline|writes?|blog|piece later)\b/i.test(text);
+  private sceneEventText(scene: SceneBlueprint): string {
+    return [
+      scene.id,
+      scene.name,
+      scene.description,
+      scene.location,
+      scene.dramaticPurpose,
+      scene.turnContract?.centralTurn,
+      scene.turnContract?.turnEvent,
+      ...(scene.keyBeats ?? []),
+    ].filter(Boolean).join(' ');
   }
 
-  private repairRooftopSetupDensity(blueprint: EpisodeBlueprint): void {
-    for (const scene of blueprint.scenes ?? []) {
-      if (!/\b(?:rooftop|dusk club)\b/i.test([scene.id, scene.name, scene.description, scene.location, scene.signatureMoment].filter(Boolean).join(' '))) continue;
-      const signature = scene.signatureMoment || scene.keyBeats?.find((beat) => /\brooftop\b/i.test(beat) && /\bdusk club\b/i.test(beat));
-      scene.keyBeats = signature ? [signature] : (scene.keyBeats ?? []);
-      scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) =>
-        beat.tier !== 'seed' && !/\bsuccubus\b|\b57-year contract\b|\bblack roses\b|\bhalf-second\b/i.test(`${beat.mustDepict || ''} ${beat.sourceTurn || ''}`)
-      );
-    }
+  private sceneForEventCue(scenes: SceneBlueprint[], cue: StoryEventCue, current: SceneBlueprint): SceneBlueprint | undefined {
+    const direct = scenes.find((scene) => scene !== current && detectPrimaryStoryEventCues(this.sceneEventText(scene)).has(cue));
+    if (direct) return direct;
+    if (cue === 'arrival') return current;
+    return undefined;
   }
 
-  private arrivalSlice(text: string): string {
-    return text.match(/[^.;]*(?:arrives?|two suitcases|grandmother[^.;]*address)[^.;]*/i)?.[0]?.trim() || text;
-  }
-
-  private duskClubSlice(text: string): string {
-    return text.match(/[^.;]*(?:Dusk Club|rooftop|negronis|both men watching)[^.;]*/i)?.[0]?.trim() || text;
-  }
-
-  private blogSlice(text: string): string {
-    return text.match(/[^.;]*(?:blog|post|readership|byline|viral|Midnight)[^.;]*/i)?.[0]?.trim() || text;
+  private sliceForEventCue(text: string, cue: StoryEventCue): string {
+    const clauses = text
+      .split(/(?:[.;]|\s+\bthen\b\s+|\s+\band\b\s+)/i)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const clause = clauses.find((part) => detectPrimaryStoryEventCues(part).has(cue));
+    return clause || text;
   }
 
   private repairPlannedSequentialReachability(blueprint: EpisodeBlueprint): void {
@@ -3761,27 +3741,27 @@ Remember: The encounter is the heart. Design outward from it.
       .replace(/[\u0300-\u036f]/g, '');
     if (!authoredText.trim()) return undefined;
 
-    if (/\b(?:blog|post|mr\.?\s+midnight|dating after dusk|dm pile)\b/.test(authoredText)
+    if (/\b(?:blog|post|codename|public account|message pile)\b/.test(authoredText)
       && /\b(?:4\s*am|9\s*am|unable to sleep|home|counter|apartment|launches|writes?|scrolling)\b/.test(authoredText)) {
       return currentLocation;
     }
     if (/\bapartment\b|\bwalk\s*up\b/.test(authoredText)) {
       return currentLocation;
     }
-    if (/\b(?:cismigiu|park|gardens?)\b/.test(authoredText)) {
-      return 'Cișmigiu Gardens';
+    if (/\b(?:park|gardens?)\b/.test(authoredText)) {
+      return 'Park';
     }
     if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(authoredText)) {
       return 'Rooftop Bar';
     }
     if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance|vip table)\b/.test(authoredText)) {
-      return 'Vâlcescu Club';
+      return 'Venue';
     }
     if (/\b(?:bookshop|bookstore|quartz|crystal|stone|charm|talisman)\b/.test(authoredText)) {
-      return 'Lumina Books';
+      return 'Bookshop';
     }
     if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(authoredText)) {
-      return "Victor's Estate";
+      return 'Estate';
     }
     return undefined;
   }
@@ -5128,34 +5108,21 @@ If you don't include enough choice points, the story will be rejected as non-int
 
   private storyCircleContractSceneCueScore(source: string, target: string, scene: SceneBlueprint, index: number): number {
     let score = 0;
-    if (/\bdusk\s+club\b|\bnegronis?\b/.test(source)) {
-      if (/\bdusk\s+club\b|\bnegronis?\b|\brooftop\b|\bv[âa]lcescu\s+club\b/.test(target)) score += 6;
-      if (/\bwalks?\s+home\b|\bci[șs]migiu\b|\battack\b/.test(target)) score -= 4;
+    const sourceCues = detectPrimaryStoryEventCues(source);
+    const targetCues = detectPrimaryStoryEventCues(target);
+    for (const cue of sourceCues) {
+      if (targetCues.has(cue)) score += 6;
     }
-    if (/\bstaged\s+rescue\b|\brescue\b|\bmr\.?\s+midnight\b/.test(source)) {
-      if (/\bci[șs]migiu\b|\battack\b|\brescue\b|\bfog\b|\bwalks?\s+home\b|\bmr\.?\s+midnight\b/.test(target)) score += 5;
-      if (/\bblog\b|\bpost\b|\breadership\b|\bviral\b/.test(target)) score += 1;
-    }
-    if (/\bviral\b|\bpost\b|\bblog\b|\breadership\b|\bbyline\b|\bmakes?\s+(?:her|you)\s+a\s+name\b/.test(source)) {
-      if (/\bblog\b|\bpost\b|\breadership\b|\bviral\b|\bmr\.?\s+midnight\b|\bpublic\s+pressure\b/.test(target)) score += 7;
-      if (/\bwalks?\s+home\b|\bci[șs]migiu\b|\battack\b/.test(target)) score -= 3;
-    }
-    if (/\bside[-\s]?entrance\b|\bkey\s*card\b/.test(source)) {
-      if (/\bside[-\s]?entrance\b|\bkey\s*card\b|\bv[âa]lcescu\s+club\b|\brooftop\b/.test(target)) score += 7;
-    }
-    if (/\bbookshop\b|\blumina\b|\bquartz\b|\bstela\b/.test(source)) {
-      if (/\bbookshop\b|\blumina\b|\bquartz\b|\bstela\b/.test(target)) score += 5;
-    }
-    if (/\barrives?\s+in\s+bucharest\b|\btwo\s+suitcases\b|\bgrandmother'?s\s+address\b/.test(source)) {
-      if (/\barrives?\b|\bbucharest\b|\btwo\s+suitcases\b|\bgrandmother'?s\s+address\b/.test(target)) score += 7;
-    }
+    if (sourceCues.has('threatEncounter') && targetCues.has('blogAftermath')) score -= 3;
+    if (sourceCues.has('blogAftermath') && targetCues.has('threatEncounter')) score -= 3;
+    if (sourceCues.has('arrival') && index === 0) score += 2;
     if (score === 0 && this.treatmentCueTokenOverlap(source, target) >= 3) score += 1;
     score += Math.max(0, 1 - index * 0.01);
     return score;
   }
 
   private treatmentCueTokenOverlap(source: string, target: string): number {
-    const stopwords = new Set(['the', 'and', 'that', 'with', 'from', 'this', 'into', 'episode', 'scene', 'story', 'kylie']);
+    const stopwords = new Set(['the', 'and', 'that', 'with', 'from', 'this', 'into', 'episode', 'scene', 'story', 'protagonist']);
     const sourceTokens = new Set(source.split(/[^a-z0-9']+/).filter((token) => token.length >= 4 && !stopwords.has(token)));
     const targetTokens = new Set(target.split(/[^a-z0-9']+/).filter((token) => token.length >= 4 && !stopwords.has(token)));
     let matches = 0;
@@ -5965,6 +5932,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
   }
 
   private applySceneConstructionProfiles(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
+    normalizeRelationshipPacingStages(blueprint.scenes);
     const issues = collectSceneConstructionProfileIssues(blueprint.scenes, { episodeNumber: input.episodeNumber });
     for (const scene of blueprint.scenes ?? []) {
       const budget = scene.sceneConstructionProfile?.capacity.beatBudget;
@@ -5972,7 +5940,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         scene.recommendedBeatCount = Math.max(scene.recommendedBeatCount ?? 0, budget.recommended);
       }
     }
-    return issues;
+    const ownershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: input.episodeNumber })
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
+    return [...issues, ...ownershipIssues];
   }
 
   private buildTreatmentDensityDiagnostics(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Record<string, unknown> {

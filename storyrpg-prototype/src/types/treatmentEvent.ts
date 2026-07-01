@@ -31,6 +31,21 @@ export interface TreatmentEventAtom {
   realizationMode: TreatmentEventRealizationMode;
   sourceSection?: string;
   isPlayableEvent: boolean;
+  /**
+   * Generator-only route/event cues inferred from the concrete event text.
+   * These mirror scene-event ownership cues without importing pipeline types
+   * into the shared treatment model.
+   */
+  eventCues?: string[];
+  /** Higher values indicate events that should win over abstract pressure labels. */
+  dramaticPriority?: number;
+  /** Advisory scene kind for binders when an atom implies a set-piece/encounter. */
+  sceneKindHint?: 'standard' | 'encounter';
+  /**
+   * How the planner should treat this atom. `must_stage` means the event must
+   * appear as reader-facing action, not just context or recap.
+   */
+  ownershipIntent?: 'must_stage' | 'may_support' | 'ledger_only';
 }
 
 export interface TreatmentEventOwnership {

@@ -56,6 +56,40 @@ describe('buildPlayerFacingProseRepairHandler', () => {
     expect(choice.outcomeTexts.partial).toBe("The other person's identity remains hidden.");
   });
 
+  it('removes synthetic unsafe fallback beats named by the final contract', async () => {
+    const story = {
+      episodes: [{
+        scenes: [{
+          id: 's1',
+          beats: [
+            { id: 'b1', text: 'You arrive with the old address folded in your coat.', choices: [] },
+            {
+              id: 'bad-fragment',
+              text: "her grandmother's address.",
+              visualMoment: "her grandmother's address.",
+              primaryAction: "her grandmother's address.",
+              choices: [],
+            },
+          ],
+        }],
+      }],
+    } as unknown as Story;
+
+    const result = await buildPlayerFacingProseRepairHandler()({
+      story,
+      blockingIssues: [{
+        type: 'unsafe_fallback_prose',
+        validator: 'RouteContinuityValidator',
+        sceneId: 's1',
+        beatId: 'bad-fragment',
+        message: 'Unsafe fallback/planning prose survived in scene:s1.beat:bad-fragment.text: "her grandmother\'s address."',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(story.episodes[0].scenes[0].beats.map((beat) => beat.id)).toEqual(['b1']);
+  });
+
   it('does nothing without a matching final-contract blocker', async () => {
     const story = { episodes: [{ scenes: [{ beats: [{ text: 'The player is listed in metadata only.' }] }] }] } as unknown as Story;
     const result = await buildPlayerFacingProseRepairHandler()({ story, blockingIssues: [] });

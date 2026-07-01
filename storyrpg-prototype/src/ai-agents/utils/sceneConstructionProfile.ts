@@ -21,14 +21,20 @@ import type {
   StoryCircleBeatRealizationContract,
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
+import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 
 export interface SceneConstructionChoicePoint {
+  type?: string;
+  branches?: boolean | unknown[];
   description?: string;
   stakes?: {
     want?: string;
     cost?: string;
     identity?: string;
   };
+  optionHints?: string[];
+  setsTreatmentSeeds?: string[];
+  setsBranchAxes?: string[];
 }
 
 export interface SceneConstructionSceneLike {
@@ -134,6 +140,41 @@ function tokenOverlap(left: unknown, right: unknown): number {
   return hits.length / leftTokens.length;
 }
 
+const GENERIC_LOCALITY_TOKENS = new Set([
+  'protagonist',
+  'traveler',
+  'character',
+  'scene',
+  'episode',
+  'starts',
+  'start',
+  'begins',
+  'begin',
+  'forms',
+  'form',
+  'turns',
+  'turn',
+  'arrives',
+  'arrive',
+  'public',
+  'private',
+]);
+
+function distinctiveTokens(value: unknown): string[] {
+  return tokens(value).filter((token) => !GENERIC_LOCALITY_TOKENS.has(token));
+}
+
+function distinctiveTokenOverlap(left: unknown, right: unknown): number {
+  const leftTokens = Array.from(new Set(distinctiveTokens(left)));
+  const rightTokens = Array.from(new Set(distinctiveTokens(right)));
+  if (leftTokens.length === 0 || rightTokens.length === 0) return 0;
+  const rightSet = new Set(rightTokens);
+  const hits = leftTokens.filter((token) =>
+    rightSet.has(token) || rightTokens.some((candidate) => candidate.startsWith(token) || token.startsWith(candidate)),
+  );
+  return hits.length / leftTokens.length;
+}
+
 function substantiallyDuplicates(left: unknown, right: unknown): boolean {
   const a = normalize(left);
   const b = normalize(right);
@@ -149,17 +190,61 @@ function isConcreteEvent(text: unknown): boolean {
   return ACTION_RE.test(value) || CONTRAST_RE.test(value) || timeCues(value).length > 0;
 }
 
+const PREMISE_PRESSURE_RE = /\b(?:baseline|comfort zone|known world|normal|mask|rut|recurring pressure|unmet need|dramatic need|deeper need|surface want|want\s*(?:vs\.?|\/)\s*need|need to|needs to|lack|identity|self[-\s]?concept|defined by|wound|wounded|fresh start|rebuild(?:ing)?\s+(?:a\s+|the\s+|their\s+|his\s+|her\s+|new\s+|own\s+)?life)\b/i;
+const COLD_OPEN_SECOND_STAGE_ACTION_RE = /(?:[,;]\s*|\b(?:and\s+)?then\s+|\bwhile\s+|\bafter\s+|\bbefore\s+|\s+)(?:starting|forming|launching|publishing|writing|turning|starts|forms|launches|publishes|writes|turns|using\s+[^.!?]{0,120}\b(?:blog|club|circle|crew|group|account|feed|publication)\b)\b/i;
+
+function isPremisePressureSupportText(text: unknown): boolean {
+  const value = cleanText(text);
+  if (!value || !PREMISE_PRESSURE_RE.test(value)) return false;
+  const sentenceCount = value
+    .split(/[.!?]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .length;
+  if (sentenceCount > 1) return true;
+  return /\b(?:is|are|was|were|be|being|letting|defined|feels?|wants?|needs?|believes?|fears?|hopes?)\b/i.test(value);
+}
+
 function timeCues(value: unknown): string[] {
-  return Array.from(new Set(cleanText(value).match(TIME_CUE_RE)?.map((cue) => cue.toLowerCase()) ?? []));
+  const text = cleanText(value);
+  const matches = Array.from(text.matchAll(TIME_CUE_RE));
+  return Array.from(new Set(matches
+    .filter((match) => {
+      const cue = match[0];
+      const index = match.index ?? 0;
+      const before = text.slice(Math.max(0, index - 32), index);
+      const after = text.slice(index + cue.length, index + cue.length + 32);
+      if (/(\b(?:mr|mrs|ms|mx|dr)\.?\s*|\b(?:codename|called|named|titled|title)\s+)$/i.test(before)) return false;
+      if (/\b[A-Z][a-z]+\s+After\s+$/.test(before)) return false;
+      if (/^[A-Z]/.test(cue) && /^\s+[A-Z][a-z]+/.test(after)) return false;
+      if (/^[A-Z]/.test(cue) && /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+$/.test(before) && !/\b(?:at|by|in|before|after|during|until|since)\s+$/i.test(before)) return false;
+      return true;
+    })
+    .map((cue) => cue[0].toLowerCase())));
+}
+
+function hasMultipleTimeCues(value: unknown): boolean {
+  return timeCues(value).length >= 2;
 }
 
 function locationCueCount(scene: SceneConstructionSceneLike, activeTexts: string[]): number {
-  const declared = new Set([scene.location, ...(scene.locations ?? [])].map(normalize).filter(Boolean));
-  const text = normalize(activeTexts.join(' '));
-  let count = declared.size;
-  const namedPlaceMatches = text.match(/\b(?:at|in|inside|outside|to|from)\s+[a-z0-9]+(?:\s+[a-z0-9]+){0,2}\b/g) ?? [];
-  count += namedPlaceMatches.filter((match) => !declared.has(normalize(match))).length;
-  return count;
+  const primaryDeclaredLocation = scene.location || scene.locations?.[0];
+  const declared = new Set([primaryDeclaredLocation].map(normalize).filter(Boolean));
+  const rawText = activeTexts.join(' ');
+  const activeLocations = new Set(declared);
+  const capitalizedVenueMatches = rawText.match(/\b(?:at|in|inside|outside|to|from)\s+(?:the\s+|a\s+|an\s+)?(?:[A-ZÀ-Ž][A-Za-zÀ-ž'’-]+(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž'’-]+){0,2}\s+)?(?:Apartment|Archive|Bar|Bookshop|Bookstore|Cafe|Café|Club|Dock|Estate|Garden|Hotel|House|Library|Market|Museum|Office|Park|Rooftop|Shop|Station|Studio|Venue)\b/g) ?? [];
+  const categoryVenueMatches = rawText.match(/\b(?:at|in|inside|outside|to|from)\s+(?:the\s+|a\s+|an\s+)?(?:apartment|archive|bar|bookshop|bookstore|cafe|café|club|dock|estate|garden|hotel|house|library|market|museum|office|park|rooftop|shop|station|studio|venue)\b/gi) ?? [];
+  const namedPlaceMatches = [...capitalizedVenueMatches, ...categoryVenueMatches];
+  const normalizeLocationMatch = (match: string) => normalize(match.replace(/^(?:at|in|inside|outside|to|from)\s+(?:the\s+|a\s+|an\s+)?/i, ''));
+  for (const match of namedPlaceMatches) {
+    const candidate = normalizeLocationMatch(match);
+    if (!candidate) continue;
+    const alreadyCovered = [...activeLocations].some((existing) =>
+      existing === candidate || existing.includes(candidate) || candidate.includes(existing),
+    );
+    if (!alreadyCovered) activeLocations.add(candidate);
+  }
+  return activeLocations.size;
 }
 
 function beatText(beat: RequiredBeat | undefined): string {
@@ -184,7 +269,8 @@ function firstText(values: unknown[]): string {
 
 function primaryTurnFor(scene: SceneConstructionSceneLike): SceneConstructionPrimaryTurn {
   if (scene.turnContract && cleanText(scene.turnContract.centralTurn || scene.turnContract.turnEvent)) {
-    const text = cleanText(scene.turnContract.centralTurn || scene.turnContract.turnEvent);
+    const rawText = cleanText(scene.turnContract.centralTurn || scene.turnContract.turnEvent);
+    const text = scene.coldOpenProfile ? sceneLocalColdOpenTurnText(rawText) : sceneLocalTurnText(rawText);
     return {
       id: scene.turnContract.turnId || `${scene.id ?? 'scene'}-turn`,
       source: 'sceneTurn',
@@ -273,6 +359,96 @@ function supportsPrimaryOrColdOpen(text: unknown, primaryText: string, scene: Sc
   const coldOpenText = coldOpenFocusText(scene);
   return Boolean(coldOpenText)
     && (tokenOverlap(text, coldOpenText) >= 0.28 || tokenOverlap(coldOpenText, text) >= 0.28);
+}
+
+function supportsPrimaryTurn(text: unknown, primaryText: string): boolean {
+  return substantiallyDuplicates(text, primaryText)
+    || tokenOverlap(text, primaryText) >= 0.28
+    || tokenOverlap(primaryText, text) >= 0.28;
+}
+
+function eventCues(value: unknown): Set<StoryEventCue> {
+  return detectPrimaryStoryEventCues(cleanText(value));
+}
+
+function eventCueOverlap(left: unknown, right: unknown): boolean {
+  const leftCues = eventCues(left);
+  const rightCues = eventCues(right);
+  if (leftCues.size === 0 || rightCues.size === 0) return false;
+  return [...leftCues].some((cue) => rightCues.has(cue));
+}
+
+function sceneLocalTurnText(value: unknown): string {
+  const text = cleanText(value);
+  const cues = timeCues(text);
+  if (cues.length < 2) return text;
+  const lower = text.toLowerCase();
+  const secondCueIndex = lower.indexOf(cues[1]);
+  if (secondCueIndex <= 0) return text;
+  const local = text
+    .slice(0, secondCueIndex)
+    .replace(/(?:[,;]\s*)?(?:and|then|but)?\s*(?:by|at|in|during|after|before)?\s*$/i, '')
+    .trim();
+  return local || text;
+}
+
+function sceneLocalColdOpenTurnText(value: unknown): string {
+  const text = sceneLocalTurnText(value);
+  const match = COLD_OPEN_SECOND_STAGE_ACTION_RE.exec(text);
+  if (!match || match.index <= 0) return text;
+  const local = text.slice(0, match.index).replace(/(?:[,;]\s*)?$/, '').trim();
+  return local || text;
+}
+
+function isBroadMultiTimeSupport(obligation: SceneConstructionObligation): boolean {
+  if (!hasMultipleTimeCues(obligation.text)) return false;
+  if (obligation.slot === 'primary_turn' || obligation.source === 'sceneTurn') return false;
+  return obligation.source !== 'requiredBeat' || obligation.hardUnits < 1;
+}
+
+function choicePressureServesTurn(obligation: SceneConstructionObligation, primaryText: string, scene: SceneConstructionSceneLike): boolean {
+  if (obligation.source !== 'choicePressure') return true;
+  if (substantiallyDuplicates(obligation.text, primaryText)) return true;
+  if (supportsPrimaryOrColdOpen(obligation.text, primaryText, scene)) return true;
+  const choiceCues = eventCues(obligation.text);
+  if (choiceCues.size === 0) return false;
+  const primaryCues = eventCues(primaryText);
+  return [...choiceCues].some((cue) => primaryCues.has(cue));
+}
+
+function coldOpenStoryCircleAtomServesTurn(text: unknown, primaryText: string, scene: SceneConstructionSceneLike): boolean {
+  if (substantiallyDuplicates(text, primaryText)) return true;
+  if (distinctiveTokenOverlap(text, primaryText) >= 0.28 || distinctiveTokenOverlap(primaryText, text) >= 0.28) return true;
+  const value = cleanText(text);
+  if (!value) return false;
+  if (/\b(?:starts?|launches?|forms?|publishes?|writes?|turns?)\b/i.test(value)) return false;
+  const profile = scene.coldOpenProfile;
+  if (!profile) return false;
+  const coldOpenText = [
+    profile.centralTurn,
+    profile.microConflict,
+    profile.storyCircleFulfillment.baseline,
+    profile.storyCircleFulfillment.need,
+    profile.exitHook,
+  ].filter(Boolean).join(' ');
+  return Boolean(coldOpenText)
+    && !timeCues(value).some((cue) => !timeCues(coldOpenText).includes(cue))
+    && (distinctiveTokenOverlap(value, coldOpenText) >= 0.32 || distinctiveTokenOverlap(coldOpenText, value) >= 0.32);
+}
+
+function hasColdOpenExtraneousEventCue(text: unknown, primaryText: string, scene: SceneConstructionSceneLike): boolean {
+  if (!scene.coldOpenProfile) return false;
+  const value = cleanText(text);
+  if (!value) return false;
+  const cues = eventCues(value);
+  if (cues.size === 0) return false;
+  const primaryCues = eventCues([
+    primaryText,
+    scene.coldOpenProfile.storyCircleFulfillment.baseline,
+    scene.coldOpenProfile.storyCircleFulfillment.need,
+  ].filter(Boolean).join(' '));
+  if (primaryCues.size === 0) return false;
+  return [...cues].some((cue) => !primaryCues.has(cue));
 }
 
 function makeObligation(
@@ -394,8 +570,11 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
   const seen = new Map<string, SceneConstructionObligation>();
 
   for (const obligation of obligations) {
-    const duplicateOfPrimary = obligation.id !== primary.id && substantiallyDuplicates(obligation.text, primaryText);
+    const broadMultiTimeSupport = isBroadMultiTimeSupport(obligation);
+    const duplicateOfPrimary = obligation.id !== primary.id && !broadMultiTimeSupport && substantiallyDuplicates(obligation.text, primaryText);
     const broad = !isConcreteEvent(obligation.text);
+    const coldOpenExtraneousEventCue = obligation.slot !== 'primary_turn'
+      && hasColdOpenExtraneousEventCue(obligation.text, primaryText, scene);
     const coldOpenProfile = scene.coldOpenProfile;
     const coldOpenKeepsStoryCircle = obligation.source === 'storyCircle'
       && Boolean(coldOpenProfile)
@@ -406,9 +585,21 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
       && supportsPrimaryOrColdOpen(obligation.text, primaryText, scene);
     const storyCircleRequiredBeat = obligation.source === 'requiredBeat' && isStoryCircleDerivedId(obligation.id);
     const storyCircleSupport = obligation.source === 'storyCircle' || storyCircleRequiredBeat;
+    const coldOpenPremisePressure = Boolean(scene.coldOpenProfile)
+      && obligation.source === 'requiredBeat'
+      && obligation.hardUnits >= 1
+      && isPremisePressureSupportText(obligation.text);
     let next = { ...obligation };
 
-    if (duplicateOfPrimary) {
+    if (coldOpenExtraneousEventCue) {
+      next = {
+        ...next,
+        slot: obligation.source === 'choicePressure' || (obligation.hardUnits >= 1 && obligation.source === 'requiredBeat') ? 'route_later' : 'metadata_only',
+        reason: `${obligation.reason} Routed away because this cold-open obligation carries a separate story event cue from the opening collision.`,
+        hardUnits: 0,
+        softUnits: Math.min(obligation.softUnits || 0.25, 0.25),
+      };
+    } else if (duplicateOfPrimary) {
       next = {
         ...next,
         slot: storyCircleSupport ? 'must_support' : obligation.source === 'requiredBeat' && obligation.hardUnits >= 1 ? 'must_stage' : 'must_support',
@@ -417,8 +608,32 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
         hardUnits: 0,
         softUnits: 0,
       };
+    } else if (obligation.source === 'choicePressure' && !choicePressureServesTurn(obligation, primaryText, scene)) {
+      next = {
+        ...next,
+        slot: 'route_later',
+        reason: `${obligation.reason} Routed away because this choice pressure does not serve the scene's primary turn.`,
+        hardUnits: 0,
+        softUnits: Math.min(obligation.softUnits || 0.25, 0.25),
+      };
+    } else if (broadMultiTimeSupport) {
+      next = {
+        ...next,
+        slot: obligation.hardUnits >= 1 && obligation.source === 'requiredBeat' ? 'route_later' : 'metadata_only',
+        reason: `${obligation.reason} Routed away because broad support text carries multiple time cues and cannot serve as one scene-local obligation.`,
+        hardUnits: 0,
+        softUnits: Math.min(obligation.softUnits || 0.25, 0.25),
+      };
+    } else if (coldOpenPremisePressure) {
+      next = {
+        ...next,
+        slot: 'texture',
+        reason: `${obligation.reason} Routed out of hard prose requirements because this cold-open fragment is premise/identity pressure, not an independently stageable scene event.`,
+        hardUnits: 0,
+        softUnits: Math.min(obligation.softUnits || 0.25, 0.25),
+      };
     } else if (scene.coldOpenProfile && storyCircleRequiredBeat) {
-      if (supportsPrimaryOrColdOpen(obligation.text, primaryText, scene)) {
+      if (coldOpenStoryCircleAtomServesTurn(obligation.text, primaryText, scene)) {
         next = {
           ...next,
           slot: 'must_support',
@@ -580,6 +795,7 @@ function activeCastFor(scene: SceneConstructionSceneLike, activeTexts: string[])
 function conflictDiagnostics(
   scene: SceneConstructionSceneLike,
   obligations: SceneConstructionObligation[],
+  activeTexts: string[],
   hardUnits: number,
   totalUnits: number,
   maxHard: number,
@@ -590,15 +806,24 @@ function conflictDiagnostics(
     .filter((item) => isActiveSlot(item.slot) && item.hardUnits > 0)
     .map((item) => ({ text: item.text, cues: timeCues(item.text) }))
     .filter((item) => item.cues.length > 0);
-  const uniqueTimeCues = Array.from(new Set(activeHardWithCues.flatMap((item) => item.cues)));
+  const activeTimeCues = obligations
+    .filter((item) => isActiveSlot(item.slot))
+    .flatMap((item) => timeCues(item.text));
+  const uniqueTimeCues = Array.from(new Set(activeTimeCues));
   if (activeHardWithCues.length >= 2 && uniqueTimeCues.length >= 2 && !(scene.kind === 'encounter' || scene.isEncounter)) {
     diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has hard active obligations with multiple time cues (${uniqueTimeCues.join(', ')}); split or route them before prose.`);
+  } else if (uniqueTimeCues.length >= 2 && !(scene.kind === 'encounter' || scene.isEncounter)) {
+    diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has active obligations with multiple time cues (${uniqueTimeCues.join(', ')}); split or route them before prose.`);
   }
   if (hardUnits > maxHard && !(scene.kind === 'encounter' || scene.isEncounter)) {
     diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has ${hardUnits} active hard construction units, above ${maxHard}.`);
   }
   if (totalUnits > maxTotal && !(scene.kind === 'encounter' || scene.isEncounter) && (scene.recommendedBeatCount ?? 0) < Math.ceil(totalUnits) + 1) {
     diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has ${totalUnits} active construction units, above ${maxTotal}, without enough beat budget.`);
+  }
+  const locationCount = locationCueCount(scene, activeTexts);
+  if (locationCount >= 2 && !(scene.kind === 'encounter' || scene.isEncounter)) {
+    diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has active obligations tied to ${locationCount} major location cue(s); split or route location changes before prose.`);
   }
   const activePrimaryLike = obligations.filter((item) => item.slot === 'primary_turn' || item.slot === 'must_stage');
   const nonDuplicateStageTexts = activePrimaryLike
@@ -633,7 +858,7 @@ export function compileSceneConstructionProfile(
   const explicitLocationCueCount = locationCueCount(scene, activeTexts);
   const introductionCount = activeObligations.filter((item) => INTRO_RE.test(item.text)).length;
   const activeConflictCount = activeObligations.filter((item) => CONTRAST_RE.test(item.text) || item.slot === 'must_stage').length;
-  const conflictDiagnosticsList = conflictDiagnostics(scene, obligations, hardUnits, totalUnits, maxHard, maxTotal);
+  const conflictDiagnosticsList = conflictDiagnostics(scene, obligations, activeTexts, hardUnits, totalUnits, maxHard, maxTotal);
 
   return {
     id: `scene-construction:${options.episodeNumber ?? scene.episodeNumber ?? 'episode'}:${scene.id ?? 'scene'}`,
@@ -719,12 +944,102 @@ function keepByProfile<T extends { id?: string }>(
   return items.filter((item) => item.id && ids.has(item.id));
 }
 
+type ChoicePointLike = NonNullable<SceneConstructionSceneLike['choicePoint']> & {
+  type?: string;
+  branches?: boolean | unknown[];
+  optionHints?: string[];
+  reminderPlan?: { immediate?: string; shortTerm?: string; later?: string };
+  expectedResidue?: string[];
+  competenceArc?: { testsNow?: string; shortfall?: string; growthPath?: string };
+  setsTreatmentSeeds?: string[];
+  setsBranchAxes?: string[];
+};
+
+function hasGenerationCriticalChoicePoint(choicePoint: ChoicePointLike | undefined): boolean {
+  if (!choicePoint) return false;
+  return Boolean(
+    choicePoint.type ||
+    choicePoint.branches ||
+    choicePoint.setsTreatmentSeeds?.length ||
+    choicePoint.setsBranchAxes?.length,
+  );
+}
+
+function routedConceptTexts(profile: SceneConstructionProfile): string[] {
+  return profile.obligations
+    .filter((item) => item.slot === 'route_later' || item.slot === 'metadata_only')
+    .map((item) => item.text)
+    .filter(Boolean);
+}
+
+function textRestagesRoutedConcept(text: unknown, profile: SceneConstructionProfile): boolean {
+  const value = cleanText(text);
+  if (!value) return false;
+  if (supportsPrimaryTurn(value, profile.primaryTurn.text) || eventCueOverlap(value, profile.primaryTurn.text)) {
+    return false;
+  }
+  return routedConceptTexts(profile).some((routed) =>
+    substantiallyDuplicates(value, routed)
+    || distinctiveTokenOverlap(value, routed) >= 0.34
+    || distinctiveTokenOverlap(routed, value) >= 0.34
+    || eventCueOverlap(value, routed),
+  );
+}
+
+function stripRoutedTextArray(values: string[] | undefined, profile: SceneConstructionProfile): string[] | undefined {
+  if (!values) return values;
+  return values.filter((value) => !textRestagesRoutedConcept(value, profile));
+}
+
+function stripRoutedChoicePoint(choicePoint: ChoicePointLike | undefined, profile: SceneConstructionProfile): ChoicePointLike | undefined {
+  if (!choicePoint) return choicePoint;
+  const next: ChoicePointLike = {
+    ...choicePoint,
+    stakes: { ...choicePoint.stakes },
+    optionHints: stripRoutedTextArray(choicePoint.optionHints, profile) ?? [],
+    expectedResidue: stripRoutedTextArray(choicePoint.expectedResidue, profile),
+  };
+  if (textRestagesRoutedConcept(next.description, profile)) {
+    next.description = profile.primaryTurn.turnEvent || profile.primaryTurn.text;
+  }
+  const stakes = next.stakes ?? (next.stakes = {});
+  for (const key of ['want', 'cost', 'identity'] as const) {
+    if (textRestagesRoutedConcept(stakes[key], profile)) {
+      stakes[key] = key === 'cost'
+        ? 'Risk losing leverage inside the current scene turn.'
+        : key === 'identity'
+          ? 'Reveal a self-protective or self-authored posture in the current pressure.'
+          : `Pursue the current scene turn: ${profile.primaryTurn.text}`;
+    }
+  }
+  if (choicePoint.reminderPlan) {
+    const reminderPlan = { ...choicePoint.reminderPlan };
+    for (const key of ['immediate', 'shortTerm', 'later'] as const) {
+      if (textRestagesRoutedConcept(reminderPlan[key], profile)) {
+        delete reminderPlan[key];
+      }
+    }
+    next.reminderPlan = reminderPlan.immediate && reminderPlan.shortTerm ? reminderPlan : undefined;
+  }
+  if (choicePoint.competenceArc) {
+    const competenceArc = { ...choicePoint.competenceArc };
+    for (const key of ['testsNow', 'shortfall', 'growthPath'] as const) {
+      if (textRestagesRoutedConcept(competenceArc[key], profile)) {
+        delete competenceArc[key];
+      }
+    }
+    next.competenceArc = Object.values(competenceArc).some(Boolean) ? competenceArc : undefined;
+  }
+  return next;
+}
+
 export function buildSceneConstructionPromptView<T extends SceneConstructionSceneLike>(scene: T): T {
   const profile = scene.sceneConstructionProfile;
   if (!profile) return scene;
   const keyBeatIds = activeIdsFor(profile, 'keyBeat');
   const requiredBeatIds = activeIdsFor(profile, 'requiredBeat');
-  const choiceActive = Boolean(activeIdsFor(profile, 'choicePressure')?.size);
+  const choiceActive = Boolean(activeIdsFor(profile, 'choicePressure')?.size)
+    || hasGenerationCriticalChoicePoint(scene.choicePoint as ChoicePointLike | undefined);
   const signatureActive = Boolean(activeIdsFor(profile, 'signatureMoment')?.size)
     || Boolean(requiredBeatIds && (scene.requiredBeats ?? []).some((beat) => requiredBeatIds.has(beat.id) && beat.tier === 'signature'));
 
@@ -751,7 +1066,7 @@ export function buildSceneConstructionPromptView<T extends SceneConstructionScen
     keyBeats: scene.keyBeats && keyBeatIds
       ? scene.keyBeats.filter((_, index) => keyBeatIds.has(`keyBeat:${index}`))
       : scene.keyBeats,
-    choicePoint: choiceActive ? scene.choicePoint : undefined,
+    choicePoint: choiceActive ? stripRoutedChoicePoint(scene.choicePoint as ChoicePointLike | undefined, profile) as T['choicePoint'] : undefined,
   };
 }
 

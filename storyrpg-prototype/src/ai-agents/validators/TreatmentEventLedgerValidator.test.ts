@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Beat, Scene, Story } from '../../types';
-import type { StoryCircleBeatRealizationContract } from '../../types/scenePlan';
+import type { SeasonScenePlan, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import {
   hasDirectTreatmentEventRealization,
   TreatmentEventLedgerValidator,
@@ -340,5 +340,229 @@ describe('TreatmentEventLedgerValidator', () => {
 
     expect(result.valid).toBe(true);
     expect(result.findings).toHaveLength(0);
+  });
+
+  it('uses the scene construction profile to ignore ledger contracts routed out of the scene', () => {
+    const routed = contract({
+      id: 'story-circle-routed-newsroom',
+      sourceText: 'Mara starts the citywide investigation from the newsroom.',
+      eventAtoms: ['Mara starts the citywide investigation'],
+    });
+    const scenePlan: SeasonScenePlan = {
+      scenes: [{
+        id: 's1-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'standard',
+        title: 'Side Door',
+        dramaticPurpose: 'Mara gets inside.',
+        narrativeRole: 'turn',
+        locations: ['Side Door'],
+        npcsInvolved: ['avery'],
+        setsUp: [],
+        paysOff: [],
+        storyCircleBeatContracts: [routed],
+        sceneConstructionProfile: {
+          id: 'scp-s1-1',
+          sceneId: 's1-1',
+          episodeNumber: 1,
+          primaryTurn: {
+            id: 'turn',
+            source: 'sceneTurn',
+            text: 'Avery opens the locked side door for Mara.',
+            sourceContractIds: ['turn'],
+          },
+          obligations: [
+            { source: 'storyCircle', id: routed.id, slot: 'route_later', text: routed.sourceText, reason: 'separate scene', hardUnits: 1, softUnits: 0 },
+          ],
+          sourceContractIds: [routed.id],
+          activeCast: ['Avery', 'Mara'],
+          capacity: {
+            hardUnits: 0,
+            softUnits: 0,
+            totalUnits: 0,
+            maxHardUnits: 2,
+            maxTotalUnits: 3,
+            activeCastCount: 2,
+            maxActiveCast: 3,
+            activeConflictCount: 1,
+            introductionCount: 0,
+            explicitTimeCueCount: 0,
+            explicitLocationCueCount: 1,
+            beatBudget: { min: 3, recommended: 4, max: 6 },
+          },
+          routedObligationIds: [routed.id],
+          conflictDiagnostics: [],
+          promptGuidance: [],
+        },
+      }],
+      byEpisode: { 1: ['s1-1'] },
+      setupPayoffEdges: [],
+    };
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [beat('b1', 'Avery opens the locked side door for Mara and ushers her inside.')],
+          storyCircleBeatContracts: [routed],
+        }),
+      ]),
+      scenePlan,
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('blocks when a planned event owner fails to depict its owned route cue', () => {
+    const scenePlan = {
+      scenes: [{
+        id: 's1-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'standard',
+        title: 'Arrival',
+        dramaticPurpose: 'The protagonist arrives in the city.',
+        narrativeRole: 'setup',
+        locations: ['Apartment'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+        sceneEventOwnership: {
+          id: 'seo-s1-1',
+          episodeNumber: 1,
+          sceneId: 's1-1',
+          ownedEvents: [{
+            key: 'cue:socialMeet',
+            cue: 'socialMeet',
+            text: 'The protagonist meets the local club members at a rooftop bar and accepts their invitation.',
+            sourceContractIds: ['authored-turn-1'],
+          }],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['authored-turn-1'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+      }],
+      byEpisode: { 1: ['s1-1'] },
+      setupPayoffEdges: [],
+    } as unknown as SeasonScenePlan;
+
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-1',
+          beats: [
+            beat('b1', 'The taxi idles outside the apartment while rain stripes the receipt and the driver asks for exact change.'),
+          ],
+        }),
+      ]),
+      scenePlan,
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.findings[0]).toMatchObject({
+      status: 'owned_event_missing',
+      severity: 'error',
+      sceneId: 's1-1',
+    });
+    expect(result.findings[0].message).toContain('socialMeet');
+  });
+
+  it('blocks when an abstract encounter shell displaces the concrete treatment encounter', () => {
+    const scenePlan = {
+      scenes: [
+        {
+          id: 's1-3',
+          episodeNumber: 1,
+          order: 2,
+          kind: 'standard',
+          title: 'Park Attack',
+          dramaticPurpose: 'Walking home through the park, the protagonist is attacked and rescued by a stranger.',
+          narrativeRole: 'turn',
+          locations: ['Park'],
+          npcsInvolved: [],
+          setsUp: [],
+          paysOff: [],
+          sceneEventOwnership: {
+            id: 'seo-s1-3',
+            episodeNumber: 1,
+            sceneId: 's1-3',
+            ownedEvents: [{
+              key: 'cue:threatEncounter',
+              cue: 'threatEncounter',
+              text: 'Walking home through the park, the protagonist is attacked and rescued by a stranger.',
+              sourceContractIds: ['authored-turn-attack'],
+            }],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: ['authored-turn-attack'],
+            diagnostics: [],
+            promptGuidance: [],
+          },
+        },
+        {
+          id: 'treatment-enc-1',
+          episodeNumber: 1,
+          order: 3,
+          kind: 'encounter',
+          title: 'Abstract Pressure',
+          dramaticPurpose: 'Can the protagonist start over while the city watches?',
+          narrativeRole: 'turn',
+          locations: ['Apartment'],
+          npcsInvolved: [],
+          setsUp: [],
+          paysOff: [],
+          encounter: {
+            category: 'social',
+            description: 'Can the protagonist start over while the city watches?',
+            centralConflict: 'Can the protagonist start over while the city watches?',
+            stakes: 'Self-definition',
+            isBranchPoint: true,
+          },
+          sceneEventOwnership: {
+            id: 'seo-treatment-enc-1',
+            episodeNumber: 1,
+            sceneId: 'treatment-enc-1',
+            ownedEvents: [],
+            incomingContext: [],
+            outgoingResidue: [],
+            forbiddenRestageEvents: [],
+            sourceContractIds: [],
+            diagnostics: [],
+            promptGuidance: [],
+          },
+        },
+      ],
+      byEpisode: { 1: ['s1-3', 'treatment-enc-1'] },
+      setupPayoffEdges: [],
+    } as unknown as SeasonScenePlan;
+
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 's1-3',
+          beats: [
+            beat('b1', 'In the park, an attacker grabs your arm before a stranger intervenes and pulls you free.'),
+          ],
+        }),
+        scene({
+          id: 'treatment-enc-1',
+          beats: [
+            beat('b2', 'At the desk, you draft a public post and wonder whether the city will read you kindly.'),
+          ],
+        }),
+      ]),
+      scenePlan,
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.findings.some((finding) => finding.status === 'encounter_priority_mismatch')).toBe(true);
   });
 });

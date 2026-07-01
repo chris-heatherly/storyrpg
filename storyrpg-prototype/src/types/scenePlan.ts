@@ -297,6 +297,46 @@ export interface SceneConstructionProfile {
   promptGuidance: string[];
 }
 
+export type SceneEventOwnershipCue =
+  | 'arrival'
+  | 'venueDoor'
+  | 'objectHandoff'
+  | 'socialMeet'
+  | 'threatEncounter'
+  | 'roadBreakdown'
+  | 'friendDebrief'
+  | 'lateNightWriting'
+  | 'blogAftermath'
+  | 'endingAftermath'
+  | 'walkHome';
+
+export interface SceneOwnedEvent {
+  key: string;
+  cue: SceneEventOwnershipCue;
+  text: string;
+  sourceContractIds: string[];
+}
+
+/**
+ * Generator-only ownership map for route-significant story events. It is a
+ * compiled view over existing required beats, turn contracts, Story Circle
+ * contracts, treatment fields, and scene-construction profiles. Runtime
+ * playback ignores it; prompts, validators, and repair routing use it to keep
+ * one scene from restaging an event another scene owns.
+ */
+export interface SceneEventOwnershipProfile {
+  id: string;
+  episodeNumber?: number;
+  sceneId: string;
+  ownedEvents: SceneOwnedEvent[];
+  incomingContext: SceneOwnedEvent[];
+  outgoingResidue: SceneOwnedEvent[];
+  forbiddenRestageEvents: SceneOwnedEvent[];
+  sourceContractIds: string[];
+  diagnostics: string[];
+  promptGuidance: string[];
+}
+
 export type RelationshipPacingStage =
   | 'unmet'
   | 'noticed'
@@ -996,6 +1036,8 @@ export interface PlannedScene {
   coldOpenProfile?: ColdOpenProfile;
   /** Generator-only scene construction profile compiled from existing contracts. */
   sceneConstructionProfile?: SceneConstructionProfile;
+  /** Generator-only event ownership profile compiled from existing contracts. */
+  sceneEventOwnership?: SceneEventOwnershipProfile;
 
   /**
    * Relationship pacing contracts for NPC/group bonds this scene is allowed to

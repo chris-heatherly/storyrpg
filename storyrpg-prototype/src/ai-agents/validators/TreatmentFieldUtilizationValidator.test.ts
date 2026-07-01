@@ -527,6 +527,7 @@ describe('TreatmentFieldUtilizationValidator', () => {
       'location_history',
       'location_choice_pressure',
     ]));
+    expect(contracts.find((contract) => contract.contractKind === 'world_premise')?.blockingLevel).toBe('warning');
     expect(contracts.find((contract) => contract.contractKind === 'location_mood')?.blockingLevel).toBe('warning');
   });
 
@@ -558,6 +559,35 @@ describe('TreatmentFieldUtilizationValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.some((issue) => issue.message.includes('World/location treatment field'))).toBe(true);
+  });
+
+  it('does not treat broad world premise text as a hard final prose obligation', () => {
+    const premise = {
+      ...worldContracts().find((contract) => contract.contractKind === 'world_premise')!,
+      blockingLevel: 'structural' as const,
+      targetSceneIds: ['s1-1'],
+      sourceText: 'A modern city has glass towers, grandmother kitchens, private clubs, old covenants, hidden monsters, street rumors, and a real-estate dynasty underneath everything.',
+    };
+    const plan = {
+      ...plannedSeasonPlan({}),
+      worldTreatmentContracts: [premise],
+      scenePlan: {
+        scenes: [{ id: 's1-1', episodeNumber: 1, title: 'The City Opens', order: 1, worldTreatmentContracts: [premise] }],
+        byEpisode: { 1: ['s1-1'] },
+        setupPayoffEdges: [],
+        worldTreatmentContracts: [premise],
+      },
+    } as unknown as SeasonPlan;
+
+    const result = new TreatmentFieldUtilizationValidator().validate({
+      sourceAnalysis: { ...analysis({}), worldTreatmentContracts: [premise] } as SourceMaterialAnalysis,
+      seasonPlan: plan,
+      story: finalStoryForScene('s1-1', 'Mara crosses the city at night and realizes the ordinary streets are hiding a second set of rules.'),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+
+    expect(result.issues.filter((issue) => issue.message.includes('World/location treatment field'))).toEqual([]);
   });
 
   it('fails final validation when assigned world choice pressure is not on the page', () => {

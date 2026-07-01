@@ -450,6 +450,76 @@ describe('treatment density guard', () => {
     expect(isUnsafeTreatmentDensityReport(report)).toBe(false);
   });
 
+  it('treats two explicit time cues as unsafe even with low unit count', () => {
+    const report = analyzeSceneTreatmentDensity({
+      id: 's1-4',
+      turnContract: {
+        turnId: 'turn',
+        source: 'treatment',
+        centralTurn: 'Kylie turns the night into a public post.',
+        beforeState: 'Private',
+        turnEvent: 'At 4am she writes the post, and by evening it has gone viral.',
+        afterState: 'Public',
+        handoff: 'The attention changes who is watching.',
+      },
+      keyBeats: [],
+      recommendedBeatCount: 10,
+    } as never, { episodeNumber: 1, sceneIndex: 4 });
+
+    expect(report.hardUnits).toBeLessThanOrEqual(report.threshold.hardUnits);
+    expect(report.totalUnits).toBeLessThanOrEqual(report.threshold.totalUnits);
+    expect(report.explicitTimeJumpCount).toBe(2);
+    expect(report.overloaded).toBe(true);
+    expect(isTreatmentDensityExpandable(report)).toBe(false);
+    expect(isUnsafeTreatmentDensityReport(report)).toBe(true);
+  });
+
+  it('uses compiled scene-construction primary turn text for density', () => {
+    const report = analyzeSceneTreatmentDensity({
+      id: 's1-4',
+      turnContract: {
+        turnId: 's1-4-turn',
+        source: 'treatment',
+        centralTurn: 'Kylie turns the night into a public post.',
+        beforeState: 'Private',
+        turnEvent: 'At 4am she writes the post, and by evening it has gone viral.',
+        afterState: 'Public',
+        handoff: 'The attention changes who is watching.',
+      },
+      sceneConstructionProfile: {
+        primaryTurn: {
+          id: 's1-4-turn',
+          source: 'sceneTurn',
+          text: 'At 4am she writes the post.',
+          sourceContractIds: ['s1-4-turn'],
+        },
+        obligations: [
+          {
+            source: 'sceneTurn',
+            id: 's1-4-turn',
+            slot: 'primary_turn',
+            text: 'At 4am she writes the post.',
+            reason: 'One scene, one dramatic turn.',
+            hardUnits: 1,
+            softUnits: 0,
+          },
+        ],
+      },
+      keyBeats: [],
+      recommendedBeatCount: 4,
+    } as never, { episodeNumber: 1, sceneIndex: 4 });
+
+    expect(report.obligations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'scene_turn',
+        label: 'At 4am she writes the post.',
+      }),
+    ]));
+    expect(report.explicitTimeJumpCount).toBe(1);
+    expect(report.overloaded).toBe(false);
+    expect(isUnsafeTreatmentDensityReport(report)).toBe(false);
+  });
+
   it('marks overloaded encounter scenes as unsafe before encounter generation', () => {
     const report = analyzeSceneTreatmentDensity({
       id: 'treatment-enc-1-1',

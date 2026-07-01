@@ -210,4 +210,57 @@ describe('runFinalContractRepair', () => {
     expect(JSON.stringify(intent)).not.toMatch(/the protagonist|without saying everything directly|without full control of the room/i);
     expect(intent.characterObjectives['the focal character']).toContain('visible change');
   });
+
+  it('removes synthetic cold-open fallback beats from non-opening scenes flagged by route continuity', async () => {
+    const localStory = {
+      id: 'coldopen-cleanup',
+      title: 'Cold Open Cleanup',
+      episodes: [{
+        id: 'ep1',
+        number: 1,
+        startingSceneId: 'opening',
+        scenes: [{
+          id: 'opening',
+          startingBeatId: 'open-b1',
+          beats: [{ id: 'open-b1', text: 'The taxi drops Mara at the curb.' }],
+        }, {
+          id: 'later',
+          startingBeatId: 'later-b1',
+          beats: [{
+            id: 'later-b1',
+            text: 'The booth is already loud.',
+            nextBeatId: 'later-authored-coldopen-mara-arrives-1',
+          }, {
+            id: 'later-authored-coldopen-mara-arrives-1',
+            text: 'Mara arrives in the city with two suitcases.',
+            nextBeatId: 'later-b2',
+          }, {
+            id: 'later-b2',
+            text: 'The conversation continues.',
+          }],
+        }],
+      }],
+    } as unknown as Story;
+
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: {
+        passed: false,
+        blockingIssues: [{
+          validator: 'RouteContinuityValidator',
+          type: 'route_chronology_violation',
+          sceneId: 'later',
+          message: 'Reader route opening -> later stages arrival after socialMeet.',
+        }],
+      },
+      handlers: buildDeterministicContractHandlers(),
+      revalidate: async () => pass,
+    });
+
+    const later = localStory.episodes[0].scenes[1];
+    expect(out.passed).toBe(true);
+    expect(later.beats.map((beat) => beat.id)).toEqual(['later-b1', 'later-b2']);
+    expect(later.beats[0].nextBeatId).toBe('later-b2');
+    expect(out.records.some((record) => record.rule === 'final_contract_coldopen_fallback_route_cleanup')).toBe(true);
+  });
 });

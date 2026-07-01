@@ -778,6 +778,31 @@ describe('planned scene obligation binder', () => {
     });
   });
 
+  it('marks inserted cold-open arrival helper scenes as owning arrival chronology', () => {
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 's1-1',
+        order: 1,
+        title: 'First social pressure',
+        dramaticPurpose: 'The traveler meets a new table at the rooftop bar.',
+        locations: ['Rooftop Bar'],
+        requiredBeats: [
+          {
+            id: 'cold-arrival',
+            sourceTurn: 'The traveler arrives in the port city with two bags and an old address.',
+            mustDepict: 'The traveler arrives in the port city with two bags and an old address.',
+            tier: 'coldopen',
+          },
+        ],
+      }),
+    ], { episodeNumber: 1 });
+
+    const helper = result.scenes.find((item) => item.id === 's1-arrival-cold-open');
+    expect(helper?.ownedChronologyKeys).toEqual(['arrival']);
+    expect(helper?.requiredBeats?.map((beat) => beat.id)).toEqual(['cold-arrival']);
+    expect(result.scenes.find((item) => item.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
+  });
+
   it('splits composite cold-open beats into content-agnostic scene-sized obligations', () => {
     const broadBeat = {
       id: 's1-1-coldopen-composite',
@@ -859,6 +884,12 @@ describe('planned scene obligation binder', () => {
             mustDepict: 'The traveler starts a public account under a codename.',
             tier: 'authored',
           },
+          {
+            id: 's1-1-story-circle-you-named-project',
+            sourceTurn: 'The traveler starts The Night Ledger.',
+            mustDepict: 'The traveler starts The Night Ledger.',
+            tier: 'authored',
+          },
         ],
       }),
       scene({
@@ -875,11 +906,19 @@ describe('planned scene obligation binder', () => {
         dramaticPurpose: 'At 3am, the traveler writes the public account under a codename.',
         locations: ['Room'],
       }),
+      scene({
+        id: 's1-named-project',
+        order: 3,
+        title: 'The Night Ledger',
+        dramaticPurpose: 'The traveler starts The Night Ledger as a public record.',
+        locations: ['Desk'],
+      }),
     ], { episodeNumber: 1 });
 
     expect(result.scenes.find((item) => item.id === 's1-arrival-cold-open')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-hook1']);
     expect(result.scenes.find((item) => item.id === 's1-social-table')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-story-circle-you-social']);
     expect(result.scenes.find((item) => item.id === 's1-late-writing')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-story-circle-you-public-account']);
+    expect(result.scenes.find((item) => item.id === 's1-named-project')?.requiredBeats?.map((beat) => beat.id)).toEqual(['s1-1-story-circle-you-named-project']);
   });
 
   it('rebalances concrete scene obligations out of a synthetic encounter before density gating', () => {

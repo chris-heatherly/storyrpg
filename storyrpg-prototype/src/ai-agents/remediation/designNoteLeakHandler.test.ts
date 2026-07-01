@@ -55,6 +55,21 @@ describe('buildDesignNoteLeakStripHandler', () => {
     expect(result.record.attempted).toBe(1);
   });
 
+  it('repairs whole-beat feedback cue text instead of leaving a meta-only payoff beat', () => {
+    const story = storyWithLeak();
+    const beat: any = (story as any).episodes[0].scenes[0].beats[0];
+    beat.text = CUE;
+    beat.textVariants = [];
+
+    const result = handler({ story, blockingIssues: [] }) as { story: Story; changed: boolean; record?: any };
+    const repairedBeat: any = (result.story as any).episodes[0].scenes[0].beats[0];
+
+    expect(result.changed).toBe(true);
+    expect(repairedBeat.text).not.toBe(CUE);
+    expect(repairedBeat.text).toContain('consequence');
+    expect(result.record.attempted).toBe(1);
+  });
+
   it('strips generic callback scaffolding appended as its own base-text paragraph', () => {
     const story = {
       episodes: [{ number: 1, scenes: [{ id: 's1', beats: [{

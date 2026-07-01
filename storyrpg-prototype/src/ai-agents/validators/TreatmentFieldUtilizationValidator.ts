@@ -99,7 +99,10 @@ function contractsFromAnalysis(analysis?: SourceMaterialAnalysis): AuthoredTreat
 
 function worldContractsFromInput(input: TreatmentFieldUtilizationInput): WorldTreatmentRealizationContract[] {
   const contracts = input.seasonPlan?.worldTreatmentContracts ?? input.sourceAnalysis?.worldTreatmentContracts ?? [];
-  return contracts.filter((contract) => contract.blockingLevel !== 'warning');
+  return contracts.filter((contract) =>
+    contract.blockingLevel !== 'warning'
+    && contract.contractKind !== 'world_premise'
+  );
 }
 
 function stakesContractsFromInput(input: TreatmentFieldUtilizationInput): StakesArchitectureContract[] {

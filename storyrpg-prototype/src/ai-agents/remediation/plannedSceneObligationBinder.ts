@@ -149,6 +149,40 @@ function tokenOverlap(needle: string | undefined, haystack: string): number {
   return hits.length / wanted.length;
 }
 
+const GENERIC_LOCALITY_TOKENS = new Set([
+  'protagonist',
+  'traveler',
+  'character',
+  'scene',
+  'episode',
+  'starts',
+  'start',
+  'begins',
+  'begin',
+  'forms',
+  'form',
+  'turns',
+  'turn',
+  'arrives',
+  'arrive',
+  'public',
+  'private',
+]);
+
+function distinctiveTokens(value: string | undefined): string[] {
+  return tokens(value).filter((token) => !GENERIC_LOCALITY_TOKENS.has(token));
+}
+
+function distinctiveTokenOverlap(needle: string | undefined, haystack: string): number {
+  const wanted = Array.from(new Set(distinctiveTokens(needle)));
+  if (wanted.length === 0) return 0;
+  const have = Array.from(new Set(distinctiveTokens(haystack)));
+  const hits = wanted.filter((token) =>
+    have.includes(token) || have.some((candidate) => candidate.startsWith(token) || token.startsWith(candidate)),
+  );
+  return hits.length / wanted.length;
+}
+
 function sceneText(scene: PlannedScene, excludeRequiredBeatId?: string): string {
   return [
     scene.id,
@@ -389,6 +423,11 @@ function fallbackNonArrivalScene(scenes: PlannedScene[], sourceScene: PlannedSce
 
 function targetForBroadArrivalPart(part: string, scenes: PlannedScene[], sourceScene: PlannedScene, beatId: string): PlannedScene | undefined {
   const cues = eventCues(part);
+  if (cues.has('lateNightWriting')) {
+    return scenes
+      .filter((scene) => scene.episodeNumber === sourceScene.episodeNumber && isPrimaryBlogDraftScene(scene))
+      .sort((a, b) => scoreSceneForBeat(part, b, beatId) - scoreSceneForBeat(part, a, beatId) || a.order - b.order)[0];
+  }
   const targetPool = cues.has('arrival')
     ? scenes
     : scenes.filter((scene) => scene.id !== sourceScene.id && !primarySceneCues(scene).has('arrival'));
@@ -469,11 +508,20 @@ function splitActionSeries(text: string): string[] {
   const subject = raw[0].slice(0, firstVerb.index).trim();
   if (subject.length < 3 || subject.length > 90) return [text.trim()].filter(Boolean);
 
-  return raw.map((part, index) => {
-    if (index === 0) return part;
-    if (ACTION_VERB_RE.test(part)) return `${subject} ${part}`;
-    return part;
+  const out: string[] = [];
+  raw.forEach((part, index) => {
+    if (index === 0) {
+      out.push(part);
+      return;
+    }
+    if (ACTION_VERB_RE.test(part)) {
+      out.push(`${subject} ${part}`);
+      return;
+    }
+    const previous = out.pop();
+    out.push(previous ? `${previous}, ${part}` : part);
   });
+  return out;
 }
 
 function splitActionChainedBeat(beat: RequiredBeat): string[] {
@@ -663,6 +711,45 @@ function bestSceneForBeat(text: string, scenes: PlannedScene[], excludeRequiredB
     .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order);
   if (scored[0]?.score > 0) return scored[0].scene;
   return undefined;
+}
+
+function isEpisodeOpeningScene(scene: PlannedScene, scenes: PlannedScene[]): boolean {
+  if (scene.coldOpenProfile) return true;
+  const episodeScenes = scenes
+    .filter((candidate) => candidate.episodeNumber === scene.episodeNumber)
+    .sort((a, b) => a.order - b.order);
+  return episodeScenes[0]?.id === scene.id;
+}
+
+function isStoryCircleDerivedBeat(beat: RequiredBeat): boolean {
+  return /\b(?:story-circle|episode-circle)\b/i.test(beat.id);
+}
+
+function isLocalOpeningStoryCircleBeat(text: string, scene: PlannedScene, beatId?: string): boolean {
+  const localText = sceneSpecificText(scene, beatId);
+  const normalizedText = normalize(text);
+  const normalizedLocal = normalize(localText);
+  if (normalizedText && normalizedLocal && (normalizedText.includes(normalizedLocal) || normalizedLocal.includes(normalizedText))) return true;
+  if (distinctiveTokenOverlap(text, localText) >= 0.32 || distinctiveTokenOverlap(localText, text) >= 0.32) return true;
+  const sourceCues = eventCues(text);
+  const localCues = primarySceneCues(scene);
+  return sourceCues.size > 0 && cueSetsOverlap(sourceCues, localCues);
+}
+
+function openingStoryCircleTarget(
+  scenes: PlannedScene[],
+  scene: PlannedScene,
+  beat: RequiredBeat,
+): PlannedScene | undefined {
+  const text = beatText(beat);
+  if (!isEpisodeOpeningScene(scene, scenes) || !isStoryCircleDerivedBeat(beat)) return undefined;
+  if (isLocalOpeningStoryCircleBeat(text, scene, beat.id)) return undefined;
+  if (!ACTION_VERB_RE.test(text) && eventCues(text).size === 0 && explicitTimeCues(text).length === 0) return undefined;
+  const candidates = scenes.filter((candidate) => candidate.episodeNumber === scene.episodeNumber && candidate.id !== scene.id);
+  const target = bestSceneForBeat(text, candidates, beat.id);
+  if (!target) return undefined;
+  const targetScore = scoreSceneForBeat(text, target, beat.id);
+  return targetScore > 0 ? target : undefined;
 }
 
 function bestSceneForContract(
@@ -877,6 +964,7 @@ function makeColdOpenArrivalScene(episodeNumber: number, sourceBeat: RequiredBea
     setsUp: [],
     paysOff: [],
     requiredBeats: [sourceBeat],
+    ownedChronologyKeys: ['arrival'],
     stakes: 'The protagonist reaches a new threshold with the opening promise still intact.',
     turnContract: {
       turnId: `s${episodeNumber}-arrival-cold-open-turn`,
@@ -911,9 +999,16 @@ function isPublicBlogAftermathText(value: string | undefined): boolean {
     && !isBlogDraftText(value);
 }
 
+function hasPublicWritingActionText(text: string): boolean {
+  return /\b(?:[234]\s*a\s*m|[234]\s*am|late night|unable to sleep|numbers in (?:her|your|their) phone|dictionary|codename|draft|blank page|publish button|publishes|published)\b/.test(text)
+    || /\b(?:writes?|writing|drafts?)\b.{0,100}\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title)\b/.test(text)
+    || /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title)\b.{0,100}\b(?:writes?|writing|drafts?)\b/.test(text);
+}
+
 function isBlogDraftText(value: string | undefined): boolean {
   const text = normalize(value);
-  return /\b(?:[234]\s*a\s*m|[234]\s*am|late night|unable to sleep|writes? about|writes?|draft|blank page|publish button|publishes|published|post about|codename)\b/.test(text);
+  return hasPublicWritingActionText(text)
+    || /\bpost about\b/.test(text);
 }
 
 function hasThreatPrerequisiteText(value: string | undefined): boolean {
@@ -1014,7 +1109,8 @@ function isFriendDebriefText(value: string | undefined): boolean {
 
 function isLateNightWritingText(value: string | undefined): boolean {
   const text = normalize(value);
-  const strongWriting = /\b(?:3 ?am|2 ?am|late night|goes home|back home|numbers in (?:her|your|their) phone|dictionary|codename|writes?|draft|blank page)\b/.test(text);
+  const strongWriting = /\b(?:3 ?am|2 ?am|late night|goes home|back home|numbers in (?:her|your|their) phone|dictionary|codename|draft|blank page)\b/.test(text)
+    || hasPublicWritingActionText(text);
   return strongWriting
     && hasCue(value, 'lateNightWriting')
     && !hasCue(value, 'venueDoor');
@@ -1025,7 +1121,8 @@ function isSocialDebriefAndWritingAftermathText(value: string | undefined): bool
   if (cues.has('friendDebrief') && cues.has('lateNightWriting')) return true;
   const text = normalize(value);
   return /\b(?:debrief|regroup|recap|friend group|compares notes)\b/.test(text)
-    && /\b(?:3 ?am|2 ?am|late night|numbers in (?:her|your|their) phone|dictionary|codename|draft|writes?)\b/.test(text);
+    && (/\b(?:3 ?am|2 ?am|late night|numbers in (?:her|your|their) phone|dictionary|codename|draft)\b/.test(text)
+      || hasPublicWritingActionText(text));
 }
 
 function isRescueAftermathText(value: string | undefined): boolean {
@@ -2241,6 +2338,22 @@ export function rebindPlannedSceneObligations(
           episodeNumber: scene.episodeNumber,
           fromSceneId: scene.id,
           reason: 'Abstract or future seed beat remains in the season ledger instead of hard-bound to scene prose.',
+        });
+        continue;
+      }
+
+      const openingStoryCircleScene = openingStoryCircleTarget(scenes, scene, beat);
+      if (openingStoryCircleScene && openingStoryCircleScene.id !== scene.id) {
+        beatAdditions.set(openingStoryCircleScene.id, [...(beatAdditions.get(openingStoryCircleScene.id) ?? []), beat]);
+        decisions.push({
+          action: 'rebound',
+          issueKind: 'wrong_scene_binding',
+          contractId: beat.id,
+          contractKind: 'pressure_lane',
+          episodeNumber: scene.episodeNumber,
+          fromSceneId: scene.id,
+          toSceneId: openingStoryCircleScene.id,
+          reason: 'Story Circle-derived opening atom did not serve the cold-open turn and was rebound to the matching planned scene.',
         });
         continue;
       }

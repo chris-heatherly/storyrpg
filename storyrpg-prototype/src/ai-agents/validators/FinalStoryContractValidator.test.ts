@@ -1762,6 +1762,32 @@ describe('FinalStoryContractValidator repeated high-pressure event gate', () => 
     ]));
   });
 
+  it('allows generic street aftermath when the staged event names the planned place', async () => {
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-gardens',
+        scenes: [{
+          id: 's1-gardens',
+          name: 'Larkspur Gardens Attack',
+          startingBeatId: 's1-gardens-b1',
+          leadsTo: [],
+          timeline: { location: 'Larkspur Gardens', timeOfDay: 'night' },
+          beats: [{
+            id: 's1-gardens-b1',
+            text: 'Walking home through Larkspur, an attacker grabs your coat before a stranger rescues you on the path. Afterward, the street is empty again except for your breathing.',
+          } as any],
+        }],
+      }],
+    });
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'scene_location_event_mismatch', sceneId: 's1-gardens' }),
+    ]));
+  });
+
   it('allows rooftop terrace pressure inside the planned club location', async () => {
     const story = validStory({
       episodes: [{

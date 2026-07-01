@@ -23,7 +23,11 @@ import {
   StoryCircleStructure,
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
-import { PovClarityValidator } from '../validators/PovClarityValidator';
+import {
+  coerceThirdPersonProtagonistToSecond,
+  hasPlayerReference,
+  PovClarityValidator,
+} from '../validators/PovClarityValidator';
 import { auditFictionFirstTurns, FICTION_FIRST_TURN_DOMAINS } from '../validators/turnAudit';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import {
@@ -52,6 +56,7 @@ import {
   buildSceneConstructionProfileSection,
   buildSceneConstructionPromptView,
 } from '../utils/sceneConstructionProfile';
+import { buildSceneEventOwnershipPromptSection } from '../utils/sceneEventOwnership';
 import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
 import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
@@ -1615,7 +1620,7 @@ Return exactly one complete SceneContent JSON object with:
     const leadIns: string[] = [];
 
     const pushText = (value?: string) => {
-      const normalized = this.ensureTerminalPunctuation((value || '').trim());
+      const normalized = this.prepareSyntheticLeadInText(value, input);
       if (!normalized || uniqueTexts.has(normalized)) return;
       if (this.isUnsafeSyntheticBeatText(normalized)) return;
       uniqueTexts.add(normalized);
@@ -1635,11 +1640,11 @@ Return exactly one complete SceneContent JSON object with:
     pushText(scene.encounterBuildup);
 
     const fallbackLeadIns = [
-      `${scene.name} opens with pressure already mounting around ${input.protagonistInfo.name}`,
-      `${input.protagonistInfo.name} catches the first sign that this moment will demand a choice`,
+      'Pressure is already mounting around you as this moment opens',
+      'You catch the first sign that this moment will demand a choice',
       `A concrete detail changes the room, narrowing what ${input.protagonistInfo.name} can safely ignore`,
       `The people nearby reveal new stakes without saying them plainly`,
-      `The pressure tightens as the scene drives toward a decision ${input.protagonistInfo.name} cannot avoid`,
+      'The pressure tightens as the scene drives toward a decision you cannot avoid',
     ];
     for (const fallback of fallbackLeadIns) {
       if (leadIns.length >= count) break;
@@ -1661,6 +1666,63 @@ Return exactly one complete SceneContent JSON object with:
     return isPlanningRegisterText(text)
       || /\bserves\s+the\s+\w+\s+beat\b/i.test(text)
       || /\bforward\s+pressure\s*:/i.test(text);
+  }
+
+  private prepareSyntheticLeadInText(value: string | undefined, input: SceneWriterInput): string | undefined {
+    const raw = (value || '').trim();
+    if (!raw) return undefined;
+
+    const subjectPronoun = this.protagonistSubjectPronoun(input);
+    const coerced = coerceThirdPersonProtagonistToSecond(raw, input.protagonistInfo.name, {
+      coercePronouns: true,
+      subjectPronoun,
+    }).text;
+    const anchored = this.anchorGerundSummaryToPlayer(coerced, subjectPronoun);
+    let normalized = this.ensureTerminalPunctuation(anchored.trim());
+    if (!normalized) return undefined;
+    if (!hasPlayerReference(normalized) && this.looksLikeThirdPersonSyntheticSummary(normalized, input, subjectPronoun)) {
+      return undefined;
+    }
+    if (!hasPlayerReference(normalized)) {
+      normalized = this.anchorUnanchoredSyntheticText(normalized);
+    }
+    return normalized;
+  }
+
+  private protagonistSubjectPronoun(input: SceneWriterInput): 'she' | 'he' {
+    return /\bhe\b/i.test(input.protagonistInfo.pronouns || '') ? 'he' : 'she';
+  }
+
+  private anchorGerundSummaryToPlayer(text: string, subjectPronoun: 'she' | 'he'): string {
+    if (hasPlayerReference(text)) return text;
+    const match = text.match(new RegExp(`^([A-Z][A-Za-z'’-]+ing\\b[^,]{0,120}),\\s*${subjectPronoun}\\s+(.+)$`, 'i'));
+    if (!match) return text;
+
+    const activity = match[1].charAt(0).toLowerCase() + match[1].slice(1);
+    let rest = match[2].trim();
+    rest = rest
+      .replace(/^is\b/i, 'you are')
+      .replace(/^was\b/i, 'you were')
+      .replace(/^has\b/i, 'you have')
+      .replace(/^had\b/i, 'you had');
+    return `You are ${activity} when the moment turns: ${rest}`;
+  }
+
+  private anchorUnanchoredSyntheticText(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed) return trimmed;
+    const lower = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+    return this.ensureTerminalPunctuation(`You register the first shift: ${lower}`);
+  }
+
+  private looksLikeThirdPersonSyntheticSummary(
+    text: string,
+    input: SceneWriterInput,
+    subjectPronoun: 'she' | 'he',
+  ): boolean {
+    const firstName = input.protagonistInfo.name.split(/\s+/)[0];
+    const escapedName = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b(?:${escapedName}|${subjectPronoun})\\b`, 'i').test(text);
   }
 
   private createSyntheticLeadInBeat(
@@ -1914,6 +1976,7 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Conflict Engine**: ${input.sceneBlueprint.conflictEngine}
 - **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
 ${buildSceneConstructionProfileSection(input.sceneBlueprint)}
+${buildSceneEventOwnershipPromptSection(input.sceneBlueprint)}
 ${input.sceneBlueprint.turnContract ? `
 ### Scene Turn Contract
 - **Central turn**: ${input.sceneBlueprint.turnContract.centralTurn}

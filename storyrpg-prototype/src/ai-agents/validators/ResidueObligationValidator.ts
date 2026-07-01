@@ -135,7 +135,8 @@ export class ResidueObligationValidator extends BaseValidator {
             typeof consequence.flag === 'string' &&
             consequence.value !== false &&
             !plannedOutgoingFlags.has(consequence.flag) &&
-            !isExcludedResidueFlag(consequence.flag)
+            !isExcludedResidueFlag(consequence.flag) &&
+            !callbackLedgerTracksFlag(input.callbackLedger, consequence.flag)
           ) {
             metrics.unplannedConsequentialFlags.push(consequence.flag);
             issues.push(this.warning(
@@ -177,6 +178,14 @@ export class ResidueObligationValidator extends BaseValidator {
       metrics,
     };
   }
+}
+
+function callbackLedgerTracksFlag(callbackLedger: SerializedCallbackLedger | undefined, flag: string): boolean {
+  return (callbackLedger?.hooks || []).some((hook) =>
+    hook.id === `flag:${flag}` ||
+    hook.flags?.includes(flag) === true ||
+    hook.conditionKeys?.includes(flag) === true
+  );
 }
 
 function episodeToSceneContents(episode: Episode): SceneContent[] {

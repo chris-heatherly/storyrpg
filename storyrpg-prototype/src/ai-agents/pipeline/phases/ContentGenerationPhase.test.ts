@@ -103,6 +103,132 @@ describe('ContentGenerationPhase cold-open alignment', () => {
   });
 });
 
+describe('ContentGenerationPhase checkpoint resume validation', () => {
+  it('records incremental scene validation when completed scene content resumes from checkpoint', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const recorded: Array<{ sceneId: string; episodeNumber?: number; overallPassed: boolean }> = [];
+    const emitted: Array<{ type: string; phase?: string; message?: string }> = [];
+    const phase = new ContentGenerationPhase({
+      sceneWriter: {
+        execute: async () => {
+          throw new Error('SceneWriter should not run for resumed scene content');
+        },
+      },
+      choiceAuthor: {
+        execute: async () => {
+          throw new Error('ChoiceAuthor should not run for resumed scene content');
+        },
+        setEpisodeSkillTargets: () => undefined,
+      },
+      encounterArchitect: {
+        execute: async () => {
+          throw new Error('EncounterArchitect should not run for resumed scene content');
+        },
+      },
+      getThreadPlanner: () => ({}),
+      getTwistArchitect: () => ({}),
+      getCharacterArcTracker: () => ({}),
+      incrementalValidator: null,
+      sceneValidationResults: [],
+      seasonSkillPlan: undefined,
+      encounterTelemetry: [],
+      cachedPipelineMemory: null,
+      callbackLedger: { threads: [] } as never,
+      dependencySchedulerStats: { hasCycle: false, waveCount: 0, fallbackToSerial: false },
+      episodeArcTargets: new Map(),
+      episodeTwistPlans: new Map(),
+      generationPlan: null,
+      remediationBudget: null,
+      seasonChoicePlan: undefined,
+      seasonThreadLedger: { threads: [] } as never,
+      assertSceneDependencyInvariants: () => undefined,
+      buildBranchFallbackChoiceSet: () => undefined,
+      buildDeterministicChoiceSet: () => undefined,
+      buildChoiceAuthorNpcs: () => [],
+      buildCompactWorldContext: () => '',
+      buildEncounterPriorStateContext: () => undefined,
+      captureEncounterTelemetry: () => undefined,
+      checkCancellation: async () => undefined,
+      deriveStoryVerbsForBrief: () => [],
+      emitPhaseProgress: () => undefined,
+      emitPlanUpdate: () => undefined,
+      episodeCheckpointFile: (episodeNumber: number, kind: string, id?: string) => `checkpoints/episode-${episodeNumber}/${kind}-${id || 'all'}.json`,
+      establishedCanonForPrompt: () => undefined,
+      getPhase4DefaultCollisions: () => [],
+      getTargetBeatCountForScene: () => 1,
+      getUnresolvedCallbacksForPrompt: () => undefined,
+      inferBranchType: () => 'neutral',
+      isEpisodeFinalScene: () => false,
+      loadResumeUnit: (_outputDirectory: string | undefined, unitId: string) => {
+        if (unitId === 'scene_content:episode-1:s1-1') {
+          return {
+            sceneId: 's1-1',
+            sceneName: 'Return Key',
+            beats: [{
+              id: 'beat-1',
+              text: 'You step into the room, close the door, and choose what happens next.',
+            }],
+          };
+        }
+        return undefined;
+      },
+      recordRemediationSafe: async () => undefined,
+      recordSceneValidationResult: (result: { sceneId: string; episodeNumber?: number; overallPassed: boolean }) => {
+        recorded.push({
+          sceneId: result.sceneId,
+          episodeNumber: result.episodeNumber,
+          overallPassed: result.overallPassed,
+        });
+      },
+      resolveWorldLocationForScene: () => undefined,
+      runSceneCriticPass: async () => undefined,
+      sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
+      saveResumeUnit: async () => undefined,
+      throwIfFailFast: () => undefined,
+      trackEncounterFlagConsequences: () => undefined,
+    } as never);
+
+    const result = await phase.run(
+      {
+        episode: { number: 1 },
+        options: {},
+        protagonist: { id: 'protagonist', name: 'Ari', pronouns: 'they/them' },
+        story: { title: 'Checkpoint Story', genre: 'drama', tone: 'tense' },
+        world: { premise: 'A locked room.' },
+      } as never,
+      { locations: [] } as never,
+      { characters: [] } as never,
+      {
+        suggestedFlags: [],
+        suggestedScores: [],
+        scenes: [{
+          id: 's1-1',
+          name: 'Return Key',
+          description: 'Ari returns to the locked room.',
+          npcsPresent: [],
+          leadsTo: [],
+          requiredBeats: [],
+        }],
+      } as never,
+      undefined,
+      '/tmp/story-run',
+      1,
+      {
+        config: { generation: {} },
+        emit: (event: { type: string; phase?: string; message?: string }) => emitted.push(event),
+      } as never,
+    );
+
+    expect(result.sceneContents.map(scene => scene.sceneId)).toEqual(['s1-1']);
+    expect(recorded).toEqual([{
+      sceneId: 's1-1',
+      episodeNumber: 1,
+      overallPassed: true,
+    }]);
+    expect(emitted.some(event => event.phase === 'resumed_scene' && event.message?.includes('s1-1'))).toBe(true);
+  });
+});
+
 describe('ContentGenerationPhase treatment density gate', () => {
   it('allows bounded opening density only when the cold open has enough beat budget', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');

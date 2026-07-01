@@ -1,5 +1,9 @@
-const LOCATION_RE = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+(?:the\s+|a\s+|an\s+)?([A-ZÀ-Ž][A-Za-zÀ-ž0-9'’-]*(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž0-9'’-]*){0,3}|[a-z][a-z0-9'’-]*(?:\s+[a-z][a-z0-9'’-]*){0,2}\s+(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop))/g;
-const CATEGORY_LOCATION_RE = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+(?:the\s+|a\s+|an\s+)?((?:rooftop\s+)?(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop))\b/gi;
+// The preposition alternation allows an optional capitalized first letter so a
+// sentence-initial "Through Cișmigiu" / "In Bucharest" is recognized (the rest of
+// LOCATION_RE stays case-sensitive to keep the capitalized-vs-lowercase branch
+// logic for the location name itself).
+const LOCATION_RE = /\b(?:[Aa]t|[Ii]n|[Ii]nside|[Oo]utside|[Oo]n|[Nn]ear|[Tt]hrough|[Tt]o|[Ff]rom)\s+(?:the\s+|a\s+|an\s+)?([A-ZÀ-Ž][A-Za-zÀ-ž0-9'’-]*(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž0-9'’-]*){0,3}|[a-z][a-z0-9'’-]*(?:\s+[a-z][a-z0-9'’-]*){0,2}\s+(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate))/g;
+const CATEGORY_LOCATION_RE = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+(?:the\s+|a\s+|an\s+)?((?:rooftop\s+)?(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate))\b/gi;
 
 const CITY_CONTAINER_CUES = new Set([
   'city',
@@ -55,10 +59,42 @@ export function extractSceneLocationCues(text: unknown): string[] {
   return [...out];
 }
 
+// Venue nouns that mark a phrase as an actual place. Kept in sync with the venue
+// alternation in LOCATION_RE / CATEGORY_LOCATION_RE above (plus dock/estate, which
+// an earlier refactor dropped).
+const VENUE_NOUNS = [
+  'bar', 'club', 'park', 'station', 'apartment', 'archive', 'venue', 'hotel',
+  'house', 'garden', 'gardens', 'market', 'office', 'studio', 'library',
+  'bookshop', 'bookstore', 'rooftop', 'courtyard', 'cafe', 'café', 'museum',
+  'shop', 'dock', 'estate',
+];
+const VENUE_NOUN_RE = new RegExp(`\\b(?:${VENUE_NOUNS.join('|')})\\b`, 'i');
+const PLACE_STOPWORDS = new Set(['of', 'the', 'and', 'de', 'la', 'le', 'du', 'des']);
+
+// A proper place name reads as Title Case ("Vâlcescu Club", "Cișmigiu") — its
+// first word is capitalized and no word is a lowercase content word. This
+// distinguishes a real location label from a short prose fragment that merely
+// lacks sentence punctuation ("A shadow moves behind the trees").
+function looksLikeProperPlace(text: string): boolean {
+  const stripped = text.replace(/^(?:the|a|an)\s+/i, '').trim();
+  if (!stripped) return false;
+  const words = stripped.split(/\s+/);
+  if (!/^[A-ZÀ-Ž]/.test(words[0])) return false;
+  return words.every((word) => /^[A-ZÀ-Ž0-9]/.test(word) || PLACE_STOPWORDS.has(word.toLowerCase()));
+}
+
+// Positive test: a value counts as a direct location label only if it actually
+// looks like a place — a venue noun, a known container/city, or a proper place
+// name. Previously ANY short, punctuation-free, verb-free string qualified, so
+// prose fragments inflated the multi-location count that hard-aborts at
+// SceneConstructionGate.
 function isDirectLocationLabel(value: unknown): boolean {
   const text = cleanText(value);
   if (!text || text.length > 48 || /[.!?]/.test(text)) return false;
-  return !/\b(?:arrives?|attacks?|attacked|enters?|forms?|gathers?|meets?|opens?|publishes?|reaches|turns?|walks?|writes?)\b/i.test(text);
+  if (VENUE_NOUN_RE.test(text)) return true;
+  const normalized = normalizeSceneLocationCue(text);
+  if (normalized && isContainerLocationCue(normalized)) return true;
+  return looksLikeProperPlace(text);
 }
 
 export function uniqueMajorLocationCues(inputs: unknown[]): string[] {
@@ -70,9 +106,12 @@ export function uniqueMajorLocationCues(inputs: unknown[]): string[] {
   });
   const cues = Array.from(new Set(raw.filter(Boolean)));
   const specific = cues.filter((cue) => !isContainerLocationCue(cue));
-  const candidates = specific.length > 0 ? specific : cues;
+  // When only ambient container cues remain (city, town, the city's proper name),
+  // they describe one setting and never conflict — collapse to a single location
+  // instead of counting "city center" + "bucharest" as two.
+  if (specific.length === 0) return cues.length > 0 ? [cues[0]] : [];
   const collapsed: string[] = [];
-  for (const cue of candidates) {
+  for (const cue of specific) {
     if (collapsed.some((existing) => existing === cue || existing.includes(cue) || cue.includes(existing))) continue;
     collapsed.push(cue);
   }

@@ -138,6 +138,7 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_CHOICE_DISTRIBUTION', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_DRAMATIC_STRUCTURE', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SCENE_TURN_CONTRACT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },

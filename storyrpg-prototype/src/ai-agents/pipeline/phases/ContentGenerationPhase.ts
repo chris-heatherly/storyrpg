@@ -516,7 +516,7 @@ export class ContentGenerationPhase {
       ...sceneOwnershipPreflightIssues,
       ...routeCueIssueMessages,
     ];
-    if (preProseConstructionIssues.length > 0) {
+    if (preProseConstructionIssues.length > 0 && isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
       const summary = preProseConstructionIssues.slice(0, 5).join(' | ');
       context.emit({
         type: 'warning',

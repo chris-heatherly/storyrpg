@@ -50,12 +50,48 @@ security/boundary, reader runtime, uncommitted diff) run 2026-07-01. Finding IDs
 Verification: 535 tests green across schemas/agents/utils/proxy;
 `typecheck:app` clean. NOT committed (per commit-only-when-asked).
 
-**Remaining in Phase 1 (not yet done):** 1.2 (owned atoms in both prompt
-sections — SceneWriter, will touch prompt goldens), 1.3 (non-encounter route
-enforcement), 1.5 (sceneLocationCues correctness + dedicated test), 1.6
-(register SceneConstructionGate), 1.7 (post-drain diagnostics), 1.8 (stakes
-ladder register leak), 1.9 (signature-moment routing), 1.10 (cleanups), 1.11
-(commit). Phases 2–8 not started.
+**2026-07-01 (later) — Phase 1 COMPLETE (uncommitted, tested):**
+- ✅ **1.2 (H11)** — SceneWriter `buildTreatmentEventPromptSections` filters owned
+  atom ids out of the "Non-Copyable Source Context" list (kept in payload for
+  text resolution). Zero golden churn (no goldens exercise that section).
+- ⏭️ **1.3 (H12) — VERIFIED NON-ISSUE, no change.** A standard (non-encounter)
+  atom has empty requiredLocations/entities and no cues, so it gets no
+  target-side score while the source scene always wins tokenOverlap + the +1
+  self bonus. Cross-scene routing therefore only ever lands on ENCOUNTER owners
+  (which `ensureEncounterCapable` already binds via `encounter.requiredBeats`).
+  The "enforcement gap" is unreachable under current scoring; a NOTE documents
+  it in `episodeSceneOwnership.ts` instead of shipping untestable dead code.
+- ✅ **1.5 (M13)** — `sceneLocationCues.ts`: `isDirectLocationLabel` is now a
+  positive "looks like a place" test (venue noun / container / proper name), so
+  prose fragments no longer inflate the multi-location count; container-only cue
+  sets collapse to one; preposition alternation made case-insensitive
+  (sentence-initial "Through"/"In" now match); +`dock`/`estate`. New
+  `sceneLocationCues.test.ts` (10 tests incl. both FP repros).
+- ✅ **1.6 (H7)** — `GATE_SCENE_CONSTRUCTION_PREFLIGHT` registered in gateDefaults
+  + gateRegistry (blocking, default-ON, repair regen); all three throw sites
+  (StoryArchitect ×2, ContentGenerationPhase) routed through `isGateEnabled` so
+  detection still runs but the abort has a kill-switch;
+  `SceneOwnershipPreflightValidator` added to VALIDATOR_REGISTRY.
+- ✅ **1.7 (M15)** — `applySceneConstructionProfilesToScenes` re-attaches profiles
+  AFTER the drain so returned diagnostics and downstream-read obligations
+  reflect post-drain state.
+- ✅ **1.8 (M16)** — `buildSceneStakesLadder` joins the derived value + register
+  suffix so an empty derivation yields a clean line, not malformed
+  `"REST:  establishes…"`.
+- ✅ **1.9 (M14)** — signature-moment routing no longer steals a signature from a
+  scene that owns its own cue, and never drops the source's signature on
+  collision (only relocates to a scene without an existing signature).
+- ✅ **1.10** — removed dead `KEY_BEAT_STAGE_RE`, unified order sentinel to
+  `Number.MAX_SAFE_INTEGER` (validator + construction profile), removed unused
+  `'pipeline_preflight'` stamp-source union member.
+
+Verification: 1947 tests pass across all touched areas; `typecheck:app` clean;
+lint 0 errors (pre-existing console warnings only, none added). The 2 failures
+in `relationshipArcEnforcement.test.ts` are **pre-existing at HEAD** (confirmed
+by running with the entire working tree stashed) — unrelated to this work; HEAD
+b4a275ee is itself partially red. NOT committed.
+
+**1.11 (commit)** — pending user request. Phases 2–8 not started.
 
 ## Sequencing overview
 

@@ -525,6 +525,15 @@ function finalizeEpisode<T extends PlannedScene>(
     const target = bestSceneForAtom(atom, scene, episodeScenes);
     ensureEncounterCapable(target, atom);
     addPrimaryAtom(target, atom);
+    // NOTE (audit 1.3/H12): a routed NON-encounter target would hold the fact only
+    // in treatmentAtomIds, escaping RequiredBeatRealization enforcement. Verified
+    // that this is unreachable under the current atomizer+scoring: a standard atom
+    // has empty requiredLocations/entities and no cues, so it gets no target-side
+    // score while the source scene always wins tokenOverlap (its sceneText includes
+    // its own requiredBeat) plus the +1 self bonus. Cross-scene routing therefore
+    // only happens to ENCOUNTER owners, which ensureEncounterCapable already binds
+    // via encounter.requiredBeats. Revisit if scoring gives standard atoms a
+    // target-side signal.
     if (target.id !== scene.id) addContext(scene, atom);
     addConstructionObligation(target, atom, sourceContractId);
     result.assignments.push({

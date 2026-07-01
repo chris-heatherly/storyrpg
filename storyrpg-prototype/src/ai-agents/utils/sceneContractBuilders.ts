@@ -51,7 +51,6 @@ const GENERIC_TURN_RE =
   /\b(?:open the episode through its immediate question|escalate the episode pressure|let the fallout settle into the next pressure|reverse or reveal something the scene can no longer hide|pay off an earlier setup|rising pressure|falling pressure)\b/i;
 
 const REQUIRED_BEAT_TIERS = new Set(['signature', 'authored', 'coldopen']);
-const KEY_BEAT_STAGE_RE = /^(?:REST|RISK|LEVERAGE|PEAK|CONSEQUENCE):/i;
 
 function firstMeaningful(values: Array<unknown>): string {
   for (const value of values) {
@@ -237,21 +236,20 @@ function buildSceneStakesLadder(
   const peak = derivation.dramaticStructure.pressurePeak || derivation.turnContract.turnEvent || leverage;
   const consequence = derivation.dramaticStructure.changedState || derivation.turnContract.afterState;
 
-  if (!result.some((beat) => /^REST:/i.test(beat))) {
-    add(`REST: ${trimSentence(question, 150)} establishes what feels stable, desired, or controlled before pressure changes it.`, { trusted: true });
-  }
-  if (!result.some((beat) => /^RISK:/i.test(beat))) {
-    add(`RISK: ${trimSentence(personalStake, 150)} names the concrete cost, trust, reputation, access, safety, or identity pressure now exposed.`, { trusted: true });
-  }
-  if (!result.some((beat) => /^LEVERAGE:/i.test(beat))) {
-    add(`LEVERAGE: ${trimSentence(leverage, 150)} narrows the protagonist's options and changes who holds information, access, or social power.`, { trusted: true });
-  }
-  if (!result.some((beat) => /^PEAK:/i.test(beat))) {
-    add(`PEAK: ${trimSentence(peak, 150)} forces a visible choice, reveal, refusal, commitment, or irreversible cost.`, { trusted: true });
-  }
-  if (!result.some((beat) => /^CONSEQUENCE:/i.test(beat))) {
-    add(`CONSEQUENCE: ${trimSentence(consequence, 150)} leaves a harder, more public, more intimate, or more dangerous next pressure.`, { trusted: true });
-  }
+  // Join the derived value and the register suffix so an empty derivation yields a
+  // clean "REST: establishes…" line instead of a malformed "REST:  establishes…"
+  // (double space, no stake content).
+  const addLadderRung = (tag: string, value: string | undefined, suffix: string): void => {
+    if (result.some((beat) => new RegExp(`^${tag}:`, 'i').test(beat))) return;
+    const derived = trimSentence(value ?? '', 150);
+    add(`${tag}: ${[derived, suffix].filter(Boolean).join(' ')}`, { trusted: true });
+  };
+
+  addLadderRung('REST', question, 'establishes what feels stable, desired, or controlled before pressure changes it.');
+  addLadderRung('RISK', personalStake, 'names the concrete cost, trust, reputation, access, safety, or identity pressure now exposed.');
+  addLadderRung('LEVERAGE', leverage, "narrows the protagonist's options and changes who holds information, access, or social power.");
+  addLadderRung('PEAK', peak, 'forces a visible choice, reveal, refusal, commitment, or irreversible cost.');
+  addLadderRung('CONSEQUENCE', consequence, 'leaves a harder, more public, more intimate, or more dangerous next pressure.');
 
   return result;
 }

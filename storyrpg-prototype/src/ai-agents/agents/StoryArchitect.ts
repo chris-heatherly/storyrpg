@@ -84,6 +84,7 @@ import {
   isUnsafeTreatmentDensityReport,
   type TreatmentDensityReport,
 } from '../remediation/gateRepairRouter';
+import { isGateEnabled } from '../remediation/gateDefaults';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import { treatmentFieldTokens } from '../utils/treatmentFieldContracts';
 import { storyCircleRoleBeats } from '../utils/storyCircleDistribution';
@@ -703,7 +704,7 @@ export interface EpisodeBlueprint {
   sceneOwnershipStamp?: {
     version: string;
     finalizedAt: string;
-    source: 'story_architect' | 'pipeline_resume' | 'pipeline_preflight';
+    source: 'story_architect' | 'pipeline_resume';
     issues: string[];
     drainedRequiredBeatIds: string[];
   };
@@ -3502,12 +3503,23 @@ Remember: The encounter is the heart. Design outward from it.
         scene.authoredTreatmentFields = remaining;
       }
       if (scene.signatureMoment) {
-        const signatureTarget = this.sortedEventCues(scene.signatureMoment)
-          .map((cue) => this.sceneForEventCue(scenes, cue, scene))
-          .find((candidate): candidate is SceneBlueprint => Boolean(candidate && candidate !== scene));
-        if (signatureTarget) {
-          signatureTarget.signatureMoment = signatureTarget.signatureMoment || scene.signatureMoment;
-          scene.signatureMoment = undefined;
+        const signatureCues = this.sortedEventCues(scene.signatureMoment);
+        // Don't relocate a signature that already sits on a scene owning its own cue
+        // (sceneForEventCue excludes `scene`, so without this it would be stolen to
+        // any other scene sharing the cue).
+        const sceneCues = detectPrimaryStoryEventCues(this.sceneEventText(scene));
+        const sceneOwnsSignatureCue = signatureCues.some((cue) => sceneCues.has(cue));
+        if (!sceneOwnsSignatureCue) {
+          // Only relocate to a scene that doesn't already carry a signature — otherwise
+          // the source's signature would be silently dropped on collision.
+          const signatureTarget = signatureCues
+            .map((cue) => this.sceneForEventCue(scenes, cue, scene))
+            .find((candidate): candidate is SceneBlueprint =>
+              Boolean(candidate && candidate !== scene && !candidate.signatureMoment));
+          if (signatureTarget) {
+            signatureTarget.signatureMoment = scene.signatureMoment;
+            scene.signatureMoment = undefined;
+          }
         }
       }
     }
@@ -3934,7 +3946,7 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairPlannedSequentialReachability(blueprint);
 
       const sceneConstructionIssues = this.applySceneConstructionProfiles(blueprint, input);
-      if (sceneConstructionIssues.length > 0) {
+      if (sceneConstructionIssues.length > 0 && isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
         return {
           success: false,
           error:
@@ -4364,7 +4376,7 @@ REQUIREMENTS:
       this.repairPlannedSequentialReachability(blueprint);
 
       const sceneConstructionIssues = this.applySceneConstructionProfiles(blueprint, input);
-      if (sceneConstructionIssues.length > 0) {
+      if (sceneConstructionIssues.length > 0 && isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
         if (retryCount < maxRetries) {
           console.log(`[StoryArchitect] Scene construction found ${sceneConstructionIssues.length} issue(s), retrying with feedback...`);
           this.lastStructuralFeedback = sceneConstructionIssues;

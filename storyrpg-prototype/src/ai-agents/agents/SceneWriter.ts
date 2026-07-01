@@ -497,7 +497,12 @@ function buildTreatmentEventPromptSections(scene: SceneBlueprint): string {
     ...(scene.ownedChronologyKeys || []).map((key) => `Chronology key already owned here: ${key}`),
     ...(scene.sourceContextIds || []).map((id) => `Context atom available for continuity only: ${id}: ${atomText(id)}`),
   ];
-  const nonCopyable = scene.nonCopyableContext || [];
+  // Owned atoms are stored in nonCopyableContext too (so atomText() can resolve
+  // their prose above), but they must NOT appear in the Non-Copyable list — a scene
+  // must stage its own owned facts, and listing them as "must not paraphrase" gives
+  // every owned atom contradictory instructions.
+  const ownedIds = new Set(scene.treatmentAtomIds || []);
+  const nonCopyable = (scene.nonCopyableContext || []).filter((atom) => !ownedIds.has(atom.id));
   if (mustDramatize.length === 0 && continuity.length === 0 && nonCopyable.length === 0) return '';
   return `
 ### Treatment Event Boundary

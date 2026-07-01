@@ -2068,7 +2068,7 @@ export class FullStoryPipeline {
   private finalizeEpisodeBlueprintSceneOwnershipForPipeline(params: {
     blueprint: EpisodeBlueprint;
     episodeNumber: number;
-    source: 'pipeline_resume' | 'pipeline_preflight';
+    source: 'pipeline_resume';
     storyCircleRole?: EpisodeBlueprint['storyCircleRole'];
   }): { issues: string[]; wasStale: boolean; drainedRequiredBeatIds: string[] } {
     const { blueprint, episodeNumber, source, storyCircleRole } = params;

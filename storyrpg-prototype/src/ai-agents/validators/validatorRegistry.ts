@@ -148,6 +148,11 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'SceneTurnContractValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
   { validator: 'EpisodePressureArchitectureValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
   { validator: 'EpisodeStoryCircleValidator', stage: 'architecture', tier: 'blocking', remediation: 'plan-time', dispatchedFrom: 'StoryArchitect.validateBlueprint' },
+  // Scene-construction preflight: each scene owns one primary turn and one owner per
+  // route event before prose. Blocking (regenerate) behind GATE_SCENE_CONSTRUCTION_PREFLIGHT;
+  // detection (profiles + SceneOwnershipPreflightValidator) always runs and is saved to
+  // the construction report.
+  { validator: 'SceneOwnershipPreflightValidator', stage: 'architecture', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', dispatchedFrom: 'StoryArchitect / ContentGenerationPhase (SceneConstructionGate)' },
 
   // --- Phase gates (PhaseValidator) ---
   { validator: 'PhaseValidator', stage: 'phase', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },

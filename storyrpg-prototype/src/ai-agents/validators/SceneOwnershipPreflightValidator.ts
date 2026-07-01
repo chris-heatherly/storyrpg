@@ -137,7 +137,7 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
   validate(input: SceneOwnershipPreflightInput): ValidationResult {
     const issues: ValidationIssue[] = [];
     const scenes = [...(input.scenes ?? [])].sort((a, b) =>
-      (a.order ?? 999) - (b.order ?? 999) || cleanText(a.id).localeCompare(cleanText(b.id)),
+      (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER) || cleanText(a.id).localeCompare(cleanText(b.id)),
     );
 
     const primaryAtomOwners = new Map<string, string>();

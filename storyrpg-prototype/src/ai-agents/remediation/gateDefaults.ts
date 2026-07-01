@@ -175,6 +175,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // assembled as a linear pass-through. The metric is always recorded; this flag
   // promotes it to a blocking SceneGraphBranchValidator error.
   GATE_BRANCH_FANOUT: true,
+  // Scene-construction preflight: each scene must own one primary turn and one
+  // owner per route event before SceneWriter/EncounterArchitect. Detection
+  // (SceneOwnershipPreflightValidator + construction/event-ownership profiles)
+  // always runs and is saved to the construction report; this flag promotes the
+  // conflicts to a blocking hard-abort (StoryArchitect regenerates; the
+  // content-phase re-check aborts). Reversible via =0. Default-ON.
+  GATE_SCENE_CONSTRUCTION_PREFLIGHT: true,
   // Treatment-seed on-page presence: every treatment_seed_* declared for an
   // episode must be set via a setFlag consequence on some choice in that episode.
   // Seeds are emitted deterministically upstream, so this is a pure backstop.

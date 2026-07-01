@@ -1137,7 +1137,7 @@ function openingSceneIds<T extends SceneConstructionSceneLike>(scenes: T[]): Set
   const ids = new Set<string | undefined>();
   for (const list of byEpisode.values()) {
     const first = [...list].sort((a, b) =>
-      (a.order ?? 999) - (b.order ?? 999) || cleanText(a.id).localeCompare(cleanText(b.id)),
+      (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER) || cleanText(a.id).localeCompare(cleanText(b.id)),
     )[0];
     ids.add(first?.id);
   }
@@ -1204,13 +1204,20 @@ export function applySceneConstructionProfilesToScenes<T extends SceneConstructi
   diagnostics: SceneConstructionProfileDiagnostic[];
   applications: SceneConstructionApplicationResult[];
 } {
-  const diagnostics = attachSceneConstructionProfiles(scenes, options);
+  // First pass gives applySceneConstructionProfileToScene its input profile.
+  attachSceneConstructionProfiles(scenes, options);
   const openingIds = openingSceneIds(scenes);
   const applications = scenes.map((scene) =>
     applySceneConstructionProfileToScene(scene, {
       isOpeningScene: Boolean(scene.coldOpenProfile) || openingIds.has(scene.id),
     }),
   );
+  // Re-attach AFTER the apply pass drained requiredBeats so both the returned
+  // diagnostics and the profile obligations downstream consumers read
+  // (SceneWriter prompt, SceneOwnershipPreflightValidator.sceneOwnsEncounterCue)
+  // reflect the post-drain state — a conflict the apply step just fixed must not
+  // still block, and a drained beat must not still mark a scene as owning its cue.
+  const diagnostics = attachSceneConstructionProfiles(scenes, options);
   return { diagnostics, applications };
 }
 

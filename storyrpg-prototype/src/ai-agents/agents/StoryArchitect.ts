@@ -6629,13 +6629,23 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         }
       }
       const ds = scene.dramaticStructure;
-      if (ds && !(ds.pressurePeak || '').trim()) {
-        const fallback = [ds.turn, ds.changedState, ds.question]
-          .map((value) => (value || '').trim())
+      if (ds) {
+        const firstOf = (...values: Array<string | undefined>): string | undefined =>
+          values.map((value) => (value || '').trim()).find(Boolean);
+        const residueDescription = (scene.residue || [])
+          .map((item) => (item?.description || '').trim())
           .find(Boolean);
-        if (fallback) {
-          ds.pressurePeak = fallback;
-          console.log(`[StoryArchitect] Defaulted missing dramaticStructure.pressurePeak on ${scene.id} from the scene turn`);
+        const fills: Array<[keyof typeof ds, string | undefined]> = [
+          ['question', firstOf(scene.dramaticQuestion, ds.turn)],
+          ['turn', firstOf(ds.pressurePeak, ds.changedState)],
+          ['pressurePeak', firstOf(ds.turn, ds.changedState, ds.question)],
+          ['changedState', firstOf(residueDescription, ds.turn, ds.pressurePeak)],
+        ];
+        for (const [field, fallback] of fills) {
+          if (!(ds[field] || '').trim() && fallback) {
+            ds[field] = fallback;
+            console.log(`[StoryArchitect] Defaulted missing dramaticStructure.${String(field)} on ${scene.id}`);
+          }
         }
       }
     }

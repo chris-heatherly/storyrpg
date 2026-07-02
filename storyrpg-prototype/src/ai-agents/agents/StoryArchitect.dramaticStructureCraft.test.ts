@@ -55,6 +55,26 @@ describe('StoryArchitect.repairDramaticStructureCraft', () => {
       .toBe('Marcus pockets the keycard instead of handing it over.');
   });
 
+  it('defaults a missing changedState from residue, then turn (live scene-3a regression)', () => {
+    const blueprint = {
+      scenes: [{
+        id: 'scene-3a',
+        residue: [{ type: 'danger', description: 'Victoria now knows the corridor route.' }],
+        dramaticStructure: {
+          question: 'Does Victoria cover for you?',
+          turn: 'Victoria steps into the breach beside you.',
+          pressurePeak: 'The alarm pad blinks while she decides.',
+          changedState: '',
+        },
+      }],
+    } as unknown as EpisodeBlueprint;
+
+    repair(blueprint);
+
+    expect(blueprint.scenes[0].dramaticStructure?.changedState)
+      .toBe('Victoria now knows the corridor route.');
+  });
+
   it('leaves valid residue and populated pressurePeak untouched', () => {
     const blueprint = {
       scenes: [{

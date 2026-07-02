@@ -105,7 +105,7 @@ describe('readSSEStream chunk reassembly (Anthropic)', () => {
     ];
     const result = await readSSEStream(streamFromChunks(chunks), anthropicSseHandler);
     expect(result.finishReason).toBe('max_tokens');
-    expect(result.usage.outputTokens).toBe(8192);
+    expect(result.usage?.outputTokens).toBe(8192);
   });
 
   it('leaves finishReason undefined on a clean end_turn-free stream', async () => {

@@ -172,6 +172,30 @@ tree stashed). Bisect worktree used and removed.
 `relationshipArcEnforcement` ×2. These predate the audit and block `npm run
 validate` — triage separately before the Phase 7 live run.
 
+**RESOLVED 2026-07-01 (follow-up session).** All six were introduced by
+19e91ad8 ("Checkpoint StoryRPG pipeline validation work"):
+1. The scene-event-ownership prompt sections added turn-contract handoff lines
+   ("Hand forward to scene-3 …") that name *neighboring* scene ids inside a
+   scene's SceneWriter prompt. `fullRunFixtures`' Scene Writer responder
+   matched any `scene-N` substring (scene-3 first), so the scene-2 write was
+   answered with the scene-3 fixture — which has no `isChoicePoint` beat →
+   hard "MISSING CHOICE POINT" abort. Fix: match the `**Scene ID**:` marker
+   (same pattern branching/season fixtures already used), with scene-name
+   fallback for markerless rewrite prompts.
+2. The same commit's `effectiveTargetStage` clamp in
+   `RelationshipArcLedgerValidator` forgave over-eager pacing targets for ALL
+   contract sources, silencing the blocking behavior the enforcement tests
+   pin. Fix: clamp only derived sources (`planner`/`encounter`); `treatment`/
+   `choice` contracts are enforced strictly again.
+Also fixed a third `validate` blocker found on the way: `streamLLM.test.ts`
+read `result.usage.outputTokens` on optional `usage` (typecheck:test error,
+from the Phase 3 commit) → `usage?.`.
+Goldens for all four pipeline tests regenerated AFTER verifying the runs
+complete with `success=true` (the diffs are the intended ownership-section /
+turn-audit prompt churn plus the extra advisory MISSING_MECHANICS_HOOK
+revision rounds). `npm run validate` exits 0 (4 tsconfigs, lint 0 errors,
+3,915 tests).
+
 **2026-07-01 (later) — Phase 4 items 4.1–4.5 (tested; 4.6/4.7 deferred):**
 - ✅ **4.1 (H5)** — deleted the 4 dead repair-infra gates
   (GATE_SEASON_PROMISE_REPAIR / CHARACTER_TREATMENT_REPAIR /

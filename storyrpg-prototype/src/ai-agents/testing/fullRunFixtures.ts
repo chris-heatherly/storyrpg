@@ -828,8 +828,16 @@ export function buildFullRunFixtureMap(): ScriptedFixtureMap {
     'Branch Manager': JSON.stringify(branchAnalysis),
     'Scene Writer': (request) => {
       const text = requestText(request);
-      if (text.includes('scene-3')) return sceneFixture('scene-3');
-      if (text.includes('scene-2')) return sceneFixture('scene-2');
+      // Match the blueprint's own Scene ID marker, not any mention of a scene
+      // id — turn-contract handoff lines ("Hand forward to scene-3 …") name
+      // neighboring scenes inside another scene's prompt.
+      if (text.includes('**Scene ID**: scene-3')) return sceneFixture('scene-3');
+      if (text.includes('**Scene ID**: scene-2')) return sceneFixture('scene-2');
+      if (text.includes('**Scene ID**: scene-1')) return sceneFixture('scene-1');
+      // Fallback for prompts without the Scene ID marker (targeted rewrites
+      // quote the scene name instead).
+      if (text.includes('East Garden')) return sceneFixture('scene-3');
+      if (text.includes('The Steward')) return sceneFixture('scene-2');
       return sceneFixture('scene-1');
     },
     'Choice Author': (request) => choiceSetFixtureFor(request),

@@ -98,6 +98,14 @@ function hasHighStageRelationshipLabel(text: string): boolean {
 }
 
 function effectiveTargetStage(contract: RelationshipPacingContract, entry: RelationshipArcLedgerEntry): RelationshipPacingStage {
+  // Only derived contracts (planner/encounter) get their stale targets
+  // forgiven down to what plan-time normalization would have allowed
+  // (normalizeRelationshipPacingStages). Treatment- and choice-sourced
+  // contracts are authorial intent / earned advancement: if the ledger cannot
+  // support them, that is a real blocking defect, not planner drift.
+  if (contract.source !== 'planner' && contract.source !== 'encounter') {
+    return contract.targetStage;
+  }
   if (contract.groupId) {
     if (entry.relationshipChoiceSceneIds.length === 0) return 'spark';
     if (stageRank(contract.startStage) <= stageRank('spark') && stageRank(contract.targetStage) > stageRank('acquaintance')) {

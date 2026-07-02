@@ -91,11 +91,6 @@
       "message": "Episode 1 blueprint: 4 scenes"
     },
     {
-      "type": "warning",
-      "phase": "episode_architecture",
-      "message": "StoryArchitect proceeded with 2 unresolved advisory issue(s) (story still generated): [DramaticStructure] Scene scene-1 (The Hidden Door) is missing a stakes ladder in keyBeats. (scene-1) Suggestion: Key beats should raise risk, reveal cost, narrow options, shift leverage, or deepen consequence until the pressure peak. | [DramaticStructure] Scene scene-1 (The Hidden Door) has no residue. (scene-1) Suggestion: Every scene must leave changed information, leverage, relationship, identity, resource, danger, promise, wound, reputation, access, or future option."
-    },
-    {
       "type": "checkpoint",
       "phase": "episode_blueprint",
       "message": "Checkpoint committed: Episode Blueprint"
@@ -153,7 +148,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 14735 -> 14009 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16827 -> 16101 bytes"
     },
     {
       "type": "debug",
@@ -166,14 +161,44 @@
       "message": "Best-of-2 winner for scene-1: score 100 vs 100"
     },
     {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "Scene scene-1 under-realizes 3 authored moment(s) — retrying with realization feedback (1/2)"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Realization retry 1/2 for scene-1: 3 under-realized moment(s) remain"
+    },
+    {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "Scene scene-1 under-realizes 3 authored moment(s) — retrying with realization feedback (2/2)"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Realization retry 2/2 for scene-1: 3 under-realized moment(s) remain"
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": moment has timeline or cross-scene cues."
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "Scene scene-1 deterministic authored-moment recovery inserted 2/3 beat(s); 0 under-realized moment(s) remain"
+    },
+    {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 3 beats for scene-1"
+      "message": "Wrote 5 beats for scene-1"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-1 written (3 beats)"
+      "message": "Scene scene-1 written (5 beats)"
     },
     {
       "type": "debug",
@@ -188,7 +213,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
+      "message": "Looking for choicePoint beat in 5 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -223,7 +248,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2a: 6000 -> 5937 bytes"
+      "message": "SceneWriter input compacted for scene-2a: 7631 -> 7568 bytes"
     },
     {
       "type": "agent_complete",
@@ -334,11 +359,6 @@
       "type": "agent_start",
       "agent": "SceneWriter",
       "message": "Writing scene 4/4: The East Garden"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-3: 7773 -> 7245 bytes"
     },
     {
       "type": "debug",
@@ -471,7 +491,7 @@
     {
       "type": "debug",
       "phase": "observability",
-      "message": "{\"imageCoverage\":{\"totalBeats\":15,\"beatsWithImages\":0,\"encounterBeatsTotal\":1,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
+      "message": "{\"imageCoverage\":{\"totalBeats\":18,\"beatsWithImages\":0,\"encounterBeatsTotal\":1,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
     }
   ],
   "checkpoints": [
@@ -513,6 +533,7 @@
         "episodeCircle",
         "episodeId",
         "narrativePromises",
+        "sceneOwnershipStamp",
         "scenes",
         "startingSceneId",
         "storyCircleRole",

@@ -465,6 +465,50 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
+  it('merges authored turns that duplicate the cold-open hook so later events keep their own scenes (bite-me run #7)', () => {
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 4,
+      storyCircleRole: [{ beat: 'you' }] as never,
+      treatmentGuidance: {
+        episodeTurns: [
+          'Kylie arrives in Bucharest with two suitcases and her grandmother address.',
+          'She forms the Dusk Club with Mika and Stela over velvet booths and negronis.',
+          'At a rooftop bar she catches the attention of a man in a charcoal suit.',
+        ],
+      },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], {
+      storyCircle: {
+        you: 'Kylie arrives in Bucharest with two suitcases, her grandmother address, and the intent to rebuild. '
+          + 'She turns the night into her first viral post.',
+        need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      },
+    })), 1);
+
+    // Release-scene turns are composed boilerplate that quotes episode text
+    // ("Let the fallout settle into the next pressure: …") — a separate known
+    // filler class; spine binding only targets content scenes.
+    const sceneFacts = scenes.filter((s) => s.narrativeRole !== 'release').map((s) => ({
+      id: s.id,
+      turn: String(s.turnContract?.turnEvent ?? ''),
+      authored: (s.requiredBeats ?? []).filter((b) => b.tier === 'authored').map((b) => String(b.mustDepict)),
+      coldopen: (s.requiredBeats ?? []).filter((b) => b.tier === 'coldopen').length,
+    }));
+    const hookOwner = sceneFacts.find((s) => s.coldopen > 0);
+    // The description's arrival sentence duplicates the cold-open hook: no
+    // OTHER scene may carry the arrival as its turn or an authored beat.
+    const arrivalElsewhere = sceneFacts.filter((s) =>
+      s.id !== hookOwner?.id
+      && (/two suitcases/.test(s.turn) || s.authored.some((t) => /two suitcases/.test(t))));
+    expect(arrivalElsewhere).toHaveLength(0);
+    // The formation therefore owns a scene of its own (as its primary turn or
+    // an authored beat), distinct from the hook owner.
+    const formationOwner = sceneFacts.find((s) =>
+      /Dusk Club/.test(s.turn) || s.authored.some((t) => /Dusk Club/.test(t)));
+    expect(formationOwner).toBeDefined();
+    expect(formationOwner!.id).not.toBe(hookOwner?.id);
+  });
+
   it('floors the pacing start stage for treatment-declared prior bonds (bite-me 2026-07-02 Mika)', () => {
     const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,

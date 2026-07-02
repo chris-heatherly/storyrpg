@@ -1442,18 +1442,41 @@ export function bindAuthoredTurnsToScenes(
   //    seeds (step 3); only authored spine turns are kept off them.
   const turnTargetsRaw = targets.filter((s) => s.kind !== 'encounter');
   const turnTargets = turnTargetsRaw.length > 0 ? turnTargetsRaw : targets;
-  if (turns.length > 0) {
-    const assignment = alignTurnsToScenes(turns, turnTargets);
+  // A turn that near-duplicates the opening scene's cold-open hook is the SAME
+  // event told twice (the story-circle "You" opener and the episode
+  // description's first sentence both narrate the arrival). Binding both
+  // consumes a second scene and starves the next authored event of its own
+  // scene — bite-me run #7 (2026-07-02T23-23-50): two arrival turns took
+  // s1-1 AND s1-2, so the dusk-club formation had no turn slot and its
+  // socialMeet ownership defaulted to s1-1 where it can never be staged.
+  // The hook already stages the event; drop the duplicate from spine binding.
+  const coldOpenHookTexts = scenes
+    .flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'coldopen'))
+    .map((b) => String(b.mustDepict || b.sourceTurn || '').trim())
+    .filter(Boolean);
+  const hookTokenSets = coldOpenHookTexts.map((text) => new Set(bindTokens(text)));
+  const duplicatesColdOpenHook = (turn: string): boolean =>
+    hookTokenSets.some((hookSet) => {
+      if (hookSet.size === 0) return false;
+      const turnTokens = bindTokens(turn);
+      if (turnTokens.length === 0) return false;
+      const hits = tokenHitCount(turnTokens, hookSet);
+      return hits / turnTokens.length >= 0.6;
+    });
+  const spineTurns = turns.filter((turn) => !duplicatesColdOpenHook(turn));
+  const dedupedTurns = spineTurns.length > 0 ? spineTurns : turns;
+  if (dedupedTurns.length > 0) {
+    const assignment = alignTurnsToScenes(dedupedTurns, turnTargets);
     const perScene: RequiredBeat[][] = turnTargets.map(() => []);
-    for (let t = 0; t < turns.length; t += 1) {
+    for (let t = 0; t < dedupedTurns.length; t += 1) {
       const slot = assignment[t];
       const scene = turnTargets[slot];
       const beatIndex = (scene.requiredBeats?.length ?? 0) + perScene[slot].length;
-      perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, turns[t]));
+      perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, dedupedTurns[t]));
       // Pin the scene's setting to the place its authored turn names (when it names a
       // declared episode location), overriding the deterministic collapse-to-first.
       // Only the LAST naming turn per scene wins (rare; a scene maps to ~1 turn).
-      const namedLocation = inferAuthoredLocationFromText(turns[t], ep.locations ?? []);
+      const namedLocation = inferAuthoredLocationFromText(dedupedTurns[t], ep.locations ?? []);
       if (namedLocation) scene.locations = [namedLocation];
     }
     turnTargets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));

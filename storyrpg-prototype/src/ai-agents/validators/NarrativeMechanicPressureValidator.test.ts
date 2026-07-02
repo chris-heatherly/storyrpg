@@ -63,7 +63,7 @@ describe('NarrativeMechanicPressureValidator', () => {
       story: story([
         scene('s1-1', 'Mika smiles at the door.', [], {
           beats: [beat('s1-1-b1', 'Mika smiles at the door.', {
-            choices: [{ id: 'c1', text: 'Trust her', consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 4 }] }],
+            choices: [{ id: 'c1', text: 'Trust her', consequences: [{ type: 'changeScore', score: 'suspicion', change: 4 }] }],
           })],
         }),
       ]),
@@ -99,9 +99,9 @@ describe('NarrativeMechanicPressureValidator', () => {
       story: story([
         scene('s1-1', 'Mika nods once at the door.', [
           pressure({
-            id: 's1-1-pressure-mika',
-            domain: 'relationship',
-            mechanicRef: { npcId: 'mika', relationshipDimension: 'trust' },
+            id: 's1-1-pressure-suspicion',
+            domain: 'score',
+            mechanicRef: { score: 'suspicion' },
             maxMagnitudeThisScene: 6,
           }),
         ], {
@@ -109,8 +109,8 @@ describe('NarrativeMechanicPressureValidator', () => {
             choices: [{
               id: 'c1',
               text: 'Smile back',
-              residueHints: [{ kind: 'relationship_behavior', description: 'Mika warms by one careful degree.' }],
-              consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 20 }],
+              residueHints: [{ kind: 'immediate_prose_echo', description: 'The doorman clocks your face for later.' }],
+              consequences: [{ type: 'changeScore', score: 'suspicion', change: 20 }],
             }],
           })],
         }),
@@ -149,30 +149,27 @@ describe('NarrativeMechanicPressureValidator', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('accepts relationship pacing as relationship-domain pressure during migration', () => {
+  it('ignores relationship consequences and gates entirely (owned by RelationshipArcLedgerValidator)', () => {
+    // Pair C cut (2026-07-02): no pacing-contract synthesis, no relationship
+    // delta caps, no relationship condition gating here — even a bare oversized
+    // relationship delta with no residue is not this validator's finding.
     const result = validator.validate({
       story: story([
-        scene('s1-1', 'Mika notices the shoes first and offers the card like a test, not friendship.', [], {
-          relationshipPacing: [{
-            id: 's1-1-rel-mika',
-            source: 'treatment',
-            npcId: 'mika',
-            startStage: 'unmet',
-            targetStage: 'spark',
-            allowedLabels: ['spark', 'invitation'],
-            blockedLabels: ['friend', 'trusted ally'],
-            requiredEvidence: ['show behavior before naming the bond'],
-            minScenesSinceIntroduction: 1,
-            maxDeltaThisScene: 6,
-            mechanicDimensions: ['trust'],
-          }],
-          beats: [beat('s1-1-b1', 'Mika notices the shoes first and offers the card like a test, not friendship.', {
-            choices: [{
-              id: 'c1',
-              text: 'Play along',
-              residueHints: [{ kind: 'relationship_behavior', description: 'Mika keeps testing you, but closer now.' }],
-              consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 4 }],
-            }],
+        scene('s1-1', 'Mika nods once at the door.', [], {
+          beats: [beat('s1-1-b1', 'Mika nods once at the door.', {
+            choices: [
+              {
+                id: 'c1',
+                text: 'Trust her completely',
+                consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 25 }],
+              },
+              {
+                id: 'c2',
+                text: 'Lean on the bond',
+                conditions: { type: 'relationship', npcId: 'mika', dimension: 'trust', operator: '>=', value: 50 },
+                consequences: [],
+              },
+            ],
           })],
         }),
       ]),
@@ -180,6 +177,7 @@ describe('NarrativeMechanicPressureValidator', () => {
     });
 
     expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
   });
 
   it('counts encounter prose as visible residue for treatment-authored pressure', () => {

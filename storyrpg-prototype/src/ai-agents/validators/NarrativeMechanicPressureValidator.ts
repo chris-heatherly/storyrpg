@@ -3,9 +3,9 @@ import type {
   MechanicPressureContract,
   MechanicPressureDomain,
   PlannedScene,
-  RelationshipPacingContract,
   SeasonScenePlan,
 } from '../../types/scenePlan';
+import { FICTION_SAFE_RESIDUE_GUIDANCE, MAJOR_EVIDENCE_RE } from '../constants/evidenceProse';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 
 export interface NarrativeMechanicPressureInput {
@@ -32,8 +32,6 @@ interface ConsequenceRef {
 }
 
 const LARGE_MAGNITUDE = 10;
-const RELATIONSHIP_LARGE_MAGNITUDE = 6;
-const MAJOR_EVIDENCE_RE = /\b(rescue|saved|sacrifice|confess|secret|risked|bled|wounded|protected|betray|public cost|exposed|gave up|lost|injured|vow|promise)\b/i;
 const RESIDUE_RE = /\b(changed|remembers?|hesitates?|invites?|withholds?|opens?|blocks?|carries?|keeps?|notices?|owes?|debt|risk|cost|scar|clue|key|card|access|suspicion|warning|promise|secret|later|because)\b/i;
 
 function plannedById(scenePlan?: SeasonScenePlan): Map<string, PlannedScene> {
@@ -55,29 +53,13 @@ function collectScenes(input: NarrativeMechanicPressureInput): SceneRef[] {
   return refs.sort((a, b) => (a.episodeNumber - b.episodeNumber) || ((a.planned?.order ?? a.ordinal) - (b.planned?.order ?? b.ordinal)));
 }
 
-function relationshipPressure(contract: RelationshipPacingContract, sceneId: string): MechanicPressureContract {
-  return {
-    id: `${contract.id}-mechanic-pressure`,
-    source: contract.source,
-    domain: 'relationship',
-    mechanicRef: {
-      npcId: contract.npcId,
-      relationshipDimension: contract.mechanicDimensions[0] ?? 'trust',
-    },
-    function: 'intensify',
-    storyPressure: `Relationship can advance only to ${contract.targetStage}.`,
-    evidenceRequired: contract.requiredEvidence,
-    visibleResidue: ['changed distance, invitation, withholding, teasing, remembered detail, challenge, or refusal'],
-    allowedPayoffs: contract.allowedLabels,
-    blockedPayoffs: contract.blockedLabels,
-    originatingSceneId: sceneId,
-    maxMagnitudeThisScene: contract.maxDeltaThisScene,
-  };
-}
-
+// The relationship domain is wholly owned by RelationshipArcLedgerValidator
+// (deterministic ledger with stage/cap/evidence semantics). This validator
+// previously synthesized a pressure contract from every relationship-pacing
+// contract and re-enforced the same delta cap with its own evidence regex —
+// triple-policing each relationship delta (2026-07-02 audit, Pair C cut).
 function contractsFor(ref: SceneRef): MechanicPressureContract[] {
   const contracts = ref.scene.mechanicPressure ?? ref.planned?.mechanicPressure ?? [];
-  const pacing = ref.scene.relationshipPacing ?? ref.planned?.relationshipPacing ?? [];
   const branchPressure: MechanicPressureContract[] = (ref.scene.branchConsequenceContracts ?? ref.planned?.branchConsequenceContracts ?? []).map((contract) => ({
     id: `${contract.id}-mechanic-pressure`,
     source: contract.source === 'treatment' ? 'treatment' : 'planner',
@@ -122,7 +104,6 @@ function contractsFor(ref: SceneRef): MechanicPressureContract[] {
     ...branchPressure,
     ...endingPressure,
     ...failureModePressure,
-    ...pacing.map((contract) => relationshipPressure(contract, ref.scene.id)),
   ];
 }
 
@@ -391,6 +372,9 @@ export class NarrativeMechanicPressureValidator extends BaseValidator {
         const { consequence, choice } = refConsequence;
         if (!isMeaningfulConsequence(consequence)) continue;
         const domain = consequenceDomain(consequence);
+        // Relationship deltas, caps, and evidence are RelationshipArcLedgerValidator's
+        // job (Pair C cut) — policing them here triple-flagged the same choice.
+        if (domain === 'relationship') continue;
         const hasPressure = hasContractForConsequence(consequence, contracts) || Boolean(choice?.mechanicPressure?.some((contract) => contract.domain === domain));
         const hasResidue = hasChoiceResidue(choice) || RESIDUE_RE.test(text);
         if (!hasPressure && !hasResidue) {
@@ -398,7 +382,7 @@ export class NarrativeMechanicPressureValidator extends BaseValidator {
             severity: treatmentScene ? 'error' : 'warning',
             location: `${loc}:${choice?.id ?? refConsequence.beat?.id ?? consequence.type}`,
             message: `Meaningful ${consequence.type} consequence has no narrative pressure contract or visible residue.`,
-            suggestion: 'Attach mechanicPressure and show the fictional evidence/residue that makes the state change meaningful.',
+            suggestion: `Attach mechanicPressure and show the fictional evidence/residue that makes the state change meaningful. ${FICTION_SAFE_RESIDUE_GUIDANCE}`,
           });
         }
 
@@ -407,13 +391,13 @@ export class NarrativeMechanicPressureValidator extends BaseValidator {
           .filter((contract) => contract.domain === domain)
           .map((contract) => contract.maxMagnitudeThisScene)
           .find((value): value is number => typeof value === 'number' && value > 0);
-        const max = contractCap ?? (domain === 'relationship' ? RELATIONSHIP_LARGE_MAGNITUDE : LARGE_MAGNITUDE);
+        const max = contractCap ?? LARGE_MAGNITUDE;
         if (magnitude !== undefined && magnitude > max && !MAJOR_EVIDENCE_RE.test(text)) {
           issues.push({
             severity: 'error',
             location: `${loc}:${choice?.id ?? consequence.type}`,
             message: `${consequence.type} consequence magnitude ${magnitude} is too large for the visible evidence in scene "${ref.scene.id}".`,
-            suggestion: 'Reduce the magnitude or stage a major rescue, sacrifice, confession, betrayal, public cost, risk, discovery, or repeated practice.',
+            suggestion: `Reduce the magnitude or stage a major rescue, sacrifice, confession, betrayal, public cost, risk, discovery, or repeated practice. ${FICTION_SAFE_RESIDUE_GUIDANCE}`,
           });
         }
 
@@ -425,6 +409,10 @@ export class NarrativeMechanicPressureValidator extends BaseValidator {
         walkCondition(condition, (raw) => {
           const domain = conditionDomain(raw);
           if (!domain) return;
+          // Relationship-gated reachability is checked numerically (against
+          // accumulated deltas) by RelationshipArcLedgerValidator — stronger
+          // than this planted-at-all check (Pair C cut).
+          if (domain === 'relationship') return;
           const key = keyForCondition(domain, raw);
           const supportedByContract = contracts.some((contract) => contract.domain === domain && (keyForContract(contract) === key || keyForContract(contract).endsWith(':*')));
           if (!planted.has(key) && !plantedDomains.has(domain) && !supportedByContract) {
@@ -457,7 +445,7 @@ export class NarrativeMechanicPressureValidator extends BaseValidator {
               : `Treatment-authored ${contract.domain} pressure "${contract.storyPressure}" is planted but has no visible payoff, callback, gate, or residue in the final story slice.`,
             suggestion: terminalPartialSlice
               ? 'Keep this pressure in the callback/residue ledger for future generated episodes; do not require a same-slice payoff during partial generation.'
-              : 'Add a later callback/variant/choice/route payoff, or show residue strongly enough that the mechanic is not dead state.',
+              : `Add a later callback/variant/choice/route payoff, or show residue strongly enough that the mechanic is not dead state. ${FICTION_SAFE_RESIDUE_GUIDANCE}`,
           });
         }
       }

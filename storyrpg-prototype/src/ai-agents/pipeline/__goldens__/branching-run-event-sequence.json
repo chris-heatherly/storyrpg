@@ -148,7 +148,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 16827 -> 16101 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16874 -> 16148 bytes"
     },
     {
       "type": "debug",
@@ -248,7 +248,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2a: 7631 -> 7568 bytes"
+      "message": "SceneWriter input compacted for scene-2a: 8063 -> 8000 bytes"
     },
     {
       "type": "agent_complete",

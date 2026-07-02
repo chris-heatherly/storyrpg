@@ -73,6 +73,52 @@ export function stripStructuralTreatmentLabels(value: unknown): string {
   return concrete || text.replace(/\b(?:hook|promise|stakes)\s*(?:—|-|:)\s*/gi, '').trim();
 }
 
+const THIRD_TO_SECOND_IRREGULAR: Record<string, string> = {
+  is: 'are',
+  was: 'were',
+  has: 'have',
+  does: 'do',
+};
+
+const NON_CONJUGATING_FOLLOWERS = /^(?:must|can|could|will|would|shall|should|may|might|had|did|were|are|have|do|never|already|then|now|also|only|still|finally|quietly|slowly)$/i;
+
+function secondPersonVerb(verb: string): string {
+  const lower = verb.toLowerCase();
+  if (THIRD_TO_SECOND_IRREGULAR[lower]) return THIRD_TO_SECOND_IRREGULAR[lower];
+  if (NON_CONJUGATING_FOLLOWERS.test(lower)) return verb;
+  if (/ies$/.test(lower) && lower.length > 4) return `${verb.slice(0, -3)}y`;
+  if (/(?:s|x|z|ch|sh|o)es$/.test(lower)) return verb.slice(0, -2);
+  if (/[a-z]s$/.test(lower) && !/ss$/.test(lower)) return verb.slice(0, -1);
+  return verb;
+}
+
+/**
+ * Deterministically rewrite "the protagonist <verb>" / "the protagonist's"
+ * planning-register cards into second person. Repair-first: a blueprint whose
+ * only hygiene violation is this phrasing should be fixed in place, not burn
+ * LLM retries on feedback the model reliably ignores (observed live: three
+ * Story Architect attempts in a row kept "The protagonist wants …" in
+ * wantVsNeed and aborted the episode).
+ */
+export function coerceProtagonistCardToSecondPerson(value: string): { text: string; changed: boolean } {
+  if (!value || !/\bprotagonist\b/i.test(value)) return { text: value, changed: false };
+  let changed = false;
+  let text = value.replace(/\b(?:the\s+)?protagonist['’]s\b/gi, (match) => {
+    changed = true;
+    return /^[A-Z]/.test(match) ? 'Your' : 'your';
+  });
+  text = text.replace(/\b(?:the\s+)?protagonist\b(\s+)([A-Za-z]+)/gi, (match, space, follower) => {
+    changed = true;
+    const subject = /^[A-Z]/.test(match) ? 'You' : 'you';
+    return `${subject}${space}${secondPersonVerb(follower)}`;
+  });
+  text = text.replace(/\b(the\s+)?protagonist\b/gi, (match) => {
+    changed = true;
+    return /^[A-Z]/.test(match) ? 'You' : 'you';
+  });
+  return { text, changed };
+}
+
 export function matchingBlueprintHygienePatterns(value: unknown): BlueprintHygienePattern[] {
   const text = cleanBlueprintText(value);
   if (!text) return [];
@@ -99,5 +145,11 @@ export function pickBlueprintSafeText(...values: unknown[]): string | undefined 
 export function sanitizeBlueprintText(value: unknown, ...fallbacks: unknown[]): string | undefined {
   const text = stripStructuralTreatmentLabels(value);
   if (text && !isBlueprintHygieneUnsafeText(text)) return text;
+  if (text) {
+    // Content-preserving repair before the lossy fallback: most raw synopsis
+    // cards are only unsafe because of "the protagonist <verb>" register.
+    const coerced = coerceProtagonistCardToSecondPerson(text);
+    if (coerced.changed && !isBlueprintHygieneUnsafeText(coerced.text)) return coerced.text;
+  }
   return pickBlueprintSafeText(...fallbacks);
 }

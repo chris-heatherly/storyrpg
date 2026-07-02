@@ -173,7 +173,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 17552 -> 16108 bytes"
+      "message": "SceneWriter input compacted for scene-1: 17574 -> 16130 bytes"
     },
     {
       "type": "debug",
@@ -278,42 +278,17 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2: 8910 -> 8610 bytes"
-    },
-    {
-      "type": "regeneration_triggered",
-      "phase": "scenes",
-      "message": "Scene scene-2 under-realizes 1 authored moment(s) — retrying with realization feedback (1/2)"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Realization retry 1/2 for scene-2: 1 under-realized moment(s) remain"
-    },
-    {
-      "type": "regeneration_triggered",
-      "phase": "scenes",
-      "message": "Scene scene-2 under-realizes 1 authored moment(s) — retrying with realization feedback (2/2)"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Realization retry 2/2 for scene-2: 1 under-realized moment(s) remain"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Scene scene-2 deterministic authored-moment recovery inserted 1/1 beat(s); 0 under-realized moment(s) remain"
+      "message": "SceneWriter input compacted for scene-2: 8065 -> 8002 bytes"
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 4 beats for scene-2"
+      "message": "Wrote 3 beats for scene-2"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-2 written (4 beats)"
+      "message": "Scene scene-2 written (3 beats)"
     },
     {
       "type": "debug",
@@ -328,7 +303,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 4 beats... Found: beat-3"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -578,7 +553,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-4: 17653 -> 16692 bytes"
+      "message": "SceneWriter input compacted for scene-4: 17795 -> 16834 bytes"
     },
     {
       "type": "debug",
@@ -678,42 +653,17 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-5: 9094 -> 9007 bytes"
-    },
-    {
-      "type": "regeneration_triggered",
-      "phase": "scenes",
-      "message": "Scene scene-5 under-realizes 1 authored moment(s) — retrying with realization feedback (1/2)"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Realization retry 1/2 for scene-5: 1 under-realized moment(s) remain"
-    },
-    {
-      "type": "regeneration_triggered",
-      "phase": "scenes",
-      "message": "Scene scene-5 under-realizes 1 authored moment(s) — retrying with realization feedback (2/2)"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Realization retry 2/2 for scene-5: 1 under-realized moment(s) remain"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Scene scene-5 deterministic authored-moment recovery inserted 1/1 beat(s); 0 under-realized moment(s) remain"
+      "message": "SceneWriter input compacted for scene-5: 8619 -> 8556 bytes"
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 4 beats for scene-5"
+      "message": "Wrote 3 beats for scene-5"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-5 written (4 beats)"
+      "message": "Scene scene-5 written (3 beats)"
     },
     {
       "type": "debug",
@@ -728,7 +678,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 4 beats... Found: beat-3"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",

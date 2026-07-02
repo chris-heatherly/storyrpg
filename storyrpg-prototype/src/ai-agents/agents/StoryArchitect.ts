@@ -4369,6 +4369,11 @@ REQUIREMENTS:
       this.ensureDramaticAuditMinimums(blueprint, input);
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
+      // Freeform-path parity with the planned path: repair hygiene-unsafe
+      // planning text (register coercion, then safe fallback) BEFORE the
+      // hygiene check throws. Observed live: three attempts in a row kept
+      // "The protagonist wants …" in wantVsNeed and aborted the episode.
+      this.repairBlueprintHygieneUnsafeText(blueprint, input);
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
@@ -4897,7 +4902,7 @@ ${this.buildCliffhangerPlanSection(input)}
       "npcsPresent": ["npc-id"],
       "narrativeFunction": "What this scene accomplishes",
       "dramaticQuestion": "What this scene is here to find out",
-      "wantVsNeed": "Protagonist's conscious goal vs dramatic necessity",
+      "wantVsNeed": "What you consciously want vs what you actually need this scene (second person — never 'the protagonist')",
       "conflictEngine": "What or who opposes the protagonist here",
       "dramaticStructure": {
         "question": "Scene-level question or pressure",
@@ -5047,6 +5052,7 @@ ${this.buildCliffhangerPlanSection(input)}
 }
 
 CRITICAL REQUIREMENTS:
+0. Write every scene planning field (description, wantVsNeed, dramaticQuestion, conflictEngine, themePressure) in second person ("you") — never "the protagonist", "the hero", or the character's name as a synopsis subject.
 1. The "scenes" array must contain 3-${input.targetSceneCount} scenes
 2. Each scene MUST have: id, name, description, location, mood, purpose, npcsPresent, narrativeFunction, keyBeats, leadsTo
 2a. Each newly generated multi-beat scene SHOULD include sequenceIntent with a visible activity, visualThread, turningPoint, and endState. Missing sequenceIntent is tolerated for compatibility/fallbacks, but lowers storyboard QA quality.

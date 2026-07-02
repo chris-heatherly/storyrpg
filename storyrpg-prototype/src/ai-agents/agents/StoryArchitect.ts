@@ -1774,6 +1774,11 @@ export class StoryArchitect extends BaseAgent {
     let adequacy = this.assessBlueprintBranchAdequacy(blueprint);
     if (!adequacy.adequate) {
       this.repairSceneGraphBranchCoverage(blueprint);
+      // The normal repair pipeline runs repairSceneTransitions AFTER the branch
+      // repair; a branch synthesized here (post-pipeline) must restore that
+      // invariant or its new edge ships without transitionOut metadata and the
+      // DramaticStructure transition rule blocks the episode.
+      this.repairSceneTransitions(blueprint);
       adequacy = this.assessBlueprintBranchAdequacy(blueprint);
     }
     return adequacy;

@@ -2862,6 +2862,13 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(verdict.validBranchCount).toBeGreaterThanOrEqual(1);
     const branch = blueprint.scenes.find((scene: any) => scene.choicePoint?.branches && new Set(scene.leadsTo).size >= 2);
     expect(branch).toBeDefined();
+    // The late-synthesized edges must carry transition metadata — the normal
+    // pipeline's repairSceneTransitions has already run by gate time.
+    for (const toSceneId of branch.leadsTo) {
+      const transition = (branch.transitionOut || []).find((t: any) => t.toSceneId === toSceneId);
+      expect(transition?.connector).toMatch(/^(therefore|but)$/);
+      expect(transition?.causalLink).toBeTruthy();
+    }
   });
 
   it('exempts linear-bottleneck episodes (never fires)', () => {

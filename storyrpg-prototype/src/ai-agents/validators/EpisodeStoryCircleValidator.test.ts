@@ -57,6 +57,33 @@ describe('EpisodeStoryCircleValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
+  it('accepts a beat whose prose merely contains a placeholder word (live FP regression)', () => {
+    const result = validator.validate({
+      episodeNumber: 3,
+      episodeCircle: {
+        ...circle,
+        need: 'Kylie needs to decide whether an unknown payout is worth the crew’s trust.',
+      },
+      storyCircleRole: [{ beat: 'find', roleKind: 'primary' }],
+      scenes: scenes(contracts()),
+    });
+
+    expect(result.issues.some((issue) => issue.location === 'episodeCircle.need')).toBe(false);
+  });
+
+  it('still rejects whole-value and same-as placeholder beats', () => {
+    for (const bad of ['TBD', 'unknown.', 'same as episode 2']) {
+      const result = validator.validate({
+        episodeNumber: 3,
+        episodeCircle: { ...circle, need: bad },
+        storyCircleRole: [{ beat: 'find', roleKind: 'primary' }],
+        scenes: scenes(contracts()),
+      });
+
+      expect(result.issues.some((issue) => issue.location === 'episodeCircle.need')).toBe(true);
+    }
+  });
+
   it('fails missing episodeCircle.take', () => {
     const result = validator.validate({
       episodeNumber: 3,

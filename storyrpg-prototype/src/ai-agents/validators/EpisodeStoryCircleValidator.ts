@@ -20,7 +20,12 @@ export interface EpisodeStoryCircleInput {
   scenes: EpisodeStoryCircleScene[];
 }
 
-const PLACEHOLDER_RE = /\b(?:tbd|todo|placeholder|unknown|not specified|same as|n\/a)\b/i;
+// Whole-value placeholders only — prose that merely contains "unknown"
+// ("an unknown payout") is a real beat, not a placeholder (live-run FP class,
+// see DramaticStructureValidator). "same as …" stays an embedded check: a
+// beat that defers to another beat is a placeholder wherever it appears.
+const WHOLE_PLACEHOLDER_RE = /^\s*(?:tbd|todo|placeholder|unknown|not specified|n\/a)\s*[.!?…-]*\s*$/i;
+const EMBEDDED_PLACEHOLDER_RE = /\bsame\s+as\b/i;
 const WORD_RE = /[a-z0-9']+/gi;
 const PAIRS: Array<[StoryCircleBeat, StoryCircleBeat, string]> = [
   ['you', 'find', '`find` should contrast the starting pressure in `you` with the wanted thing or answer obtained.'],
@@ -29,8 +34,15 @@ const PAIRS: Array<[StoryCircleBeat, StoryCircleBeat, string]> = [
   ['search', 'change', '`change` should prove the transformation produced by adaptation under pressure in `search`.'],
 ];
 
+export function hasConcreteStoryCircleBeatText(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim().length >= 8
+    && !WHOLE_PLACEHOLDER_RE.test(value)
+    && !EMBEDDED_PLACEHOLDER_RE.test(value);
+}
+
 function hasConcreteText(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length >= 8 && !PLACEHOLDER_RE.test(value);
+  return hasConcreteStoryCircleBeatText(value);
 }
 
 function normalizedText(value: string): string {

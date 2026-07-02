@@ -75,7 +75,7 @@ import { DramaticStructureValidator } from '../validators/DramaticStructureValid
 import { ThemePressureValidator } from '../validators/ThemePressureValidator';
 import { SceneTurnContractValidator } from '../validators/SceneTurnContractValidator';
 import { EpisodePressureArchitectureValidator } from '../validators/EpisodePressureArchitectureValidator';
-import { EpisodeStoryCircleValidator } from '../validators/EpisodeStoryCircleValidator';
+import { EpisodeStoryCircleValidator, hasConcreteStoryCircleBeatText } from '../validators/EpisodeStoryCircleValidator';
 import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
 import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
 import {
@@ -5160,7 +5160,10 @@ If you don't include enough choice points, the story will be rejected as non-int
     const normalized = { ...fallback };
     for (const beat of STORY_CIRCLE_BEATS) {
       const value = episodeCircle?.[beat];
-      if (typeof value === 'string' && value.trim().length > 0) {
+      // Hold the model's beat to the same bar the StoryCircleGate applies —
+      // a too-short/placeholder beat must keep the concrete fallback instead
+      // of overwriting it and aborting the episode at the gate (observed live).
+      if (hasConcreteStoryCircleBeatText(value)) {
         normalized[beat] = value.trim();
       }
     }

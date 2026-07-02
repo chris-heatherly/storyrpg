@@ -116,11 +116,10 @@ import {
   EnvironmentalElement, NPCEncounterState, EscalationTrigger, InformationVisibility, 
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
-import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './events';
+import { PipelineEvent, PipelineEventHandler } from './events';
 import {
   type GenerationPlan,
   applyEventToPlan,
-  computeOverallProgress,
   initPlan,
   setSceneBeats,
   markEpisode,
@@ -401,6 +400,7 @@ import {
   resolveWorldLocationForScene as resolveWorldLocationForSceneImpl,
 } from './sceneMediaSignals';
 import { ensureChoiceBridgeBeats as ensureChoiceBridgeBeatsImpl } from './choiceBridgeBeats';
+import { ProgressTelemetryTracker } from './progressTelemetry';
 import {
   analyzeBeatCharacters as analyzeBeatCharactersImpl,
   extractCanonicalAppearance as extractCanonicalAppearanceImpl,
@@ -816,7 +816,10 @@ export class FullStoryPipeline {
   };
   private telemetry: PipelineTelemetry = new PipelineTelemetry();
   private pipelineStartedAtMs: number = 0;
-  private lastTelemetryOverallProgress: number = 0;
+  private progressTelemetryTracker = new ProgressTelemetryTracker({
+    pipelineStartedAtMs: () => this.pipelineStartedAtMs,
+    generationPlan: () => this.generationPlan,
+  });
   /**
    * Structure-driven progress plan (episodes -> scenes -> beats). Built up as
    * the pipeline discovers structure and used to drive the headline % and the
@@ -1550,42 +1553,6 @@ export class FullStoryPipeline {
     }
   }
 
-  private normalizeTelemetryPhase(phase?: string): string {
-    if (!phase) return 'initialization';
-    if (phase === 'multi_episode_init') return 'initialization';
-    if (phase === 'episode_parallelism') return 'content';
-    if (/^episode_\d+$/.test(phase)) return 'content';
-    if (phase.startsWith('qa_ep_')) return 'qa';
-    if (phase.startsWith('images_ep_')) return 'images';
-    if (phase === 'image_manifest') return 'images';
-    return phase;
-  }
-
-  private getTelemetryPhaseBounds(phase: string): [number, number] {
-    const bounds: Record<string, [number, number]> = {
-      initialization: [0, 4],
-      source_analysis: [4, 10],
-      foundation: [10, 24],
-      world: [10, 22],
-      characters: [22, 34],
-      npc_validation: [34, 38],
-      architecture: [38, 48],
-      branch_analysis: [48, 54],
-      content: [54, 72],
-      quick_validation: [72, 76],
-      qa: [76, 82],
-      master_images: [82, 88],
-      images: [88, 93],
-      encounter_images: [93, 95],
-      video_generation: [95, 97],
-      assembly: [97, 98],
-      saving: [98, 99],
-      audio_generation: [99, 100],
-      complete: [100, 100],
-    };
-    return bounds[phase] || [this.lastTelemetryOverallProgress, Math.min(100, this.lastTelemetryOverallProgress + 1)];
-  }
-
   private emitPhaseProgress(
     phase: string,
     currentItem: number,
@@ -1609,79 +1576,6 @@ export class FullStoryPipeline {
     });
   }
 
-  private buildProgressTelemetry(event: Omit<PipelineEvent, 'timestamp'>): PipelineProgressTelemetry | undefined {
-    const phase = this.normalizeTelemetryPhase(event.phase);
-    const [phaseStart, phaseEnd] = this.getTelemetryPhaseBounds(phase);
-    const raw = event.data as any;
-    const elapsedSeconds = this.pipelineStartedAtMs > 0
-      ? Math.max(0, Math.round((Date.now() - this.pipelineStartedAtMs) / 1000))
-      : undefined;
-
-    let currentItem: number | undefined;
-    let totalItems: number | undefined;
-    let subphaseLabel: string | undefined;
-    let phaseProgress: number | undefined;
-
-    if (raw && typeof raw === 'object') {
-      if (typeof raw.imageIndex === 'number' && typeof raw.totalImages === 'number' && raw.totalImages > 0) {
-        currentItem = raw.imageIndex;
-        totalItems = raw.totalImages;
-        subphaseLabel = raw.sceneId ? `images:${raw.sceneId}` : 'images';
-      } else if (typeof raw.currentItem === 'number' && typeof raw.totalItems === 'number' && raw.totalItems > 0) {
-        currentItem = raw.currentItem;
-        totalItems = raw.totalItems;
-        subphaseLabel = typeof raw.subphaseLabel === 'string' ? raw.subphaseLabel : undefined;
-      } else if (typeof raw.completed === 'number' && typeof raw.total === 'number' && raw.total > 0) {
-        currentItem = raw.completed;
-        totalItems = raw.total;
-        subphaseLabel = typeof raw.subphaseLabel === 'string' ? raw.subphaseLabel : undefined;
-      }
-    }
-
-    if (event.type === 'phase_start') {
-      phaseProgress = 0;
-    } else if (event.type === 'phase_complete') {
-      phaseProgress = 100;
-    } else if (currentItem !== undefined && totalItems !== undefined && totalItems > 0) {
-      phaseProgress = Math.max(0, Math.min(100, Math.round((currentItem / totalItems) * 100)));
-    }
-
-    let overallProgress = this.lastTelemetryOverallProgress;
-    if (this.generationPlan) {
-      // Fully unit-weighted: once a structure plan exists it is the authoritative
-      // source for the headline %. The legacy phase ramp below is only used for
-      // analysis-only runs (no plan) and very early single-episode emits.
-      overallProgress = computeOverallProgress(this.generationPlan);
-    } else if (phaseProgress !== undefined) {
-      overallProgress = Math.round(phaseStart + ((phaseEnd - phaseStart) * (phaseProgress / 100)));
-    } else if (event.type === 'phase_start') {
-      overallProgress = phaseStart;
-    } else if (event.type === 'phase_complete') {
-      overallProgress = phaseEnd;
-    } else {
-      overallProgress = Math.max(overallProgress, phaseStart);
-    }
-
-    overallProgress = Math.max(this.lastTelemetryOverallProgress, Math.min(100, overallProgress));
-    this.lastTelemetryOverallProgress = overallProgress;
-
-    let etaSeconds: number | null | undefined = undefined;
-    if (elapsedSeconds !== undefined && overallProgress > 1 && overallProgress < 100) {
-      const rate = overallProgress / Math.max(1, elapsedSeconds);
-      etaSeconds = rate > 0 ? Math.round((100 - overallProgress) / rate) : null;
-    }
-
-    return {
-      overallProgress,
-      phaseProgress,
-      currentItem,
-      totalItems,
-      subphaseLabel,
-      etaSeconds,
-      elapsedSeconds,
-    };
-  }
-
   /**
    * Emit a snapshot of the current structure plan so the generator UI can render
    * the episode -> scene -> beat tree. Rides the existing `event.data` channel;
@@ -1699,7 +1593,7 @@ export class FullStoryPipeline {
 
   private emit(event: Omit<PipelineEvent, 'timestamp'>): void {
     if (this.generationPlan) applyEventToPlan(this.generationPlan, event);
-    const telemetry = event.telemetry || this.buildProgressTelemetry(event);
+    const telemetry = event.telemetry || this.progressTelemetryTracker.buildProgressTelemetry(event);
     const fullEvent: PipelineEvent = { ...event, telemetry, timestamp: new Date() };
     this.events.push(fullEvent);
     if (this.eventHandler) {
@@ -2968,7 +2862,7 @@ export class FullStoryPipeline {
     this.checkpoints = [];
     this.telemetry = new PipelineTelemetry();
     this.pipelineStartedAtMs = Date.now();
-    this.lastTelemetryOverallProgress = 0;
+    this.progressTelemetryTracker.reset();
     this.completedPhases = new Set<string>();
     this.invalidatedResumeEpisodes = new Set<number>();
     this.dependencySchedulerStats = {
@@ -5299,7 +5193,7 @@ export class FullStoryPipeline {
     this.checkpoints = [];
     this.telemetry = new PipelineTelemetry();
     this.pipelineStartedAtMs = Date.now();
-    this.lastTelemetryOverallProgress = 0;
+    this.progressTelemetryTracker.reset();
     this.completedPhases = new Set<string>();
     this.dependencySchedulerStats = {
       hasCycle: false,

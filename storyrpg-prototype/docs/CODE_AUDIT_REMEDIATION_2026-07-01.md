@@ -737,6 +737,25 @@ Order matters: 5.1/5.2 corrupt state on every playthrough — fix first.
 
 ## Phase 7 — The live `=1` run + promotion drain + runGraph flip
 
+**STATUS 2026-07-02: STARTED — infrastructure clean end-to-end, content
+contract now the frontier.** 14 watched 1-episode runs (heist brief,
+STORYRPG_RUN_GRAPH=1, smoke gates ON, STORYRPG_STORY_ONLY=1,
+GATE_SCENE_CONSTRUCTION_PREFLIGHT=0). Nine pipeline blockers found live and
+fixed deterministically with tests (commits 7a0c2d8a..9c783b8f: treatment
+atomizer crash, third-person planning register, residue type/description
+omissions, dramaticStructure defaulting, substring placeholder-regex FP —
+five sibling validators still carry it, see task chip — story-circle
+normalize, story-only CLI mode, density-gate kill-switch bypass, SceneWriter
+soft response budget). Final attempt ran ALL phases (5 scenes, 3 encounters,
+QA, assembly) and was correctly blocked by the FINAL STORY CONTRACT on
+authored-content defects: unreachable relationship condition, two
+forward-referenced encounter flags, consequence magnitude > evidence, one QA
+continuity error — the known G17 QA state_conflict + encounter
+flag-chronology classes; repair router deferred with diagnostic_stop.
+Diagnostics: worktree generated-stories/the-velvet-job_2026-07-02T09-20-08/.
+Next: triage those content classes, then a completing run feeds
+`smoke:check` and the promotion drain below.
+
 The single biggest unlock; everything here is already built and waiting.
 
 1. Precondition: Phases 1 & 4 landed (so the run exercises fixed ownership +

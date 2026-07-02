@@ -107,6 +107,11 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
           />
         </Section>
 
+        {/* Dev builds only: developer mode exposes beat ids, consequence-
+            skipping navigation, and raw image generation prompts — none of
+            which belong in the shipping public reader (fiction-first +
+            internal-surface rule). */}
+        {__DEV__ ? (
         <Section
           icon={<Code size={18} color={developerMode ? TERMINAL.colors.cyan : TERMINAL.colors.muted} />}
           title="DEVELOPER MODE"
@@ -129,6 +134,7 @@ export const ReaderSettingsScreen: React.FC<ReaderSettingsScreenProps> = ({
             </TouchableOpacity>
           ) : null}
         </Section>
+        ) : null}
 
         <Section
           icon={<RefreshCw size={18} color={TERMINAL.colors.cyan} />}

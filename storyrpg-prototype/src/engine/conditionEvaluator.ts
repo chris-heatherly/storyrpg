@@ -91,18 +91,22 @@ export function evaluateCondition(
   }
 
   switch (condition.type) {
+    // and/or tolerate a missing conditions array (generator has shipped bare
+    // {type:'and'}): vacuous truth for and, vacuous false for or.
     case 'and':
-      return condition.conditions.every((c) => evaluateCondition(c, player));
+      return (condition.conditions ?? []).every((c) => evaluateCondition(c, player));
 
     case 'or':
-      return condition.conditions.some((c) => evaluateCondition(c, player));
+      return (condition.conditions ?? []).some((c) => evaluateCondition(c, player));
 
     case 'not':
       return !evaluateCondition(condition.condition, player);
 
     case 'attribute':
+      // ?? 0 like skill/score: a save predating an attribute rename must not
+      // compare undefined (undefined > 40 is false, undefined != x is true).
       return compareValues(
-        player.attributes[condition.attribute],
+        player.attributes[condition.attribute] ?? 0,
         condition.operator,
         condition.value
       );
@@ -128,10 +132,20 @@ export function evaluateCondition(
       return state.rung === condition.rung;
     }
 
-    case 'flag':
-      const flagName = condition.flag || Object.keys(condition).find(k => k !== 'type');
-      const expectedValue = condition.value !== undefined ? condition.value : (condition as any)[flagName!];
+    case 'flag': {
+      // Tolerant shape: the generator ships flag conditions with `value`
+      // omitted (and sometimes the flag name as a bare key).
+      const flagCondition = condition as unknown as { flag?: string; value?: boolean } & Record<string, unknown>;
+      const flagName = flagCondition.flag || Object.keys(flagCondition).find(k => k !== 'type');
+      // {type:'flag', flag:'x'} with value omitted means "x is set": the old
+      // fallback read condition['x'] (undefined), making the comparison
+      // `boolean === undefined` — permanently false, so choices gated this way
+      // could never unlock (and not-wrapped ones were permanently true).
+      const expectedValue = flagCondition.value !== undefined
+        ? flagCondition.value
+        : (flagCondition.flag !== undefined ? true : (flagCondition[flagName!] as boolean | undefined) ?? true);
       return (player.flags[flagName!] ?? false) === expectedValue;
+    }
 
     case 'score':
       return compareValues(

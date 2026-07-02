@@ -132,6 +132,31 @@ describe('evaluateCondition — flag type', () => {
     const cond = { flag: 'quest_started', value: true } as any;
     expect(evaluateCondition(cond, createPlayer())).toBe(true);
   });
+
+  it('treats a missing value as "flag is set" (audit H16: was permanently false)', () => {
+    // {type:'flag', flag:'x'} with value omitted — common LLM output. The old
+    // fallback compared boolean === undefined, permanently locking the choice.
+    const set = { type: 'flag', flag: 'quest_started' } as any;
+    expect(evaluateCondition(set, createPlayer())).toBe(true);
+    const unset = { type: 'flag', flag: 'never_set_flag' } as any;
+    expect(evaluateCondition(unset, createPlayer())).toBe(false);
+    // And not-wrapped versions are no longer permanently true.
+    expect(evaluateCondition({ type: 'not', condition: set } as any, createPlayer())).toBe(false);
+  });
+});
+
+describe('evaluateCondition — malformed-story tolerance (audit 5.4)', () => {
+  it('tolerates and/or with a missing conditions array', () => {
+    expect(evaluateCondition({ type: 'and' } as any, createPlayer())).toBe(true); // vacuous
+    expect(evaluateCondition({ type: 'or' } as any, createPlayer())).toBe(false);
+  });
+
+  it('treats a missing attribute as 0 instead of comparing undefined', () => {
+    const gt = { type: 'attribute', attribute: 'renamed_attribute', operator: '>', value: 40 } as any;
+    expect(evaluateCondition(gt, createPlayer())).toBe(false);
+    const ne = { type: 'attribute', attribute: 'renamed_attribute', operator: '!=', value: 0 } as any;
+    expect(evaluateCondition(ne, createPlayer())).toBe(false); // 0 != 0 → false (was true via undefined)
+  });
 });
 
 // -----------------------------------------------------------------------

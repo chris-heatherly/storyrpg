@@ -223,8 +223,11 @@ export function processBeat(
       if (typeof anyBeat.content === 'string') {
         rawText = anyBeat.content;
       } else if (typeof anyBeat.content === 'object') {
-        // Strategy 2: Check "content.narrative" or "content.text"
-        rawText = anyBeat.content.narrative || anyBeat.content.text || anyBeat.content.dialogue?.[0]?.text || JSON.stringify(anyBeat.content);
+        // Strategy 2: Check "content.narrative" or "content.text". NO
+        // JSON.stringify last resort — serialized system JSON in player-facing
+        // prose is a fiction-first violation; an empty rawText falls through to
+        // readerSafeBeatFallback below, which renders authored-safe prose.
+        rawText = anyBeat.content.narrative || anyBeat.content.text || anyBeat.content.dialogue?.[0]?.text || '';
       }
     } 
     // Strategy 3: Check "narrative" field

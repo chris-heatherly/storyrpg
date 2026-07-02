@@ -43,23 +43,30 @@ export const NarrativeText: React.FC<NarrativeTextProps> = ({
       useNativeDriver: Platform.OS !== 'web',
     }).start();
 
-    // Typewriter effect
-    let currentIndex = 0;
+    // Typewriter effect — progress is ELAPSED-TIME based (10ms/char), not
+    // one-char-per-tick: browsers clamp background/throttled timers to 1s+
+    // ticks, which used to starve the animation to a crawl (or a freeze once
+    // an unrelated effect-loop stopped restarting it). With time-based
+    // progress a starved tick simply catches up in one burst.
+    let lastTarget = 0;
+    const startedAt = Date.now();
     const interval = setInterval(() => {
-      if (currentIndex < text.length) {
-        setDisplayedText(text.slice(0, currentIndex + 1));
-        currentIndex++;
-      } else {
+      const target = Math.min(text.length, Math.floor((Date.now() - startedAt) / 10) + 1);
+      if (target > lastTarget) {
+        lastTarget = target;
+        setDisplayedText(text.slice(0, target));
+      }
+      if (target >= text.length) {
         clearInterval(interval);
         onAnimationComplete?.();
       }
-    }, 10); 
+    }, 10);
 
     return () => {
       clearInterval(interval);
       // Ensure completion callback is called even if interrupted
       // This prevents getting stuck in an 'isAnimating' state
-      if (currentIndex < text.length) {
+      if (lastTarget < text.length) {
         onAnimationComplete?.();
       }
     };

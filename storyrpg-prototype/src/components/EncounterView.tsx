@@ -427,7 +427,9 @@ type EncounterScreenState =
 function resolveOutcomeTier(
   weights: { success: number; complicated: number; failure: number },
 ): 'success' | 'complicated' | 'failure' {
-  if (typeof window !== 'undefined') {
+  // Dev/E2E builds only: a player could otherwise set this from the console to
+  // force outcomes in the shipping reader.
+  if (__DEV__ && typeof window !== 'undefined') {
     const forced = (window as any).__QA_FORCE_TIER as string | undefined;
     if (forced === 'success' || forced === 'complicated' || forced === 'failure') {
       return forced;
@@ -1403,7 +1405,11 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   };
 
   const handleEncounterEnd = (outcome: EncounterOutcome) => {
-    const outcomeData = encounter.outcomes[outcome];
+    // Optional-chained like every other outcomes access in this file — the
+    // generator has shipped encounters with missing/empty outcomes (G10 class),
+    // and a throw here at encounter end loses the whole session to the error
+    // boundary.
+    const outcomeData = encounter.outcomes?.[outcome];
     const endTier: EncounterOutcomeTier =
       screenState.type === 'terminal' ? screenState.tier :
       screenState.type === 'beat_outcome' ? screenState.outcome :

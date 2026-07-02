@@ -240,7 +240,59 @@ revision rounds). `npm run validate` exits 0 (4 tsconfigs, lint 0 errors,
 - ⏭️ **4.7 (M5)** — typed phase-deps unwind (11 casts) deferred with 4.6 (same
   decomposition work).
 
-Phases 5, 6, 8 not started.
+**2026-07-01 (later) — Phase 5 reader sprint (major items; tested + browser-verified):**
+- ✅ **5.1 (H13)** — StoryReader beat effect gets a same-beat-key early return:
+  onShow consequences, 'beat viewed' analytics, and processBeat/animation now
+  run ONCE per beat (the effect depends on player.visitLog, which its own
+  visitBeat call mutates — it was re-firing for its own update, applying onShow
+  2-3x per beat).
+- ✅ **5.2 (H14)** — applyConsequences: preview-then-commit via a FUNCTIONAL
+  updater (recomputes iff another updater interleaved) — no longer overwrites
+  loadScene's concurrent updates or resurrects fired butterflies. loadScene's
+  delayed-consequence pass rewritten PURE (no in-place dc mutation, no closure
+  feedback array) with the same preview/commit pattern.
+- ✅ **5.3 (H15/H19)** — navigation persist now WRITES story/episode/scene ids
+  (they were read at hydration but never written); hydration exposes
+  `savedResumePoint` on the story context for the app layer to implement
+  cross-restart resume. Player saves stamped with `saveVersion` (v1) and
+  deserialization defaults EVERY map/collection (v0 saves with missing
+  attributes crashed the evaluator / NaN-poisoned consequences). New
+  playerStatePersistence.test.ts.
+- ✅ **5.4 (H16/H17/H18 + guards)** — flag condition without `value` means "is
+  set" (was permanently false); and/or tolerate missing conditions arrays;
+  attribute compare defaults 0; dangling choice nextSceneId falls through to
+  beat/next-scene instead of soft-locking; `encounter.outcomes?.[...]` guard at
+  encounter end; `loadScene` tolerates beats-less scenes; episode-delayed
+  butterflies FIRE now (completeEpisode advances episodesElapsed and converts
+  due ones to immediately-due scene delays). Regression tests in
+  conditionEvaluator.test.ts.
+- ✅ **5.5 (H21/M18)** — `JSON.stringify(beat.content)` prose fallback removed
+  (falls through to readerSafeBeatFallback); `{{npc.X.trust}}` renders a
+  qualitative word, `{{score.X}}`/`{{flag.X}}` stripped with warnings
+  (fiction-first); NPC ids regex-escaped in templates; developer-mode section +
+  `window.__QA_FORCE_TIER` gated behind `__DEV__` (no e2e test used the hatch;
+  Playwright targets the dev server).
+- ✅ **5.6 (H20 + M19 tail)** — completedEncounters/encounterStartedRef reset on
+  episode/story change (encounters no longer silently skipped on replay);
+  loadEpisode clears stale scene/beat.
+- ✅ **NarrativeText hardening** — typewriter progress is elapsed-time based:
+  browser-throttled ticks catch up in a burst instead of crawling/freezing.
+- ⏭️ Deferred: 5.3 app-layer resume UX (HomeScreen "continue" consuming
+  savedResumePoint), 5.4 hostile-story-JSON corpus, per-episode snapshot
+  rollback on replay, stat-check strand fix (M19), initializeStory defaults.
+
+Verification: 192 engine/store/component tests green (incl. new persistence +
+condition-tolerance tests); typecheck:app + reader:typecheck clean; reader
+boundary clean. BROWSER-VERIFIED against the live Bite Me story: library →
+episode → 10+ beats → choice point with 3 choices, full prose, no console
+errors. The typewriter/transition stalls observed in the harness reproduce
+IDENTICALLY on stashed baseline code (throttled hidden-tab rAF/timers — an
+environment artifact, not a regression); the time-based typewriter measurably
+improves throttled typing (209 chars/4s vs ~4/s baseline). Also provisioned
+SESSION_SECRET in local .env (required by the Phase 2 fail-hard with
+PROXY_REQUIRE_AUTH=1).
+
+Phases 6 and 8 not started.
 
 ## Sequencing overview
 

@@ -394,7 +394,13 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     episodeRelationshipBaselineRef.current = cloneRelationshipMap(player.relationships);
     setEpisodeChoiceRecap([]);
     setEpisodeRecap(null);
-  }, [currentEpisode?.id]);
+    // Reset per-episode encounter tracking: these persisted for the component's
+    // lifetime keyed only by encounter id, so REPLAYING an episode (or
+    // switching stories) treated its encounters as already completed and the
+    // no-renderable-content guard silently skipped them.
+    setCompletedEncounters(new Set());
+    encounterStartedRef.current = new Set();
+  }, [currentEpisode?.id, currentStory?.id]);
 
   const {
     showPromptOverlay,
@@ -839,6 +845,14 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       setIsChoiceResolutionInFlight(false);
       setPendingChoiceId(null);
       proceedAfterStatCheckRef.current = null;
+    } else {
+      // Same beat re-run: this effect depends on player.visitLog, which
+      // visitBeat (called below) mutates — so without this guard the effect
+      // re-fired for its own state update and applied beat.onShow consequences
+      // 2-3x per beat (double score/flag/relationship deltas), double-fired
+      // 'beat viewed' analytics, and restarted the typewriter animation.
+      // Everything below is once-per-beat work.
+      return;
     }
 
     // Cycle guard: remember which beats we've shown since entering this scene.
@@ -1274,10 +1288,25 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           return;
         }
       }
+      const targetScene = currentEpisode?.scenes.find(s => s.id === nextSceneId);
+      // Dangling target (typo'd / cross-episode id that isn't a terminal
+      // sentinel): loadScene would silently no-op with choices already hidden
+      // and Continue suppressed — a soft-lock. Fall through to the beat/next-
+      // scene path instead so the story keeps moving.
+      if (currentEpisode && !targetScene) {
+        console.warn(`[StoryReader] Choice targets unknown scene "${nextSceneId}" — advancing on the current path instead.`);
+        if (nextBeatId && currentScene && findBeat(currentScene, nextBeatId)) {
+          transitionToBeatSafely(nextBeatId, 'crossfade');
+        } else if (processedBeat?.nextBeatId) {
+          transitionToBeatSafely(processedBeat.nextBeatId, 'crossfade');
+        } else {
+          advanceToNextScene();
+        }
+        return;
+      }
       if (currentScene) {
         recordBranchChoice(currentScene.id, nextSceneId, choiceId);
       }
-      const targetScene = currentEpisode?.scenes.find(s => s.id === nextSceneId);
       const isEncounterEntry = !!targetScene?.encounter;
       transitionTo(
         () => loadScene(nextSceneId, undefined, nextBeatId),

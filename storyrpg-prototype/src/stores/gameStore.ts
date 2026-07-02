@@ -145,11 +145,24 @@ interface GamePlayerStateValue {
   player: PlayerState;
 }
 
+export interface SavedResumePoint {
+  storyId: string;
+  episodeId?: string;
+  sceneId?: string;
+  beatId?: string;
+}
+
 interface GameStoryStateValue {
   currentStory: Story | null;
   currentEpisode: Episode | null;
   currentScene: Scene | null;
   currentBeatId: string | null;
+  /**
+   * Mid-episode position persisted by a previous session (null when none).
+   * Hydrated from storage on mount; the app layer re-loads the story by id and
+   * jumps back via loadEpisode/loadScene to implement cross-restart resume.
+   */
+  savedResumePoint: SavedResumePoint | null;
 }
 
 interface GameProgressStateValue {
@@ -225,6 +238,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [currentEpisode, setCurrentEpisode] = useState<Episode | null>(null);
   const [currentScene, setCurrentScene] = useState<Scene | null>(null);
   const [currentBeatId, setCurrentBeatId] = useState<string | null>(null);
+  const [savedResumePoint, setSavedResumePoint] = useState<SavedResumePoint | null>(null);
   const [sceneHistory, setSceneHistory] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<BranchPathEntry[]>([]);
   const [currentBranchTone, setCurrentBranchTone] = useState<'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption' | null>(null);
@@ -278,7 +292,17 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         
         // Load IDs (note: we can't load actual Story/Episode/Scene objects from storage,
-        // only the IDs - the actual data must be re-loaded from the story file)
+        // only the IDs - the actual data must be re-loaded from the story file).
+        // Expose the full resume point so the app layer (HomeScreen "continue")
+        // can re-load the story by id and jump back to the saved scene/beat.
+        if (storyId[1]) {
+          setSavedResumePoint({
+            storyId: storyId[1],
+            episodeId: episodeId[1] || undefined,
+            sceneId: sceneId[1] || undefined,
+            beatId: beatId[1] || undefined,
+          });
+        }
         if (beatId[1]) {
           setCurrentBeatId(beatId[1]);
         }
@@ -358,6 +382,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const persistNavigationState = async () => {
       try {
         await AsyncStorage.multiSet([
+          // Story/episode/scene ids were READ by hydration but never written
+          // (refactor residue) — so "SAVE & EXIT" could not actually resume
+          // across an app restart.
+          [STORAGE_KEYS.CURRENT_STORY_ID, currentStory?.id || ''],
+          [STORAGE_KEYS.CURRENT_EPISODE_ID, currentEpisode?.id || ''],
+          [STORAGE_KEYS.CURRENT_SCENE_ID, currentScene?.id || ''],
           [STORAGE_KEYS.CURRENT_BEAT_ID, currentBeatId || ''],
           [STORAGE_KEYS.SCENE_HISTORY, JSON.stringify(sceneHistory)],
           [STORAGE_KEYS.BRANCH_HISTORY, JSON.stringify(branchHistory)],
@@ -368,9 +398,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error('[GameStore] Failed to persist navigation state (progress may be lost):', e);
       }
     };
-    
+
     persistNavigationState();
-  }, [currentBeatId, sceneHistory, branchHistory, currentBranchTone]);
+  }, [currentStory?.id, currentEpisode?.id, currentScene?.id, currentBeatId, sceneHistory, branchHistory, currentBranchTone]);
   
   // Persist encounter state changes
   useEffect(() => {
@@ -502,6 +532,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!episode) return;
 
     setCurrentEpisode(episode);
+    // Clear the previous episode's scene/beat so an episode without a
+    // startingSceneId can't open on the STALE scene (navigation would then
+    // resolve scene ids against the wrong episode).
+    setCurrentScene(null);
+    setCurrentBeatId('');
     setPlayer(prev => ({ ...prev, currentEpisodeId: episodeId }));
   }, [currentStory]);
 
@@ -512,8 +547,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const scene = storyIndexesRef.current.scenesByEpisodeId.get(episode.id)?.get(sceneId);
     if (!scene) return;
 
-    // Debug: Check if beats have choices (skip warning for encounter scenes)
-    const beatsWithChoices = scene.beats.filter(b => b.choices && b.choices.length > 0);
+    // Debug: Check if beats have choices (skip warning for encounter scenes).
+    // Guarded: encounter-only scenes can ship without a beats array at all.
+    const beatsWithChoices = (scene.beats ?? []).filter(b => b.choices && b.choices.length > 0);
     if (beatsWithChoices.length === 0 && !scene.encounter) {
       console.warn(`[GameStore] WARNING: Scene "${sceneId}" has NO beats with choices and no encounter!`);
     }
@@ -529,10 +565,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setCurrentScene(scene);
     setCurrentBeatId(resolvedStartingBeatId);
 
-    // Process pending delayed consequences on scene transition
-    const firedButterflies: { description: string; consequence: Consequence }[] = [];
-    setPlayer(prev => {
+    // Process pending delayed consequences on scene transition. PURE pass:
+    // the old code mutated the shared DelayedConsequence objects in place
+    // (dc.scenesElapsed++, dc.fired = true) inside the updater, so StrictMode
+    // double-invocation advanced counters twice (butterflies fired early), and
+    // it collected feedback via a closure array that relied on React invoking
+    // the updater eagerly.
+    const processDelayedConsequences = (prev: PlayerState): {
+      player: PlayerState;
+      fired: { description: string; consequence: Consequence }[];
+    } => {
       const updatedPlayer = { ...prev, currentSceneId: sceneId };
+      const fired: { description: string; consequence: Consequence }[] = [];
       const pending = updatedPlayer.pendingConsequences ?? [];
       const stillPending: DelayedConsequence[] = [];
       const toFire: Consequence[] = [];
@@ -540,31 +584,30 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       for (const dc of pending) {
         if (dc.fired) continue;
 
-        dc.scenesElapsed = (dc.scenesElapsed ?? 0) + 1;
+        const advanced: DelayedConsequence = { ...dc, scenesElapsed: (dc.scenesElapsed ?? 0) + 1 };
 
         let shouldFire = false;
-        if (dc.delay?.type === 'scenes' && dc.scenesElapsed >= dc.delay.count) {
+        if (advanced.delay?.type === 'scenes' && (advanced.scenesElapsed ?? 0) >= advanced.delay.count) {
           shouldFire = true;
         }
 
-        if (dc.triggerCondition && evaluateCondition(dc.triggerCondition, updatedPlayer)) {
+        if (advanced.triggerCondition && evaluateCondition(advanced.triggerCondition, updatedPlayer)) {
           shouldFire = true;
         }
 
         if (shouldFire) {
-          toFire.push(dc.consequence);
-          firedButterflies.push({ description: dc.description, consequence: dc.consequence });
-          dc.fired = true;
+          toFire.push(advanced.consequence);
+          fired.push({ description: advanced.description, consequence: advanced.consequence });
           console.log(
-            `[GameStore] Delayed consequence fired: "${dc.description}" ` +
-            `(from scene ${dc.sourceSceneId}, ${dc.scenesElapsed} scenes ago)`
+            `[GameStore] Delayed consequence fired: "${advanced.description}" ` +
+            `(from scene ${advanced.sourceSceneId}, ${advanced.scenesElapsed} scenes ago)`
           );
+        } else {
+          stillPending.push(advanced);
         }
-
-        stillPending.push(dc);
       }
 
-      updatedPlayer.pendingConsequences = stillPending.filter(dc => !dc.fired);
+      updatedPlayer.pendingConsequences = stillPending;
 
       // Apply fired consequences
       if (toFire.length > 0) {
@@ -626,11 +669,27 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         );
       }
 
-      return updatedPlayer;
+      return { player: updatedPlayer, fired };
+    };
+
+    // Preview from the freshest known state (for the butterfly feedback UI),
+    // then commit through a functional updater — recomputing only if another
+    // updater interleaved. Mirrors applyConsequences.
+    const basePlayer = playerRef.current;
+    const preview = processDelayedConsequences(basePlayer);
+    playerRef.current = preview.player;
+    setPlayer(prev => {
+      if (prev === basePlayer) {
+        playerRef.current = preview.player;
+        return preview.player;
+      }
+      const recomputed = processDelayedConsequences(prev);
+      playerRef.current = recomputed.player;
+      return recomputed.player;
     });
 
-    if (firedButterflies.length > 0) {
-      setButterflyFeedback(firedButterflies);
+    if (preview.fired.length > 0) {
+      setButterflyFeedback(preview.fired);
     }
 
     setSceneHistory(prev => [...prev, sceneId]);
@@ -999,11 +1058,35 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return newPlayer;
     };
 
-    const nextPlayer = computeNextPlayer(playerRef.current);
-    playerRef.current = nextPlayer;
-    setPlayer(nextPlayer);
+    // Preview synchronously so callers get their AppliedConsequence feedback
+    // list on return, then commit through a FUNCTIONAL updater. The old code
+    // did setPlayer(computeNextPlayer(playerRef.current)) with a plain value —
+    // but playerRef is synced by a parent effect and can be one commit stale,
+    // so it silently overwrote concurrent functional updates (loadScene's
+    // currentSceneId/scenesElapsed/delayed-consequence removal), resurrecting
+    // already-fired butterflies.
+    const basePlayer = playerRef.current;
+    const previewPlayer = computeNextPlayer(basePlayer);
+    // Freeze the caller's feedback before any recompute can double-push.
+    const appliedResult = applied.slice();
+    // Keep the ref fresh for same-tick sequential applyConsequences calls.
+    playerRef.current = previewPlayer;
+    setPlayer(prev => {
+      if (prev === basePlayer) {
+        // No interleaved update — reuse the preview (no recompute).
+        playerRef.current = previewPlayer;
+        return previewPlayer;
+      }
+      // A concurrent updater (e.g. loadScene) ran between our preview and this
+      // commit: recompute against the authoritative prev so both changes
+      // survive. computeNextPlayer is pure aside from pushing feedback into
+      // `applied`, which was already sliced above — duplicates are discarded.
+      const next = computeNextPlayer(prev);
+      playerRef.current = next;
+      return next;
+    });
 
-    return applied;
+    return appliedResult;
   }, []);
 
   const queueDelayedConsequence = useCallback((delayed: DelayedConsequence) => {
@@ -1336,10 +1419,29 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         beatsVisited,
         scenesVisited,
       };
+      // Advance episode-delayed butterflies (delay.type === 'episodes'): this
+      // was the ONLY missing firing path — episodesElapsed was initialized at
+      // queue time and never incremented anywhere, so authored episode-delayed
+      // consequences could never fire. Fires here (episode boundary); the
+      // consequence itself is applied by loadScene's trigger pass via a
+      // synthetic always-true state: we mark it due by converting it to a
+      // scenes delay that the next scene transition fires immediately.
+      const pendingAdvanced = (prev.pendingConsequences ?? []).map((dc) => {
+        if (dc.fired || dc.delay?.type !== 'episodes') return dc;
+        const episodesElapsed = (dc.episodesElapsed ?? 0) + 1;
+        if (episodesElapsed >= dc.delay.count) {
+          // Due: rewrite as an immediately-due scenes delay so the existing
+          // scene-transition firing pass (processDelayedConsequences) applies
+          // the consequence with full feedback UI on the next scene load.
+          return { ...dc, episodesElapsed, delay: { type: 'scenes' as const, count: 0 }, scenesElapsed: 0 };
+        }
+        return { ...dc, episodesElapsed };
+      });
       return {
         ...prev,
         completedEpisodes: [...prev.completedEpisodes, episodeId],
         episodeCompletions: [...(prev.episodeCompletions ?? []), completion],
+        pendingConsequences: pendingAdvanced,
       };
     });
   }, [currentStory]);
@@ -1429,7 +1531,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     currentEpisode,
     currentScene,
     currentBeatId,
-  }), [currentStory, currentEpisode, currentScene, currentBeatId]);
+    savedResumePoint,
+  }), [currentStory, currentEpisode, currentScene, currentBeatId, savedResumePoint]);
 
   const progressValue = useMemo<GameProgressStateValue>(() => ({
     sceneHistory,

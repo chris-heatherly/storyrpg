@@ -128,6 +128,18 @@ function applyFilter(value: string, filterName: string): string {
 }
 
 /**
+ * Fiction-first rendering of a relationship dimension value (-100..100):
+ * a qualitative word instead of the raw magnitude.
+ */
+function describeRelationshipLevel(value: number): string {
+  if (value <= -50) return 'hostile';
+  if (value < 0) return 'strained';
+  if (value < 25) return 'uncertain';
+  if (value < 60) return 'steady';
+  return 'deep';
+}
+
+/**
  * Process a text string with template variables.
  * Supports filters via pipe syntax: {{player.they|capitalize}}
  */
@@ -192,11 +204,17 @@ export function processTemplate(
     }
   }
 
+  // Escape regex metacharacters in story-data-controlled ids: an NPC id with
+  // `(`/`+`/`?` used to throw SyntaxError inside the render effect → whole-
+  // reader error boundary.
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
   // Replace NPC references (with optional filter)
   if (story) {
-    for (const npc of story.npcs) {
+    for (const npc of story.npcs ?? []) {
+      const npcIdPattern = escapeRegExp(npc.id);
       // NPC name
-      const npcRegex = new RegExp(`\\{\\{npc\\.${npc.id}\\.name(?:\\|(\\w+))?\\}\\}`, 'gi');
+      const npcRegex = new RegExp(`\\{\\{npc\\.${npcIdPattern}\\.name(?:\\|(\\w+))?\\}\\}`, 'gi');
       processed = processed.replace(npcRegex, (_, filter) => {
         return filter ? applyFilter(npc.name, filter) : npc.name;
       });
@@ -204,9 +222,9 @@ export function processTemplate(
       // NPC pronouns (use their specified pronouns or default to they/them)
       const npcPronouns = npc.pronouns || 'he/him';
       const npcPronounSet = PRONOUNS[npcPronouns as keyof typeof PRONOUNS] || PRONOUNS['he/him'];
-      
+
       for (const [key, value] of Object.entries(npcPronounSet)) {
-        const pronounRegex = new RegExp(`\\{\\{npc\\.${npc.id}\\.${key}(?:\\|(\\w+))?\\}\\}`, 'gi');
+        const pronounRegex = new RegExp(`\\{\\{npc\\.${npcIdPattern}\\.${key}(?:\\|(\\w+))?\\}\\}`, 'gi');
         processed = processed.replace(pronounRegex, (match, filter) => {
           let result = value;
           if (match.charAt(2) === match.charAt(2).toUpperCase() && !filter) {
@@ -216,30 +234,36 @@ export function processTemplate(
         });
       }
 
-      // NPC relationship values
+      // NPC relationship values — FICTION-FIRST: render a qualitative word, not
+      // the raw number (magnitudes never reach player-facing prose).
       const rel = player.relationships[npc.id];
       if (rel) {
         for (const dim of ['trust', 'affection', 'respect', 'fear'] as const) {
-          const dimRegex = new RegExp(`\\{\\{npc\\.${npc.id}\\.${dim}\\}\\}`, 'gi');
-          processed = processed.replace(dimRegex, rel[dim].toString());
+          const dimRegex = new RegExp(`\\{\\{npc\\.${npcIdPattern}\\.${dim}\\}\\}`, 'gi');
+          processed = processed.replace(dimRegex, describeRelationshipLevel(rel[dim] ?? 0));
         }
       }
     }
   }
 
-  // Replace score values
+  // Score/flag tokens are dev-era debugging leftovers: rendering the raw number
+  // or "true"/"false" into prose violates fiction-first. Strip them (with a
+  // warning) rather than leak system state; handled HERE so the unresolved-token
+  // guard downstream doesn't substitute the character's name instead.
   const scoreRegex = /\{\{score\.(\w+)\}\}/gi;
   processed = processed.replace(scoreRegex, (_, scoreName) => {
-    return (player.scores[scoreName] ?? 0).toString();
+    console.warn(`[TemplateProcessor] Stripped fiction-unsafe score token {{score.${scoreName}}} from prose.`);
+    return '';
   });
 
-  // Replace flag values (as "true"/"false" for debugging)
   const flagRegex = /\{\{flag\.(\w+)\}\}/gi;
   processed = processed.replace(flagRegex, (_, flagName) => {
-    return (player.flags[flagName] ?? false).toString();
+    console.warn(`[TemplateProcessor] Stripped fiction-unsafe flag token {{flag.${flagName}}} from prose.`);
+    return '';
   });
 
-  // Replace inventory item counts
+  // Replace inventory item counts (small concrete quantities read as fiction:
+  // "three coins" — keep numeric).
   const itemRegex = /\{\{item\.(\w+)\.count\}\}/gi;
   processed = processed.replace(itemRegex, (_, itemId) => {
     const item = player.inventory.find((i) => i.itemId === itemId);

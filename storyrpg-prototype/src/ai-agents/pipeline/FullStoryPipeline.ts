@@ -15,9 +15,6 @@
 import { PipelineConfig, loadConfig, defaultValidationConfig, clampTargetBeatCount, MAX_BEATS_PER_SCENE, type MemoryConfig, type PreapprovedAnchor } from '../config';
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
-import { isUnsafeCallbackProse } from '../constants/metaProse';
-import { isPlaceholderStake } from '../constants/placeholderStakes';
-import { isPlanningRegisterText } from '../constants/planningRegisterText';
 
 
 import { 
@@ -119,7 +116,6 @@ import {
   EnvironmentalElement, NPCEncounterState, EscalationTrigger, InformationVisibility, 
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
-import type { ChoiceImpactFactor } from '../../types/choice';
 import { PipelineEvent, PipelineEventHandler, PipelineProgressTelemetry } from './events';
 import {
   type GenerationPlan,
@@ -387,10 +383,36 @@ import {
 } from './planningHelpers';
 import { mergeSeasonEpisodes } from './seasonStoryMerge';
 import {
-  buildReaderFacingFallbackChoiceOptions,
   normalizeConsequences,
-  routeFallbackChoicesAcrossTargets,
 } from './choiceAssembly';
+import {
+  buildBranchFallbackChoiceSet as buildBranchFallbackChoiceSetImpl,
+  createFallbackChoiceSet as createFallbackChoiceSetImpl,
+  ensureBlueprintFidelityText as ensureBlueprintFidelityTextImpl,
+  sanitizeReaderFacingSceneName as sanitizeReaderFacingSceneNameImpl,
+  sanitizeSceneContentForReader as sanitizeSceneContentForReaderImpl,
+} from './readerTextFallbacks';
+import {
+  extractSceneContext as extractSceneContextImpl,
+  inferIntensity as inferIntensityImpl,
+  inferValence as inferValenceImpl,
+  mapChoicePositions as mapChoicePositionsImpl,
+  mapSpeakerMoodToEmotion as mapSpeakerMoodToEmotionImpl,
+  resolveWorldLocationForScene as resolveWorldLocationForSceneImpl,
+} from './sceneMediaSignals';
+import { ensureChoiceBridgeBeats as ensureChoiceBridgeBeatsImpl } from './choiceBridgeBeats';
+import {
+  analyzeBeatCharacters as analyzeBeatCharactersImpl,
+  extractCanonicalAppearance as extractCanonicalAppearanceImpl,
+  getCharacterIdsInScene as getCharacterIdsInSceneImpl,
+  inferBasePostureFromPersonality as inferBasePostureFromPersonalityImpl,
+  inferGestureStyleFromPersonality as inferGestureStyleFromPersonalityImpl,
+  isEstablishingBeat as isEstablishingBeatImpl,
+  normalizeCharacterIds as normalizeCharacterIdsImpl,
+  resolveCharacterId as resolveCharacterIdImpl,
+  resolveCharacterIdWithBrief as resolveCharacterIdWithBriefImpl,
+  resolveProtagonistCharacterId as resolveProtagonistCharacterIdImpl,
+} from './imageCasting';
 
 // Re-export types for consumers
 export type { OutputManifest } from '../utils/pipelineOutputWriter';
@@ -1319,275 +1341,26 @@ export class FullStoryPipeline {
     sceneBlueprint: SceneBlueprint,
     choiceBeat: GeneratedBeat
   ): ChoiceSet {
-    const choicePoint = sceneBlueprint.choicePoint;
-    const optionHints = (choicePoint?.optionHints || [])
-      .map((hint) => String(hint || '').trim())
-      .filter(Boolean);
-    const options = buildReaderFacingFallbackChoiceOptions({
-      optionHints,
-      localContext: [
-        ...(sceneBlueprint.requiredBeats || []).flatMap((beat: { sourceTurn?: string; mustDepict?: string }) => [
-          beat.sourceTurn,
-          beat.mustDepict,
-        ]).filter((text): text is string => typeof text === 'string' && text.trim().length > 0),
-      ],
-      choicePointDescription: choicePoint?.description,
-      choiceBeatText: choiceBeat.text,
-      choiceBeatVisualMoment: choiceBeat.visualMoment,
-      sceneName: sceneBlueprint.name,
-      dramaticQuestion: sceneBlueprint.dramaticQuestion,
-      dramaticPurpose: sceneBlueprint.dramaticPurpose,
-      conflictEngine: sceneBlueprint.conflictEngine,
-    });
-    const rawStakes = choicePoint?.stakes;
-    const stakes = {
-      want: this.safeFallbackReaderText(
-        rawStakes?.want,
-        sceneBlueprint.dramaticQuestion || sceneBlueprint.dramaticPurpose || 'Change what can happen next.',
-        'Change what can happen next.'
-      ),
-      cost: this.safeFallbackReaderText(
-        rawStakes?.cost,
-        sceneBlueprint.conflictEngine || 'The choice gives up one kind of safety to claim another.',
-        'The choice gives up one kind of safety to claim another.'
-      ),
-      identity: this.safeFallbackReaderText(
-        rawStakes?.identity,
-        sceneBlueprint.wantVsNeed || 'The choice reveals what the protagonist is becoming under pressure.',
-        'The choice reveals what the protagonist is becoming under pressure.'
-      ),
-    };
-    const choiceType = choicePoint?.type || 'dilemma';
-    const consequenceTier = 'sceneTint' as const;
-    const impactFactors =
-      choiceType === 'expression' ? [] :
-      choiceType === 'relationship' ? ['relationship', 'identity'] :
-      choiceType === 'strategic' ? ['information', 'process'] :
-      ['identity', 'relationship'];
-    const choiceIntent = choiceType === 'expression' ? 'flavor' : choiceType === 'dilemma' ? 'dilemma' : 'blind';
-    const storyVerb = choiceType === 'relationship' ? 'protect' : choiceType === 'strategic' ? 'observe' : 'commit';
-    const immediateReminder = this.safeFallbackReaderText(
-      choicePoint?.reminderPlan?.immediate || choicePoint?.description,
-      'The decision changes the tone of the scene.'
-    );
-
-    return {
-      beatId: choiceBeat.id,
-      sceneId: sceneBlueprint.id,
-      choiceType,
-      overallStakes: stakes,
-      overallStakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
-      designNotes: 'Deterministic fallback: preserves authored choice pressure when ChoiceAuthor does not produce a usable choice set.',
-      choices: options.map((text, index) => {
-        const tintFlag = this.fallbackTintFlag(choiceType, index);
-        return {
-          id: `${choiceBeat.id}-fallback-choice-${index + 1}`,
-          text: this.ensureSentence(text),
-          choiceType,
-          choiceIntent,
-          impactFactors,
-          consequenceTier,
-          storyVerb,
-          reactionText: this.fallbackReactionText(text),
-          tintFlag,
-          outcomeTexts: this.fallbackOutcomeTexts(text),
-          residueHints: [{
-            kind: 'immediate_prose_echo' as const,
-            description: this.fallbackResidueDescription(text),
-          }],
-          stakes,
-          stakesLayers: choicePoint?.stakesLayers || sceneBlueprint.stakesLayers,
-          stakesAnnotation: stakes,
-          consequenceDomain: choicePoint?.consequenceDomain || 'identity',
-          consequences: [{ type: 'setFlag' as const, flag: tintFlag, value: true }],
-          reminderPlan: choicePoint?.reminderPlan || {
-            immediate: immediateReminder,
-            shortTerm: this.stripAgentFacingFidelityText(
-              sceneBlueprint.narrativeFunction || '',
-              'The residue carries into the next scene.'
-            ),
-          },
-          feedbackCue: {
-            echoSummary: `You chose: ${this.ensureSentence(text)}`,
-            progressSummary: this.stripAgentFacingFidelityText(
-              choicePoint?.reminderPlan?.immediate || sceneBlueprint.narrativeFunction || '',
-              'The choice leaves visible residue.'
-            ),
-          },
-          expectedResidue: choicePoint?.expectedResidue,
-        };
-      }),
-    } as ChoiceSet;
+    return createFallbackChoiceSetImpl(sceneBlueprint, choiceBeat);
   }
 
-  private safeFallbackReaderText(text: string | undefined, fallback: string, lastResort?: string): string {
-    const cleaned = String(text || '').trim();
-    if (!cleaned || this.isUnsafeReaderFallbackText(cleaned)) {
-      const fallbackText = String(fallback || '').trim();
-      if (fallbackText && !this.isUnsafeReaderFallbackText(fallbackText)) {
-        return this.ensureSentence(fallbackText);
-      }
-      return this.ensureSentence(lastResort || 'The choice leaves visible residue in the scene.');
-    }
-    return this.ensureSentence(cleaned);
-  }
-
-  private isUnsafeReaderFallbackText(text: string | undefined): boolean {
-    const cleaned = String(text || '').trim();
-    if (!cleaned) return true;
-    return isPlanningRegisterText(cleaned)
-      || isPlaceholderStake(cleaned)
-      || cleaned.length > 240
-      || /\bserves\s+the\s+\w+\s+beat\b/i.test(cleaned)
-      || /\bforward\s+pressure\s*:/i.test(cleaned)
-      || /\bcomposed surface slips through a small evasive movement\b/i.test(cleaned)
-      || /\bsmall evasive movement\b/i.test(cleaned)
-      || /\bmaking the subtext visible\b/i.test(cleaned)
-      || /\bposture, glance, and distance make the unspoken tension visible\b/i.test(cleaned)
-      || /\bvisibly changing the balance of the moment\b/i.test(cleaned)
-      || /\bbusy hands betray what the words avoid\b/i.test(cleaned)
-      || /\bvisible gesture, object cue, or shift in distance\b/i.test(cleaned);
-  }
-
-  private fallbackTintFlag(choiceType: string, index: number): string {
-    if (choiceType === 'expression') return index % 2 === 0 ? 'tint:emotion' : 'tint:intuition';
-    if (choiceType === 'relationship') return index % 2 === 0 ? 'tint:teamwork' : 'tint:empathy';
-    if (choiceType === 'strategic') return index % 2 === 0 ? 'tint:pragmatism' : 'tint:intuition';
-    return index % 2 === 0 ? 'tint:sacrifice' : 'tint:caution';
-  }
-
-  private fallbackReactionText(choiceText: string): string {
-    return `${this.ensureSentence(choiceText)} The choice changes the room's next silence.`;
-  }
-
-  private fallbackOutcomeTexts(choiceText: string): { success: string; partial: string; failure: string } {
-    const sentence = this.ensureSentence(choiceText);
-    return {
-      success: `${sentence} The moment yields a clearer emotional footing.`,
-      partial: `${sentence} The moment shifts, but the uncertainty stays close.`,
-      failure: `${sentence} The hesitation leaves a visible complication behind.`,
-    };
-  }
-
-  private fallbackResidueDescription(choiceText: string): string {
-    return `${this.ensureSentence(choiceText)} The scene should echo this as an immediate tonal residue.`;
-  }
-
-  private ensureSentence(text: string): string {
-    const trimmed = String(text || '').trim();
-    if (!trimmed) return 'The pressure changes shape.';
-    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-  }
-
-  /**
-   * Last-resort fallback for a choiceless BRANCH POINT. Reuses the deterministic
-   * choice-set builder, then routes ≥1 choice to EACH distinct `leadsTo` target so the
-   * planned branch is structurally realized (satisfying GATE_BRANCH_FANOUT) instead of
-   * hard-aborting the episode when ChoiceAuthor fails. Returns undefined for non-branch
-   * scenes (leadsTo < 2 distinct), where a choiceless scene is survivable on its own.
-   */
   private buildBranchFallbackChoiceSet(
     sceneBlueprint: SceneBlueprint,
     choiceBeat: GeneratedBeat | undefined,
   ): ChoiceSet | undefined {
-    if (!choiceBeat) return undefined;
-    const targets = [...new Set((sceneBlueprint.leadsTo || []).filter(Boolean))];
-    if (targets.length < 2) return undefined; // only branch points need this net
-
-    const base = this.createFallbackChoiceSet(sceneBlueprint, choiceBeat);
-    // Pad to cover every target and route round-robin so each leadsTo target is reached.
-    const choices = routeFallbackChoicesAcrossTargets(base.choices, targets, choiceBeat.id).map((choice) => ({
-      ...choice,
-      choiceIntent: 'branching' as const,
-      consequenceTier: 'structuralBranch' as const,
-      impactFactors: Array.from(new Set<ChoiceImpactFactor>([...(choice.impactFactors || []), 'outcome'])),
-    }));
-    return {
-      ...base,
-      choices,
-      designNotes:
-        `${base.designNotes} Routed across leadsTo targets [${targets.join(', ')}] to preserve the ` +
-        'planned branch after ChoiceAuthor failed for this branch point.',
-    };
-  }
-
-  private stripAgentFacingFidelityText(text: string, fallback: string): string {
-    const cleaned = String(text || '')
-      .split(/\n{2,}|\r?\n/)
-      .map((part) => part.trim())
-      .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
-      .join('\n\n')
-      .trim();
-    if (!cleaned || this.isUnsafeReaderFallbackText(cleaned)) {
-      return this.ensureSentence(fallback || 'The story pressure changes what can happen next.');
-    }
-    return cleaned;
+    return buildBranchFallbackChoiceSetImpl(sceneBlueprint, choiceBeat);
   }
 
   private sanitizeSceneContentForReader(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
-    if (!Array.isArray(content.beats)) return;
-    for (const beat of content.beats) {
-      const sceneFallback = sceneBlueprint.description || sceneBlueprint.dramaticQuestion || sceneBlueprint.name || 'The story pressure changes.';
-      beat.text = this.stripAgentFacingFidelityText(
-        beat.text,
-        sceneFallback
-      );
-      beat.visualMoment = this.stripAgentFacingFidelityText(
-        beat.visualMoment || beat.text,
-        beat.text || sceneFallback
-      );
-      beat.primaryAction = this.stripAgentFacingFidelityText(
-        beat.primaryAction || beat.text,
-        beat.text || sceneFallback
-      );
-      beat.emotionalRead = this.stripAgentFacingFidelityText(
-        beat.emotionalRead || '',
-        'The protagonist absorbs the consequence.'
-      );
-      beat.relationshipDynamic = this.stripAgentFacingFidelityText(
-        beat.relationshipDynamic || '',
-        sceneBlueprint.npcsPresent?.length
-          ? 'The relationship pressure changes.'
-          : 'The situation pressure changes.'
-      );
-    }
+    sanitizeSceneContentForReaderImpl(sceneBlueprint, content);
   }
 
   private sanitizeReaderFacingSceneName(name: string | undefined, fallback = 'the next scene'): string {
-    const cleaned = String(name || fallback)
-      .replace(/\s*\((?:[^)]*\b(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b[^)]*)\)\s*/gi, ' ')
-      .replace(/\s*\[(?:[^\]]*\b(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b[^\]]*)\]\s*/gi, ' ')
-      .replace(/\s+-\s*(?:ENCOUNTER|Episode\s+Climax|Buildup|Setup|Transition|Bridge)\b.*$/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return cleaned || fallback;
-  }
-
-  private cleanChoiceBridgeFragment(value: string | undefined): string {
-    return this.sanitizeReaderFacingSceneName(value || '', '')
-      .replace(/\bThe decision carries you\b.*$/i, '')
-      .replace(/\bone concrete step at a time\b\.?/i, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return sanitizeReaderFacingSceneNameImpl(name, fallback);
   }
 
   private ensureBlueprintFidelityText(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
-    const importantBeats = (sceneBlueprint.keyBeats || [])
-      .map((beat) => (beat || '').trim())
-      .filter((beat) => /^(?:pressure|choice pressure|forward pressure):/i.test(beat));
-    if (importantBeats.length === 0) return;
-
-    content.continuityNotes = Array.isArray(content.continuityNotes) ? content.continuityNotes : [];
-    for (const importantBeat of importantBeats) {
-      const note = `Agent-facing fidelity pressure preserved outside reader prose: ${importantBeat}`;
-      if (!content.continuityNotes.includes(note)) {
-        content.continuityNotes.push(note);
-      }
-    }
-
-    if (!content.startingBeatId && content.beats?.[0]) {
-      content.startingBeatId = content.beats[0].id;
-    }
+    ensureBlueprintFidelityTextImpl(sceneBlueprint, content);
   }
 
   private repairSceneGraphBranchingChoices(
@@ -8618,131 +8391,24 @@ export class FullStoryPipeline {
     );
   }
 
-  /**
-   * Get character IDs present in a scene based on speakers and mentions
-   */
   private getCharacterIdsInScene(scene: SceneContent, characterBible: CharacterBible, protagonistId?: string): string[] {
-    const characterIds = new Set<string>();
-    
-    // ALWAYS include the protagonist — they are in every scene even if not explicitly named.
-    if (protagonistId) {
-      const protagonistExists = characterBible.characters.some(c => c.id === protagonistId);
-      if (protagonistExists) characterIds.add(protagonistId);
-    }
-    
-    // Primary: use charactersInvolved from scene content (populated from blueprint.npcsPresent)
-    if (scene.charactersInvolved && scene.charactersInvolved.length > 0) {
-      for (const charId of scene.charactersInvolved) {
-        // Verify character exists in bible
-        const exists = characterBible.characters.some(c => c.id === charId);
-        if (exists) {
-          characterIds.add(charId);
-        } else {
-          // Try to match by name
-          const char = characterBible.characters.find(
-            c => c.name.toLowerCase() === charId.toLowerCase()
-          );
-          if (char) characterIds.add(char.id);
-        }
-      }
-    }
-    
-    // Secondary: scan beat speakers for additional characters
-    for (const beat of scene.beats) {
-      if (beat.speaker) {
-        // Try to find the character by name
-        const char = characterBible.characters.find(
-          c => c.name.toLowerCase() === beat.speaker?.toLowerCase() ||
-               c.id.toLowerCase() === beat.speaker?.toLowerCase()
-        );
-        if (char) {
-          characterIds.add(char.id);
-        }
-      }
-    }
-
-    // Tertiary: scan beat text + authored visualMoment for character mentions.
-    // This is critical for scenes with limited/incorrect blueprint.npcsPresent and for image prompts
-    // where we must include all named characters consistently.
-    for (const beat of scene.beats) {
-      const text = `${beat.text || ''} ${(beat as any).visualMoment || ''}`.toLowerCase();
-      if (!text.trim()) continue;
-
-      for (const c of characterBible.characters) {
-        const name = c.name.trim();
-        if (!name) continue;
-        const [firstName] = name.split(/\s+/).map(t => t.trim()).filter(Boolean);
-        const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const escapedFirstName = firstName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const mentioned = new RegExp(`\\b${escapedName}\\b`, 'i').test(text)
-          || Boolean(firstName && firstName.length > 2 && escapedFirstName && new RegExp(`\\b${escapedFirstName}\\b`, 'i').test(text));
-        if (mentioned) characterIds.add(c.id);
-      }
-    }
-    
-    return Array.from(characterIds);
+    return getCharacterIdsInSceneImpl(scene, characterBible, protagonistId);
   }
 
   private resolveCharacterId(idOrName: string, characterBible: CharacterBible): string | null {
-    const raw = String(idOrName || '').trim();
-    if (!raw) return null;
-    const normalize = (value: string) => value
-      .toLowerCase()
-      .replace(/^char[-_]/, '')
-      .replace(/\s*\([^)]*\)\s*/g, ' ')
-      .replace(/[-_]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const rawNorm = normalize(raw);
-    const direct = characterBible.characters.find((c) => c.id === raw || c.name === raw);
-    if (direct) return direct.id;
-    const fuzzy = characterBible.characters.find((c) =>
-      normalize(c.id) === rawNorm ||
-      normalize(c.name) === rawNorm ||
-      normalize(c.name).includes(rawNorm) ||
-      rawNorm.includes(normalize(c.name))
-    );
-    return fuzzy?.id || null;
+    return resolveCharacterIdImpl(idOrName, characterBible);
   }
 
   private resolveProtagonistCharacterId(characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
-    const byRole = characterBible.characters.find((c: any) =>
-      /\b(protagonist|main character|player character)\b/i.test(String(c.role || c.archetype || ''))
-    );
-    if (byRole?.id) return byRole.id;
-
-    const briefName = String(brief.protagonist?.name || '').trim();
-    if (briefName && !/^hero$/i.test(briefName)) {
-      const byBriefName = this.resolveCharacterId(briefName, characterBible);
-      if (byBriefName) return byBriefName;
-    }
-
-    const briefId = String(brief.protagonist?.id || '').trim();
-    if (briefId && !/^p(?:rotagonist)?[-_ ]?1$/i.test(briefId) && !/^hero$/i.test(briefId)) {
-      const byBriefId = this.resolveCharacterId(briefId, characterBible);
-      if (byBriefId) return byBriefId;
-    }
-
-    return characterBible.characters[0]?.id || null;
+    return resolveProtagonistCharacterIdImpl(characterBible, brief);
   }
 
   private resolveCharacterIdWithBrief(idOrName: string, characterBible: CharacterBible, brief: FullCreativeBrief): string | null {
-    const raw = String(idOrName || '').trim();
-    if (!raw) return null;
-    if (/^p(?:rotagonist)?[-_ ]?1$/i.test(raw) || /^player$/i.test(raw) || /^hero$/i.test(raw)) {
-      return this.resolveProtagonistCharacterId(characterBible, brief)
-        || this.resolveCharacterId(brief.protagonist?.name || brief.protagonist?.id || raw, characterBible);
-    }
-    return this.resolveCharacterId(raw, characterBible);
+    return resolveCharacterIdWithBriefImpl(idOrName, characterBible, brief);
   }
 
   private normalizeCharacterIds(ids: string[] | undefined, characterBible: CharacterBible): string[] {
-    const normalized = new Set<string>();
-    for (const value of ids || []) {
-      const resolved = this.resolveCharacterId(value, characterBible);
-      if (resolved) normalized.add(resolved);
-    }
-    return [...normalized];
+    return normalizeCharacterIdsImpl(ids, characterBible);
   }
 
   private async ensureCharacterReferencesForVisibleCharacters(
@@ -9009,25 +8675,6 @@ export class FullStoryPipeline {
     }).value;
   }
 
-  /**
-   * Get character ID(s) for a speaker name
-   */
-  private getCharacterIdBySpeaker(speakerName: string, characterBible: CharacterBible): string[] {
-    const char = characterBible.characters.find(
-      c => c.name.toLowerCase() === speakerName.toLowerCase() ||
-           c.id.toLowerCase() === speakerName.toLowerCase()
-    );
-    return char ? [char.id] : [];
-  }
-
-  /**
-   * Analyze which characters are relevant to a specific beat and classify their visual role.
-   * 
-   * Returns:
-   * - foreground: Characters who are the visual focus (speaking, performing action, being addressed)
-   * - background: Characters present in the scene but not the focus of this beat
-   * - sceneCharacterNames: Map of character ID → name for the prompt
-   */
   private analyzeBeatCharacters(
     beatText: string,
     beatSpeaker: string | undefined,
@@ -9035,96 +8682,16 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     protagonistId: string
   ): { foreground: string[]; background: string[]; foregroundNames: string[]; backgroundNames: string[] } {
-    const foregroundIds = new Set<string>();
-    const textLower = beatText.toLowerCase();
-
-    // 1. Speaker is always foreground
-    if (beatSpeaker) {
-      const speakerChar = characterBible.characters.find(
-        c => c.name.toLowerCase() === beatSpeaker.toLowerCase() || c.id.toLowerCase() === beatSpeaker.toLowerCase()
-      );
-      if (speakerChar) foregroundIds.add(speakerChar.id);
-    }
-
-    // 2. Scan beat text for character names — mentioned characters are foreground
-    for (const charId of sceneCharacterIds) {
-      const char = characterBible.characters.find(c => c.id === charId);
-      if (!char) continue;
-      
-      const nameLower = char.name.toLowerCase();
-      // Check for name mention (word boundary aware)
-      // Also check for common name fragments (e.g., "Tyrell" matches "Eldon Tyrell")
-      const nameWords = nameLower.split(/\s+/);
-      const isMentioned = textLower.includes(nameLower) || 
-        nameWords.some(word => word.length > 2 && textLower.includes(word));
-      
-      if (isMentioned) {
-        foregroundIds.add(char.id);
-      }
-    }
-
-    // 3. Check for second-person address ("you") — protagonist is foreground
-    if (textLower.includes('you ') || textLower.includes('your ') || textLower.startsWith('you')) {
-      foregroundIds.add(protagonistId);
-    }
-
-    // 4. If no one is explicitly foreground, protagonist is the default focus
-    if (foregroundIds.size === 0) {
-      foregroundIds.add(protagonistId);
-    }
-
-    // 5. All other scene characters are background
-    const foreground = Array.from(foregroundIds);
-    const background = sceneCharacterIds.filter(id => !foregroundIds.has(id));
-
-    // Map IDs to names
-    const getName = (id: string) => characterBible.characters.find(c => c.id === id)?.name || id;
-    
-    return {
-      foreground,
-      background,
-      foregroundNames: foreground.map(getName),
-      backgroundNames: background.map(getName),
-    };
+    return analyzeBeatCharactersImpl(beatText, beatSpeaker, sceneCharacterIds, characterBible, protagonistId);
   }
 
-  /**
-   * Determine whether a beat is a pure establishing/atmospheric shot with no character action.
-   * Used as a fallback when SceneWriter did not set an explicit shotType.
-   * Returns true when the beat text describes environment/atmosphere without a character performing
-   * a specific action — no speaker, no action verbs, protagonist only in foreground via "you/your".
-   */
   private isEstablishingBeat(
     beatText: string,
     speaker: string | undefined,
     _primaryAction: string | undefined,
     beatCharContext: { foreground: string[]; foregroundNames: string[] }
   ): boolean {
-    // A speaker means dialogue — definitely a character beat
-    if (speaker) return false;
-
-    const lowered = beatText.toLowerCase();
-
-    // Strong action verbs signal a character beat
-    const hasActionVerb = /\b(grabs?|reaches?|recoils?|steps?\s+forward|stumbles?|lunges?|pushes?|pulls?|raises?|strikes?|dodges?|fires?|shoots?|charges?|slams?|throws?|catches?|turns?\s+to|walks?|runs?|confronts?|advances?)\b/.test(lowered);
-    if (hasActionVerb) return false;
-
-    // Character dialogue markers (attributions)
-    const hasDialogue = /["'"][^"']{3,}["'"]/g.test(beatText);
-    if (hasDialogue) return false;
-
-    // The protagonist only got into foreground because of "you/your" second-person address
-    // (i.e., foreground has exactly one character and it's the protagonist)
-    // If there are named NPCs in the foreground it's a character beat
-    if (beatCharContext.foregroundNames.length > 1) return false;
-
-    // Atmospheric environment keywords
-    const hasAtmosphericEnv = /\b(rain|neon|window|street|city|sky|horizon|corridor|room|space|building|apartment|hall|fog|darkness|shadow|landscape|alley|crowd|distance|ceiling|floor|light|wall|door)\b/.test(lowered);
-
-    // Passive/observational description — no action being performed by the viewpoint character
-    const isPassiveDescription = !/\b(you\s+(turn|step|move|walk|run|reach|grab|look\s+at|face|stand\s+up|sit\s+down|rise|approach|back\s+away|push|pull|draw|aim|strike|throw|fire|shout|cry|say|ask|reply))\b/.test(lowered);
-
-    return hasAtmosphericEnv && isPassiveDescription;
+    return isEstablishingBeatImpl(beatText, speaker, _primaryAction, beatCharContext);
   }
 
   /**
@@ -9259,73 +8826,12 @@ export class FullStoryPipeline {
     return descs;
   }
 
-  /**
-   * Extract structured identity slots (hair, eyes, skin, build, height, face)
-   * from free-form character description text. Each slot scans the merged
-   * source text for phrases that match the slot's keyword set and captures the
-   * surrounding words as the slot value.
-   *
-   * The extractor is deliberately conservative — it returns undefined for any
-   * slot it can't confidently populate, leaving the fallback appearance prose
-   * to cover the gap. distinctiveFeatures and typicalAttire are passed through
-   * directly since they are already structured.
-   */
   private extractCanonicalAppearance(
     sources: string[],
     distinctiveFeatures: string[] | undefined,
     typicalAttire: string | undefined,
   ): CanonicalAppearance | undefined {
-    const text = sources.join('. ');
-    if (!text && (!distinctiveFeatures || distinctiveFeatures.length === 0) && !typicalAttire) {
-      return undefined;
-    }
-
-    const splitPhrases = (raw: string): string[] =>
-      raw
-        .split(/[.,;]|\s-\s|\s—\s/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-
-    const phrases = splitPhrases(text);
-
-    const findPhrase = (keywords: RegExp): string | undefined => {
-      for (const p of phrases) {
-        if (keywords.test(p)) return p;
-      }
-      return undefined;
-    };
-
-    const ca: CanonicalAppearance = {};
-
-    const hairPhrase = findPhrase(/\b(hair|hairstyle|braid|ponytail|locks|mane|curls|dreadlocks)\b/i);
-    if (hairPhrase) ca.hair = hairPhrase;
-
-    const eyesPhrase = findPhrase(/\b(eyes|eye|iris|gaze)\b/i);
-    if (eyesPhrase) ca.eyes = eyesPhrase;
-
-    const skinPhrase = findPhrase(/\b(skin|complexion|tan|pale|sunburn(?:t|ed)?|freckl(?:e|ed|es))\b/i);
-    if (skinPhrase) ca.skinTone = skinPhrase;
-
-    const buildPhrase = findPhrase(/\b(build|physique|stature|frame|muscled|slender|broad|lean|stocky|wiry|sinewy)\b/i);
-    if (buildPhrase) ca.build = buildPhrase;
-
-    const heightPhrase = findPhrase(/\b(tall|short|height|petite|towering|diminutive)\b/i);
-    if (heightPhrase) ca.height = heightPhrase;
-
-    const facePhrase = findPhrase(/\b(face|jaw|jawline|cheekbones?|nose|chin|brow|forehead)\b/i);
-    if (facePhrase) ca.face = facePhrase;
-
-    if (distinctiveFeatures && distinctiveFeatures.length > 0) {
-      ca.distinguishingMarks = distinctiveFeatures.slice(0, 6);
-    }
-    if (typicalAttire) {
-      ca.defaultAttire = typicalAttire;
-    }
-
-    const hasAny = Object.values(ca).some((v) =>
-      Array.isArray(v) ? v.length > 0 : typeof v === 'string' && v.length > 0
-    );
-    return hasAny ? ca : undefined;
+    return extractCanonicalAppearanceImpl(sources, distinctiveFeatures, typicalAttire);
   }
 
   private gatherCharacterReferenceImages(
@@ -9580,41 +9086,12 @@ export class FullStoryPipeline {
     return vocabularies;
   }
 
-  /**
-   * Infer base posture from personality description
-   */
   private inferBasePostureFromPersonality(personality: string): string {
-    const lower = (personality || '').toLowerCase();
-    if (lower.includes('confident') || lower.includes('bold') || lower.includes('brash')) {
-      return 'upright, open chest, chin slightly raised, expansive';
-    }
-    if (lower.includes('shy') || lower.includes('reserved') || lower.includes('anxious')) {
-      return 'slightly hunched, arms close to body, compact';
-    }
-    if (lower.includes('regal') || lower.includes('noble') || lower.includes('proud')) {
-      return 'perfectly upright, formal, controlled movements';
-    }
-    if (lower.includes('relaxed') || lower.includes('laid-back') || lower.includes('casual')) {
-      return 'loose, weight on one leg, relaxed shoulders';
-    }
-    return 'natural, comfortable standing posture';
+    return inferBasePostureFromPersonalityImpl(personality);
   }
 
-  /**
-   * Infer gesture style from personality description
-   */
   private inferGestureStyleFromPersonality(personality: string): string {
-    const lower = (personality || '').toLowerCase();
-    if (lower.includes('expressive') || lower.includes('dramatic') || lower.includes('theatrical')) {
-      return 'large, sweeping gestures, uses whole arm';
-    }
-    if (lower.includes('reserved') || lower.includes('controlled') || lower.includes('formal')) {
-      return 'minimal, precise gestures, hands often clasped or still';
-    }
-    if (lower.includes('nervous') || lower.includes('anxious') || lower.includes('fidgety')) {
-      return 'small, quick gestures, self-touching, fidgeting';
-    }
-    return 'natural, moderate hand gestures when speaking';
+    return inferGestureStyleFromPersonalityImpl(personality);
   }
 
   private summarizeEpisode(episode: Episode): string {
@@ -10154,205 +9631,39 @@ export class FullStoryPipeline {
     return this.imageSupport().prefetchSceneOpeningBeats(sceneContents, brief, characterBible, colorScript, worldBible, outputDirectory);
   }
 
-  /**
-   * Map speakerMood string to emotion category
-   */
   private mapSpeakerMoodToEmotion(speakerMood?: string): 'hopeful' | 'tense' | 'melancholy' | 'triumphant' | 'eerie' | 'neutral' {
-    if (!speakerMood) return 'neutral';
-    
-    const mood = speakerMood.toLowerCase();
-    
-    if (mood.includes('happy') || mood.includes('joy') || mood.includes('excit') || mood.includes('hope')) return 'hopeful';
-    if (mood.includes('tense') || mood.includes('anxious') || mood.includes('nervous') || mood.includes('fear') || mood.includes('worry')) return 'tense';
-    if (mood.includes('sad') || mood.includes('grief') || mood.includes('mourn') || mood.includes('melan')) return 'melancholy';
-    if (mood.includes('triumph') || mood.includes('victory') || mood.includes('proud') || mood.includes('confident')) return 'triumphant';
-    if (mood.includes('eerie') || mood.includes('creep') || mood.includes('unnerv') || mood.includes('dread')) return 'eerie';
-    if (mood.includes('angry') || mood.includes('rage') || mood.includes('frust')) return 'tense'; // Map anger to tense
-    
-    return 'neutral';
+    return mapSpeakerMoodToEmotionImpl(speakerMood);
   }
 
-  /**
-   * Infer emotional intensity from mood and text
-   */
   private inferIntensity(speakerMood?: string, text?: string): 'low' | 'medium' | 'high' {
-    const mood = (speakerMood || '').toLowerCase();
-    const content = (text || '').toLowerCase();
-    
-    // High intensity indicators
-    if (mood.includes('rage') || mood.includes('terror') || mood.includes('ecsta') || mood.includes('grief')) return 'high';
-    const exclamationMatches = content.match(/!/g);
-    if (content.includes('!') && exclamationMatches && exclamationMatches.length >= 2) return 'high';
-    if (content.includes('scream') || content.includes('shout') || content.includes('explod')) return 'high';
-    
-    // Low intensity indicators
-    if (mood.includes('calm') || mood.includes('peace') || mood.includes('serene') || mood.includes('quiet')) return 'low';
-    if (mood.includes('bored') || mood.includes('tired') || mood.includes('sleepy')) return 'low';
-    
-    return 'medium';
+    return inferIntensityImpl(speakerMood, text);
   }
 
-  /**
-   * Infer emotional valence from mood and text
-   */
   private inferValence(speakerMood?: string, text?: string): 'positive' | 'negative' | 'ambiguous' {
-    const mood = (speakerMood || '').toLowerCase();
-    
-    // Positive
-    if (mood.includes('happy') || mood.includes('joy') || mood.includes('hope') || mood.includes('love') ||
-        mood.includes('excit') || mood.includes('proud') || mood.includes('triumph') || mood.includes('relief')) {
-      return 'positive';
-    }
-    
-    // Negative
-    if (mood.includes('sad') || mood.includes('grief') || mood.includes('fear') || mood.includes('anger') ||
-        mood.includes('rage') || mood.includes('despair') || mood.includes('terror') || mood.includes('disgust')) {
-      return 'negative';
-    }
-    
-    // Ambiguous/mixed
-    return 'ambiguous';
+    return inferValenceImpl(speakerMood, text);
   }
 
-  /**
-   * Extract scene context for visual generation
-   */
   private extractSceneContext(
     scene: SceneContent,
     sceneIndex: number,
     totalScenes: number,
     worldBible: WorldBible
-  ): {
-    isClimactic: boolean;
-    isResolution: boolean;
-    isFlashback: boolean;
-    isNightmare: boolean;
-    isSafeHubScene: boolean;
-    branchType: 'dark' | 'hopeful' | 'neutral';
-    timeOfDay?: 'dawn' | 'day' | 'dusk' | 'night';
-  } {
-    const sceneName = (scene.sceneName || '').toLowerCase();
-    const keyMoments = (Array.isArray(scene.keyMoments) ? scene.keyMoments : []).join(' ').toLowerCase();
-    const moodProg = (Array.isArray(scene.moodProgression) ? scene.moodProgression : []).join(' ').toLowerCase();
-    
-    // Determine if climactic (near end, contains confrontation/climax keywords)
-    const isNearEnd = sceneIndex >= totalScenes - 2;
-    const hasClimaxKeywords = keyMoments.includes('climax') || keyMoments.includes('confrontation') || 
-                              keyMoments.includes('showdown') || keyMoments.includes('final');
-    const isClimactic = isNearEnd && hasClimaxKeywords;
-    
-    // Resolution (last scene, contains resolution keywords)
-    const isResolution = sceneIndex === totalScenes - 1 && 
-                         (keyMoments.includes('resolution') || keyMoments.includes('aftermath') || keyMoments.includes('conclude'));
-    
-    // Flashback/nightmare detection
-    const isFlashback = sceneName.includes('flashback') || sceneName.includes('memory') || keyMoments.includes('past');
-    const isNightmare = sceneName.includes('nightmare') || sceneName.includes('dream') || keyMoments.includes('nightmare');
-    
-    // Safe hub (calm base scenes)
-    const isSafeHubScene = moodProg.includes('calm') || moodProg.includes('safe') || 
-                           sceneName.includes('base') || sceneName.includes('home') || sceneName.includes('haven');
-    
-    // Branch type inference (would normally come from player state)
-    let branchType: 'dark' | 'hopeful' | 'neutral' = 'neutral';
-    if (moodProg.includes('dark') || moodProg.includes('despair') || moodProg.includes('corrupt')) {
-      branchType = 'dark';
-    } else if (moodProg.includes('hope') || moodProg.includes('redemption') || moodProg.includes('light')) {
-      branchType = 'hopeful';
-    }
-    
-    // Time of day inference
-    let timeOfDay: 'dawn' | 'day' | 'dusk' | 'night' | undefined;
-    if (sceneName.includes('dawn') || sceneName.includes('morning') || keyMoments.includes('sunrise')) {
-      timeOfDay = 'dawn';
-    } else if (sceneName.includes('night') || sceneName.includes('midnight') || keyMoments.includes('dark')) {
-      timeOfDay = 'night';
-    } else if (sceneName.includes('dusk') || sceneName.includes('sunset') || sceneName.includes('evening')) {
-      timeOfDay = 'dusk';
-    } else if (sceneName.includes('day') || sceneName.includes('noon') || sceneName.includes('afternoon')) {
-      timeOfDay = 'day';
-    }
-    
-    return { isClimactic, isResolution, isFlashback, isNightmare, isSafeHubScene, branchType, timeOfDay };
+  ): ReturnType<typeof extractSceneContextImpl> {
+    return extractSceneContextImpl(scene, sceneIndex, totalScenes, worldBible);
   }
 
-  /**
-   * Map choice sets to choice positions for visual planning
-   */
   private mapChoicePositions(
     choiceSets: ChoiceSet[],
     scene: SceneContent
-  ): Array<{
-    beatId: string;
-    choiceType: 'binary' | 'multiple' | 'timed';
-    options?: Array<{ type: 'trust' | 'suspicion' | 'action' | 'caution' | 'kindness' | 'cruelty' | 'other'; label?: string }>;
-  }> {
-    const positions: Array<{
-      beatId: string;
-      choiceType: 'binary' | 'multiple' | 'timed';
-      options?: Array<{ type: 'trust' | 'suspicion' | 'action' | 'caution' | 'kindness' | 'cruelty' | 'other'; label?: string }>;
-    }> = [];
-    
-    for (const choiceSet of choiceSets) {
-      // Only include choices that belong to beats in this scene
-      const belongsToScene = scene.beats.some(b => b.id === choiceSet.beatId);
-      if (!belongsToScene) continue;
-      
-      const choiceCount = choiceSet.choices.length;
-      const choiceType: 'binary' | 'multiple' | 'timed' = choiceCount === 2 ? 'binary' : 'multiple';
-      
-      positions.push({
-        beatId: choiceSet.beatId,
-        choiceType,
-        options: choiceSet.choices.map(c => ({
-          type: this.inferChoiceType(c.text),
-          label: c.text.substring(0, TEXT_LIMITS.shortPreviewLength)
-        }))
-      });
-    }
-    
-    return positions;
+  ): ReturnType<typeof mapChoicePositionsImpl> {
+    return mapChoicePositionsImpl(choiceSets, scene);
   }
 
-  /**
-   * Infer choice type from text
-   */
-  private inferChoiceType(choiceText: string): 'trust' | 'suspicion' | 'action' | 'caution' | 'kindness' | 'cruelty' | 'other' {
-    const text = choiceText.toLowerCase();
-    
-    if (text.includes('trust') || text.includes('believe') || text.includes('faith')) return 'trust';
-    if (text.includes('suspic') || text.includes('doubt') || text.includes('question')) return 'suspicion';
-    if (text.includes('attack') || text.includes('fight') || text.includes('confront')) return 'action';
-    if (text.includes('wait') || text.includes('careful') || text.includes('cautious')) return 'caution';
-    if (text.includes('help') || text.includes('kind') || text.includes('compassion')) return 'kindness';
-    if (text.includes('cruel') || text.includes('harsh') || text.includes('punish')) return 'cruelty';
-    
-    return 'other';
-  }
-
-  /**
-   * Get location info from world bible for a scene
-   */
   private resolveWorldLocationForScene(
     sceneBlueprint: Pick<SceneBlueprint, 'location' | 'name' | 'description'>,
     worldBible: WorldBible
   ) {
-    const authoredLocation = (sceneBlueprint.location || '').trim().toLowerCase();
-    if (authoredLocation) {
-      const exactIdMatch = worldBible.locations.find((loc) => loc.id.toLowerCase() === authoredLocation);
-      if (exactIdMatch) return exactIdMatch;
-      const exactNameMatch = worldBible.locations.find((loc) => loc.name.toLowerCase() === authoredLocation);
-      if (exactNameMatch) return exactNameMatch;
-      const partialNameMatch = worldBible.locations.find((loc) => loc.name.toLowerCase().includes(authoredLocation) || authoredLocation.includes(loc.name.toLowerCase()));
-      if (partialNameMatch) return partialNameMatch;
-    }
-
-    const sceneText = `${sceneBlueprint.name} ${sceneBlueprint.description || ''}`.toLowerCase();
-    const heuristicMatch = worldBible.locations.find((loc) => {
-      const locName = loc.name.toLowerCase();
-      return sceneText.includes(locName) || locName.includes(sceneText.split(' ')[0] || '');
-    });
-    return heuristicMatch || worldBible.locations[0];
+    return resolveWorldLocationForSceneImpl(sceneBlueprint, worldBible);
   }
 
   private ensureChoiceBridgeBeats(
@@ -10361,136 +9672,7 @@ export class FullStoryPipeline {
     content: SceneContent,
     choiceMap: Map<string, ChoiceSet>,
   ): void {
-    for (const beat of content.beats || []) {
-      if (!beat.isChoicePoint) continue;
-      const choiceSet = choiceMap.get(`${sceneBlueprint.id}::${beat.id}`) || choiceMap.get(beat.id);
-      if (!choiceSet) continue;
-
-      for (const choice of choiceSet.choices || []) {
-        const targetSceneId = choice.nextSceneId;
-        if (!targetSceneId) continue;
-
-        const targetScene = blueprint.scenes.find(scene => scene.id === targetSceneId);
-        const bridgeId = `${beat.id}-bridge-${String(choice.id || 'choice')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, '') || 'choice'}`;
-
-        const readerTargetName = this.sanitizeReaderFacingSceneName(targetScene?.name || targetSceneId, targetSceneId);
-        const originalTargetBeat = choice.nextBeatId
-          ? content.beats.find(candidate => candidate.id === choice.nextBeatId)
-          : undefined;
-        const originalTargetBeatId = originalTargetBeat?.isChoiceBridge ? undefined : choice.nextBeatId;
-
-        const routeContext = {
-          sourceSceneId: sceneBlueprint.id,
-          sourceBeatId: beat.id,
-          sourceChoiceId: choice.id,
-          choiceSummary: choice.feedbackCue?.echoSummary || choice.text,
-          originalTargetSceneId: targetSceneId,
-          originalTargetBeatId,
-          transitionIntent: `Bridge from "${this.sanitizeReaderFacingSceneName(sceneBlueprint.name)}" to "${readerTargetName}" without teleporting the player.`,
-          bridgePurpose: 'choice_transition',
-        };
-
-        choice.routeContext = routeContext;
-        choice.nextBeatId = bridgeId;
-
-        const existingBridge = content.beats.find(candidate => candidate.id === bridgeId);
-        if (existingBridge) {
-          existingBridge.nextSceneId = targetSceneId;
-          existingBridge.nextBeatId = originalTargetBeatId;
-          existingBridge.isChoiceBridge = true;
-          existingBridge.routeContext = routeContext;
-          continue;
-        }
-
-        const bridgeText = this.buildChoiceBridgeBeatText(choice);
-        content.beats.push({
-          id: bridgeId,
-          text: bridgeText,
-          nextSceneId: targetSceneId,
-          nextBeatId: originalTargetBeatId,
-          isChoiceBridge: true,
-          routeContext,
-          visualMoment: bridgeText,
-          primaryAction: bridgeText,
-          emotionalRead: 'the chosen decision visibly turns into motion',
-          relationshipDynamic: 'the decision changes posture, pace, or distance before the moment moves on',
-          mustShowDetail: targetScene?.location
-            ? `a concrete transition toward ${targetScene.location}`
-            : 'a concrete transition from decision into action',
-          intensityTier: 'supporting',
-          sequenceIntent: {
-            objective: 'Let the decision become visible movement without a jump in place or relationship.',
-            activity: 'decision, movement, and arrival',
-            obstacle: 'the decision needs a visible breath before the moment moves on',
-            startState: choice.feedbackCue?.echoSummary || choice.text,
-            endState: targetScene ? `The decision has enough momentum to carry the moment onward.` : 'The decision has enough momentum to carry forward.',
-            beatRole: 'handoff',
-            mechanicThread: choice.consequenceDomain || choice.choiceIntent,
-          },
-        } as GeneratedBeat);
-      }
-    }
-  }
-
-  private buildChoiceBridgeBeatText(choice: ChoiceSet['choices'][number]): string {
-    const rawImmediate = this.cleanChoiceBridgeFragment(
-      choice.outcomeTexts?.partial
-      || choice.reactionText
-      || choice.feedbackCue?.progressSummary
-      || choice.reminderPlan?.immediate
-    );
-    // The lead fragment is sourced from planning fields; reject any meta/design-note
-    // register ("In the next scene…", raw flag ids) rather than leak it to readers.
-    const immediate = rawImmediate && !isUnsafeCallbackProse(rawImmediate) && !this.isGenericChoiceBridgeFragment(rawImmediate)
-      ? rawImmediate
-      : '';
-    // Prefer the authored in-fiction fragment ALONE. The generic line was previously
-    // APPENDED to every bridge, producing robotic structural closers ("The path forward
-    // is set.") on top of real prose (gen-5 audit) — it is now a last-resort fallback.
-    const lead = immediate || this.genericBridgeDestination(choice.id);
-    const trimmed = lead.trim();
-    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-  }
-
-  private isGenericChoiceBridgeFragment(text: string): boolean {
-    const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
-    return [
-      'the choice leaves a visible pressure in the next moment.',
-      'the choice leaves a visible pressure in the next moment',
-      'in the next room, access, trust, and pressure have already shifted.',
-      'in the next room, access, trust, and pressure have already shifted',
-      'people remember what the protagonist risked, and they treat the next ask differently.',
-      'people remember what the protagonist risked, and they treat the next ask differently',
-      'what comes next is already in motion.',
-      'what comes next is already in motion',
-      'there is no stepping back from here.',
-      'there is no stepping back from here',
-      'the decision settles into your chest and stays there.',
-      'the decision settles into your chest and stays there',
-      'the choice changes the air around you.',
-      'the choice changes the air around you',
-    ].includes(normalized);
-  }
-
-  /**
-   * Deterministic generic in-fiction line for a choice bridge with no authored
-   * fragment. In-world register (no "path/threshold/forward is set" scaffolding, no
-   * scene names); rotation keyed on the choice id avoids identical consecutive lines.
-   */
-  private genericBridgeDestination(choiceId: string | undefined): string {
-    const options = [
-      'What comes next is already in motion.',
-      'There is no stepping back from here.',
-      'The decision settles into your chest and stays there.',
-      'The choice changes the air around you.',
-    ];
-    const key = String(choiceId || '');
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-    return options[hash % options.length];
+    ensureChoiceBridgeBeatsImpl(blueprint, sceneBlueprint, content, choiceMap);
   }
 
   private assembleEpisode(

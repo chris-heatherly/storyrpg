@@ -49,6 +49,9 @@ const ENTITY_PATTERN = /\b[A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,
 const CONNECTOR_SPLIT = /\s+(?:and then|but then|then|afterward|afterwards|before|while|as)\s+/i;
 
 export function atomizeTreatmentText(input: TreatmentAtomizerInput): TreatmentEventAtom[] {
+  // LLM-sourced contracts can arrive without sourceText/eventAtoms — an
+  // absent text has no events to atomize, it is not a crash.
+  if (!input.text?.trim()) return [];
   const sourceSentences = splitTreatmentSentences(input.text);
   const atoms: TreatmentEventAtom[] = [];
   let order = 0;

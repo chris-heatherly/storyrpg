@@ -263,7 +263,8 @@ function atomSourcesForScene(scene: PlannedScene): AtomSource[] {
     }
   }
   for (const contract of scene.storyCircleBeatContracts ?? []) {
-    const texts = contract.eventAtoms?.length ? contract.eventAtoms : [contract.sourceText];
+    const texts = (contract.eventAtoms?.length ? contract.eventAtoms : [contract.sourceText])
+      .filter((text): text is string => Boolean(text?.trim()));
     texts.forEach((text, index) => {
       const atoms = atomizeTreatmentText({
         episodeNumber: scene.episodeNumber,

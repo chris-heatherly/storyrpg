@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { atomizeTreatmentText } from './treatmentEventAtomizer';
 
 describe('treatmentEventAtomizer', () => {
+  it('returns no atoms for missing or blank text instead of crashing', () => {
+    // Live-run regression: a storyCircleBeatContract with neither eventAtoms
+    // nor sourceText fed undefined into the atomizer and aborted the episode
+    // blueprint ("Cannot read properties of undefined (reading 'replace')").
+    expect(atomizeTreatmentText({
+      episodeNumber: 1,
+      text: undefined as unknown as string,
+    })).toEqual([]);
+    expect(atomizeTreatmentText({ episodeNumber: 1, text: '   ' })).toEqual([]);
+  });
+
   it('separates compound playable treatment text into ordered event atoms', () => {
     const atoms = atomizeTreatmentText({
       episodeNumber: 1,

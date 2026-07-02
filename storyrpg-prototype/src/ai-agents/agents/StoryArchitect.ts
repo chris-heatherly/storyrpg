@@ -4444,6 +4444,11 @@ REQUIREMENTS:
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`[StoryArchitect] Error:`, errorMsg);
+      if (error instanceof TypeError && error.stack) {
+        // Post-parse repair crashes are unlocatable from the message alone —
+        // surface where in the ~20 repair helpers it died.
+        console.error(`[StoryArchitect] Stack:`, error.stack.split('\n').slice(0, 6).join('\n'));
+      }
 
       const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
 

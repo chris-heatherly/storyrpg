@@ -2,6 +2,7 @@
 // ColorScript / VisualPlan type drift and restore whole-file typecheck.
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
+import { PROXY_CONFIG } from '../../../config/endpoints';
 import { SceneContent } from '../SceneWriter';
 import { 
   CORE_VISUAL_PRINCIPLE, 
@@ -1136,7 +1137,7 @@ Return ONLY JSON matching VisualPlan shape:
       stack: stack || '',
     };
     const filePath = `generated-stories/_storyboard_diagnostics/${sceneId}_${Date.now()}.json`;
-    fetch('http://localhost:3001/write-file', {
+    fetch(`${PROXY_CONFIG.getProxyUrl()}/write-file`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filePath, content: JSON.stringify(payload, null, 2) }),

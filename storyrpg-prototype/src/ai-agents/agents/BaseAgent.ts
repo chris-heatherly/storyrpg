@@ -332,14 +332,10 @@ export abstract class BaseAgent {
   };
   private static _observer?: (observation: LlmCallObservation) => void;
 
+  // Single source of truth with isLlmQuotaError — a new quota phrase added to
+  // one and not the other used to split retry classification from error wrapping.
   private static isQuotaMessage(message: string): boolean {
-    const lower = (message || '').toLowerCase();
-    return (
-      lower.includes('exceeded your current quota') ||
-      lower.includes('quota exceeded for metric') ||
-      lower.includes('generate_requests_per_model_per_day') ||
-      lower.includes('limit: 0')
-    );
+    return isLlmQuotaError(new Error(message || ''));
   }
 
   /**
@@ -492,7 +488,7 @@ Do not use markdown code blocks around the JSON.
   /**
    * Call the LLM with the given messages (with retry for transient errors)
    */
-  protected async callLLM(messages: AgentMessage[], retries: number = 4, options?: { useMemory?: boolean; signal?: AbortSignal; jsonSchema?: StructuredJsonSchema }): Promise<string> {
+  protected async callLLM(messages: AgentMessage[], retries: number = 4, options?: { signal?: AbortSignal; jsonSchema?: StructuredJsonSchema }): Promise<string> {
     const existingSystemMessage = messages.find((m) => m.role === 'system');
     const otherMessages = messages.filter((m) => m.role !== 'system');
 
@@ -545,9 +541,7 @@ Do not use markdown code blocks around the JSON.
         // didn't pass a per-call one, so a timeout abort reaches every call site.
         const signal = options?.signal ?? this.activeAbortSignal;
         if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-        if (this.config.provider === 'anthropic' && options?.useMemory) {
-          result = await this.callAnthropicWithMemory(fullMessages, usageCapture);
-        } else if (this.config.provider === 'anthropic') {
+        if (this.config.provider === 'anthropic') {
           result = await this.callAnthropic(fullMessages, signal, usageCapture, options?.jsonSchema);
         } else if (this.config.provider === 'gemini') {
           result = await this.callGemini(fullMessages, signal, usageCapture, options?.jsonSchema);
@@ -611,11 +605,14 @@ Do not use markdown code blocks around the JSON.
 
         // Classify the failure (pure helper — see BaseAgent.classifyLlmError). The
         // scoped abort signal is authoritative for "was this an intentional abort",
-        // since undici can surface a timeout-abort as a bare `terminated`.
+        // since undici can surface a timeout-abort as a bare `terminated`. Check
+        // the PER-CALL signal too (EncounterArchitect passes withTimeoutAbort
+        // signals) — a per-call timeout abort must not be classified retryable
+        // or pollute the shared circuit-breaker state.
         const { isRetryable, isConnectionFailure } = BaseAgent.classifyLlmError({
           message: msg,
           errorName: lastError.name,
-          signalAborted: !!this.activeAbortSignal?.aborted,
+          signalAborted: !!(options?.signal?.aborted || this.activeAbortSignal?.aborted),
           isQuotaError,
         });
         // Track consecutive connection failures for the circuit breaker.
@@ -758,25 +755,31 @@ Do not use markdown code blocks around the JSON.
       return await this.callAnthropicStreaming(body, signal, usageOut);
     }
 
-    const response = await fetch(ANTHROPIC_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-        ...(isWebRuntime()
-          ? {
-              'x-llm-timeout-ms': String(timeoutHintMs),
-              'x-llm-connect-timeout-ms': String(connectTimeoutHintMs),
-              'x-llm-step': this.name,
-            }
-          : {}),
-      },
-      body: JSON.stringify(body),
-      ...(signal ? { signal } : {}),
-    });
-
-    const text = await response.text();
+    const ct = this.clientTimeoutSignal(signal, 'Anthropic');
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+          ...(isWebRuntime()
+            ? {
+                'x-llm-timeout-ms': String(timeoutHintMs),
+                'x-llm-connect-timeout-ms': String(connectTimeoutHintMs),
+                'x-llm-step': this.name,
+              }
+            : {}),
+        },
+        body: JSON.stringify(body),
+        signal: ct.signal,
+      });
+      text = await response.text();
+    } finally {
+      ct.done();
+    }
 
     if (!response.ok) {
       let errorMessage = `Anthropic API error: ${response.status} - ${text}`;
@@ -830,9 +833,18 @@ Do not use markdown code blocks around the JSON.
       const textBlock = Array.isArray(data.content)
         ? data.content.find((b: any) => typeof b?.text === 'string')
         : undefined;
-      return textBlock?.text ?? data.content[0]?.text ?? '';
+      const content = textBlock?.text ?? data.content[0]?.text ?? '';
+      // Parity with the other three providers: an empty response must throw a
+      // descriptive error, not degrade to an opaque parseJSON failure downstream.
+      if (!content) {
+        throw new Error(
+          `Anthropic returned empty content (stop_reason=${stopReason ?? 'unknown'}). Response start: ${text.substring(0, 300)}`,
+        );
+      }
+      return content;
     } catch (parseError) {
       if (parseError instanceof TruncatedLLMResponseError) throw parseError;
+      if (parseError instanceof Error && parseError.message.startsWith('Anthropic returned empty content')) throw parseError;
       const msg = parseError instanceof Error ? parseError.message : String(parseError);
       throw new Error(`Failed to parse Anthropic response as JSON: ${msg}. Response start: ${text.substring(0, 500)}`);
     }
@@ -910,169 +922,25 @@ Do not use markdown code blocks around the JSON.
           `${result.usage?.outputTokens ?? '?'} output tokens${cacheNote} ` +
           `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
       );
+      // Parity with the buffered path: a max_tokens cut must surface as the
+      // typed truncation error (fail-fast, non-retryable) rather than degrading
+      // to a downstream parse failure.
+      if (isTruncationFinishReason(result.finishReason)) {
+        throw new TruncatedLLMResponseError(
+          `Truncated LLM response from Anthropic stream: stop_reason=${result.finishReason} (limit: ${this.config.maxTokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
+          'anthropic',
+          result.finishReason,
+        );
+      }
+      if (!result.text) {
+        throw new Error(
+          `Anthropic returned empty content (stream, stop_reason=${result.finishReason ?? 'unknown'})`,
+        );
+      }
       return result.text;
     } finally {
       if (signal) signal.removeEventListener('abort', onOuterAbort);
     }
-  }
-
-  private async callAnthropicWithMemory(
-    messages: AgentMessage[],
-    usageOut?: { inputTokens?: number; outputTokens?: number },
-  ): Promise<string> {
-    const MAX_MEMORY_ROUNDS = 10;
-    const systemMessage = messages.find((m) => m.role === 'system');
-    const initialMessages = messages.filter((m) => m.role !== 'system');
-
-    const systemText = typeof systemMessage?.content === 'string'
-      ? systemMessage.content
-      : (Array.isArray(systemMessage?.content)
-          ? (systemMessage?.content[0] as any)?.text || ''
-          : '');
-
-    const totalInputChars = systemText.length
-      + initialMessages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0);
-    log.debug(`[${this.name}] Calling Anthropic API with memory via ${isWebRuntime() ? 'proxy' : 'direct'}... (input ~${Math.round(totalInputChars / 4)} tokens)`);
-
-    const conversationMessages: any[] = initialMessages.map((m) => {
-      if (typeof m.content === 'string') {
-        return { role: m.role, content: m.content };
-      }
-      return {
-        role: m.role,
-        content: m.content.map(part => {
-          if (part.type === 'text') return part;
-          if (part.type === 'image') return part;
-          return null;
-        }).filter(Boolean)
-      };
-    });
-
-    const stepName = this.name.toLowerCase();
-    const isHeavyPlanningStep =
-      stepName.includes('world builder') ||
-      stepName.includes('story architect') ||
-      stepName.includes('season planner') ||
-      stepName.includes('source material analyzer');
-    const timeoutHintMs = this.config.maxTokens >= 32000 ? 900000 : (isHeavyPlanningStep ? 300000 : 180000);
-    const connectTimeoutHintMs = this.config.maxTokens >= 32000 ? 180000 : (isHeavyPlanningStep ? 180000 : 120000);
-
-    const memoryStore = getMemoryStore();
-
-    for (let round = 0; round < MAX_MEMORY_ROUNDS; round++) {
-      const body: any = {
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        // Cache the stable system prompt prefix across calls (C1).
-        system: this.buildCachedSystemField(systemText),
-        messages: conversationMessages,
-        tools: [{ type: 'memory_20250818', name: 'memory' }],
-      };
-
-      const response = await fetch(ANTHROPIC_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.config.apiKey,
-          'anthropic-version': '2023-06-01',
-          ...(isWebRuntime()
-            ? {
-                'x-llm-timeout-ms': String(timeoutHintMs),
-                'x-llm-connect-timeout-ms': String(connectTimeoutHintMs),
-                'x-llm-step': this.name,
-              }
-            : {}),
-        },
-        body: JSON.stringify(body),
-      });
-
-      const text = await response.text();
-      if (!response.ok) {
-        let errorMessage = `Anthropic API error: ${response.status} - ${text}`;
-        try {
-          const errorJson = JSON.parse(text);
-          if (errorJson.error?.message) errorMessage = `Anthropic API error: ${errorJson.error.message}`;
-        } catch { /* keep original */ }
-        if (response.status === 402 || isBillingQuotaMessage(errorMessage)) {
-          throw new LLMQuotaError(errorMessage, 'anthropic');
-        }
-        throw new Error(errorMessage);
-      }
-
-      const data = JSON.parse(text);
-      const stopReason = data.stop_reason;
-      const outputTokens = data.usage?.output_tokens ?? '?';
-      const inputTokens = data.usage?.input_tokens ?? '?';
-      log.debug(`[${this.name}] Memory round ${round + 1}: ${inputTokens} in, ${outputTokens} out, stop: ${stopReason}`);
-      if (usageOut) {
-        if (typeof data.usage?.input_tokens === 'number') {
-          usageOut.inputTokens = (usageOut.inputTokens ?? 0) + data.usage.input_tokens;
-        }
-        if (typeof data.usage?.output_tokens === 'number') {
-          usageOut.outputTokens = (usageOut.outputTokens ?? 0) + data.usage.output_tokens;
-        }
-      }
-
-      if (stopReason === 'end_turn' || stopReason === 'max_tokens') {
-        const textBlock = data.content?.find((b: any) => b.type === 'text');
-
-        // Even on end_turn there may be trailing memory writes — execute them
-        const toolBlocks = (data.content || []).filter((b: any) => b.type === 'tool_use' && b.name === 'memory');
-        for (const tb of toolBlocks) {
-          try {
-            await memoryStore.execute(tb.input as MemoryCommand);
-            log.debug(`[${this.name}] Memory write (final): ${tb.input.command} ${tb.input.path || tb.input.old_path || ''}`);
-          } catch (err) {
-            console.warn(`[${this.name}] Memory write failed (final):`, err);
-          }
-        }
-
-        if (stopReason === 'max_tokens') {
-          throw new TruncatedLLMResponseError(
-            `Truncated LLM response from Anthropic: stop_reason=max_tokens with memory enabled (limit: ${this.config.maxTokens})`,
-            'anthropic',
-            'max_tokens',
-          );
-        }
-        return textBlock?.text || '';
-      }
-
-      if (stopReason === 'tool_use') {
-        const toolBlocks = (data.content || []).filter((b: any) => b.type === 'tool_use' && b.name === 'memory');
-        if (toolBlocks.length === 0) {
-          const textBlock = data.content?.find((b: any) => b.type === 'text');
-          return textBlock?.text || '';
-        }
-
-        conversationMessages.push({ role: 'assistant', content: data.content });
-
-        const toolResults: any[] = [];
-        for (const tb of toolBlocks) {
-          log.debug(`[${this.name}] Memory: ${tb.input.command} ${tb.input.path || tb.input.old_path || ''}`);
-          let result: string;
-          try {
-            result = await memoryStore.execute(tb.input as MemoryCommand);
-          } catch (err) {
-            result = `Error: ${err instanceof Error ? err.message : String(err)}`;
-          }
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: tb.id,
-            content: result,
-          });
-        }
-        conversationMessages.push({ role: 'user', content: toolResults });
-        continue;
-      }
-
-      // Unknown stop reason — extract text and return
-      const textBlock = data.content?.find((b: any) => b.type === 'text');
-      return textBlock?.text || '';
-    }
-
-    console.warn(`[${this.name}] Memory loop exhausted after ${MAX_MEMORY_ROUNDS} rounds`);
-    return '';
   }
 
   private async callOpenAI(
@@ -1151,17 +1019,23 @@ Do not use markdown code blocks around the JSON.
       return await this.callOpenAIStreaming(body, model, isReasoningModel, signal, usageOut);
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.config.apiKey}`,
-      },
-      ...(signal ? { signal } : {}),
-      body: JSON.stringify(body),
-    });
-
-    const text = await response.text();
+    const ct = this.clientTimeoutSignal(signal, 'OpenAI');
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
+        signal: ct.signal,
+        body: JSON.stringify(body),
+      });
+      text = await response.text();
+    } finally {
+      ct.done();
+    }
 
     if (!response.ok) {
       throw new Error(`OpenAI API error: ${response.status} - ${text}`);
@@ -1272,6 +1146,15 @@ Do not use markdown code blocks around the JSON.
         `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
     );
 
+    // Parity with the buffered path: finish_reason "length" = max_tokens cut.
+    if (isTruncationFinishReason(result.finishReason)) {
+      throw new TruncatedLLMResponseError(
+        `Truncated LLM response from OpenAI stream: finish_reason=${result.finishReason} (limit: ${this.config.maxTokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
+        'openai',
+        result.finishReason,
+      );
+    }
+
     const content = result.text;
     if (!content || content.trim().length === 0) {
       if (isReasoningModel) {
@@ -1343,9 +1226,8 @@ Do not use markdown code blocks around the JSON.
     if (openRouter?.transforms && openRouter.transforms.length > 0) {
       body.transforms = openRouter.transforms;
     }
-    if (openRouter?.route === 'fusion' && !body.models) {
-      body.model = model || 'openrouter/fusion';
-    }
+    // (No fusion special-case here: `model` is always defaulted above, so fusion
+    // routing works by configuring model: 'openrouter/fusion' explicitly.)
     if (jsonSchema) {
       body.response_format = {
         type: 'json_schema',
@@ -1362,14 +1244,20 @@ Do not use markdown code blocks around the JSON.
       return await this.callOpenRouterStreaming(body, model, signal, usageOut);
     }
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: this.openRouterHeaders(),
-      ...(signal ? { signal } : {}),
-      body: JSON.stringify(body),
-    });
-
-    const text = await response.text();
+    const ct = this.clientTimeoutSignal(signal, 'OpenRouter');
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(OPENROUTER_API_URL, {
+        method: 'POST',
+        headers: this.openRouterHeaders(),
+        signal: ct.signal,
+        body: JSON.stringify(body),
+      });
+      text = await response.text();
+    } finally {
+      ct.done();
+    }
     if (!response.ok) {
       throw new Error(`OpenRouter API error: ${response.status} - ${text}`);
     }
@@ -1466,6 +1354,15 @@ Do not use markdown code blocks around the JSON.
         `${result.usage?.outputTokens ?? '?'} output tokens ` +
         `(first-byte ${result.firstByteMs}ms, total ${result.totalMs}ms)`,
     );
+
+    // Parity with the buffered path: finish_reason "length" = max_tokens cut.
+    if (isTruncationFinishReason(result.finishReason)) {
+      throw new TruncatedLLMResponseError(
+        `Truncated LLM response from OpenRouter stream: finish_reason=${result.finishReason} (limit: ${this.config.maxTokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
+        'openrouter',
+        result.finishReason,
+      );
+    }
 
     const content = result.text;
     if (!content || content.trim().length === 0) {
@@ -1812,7 +1709,7 @@ Do not use markdown code blocks around the JSON.
    */
   protected async callLLMForJson<T>(
     messages: AgentMessage[],
-    options?: { useMemory?: boolean; signal?: AbortSignal; jsonSchema?: StructuredJsonSchema },
+    options?: { signal?: AbortSignal; jsonSchema?: StructuredJsonSchema },
   ): Promise<{ data: T; rawResponse: string }> {
     const response = await this.callLLM(messages, 4, options);
     try {
@@ -2033,6 +1930,38 @@ Do not use markdown code blocks around the JSON.
   }
 
   /**
+   * Chain a REAL client-side timeout onto a buffered provider call (every
+   * structured/jsonSchema call uses the buffered path). Direct provider calls
+   * (the worker path) have no proxy to honor a timeout header, so without this
+   * a stalled connection hangs until undici's ~22-min ceiling while holding its
+   * global + per-provider guardrail permits — two stalls freeze a provider
+   * lane. Sized by output budget, matching the Gemini buffered path.
+   */
+  private clientTimeoutSignal(
+    signal: AbortSignal | undefined,
+    providerLabel: string,
+  ): { signal: AbortSignal; done: () => void } {
+    const timeoutMs = this.config.maxTokens >= 32000 ? 900_000 : 300_000;
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`${providerLabel} request exceeded ${timeoutMs}ms client timeout`)),
+      timeoutMs,
+    );
+    const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort((signal as { reason?: unknown }).reason);
+      else signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+    return {
+      signal: controller.signal,
+      done: () => {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onOuterAbort);
+      },
+    };
+  }
+
+  /**
    * True when `json` has an even number of unescaped `"` — i.e. every string is
    * closed. An odd count means a string was left open (the response was cut
    * mid-string), which {@link handleTruncation} must recover rather than treat
@@ -2041,9 +1970,21 @@ Do not use markdown code blocks around the JSON.
   private hasBalancedJsonQuotes(json: string): boolean {
     let quotes = 0;
     for (let i = 0; i < json.length; i++) {
-      if (json[i] === '"' && (i === 0 || json[i - 1] !== '\\')) quotes++;
+      if (json[i] === '"' && !BaseAgent.isEscapedAt(json, i)) quotes++;
     }
     return quotes % 2 === 0;
+  }
+
+  /**
+   * True when the character at `i` is escaped — preceded by an ODD run of
+   * backslashes. A single `json[i-1] !== '\\'` check misclassifies `\\"`
+   * (escaped backslash, then a REAL closing quote) and flips quote parity for
+   * every string ending in a literal backslash.
+   */
+  private static isEscapedAt(json: string, i: number): boolean {
+    let backslashes = 0;
+    for (let j = i - 1; j >= 0 && json[j] === '\\'; j--) backslashes++;
+    return backslashes % 2 === 1;
   }
 
   /**
@@ -2069,9 +2010,26 @@ Do not use markdown code blocks around the JSON.
 
     log.debug(`[BaseAgent] Detected truncated response, attempting recovery...`);
 
+    // Single string-aware scan: track in-string state so a literal "}," inside
+    // prose (scene text quoting JSON, dialogue with braces) can never become the
+    // cut point, and record real quote parity with escape-run handling.
+    let inString = false;
+    let quoteCount = 0;
+    let lastQuotePos = -1;
+    let lastCompletePos = -1;
+    for (let i = 0; i < json.length; i++) {
+      const ch = json[i];
+      if (ch === '"' && !BaseAgent.isEscapedAt(json, i)) {
+        inString = !inString;
+        quoteCount++;
+        lastQuotePos = i;
+      } else if (!inString && ch === '}' && json[i + 1] === ',') {
+        lastCompletePos = i;
+      }
+    }
+
     // Find the last complete array element (for shots arrays)
     // Look for the pattern: }, { or }, ] which indicates a complete object in an array
-    const lastCompletePos = json.lastIndexOf('},');
     if (lastCompletePos > 0) {
       const truncated = json.slice(0, lastCompletePos + 1);
       const droppedChars = json.length - truncated.length;
@@ -2085,16 +2043,7 @@ Do not use markdown code blocks around the JSON.
     }
 
     // If we can't find a clean truncation point, try to close the current string
-    // Count quotes to see if we're in an unterminated string
-    let quoteCount = 0;
-    let lastQuotePos = -1;
-    for (let i = 0; i < json.length; i++) {
-      if (json[i] === '"' && (i === 0 || json[i-1] !== '\\')) {
-        quoteCount++;
-        lastQuotePos = i;
-      }
-    }
-
+    // (quote parity comes from the string-aware scan above).
     // Odd number of quotes means unterminated string
     if (quoteCount % 2 === 1 && lastQuotePos > 0) {
       // Find the last property name before the unterminated value

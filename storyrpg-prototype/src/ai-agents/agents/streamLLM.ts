@@ -326,6 +326,11 @@ export const anthropicSseHandler: SseEventHandler = (evt, acc) => {
     if (u && typeof u.output_tokens === 'number') {
       acc.usage.outputTokens = u.output_tokens;
     }
+    // Capture stop_reason so callers can detect a max_tokens truncation and
+    // throw the typed TruncatedLLMResponseError instead of degrading to an
+    // opaque parse failure (parity with the buffered path and Gemini streaming).
+    const sr = evt.delta?.stop_reason;
+    if (typeof sr === 'string') acc.finishReason = sr;
   }
 };
 
@@ -338,6 +343,10 @@ export const openaiSseHandler: SseEventHandler = (evt, acc) => {
   if (delta && typeof delta.content === 'string') {
     acc.text += delta.content;
   }
+  // Capture finish_reason ("length" = max_tokens truncation) for the typed
+  // truncation error — parity with the buffered path. Shared by OpenRouter.
+  const fr = evt?.choices?.[0]?.finish_reason;
+  if (typeof fr === 'string' && fr) acc.finishReason = fr;
   const u = evt?.usage;
   if (u) {
     if (typeof u.prompt_tokens === 'number') acc.usage.inputTokens = u.prompt_tokens;

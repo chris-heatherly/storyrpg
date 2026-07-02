@@ -1730,17 +1730,40 @@ Outcomes should include consequences that match the skill being tested:
   // 3 choices × 3 outcomes) is the largest payload — these routinely blew 120s
   // and aborted as "fetch failed", producing the silent phase2:[false,false,false]
   // collapse. Sized generously above the heaviest legit generation but kept
-  // below PIPELINE_TIMEOUTS.encounterAgent (10min) and the 16min HTTP ceiling
-  // so a genuine hang still dies. Each phase additionally gets ONE retry with a
-  // fresh timeout window (runPhaseWithRetry).
+  // below PIPELINE_TIMEOUTS.encounterAgent (25min) so a genuine hang still dies.
+  // Each phase additionally gets ONE retry with a fresh timeout window
+  // (runPhaseWithRetry).
   private static readonly PHASE1_TIMEOUT_MS = 180_000;
   private static readonly PHASE2_TIMEOUT_MS = 240_000; // largest payload
   private static readonly PHASE3_TIMEOUT_MS = 180_000;
   private static readonly PHASE4_TIMEOUT_MS = 180_000;
   private static readonly PHASE_RETRY_ATTEMPTS = 2;
+  private static readonly PHASE2_CONCURRENCY = 2;
+  // Phase-1 schema caps openingBeat.choices at 4 (encounterSchemas maxItems).
+  private static readonly MAX_PHASE2_CHOICES = 4;
   // Legacy lean/retry single-call path timeout (raised from 120s for the same
   // reason — large structured generations exceed 120s).
   private static readonly PER_CALL_TIMEOUT_MS = 180_000;
+
+  /**
+   * Worst-case wall-clock of the phased pipeline when EVERY attempt of every
+   * phase times out: sequential phase 1, then the parallel block bounded by its
+   * slowest lane (phase 2's ceil(choices/concurrency) sequential waves, each
+   * with PHASE_RETRY_ATTEMPTS fresh timeout windows). Retry backoff (~1.2s per
+   * retry) is folded in as a small constant. A unit test asserts this stays
+   * under PIPELINE_TIMEOUTS.encounterAgent so the outer budget can never sit
+   * below the internal sum again (the "600s timeout" bug class, twice fixed).
+   */
+  static worstCasePhaseBudgetMs(): number {
+    const attempts = EncounterArchitect.PHASE_RETRY_ATTEMPTS;
+    const backoffPerRetryMs = 1_300;
+    const phase1 = attempts * EncounterArchitect.PHASE1_TIMEOUT_MS + (attempts - 1) * backoffPerRetryMs;
+    const phase2Waves = Math.ceil(EncounterArchitect.MAX_PHASE2_CHOICES / EncounterArchitect.PHASE2_CONCURRENCY);
+    const phase2 = phase2Waves * (attempts * EncounterArchitect.PHASE2_TIMEOUT_MS + (attempts - 1) * backoffPerRetryMs);
+    const phase3 = attempts * EncounterArchitect.PHASE3_TIMEOUT_MS + (attempts - 1) * backoffPerRetryMs;
+    const phase4 = attempts * EncounterArchitect.PHASE4_TIMEOUT_MS + (attempts - 1) * backoffPerRetryMs;
+    return phase1 + Math.max(phase2, phase3, phase4);
+  }
 
   async execute(
     input: EncounterArchitectInput,
@@ -4770,7 +4793,7 @@ CRITICAL RULES:
     // doesn't time out every branch at once (the root of phase2:[F,F,F]).
     const phase2Promise = mapWithConcurrency(
       phase1.openingBeat.choices,
-      2,
+      EncounterArchitect.PHASE2_CONCURRENCY,
       (choice) =>
         this.runPhase2(input, dynamicsBrief, choice, phaseErrors).catch(() => null),
     );
@@ -4916,8 +4939,8 @@ CRITICAL RULES:
    * Note: `callLLM` keeps its own internal retry (maxRetries 1) for fast,
    * transient connection errors WITHIN one timeout window; this outer loop adds
    * recovery from a whole-attempt timeout/parse failure. We deliberately do NOT
-   * also raise callLLM's retries — stacking 2×2 attempts under 180–240s windows
-   * could exceed the 10-min encounter budget.
+   * also raise callLLM's retries — stacking more attempts under 180–240s windows
+   * grows worstCasePhaseBudgetMs() toward the 25-min encounter budget.
    */
   private async runPhaseWithRetry<T>(
     label: string,

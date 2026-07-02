@@ -129,7 +129,50 @@ key-resolution suites 211 green, `node --check` on all edited server files,
 NOTE for operators: keys must now be set under their server-side names
 (GEMINI_API_KEY etc.) — EXPO_PUBLIC names are ignored by src/ code.
 
-Phases 3–8 not started.
+**2026-07-01 (later) — Phase 3 COMPLETE (tested):**
+- ✅ **3.1 (H4)** — streaming truncation parity: `anthropicSseHandler` captures
+  `message_delta.stop_reason`, `openaiSseHandler` captures
+  `choices[0].finish_reason` (shared by OpenRouter); all three streaming
+  consumers now throw the typed `TruncatedLLMResponseError` on a max_tokens cut
+  (+ Anthropic stream empty-content error). 4 new SSE fixture tests.
+- ✅ **3.2 (M7)** — new `clientTimeoutSignal` helper (5 min / 15 min ≥32k
+  budget, chained to the per-call signal) applied to the buffered
+  Anthropic/OpenAI/OpenRouter fetches — a stalled structured call can no
+  longer hold guardrail permits for undici's 22-min ceiling.
+- ✅ **3.3 (M8)** — deleted dead `callAnthropicWithMemory` (159 lines, zero
+  callers, two latent bugs) + the `useMemory` option plumbing.
+- ✅ **3.4 (M9)** — `handleTruncation` now does ONE string-aware scan: a literal
+  `},` inside prose can never be the cut point, and escape handling counts
+  backslash RUNS (`\\"` is a real delimiter). 2 new regression tests including
+  a decoy-`},`-in-string recovery proof.
+- ✅ **3.5 (M6)** — `encounterAgent` budget 20→25 min; new
+  `EncounterArchitect.worstCasePhaseBudgetMs()` computes the all-retries-slow
+  worst case (1,324s) from the LIVE constants (phase timeouts, attempts,
+  phase-2 concurrency, schema choice cap) and a unit test asserts it fits under
+  the outer budget — the "600s timeout" class can't recur silently a third time.
+- ✅ **3.6** — abort classification consults the per-call signal (F5); Anthropic
+  buffered empty-content throws descriptively like the other 3 providers (F8);
+  quota matcher single-sourced (`isQuotaMessage` delegates to `isLlmQuotaError`,
+  F12); image agents use `PROXY_CONFIG.getProxyUrl()` instead of hardcoded
+  `localhost:3001` (F11); OpenRouter fusion no-op branch removed (F14); stale
+  undici "16 min" comment corrected to 22 (F12 tail).
+- ⏭️ Deferred by design: model-slug drift table (F9), display-name timeout tiers
+  (F10), parse-retry convention unification (F13), per-provider circuit breaker
+  (F15) — documented, low risk, judgment calls.
+
+Verification: typecheck:app clean; 511 agent/schema/timeout tests green; FULL
+suite 3,909 pass with exactly 6 failures — ALL verified pre-existing before
+this session (4 promptSnapshot/runGraphParity goldens fail at 19e91ad8, two
+checkpoints back; 2 relationshipArcEnforcement fail at HEAD with the entire
+tree stashed). Bisect worktree used and removed.
+
+**KNOWN-RED BASELINE (pre-existing, NOT from this remediation):**
+`FullStoryPipeline.promptSnapshot{,.branching,.season}` +
+`runGraphParity.season` (scene-2 "MISSING CHOICE POINT" hard issue) and
+`relationshipArcEnforcement` ×2. These predate the audit and block `npm run
+validate` — triage separately before the Phase 7 live run.
+
+Phases 4–8 not started.
 
 ## Sequencing overview
 

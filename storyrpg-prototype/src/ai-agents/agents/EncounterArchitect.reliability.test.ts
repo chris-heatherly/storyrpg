@@ -80,6 +80,19 @@ const makePhase4 = (): Phase4Result => ({
   escape: { id: 'se', name: 'Escape', triggerOutcome: 'escape', tone: 'relieved', narrativeFunction: 'The narrow escape keeps danger alive.', beats: [{ id: 'se-1', text: 'Distance opens just enough to breathe, though the threat remains close behind.', isTerminal: true }], startingBeatId: 'se-1', consequences: [] },
 });
 
+describe('phase budget arithmetic (the twice-fixed "600s timeout" bug class)', () => {
+  it('worst-case internal phase sum fits under the outer encounterAgent budget', async () => {
+    const { PIPELINE_TIMEOUTS } = await import('../utils/withTimeout');
+    // Computed from the LIVE constants (phase timeouts, retry attempts, phase-2
+    // concurrency, schema choice cap) — if anyone raises a phase timeout or adds
+    // an attempt without re-sizing the outer budget, this fails at unit time
+    // instead of as a live-run "execute timed out" abort.
+    expect(EncounterArchitect.worstCasePhaseBudgetMs()).toBeLessThanOrEqual(
+      PIPELINE_TIMEOUTS.encounterAgent,
+    );
+  });
+});
+
 describe('getMinimumRequiredBeatCount (authored-anchor scaling)', () => {
   const min = (overrides: Partial<EncounterArchitectInput>): number => {
     const architect = new EncounterArchitect(config) as any;

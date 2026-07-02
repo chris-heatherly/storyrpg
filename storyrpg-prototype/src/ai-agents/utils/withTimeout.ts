@@ -66,10 +66,12 @@ export function withTimeoutAbort<T>(
 export const PIPELINE_TIMEOUTS = {
   // Single heavy LLM agent call (WorldBuilder, CharacterDesigner, SceneWriter,
   // ChoiceAuthor, BranchManager, …). Raised 10→15 min: once the process-wide
-  // undici headersTimeout was lifted to 16 min (resilientHttp.ts), the binding
+  // undici headersTimeout was lifted (now 22 min — resilientHttp.ts), the binding
   // limit on a large non-streaming generation became THIS wrapper. A 10-episode
   // treatment's per-call outputs legitimately exceed 10 min, so they were dying
-  // here as "timed out after 600s". Stays just below the 16-min transport ceiling.
+  // here as "timed out after 600s". Stays below the 22-min transport ceiling;
+  // buffered provider calls additionally carry their own 5/15-min client abort
+  // (BaseAgent.clientTimeoutSignal).
   llmAgent: 15 * 60_000,
   // Source analysis runs MULTIPLE sequential LLM calls (plot points, episode
   // breakdown, ...), so it needs more than the single-call llmAgent budget — one
@@ -93,8 +95,15 @@ export const PIPELINE_TIMEOUTS = {
   // the phase timeouts to 180/240 without raising this cap is what made every
   // 3-choice encounter time out at "600s".) A genuine hang is still caught per
   // phase by each runPhaseWithRetry's own abort, so this only bounds the overall
-  // orchestration. Matched to storyArchitect's 20-min budget with headroom.
-  encounterAgent: 20 * 60_000,
+  // orchestration.
+  //
+  // 25 min: the WORST case (every attempt of every phase times out) is
+  // phase1 2×180s + max-parallel-lane(phase2: ceil(4 choices/concurrency 2)=2
+  // waves × 2 attempts × 240s = 960s) ≈ 1,323s incl. backoffs — the previous
+  // 20-min cap sat BELOW that, recreating the same class of bug for the
+  // all-retries-slow case. EncounterArchitect.worstCasePhaseBudgetMs() computes
+  // this from the live constants and a unit test asserts it fits under this cap.
+  encounterAgent: 25 * 60_000,
   imageGeneration: 3 * 60_000,
   storyboard: 15 * 60_000,
   validateAndRegenerate: 5 * 60_000,

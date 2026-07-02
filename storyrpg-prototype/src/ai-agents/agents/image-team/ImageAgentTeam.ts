@@ -2,8 +2,9 @@
 // beat / reference-image type drift and restore whole-file typecheck.
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from '../BaseAgent';
-import { 
-  ImagePrompt, 
+import { PROXY_CONFIG } from '../../../config/endpoints';
+import {
+  ImagePrompt,
   SceneImageRequest, 
   BeatImageRequest, 
   CoverImageRequest, 
@@ -678,8 +679,8 @@ ${MOBILE_COMPOSITION_FRAMEWORK}
     };
     try {
       const target = jobId.startsWith('worker-')
-        ? `http://localhost:3001/worker-jobs/${jobId}/checkpoint`
-        : `http://localhost:3001/generation-jobs/${jobId}`;
+        ? `${PROXY_CONFIG.getProxyUrl()}/worker-jobs/${jobId}/checkpoint`
+        : `${PROXY_CONFIG.getProxyUrl()}/generation-jobs/${jobId}`;
       const method = jobId.startsWith('worker-') ? 'PATCH' : 'PATCH';
       const body = jobId.startsWith('worker-')
         ? JSON.stringify(stepPatch)

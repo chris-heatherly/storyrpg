@@ -97,6 +97,22 @@ describe('readSSEStream chunk reassembly (Anthropic)', () => {
     expect(result.cacheRead).toBe(80);
     expect(result.cacheCreate).toBe(10);
   });
+
+  it('captures stop_reason from message_delta so a max_tokens cut is detectable', async () => {
+    const chunks = [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"truncat"}}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":8192}}\n\n',
+    ];
+    const result = await readSSEStream(streamFromChunks(chunks), anthropicSseHandler);
+    expect(result.finishReason).toBe('max_tokens');
+    expect(result.usage.outputTokens).toBe(8192);
+  });
+
+  it('leaves finishReason undefined on a clean end_turn-free stream', async () => {
+    const chunks = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n'];
+    const result = await readSSEStream(streamFromChunks(chunks), anthropicSseHandler);
+    expect(result.finishReason).toBeUndefined();
+  });
 });
 
 describe('readSSEStream OpenAI handler', () => {
@@ -110,6 +126,25 @@ describe('readSSEStream OpenAI handler', () => {
     const result = await readSSEStream(streamFromChunks(chunks), openaiSseHandler);
     expect(result.text).toBe('part-A part-B');
     expect(result.usage).toEqual({ inputTokens: 11, outputTokens: 5 });
+  });
+
+  it('captures finish_reason "length" so a max_tokens cut is detectable (also OpenRouter)', async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"{\\"truncat"}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":4096}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const result = await readSSEStream(streamFromChunks(chunks), openaiSseHandler);
+    expect(result.finishReason).toBe('length');
+  });
+
+  it('keeps the last non-empty finish_reason across chunks ("stop" on clean end)', async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+    ];
+    const result = await readSSEStream(streamFromChunks(chunks), openaiSseHandler);
+    expect(result.finishReason).toBe('stop');
   });
 });
 

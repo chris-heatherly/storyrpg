@@ -179,6 +179,35 @@ describe('BaseAgent truncation-loss signal (L4)', () => {
     )).toThrow(TruncatedLLMResponseError);
   });
 
+  it('never uses a literal "}," INSIDE a prose string as the truncation cut point', () => {
+    const agent = new TestAgent();
+    // The prose contains `},` inside a string value; the old raw
+    // lastIndexOf('},') scan would cut mid-string and produce garbage. The
+    // string-aware scan must cut at the last STRUCTURAL object boundary
+    // (after {"a":1}) — recovering a valid document that keeps element one.
+    process.env.STORYRPG_ALLOW_LOSSY_JSON_TRUNCATION = '1';
+    const result = agent.parse<{ shots: Array<Record<string, unknown>> }>(
+      '{"shots":[{"a":1},{"quote":"she typed \\"}, \\" and hit send"},{"c":"cut mid-str',
+    );
+    // Structural cut after the SECOND complete object (the one containing the
+    // decoy "},"), not inside its string.
+    expect(result.shots.length).toBe(2);
+    expect(result.shots[0]).toEqual({ a: 1 });
+    expect(String((result.shots[1] as { quote?: string }).quote)).toContain('hit send');
+  });
+
+  it('treats a string ending in an ESCAPED backslash before the quote as closed', () => {
+    const agent = new TestAgent();
+    // `"path ends in backslash\\"` — the closing quote follows an escaped
+    // backslash (even run), so it IS a real delimiter. The old single-char
+    // escape check miscounted parity here and misrouted recovery.
+    const result = agent.parse<{ path: string; ok: boolean }>(
+      '{"path":"C:\\\\storyrpg\\\\","ok":true}',
+    );
+    expect(result.ok).toBe(true);
+    expect(result.path.endsWith('\\')).toBe(true);
+  });
+
   it('rejects a SceneWriter response cut right after `"text":"` (dangling open quote)', () => {
     const agent = new TestAgent();
     // bite-me-g14 s1-6: the response was truncated mid-string so the last

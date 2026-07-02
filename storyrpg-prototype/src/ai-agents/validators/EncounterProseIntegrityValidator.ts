@@ -1,5 +1,6 @@
 import type { Scene, Story } from '../../types';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
+import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
 
 export interface EncounterProseFinding {
   sceneId: string;
@@ -11,7 +12,10 @@ export interface EncounterProseFinding {
 const MALFORMED_YOU_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   {
     name: 'malformed-you-noun',
-    pattern: /\byou\s+(rooftop|bar|stair|same|charcoal|flannel|hedge|music|dark|threshold|room|club|glass|curtain|willow|attacker|boulevard|first|velvet|key(?:\s+card)?|back-room|door|choice|candle|maze|lantern|inch|noticer|woman|night|pulse|watchfulness|grin|thing|catalogue)\b/i,
+    // Noun list is corpus-derived per story (g22/g23) — lives in the lexicon.
+    get pattern() {
+      return new RegExp(`\\byou\\s+(${lexiconAlternation(getStoryLexicon().malformedYouNouns)})\\b`, 'i');
+    },
   },
   {
     name: 'malformed-you-fragment',

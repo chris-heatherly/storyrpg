@@ -292,7 +292,38 @@ improves throttled typing (209 chars/4s vs ~4/s baseline). Also provisioned
 SESSION_SECRET in local .env (required by the Phase 2 fail-hard with
 PROXY_REQUIRE_AUTH=1).
 
-Phases 6 and 8 not started.
+**2026-07-01 (later) — Phase 6 STEP 1 (vocabulary relocation; tested):**
+- ✅ New `src/ai-agents/config/storyLexicon.ts`: typed StoryLexicon +
+  BITE_ME_LEXICON + GENRE_NEUTRAL_LEXICON + get/setStoryLexicon singleton +
+  lexiconMatcher/lexiconAlternation helpers. The four audit-flagged detectors
+  now build their regexes from the ACTIVE lexicon: `sceneLocationCues`
+  (signature places, named venues, container cities), `storyEventCues`
+  (handoff nouns, social-meet phrases, ending-aftermath phrases),
+  `RequiredBeatRealizationValidator` (season-pressure entities/anchors,
+  publication titles, on-page cue nouns),
+  `EncounterProseIntegrityValidator` (corpus malformed-you noun list).
+- **DEFAULT stays BITE_ME_LEXICON** — pure relocation, byte-identical behavior
+  (1,790 remediation/utils/validators tests green, zero golden churn). The
+  genre-neutral default flip is gated on a corpus/golden regen + the live run,
+  like every behavior change. Per-story opt-in exists NOW via setStoryLexicon.
+- ⏭️ **Step 2 (remaining overfit sites found by the acceptance sweep, NOT yet
+  migrated):** `remediation/plannedSceneObligationBinder.ts` (a whole cismigiu
+  routing branch + brand-deal/dm-pile readership phrases),
+  `validators/treatmentObligationClassifier.ts` (cismigiu),
+  `utils/encounterEventSignature.ts` (valcescu venue cue),
+  `remediation/gateRepairRouter.ts` (dating-after-dusk rewrite),
+  `utils/treatmentExtraction.ts` + `TreatmentFieldUtilizationValidator` +
+  `stakesArchitectureContracts` + `branchConsequenceContracts` +
+  `realizationEvaluator` + `CharacterIntroductionValidator` (victor valcescu
+  doc example). Same mechanical pattern; needs its own pass.
+- ⏭️ **Step 3 (gated):** wire lexicon selection from story config at pipeline
+  start; flip default to GENRE_NEUTRAL after corpus/golden regen + live run.
+
+**Phase 8 deferred with notes:** vestigial persistence keys became LIVE in
+Phase 5.3 (don't delete); rewindEngine/relationshipStance are referenced by
+the story-playback skill docs (3 skill sets must stay in sync — verify before
+deleting); ConsequenceToast/StoryBrowser/resolutionBalanceSimulator are safe
+deletions; stale validator-header comments remain (4 listed in audit).
 
 ## Sequencing overview
 

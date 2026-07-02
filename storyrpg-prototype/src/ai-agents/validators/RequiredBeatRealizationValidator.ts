@@ -53,6 +53,7 @@ import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
+import { getStoryLexicon, lexiconMatcher } from '../config/storyLexicon';
 import { concreteSeedDepicted } from '../utils/concreteSeedRealization';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { classifyTreatmentObligation } from './treatmentObligationClassifier';
@@ -69,13 +70,15 @@ function seedDepicted(mustDepict: string, prose: string): boolean {
   if (typeof concreteDepicted === 'boolean') return concreteDepicted;
   if (beatDepicted(mustDepict, prose)) return true;
   if (/\bblog readership number\b/.test(needle)) {
-    return /\b(?:blog|dating after dusk|post)\b/.test(hay)
+    const lexicon = getStoryLexicon();
+    return (lexiconMatcher([...lexicon.publicationTitles, 'blog', 'post']).test(hay))
       && /\b(?:reads?|readership|views?|view count|dashboard)\b/.test(hay)
       && /\b(?:\d{1,3}\s?\d{3}|\d+k)\b/.test(hay);
   }
   if (needle === 'season central pressure') {
-    return /\b(?:victor|charcoal|rescuer|savior|midnight)\b/.test(hay)
-      && /\b(?:blog|dating after dusk|voice|chosen|saved|rescued|roses?|card)\b/.test(hay);
+    const lexicon = getStoryLexicon();
+    return lexiconMatcher(lexicon.seasonPressureEntities).test(hay)
+      && lexiconMatcher(lexicon.seasonPressureAnchorPhrases).test(hay);
   }
   return false;
 }
@@ -128,8 +131,8 @@ function isHiddenInformationSeed(mustDepict: string): boolean {
     .test(normalized);
   if (!hasHiddenCue) return false;
 
-  const hasConcreteOnPageCue = /\b(?:stray dog|courtyard|key ?card|card|quartz|herbs?|chain|necklace|letter|photo|phone|mirror|window|door|blood|hand|pocket|table)\b/
-    .test(normalized);
+  const lexicon = getStoryLexicon();
+  const hasConcreteOnPageCue = lexiconMatcher([...lexicon.concreteOnPageCueNouns, ...lexicon.handoffObjectNouns]).test(normalized);
   return !hasConcreteOnPageCue;
 }
 

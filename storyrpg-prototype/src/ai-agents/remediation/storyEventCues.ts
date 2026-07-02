@@ -1,3 +1,5 @@
+import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
+
 export type StoryEventCue =
   | 'arrival'
   | 'venueDoor'
@@ -62,15 +64,18 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('venueDoor');
   }
 
-  const objectNoun = /\b(?:bookshop|bookstore|shop|quartz|crystal|stone|charm|token|talisman|amulet|gift|ward)\b/.test(text);
-  const objectTransfer = /\b(?:gives?|hands?|presses?|slides?|passes?|offers?)\b.{0,120}\b(?:quartz|crystal|stone|charm|token|talisman|amulet|gift|ward)\b|\b(?:quartz|crystal|stone|charm|token|talisman|amulet|gift|ward)\b.{0,120}\b(?:gives?|hands?|presses?|slides?|passes?|offers?)\b/.test(text);
+  // Generic handoff nouns + story-signature ones from the lexicon (Phase 6).
+  const handoffNouns = lexiconAlternation(['stone', 'token', 'talisman', 'amulet', 'gift', 'ward', ...getStoryLexicon().handoffObjectNouns]);
+  const objectNoun = new RegExp(`\\b(?:bookshop|bookstore|shop|${handoffNouns})\\b`).test(text);
+  const objectTransfer = new RegExp(`\\b(?:gives?|hands?|presses?|slides?|passes?|offers?)\\b.{0,120}\\b(?:${handoffNouns})\\b|\\b(?:${handoffNouns})\\b.{0,120}\\b(?:gives?|hands?|presses?|slides?|passes?|offers?)\\b`).test(text);
   if (objectTransfer || (objectNoun && /\b(?:protective|protection|consent|gift|token|talisman|amulet|ward)\b/.test(text))) {
     cues.add('objectHandoff');
   }
 
   const socialGroupFormation = /\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\b.{0,100}\b(?:club|circle|crew|group|friends?|allies|companions|table|booth|bar|party)\b/.test(text)
     || /\b(?:club|circle|crew|group|friends?|allies|companions|table|booth|bar|party)\b.{0,100}\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\b/.test(text);
-  if (socialGroupFormation || /\b(?:rooftop|roof|terrace|bar|party|table|booth|dance floor|first meet|first meeting|social triangle|podcast|kitchen entrance|notices across)\b/.test(text)) {
+  const socialMeetPhrases = lexiconAlternation(['rooftop', 'roof', 'terrace', 'bar', 'party', 'table', 'booth', 'dance floor', 'first meet', 'first meeting', 'social triangle', ...getStoryLexicon().socialMeetPhrases]);
+  if (socialGroupFormation || new RegExp(`\\b(?:${socialMeetPhrases})\\b`).test(text)) {
     cues.add('socialMeet');
   }
 
@@ -114,7 +119,8 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('blogAftermath');
   }
 
-  if (/\b(?:9 ?am|dm pile|brand deal|message pile|horrible dream|coming over|cliffhanger|episode end)\b/.test(text)) {
+  const endingPhrases = lexiconAlternation(['cliffhanger', 'episode end', ...getStoryLexicon().endingAftermathPhrases]);
+  if (new RegExp(`\\b(?:${endingPhrases})\\b`).test(text)) {
     cues.add('endingAftermath');
   }
 

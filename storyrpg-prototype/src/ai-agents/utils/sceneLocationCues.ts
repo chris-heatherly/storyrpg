@@ -5,21 +5,15 @@
 const LOCATION_RE = /\b(?:[Aa]t|[Ii]n|[Ii]nside|[Oo]utside|[Oo]n|[Nn]ear|[Tt]hrough|[Tt]o|[Ff]rom)\s+(?:the\s+|a\s+|an\s+)?([A-ZÀ-Ž][A-Za-zÀ-ž0-9'’-]*(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž0-9'’-]*){0,3}|[a-z][a-z0-9'’-]*(?:\s+[a-z][a-z0-9'’-]*){0,2}\s+(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate))/g;
 const CATEGORY_LOCATION_RE = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+(?:the\s+|a\s+|an\s+)?((?:rooftop\s+)?(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate))\b/gi;
 
-const CITY_CONTAINER_CUES = new Set([
-  'city',
-  'town',
-  'village',
-  'new city',
-  'home city',
-  'city center',
-  'bucharest',
-  'new york',
-  'london',
-  'paris',
-  'rome',
-  'tokyo',
-  'los angeles',
-]);
+import { getStoryLexicon } from '../config/storyLexicon';
+
+// Generic settlement words; story-specific city names come from the active
+// lexicon (audit Phase 6 — vocabulary lives in storyLexicon.ts, not here).
+const GENERIC_CONTAINER_CUES = ['city', 'town', 'village', 'new city', 'home city', 'city center'];
+
+function containerCues(): Set<string> {
+  return new Set([...GENERIC_CONTAINER_CUES, ...getStoryLexicon().containerCities]);
+}
 
 function cleanText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -37,16 +31,23 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
     .trim();
   if (!normalized) return undefined;
   if (/^(?:purpose|scene|episode|next|before|after|consequence|consequences|turn|handoff)\b/.test(normalized)) return undefined;
-  if (/\bcismigiu\b/.test(normalized)) return 'cismigiu';
+  const lexicon = getStoryLexicon();
+  // Story-signature places collapse to their canonical cue.
+  for (const place of lexicon.signaturePlaces) {
+    if (normalized.includes(place)) return place;
+  }
   if (/\brooftop\b/.test(normalized) && /\bbar\b/.test(normalized)) return 'rooftop bar';
   if (/\bbook(?:shop|store)\b/.test(normalized)) return 'bookshop';
   if (/\bapartment\b/.test(normalized)) return 'apartment';
-  if (/\bclub\b/.test(normalized) || /\bvenue\b/.test(normalized)) return normalized.includes('valcescu') ? 'valcescu club' : 'club';
+  if (/\bclub\b/.test(normalized) || /\bvenue\b/.test(normalized)) {
+    const named = lexicon.namedVenues.find((venue) => normalized.includes(venue));
+    return named ? `${named} club` : 'club';
+  }
   return normalized.replace(/\bgardens\b/g, 'garden');
 }
 
 export function isContainerLocationCue(value: string): boolean {
-  return CITY_CONTAINER_CUES.has(value);
+  return containerCues().has(value);
 }
 
 export function extractSceneLocationCues(text: unknown): string[] {

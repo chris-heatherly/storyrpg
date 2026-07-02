@@ -106,6 +106,45 @@ describe('episodeSceneOwnership finalizer', () => {
     expect((scenes[1] as unknown as { encounterBeatPlan?: string[] }).encounterBeatPlan?.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('drops required beats whose id belongs to another episode (bite-me 2026-07-02 cross-episode bleed)', () => {
+    const scenes = [
+      scene({
+        id: 's1-1',
+        order: 0,
+        title: 'Opening',
+        requiredBeats: [
+          {
+            id: 's1-1-rb1',
+            tier: 'authored',
+            sourceTurn: 'The protagonist arrives in the city.',
+            mustDepict: 'The protagonist arrives in the city.',
+          },
+          {
+            id: 's3-4-rb1',
+            tier: 'authored',
+            sourceTurn: 'Victor gently frames the blog as a privacy problem.',
+            mustDepict: 'Victor gently frames the blog as a privacy problem.',
+          },
+          {
+            id: 's2-2-rb1-action-1',
+            tier: 'authored',
+            sourceTurn: 'The blog becomes a real local curiosity.',
+            mustDepict: 'The blog becomes a real local curiosity.',
+          },
+        ],
+      }),
+      scene({ id: 's1-2', order: 1, title: 'Development' }),
+    ];
+
+    const result = finalizeEpisodeSceneOwnership(scenes, { episodeNumber: 1 });
+
+    const beatIds = (scenes[0].requiredBeats ?? []).map((beat) => beat.id);
+    expect(beatIds).toContain('s1-1-rb1');
+    expect(beatIds).not.toContain('s3-4-rb1');
+    expect(beatIds).not.toContain('s2-2-rb1-action-1');
+    expect(result.diagnostics.filter((diag) => diag.reason.includes('belongs to episode'))).toHaveLength(2);
+  });
+
   it('keeps threat atoms off an opening scene whose stakes/purpose quote the episode synopsis (bite-me 2026-07-02)', () => {
     // The deterministic skeleton copies the whole-episode synopsis into every
     // standard scene's stakes and composed purpose. Threat cues in that shared

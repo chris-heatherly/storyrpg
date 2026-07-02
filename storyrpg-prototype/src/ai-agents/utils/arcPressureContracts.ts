@@ -418,7 +418,15 @@ function shouldRequireBeat(contract: ArcPressureTreatmentContract): boolean {
   return contract.blockingLevel !== 'warning'
     && contract.contractKind !== 'arc_identity'
     && contract.contractKind !== 'arc_question'
-    && contract.contractKind !== 'season_relation';
+    && contract.contractKind !== 'season_relation'
+    // The Lie facet is a THEME statement ("Observer versus author; being
+    // chosen… versus claiming…"), not a stageable event. Emitting it as an
+    // authored mustDepict beat makes RequiredBeatRealization demand the prose
+    // dramatize an abstraction verbatim (bite-me 2026-07-02T20-30-27
+    // treatment-enc-1-1-arc-pressure-lie-facet). Its realization channel is
+    // the identity-domain mechanicPressure contract, which pressureFor()
+    // still emits for scene-bound kinds below.
+    && contract.contractKind !== 'lie_facet';
 }
 
 function requiredBeatFor(contract: ArcPressureTreatmentContract, scene: PlannedScene): RequiredBeat {
@@ -523,6 +531,10 @@ export function assignArcPressureContractsToScenes(
         if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === beat.id)) {
           target.requiredBeats = [...(target.requiredBeats ?? []), beat];
         }
+      }
+      if (shouldRequireBeat(contract) || contract.contractKind === 'lie_facet') {
+        // The lie facet keeps its identity-domain mechanicPressure channel even
+        // though it no longer becomes a verbatim mustDepict beat.
         const pressure = pressureFor(contract, target);
         if (pressure && !(target.mechanicPressure ?? []).some((candidate) => candidate.id === pressure.id)) {
           target.mechanicPressure = [...(target.mechanicPressure ?? []), pressure];

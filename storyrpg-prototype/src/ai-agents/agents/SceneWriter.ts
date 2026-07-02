@@ -1240,6 +1240,44 @@ Return exactly one complete SceneContent JSON object with:
       this.ensureBeatSequenceIntent(beat, content, i);
     }
 
+    // Collapse duplicate narrative beats. The LLM sometimes emits the same
+    // paragraph several times in one scene (bite-me 2026-07-02T20-30-27 s1-5:
+    // four beats with identical text — QA read it as zero narrative
+    // progression). Only long, non-interactive beats collapse; choice points,
+    // beats with choices, and variant-carrying beats are never touched.
+    const seenBeatText = new Map<string, string>();
+    const removedRedirect = new Map<string, string | undefined>();
+    content.beats = content.beats.filter((beat) => {
+      const normalizedText = (beat.text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const interactive = beat.isChoicePoint
+        || ((beat.choices?.length ?? 0) > 0)
+        || Boolean((beat as { textVariants?: unknown }).textVariants);
+      if (normalizedText.length < 40 || interactive) return true;
+      const survivor = seenBeatText.get(normalizedText);
+      if (!survivor) {
+        seenBeatText.set(normalizedText, beat.id);
+        return true;
+      }
+      removedRedirect.set(beat.id, beat.nextBeatId);
+      console.warn(`[SceneWriter] Collapsed duplicate beat "${beat.id}" (same text as "${survivor}") in scene ${content.sceneId}`);
+      return false;
+    });
+    if (removedRedirect.size > 0) {
+      const resolveBeatId = (id: string | undefined): string | undefined => {
+        let current = id;
+        const visited = new Set<string>();
+        while (current && removedRedirect.has(current) && !visited.has(current)) {
+          visited.add(current);
+          current = removedRedirect.get(current);
+        }
+        return current;
+      };
+      for (const beat of content.beats) {
+        beat.nextBeatId = resolveBeatId(beat.nextBeatId);
+      }
+    }
+
+
     // Guard against degenerate choice scenes. If the writer returns only one beat for a
     // scene that needs a decision, the whole scene can collapse into "choice beat + payoff beat"
     // and skip the setup that branch scenes need for pacing, QA, and image coverage.

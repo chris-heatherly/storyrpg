@@ -479,6 +479,33 @@ function finalizeEpisode<T extends PlannedScene>(
   if (episodeScenes.length === 0) return;
   const episodeNumber = options.episodeNumber ?? episodeScenes[0].episodeNumber;
 
+  // Foreign-episode beat guard: the season-planner LLM authors the whole
+  // season and can relocate a beat across episodes despite the prompt
+  // forbidding it — bite-me 2026-07-02T20-30-27 shipped ep3's "Victor gently
+  // frames the blog" (s3-4-rb1) on ep1's encounter and ep2's opening line
+  // (s2-2-rb1) on s1-5, which QA then read as chronology/knowledge defects.
+  // A beat id's `s<episode>-` root is authoritative provenance: drop beats
+  // whose id-encoded episode differs from the episode being finalized.
+  for (const scene of episodeScenes) {
+    if (!scene.requiredBeats?.length) continue;
+    const kept: RequiredBeat[] = [];
+    for (const beat of scene.requiredBeats) {
+      const idEpisode = /^s(\d+)-/.exec(beat.id ?? '');
+      if (idEpisode && Number(idEpisode[1]) !== episodeNumber) {
+        result.diagnostics.push({
+          severity: 'warning',
+          episodeNumber,
+          sceneId: scene.id,
+          reason: `Dropped required beat "${beat.id}" — its id belongs to episode ${idEpisode[1]}, not episode ${episodeNumber}: "${String(beatText(beat)).slice(0, 120)}"`,
+        });
+        continue;
+      }
+      kept.push(beat);
+    }
+    scene.requiredBeats = kept.length ? kept : undefined;
+  }
+
+
   // Idempotency: if this exact scene graph was already finalized in-memory this
   // run, re-running would destroy routed ownership (see OWNERSHIP_FINALIZED). Skip
   // the destructive body and only re-emit the terminal diagnostic so a re-check

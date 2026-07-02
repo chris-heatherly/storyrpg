@@ -156,6 +156,36 @@ describe('arcPressureContracts', () => {
     expect(target?.mechanicPressure?.some((pressure) => pressure.storyPressure.includes('glamorous new life'))).toBe(true);
   });
 
+  it('never converts the lie facet into a verbatim required beat but keeps its pressure channel (bite-me 2026-07-02)', () => {
+    const plan = {
+      totalEpisodes: 8,
+      arcs: [{
+        id: 'arc-1',
+        name: 'Champagne',
+        description: 'Arc 1',
+        episodeRange: { start: 1, end: 3 },
+      }],
+      treatmentSeasonGuidance: guidance,
+    } as unknown as SeasonPlan;
+    const scenes = [
+      scene('s1-1', 1, 0, 'setup'),
+      scene('s1-2', 1, 1, 'turn'),
+      scene('s1-3', 1, 2, 'release'),
+    ];
+
+    assignArcPressureContractsToScenes(plan, scenes);
+
+    const lieText = guidance.arcGuidance.arcs[0].lieFacet;
+    for (const planned of scenes) {
+      expect(planned.requiredBeats?.some((beat) => beat.mustDepict === lieText)).not.toBe(true);
+      expect(planned.requiredBeats?.some((beat) => beat.id.includes('arc-pressure-lie-facet'))).not.toBe(true);
+    }
+    // The identity-domain mechanic pressure channel survives on some scene.
+    expect(scenes.some((planned) =>
+      planned.mechanicPressure?.some((pressure) => pressure.domain === 'identity' && pressure.storyPressure === lieText)
+    )).toBe(true);
+  });
+
   it('removes stale scene-local arc pressure that canonical targeting moves to another episode', () => {
     const canonical = buildArcPressureContracts({
       guidance,

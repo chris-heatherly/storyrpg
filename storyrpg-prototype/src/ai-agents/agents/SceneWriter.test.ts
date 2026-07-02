@@ -14,6 +14,57 @@ function createWriter(): SceneWriter {
   });
 }
 
+describe('SceneWriter duplicate-beat collapse', () => {
+  it('collapses beats with identical narrative text and re-links the chain (bite-me 2026-07-02 s1-5)', () => {
+    const writer = createWriter();
+    const viral = 'Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material for her growing readership.';
+    const content = (writer as any).normalizeContent({
+      sceneId: 's1-5',
+      sceneName: 'The First Post',
+      startingBeatId: 'beat-1',
+      beats: [
+        { id: 'beat-1', text: viral, nextBeatId: 'beat-2', isChoicePoint: false },
+        { id: 'beat-2', text: viral, nextBeatId: 'beat-3', isChoicePoint: false },
+        { id: 'beat-3', text: viral, nextBeatId: 'beat-4', isChoicePoint: false },
+        { id: 'beat-4', text: 'Mika forwards the post to three people before Kylie finishes her coffee, and the comment count doubles.', nextBeatId: 'beat-5', isChoicePoint: false },
+        { id: 'beat-5', text: 'A private message arrives from an account with no profile photo, and the room feels colder.', isChoicePoint: false },
+      ],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    const texts = content.beats.map((beat: { text: string }) => beat.text);
+    expect(texts.filter((text: string) => text === viral)).toHaveLength(1);
+    expect(content.beats).toHaveLength(3);
+    // beat-1 pointed at removed beat-2 → chain resolves through removals to beat-4.
+    expect(content.beats[0].nextBeatId).toBe('beat-4');
+    expect(content.beats[1].nextBeatId).toBe('beat-5');
+  });
+
+  it('never collapses interactive or variant-carrying beats', () => {
+    const writer = createWriter();
+    const prompt = 'Do you post the story tonight or sit on it until you can verify the details with Mika?';
+    const content = (writer as any).normalizeContent({
+      sceneId: 's1-4',
+      sceneName: 'The Decision',
+      startingBeatId: 'beat-1',
+      beats: [
+        { id: 'beat-1', text: prompt, nextBeatId: 'beat-2', isChoicePoint: true, choices: [{ id: 'c1', text: 'Post it' }] },
+        { id: 'beat-2', text: prompt, nextBeatId: 'beat-3', isChoicePoint: true, choices: [{ id: 'c2', text: 'Wait' }] },
+        { id: 'beat-3', text: 'You put the phone face-down and the decision keeps breathing on the table between you.', isChoicePoint: false },
+      ],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    });
+
+    expect(content.beats).toHaveLength(3);
+  });
+});
+
 describe('SceneWriter structural guards', () => {
   it('does not invent neutral pronouns in deterministic visual subtext cues', () => {
     const writer = createWriter();

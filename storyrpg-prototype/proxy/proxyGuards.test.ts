@@ -75,10 +75,30 @@ describe('proxyGuards exposure auth gate', () => {
     expect(r.nexted).toBe(false);
   });
 
-  it('always allows safe methods and the auth/health endpoints', () => {
-    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/story/x' }).nexted).toBe(true);
+  it('allows CORS preflight and the auth/health endpoints', () => {
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'OPTIONS', path: '/story/x' }).nexted).toBe(true);
     expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'POST', path: '/auth/login' }).nexted).toBe(true);
     expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'POST', path: '/' }).nexted).toBe(true);
+  });
+
+  it('allows the public reader read endpoints without auth', () => {
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/list-stories' }).nexted).toBe(true);
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/stories/my-story' }).nexted).toBe(true);
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/deleted-stories' }).nexted).toBe(true);
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/audio-alignment' }).nexted).toBe(true);
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/generated-stories/run/story.json' }).nexted).toBe(true);
+  });
+
+  it('requires auth for NON-public GETs when exposed (GET is not blanket-safe)', () => {
+    // These read endpoints return internal state — the old blanket GET/HEAD
+    // bypass exposed them to any remote caller (audit M1/M2).
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/generator-settings' }).status).toBe(401);
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/worker-jobs' }).status).toBe(401);
+    expect(runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/story/x' }).status).toBe(401);
+    // Still available with a session or bearer.
+    expect(
+      runGuard({ PROXY_REQUIRE_AUTH: '1' }, { method: 'GET', path: '/generator-settings', user: { id: 1 } }).nexted,
+    ).toBe(true);
   });
 
   it('allows an authenticated session', () => {

@@ -91,13 +91,26 @@ function createCorsOptions(env = process.env) {
   };
 }
 
-const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+// GET/HEAD endpoints the PUBLIC reader needs through an exposed proxy. Every
+// other read endpoint requires auth when exposed — "GET" does not mean "safe":
+// /generator-settings, /worker-jobs, /file etc. return internal state. (The
+// /generated-stories static middleware is mounted before this guard; it is
+// listed here anyway so the policy survives a mount-order change.)
+const PUBLIC_READ_PATHS = new Set(['/', '/list-stories', '/deleted-stories', '/audio-alignment', '/check-builtin-stories']);
+const PUBLIC_READ_PREFIXES = ['/stories/', '/generated-stories/', '/auth/'];
+
+function isPublicReadPath(reqPath) {
+  return PUBLIC_READ_PATHS.has(reqPath) || PUBLIC_READ_PREFIXES.some((prefix) => reqPath.startsWith(prefix));
+}
 
 /**
- * Express middleware enforcing auth on non-safe (mutating) requests when the
- * proxy is in "exposed" mode. No-op when auth enforcement is off.
+ * Express middleware enforcing auth on non-exempt requests when the proxy is
+ * in "exposed" mode. No-op when auth enforcement is off.
  *
- * Exempt paths: auth endpoints (you must be able to log in) and a health check.
+ * Exempt: CORS preflight, the public reader read endpoints (see
+ * PUBLIC_READ_PATHS/PREFIXES), auth endpoints, and local-dev requests.
+ * All other requests — INCLUDING non-public GETs — require a session or the
+ * PROXY_API_TOKEN bearer.
  */
 function createExposureGuard(env = process.env) {
   const enforce = env.PROXY_REQUIRE_AUTH === '1' || env.NODE_ENV === 'production';
@@ -105,7 +118,8 @@ function createExposureGuard(env = process.env) {
 
   return function exposureGuard(req, res, next) {
     if (!enforce) return next();
-    if (SAFE_METHODS.has(req.method)) return next();
+    if (req.method === 'OPTIONS') return next(); // CORS preflight carries no credentials
+    if ((req.method === 'GET' || req.method === 'HEAD') && isPublicReadPath(req.path)) return next();
     if (req.path === '/' || req.path.startsWith('/auth/')) return next();
 
     // Local-dev convenience: requests that originate from this machine (no

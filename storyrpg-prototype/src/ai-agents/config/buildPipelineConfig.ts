@@ -127,7 +127,7 @@ function resolveStableDiffusionSettings(
   if (provider !== 'stable-diffusion' && !overrides) return undefined;
   const env = typeof process !== 'undefined' ? process.env : ({} as any);
   const baseUrl = (overrides?.baseUrl || env.STABLE_DIFFUSION_BASE_URL || env.EXPO_PUBLIC_STABLE_DIFFUSION_BASE_URL || '').trim();
-  const apiKey = (overrides?.apiKey || env.STABLE_DIFFUSION_API_KEY || env.EXPO_PUBLIC_STABLE_DIFFUSION_API_KEY || '').trim();
+  const apiKey = (overrides?.apiKey || env.STABLE_DIFFUSION_API_KEY || '').trim();
   const defaultModel = (overrides?.defaultModel || env.STABLE_DIFFUSION_DEFAULT_MODEL || env.EXPO_PUBLIC_STABLE_DIFFUSION_DEFAULT_MODEL || '').trim();
   const backend = (overrides?.backend || (env.STABLE_DIFFUSION_BACKEND as any) || 'a1111') as StableDiffusionSettings['backend'];
   return {

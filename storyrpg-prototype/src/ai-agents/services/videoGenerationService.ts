@@ -248,7 +248,7 @@ export class VideoGenerationService {
     jobId: string
   ): Promise<GeneratedVideo> {
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.apiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
+    const apiKey = this.config.apiKey || env.GEMINI_API_KEY;
     if (!apiKey) {
       throw new Error('No API key configured for Veo video generation');
     }

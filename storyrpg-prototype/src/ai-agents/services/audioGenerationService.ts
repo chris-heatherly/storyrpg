@@ -80,7 +80,7 @@ export class AudioGenerationService {
     } else {
       this.provider = options.provider || 'elevenlabs';
       this.apiKey = options.apiKey || process.env.ELEVENLABS_API_KEY || null;
-      this.geminiApiKey = options.geminiApiKey || process.env.EXPO_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY || null;
+      this.geminiApiKey = options.geminiApiKey || process.env.GEMINI_API_KEY || null;
       this.geminiModel = options.geminiModel || DEFAULT_GEMINI_TTS_MODEL;
       this.defaultVoiceId = options.voiceId;
       this.performanceTagsEnabled = !!options.performanceTagsEnabled;

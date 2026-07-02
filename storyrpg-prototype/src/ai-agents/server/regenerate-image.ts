@@ -298,13 +298,13 @@ async function main() {
     provider: config.imageGen.provider,
     geminiApiKey: config.imageGen.geminiApiKey || config.imageGen.apiKey,
     geminiModel: config.imageGen.model as any,
-    openaiApiKey: config.imageGen.openaiApiKey || process.env.OPENAI_API_KEY || process.env.EXPO_PUBLIC_OPENAI_API_KEY,
+    openaiApiKey: config.imageGen.openaiApiKey || process.env.OPENAI_API_KEY,
     openaiImageModel: config.imageGen.openaiImageModel,
     openaiModeration: config.imageGen.openaiModeration,
-    atlasCloudApiKey: process.env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY || process.env.ATLAS_CLOUD_API_KEY,
+    atlasCloudApiKey: process.env.ATLAS_CLOUD_API_KEY,
     atlasCloudModel: process.env.EXPO_PUBLIC_ATLAS_CLOUD_MODEL || process.env.ATLAS_CLOUD_MODEL,
-    midapiToken: process.env.EXPO_PUBLIC_MIDAPI_TOKEN || process.env.MIDAPI_TOKEN,
-    useapiToken: process.env.EXPO_PUBLIC_USEAPI_TOKEN || process.env.USEAPI_TOKEN,
+    midapiToken: process.env.MIDAPI_TOKEN,
+    useapiToken: process.env.USEAPI_TOKEN,
   });
 
   const modifiedPrompt = applyFeedbackToPrompt(promptPayload.prompt, payload.feedback);

@@ -80,6 +80,10 @@ function redact(value) {
 
 const importRe = /(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g;
 const sideEffectImportRe = /import\s+['"]([^'"]+)['"]/g;
+// Dynamic import()/require() with a string literal — a lazy
+// `await import('../../ai-agents/…')` must not escape the walk.
+const dynamicImportRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+const requireRe = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 function toPosix(filePath) {
   return filePath.split(path.sep).join('/');
@@ -110,7 +114,7 @@ function resolveImport(fromFile, specifier) {
 function readImports(file) {
   const source = fs.readFileSync(file, 'utf8');
   const imports = new Set();
-  for (const re of [importRe, sideEffectImportRe]) {
+  for (const re of [importRe, sideEffectImportRe, dynamicImportRe, requireRe]) {
     re.lastIndex = 0;
     let match;
     while ((match = re.exec(source))) {

@@ -56,13 +56,17 @@ class DiscordOAuth2Strategy extends OAuth2Strategy {
 function resolveSessionSecret() {
   const secret = (process.env.SESSION_SECRET || '').trim();
   if (secret.length >= 16) return secret;
-  if (process.env.NODE_ENV === 'production') {
-    console.warn(
-      '[Auth] SESSION_SECRET is missing or too short; set a strong secret (16+ chars). Using insecure fallback.',
+  // A guessable session secret lets anyone forge an authenticated session,
+  // which defeats the exposure auth gate entirely — refuse to start in any
+  // exposed configuration instead of warning and continuing.
+  if (process.env.NODE_ENV === 'production' || process.env.PROXY_REQUIRE_AUTH === '1') {
+    throw new Error(
+      '[Auth] SESSION_SECRET is missing or too short (16+ chars required). ' +
+        'Refusing to start with the well-known dev fallback while auth enforcement is on ' +
+        '(NODE_ENV=production or PROXY_REQUIRE_AUTH=1) — a forgeable session cookie would bypass the auth gate.',
     );
-  } else {
-    console.warn('[Auth] SESSION_SECRET not set; using dev fallback (sessions reset if the server restarts).');
   }
+  console.warn('[Auth] SESSION_SECRET not set; using dev fallback (sessions reset if the server restarts).');
   return 'storyrpg-dev-session-secret-min-16';
 }
 

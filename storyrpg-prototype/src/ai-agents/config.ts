@@ -1058,15 +1058,15 @@ export function loadConfig(): PipelineConfig {
   };
   const resolveProviderApiKey = (provider: AgentConfig['provider']): string => {
     if (provider === 'gemini') {
-      return env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
+      return env.GEMINI_API_KEY || '';
     }
     if (provider === 'openai') {
-      return env.EXPO_PUBLIC_OPENAI_API_KEY || env.OPENAI_API_KEY || '';
+      return env.OPENAI_API_KEY || '';
     }
     if (provider === 'openrouter') {
-      return env.EXPO_PUBLIC_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY || '';
+      return env.OPENROUTER_API_KEY || '';
     }
-    return env.EXPO_PUBLIC_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY || '';
+    return env.ANTHROPIC_API_KEY || '';
   };
   const defaultProvider: AgentConfig['provider'] =
     (env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER as AgentConfig['provider']) || 'anthropic';
@@ -1217,9 +1217,9 @@ export function loadConfig(): PipelineConfig {
     qualityCouncil,
     imageGen: {
       enabled: env.EXPO_PUBLIC_IMAGE_GENERATION_ENABLED !== 'false' && env.IMAGE_GENERATION_ENABLED !== 'false',
-      apiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
-      geminiApiKey: env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
-      openaiApiKey: env.OPENAI_API_KEY || env.EXPO_PUBLIC_OPENAI_API_KEY,
+      apiKey: env.GEMINI_API_KEY,
+      geminiApiKey: env.GEMINI_API_KEY,
+      openaiApiKey: env.OPENAI_API_KEY,
       openaiImageModel: openaiSettingsFromEnv.imageModel,
       openaiModeration: openaiSettingsFromEnv.imageModeration,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || env.GEMINI_MODEL,
@@ -1243,7 +1243,7 @@ export function loadConfig(): PipelineConfig {
     videoGen: {
       enabled: env.EXPO_PUBLIC_VIDEO_GENERATION_ENABLED === 'true' || env.VIDEO_GENERATION_ENABLED === 'true',
       model: (env.EXPO_PUBLIC_VIDEO_MODEL || env.VIDEO_MODEL || DEFAULT_VIDEO_SETTINGS.model) as VideoSettingsConfig['model'],
-      apiKey: env.EXPO_PUBLIC_VIDEO_API_KEY || env.VIDEO_API_KEY || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY,
+      apiKey: env.VIDEO_API_KEY || env.GEMINI_API_KEY,
       durationSeconds: parseInt(env.EXPO_PUBLIC_VIDEO_DURATION || env.VIDEO_DURATION || '8', 10) as 6 | 8,
       resolution: (env.EXPO_PUBLIC_VIDEO_RESOLUTION || env.VIDEO_RESOLUTION || DEFAULT_VIDEO_SETTINGS.resolution) as VideoSettingsConfig['resolution'],
       aspectRatio: (env.EXPO_PUBLIC_VIDEO_ASPECT_RATIO || env.VIDEO_ASPECT_RATIO || DEFAULT_VIDEO_SETTINGS.aspectRatio) as VideoSettingsConfig['aspectRatio'],

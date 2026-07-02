@@ -91,7 +91,45 @@ in `relationshipArcEnforcement.test.ts` are **pre-existing at HEAD** (confirmed
 by running with the entire working tree stashed) — unrelated to this work; HEAD
 b4a275ee is itself partially red. NOT committed.
 
-**1.11 (commit)** — pending user request. Phases 2–8 not started.
+**1.11 (commit)** — done: user checkpointed d85db108 mid-session (Phase 0 +
+early Phase 1); aa965d1e completes Phase 1.
+
+**2026-07-01 (later) — Phase 2 COMPLETE (tested):**
+- ✅ **2.1 (H1)** — removed all 27 `EXPO_PUBLIC_*` provider-key/token reads from
+  bundled code (config.ts, buildPipelineConfig, draftImageGeneration,
+  regenerate-image, image/video/audioGenerationService); `.env.example` now
+  shows `GEMINI_API_KEY`; local `.env` migrated in place (server-side name
+  added). Proxy files keep legacy fallbacks deliberately — server-side Node,
+  never bundled. NEW GUARD: `scripts/noBundledSecretEnvReads.test.ts` fails CI
+  on any secret-shaped EXPO_PUBLIC read in src/ or apps/ (PostHog exempt).
+- ✅ **2.2 (H2)** — `scripts/scan-bundle-secrets.mjs` + npm scripts
+  `check:generator-bundle` / `verify:generator` (export + strict scan of
+  dist-generator-internal for secret values + provider-key shapes). CI teeth
+  come from the source-level guard test (runs in `npm test`); the full bundle
+  scan is for pre-expose/deploy.
+- ✅ **2.3 (M1/M2)** — exposure guard no longer blanket-exempts GET/HEAD: only
+  the public reader endpoints (`/list-stories`, `/stories/*`,
+  `/deleted-stories`, `/audio-alignment`, `/check-builtin-stories`,
+  `/generated-stories/*`) pass unauthenticated; OPTIONS stays exempt (CORS).
+  `/generator-settings` GET now redacts via sanitizeJobState; POST/PATCH
+  reject non-objects and drop `[redacted]` values (round-trip-safe). New
+  `generatorSettingsRoutes.test.ts` + 2 new guard tests (the old
+  blanket-GET-passes test was asserting the vulnerability; replaced).
+- ✅ **2.4 (M3)** — boundary checker now follows dynamic `import()`/`require()`
+  string literals; verified red→green with a planted
+  `import('../../src/ai-agents/config')` in ReaderApp.tsx.
+- ✅ **2.5 (L1/L5)** — worker payload files written mode 0o600 (cleanup on close
+  already existed); `resolveSessionSecret` now FAILS startup (throws) instead
+  of warning when SESSION_SECRET is missing under NODE_ENV=production or
+  PROXY_REQUIRE_AUTH=1.
+
+Verification: proxy suite 56 green (incl. new tests), guard test green,
+key-resolution suites 211 green, `node --check` on all edited server files,
+`typecheck:app` clean, `check:reader-boundary` clean.
+NOTE for operators: keys must now be set under their server-side names
+(GEMINI_API_KEY etc.) — EXPO_PUBLIC names are ignored by src/ code.
+
+Phases 3–8 not started.
 
 ## Sequencing overview
 

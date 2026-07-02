@@ -622,19 +622,19 @@ export class DraftImageGeneration {
       const env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {};
       if (
         (provider === 'nano-banana' || provider === 'gemini')
-        && !(imageConfig.geminiApiKey || imageConfig.apiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY)
+        && !(imageConfig.geminiApiKey || imageConfig.apiKey || env.GEMINI_API_KEY)
       ) {
         return 'Gemini API key is required for nano-banana image generation.';
       }
       if (
         (provider === 'openai' || provider === 'dall-e' || provider === 'gpt-image')
-        && !(imageConfig.openaiApiKey || env.OPENAI_API_KEY || env.EXPO_PUBLIC_OPENAI_API_KEY)
+        && !(imageConfig.openaiApiKey || env.OPENAI_API_KEY)
       ) {
         return 'OpenAI API key is required for OpenAI image generation.';
       }
       if (
         provider === 'atlas-cloud'
-        && !(imageConfig.atlasCloudApiKey || env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY || env.ATLAS_CLOUD_API_KEY)
+        && !(imageConfig.atlasCloudApiKey || env.ATLAS_CLOUD_API_KEY)
       ) {
         return 'Atlas Cloud API key is required for Atlas Cloud image generation.';
       }

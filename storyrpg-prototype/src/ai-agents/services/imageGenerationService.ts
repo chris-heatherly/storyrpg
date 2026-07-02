@@ -376,12 +376,10 @@ export class ImageGenerationService {
     const normalizedGeminiKey =
       config.geminiApiKey ||
       (config as any).apiKey ||
-      env?.EXPO_PUBLIC_GEMINI_API_KEY ||
       env?.GEMINI_API_KEY;
     const normalizedOpenAiKey =
       config.openaiApiKey ||
-      env?.OPENAI_API_KEY ||
-      env?.EXPO_PUBLIC_OPENAI_API_KEY;
+      env?.OPENAI_API_KEY;
     this.config = {
       ...config,
       geminiApiKey: normalizedGeminiKey,
@@ -1843,7 +1841,7 @@ export class ImageGenerationService {
     }
 
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.geminiApiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
+    const apiKey = this.config.geminiApiKey || env.GEMINI_API_KEY;
     if (!apiKey) return this.generateImage(prompt, identifier, { type: 'scene' }, referenceImages);
 
     const normalizedPrompt = this.injectCharacterIdentity(prompt, metadata?.characterNames, metadata?.characterDescriptions);
@@ -3379,7 +3377,7 @@ export class ImageGenerationService {
     }
 
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.geminiApiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
+    const apiKey = this.config.geminiApiKey || env.GEMINI_API_KEY;
     if (!apiKey) return this.generateImage(prompt, identifier, { type: 'scene' }, referenceImages);
 
     const model = this._geminiSettings.model;
@@ -5342,7 +5340,7 @@ export class ImageGenerationService {
     metadata?: Record<string, any>,
   ): Promise<GeneratedImage> {
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.atlasCloudApiKey || env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY || env.ATLAS_CLOUD_API_KEY;
+    const apiKey = this.config.atlasCloudApiKey || env.ATLAS_CLOUD_API_KEY;
 
     if (!apiKey) {
       throw new Error('Atlas Cloud API key is required for atlas-cloud image generation');
@@ -5495,7 +5493,7 @@ export class ImageGenerationService {
 
     // Fallback: try Nano Banana (Gemini) before giving up entirely
     const geminiKey = this.config.geminiApiKey
-      || (typeof process !== 'undefined' ? (process.env.EXPO_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY) : undefined);
+      || (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : undefined);
 
     if ((!this.isFailFastEnabled() || this.shouldTrackEncounterType(imageType)) && geminiKey) {
       console.warn(`[ImageGenerationService] Atlas Cloud failed after ${this.maxRetries} attempts for "${identifier}". Falling back to Gemini.`);
@@ -5589,7 +5587,7 @@ export class ImageGenerationService {
     }
 
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.atlasCloudApiKey || env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY || env.ATLAS_CLOUD_API_KEY;
+    const apiKey = this.config.atlasCloudApiKey || env.ATLAS_CLOUD_API_KEY;
     if (!apiKey) {
       const results: GeneratedImage[] = [];
       for (const p of prompts) {
@@ -6395,7 +6393,7 @@ export class ImageGenerationService {
     allowDiegeticText: boolean = false
   ): Promise<{ hasText: boolean; description?: string }> {
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.geminiApiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
+    const apiKey = this.config.geminiApiKey || env.GEMINI_API_KEY;
     if (!apiKey) {
       console.warn('[ImageGenerationService] No Gemini API key for text artifact check — skipping');
       return { hasText: false };
@@ -6456,7 +6454,7 @@ export class ImageGenerationService {
     identifier: string = 'unknown',
   ): Promise<ImageDefectReport> {
     const env = typeof process !== 'undefined' ? process.env : {} as any;
-    const apiKey = this.config.geminiApiKey || env.EXPO_PUBLIC_GEMINI_API_KEY || env.GEMINI_API_KEY;
+    const apiKey = this.config.geminiApiKey || env.GEMINI_API_KEY;
     if (!apiKey) {
       const report: ImageDefectReport = {
         passed: true,

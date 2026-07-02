@@ -1125,13 +1125,15 @@ function createWorkerLifecycle({
     const runnerPath = path.resolve(appRoot, 'src/ai-agents/server/worker-runner.ts');
     const payloadPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.payload.json`);
     const resultPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.result.json`);
+    // mode 0o600: the payload carries provider API keys (config.agents.*.apiKey)
+    // and os.tmpdir() is world-readable on shared hosts.
     fs.writeFileSync(payloadPath, JSON.stringify({
       ...payload,
       externalJobId: workerJob.id,
       resultPath,
       friendlyName: workerJob.friendlyName,
       processTitle: workerJob.processTitle,
-    }, null, 2), 'utf8');
+    }, null, 2), { encoding: 'utf8', mode: 0o600 });
 
     const proc = spawnTsNodeWorker({
       appRootDir: appRoot,

@@ -439,10 +439,10 @@ const baselines = {
   // buildCompactWorldContext / deriveStoryVerbsForBrief / inferBranchType)
   // pure-moved to pipeline/contextAssembly.ts behind thin delegators
   // (goldens byte-identical).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9436,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9244,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
-  'src/ai-agents/services/imageGenerationService.ts': 6568,
+  'src/ai-agents/services/imageGenerationService.ts': 6566,
 };
 
 let failed = false;

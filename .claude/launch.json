@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "storyrpg-prototype", "run", "reader:web"],
       "port": 8081
+    },
+    {
+      "name": "generator",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "storyrpg-prototype", "run", "generator:web"],
+      "port": 8082
     }
   ]
 }

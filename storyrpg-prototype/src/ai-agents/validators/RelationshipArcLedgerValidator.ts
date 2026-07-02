@@ -1,8 +1,13 @@
-import type { Choice, Story } from '../../types';
+import type { Beat, Choice, ConditionExpression, Consequence, Story } from '../../types';
 import type { RelationshipPacingContract, RelationshipPacingStage, SeasonScenePlan } from '../../types/scenePlan';
 import {
+  beatVisibleText,
+  buildNpcAliases,
   buildRelationshipArcLedger,
+  canonicalNpcId,
   collectRelationshipScenes,
+  displayAliasesForNpc,
+  isFamilyRelationshipClaim,
   relationshipConsequencesForScene,
   relationshipSubjectKey,
   sceneVisibleText,
@@ -18,7 +23,13 @@ export interface RelationshipArcLedgerInput {
 }
 
 const HIGH_STAGE_LABEL_RE = /\b(?:friends?|friendship|best\s+friend|trusted\s+ally|trusts?\s+(?:you|her|him|them)\s+completely|intimate|inner\s+circle|one\s+of\s+us|family|soulmate)\b/ig;
-const PRIVATE_ACCESS_RE = /\b(?:text(?:ed|s|ing)?|message(?:d|s|ing)?|dm(?:ed|s|ing)?|call(?:ed|s|ing)?|phone(?:s|d)?|number|contact|reply|replies|buzz(?:es|ed)?)\b/i;
+// Negated / not-yet claims ("not friends yet", "could become family") are pacing-correct
+// prose, not stage claims (ported from RelationshipPacingValidator in the merge).
+const NEGATED_WINDOW_RE = /\b(?:not|not yet|no|never|almost|maybe|trying to become|could become|might become)\s+(?:a\s+)?$/i;
+// New-relationship prose narrated as years of established comfort (merge: was
+// RelationshipPacingValidator's compressed-familiarity check; now gated on the
+// deterministic ledger stage instead of the contract target).
+const COMPRESSED_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:hours?|days?|nights?|weeks?)\b[^.!?]{0,220}\b(?:comfortable\s+habit\s+of\s+years|known\s+(?:her|him|them|each\s+other)\s+for\s+years|known\s+(?:her|him|them|each\s+other)\s+forever|feels?\s+like\s+(?:years|home|family)|old\s+friend|every\s+easy\s+gesture|refills?\s+your\s+(?:wine|glass)|watches?\s+over\s+the\s+rim|what\s+you\s+do\s+with\s+kindness|let\s+yourself\s+belong|belonging)\b/i;
 const GROUP_IDENTITY_RE = new RegExp([
   String.raw`\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b[^.!?\n]{0,140}\b(?:complete|official|real|inside|belong(?:s|ed|ing)?|one\s+of\s+us|friends?|members?|membership|settled|permanent|unbreakable)\b`,
   String.raw`\b(?:is|are|becomes?|became)\s+(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable)\b[^.!?\n]{0,80}\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b`,
@@ -77,24 +88,131 @@ function hasSettledGroupLanguage(text: string): boolean {
   );
 }
 
-function isFamilyRelationshipClaim(text: string, index: number): boolean {
-  const start = Math.max(0, index - 56);
-  const end = Math.min(text.length, index + 80);
-  const window = text.slice(start, end).toLowerCase();
-  return /\b(?:like|as|found|chosen|feels?\s+like)\s+family\b/.test(window)
-    || /\bfamily\s+(?:now|already|forever|by choice|for tonight)\b/.test(window)
-    || /\b(?:part|member)\s+of\s+(?:the|our|their|your|his|her)\s+family\b/.test(window);
+function isNegated(text: string, index: number): boolean {
+  const prefix = text.slice(Math.max(0, index - 40), index);
+  return NEGATED_WINDOW_RE.test(prefix);
 }
 
 function hasHighStageRelationshipLabel(text: string): boolean {
   HIGH_STAGE_LABEL_RE.lastIndex = 0;
   for (const match of text.matchAll(HIGH_STAGE_LABEL_RE)) {
+    if (isNegated(text, match.index ?? 0)) continue;
     if (match[0].toLowerCase() === 'family' && !isFamilyRelationshipClaim(text, match.index ?? 0)) {
       continue;
     }
     return true;
   }
   return false;
+}
+
+const HIGH_STAGE_LABEL_SINGLE_RE = new RegExp(HIGH_STAGE_LABEL_RE.source, 'i');
+
+function escaped(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Contract-authored blocked labels beyond the generic high-stage vocabulary
+ * (merge: ported from RelationshipPacingValidator). Generic labels stay the
+ * ledger label check's job; this only catches custom contract terms.
+ */
+function customBlockedLabelHits(text: string, contract: RelationshipPacingContract): string[] {
+  const hits: string[] = [];
+  for (const label of contract.blockedLabels ?? []) {
+    if (!label || label.length < 3) continue;
+    if (HIGH_STAGE_LABEL_SINGLE_RE.test(label)) continue;
+    const source = label.toLowerCase() === 'friend' ? `${escaped(label)}(?:ship|s)?` : escaped(label);
+    const re = new RegExp(`\\b${source}\\b`, 'ig');
+    for (const match of text.matchAll(re)) {
+      if (isNegated(text, match.index ?? 0)) continue;
+      if (label.toLowerCase() === 'family' && !isFamilyRelationshipClaim(text, match.index ?? 0)) continue;
+      hits.push(label);
+      break;
+    }
+  }
+  return Array.from(new Set(hits));
+}
+
+function aliasPattern(aliases: string[]): string | undefined {
+  if (aliases.length === 0) return undefined;
+  return aliases.map(escaped).join('|');
+}
+
+function hasDirectContactAccess(text: string, aliases: string[]): boolean {
+  const alias = aliasPattern(aliases);
+  if (!alias) return false;
+  return new RegExp(`\\b(?:text(?:ed|s|ing)?|message(?:d|s|ing)?|dm(?:ed|s|ing)?|call(?:ed|s|ing)?|phone(?:s|d)?|reply|replies|buzz(?:es|ed)?|number|contact)\\b[^.!?]{0,120}\\b(?:${alias})\\b`, 'i').test(text)
+    || new RegExp(`\\b(?:${alias})\\b[^.!?]{0,120}\\b(?:text(?:ed|s|ing)?|message(?:d|s|ing)?|dm(?:ed|s|ing)?|call(?:ed|s|ing)?\\s+(?:from|back|on\\s+the\\s+phone|your\\s+phone)|phone(?:s|d)?|repl(?:y|ies)|send(?:s|ing)?|sent|buzz(?:es|ed)?|knows a place|adds?\\b[^.!?]{0,32}\\bemoji)\\b`, 'i').test(text);
+}
+
+function hasOnPageIntroductionEvidence(text: string, aliases: string[]): boolean {
+  const alias = aliasPattern(aliases);
+  if (!alias) return false;
+  return new RegExp(`\\b(?:meet|meets|met|introduce(?:s|d)?|appears?|arrives?|stands?|waits?|press(?:es|ed)?|hands?|offers?|raises?|smiles?|leans?|looks?|touch(?:es|ed)?|places?|says?|asks?|murmurs?|laughs?|waves?|opens?|holds?)\\b[^.!?]{0,120}\\b(?:${alias})\\b`, 'i').test(text)
+    || new RegExp(`\\b(?:${alias})\\b[^.!?]{0,120}\\b(?:meet|meets|met|introduce(?:s|d)?|appears?|arrives?|stands?|waits?|press(?:es|ed)?|hands?|offers?|raises?|smiles?|leans?|looks?|touch(?:es|ed)?|places?|says?|asks?|murmurs?|laughs?|waves?|opens?|holds?)\\b`, 'i').test(text);
+}
+
+function normalizedAliasKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function valueMatchesNpcAlias(value: string | undefined, aliases: string[]): boolean {
+  const key = normalizedAliasKey(value);
+  if (!key) return false;
+  return aliases.some((alias) => normalizedAliasKey(alias) === key);
+}
+
+function beatHasOnPageSpeaker(beat: Beat, aliases: string[]): boolean {
+  const raw = beat as Beat & { speaker?: string; speakerName?: string; speakerId?: string; characterId?: string };
+  return valueMatchesNpcAlias(raw.speaker, aliases)
+    || valueMatchesNpcAlias(raw.speakerName, aliases)
+    || valueMatchesNpcAlias(raw.speakerId, aliases)
+    || valueMatchesNpcAlias(raw.characterId, aliases);
+}
+
+function consequenceDelta(consequence: Consequence): number | undefined {
+  const raw = consequence as Consequence & { change?: unknown; delta?: unknown; value?: unknown };
+  if (typeof raw.change === 'number') return raw.change;
+  if (typeof raw.delta === 'number') return raw.delta;
+  if (typeof raw.value === 'number') return raw.value;
+  if (typeof raw.value === 'boolean') return raw.value ? 1 : -1;
+  return undefined;
+}
+
+function consequenceDimension(consequence: Consequence): string | undefined {
+  const raw = consequence as Consequence & { dimension?: unknown; score?: unknown };
+  return typeof raw.dimension === 'string'
+    ? raw.dimension
+    : typeof raw.score === 'string'
+      ? raw.score
+      : undefined;
+}
+
+function relationshipConditionsForScene(scene: RelationshipSceneRefLike): Array<{ choiceId?: string; condition: ConditionExpression }> {
+  const out: Array<{ choiceId?: string; condition: ConditionExpression }> = [];
+  for (const beat of scene.beats ?? []) {
+    for (const choice of (beat.choices ?? []) as Choice[]) {
+      if (choice.conditions) out.push({ choiceId: choice.id, condition: choice.conditions });
+    }
+  }
+  return out;
+}
+
+type RelationshipSceneRefLike = { beats?: Beat[] };
+
+function walkRelationshipConditions(condition: ConditionExpression, visit: (condition: any) => void): void {
+  const raw = condition as any;
+  if (!raw || typeof raw !== 'object') return;
+  if (raw.type === 'relationship' || (raw.npcId && raw.dimension && raw.operator)) visit(raw);
+  for (const child of raw.conditions ?? []) walkRelationshipConditions(child, visit);
+  if (raw.condition) walkRelationshipConditions(raw.condition, visit);
 }
 
 function effectiveTargetStage(contract: RelationshipPacingContract, entry: RelationshipArcLedgerEntry): RelationshipPacingStage {
@@ -159,7 +277,30 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
       }
     }
 
-    for (const ref of collectRelationshipScenes(input.story, input.scenePlan)) {
+    const refs = collectRelationshipScenes(input.story, input.scenePlan);
+    const sceneOrder = new Map(refs.map((ref, index) => [ref.scene.id, index]));
+    const aliases = buildNpcAliases(input.story);
+    // Order-aware accumulation of authored relationship gains, seeded from
+    // initial relationships — powers the gated-choice reachability check
+    // (merge: ported from RelationshipPacingValidator).
+    const accumulated = new Map<string, number>();
+    for (const npc of input.story.npcs ?? []) {
+      const initial = (npc as { initialRelationship?: Partial<Record<'trust' | 'affection' | 'respect' | 'fear', number>> }).initialRelationship;
+      const npcKey = canonicalNpcId(npc.id, aliases) ?? npc.id;
+      for (const dim of ['trust', 'affection', 'respect', 'fear'] as const) {
+        const value = Number(initial?.[dim] ?? 0);
+        if (value <= 0) continue;
+        accumulated.set(`npc:${npcKey}:${dim}`, (accumulated.get(`npc:${npcKey}:${dim}`) ?? 0) + value);
+      }
+    }
+    const introducedBeforeScene = (entry: RelationshipArcLedgerEntry, sceneId: string): boolean => {
+      if (!entry.introducedSceneId) return false;
+      const introIndex = sceneOrder.get(entry.introducedSceneId);
+      const hereIndex = sceneOrder.get(sceneId);
+      return introIndex !== undefined && hereIndex !== undefined && introIndex < hereIndex;
+    };
+
+    for (const ref of refs) {
       const text = sceneVisibleText(ref.scene);
       const contracts = [...(ref.planned?.relationshipPacing ?? []), ...(ref.scene.relationshipPacing ?? [])];
 
@@ -203,13 +344,80 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
           }
         }
 
-        if (contract.npcId && !entry.privateContactEarned && PRIVATE_ACCESS_RE.test(text)) {
-          pushIssue(this.error(
-            `Scene "${ref.scene.id}" gives ${contract.npcId} private contact access before the ledger has earned a contact exchange.`,
-            loc,
-            'Show the introduction and contact exchange on-page before texting/calling/DMs/replies become available.',
-          ), `contract:private-contact:${ref.episodeNumber}:${ref.scene.id}:${key}`);
+        // Contact access before any introduction (merge: ported from
+        // RelationshipPacingValidator). Order-aware and alias-anchored: an
+        // introduction in a prior scene — or an earlier beat of this scene —
+        // earns contact, replacing the whole-scene exchange-verb check that
+        // false-positived on prose like "promises to text you the address".
+        if (contract.npcId && !introducedBeforeScene(entry, ref.scene.id)) {
+          const npcAliases = displayAliasesForNpc(input.story, contract.npcId);
+          let introducedInScene = false;
+          for (const beat of ref.scene.beats ?? []) {
+            const localText = beatVisibleText(beat);
+            if (!introducedInScene && hasDirectContactAccess(localText, npcAliases)) {
+              pushIssue(this.error(
+                `Scene "${ref.scene.id}" gives ${contract.npcId} direct phone/contact access before an on-page introduction earns it.`,
+                loc,
+                'Introduce the NPC in person, show how numbers/contact access are exchanged, or rewrite the beat as public venue discovery rather than texting/calling an unmet character.',
+              ), `contract:private-contact:${ref.episodeNumber}:${ref.scene.id}:${key}`);
+            }
+            if (beatHasOnPageSpeaker(beat, npcAliases) || hasOnPageIntroductionEvidence(localText, npcAliases)) {
+              introducedInScene = true;
+            }
+          }
         }
+
+        // Ledger-gated pacing residuals (merge: ported from
+        // RelationshipPacingValidator, but gated on the deterministic ledger
+        // stage instead of the contract target so an earned bond can never be
+        // forced into cold rewrites).
+        if (stageRank(entry.currentStage) < stageRank('friend')) {
+          if (COMPRESSED_FAMILIARITY_RE.test(text)) {
+            const compressed = `Scene "${ref.scene.id}" compresses a new relationship into old-friend familiarity before the ledger earns it.`;
+            pushIssue(
+              input.treatmentSourced
+                ? this.error(compressed, loc, 'Keep the chemistry immediate, but express it as a test, invitation, guarded warmth, or fragile beginning rather than years of comfort.')
+                : this.warning(compressed, loc, 'Keep the chemistry immediate, but express it as a test, invitation, guarded warmth, or fragile beginning rather than years of comfort.'),
+              `compressed:${ref.episodeNumber}:${ref.scene.id}`,
+            );
+          }
+          const customBlocked = customBlockedLabelHits(text, contract);
+          if (customBlocked.length > 0) {
+            pushIssue(this.error(
+              `Scene "${ref.scene.id}" uses unearned relationship label(s): ${customBlocked.join(', ')}.`,
+              loc,
+              `Rewrite as ${(contract.allowedLabels ?? []).join(', ') || entry.currentStage} until relationship choices and evidence earn the stronger label.`,
+            ), `custom-labels:${ref.episodeNumber}:${ref.scene.id}:${key}`);
+          }
+        }
+      }
+
+      // Reachability of relationship-gated choices against gains authored so
+      // far (merge: ported from RelationshipPacingValidator). Checked before
+      // this scene's own consequences accumulate: a gate cannot be satisfied
+      // by the choice it guards.
+      for (const { choiceId, condition } of relationshipConditionsForScene(ref.scene)) {
+        walkRelationshipConditions(condition, (raw) => {
+          const npcKey = canonicalNpcId(raw.npcId, aliases);
+          const dimKey = npcKey && raw.dimension ? `npc:${npcKey}:${raw.dimension}` : undefined;
+          if (!dimKey || typeof raw.value !== 'number') return;
+          const available = accumulated.get(dimKey) ?? 0;
+          if ((raw.operator === '>' || raw.operator === '>=') && available < raw.value) {
+            pushIssue(this.error(
+              `Relationship-gated choice requires ${raw.npcId}.${raw.dimension} ${raw.operator} ${raw.value}, but prior authored relationship gains only reach ${available}.`,
+              `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${choiceId ?? 'condition'}`,
+              'Lower the gate, add prior relationship consequences, or move the gated option later.',
+            ), `condition:${ref.episodeNumber}:${ref.scene.id}:${choiceId ?? 'condition'}:${dimKey}:${raw.value}`);
+          }
+        });
+      }
+      for (const { consequence } of relationshipConsequencesForScene(ref.scene)) {
+        if (consequence.type !== 'relationship') continue;
+        const delta = consequenceDelta(consequence);
+        const npcKey = canonicalNpcId((consequence as Consequence & { npcId?: string }).npcId, aliases);
+        const dim = consequenceDimension(consequence);
+        if (typeof delta !== 'number' || delta <= 0 || !npcKey || !dim) continue;
+        accumulated.set(`npc:${npcKey}:${dim}`, (accumulated.get(`npc:${npcKey}:${dim}`) ?? 0) + delta);
       }
 
       if (hasHighStageRelationshipLabel(text)) {

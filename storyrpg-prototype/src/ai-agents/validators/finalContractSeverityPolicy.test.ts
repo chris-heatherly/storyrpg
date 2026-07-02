@@ -8,6 +8,7 @@ import { resolveFinalContractSeverity } from './finalContractSeverityPolicy';
 
 afterEach(() => {
   delete process.env.GATE_RELATIONSHIP_PACING;
+  delete process.env.GATE_RELATIONSHIP_ARC_LEDGER;
 });
 
 describe('resolveFinalContractSeverity', () => {
@@ -78,21 +79,23 @@ describe('resolveFinalContractSeverity', () => {
   });
 
   it('repairable_contract blocks only when its gate is ON and declares repair/exception', () => {
-    // GATE_RELATIONSHIP_PACING is registered default-ON with repair: 'regen'.
+    // GATE_RELATIONSHIP_ARC_LEDGER is registered default-ON with repair: 'regen'.
+    // (GATE_RELATIONSHIP_PACING, the previous example here, merged into it and
+    // is shadowed default-OFF as of 2026-07-02.)
     expect(
       resolveFinalContractSeverity({
         requestedSeverity: 'error',
         findingClass: 'repairable_contract',
-        gateId: 'GATE_RELATIONSHIP_PACING',
+        gateId: 'GATE_RELATIONSHIP_ARC_LEDGER',
       }),
     ).toBe('error');
     // Same finding with the gate forced OFF → downgraded.
-    process.env.GATE_RELATIONSHIP_PACING = '0';
+    process.env.GATE_RELATIONSHIP_ARC_LEDGER = '0';
     expect(
       resolveFinalContractSeverity({
         requestedSeverity: 'error',
         findingClass: 'repairable_contract',
-        gateId: 'GATE_RELATIONSHIP_PACING',
+        gateId: 'GATE_RELATIONSHIP_ARC_LEDGER',
       }),
     ).toBe('warning');
     // No gate at all → downgraded.

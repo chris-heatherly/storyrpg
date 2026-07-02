@@ -221,7 +221,10 @@ const RAW_GATE_REGISTRY = [
     policyException: 'The season-final regression-net dispatch for this plan-contract gate has no dedicated repair handler yet: a mid-run plan drift lands as a blocking authored_contract finding at the final contract. Planned fix: route these findings through the final-contract scene-prose/cluster repair before abort (audit 2026-07-01 item 4.4). Primary enforcement is plan placement (cheap fail-fast before prose).',
   },
   { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_RELATIONSHIP_PACING', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  // 2026-07-02: merged into GATE_RELATIONSHIP_ARC_LEDGER (its checks were ~70%
+  // duplicates with divergent regexes, double-flagging the same prose). The
+  // unique checks were ported ledger-gated; shadow one live run, then delete.
+  { id: 'GATE_RELATIONSHIP_PACING', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_SCENE_SPATIAL_UNIT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_RELATIONSHIP_ARC_LEDGER', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_THEMATIC_SQUARE_TURN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },

@@ -449,7 +449,7 @@ function encounterVisibleText(encounter: unknown): string {
   return out.filter(Boolean).join(' ');
 }
 
-function buildNpcAliases(story: Story): Map<string, Set<string>> {
+export function buildNpcAliases(story: Story): Map<string, Set<string>> {
   const byCanonical = new Map<string, Set<string>>();
   const add = (canonical: string, value: unknown): void => {
     if (typeof value !== 'string') return;
@@ -463,13 +463,54 @@ function buildNpcAliases(story: Story): Map<string, Set<string>> {
     const canonical = normalizeRelationshipKey(npc.id) ?? normalizeRelationshipKey(npc.name) ?? npc.id;
     add(canonical, npc.id);
     add(canonical, npc.name);
+    for (const alias of (npc as { aliases?: string[] }).aliases ?? []) add(canonical, alias);
     const first = npc.name?.match(/[A-Za-zÀ-ž'’-]{3,}/)?.[0];
     add(canonical, first);
   }
   return byCanonical;
 }
 
-function canonicalNpcId(value: string | undefined, aliases: Map<string, Set<string>>): string | undefined {
+/**
+ * Raw display aliases for an NPC (id, name, declared aliases, first name) for
+ * prose-facing regexes — unlike the normalized keys in buildNpcAliases, these
+ * keep their original casing/spacing so they can match reader-facing text.
+ */
+export function displayAliasesForNpc(story: Story, npcId: string | undefined): string[] {
+  const aliases = buildNpcAliases(story);
+  const contractKey = canonicalNpcId(npcId, aliases);
+  if (!contractKey) return [];
+  const values = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (trimmed.length >= 3) values.add(trimmed);
+  };
+  add(npcId);
+  for (const npc of story.npcs ?? []) {
+    const raw = npc as { id?: string; name?: string; aliases?: string[] };
+    const npcKey = canonicalNpcId(raw.id, aliases) ?? canonicalNpcId(raw.name, aliases);
+    if (npcKey !== contractKey) continue;
+    add(raw.id);
+    add(raw.name);
+    for (const alias of raw.aliases ?? []) add(alias);
+    add(raw.name?.match(/[A-Za-zÀ-ž'’-]{3,}/)?.[0]);
+  }
+  return Array.from(values)
+    .filter((value) => !/^char-|^npc-/i.test(value))
+    .sort((a, b) => b.length - a.length);
+}
+
+/** "family" is a relationship-stage claim only when the prose claims the bond, not lore/history. */
+export function isFamilyRelationshipClaim(text: string, index: number): boolean {
+  const start = Math.max(0, index - 56);
+  const end = Math.min(text.length, index + 80);
+  const window = text.slice(start, end).toLowerCase();
+  return /\b(?:like|as|found|chosen|feels?\s+like)\s+family\b/.test(window)
+    || /\bfamily\s+(?:now|already|forever|by choice|for tonight)\b/.test(window)
+    || /\b(?:part|member)\s+of\s+(?:the|our|their|your|his|her)\s+family\b/.test(window);
+}
+
+export function canonicalNpcId(value: string | undefined, aliases: Map<string, Set<string>>): string | undefined {
   const normalized = normalizeRelationshipKey(value);
   if (!normalized) return undefined;
   for (const [canonical, values] of aliases.entries()) {

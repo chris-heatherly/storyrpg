@@ -1347,21 +1347,38 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((i) => i.type === 'scene_turn_realization_violation')).toBe(true);
   });
 
-  it('hard-fails a relationship pacing finding as its own contract type', async () => {
-    const report = await new FinalStoryContractValidator().validate({
+  it('downgrades a relationship pacing finding by default (gate merged into arc ledger), hard-fails when re-enabled', async () => {
+    // GATE_RELATIONSHIP_PACING is shadowed default-OFF since the 2026-07-02
+    // merge into GATE_RELATIONSHIP_ARC_LEDGER; its findings land as warnings
+    // unless the shadow gate is explicitly re-enabled for comparison runs.
+    const finding = {
+      validator: 'RelationshipPacingValidator',
+      severity: 'error' as const,
+      message: 'Scene "s1-1" declares friendship before the bond is earned.',
+      sceneId: 's1-1',
+      episodeNumber: 1,
+    };
+
+    const shadowed = await new FinalStoryContractValidator().validate({
       story: validStory(),
       treatmentSourced: true,
-      fidelityFindings: [{
-        validator: 'RelationshipPacingValidator',
-        severity: 'error',
-        message: 'Scene "s1-1" declares friendship before the bond is earned.',
-        sceneId: 's1-1',
-        episodeNumber: 1,
-      }],
+      fidelityFindings: [finding],
     });
+    expect(shadowed.blockingIssues.some((i) => i.type === 'relationship_pacing_violation')).toBe(false);
+    expect(shadowed.warnings.some((i) => i.type === 'relationship_pacing_violation')).toBe(true);
 
-    expect(report.passed).toBe(false);
-    expect(report.blockingIssues.some((i) => i.type === 'relationship_pacing_violation')).toBe(true);
+    process.env.GATE_RELATIONSHIP_PACING = '1';
+    try {
+      const reenabled = await new FinalStoryContractValidator().validate({
+        story: validStory(),
+        treatmentSourced: true,
+        fidelityFindings: [finding],
+      });
+      expect(reenabled.passed).toBe(false);
+      expect(reenabled.blockingIssues.some((i) => i.type === 'relationship_pacing_violation')).toBe(true);
+    } finally {
+      delete process.env.GATE_RELATIONSHIP_PACING;
+    }
   });
 
   it('hard-fails a narrative mechanic pressure finding as its own contract type', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  anchoredSceneLocationCues,
   extractSceneLocationCues,
   isContainerLocationCue,
   normalizeSceneLocationCue,
@@ -75,5 +76,37 @@ describe('uniqueMajorLocationCues', () => {
       'rooftop bar',
       'valcescu club',
     ]);
+  });
+});
+
+describe('anchoredSceneLocationCues', () => {
+  it('anchors declared location labels to one cue (qualified label FP)', () => {
+    // Live FP (Phase 7 smoke, 2026-07-01): "Rooftop bar in Lipscani" was mined
+    // for two major cues and hard-aborted a single-place scene.
+    expect(anchoredSceneLocationCues(
+      ['Rooftop bar in Lipscani'],
+      ['At a rooftop bar she catches the attention of a man in a charcoal suit.'],
+    )).toEqual(['rooftop bar']);
+  });
+
+  it('anchors itinerary-style labels and absorbs text cues the label names', () => {
+    expect(anchoredSceneLocationCues(
+      ['Rooftop bar, then the walk home through Cismigiu'],
+      ['At a rooftop bar she catches the attention of a stranger.'],
+    )).toHaveLength(1);
+  });
+
+  it('still surfaces a genuinely conflicting obligation-text location', () => {
+    expect(anchoredSceneLocationCues(
+      ['Apartment'],
+      ['At the apartment, she opens the letter.', 'At the rooftop bar, she forms a new circle.'],
+    ).sort()).toEqual(['apartment', 'rooftop bar']);
+  });
+
+  it('treats container-only labels as ambient, not anchors', () => {
+    expect(anchoredSceneLocationCues(
+      ['Bucharest'],
+      ['At the rooftop bar, she forms a new circle.'],
+    )).toEqual(['rooftop bar']);
   });
 });

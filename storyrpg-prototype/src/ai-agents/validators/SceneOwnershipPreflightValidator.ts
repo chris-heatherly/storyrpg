@@ -2,7 +2,7 @@ import type { RequiredBeat, SceneConstructionProfile, SceneEventOwnershipProfile
 import type { StoryCircleRoleAssignment } from '../../types/sourceAnalysis';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import { detectPrimaryStoryEventCues } from '../remediation/storyEventCues';
-import { uniqueMajorLocationCues } from '../utils/sceneLocationCues';
+import { anchoredSceneLocationCues } from '../utils/sceneLocationCues';
 import { BaseValidator, buildFailureResult, buildSuccessResult, type ValidationIssue, type ValidationResult } from './BaseValidator';
 
 export interface SceneOwnershipPreflightScene {
@@ -63,7 +63,9 @@ function uniqueTimeCues(texts: string[]): string[] {
 }
 
 function uniqueLocationCues(scene: SceneOwnershipPreflightScene, texts: string[]): string[] {
-  return uniqueMajorLocationCues([scene.location, ...(scene.locations ?? []), ...texts]);
+  // Declared location labels are one spatial anchor; only hard-beat texts can
+  // introduce a genuinely conflicting second location (see anchoredSceneLocationCues).
+  return anchoredSceneLocationCues([scene.location, ...(scene.locations ?? [])], texts);
 }
 
 function sceneOwnsEncounterCue(scene: SceneOwnershipPreflightScene): boolean {

@@ -23,7 +23,7 @@ import type {
 } from '../../types/scenePlan';
 import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
-import { uniqueMajorLocationCues } from './sceneLocationCues';
+import { anchoredSceneLocationCues } from './sceneLocationCues';
 import { atomizeTreatmentText } from './treatmentEventAtomizer';
 
 export interface SceneConstructionChoicePoint {
@@ -239,8 +239,8 @@ function hasMultipleTimeCues(value: unknown): boolean {
   return timeCues(value).length >= 2;
 }
 
-function locationCueCount(scene: SceneConstructionSceneLike, activeTexts: string[]): number {
-  return uniqueMajorLocationCues([scene.location, scene.locations?.[0], activeTexts.join(' ')]).length;
+function activeLocationCues(scene: SceneConstructionSceneLike, activeTexts: string[]): string[] {
+  return anchoredSceneLocationCues([scene.location, scene.locations?.[0]], activeTexts);
 }
 
 function beatText(beat: RequiredBeat | undefined): string {
@@ -877,9 +877,9 @@ function conflictDiagnostics(
     diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has ${totalUnits} active construction units, above ${maxTotal}, without enough beat budget.`);
   }
   const activePrimaryLike = obligations.filter((item) => item.slot === 'primary_turn' || item.slot === 'must_stage');
-  const locationCount = locationCueCount(scene, activePrimaryLike.map((item) => item.text));
-  if (locationCount >= 2 && !(scene.kind === 'encounter' || scene.isEncounter)) {
-    diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has active obligations tied to ${locationCount} major location cue(s); split or route location changes before prose.`);
+  const activeCues = activeLocationCues(scene, activePrimaryLike.map((item) => item.text));
+  if (activeCues.length >= 2 && !(scene.kind === 'encounter' || scene.isEncounter)) {
+    diagnostics.push(`Scene "${scene.id ?? 'unknown'}" has active obligations tied to ${activeCues.length} major location cues (${activeCues.join(', ')}); keep the scene in one of them and split or route the other location's events before prose.`);
   }
   const nonDuplicateStageTexts = activePrimaryLike
     .map((item) => item.text)
@@ -910,7 +910,7 @@ export function compileSceneConstructionProfile(
   const maxTotal = maxTotalUnits(scene);
   const beatBudget = beatBudgetFor(scene, totalUnits);
   const explicitTimeCueCount = Array.from(new Set(activeTexts.flatMap(timeCues))).length;
-  const explicitLocationCueCount = locationCueCount(scene, activeTexts);
+  const explicitLocationCueCount = activeLocationCues(scene, activeTexts).length;
   const introductionCount = activeObligations.filter((item) => INTRO_RE.test(item.text)).length;
   const activeConflictCount = activeObligations.filter((item) => CONTRAST_RE.test(item.text) || item.slot === 'must_stage').length;
   const conflictDiagnosticsList = conflictDiagnostics(scene, obligations, activeTexts, hardUnits, totalUnits, maxHard, maxTotal);

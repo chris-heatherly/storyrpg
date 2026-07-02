@@ -67,6 +67,15 @@ Verification: 535 tests green across schemas/agents/utils/proxy;
   sets collapse to one; preposition alternation made case-insensitive
   (sentence-initial "Through"/"In" now match); +`dock`/`estate`. New
   `sceneLocationCues.test.ts` (10 tests incl. both FP repros).
+  **Follow-up (Phase 7 live FP, 2026-07-02):** a scene's declared `location`
+  label was still mined for cues, so a qualified single-place label ("Rooftop
+  bar in Lipscani") or an itinerary pasted into `location` counted as 2+ major
+  locations and hard-aborted three straight Story Architect attempts. New
+  `anchoredSceneLocationCues()` treats label(s) as ONE spatial anchor; only
+  obligation-text cues the label doesn't already name count as extra. Used by
+  both `sceneConstructionProfile.locationCueCount` (the aborting
+  SceneConstructionGate path — diagnostic now NAMES the cues so retry feedback
+  is actionable) and `SceneOwnershipPreflightValidator`.
 - ✅ **1.6 (H7)** — `GATE_SCENE_CONSTRUCTION_PREFLIGHT` registered in gateDefaults
   + gateRegistry (blocking, default-ON, repair regen); all three throw sites
   (StoryArchitect ×2, ContentGenerationPhase) routed through `isGateEnabled` so

@@ -598,6 +598,81 @@ describe('sceneConstructionProfile compiler', () => {
     expect(profile.conflictDiagnostics.join(' ')).not.toContain('major location cue');
   });
 
+  it('counts a qualified single-place location label as one spatial anchor', () => {
+    // Live FP (Phase 7 smoke, 2026-07-01): "Rooftop bar in Lipscani" was mined
+    // for two cues (rooftop bar + lipscani) and aborted three straight Story
+    // Architect attempts even though the scene sits in one place.
+    const issues = collectSceneConstructionProfileIssues([{
+      id: 's1-2',
+      order: 1,
+      location: 'Rooftop bar in Lipscani',
+      turnContract: {
+        turnId: 'venue-turn',
+        source: 'planner',
+        centralTurn: 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+        beforeState: 'The room feels anonymous.',
+        turnEvent: 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+        afterState: 'The stranger has become a question.',
+        handoff: 'Move into the walk home.',
+      },
+      requiredBeats: [{
+        id: 'venue-meet',
+        tier: 'authored',
+        sourceTurn: 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+        mustDepict: 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+      }],
+    }]);
+
+    expect(issues.join(' ')).not.toContain('major location cue');
+  });
+
+  it('does not mine an itinerary-style location label for extra major locations', () => {
+    const issues = collectSceneConstructionProfileIssues([{
+      id: 's1-2',
+      order: 1,
+      location: 'Rooftop bar, then the walk home through Cismigiu to her Lipscani apartment threshold',
+      turnContract: {
+        turnId: 'venue-turn',
+        source: 'planner',
+        centralTurn: 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+        beforeState: 'The room feels anonymous.',
+        turnEvent: 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+        afterState: 'The stranger has become a question.',
+        handoff: 'Move into the walk home.',
+      },
+    }]);
+
+    expect(issues.join(' ')).not.toContain('major location cue');
+  });
+
+  it('names the conflicting cues so architect retry feedback is actionable', () => {
+    const issues = collectSceneConstructionProfileIssues([{
+      id: 's1-2',
+      order: 1,
+      locations: ['Apartment'],
+      turnContract: {
+        turnId: 'home-turn',
+        source: 'planner',
+        centralTurn: 'At the apartment, the protagonist opens the inherited letter.',
+        beforeState: 'The letter is still sealed.',
+        turnEvent: 'At the apartment, the protagonist opens the inherited letter.',
+        afterState: 'The address inside becomes a problem.',
+        handoff: 'Move toward the social venue.',
+      },
+      requiredBeats: [{
+        id: 'venue-meet',
+        tier: 'authored',
+        sourceTurn: 'At the rooftop bar, the protagonist forms a new circle.',
+        mustDepict: 'At the rooftop bar, the protagonist forms a new circle.',
+      }],
+    }]);
+
+    const joined = issues.join(' ');
+    expect(joined).toContain('major location cue');
+    expect(joined).toContain('apartment');
+    expect(joined).toContain('rooftop bar');
+  });
+
   it('does not count city containers or aliases as multi-location overload', () => {
     const issues = collectSceneConstructionProfileIssues([{
       id: 's1-park',

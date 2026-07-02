@@ -19,8 +19,9 @@ function cleanText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
-export function normalizeSceneLocationCue(value: unknown): string | undefined {
-  const normalized = cleanText(value)
+/** Character-level normalization shared with cue values, without the cue-collapse rules. */
+export function normalizeLocationText(value: unknown): string {
+  return cleanText(value)
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -29,6 +30,10 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
     .replace(/\b(?:the|a|an)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+export function normalizeSceneLocationCue(value: unknown): string | undefined {
+  const normalized = normalizeLocationText(value);
   if (!normalized) return undefined;
   if (/^(?:purpose|scene|episode|next|before|after|consequence|consequences|turn|handoff)\b/.test(normalized)) return undefined;
   const lexicon = getStoryLexicon();
@@ -96,6 +101,26 @@ function isDirectLocationLabel(value: unknown): boolean {
   const normalized = normalizeSceneLocationCue(text);
   if (normalized && isContainerLocationCue(normalized)) return true;
   return looksLikeProperPlace(text);
+}
+
+/**
+ * Location cues for a scene whose location label(s) are DECLARATIONS, not
+ * prose. However wordy the label ("Rooftop bar in Lipscani", or an itinerary
+ * pasted into `location`), it is one spatial declaration and contributes at
+ * most one anchor cue. Only cues carried by the obligation texts can prove the
+ * scene spans locations, and text cues the label itself already names collapse
+ * into the anchor instead of counting as a second place. (Live FP 2026-07-01:
+ * mining the label for 2+ "major locations" aborted three straight Story
+ * Architect attempts on a single-place scene.)
+ */
+export function anchoredSceneLocationCues(labelInputs: unknown[], texts: string[]): string[] {
+  const anchorCues = uniqueMajorLocationCues(labelInputs).filter((cue) => !isContainerLocationCue(cue));
+  const labelText = ` ${normalizeLocationText(labelInputs.map((value) => cleanText(value)).join(' | '))} `;
+  const textCues = uniqueMajorLocationCues([texts.join(' ')]).filter((cue) => !isContainerLocationCue(cue));
+  const extras = textCues.filter((cue) =>
+    !anchorCues.some((anchor) => anchor === cue || anchor.includes(cue) || cue.includes(anchor)) &&
+    !labelText.includes(` ${cue} `));
+  return [...anchorCues.slice(0, 1), ...extras];
 }
 
 export function uniqueMajorLocationCues(inputs: unknown[]): string[] {

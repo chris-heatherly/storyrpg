@@ -221,6 +221,28 @@ describe('SceneOwnershipPreflightValidator', () => {
     expect(result.issues.map((issue) => issue.message).join(' ')).not.toContain('multiple major location');
   });
 
+  it('treats a qualified location label as one spatial anchor', () => {
+    // Live FP (Phase 7 smoke, 2026-07-01): a label like "Rooftop bar in
+    // Lipscani" was mined for two major cues even though it declares one place.
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 's1-bar',
+          locations: ['Rooftop bar in Lipscani'],
+          requiredBeats: [{
+            id: 'bar-action',
+            tier: 'authored',
+            sourceTurn: 'At a rooftop bar she catches the attention of a stranger.',
+            mustDepict: 'At a rooftop bar she catches the attention of a stranger.',
+          }],
+        }),
+      ],
+    });
+
+    expect(result.issues.map((issue) => issue.message).join(' ')).not.toContain('multiple major location');
+  });
+
   it('treats city cues as containers rather than conflicting locations', () => {
     const result = new SceneOwnershipPreflightValidator().validate({
       episodeNumber: 1,

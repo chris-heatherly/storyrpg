@@ -68,8 +68,13 @@ import { isPlanningRegisterText } from '../constants/planningRegisterText';
 
 const SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS = 3500;
 const SCENE_WRITER_REVISION_TEXT_CHARS = 1200;
-const SCENE_WRITER_MAX_RAW_RESPONSE_CHARS = 14000;
-const SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS = 14000;
+// Guard against pathological response bloat (runaway textVariants
+// boilerplate), not against rich scenes: a live 5-scene episode opener with
+// the scene-event-ownership obligations legitimately needed ~15.6k chars and
+// aborted at the old 14k line. Pathological cases run 2x+, so 20k keeps the
+// protection while clearing the calibration cliff.
+const SCENE_WRITER_MAX_RAW_RESPONSE_CHARS = 20000;
+const SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS = 20000;
 
 function normalizeSourceFragments(sourceAnalysis?: SourceMaterialAnalysis): {
   dialogue: string[];

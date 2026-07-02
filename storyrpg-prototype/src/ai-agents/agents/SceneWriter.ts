@@ -832,12 +832,17 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
       console.log(`[SceneWriter] Received response (${response.length} chars)`);
 
-      if (response.length > SCENE_WRITER_MAX_RAW_RESPONSE_CHARS) {
+      if (response.length > SCENE_WRITER_MAX_RAW_RESPONSE_CHARS * 2) {
         return {
           success: false,
-          error: `SceneWriter response exceeded raw processing budget (${response.length} > ${SCENE_WRITER_MAX_RAW_RESPONSE_CHARS} chars). Retry with concise beat prose and no boilerplate fields.`,
+          error: `SceneWriter response exceeded raw processing budget (${response.length} > ${SCENE_WRITER_MAX_RAW_RESPONSE_CHARS * 2} chars). Retry with concise beat prose and no boilerplate fields.`,
           rawResponse: response.slice(0, 1000),
         };
+      }
+      if (response.length > SCENE_WRITER_MAX_RAW_RESPONSE_CHARS) {
+        // Soft budget: a parseable response a few percent over is not worth an
+        // episode abort — beat-level caps police prose bloat downstream.
+        console.warn(`[SceneWriter] Response over soft budget (${response.length} > ${SCENE_WRITER_MAX_RAW_RESPONSE_CHARS} chars); accepting if parseable.`);
       }
 
       let content: SceneContent;
@@ -3035,12 +3040,17 @@ Return ONLY valid JSON matching the SceneContent schema.
 
       console.log(`[SceneWriter] Received revision (${response.length} chars)`);
 
-      if (response.length > SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS) {
+      if (response.length > SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS * 2) {
         return {
           success: false,
-          error: `SceneWriter revision exceeded raw processing budget (${response.length} > ${SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS} chars). Retry with concise beat prose, no boilerplate fields, and only meaningful textVariants.`,
+          error: `SceneWriter revision exceeded raw processing budget (${response.length} > ${SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS * 2} chars). Retry with concise beat prose, no boilerplate fields, and only meaningful textVariants.`,
           rawResponse: response.slice(0, 1000),
         };
+      }
+      if (response.length > SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS) {
+        // Soft budget: a parseable response a few percent over is not worth an
+        // episode abort — beat-level caps police prose bloat downstream.
+        console.warn(`[SceneWriter] Revision over soft budget (${response.length} > ${SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS} chars); accepting if parseable.`);
       }
 
       let revisedContent: SceneContent;

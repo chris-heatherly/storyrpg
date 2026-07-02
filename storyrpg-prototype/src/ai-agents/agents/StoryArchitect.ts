@@ -6628,10 +6628,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           item.type = alias;
         }
       }
+      const firstOf = (...values: Array<string | undefined>): string | undefined =>
+        values.map((value) => (value || '').trim()).find(Boolean);
       const ds = scene.dramaticStructure;
       if (ds) {
-        const firstOf = (...values: Array<string | undefined>): string | undefined =>
-          values.map((value) => (value || '').trim()).find(Boolean);
         const residueDescription = (scene.residue || [])
           .map((item) => (item?.description || '').trim())
           .find(Boolean);
@@ -6646,6 +6646,25 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
             ds[field] = fallback;
             console.log(`[StoryArchitect] Defaulted missing dramaticStructure.${String(field)} on ${scene.id}`);
           }
+        }
+      }
+      // Residue entries with a type but no description are another observed
+      // micro-omission: fill from the scene's changed state, then drop any
+      // entry that still says nothing (backstopping the list if that empties it).
+      if (Array.isArray(scene.residue) && scene.residue.length > 0) {
+        const residueFallback = firstOf(ds?.changedState, ds?.turn, scene.dramaticQuestion);
+        for (const item of scene.residue) {
+          if (item && !(item.description || '').trim() && residueFallback) {
+            item.description = residueFallback;
+            console.log(`[StoryArchitect] Filled empty residue description on ${scene.id} from the scene's changed state`);
+          }
+        }
+        const kept = scene.residue.filter((item) => (item?.description || '').trim());
+        if (kept.length !== scene.residue.length) {
+          console.log(`[StoryArchitect] Dropped ${scene.residue.length - kept.length} empty residue entr(ies) on ${scene.id}`);
+          scene.residue = kept.length > 0 || !residueFallback
+            ? kept
+            : [{ type: 'information', description: residueFallback }];
         }
       }
     }

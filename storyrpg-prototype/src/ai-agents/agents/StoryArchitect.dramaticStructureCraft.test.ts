@@ -75,6 +75,48 @@ describe('StoryArchitect.repairDramaticStructureCraft', () => {
       .toBe('Victoria now knows the corridor route.');
   });
 
+  it('fills residue entries that have a type but no description (live scene-1/scene-4 regression)', () => {
+    const blueprint = {
+      scenes: [{
+        id: 'scene-1',
+        residue: [
+          { type: 'danger', description: 'The guard rotation is off-pattern.' },
+          { type: 'promise', description: '' },
+        ],
+        dramaticStructure: {
+          question: 'q',
+          turn: 'Jules spots the anomaly in the vault feed.',
+          pressurePeak: 'p',
+          changedState: 'The crew knows the vault feed is compromised.',
+        },
+      }],
+    } as unknown as EpisodeBlueprint;
+
+    repair(blueprint);
+
+    expect(blueprint.scenes[0].residue?.map((item) => item.description)).toEqual([
+      'The guard rotation is off-pattern.',
+      'The crew knows the vault feed is compromised.',
+    ]);
+  });
+
+  it('drops undescribable residue but never leaves the list empty when a fallback exists', () => {
+    const blueprint = {
+      scenes: [{
+        id: 'scene-4',
+        residue: [{ type: 'access', description: '' }],
+        dramaticStructure: { question: '', turn: '', pressurePeak: '', changedState: '' },
+        dramaticQuestion: 'Is the inside route still safe?',
+      }],
+    } as unknown as EpisodeBlueprint;
+
+    repair(blueprint);
+
+    expect(blueprint.scenes[0].residue).toEqual([
+      { type: 'access', description: 'Is the inside route still safe?' },
+    ]);
+  });
+
   it('leaves valid residue and populated pressurePeak untouched', () => {
     const blueprint = {
       scenes: [{

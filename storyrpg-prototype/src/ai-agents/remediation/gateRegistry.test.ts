@@ -53,7 +53,10 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
     }
   });
 
-  it('does NOT treat a season-final regression-net gate as a primary final blocker', () => {
+  it('applies repair-first to season-final regression-net gates too (audit 4.4)', () => {
+    // A blocking gate that EXECUTES at season-final via auditPlacements is the
+    // same end-of-run abort shape as a primary season-final gate — it must
+    // declare a repair route (or a written exception) just the same.
     const regressionNetGate: GateSpec = {
       id: 'GATE_TEST_REGRESSION_NET',
       placement: 'scene',
@@ -64,8 +67,13 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
     };
     GATE_REGISTRY.push(regressionNetGate);
     try {
-      const violations = validateGateRegistry({ ...GATE_DEFAULTS, GATE_TEST_REGRESSION_NET: true });
-      expect(violations.filter((v) => v.gateId === 'GATE_TEST_REGRESSION_NET')).toEqual([]);
+      const bare = validateGateRegistry({ ...GATE_DEFAULTS, GATE_TEST_REGRESSION_NET: true });
+      expect(bare.filter((v) => v.gateId === 'GATE_TEST_REGRESSION_NET')).toHaveLength(1);
+
+      // With a repair route declared, it is compliant.
+      GATE_REGISTRY[GATE_REGISTRY.length - 1] = { ...regressionNetGate, repair: 'regen' };
+      const repaired = validateGateRegistry({ ...GATE_DEFAULTS, GATE_TEST_REGRESSION_NET: true });
+      expect(repaired.filter((v) => v.gateId === 'GATE_TEST_REGRESSION_NET')).toEqual([]);
     } finally {
       GATE_REGISTRY.pop();
     }

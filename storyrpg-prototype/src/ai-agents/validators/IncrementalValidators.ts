@@ -31,6 +31,7 @@ import {
   MechanicsLeakageValidator,
   MechanicsLeakageInput,
 } from './MechanicsLeakageValidator';
+import { isGateEnabled } from '../remediation/gateDefaults';
 
 // ============================================
 // TYPES AND INTERFACES
@@ -1524,7 +1525,7 @@ export class IncrementalValidationRunner {
         beatId: t.id,
       }));
       if (encounterTexts.length > 0) {
-        const strict = process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1';
+        const strict = isGateEnabled('GATE_MECHANICS_LEAKAGE_REGEN');
         const r = this.mechanicsLeakageValidator.validate({ texts: encounterTexts, strict });
         results.mechanicsLeakage = {
           passed: r.valid,
@@ -1576,7 +1577,7 @@ export class IncrementalValidationRunner {
     };
 
     // Intensity distribution: pure single-scene check over beats[].intensityTier.
-    if (this.config.intensityDistributionCheck && process.env.GATE_INTENSITY_DISTRIBUTION === '1') {
+    if (this.config.intensityDistributionCheck && isGateEnabled('GATE_INTENSITY_DISTRIBUTION')) {
       const input: IntensityDistributionInput = {
         sceneContents: [
           {
@@ -1604,7 +1605,7 @@ export class IncrementalValidationRunner {
     }
 
     // Mechanics leakage: pure single-scene scan over rendered beat text.
-    if (this.config.mechanicsLeakageSceneCheck && process.env.GATE_MECHANICS_LEAKAGE_REGEN === '1') {
+    if (this.config.mechanicsLeakageSceneCheck && isGateEnabled('GATE_MECHANICS_LEAKAGE_REGEN')) {
       // Gated path only (env flag set): run strict so the safe isolated
       // stat-delta leak class emits 'error' and trips escalate-to-scene below.
       // The `strict` flag lives on this local input only — the final-contract

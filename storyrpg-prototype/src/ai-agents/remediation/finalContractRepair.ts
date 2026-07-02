@@ -64,6 +64,16 @@ export interface ContractRepairResult {
   changed: boolean;
   /** Optional ledger record describing what the handler did (timestamp added by caller). */
   record?: Omit<RemediationLedgerRecord, 'timestamp'>;
+  /**
+   * Fingerprints (see {@link contractRepairIssueFingerprint}) of the issues this
+   * handler ACTUALLY worked on this round. Handlers that cap per-round work
+   * (scene-prose: 4 scenes, cluster: 2 centers) must report these so the loop
+   * charges the per-issue budget only for attempted issues — charging on
+   * selection starved un-attempted issues out of their repair attempts entirely
+   * (the g23 74-blocker season-final abort). Omitted ⇒ legacy behavior (every
+   * selected issue is charged when the round changed anything).
+   */
+  attemptedIssueKeys?: string[];
 }
 
 export interface FinalContractRepairOutcome {
@@ -95,7 +105,7 @@ function compactFingerprintText(value: string | undefined): string {
     .slice(0, 240);
 }
 
-function contractRepairIssueFingerprint(issue: ContractRepairIssue): string {
+export function contractRepairIssueFingerprint(issue: ContractRepairIssue): string {
   const message = issue.message ?? '';
   const moment = extractQuotedMoment(message) ?? message;
   return [
@@ -322,8 +332,14 @@ export async function runFinalContractRepair(opts: {
     attempts += 1;
 
     let roundChanged = false;
+    let anyHandlerReportedAttempts = false;
+    const attemptedThisRound = new Set<string>();
     for (const handler of opts.handlers) {
       const result = await handler({ story, blockingIssues: round.issues });
+      if (result.attemptedIssueKeys) {
+        anyHandlerReportedAttempts = true;
+        for (const key of result.attemptedIssueKeys) attemptedThisRound.add(key);
+      }
       if (result.changed) {
         roundChanged = true;
         story = result.story;
@@ -332,7 +348,15 @@ export async function runFinalContractRepair(opts: {
     }
 
     if (!roundChanged) break; // fixpoint: nothing left any handler can fix
-    for (const key of round.keys) {
+    // Charge the per-issue budget only for issues a handler actually attempted.
+    // Charging on SELECTION (the old behavior) exhausted issues the capped
+    // handlers never reached: with maxAttemptsPerIssue=2 and >8 distinct scene
+    // fingerprints, un-attempted issues ran out of budget after 2 rounds and the
+    // run aborted with blockers that never received a repair pass (g23).
+    // Handlers that don't report attempts fall back to charging every selected
+    // key, preserving the fixpoint guarantee for legacy handlers.
+    const chargeKeys = anyHandlerReportedAttempts ? Array.from(attemptedThisRound) : round.keys;
+    for (const key of chargeKeys) {
       issueAttempts.set(key, (issueAttempts.get(key) ?? 0) + 1);
     }
     report = await opts.revalidate(story);

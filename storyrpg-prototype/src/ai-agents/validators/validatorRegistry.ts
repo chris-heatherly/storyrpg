@@ -136,7 +136,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Tier 2 — each episode blueprint must fill all eight episodeCircle beats and bind
   // them to scenes — is EpisodeStoryCircleValidator inside StoryArchitect.
   { validator: 'StoryCircleCoverageValidator', stage: 'season', tier: 'blocking', dispatchedFrom: 'SeasonPlannerAgent (execute)' },
-  { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_ARC_PRESSURE', dispatchedFrom: 'SeasonPlannerAgent' },
+  { validator: 'ArcPressureArchitectureValidator', stage: 'season', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_ARC_PRESSURE', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'CharacterArchitectureValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'SeasonPromiseValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
   { validator: 'InformationLedgerValidator', stage: 'season', tier: 'advisory', dispatchedFrom: 'SeasonPlannerAgent' },
@@ -175,9 +175,9 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // ChoiceAuthor paths gate on binary error-level issues (0 factors / no
   // consequences), not a numeric judge score, so hysteresis is a no-op here.
   { validator: 'FiveFactorValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DENSITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
+  { validator: 'ChoiceDensityValidator', stage: 'quick', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DENSITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
   { validator: 'ChoiceDistributionValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CHOICE_DISTRIBUTION', dispatchedFrom: 'IntegratedBestPracticesValidator' },
-  { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CONSEQUENCE_BUDGET', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
+  { validator: 'ConsequenceBudgetValidator', stage: 'quick', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_CONSEQUENCE_BUDGET', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
   { validator: 'CallbackOpportunitiesValidator', stage: 'quick', tier: 'advisory', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator (opportunity heuristics only)' },
   // tier stays 'advisory' (not 'blocking'): the safe isolated-token class is
   // enforced via autofix; in-prose leaks defer to B1 regen.
@@ -196,12 +196,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'CliffhangerValidator', stage: 'full', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CLIFFHANGER', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
 
   // --- Narrative diagnostics (narrativeDiagnostics.runNarrativeDiagnostics) ---
-  { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_SETUP_PAYOFF', dispatchedFrom: 'narrativeDiagnostics' },
+  { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SETUP_PAYOFF', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'TwistQualityValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
   { validator: 'ArcDeltaValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_ARC_DELTA', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'DivergenceValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
-  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_CALLBACK_COVERAGE', dispatchedFrom: 'narrativeDiagnostics (CallbackLedger hygiene)' },
+  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_CALLBACK_COVERAGE', dispatchedFrom: 'narrativeDiagnostics (CallbackLedger hygiene)' },
   { validator: 'NarrativeFailureModeValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // E5 / #26C / D4 — advisory diagnostics added 2026-06.
   { validator: 'IntensityDistributionValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
@@ -231,10 +231,10 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // (a) Design-note / meta-narration leak: GATE_DESIGN_NOTE_LEAK also turns on the
   //     MechanicsLeakageValidator design-note scan; flagged prose then blocks the
   //     final contract (remediation = SceneWriter regen of the leaking beat).
-  { validator: 'MechanicsLeakageValidator (design-note class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_DESIGN_NOTE_LEAK', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator' },
+  { validator: 'MechanicsLeakageValidator (design-note class)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_DESIGN_NOTE_LEAK', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator' },
   // (b) Witness-id integrity: unknown-NPC witness references (already errors from
   //     MechanicalStorytellingValidator) become blocking instead of downgraded.
-  { validator: 'MechanicalStorytellingValidator (witness-id class)', stage: 'final', tier: 'advisory', remediation: 'regen-choices', rolloutFlag: 'GATE_WITNESS_ID_INTEGRITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator' },
+  { validator: 'MechanicalStorytellingValidator (witness-id class)', stage: 'final', tier: 'blocking', remediation: 'regen-choices', rolloutFlag: 'GATE_WITNESS_ID_INTEGRITY', dispatchedFrom: 'IntegratedBestPracticesValidator / FinalStoryContractValidator' },
 
   // --- Treatment-fidelity guardrails (Remediation §4.1–§4.5) ---
   // The five NEW validators that assert the generated story is a faithful EXPANSION
@@ -257,13 +257,13 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'SceneGraphBranchValidator', stage: 'final', tier: 'advisory', remediation: 'regen-choices', dispatchedFrom: 'FullStoryPipeline (validateSceneGraphBranching)' },
   // Dead-branch: a planned multi-target branch point whose choices collapsed to a
   // single target (assembled linear). GATE_BRANCH_FANOUT promotes it to an error.
-  { validator: 'SceneGraphBranchValidator (branch-fan-out class)', stage: 'final', tier: 'advisory', remediation: 'regen-choices', rolloutFlag: 'GATE_BRANCH_FANOUT', dispatchedFrom: 'FullStoryPipeline (validateSceneGraphBranching)' },
+  { validator: 'SceneGraphBranchValidator (branch-fan-out class)', stage: 'final', tier: 'blocking', remediation: 'regen-choices', rolloutFlag: 'GATE_BRANCH_FANOUT', dispatchedFrom: 'FullStoryPipeline (validateSceneGraphBranching)' },
   // Duplicate establishing-beat: two scenes on a linear path both staged as a first
   // entry into the same location (dual-first-entry). Surfaced to the continuity pass.
-  { validator: 'DuplicateEstablishingBeatValidator', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_DUPLICATE_ESTABLISHING_BEAT', dispatchedFrom: 'FullStoryPipeline (continuity check)' },
+  { validator: 'DuplicateEstablishingBeatValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_DUPLICATE_ESTABLISHING_BEAT', dispatchedFrom: 'FullStoryPipeline (continuity check)' },
   // Treatment-seed on-page presence: each declared treatment_seed_* must be set via a
   // setFlag consequence on some choice in its episode (presence-only, deterministic).
-  { validator: 'TreatmentSeedOnPageValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_TREATMENT_SEED_ONPAGE', dispatchedFrom: 'FullStoryPipeline (episode validation)' },
+  { validator: 'TreatmentSeedOnPageValidator', stage: 'final', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_TREATMENT_SEED_ONPAGE', dispatchedFrom: 'FullStoryPipeline (episode validation)' },
   // Ending reachability: each declared ending-axis (treatment_branch_*) must be set via a
   // setFlag consequence on some choice in its episode, so the named ending it drives is
   // mechanically reachable (presence-only, deterministic).
@@ -274,7 +274,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'protagonistPronounResolver (ambiguous-residue class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_PROTAGONIST_PRONOUN', dispatchedFrom: 'FinalStoryContractValidator' },
   // Encounter-outcome state: flags are always seeded; this flags a reconvergence scene
   // that ignores the outcome (no outcome-conditioned variant) for regen.
-  { validator: 'encounterOutcomeFlags (reconvergence-desync class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_OUTCOME_VARIANT', dispatchedFrom: 'FinalStoryContractValidator' },
+  { validator: 'encounterOutcomeFlags (reconvergence-desync class)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_OUTCOME_VARIANT', dispatchedFrom: 'FinalStoryContractValidator' },
   // Continuity remediation: promote cross-scene continuity ERRORS from the advisory QA
   // report to blocking so the final-contract repair loop engages.
   { validator: 'ContinuityChecker (cross-scene error class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CONTINUITY_REMEDIATION', dispatchedFrom: 'FinalStoryContractValidator' },
@@ -335,7 +335,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Characters without on-page introduction: cold prose name-drops before any cast
   // presence, and cast-in-metadata-only NPCs the prose never names. Backstop for the
   // first-appearance directive / notYetIntroducedNames ban-list / introduction key beats.
-  { validator: 'CharacterIntroductionValidator', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CHARACTER_INTRODUCTION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  { validator: 'CharacterIntroductionValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_CHARACTER_INTRODUCTION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
 ];
 
 /** Validators that hard-block a run regardless of validation mode. */
@@ -661,6 +661,15 @@ export function validateValidatorOwnershipRegistry(
       violations.push({
         validator: entry.validator,
         problem: `gatePlacement ${entry.gatePlacement} is not registered for ${entry.rolloutFlag}`,
+      });
+    }
+    // Audit 2026-07-01 (4.5/M11): a row still labeled 'advisory' after its gate
+    // was promoted to default-ON blocking silently bypasses the repair-first
+    // check below — the tier must be promoted together with the gate.
+    if (entry.tier === 'advisory' && gate.kind === 'blocking' && gate.defaultOn) {
+      violations.push({
+        validator: entry.validator,
+        problem: `tier says advisory but ${entry.rolloutFlag} is a default-ON blocking gate — promote the registry row's tier/remediation together with the gate`,
       });
     }
     const repairFirstViolation =

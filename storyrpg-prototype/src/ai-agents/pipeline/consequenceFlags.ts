@@ -29,6 +29,8 @@ export interface ConsequenceFlags {
   materializationGate: boolean;
 }
 
+import { isGateEnabled } from '../remediation/gateDefaults';
+
 /** True iff the env var is exactly the string `'1'`. */
 function on(name: string): boolean {
   return process.env[name] === '1';
@@ -47,6 +49,8 @@ export function consequenceFlags(): ConsequenceFlags {
     ledger: on('CONVERGENCE_LEDGER'),
     chargeStats: on('CHARGE_STATS'),
     competence: on('CHARGE_COMPETENCE'),
-    materializationGate: on('GATE_CHARGE_MATERIALIZATION'),
+    // GATE_* flags go through the registry-backed lookup, not a raw env read,
+    // so the gate shows up in GATE_DEFAULTS/GATE_REGISTRY policy checks.
+    materializationGate: isGateEnabled('GATE_CHARGE_MATERIALIZATION'),
   };
 }

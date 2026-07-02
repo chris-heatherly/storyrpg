@@ -37,7 +37,7 @@ import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } f
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
 import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
-import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
+import { contractRepairIssueFingerprint, type ContractRepairHandler, type ContractRepairReport } from './finalContractRepair';
 import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
 import { missingMomentTokens, requiredMomentFromMessage } from './realizationScoring';
 import type { RepairDirective } from './gateRepairRouter';
@@ -807,6 +807,10 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
     let criticCalls = 0;
     const repairedScenes: string[] = [];
     const clearedScenes: string[] = [];
+    // Fingerprints of the CURRENT round's issues this handler actually worked
+    // on — reported so the loop charges per-issue budget only for attempted
+    // issues (capped at maxScenesPerRound, so selection ≠ attempt; see g23).
+    const attemptedIssueKeys = new Set<string>();
     for (const [sceneId, currentIssues] of groups) {
       const cumulativeMomentIssues = mergeRepairIssues(
         cumulativeMomentIssuesByScene.get(sceneId) ?? [],
@@ -823,6 +827,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         continue;
       }
       attemptedScenes.add(sceneId);
+      for (const issue of currentIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
       // Encounter scenes carry prose in encounter.phases/storylets, not
       // scene.beats — merge the rewrite back to the surface it came from.
       const isEncounterScene = !scene.beats?.length;
@@ -939,10 +944,15 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
       }
     }
 
-    if (totalMerged === 0) return { story, changed: false };
+    if (totalMerged === 0) {
+      // Still report what was attempted: a failed attempt spends the issue's
+      // budget just like a successful one.
+      return { story, changed: false, attemptedIssueKeys: Array.from(attemptedIssueKeys) };
+    }
     return {
       story,
       changed: true,
+      attemptedIssueKeys: Array.from(attemptedIssueKeys),
       record: {
         rule: 'final_contract_scene_prose',
         scope: 'scene',
@@ -988,6 +998,9 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
     let totalMerged = 0;
     let criticCalls = 0;
     const repairedCenters: string[] = [];
+    // See buildSceneProseRepairHandler — attempted issues (capped at 2
+    // centers/round) are reported so only they spend per-issue budget.
+    const attemptedIssueKeys = new Set<string>();
 
     for (const issue of centers) {
       const centerId = issue.sceneId!;
@@ -1004,6 +1017,7 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
         candidate.sceneId === centerId
         && candidate.episodeNumber === issue.episodeNumber,
       );
+      for (const candidate of centerIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(candidate));
       const centerIssueNotes = centerIssues
         .map((candidate) => `- ${candidate.message ?? 'unspecified finding'}${candidate.suggestion ? ` (fix: ${candidate.suggestion})` : ''}`)
         .join('\n');
@@ -1121,10 +1135,11 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
       repairedCenters.push(centerId);
     }
 
-    if (totalMerged === 0) return { story, changed: false };
+    if (totalMerged === 0) return { story, changed: false, attemptedIssueKeys: Array.from(attemptedIssueKeys) };
     return {
       story,
       changed: true,
+      attemptedIssueKeys: Array.from(attemptedIssueKeys),
       record: {
         rule: 'final_contract_scene_cluster',
         scope: 'scene',

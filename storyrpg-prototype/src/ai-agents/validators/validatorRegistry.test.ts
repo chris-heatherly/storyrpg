@@ -176,8 +176,13 @@ describe('validatorRegistry (B4 dispatch map)', () => {
       tier: 'blocking',
       validators: expect.arrayContaining(['ArcDeltaValidator']),
     });
-    expect(runtimeBlocking).not.toContain('ChoiceDensityValidator');
-    expect(runtimeBlocking).not.toContain('SetupPayoffValidator');
+    // ChoiceDensity/SetupPayoff are runtime-blocking too since their plan gates
+    // (GATE_CHOICE_DENSITY / GATE_SETUP_PAYOFF) went default-ON blocking — the
+    // registry tier now mirrors the gate (audit 2026-07-01, 4.5/M11). Artifact
+    // contract tiers remain independent of runtime tiers; ArcDeltaValidator
+    // (autofix tier, remediation-kind gate) still demonstrates the separation.
+    expect(runtimeBlocking).toContain('ChoiceDensityValidator');
+    expect(runtimeBlocking).toContain('SetupPayoffValidator');
     expect(runtimeBlocking).not.toContain('ArcDeltaValidator');
   });
 

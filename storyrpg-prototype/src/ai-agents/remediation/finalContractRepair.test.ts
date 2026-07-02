@@ -123,6 +123,54 @@ describe('runFinalContractRepair', () => {
     expect(out.exhaustedIssueCount).toBe(1);
   });
 
+  it('charges per-issue budget on ATTEMPT, not selection — every issue gets a repair pass (g23)', async () => {
+    // The g23 shape: 10 distinct scene fingerprints, a handler capped at 4
+    // scenes/round, maxAttemptsPerIssue=2. The OLD accounting charged every
+    // SELECTED issue whenever the round changed anything, so the 6 un-attempted
+    // issues were "exhausted" after 2 rounds without ever being repaired and the
+    // run aborted. With attempt-based charging, all 10 receive an attempt.
+    const issues = Array.from({ length: 10 }, (_, i) => ({
+      validator: 'SceneTurnRealizationValidator',
+      episodeNumber: 1,
+      sceneId: `s1-${i + 1}`,
+      message: `Missing "authored moment ${i + 1}"`,
+    }));
+    const attempted = new Set<string>();
+    const { contractRepairIssueFingerprint } = await import('./finalContractRepair');
+    const cappedHandler: ContractRepairHandler = ({ blockingIssues }) => {
+      // Simulate the scene-prose handler: work on at most 4 not-yet-attempted
+      // scenes per round, report exactly what was attempted.
+      const round = blockingIssues.filter((i) => !attempted.has(i.sceneId!)).slice(0, 4);
+      for (const issue of round) attempted.add(issue.sceneId!);
+      return {
+        story,
+        changed: round.length > 0,
+        attemptedIssueKeys: round.map((issue) => contractRepairIssueFingerprint(issue)),
+      };
+    };
+    const out = await runFinalContractRepair({
+      story,
+      initialReport: { passed: false, blockingIssues: issues },
+      handlers: [cappedHandler],
+      // Nothing ever clears — the worst case. The loop should still give every
+      // distinct issue an attempt before running out of rounds.
+      revalidate: async () => ({ passed: false, blockingIssues: issues }),
+      maxAttempts: 3,
+      maxAttemptsPerIssue: 2,
+      dedupeIssueFingerprints: true,
+    });
+    expect(out.passed).toBe(false);
+    // All 10 scenes were attempted across the 3 rounds (4 + 4 + 2) — under the
+    // old selection-charging, rounds 1-2 would have exhausted the budgets of
+    // scenes 9-10 before they were ever attempted.
+    expect(attempted.size).toBe(10);
+    // And no issue was marked exhausted without having been attempted.
+    for (const key of out.exhaustedIssueKeys) {
+      const sceneId = key.split('::')[5];
+      expect(attempted.has(sceneId), `issue ${sceneId} exhausted without an attempt`).toBe(true);
+    }
+  });
+
   it('allows a new issue fingerprint after the prior one is repaired', async () => {
     let handlerCalls = 0;
     const firstFail: ContractRepairReport = {

@@ -172,7 +172,51 @@ tree stashed). Bisect worktree used and removed.
 `relationshipArcEnforcement` ×2. These predate the audit and block `npm run
 validate` — triage separately before the Phase 7 live run.
 
-Phases 4–8 not started.
+**2026-07-01 (later) — Phase 4 items 4.1–4.5 (tested; 4.6/4.7 deferred):**
+- ✅ **4.1 (H5)** — deleted the 4 dead repair-infra gates
+  (GATE_SEASON_PROMISE_REPAIR / CHARACTER_TREATMENT_REPAIR /
+  FAILURE_MODE_AUDIT_REPAIR / MECHANIC_PRESSURE_REPAIR) from both registries:
+  their violation classes repair via the GENERIC final-contract loop; the
+  dedicated routers were never built, so the flags advertised a no-op
+  kill-switch.
+- ✅ **4.2 (H6)** — migrated all 8 out-of-registry flags into
+  gateDefaults+gateRegistry (SEASON_BUDGETS, CHARGE_MATERIALIZATION,
+  INTENSITY_DISTRIBUTION, MECHANICS_LEAKAGE_REGEN, REGEN_CHOICES,
+  TREATMENT_FIDELITY, THEME_PRESSURE, EPISODE_PRESSURE — all default-OFF,
+  behavior preserved); raw `process.env.GATE_X==='1'` reads switched to
+  `isGateEnabled`. NEW META-GUARDRAIL `gateSourceSweep.test.ts`: (a) any quoted
+  or process.env GATE_* literal in src/ must be registered; (b) every
+  registered gate must have ≥1 call site (would have caught both 4.1 and 4.2
+  classes — verified 0/0 on the current tree).
+- ✅ **4.3 (H8)** — repair budget charged on ATTEMPT, not selection:
+  `ContractRepairResult.attemptedIssueKeys` (exported
+  `contractRepairIssueFingerprint`); scene-prose (cap 4/round) and cluster
+  (cap 2/round) handlers report attempted keys; legacy handlers keep old
+  charging. g23-shape regression test: 10 scene issues / cap 4 /
+  maxAttemptsPerIssue 2 → all 10 attempted, none exhausted-without-attempt.
+- ✅ **4.4 (M10)** — repair-first now applies to gates whose `auditPlacements`
+  include season-final (not just primary placement). The 3 flagged offenders
+  (AUTHORED_EPISODE_CONFORMANCE, INFORMATION_LEDGER_SCHEDULE,
+  STORY_CIRCLE_ANCHOR_CONFORMANCE) carry written policyExceptions naming the
+  planned fix (route authored_contract findings through scene-prose/cluster
+  repair). Registry test updated: a season-final regression-net blocking gate
+  without repair is now a VIOLATION (the old test pinned the blind spot).
+- ✅ **4.5 (M11/M12)** — new tier-vs-gate cross-check in
+  `validateValidatorOwnershipRegistry` (advisory row + default-ON blocking gate
+  = violation); it enumerated **12** stale rows (audit predicted 3) — all
+  promoted to `tier: 'blocking'`. Direct tests for
+  `resolveFinalContractSeverity` added (documents the unconditional
+  craft_critic→warning downgrade). NOTE: the 18 validators absent from
+  VALIDATOR_REGISTRY are still absent — adding entries needs per-validator
+  stage/dispatch knowledge; deferred.
+- ⏭️ **4.6 (C3)** — monolith ratchet burn-down deferred: it is the
+  runGraph-adoption refactor (decompose generate()/generateMultipleEpisodes),
+  gated on the Phase 7 live run per the original waves plan. The ratchet
+  process hole (how did +1,525 land with CI?) still needs a look at CI logs.
+- ⏭️ **4.7 (M5)** — typed phase-deps unwind (11 casts) deferred with 4.6 (same
+  decomposition work).
+
+Phases 5, 6, 8 not started.
 
 ## Sequencing overview
 

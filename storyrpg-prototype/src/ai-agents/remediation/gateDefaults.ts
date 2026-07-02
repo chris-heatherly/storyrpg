@@ -160,6 +160,30 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // advisory until the deterministic assignment/retry loop drives residualBlockingCount
   // to 0 on a watched run.
   GATE_CHOICE_DISTRIBUTION: false,
+  //
+  // 2026-07-01 audit 4.2: the following flags were LIVE in code but registered
+  // nowhere — raw `process.env.X === '1'` reads invisible to the registry policy
+  // test. Migrated to isGateEnabled + registered here with their existing
+  // opt-in (default-OFF) behavior preserved. All reversible via =0 / promotable
+  // via =1 exactly as before.
+  //
+  // Season choice/consequence budget hard-gate (SeasonPlannerAgent).
+  GATE_SEASON_BUDGETS: false,
+  // Charge-materialization hollow-branch blocking (consequenceFlags →
+  // episodeChargeMaterialization / chargeMaterializationGate).
+  GATE_CHARGE_MATERIALIZATION: false,
+  // Incremental per-scene intensity-tier distribution check.
+  GATE_INTENSITY_DISTRIBUTION: false,
+  // Strict mechanics-leakage scan + escalate-to-scene-regen (incremental).
+  GATE_MECHANICS_LEAKAGE_REGEN: false,
+  // Per-scene regen-choices loop (regenChoicesPolicy / ContentGenerationPhase).
+  GATE_REGEN_CHOICES: false,
+  // B0 architect craft gates: retry-exhausted craft warnings become blocking
+  // per-rule (architectGatePolicy). DRAMATIC_STRUCTURE / SCENE_TURN_CONTRACT
+  // from the same tag list are already registered above (default-ON).
+  GATE_TREATMENT_FIDELITY: false,
+  GATE_THEME_PRESSURE: false,
+  GATE_EPISODE_PRESSURE: false,
   // PROMOTED ON after plan-time shadow telemetry started recording this seam:
   // the local ledger shows 84 records across 72 runs with 0 would-gate rows and
   // 0 residual blockers. Plan placement means a true defect fails before prose is
@@ -356,20 +380,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // question, inaction pressure) must become visible story material instead of
   // metadata-only guidance. Reversible via =0.
   GATE_SEASON_PROMISE_REALIZATION: true,
-  GATE_SEASON_PROMISE_REPAIR: true,
   // Protagonist treatment realization: authored protagonist fields (canonical
   // identity, role facts, Want/Need/Lie/Wound/Truth, starting identity, pressure
   // points, climax choice, end states, visual identity) must become traceable
   // plan artifacts and reader-facing character pressure. Reversible via =0.
   GATE_CHARACTER_TREATMENT_REALIZATION: true,
-  GATE_CHARACTER_TREATMENT_REPAIR: true,
   // Failure-mode audit realization: authored Section 15 QA claims (avoided traps
   // and watch-item mitigations) must be converted into concrete setup/payoff,
   // agency, causality, state-change, fair-play reveal, or thematic-rhyme
   // obligations instead of remaining prompt-only confidence notes. Reversible via =0.
   GATE_FAILURE_MODE_AUDIT_REALIZATION: true,
-  GATE_FAILURE_MODE_AUDIT_REPAIR: true,
-  GATE_MECHANIC_PRESSURE_REPAIR: true,
   // Cluster repair for structural flow defects: when a turn/transition failure is
   // bigger than one missing sentence, rewrite the failed scene plus its immediate
   // neighbors with shared director notes. Runs only inside final-contract repair.

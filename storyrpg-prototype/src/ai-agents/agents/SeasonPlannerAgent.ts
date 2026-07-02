@@ -80,7 +80,7 @@ import {
 } from '../validators/StoryCircleCoverageValidator';
 import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
-import { gateEnabledPredicate } from '../remediation/gateDefaults';
+import { gateEnabledPredicate, isGateEnabled } from '../remediation/gateDefaults';
 import { CharacterArchitectureValidator } from '../validators/CharacterArchitectureValidator';
 import { SeasonPromiseValidator } from '../validators/SeasonPromiseValidator';
 import { InformationLedgerValidator } from '../validators/InformationLedgerValidator';
@@ -440,7 +440,7 @@ Your plans must define:
       // HARD GATE (opt-in, default OFF). Only when GATE_SEASON_BUDGETS=1 do
       // error-severity budget findings block the plan. Mirrors the arcPressure
       // gate below.
-      if (process.env.GATE_SEASON_BUDGETS === '1') {
+      if (isGateEnabled('GATE_SEASON_BUDGETS')) {
         const budgetErrors = budgetResult.issues.filter((i) => i.severity === 'error');
         if (budgetErrors.length > 0) {
           throw new Error(

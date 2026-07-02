@@ -42,6 +42,13 @@ function locationPattern(location: string): RegExp | undefined {
   return new RegExp(`\\b${phrase}\\b`, 'i');
 }
 
+// Locative evidence required before a PROSE-mined "Proper Noun + venue-noun"
+// match counts as a place. Named social groups are lexically identical to
+// venues ("the Dusk Club" is a friend group, not a nightclub), so a prose
+// mention only registers as a location when the surrounding words put someone
+// AT it (bite-me 2026-07-02T19-39-25: "Venue, The Dusk Club" spatial FP).
+const LOCATIVE_LEAD_RE = /\b(?:at|inside|into|outside|near|within|toward|entering|enters?|arriv\w+\s+(?:at|in)|walks?\s+(?:into|to)|steps?\s+(?:into|inside)|back\s+(?:at|to)|meets?\s+(?:you\s+)?at|door\s+of|threshold\s+of|leaves?)\s+(?:the\s+|a\s+)?$/i;
+
 function collectKnownLocations(story: Story, scenePlan?: SeasonScenePlan): string[] {
   const out = new Map<string, string>();
   const add = (value: unknown): void => {
@@ -54,7 +61,11 @@ function collectKnownLocations(story: Story, scenePlan?: SeasonScenePlan): strin
     add(ref.scene.timeline?.location);
     for (const loc of ref.planned?.locations ?? []) add(loc);
     const text = sceneVisibleText(ref.scene);
-    for (const match of text.matchAll(NAMED_VENUE_RE)) add(match[1]);
+    for (const match of text.matchAll(NAMED_VENUE_RE)) {
+      const lead = text.slice(Math.max(0, (match.index ?? 0) - 40), match.index ?? 0);
+      if (!LOCATIVE_LEAD_RE.test(lead)) continue;
+      add(match[1]);
+    }
   }
   return Array.from(out.values());
 }

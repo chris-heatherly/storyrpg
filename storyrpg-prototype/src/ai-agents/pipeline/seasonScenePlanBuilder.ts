@@ -1614,7 +1614,17 @@ export function buildEpisodeScenes(
 
   const openingScene = scenes.find((scene) => scene.narrativeRole === 'setup') ?? scenes[0];
   if (ep.treatmentGuidance && openingScene && ep.storyCircleRole?.some((role) => role.beat === 'you') && storyCircleText?.trim()) {
-    const hookText = storyCircleText.trim();
+    // Scope the cold-open hook to the FIRST SENTENCE of the Story Circle text.
+    // The full "You" beat is a whole-episode summary ("arrives… forms the Dusk
+    // Club… starts the blog… viral proof") — as a single mustDepict it is
+    // unstageable in one scene, so SceneWriter echoes it as meta-summary prose
+    // and the realization guard injects it verbatim as a reader-facing beat,
+    // while the actual opening event (the arrival) never gets dramatized
+    // (bite-me 2026-07-02T19-39-25 final-contract arrival blocker). The first
+    // sentence is the scene-sized opening event; the rest of the spine stays
+    // bound through story-circle part contracts and authored turns.
+    const fullHookText = storyCircleText.trim();
+    const hookText = (fullHookText.match(/^[^.!?]+[.!?]/)?.[0] ?? fullHookText).trim();
     appendRequiredBeats(openingScene, [
       {
         id: `${openingScene.id}-hook1`,

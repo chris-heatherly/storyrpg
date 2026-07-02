@@ -4,6 +4,7 @@ import {
   recomputeContinuityIssueCount,
   normalizeContinuitySeverity,
   deriveContinuityScore,
+  groundContinuityEvidence,
   deriveVoiceScore,
   deriveEvidenceLimitedScore,
   deriveQAOutcome,
@@ -32,6 +33,65 @@ describe('QAAgents continuity normalization', () => {
       warnings: 1,
       suggestions: 1,
     });
+  });
+});
+
+describe('groundContinuityEvidence (judge-hallucination filter)', () => {
+  const issue = (overrides: Partial<ContinuityIssue>): ContinuityIssue => ({
+    severity: 'error',
+    type: 'missing_setup',
+    location: { sceneId: 's1-1' },
+    description: 'Problem.',
+    suggestedFix: 'Fix it.',
+    ...overrides,
+  } as ContinuityIssue);
+  const prose = 'A woman with a vintage silk scarf waves from a cafe patio. You met online, a lifeline of DMs and shared fashion posts.';
+
+  it('downgrades an error whose quoted evidence appears nowhere in the prose (bite-me 2026-07-02)', () => {
+    const issues = [issue({
+      description: "Mika is introduced as already met ('You met her on the flight over'), but no flight is depicted.",
+    })];
+
+    const result = groundContinuityEvidence(issues, prose);
+
+    expect(result.downgraded).toBe(1);
+    expect(result.issues[0].severity).toBe('warning');
+    expect(result.issues[0].description).toContain('evidence-ungrounded');
+  });
+
+  it('keeps an error whose quoted evidence is present (normalization-tolerant)', () => {
+    const issues = [issue({
+      description: "The line 'You met online, a lifeline of DMs' contradicts the later flashback.",
+    })];
+
+    const result = groundContinuityEvidence(issues, prose);
+
+    expect(result.downgraded).toBe(0);
+    expect(result.issues[0].severity).toBe('error');
+  });
+
+  it('leaves errors without prose-shaped quotes untouched', () => {
+    const issues = [
+      issue({ description: 'Flag never set before it is read.' }),
+      issue({ description: "The flag 'treatment_seed_ep1_1' is read before it is set." }),
+    ];
+
+    const result = groundContinuityEvidence(issues, prose);
+
+    expect(result.downgraded).toBe(0);
+    expect(result.issues.every((i) => i.severity === 'error')).toBe(true);
+  });
+
+  it('never touches warnings or suggestions', () => {
+    const issues = [issue({
+      severity: 'warning',
+      description: "Quoted phantom 'this text does not exist anywhere at all' in a warning.",
+    })];
+
+    const result = groundContinuityEvidence(issues, prose);
+
+    expect(result.downgraded).toBe(0);
+    expect(result.issues[0].severity).toBe('warning');
   });
 });
 

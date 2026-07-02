@@ -465,6 +465,31 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
+  it('scopes the story-circle cold-open hook to the first sentence, not the whole-episode summary (bite-me 2026-07-02)', () => {
+    const youText = 'Kylie Marinescu arrives in Bucharest as a charming, wounded observer with two suitcases and the intent to rebuild. '
+      + 'She forms the Dusk Club, starts Dating After Dusk, and turns a terrifying rescue by Mr. Midnight into the first viral proof that she can author a new life.';
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 4,
+      // The hook condition reads role.beat — pass the object shape real season
+      // plans carry (the helper's bare-string shorthand never triggers the hook).
+      storyCircleRole: [{ beat: 'you' }] as never,
+      treatmentGuidance: { episodePromise: 'Reinvention under new eyes.' },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], {
+      storyCircle: {
+        you: youText, need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      },
+    })), 1);
+
+    const coldOpenBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'coldopen'));
+    expect(coldOpenBeats.length).toBeGreaterThan(0);
+    const joined = coldOpenBeats.map((b) => b.mustDepict).join(' ');
+    expect(joined).toContain('arrives in Bucharest');
+    // The later spine events must NOT be part of the opening scene's mustDepict.
+    expect(joined).not.toContain('Dusk Club');
+    expect(joined).not.toContain('viral proof');
+  });
+
   it('binds concrete cold-open beats and consequence seeds without treatment labels (WS1.3)', () => {
     const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,

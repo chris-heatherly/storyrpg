@@ -95,6 +95,59 @@ export function recomputeContinuityIssueCount(issues: ContinuityIssue[]): Contin
   );
 }
 
+const PROSE_QUOTE_RE = /['"‘“]([^'"‘’“”]{12,240})['"’”]/g;
+
+function looksLikeProseQuote(quote: string): boolean {
+  if (!quote.includes(' ')) return false; // flag/score ids, single tokens
+  if (/^[a-z0-9]+(?:_[a-z0-9]+)+$/i.test(quote)) return false; // snake_case ids
+  return quote.trim().split(/\s+/).length >= 3;
+}
+
+function normalizeForEvidenceGrounding(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * LLM continuity judges sometimes fabricate their quoted evidence — a blocking
+ * error citing prose that does not exist anywhere in the story (bite-me
+ * 2026-07-02T19-39-25: missing_setup error quoted "You met her on the flight
+ * over"; the word "flight" appears nowhere in the episode). An error whose
+ * prose-shaped quotes are ALL absent from the story text cannot be trusted to
+ * block a run: downgrade it to a warning and annotate it, keeping it visible
+ * for human review. Issues that quote nothing (or quote only ids) are left
+ * untouched — this filter only fires on checkable, failed evidence.
+ */
+export function groundContinuityEvidence(
+  issues: ContinuityIssue[],
+  storyProse: string,
+): { issues: ContinuityIssue[]; downgraded: number } {
+  const corpus = normalizeForEvidenceGrounding(storyProse);
+  let downgraded = 0;
+  const grounded = issues.map((issue) => {
+    if (normalizeContinuitySeverity(issue.severity) !== 'error') return issue;
+    const text = `${issue.description ?? ''} ${issue.conflictsWith ?? ''}`;
+    const quotes: string[] = [];
+    for (const match of text.matchAll(PROSE_QUOTE_RE)) {
+      const quote = match[1].trim();
+      if (looksLikeProseQuote(quote)) quotes.push(quote);
+    }
+    if (quotes.length === 0) return issue;
+    if (quotes.some((quote) => corpus.includes(normalizeForEvidenceGrounding(quote)))) return issue;
+    downgraded += 1;
+    return {
+      ...issue,
+      severity: 'warning' as const,
+      description: `${issue.description} [evidence-ungrounded: quoted text not found in story prose; downgraded from error]`,
+    };
+  });
+  return { issues: grounded, downgraded };
+}
+
 /**
  * Derive a continuity overallScore from the report's own signal when the model
  * omitted the numeric field. Returns null when the report carries no signal at
@@ -203,6 +256,17 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
 
       // Normalize the report
       report = this.normalizeReport(report);
+
+      // Evidence grounding: a blocking error whose quoted prose evidence does
+      // not exist anywhere in the story is a judge hallucination, not a defect.
+      const grounding = groundContinuityEvidence(report.issues, JSON.stringify(input.sceneContents ?? []));
+      if (grounding.downgraded > 0) {
+        report.issues = grounding.issues;
+        report.issueCount = recomputeContinuityIssueCount(report.issues);
+        const rescored = deriveContinuityScore(report);
+        if (rescored !== null && rescored > report.overallScore) report.overallScore = rescored;
+        console.warn(`[ContinuityChecker] Downgraded ${grounding.downgraded} error(s) with ungrounded quoted evidence.`);
+      }
 
       return {
         success: true,

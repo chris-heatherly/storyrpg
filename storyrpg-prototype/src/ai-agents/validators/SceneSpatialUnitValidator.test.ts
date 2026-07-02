@@ -96,4 +96,83 @@ describe('SceneSpatialUnitValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
+
+  it('does not mine a named social group as a second location without locative context (bite-me 2026-07-02)', () => {
+    // "the Dusk Club" is a friend group; lexically it matches the venue pattern.
+    // A prose mention with no locative lead ("First rule of the Dusk Club") must
+    // not register the group as a place the scene conducts action in.
+    const scene = {
+      id: 's1-1',
+      name: 'Cafe Patio',
+      timeline: { location: 'Venue' },
+      startingBeatId: 'b1',
+      beats: [
+        {
+          id: 'b1',
+          text: 'At the venue, Mika waves from a cafe patio and pulls you into a hug. "First rule of the Dusk Club," she murmurs. "We don\'t let the new girl carry her own baggage." She hands you a negroni and asks what you will write about first.',
+          choices: [],
+        },
+      ],
+    } as Scene;
+    const scenePlan: SeasonScenePlan = {
+      scenes: [{
+        id: 's1-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'standard',
+        title: 'Arrival',
+        dramaticPurpose: 'Kylie meets Mika and the group takes shape.',
+        narrativeRole: 'setup',
+        locations: ['Venue'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+      }],
+      byEpisode: { 1: ['s1-1'] },
+      setupPayoffEdges: [],
+    };
+
+    const result = new SceneSpatialUnitValidator().validate({ story: story(scene), scenePlan });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('still mines a prose venue that carries locative context', () => {
+    const scene = {
+      id: 's1-3',
+      name: 'Split Scene',
+      timeline: { location: 'Cismigiu Gardens' },
+      startingBeatId: 'b1',
+      beats: [
+        {
+          id: 'b1',
+          text: 'You step inside Valescu Club, and Mika introduces you to the owner while he offers you wine. You walk into Cismigiu Gardens and a stranger blocks the path and warns you to turn back.',
+          choices: [],
+        },
+      ],
+    } as Scene;
+    const scenePlan: SeasonScenePlan = {
+      scenes: [{
+        id: 's1-3',
+        episodeNumber: 1,
+        order: 2,
+        kind: 'standard',
+        title: 'Split scene',
+        dramaticPurpose: 'Action spans two major places.',
+        narrativeRole: 'turn',
+        locations: ['Cismigiu Gardens'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+      }],
+      byEpisode: { 1: ['s1-3'] },
+      setupPayoffEdges: [],
+    };
+
+    const result = new SceneSpatialUnitValidator().validate({ story: story(scene), scenePlan });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues[0]?.message).toContain('multiple major locations');
+  });
 });

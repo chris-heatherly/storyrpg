@@ -3,6 +3,7 @@ import type { SceneBlueprint } from '../agents/StoryArchitect';
 import type { ContractRepairReport } from './finalContractRepair';
 import { evaluateMomentRealization, normalizeRealizationText } from './realizationEvaluator';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
+import { isGateEnabled } from './gateDefaults';
 
 export type RepairDirectiveKind =
   | 'deterministic_cleanup'
@@ -516,8 +517,16 @@ export function analyzeSceneTreatmentDensity(
     pushObligation(obligations, 'choice_pressure', scene.choicePoint.description, 1, 1);
   }
 
-  for (const conflict of scene.sceneConstructionProfile?.conflictDiagnostics ?? []) {
-    pushObligation(obligations, 'scene_construction_conflict', conflict, 99, 99);
+  // Construction conflicts poison the density score on purpose (99 units →
+  // guaranteed blueprint_rebalance). But they are the SAME enforcement class
+  // as the preflight gate: with GATE_SCENE_CONSTRUCTION_PREFLIGHT off, they
+  // must not re-abort the run through the density gate instead (observed
+  // live: the kill-switched location-cue conflict resurfaced as
+  // "101 hard/101 total").
+  if (isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
+    for (const conflict of scene.sceneConstructionProfile?.conflictDiagnostics ?? []) {
+      pushObligation(obligations, 'scene_construction_conflict', conflict, 99, 99);
+    }
   }
 
   const hardUnits = Number(obligations.reduce((sum, item) => sum + item.hardUnits, 0).toFixed(2));

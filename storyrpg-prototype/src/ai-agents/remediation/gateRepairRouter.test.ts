@@ -144,6 +144,38 @@ describe('GateRepairRouter', () => {
     expect(route.kind).toBe('scene_cluster_rewrite');
   });
 
+  it('does not poison density with construction conflicts when the preflight gate is off', () => {
+    // Live-run regression: with GATE_SCENE_CONSTRUCTION_PREFLIGHT=0 the
+    // kill-switched location-cue conflict resurfaced through the density
+    // gate as "101 hard/101 total" and aborted the episode anyway.
+    const scene = {
+      id: 'scene-4',
+      name: 'Inside',
+      description: 'You cross the first corridor with the alarm map in your head.',
+      sceneConstructionProfile: {
+        activeCast: [],
+        conflictDiagnostics: [
+          'Scene "scene-4" has active obligations tied to 2 major location cue(s); split or route location changes before prose.',
+        ],
+      },
+    } as never;
+
+    const previous = process.env.GATE_SCENE_CONSTRUCTION_PREFLIGHT;
+    try {
+      process.env.GATE_SCENE_CONSTRUCTION_PREFLIGHT = '0';
+      const gated = analyzeSceneTreatmentDensity(scene, { episodeNumber: 1, sceneIndex: 3 });
+      expect(gated.hardUnits).toBeLessThan(99);
+      expect(isUnsafeTreatmentDensityReport(gated)).toBe(false);
+
+      process.env.GATE_SCENE_CONSTRUCTION_PREFLIGHT = '1';
+      const enforced = analyzeSceneTreatmentDensity(scene, { episodeNumber: 1, sceneIndex: 3 });
+      expect(enforced.hardUnits).toBeGreaterThanOrEqual(99);
+    } finally {
+      if (previous === undefined) delete process.env.GATE_SCENE_CONSTRUCTION_PREFLIGHT;
+      else process.env.GATE_SCENE_CONSTRUCTION_PREFLIGHT = previous;
+    }
+  });
+
   it('allows under-budget encounter scenes with localized time cues through density safety', () => {
     const report = analyzeSceneTreatmentDensity({
       id: 'treatment-enc-1-1',

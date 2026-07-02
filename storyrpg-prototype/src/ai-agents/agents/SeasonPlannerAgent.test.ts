@@ -546,6 +546,73 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     );
     expect(plan.episodes[0].plannedEncounters[0].isBranchPoint).toBe(true);
   });
+
+  it('never anchors an encounter on a question-shaped dramaticQuestion; mines the synopsis threat sentence instead (bite-me 2026-07-02)', () => {
+    const planner = makePlanner();
+    const base = makeAnalysis();
+    const analysis = {
+      ...base,
+      totalEstimatedEpisodes: 1,
+      episodeBreakdown: [{
+        episodeNumber: 1,
+        title: 'Dating After Dusk',
+        synopsis: 'Kylie arrives in the city with two suitcases. '
+          + 'Walking home through the park, she is attacked and rescued by a handsome stranger. '
+          + 'At 4am she turns the night into her first post.',
+        sourceChapters: ['1'],
+        sourceSummary: 'Arrival, attack, first post.',
+        plotPoints: [],
+        mainCharacters: ['Kylie'],
+        supportingCharacters: [],
+        locations: ['Park'],
+        estimatedSceneCount: 4,
+        estimatedChoiceCount: 3,
+        narrativeFunction: { setup: '', conflict: '', resolution: '' },
+        treatmentGuidance: {
+          authoredTitle: 'Dating After Dusk',
+          dramaticQuestion: 'Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her?',
+        },
+      }],
+    } as any;
+
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {});
+
+    const encounters = merged.episodeEncounters['1'];
+    expect(encounters).toHaveLength(1);
+    expect(encounters[0].description).toContain('attacked and rescued');
+    expect(encounters[0].description).not.toContain('Can Kylie start over');
+  });
+
+  it('plans no encounter when guidance offers only question-shaped anchors and the synopsis stages no threat', () => {
+    const planner = makePlanner();
+    const base = makeAnalysis();
+    const analysis = {
+      ...base,
+      totalEstimatedEpisodes: 1,
+      episodeBreakdown: [{
+        episodeNumber: 1,
+        title: 'Quiet Episode',
+        synopsis: 'Kylie settles into the apartment and writes her first post.',
+        sourceChapters: ['1'],
+        sourceSummary: 'A quiet settling-in episode.',
+        plotPoints: [],
+        mainCharacters: ['Kylie'],
+        supportingCharacters: [],
+        locations: ['Apartment'],
+        estimatedSceneCount: 3,
+        estimatedChoiceCount: 2,
+        narrativeFunction: { setup: '', conflict: '', resolution: '' },
+        treatmentGuidance: {
+          authoredTitle: 'Quiet Episode',
+          dramaticQuestion: 'Who is watching her?',
+        },
+      }],
+    } as any;
+
+    const merged = (planner as any).mergeTreatmentGuidanceIntoPlanData(analysis, {});
+
+    expect(merged.episodeEncounters['1'] ?? []).toHaveLength(0);
+  });
 });
 
 describe('SeasonPlannerAgent.normalizeChoiceMoments (E1 slice 4)', () => {

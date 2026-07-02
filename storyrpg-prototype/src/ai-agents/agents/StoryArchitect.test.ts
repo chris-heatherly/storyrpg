@@ -2261,6 +2261,39 @@ describe('StoryArchitect opening agency requirements', () => {
     };
   }
 
+  it('accepts an encounter opener without a standalone choicePoint on episode 1 (encounters carry internal choices)', () => {
+    // The elaborate-mode materializer never gives encounter scenes a
+    // choicePoint, and addChoicePointIfEligible refuses to bolt one on. The
+    // season-opening agency rule must credit encounter-internal choices or an
+    // encounter-first plan is permanently unbuildable (bite-me 2026-07-02).
+    const architect = new StoryArchitect(config);
+    const blueprint = makeOpeningChoiceBlueprint();
+    const opener = blueprint.scenes[0];
+    opener.isEncounter = true;
+    opener.encounterType = 'social';
+    opener.encounterDescription = 'Alex is cornered on arrival.';
+    opener.encounterStakes = 'Alex risks safety and first impressions.';
+    opener.encounterDifficulty = 'moderate';
+    opener.encounterRelevantSkills = ['resolve'];
+    opener.encounterBeatPlan = ['The threat lands.', 'Alex responds.', 'The cost shows.'];
+    expect(opener.choicePoint).toBeUndefined();
+
+    const issues: string[] = (architect as any).collectStructuralIssues(blueprint, makeInput({ episodeNumber: 1 }));
+
+    expect(issues.join('\n')).not.toContain('has no choicePoint');
+  });
+
+  it('still flags a standard episode-1 opener that lacks a choicePoint', () => {
+    const architect = new StoryArchitect(config);
+    const blueprint = makeOpeningChoiceBlueprint();
+    expect(blueprint.scenes[0].isEncounter).toBeUndefined();
+    expect(blueprint.scenes[0].choicePoint).toBeUndefined();
+
+    const issues: string[] = (architect as any).collectStructuralIssues(blueprint, makeInput({ episodeNumber: 1 }));
+
+    expect(issues.join('\n')).toContain('has no choicePoint');
+  });
+
   it('auto-adds a choicePoint to the first scene of episode 1 even when scene 2 already has agency', () => {
     const architect = new StoryArchitect({
       ...config,

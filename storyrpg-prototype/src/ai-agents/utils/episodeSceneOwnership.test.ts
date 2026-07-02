@@ -106,6 +106,66 @@ describe('episodeSceneOwnership finalizer', () => {
     expect((scenes[1] as unknown as { encounterBeatPlan?: string[] }).encounterBeatPlan?.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('keeps threat atoms off an opening scene whose stakes/purpose quote the episode synopsis (bite-me 2026-07-02)', () => {
+    // The deterministic skeleton copies the whole-episode synopsis into every
+    // standard scene's stakes and composed purpose. Threat cues in that shared
+    // text must NOT make the opening scene a threat owner — the attack atom
+    // belongs to the scene whose own TURN dramatizes it.
+    const synopsis = 'The protagonist arrives in the city with two suitcases. '
+      + 'Walking home through the park, she is attacked and rescued by a stranger. '
+      + 'At 4am she turns the night into her first post.';
+    const attackTurn = 'Walking home through the park, she is attacked and rescued by a stranger.';
+    const opening = scene({
+      id: 's1-1',
+      order: 0,
+      title: 'setup scene 1',
+      dramaticPurpose: `setup — ${synopsis}`,
+      turnContract: {
+        turnId: 's1-1-turn',
+        source: 'sceneTurn',
+        centralTurn: 'The protagonist arrives in the city with two suitcases.',
+        beforeState: 'Before the turn.',
+        turnEvent: 'The protagonist arrives in the city with two suitcases.',
+        afterState: 'After the turn.',
+        handoff: 'Carry the arrival forward.',
+      },
+    });
+    opening.stakes = synopsis;
+    const attackScene = scene({
+      id: 's1-3',
+      order: 1,
+      title: 'development scene 3',
+      narrativeRole: 'development',
+      dramaticPurpose: `development — ${synopsis}`,
+      locations: ['Park'],
+      turnContract: {
+        turnId: 's1-3-turn',
+        source: 'sceneTurn',
+        centralTurn: attackTurn,
+        beforeState: 'Before the turn.',
+        turnEvent: attackTurn,
+        afterState: 'After the turn.',
+        handoff: 'Carry the rescue forward.',
+      },
+      requiredBeats: [{
+        id: 'attack-turn',
+        tier: 'authored',
+        sourceTurn: attackTurn,
+        mustDepict: attackTurn,
+      }],
+    });
+    attackScene.stakes = synopsis;
+    const scenes = [opening, attackScene];
+
+    finalizeEpisodeSceneOwnership(scenes);
+
+    expect(scenes[0].kind).toBe('standard');
+    expect((scenes[0] as unknown as { isEncounter?: boolean }).isEncounter).toBeFalsy();
+    expect((scenes[0] as unknown as { encounterDescription?: string }).encounterDescription).toBeUndefined();
+    expect(scenes[1].kind).toBe('encounter');
+    expect(scenes[1].encounter?.description).toContain('attacked');
+  });
+
   it('upgrades the concrete threat scene when the existing encounter owner is abstract', () => {
     const scenes = [
       scene({

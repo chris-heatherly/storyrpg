@@ -155,6 +155,23 @@ function sceneCues(scene: PlannedScene): Set<StoryEventCue> {
   return detectPrimaryStoryEventCues(sceneText(scene));
 }
 
+/**
+ * Cues from fields that are scene-DISTINCT by construction (turn text, title,
+ * encounter body). Unlike dramaticPurpose/stakes, these never carry copied
+ * episode-wide boilerplate, so a cue here means THIS scene stages the event.
+ */
+function sceneCoreCues(scene: PlannedScene): Set<StoryEventCue> {
+  return detectPrimaryStoryEventCues([
+    scene.id,
+    scene.title,
+    scene.locations?.join(' '),
+    scene.encounter?.description,
+    scene.encounter?.centralConflict,
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+  ].map(cleanText).filter(Boolean).join(' '));
+}
+
 function scenePrimaryCues(scene: PlannedScene): Set<StoryEventCue> {
   return detectPrimaryStoryEventCues([
     scene.id,
@@ -226,7 +243,17 @@ function scoreSceneForAtom(atom: TreatmentEventAtom, scene: PlannedScene, source
 
 function bestSceneForAtom(atom: TreatmentEventAtom, sourceScene: PlannedScene, episodeScenes: PlannedScene[]): PlannedScene {
   if (atom.sceneKindHint === 'encounter' || atom.eventCues?.includes('threatEncounter')) {
-    const concreteThreatOwners = episodeScenes.filter((scene) => scenePrimaryCues(scene).has('threatEncounter'));
+    // Two-tier ownership: a scene whose scene-distinct core text (turn, title,
+    // encounter body) stages the threat beats any scene that merely mentions it
+    // in dramaticPurpose/stakes — the deterministic skeleton copies the whole
+    // episode synopsis into those fields on EVERY standard scene, and with the
+    // earliest-scene tie-break the setup cold-open was winning attack atoms it
+    // never dramatizes (bite-me 2026-07-02T18-19-29). The broad tier remains as
+    // a fallback for scenes that only describe the threat in their purpose.
+    const coreThreatOwners = episodeScenes.filter((scene) => sceneCoreCues(scene).has('threatEncounter'));
+    const concreteThreatOwners = coreThreatOwners.length > 0
+      ? coreThreatOwners
+      : episodeScenes.filter((scene) => scenePrimaryCues(scene).has('threatEncounter'));
     if (concreteThreatOwners.length > 0) {
       return concreteThreatOwners
         .map((scene) => ({ scene, score: scoreSceneForAtom(atom, scene, sourceScene, episodeScenes) }))

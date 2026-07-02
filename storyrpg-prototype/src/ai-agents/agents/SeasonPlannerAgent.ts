@@ -60,6 +60,7 @@ import {
   normalizeEncounterStoryCircleTarget,
 } from '../utils/encounterStoryCircleTarget';
 import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import { detectStoryEventCues } from '../remediation/storyEventCues';
 import { buildSeasonPromiseContracts } from '../utils/seasonPromiseContracts';
 import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
 import { buildStoryCircleBeatContracts } from '../utils/storyCircleBeatContracts';
@@ -169,6 +170,36 @@ export interface SeasonPlannerInput {
    * order is REJECTED (execute throws). Default ON.
    */
   storyCircleBlocking?: boolean;
+}
+
+/**
+ * A planned encounter's anchor must be a stageable EVENT, not a rhetorical
+ * question or abstract pressure. Question-shaped anchors ("Can Kylie start
+ * over…?") turn into abstract encounter-shell scenes whose turn is the
+ * question verbatim — SceneConstructionGate rejects them and SceneWriter has
+ * nothing to stage (bite-me 2026-07-02 treatment-enc-1-1).
+ */
+function isQuestionShapedAnchor(value: string | undefined): boolean {
+  const text = (value ?? '').trim();
+  if (!text) return true;
+  if (/\?\s*$/.test(text)) return true;
+  return /^(?:can|could|will|would|should|does|do|did|is|are|was|were|who|what|when|where|why|how)\b/i.test(text);
+}
+
+/**
+ * Mine the episode synopsis for the first sentence that stages a concrete
+ * threat/confrontation. Used as the encounter-anchor fallback when the
+ * treatment authors no explicit anchors — the synopsis sentence IS the staged
+ * hinge (e.g. the Cismigiu attack), so downstream coverage matching binds the
+ * encounter onto the scene that already dramatizes it.
+ */
+function minedEventAnchorFromSynopsis(ep: EpisodeOutline): string | undefined {
+  const sentences = (ep.synopsis || '')
+    .split(/(?<=[.!])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  return sentences.find((sentence) =>
+    !isQuestionShapedAnchor(sentence) && detectStoryEventCues(sentence).has('threatEncounter'));
 }
 
 function textOrFallback(value: string | undefined, fallback: string): string {
@@ -1258,14 +1289,18 @@ CRITICAL RULES:
       const guidance = ep.treatmentGuidance;
       if (!guidance) continue;
       const epKey = String(ep.episodeNumber);
-      const anchors = (guidance.encounterAnchors && guidance.encounterAnchors.length > 0)
-        ? guidance.encounterAnchors
-        : [
-            guidance.forcedChoice,
-            guidance.obstacle,
-            guidance.dramaticQuestion,
-            guidance.entryGoal,
-          ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 1);
+      // Anchors must be stageable events. Authored anchors are trusted but
+      // still question-filtered; the fallback prefers a concrete threat
+      // sentence mined from the synopsis over guidance fields, and NEVER uses
+      // dramaticQuestion (a question is not an event — see isQuestionShapedAnchor).
+      const authoredAnchors = (guidance.encounterAnchors ?? [])
+        .filter((value): value is string => typeof value === 'string' && !isQuestionShapedAnchor(value));
+      const fallbackAnchor = minedEventAnchorFromSynopsis(ep)
+        ?? [guidance.forcedChoice, guidance.obstacle, guidance.entryGoal]
+          .find((value): value is string => typeof value === 'string' && !isQuestionShapedAnchor(value));
+      const anchors = authoredAnchors.length > 0
+        ? authoredAnchors
+        : (fallbackAnchor ? [fallbackAnchor] : []);
       if (anchors.length > 0) {
         merged.episodeEncounters![epKey] = anchors.map((anchor, index) => {
           const description = guidance.encounterCentralConflict

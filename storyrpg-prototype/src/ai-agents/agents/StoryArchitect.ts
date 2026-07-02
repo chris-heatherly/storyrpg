@@ -6003,7 +6003,13 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
 
     if (this.isFirstSeasonEpisode(input)) {
       const startingScene = blueprint.scenes.find(s => s.id === blueprint.startingSceneId);
-      if (startingScene && !startingScene.choicePoint) {
+      // Encounter scenes carry their player choices internally (approach/skill
+      // decisions inside the encounter structure), so an encounter opener
+      // satisfies season-opening agency without a standalone choicePoint —
+      // the elaborate-mode materializer intentionally never gives encounters
+      // one, and rejecting that here made any encounter-first plan unbuildable
+      // (bite-me 2026-07-02T18-19-29).
+      if (startingScene && !startingScene.choicePoint && !startingScene.isEncounter) {
         issues.push(
           `First scene "${startingScene.id}" of episode 1 has no choicePoint. ` +
           `The first scene of the first episode of each season must include a player choice.`
@@ -6437,8 +6443,12 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     // season's playable contract, so the starting scene itself must include
     // a choice. Later episodes keep the existing "brief opening into
     // second-scene choice" flexibility.
+    // Encounter scenes carry their player choices internally, so they satisfy
+    // early-agency rules without a standalone choicePoint (the elaborate-mode
+    // materializer never gives encounters one by design).
     const firstScene = blueprint.scenes.find(s => s.id === blueprint.startingSceneId);
-    if (firstScene && this.isFirstSeasonEpisode(input) && !firstScene.choicePoint) {
+    const firstSceneHasAgency = Boolean(firstScene?.choicePoint || firstScene?.isEncounter);
+    if (firstScene && this.isFirstSeasonEpisode(input) && !firstSceneHasAgency) {
       console.warn(`[StoryArchitect] First scene of episode 1 has no choice point`);
       throw new Error(
         `First scene "${firstScene.name}" has no choicePoint. ` +
@@ -6446,11 +6456,11 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       );
     }
 
-    if (firstScene && !this.isFirstSeasonEpisode(input) && !firstScene.choicePoint) {
+    if (firstScene && !this.isFirstSeasonEpisode(input) && !firstSceneHasAgency) {
       // First scene doesn't have a choice - check if second scene does
       const secondSceneIds = firstScene.leadsTo;
       const secondScenes = secondSceneIds.map(id => blueprint.scenes.find(s => s.id === id)).filter(Boolean);
-      const secondSceneHasChoice = secondScenes.some(s => s?.choicePoint);
+      const secondSceneHasChoice = secondScenes.some(s => s?.choicePoint || s?.isEncounter);
 
       if (!secondSceneHasChoice) {
         console.warn(`[StoryArchitect] Neither first nor second scene has a choice point`);

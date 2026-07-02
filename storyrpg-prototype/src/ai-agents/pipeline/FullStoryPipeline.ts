@@ -288,9 +288,6 @@ import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
 import { remediateImageIssues, resaveFinalStory } from '../validators/qaRemediation';
-import {
-  anchorIdentifier,
-} from '../images/anchorPrompts';
 import { buildVerbatimProfile, composeCanonicalStyleString } from '../images/artStyleProfile';
 import { getReferenceStrategy } from '../images/referenceStrategy';
 import { buildStoryImageSlotManifest } from '../images/storyImageSlotManifest';
@@ -400,6 +397,7 @@ import {
 import { ensureChoiceBridgeBeats as ensureChoiceBridgeBeatsImpl } from './choiceBridgeBeats';
 import { ProgressTelemetryTracker } from './progressTelemetry';
 import { CastingReferences } from './castingReferences';
+import { ImageResumeHydration, type ResumeReferencePreflightReport } from './imageResumeHydration';
 import {
   analyzeBeatCharacters as analyzeBeatCharactersImpl,
   extractCanonicalAppearance as extractCanonicalAppearanceImpl,
@@ -1991,212 +1989,69 @@ export class FullStoryPipeline {
     };
   }
 
+  private _imageResumeHydration?: ImageResumeHydration;
+
+  /**
+   * Memoized image-resume hydration service (asset-registry load/reset,
+   * on-disk artifact discovery, reference-sheet/style-anchor hydration,
+   * resume reference preflight) — see pipeline/imageResumeHydration.ts.
+   * The asset registry gets a live setter because resume REPLACES it.
+   */
+  private imageResumeHydration(): ImageResumeHydration {
+    if (!this._imageResumeHydration) {
+      this._imageResumeHydration = new ImageResumeHydration({
+        imageService: () => this.imageService,
+        imageAgentTeam: () => this.imageAgentTeam,
+        assetRegistry: () => this.assetRegistry,
+        setAssetRegistry: (registry) => { this.assetRegistry = registry; },
+        activeImageResumeOutputDirectory: () => this._activeImageResumeOutputDirectory,
+        styleAnchorPaths: () => this._styleAnchorPaths,
+        checkCancellation: () => this.checkCancellation(),
+        generateCharacterReferenceSheet: (char, brief) =>
+          this.generateCharacterReferenceSheet(char, brief as FullCreativeBrief),
+        emit: (event) => this.emit(event),
+      });
+    }
+    return this._imageResumeHydration;
+  }
+
   private resetAssetRegistry(storyId?: string, persistPath?: string): void {
-    this.assetRegistry = new AssetRegistry(storyId, undefined, persistPath);
+    this.imageResumeHydration().resetAssetRegistry(storyId, persistPath);
   }
 
   private loadAssetRegistryForImageResume(storyId: string, outputDirectory: string): void {
-    const normalizedOutputDir = outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`;
-    const primaryPath = `${normalizedOutputDir}asset-registry.jsonl`;
-    const legacyPath = `${normalizedOutputDir}08-asset-registry.jsonl`;
-    this.assetRegistry = AssetRegistry.fromJSONL(primaryPath, storyId);
-
-    const legacyRegistry = AssetRegistry.fromJSONL(legacyPath, storyId);
-    for (const record of legacyRegistry.values()) {
-      if (record.status !== 'succeeded' || !record.latestUrl) continue;
-      if (this.assetRegistry.getResolvedAsset(record.slot.slotId)) continue;
-      this.assetRegistry.planSlot(record.slot);
-      this.assetRegistry.markSuccess(record.slot.slotId, {
-        prompt: { prompt: `image-resume imported legacy registry record ${record.slot.slotId}` },
-        imageUrl: record.latestUrl,
-        imagePath: record.latestPath || record.latestUrl,
-        provider: record.provider,
-        model: record.model,
-      });
-    }
+    this.imageResumeHydration().loadAssetRegistryForImageResume(storyId, outputDirectory);
   }
 
   private servedUrlForGeneratedImagePath(imagePath: string): string {
-    const gsIndex = imagePath.indexOf('generated-stories/');
-    if (gsIndex >= 0) return `http://localhost:3001/${imagePath.slice(gsIndex)}`;
-    return imagePath;
+    return this.imageResumeHydration().servedUrlForGeneratedImagePath(imagePath);
   }
 
   private async readImageArtifact(imagePath: string): Promise<GeneratedImage | undefined> {
-    if (!imagePath || /\.(txt)$/i.test(imagePath)) return undefined;
-    try {
-      const fs = await import('fs/promises');
-      const buffer = await fs.readFile(imagePath);
-      const lower = imagePath.toLowerCase();
-      const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
-        ? 'image/jpeg'
-        : lower.endsWith('.webp')
-          ? 'image/webp'
-          : 'image/png';
-      return {
-        prompt: { prompt: `image-resume hydrated existing file ${imagePath}` },
-        imagePath,
-        imageUrl: this.servedUrlForGeneratedImagePath(imagePath),
-        imageData: buffer.toString('base64'),
-        mimeType,
-        metadata: { hydratedFromDisk: true },
-      };
-    } catch {
-      return undefined;
-    }
+    return this.imageResumeHydration().readImageArtifact(imagePath);
   }
 
   private async findExistingImageArtifact(imagesDir: string, baseIdentifier: string): Promise<GeneratedImage | undefined> {
-    const exact = this.imageService.findExistingGeneratedImage(baseIdentifier);
-    if (exact?.imagePath) {
-      const hydrated = await this.readImageArtifact(exact.imagePath);
-      return {
-        ...(hydrated || { prompt: { prompt: `image-resume reused ${baseIdentifier}` } }),
-        imagePath: exact.imagePath,
-        imageUrl: exact.imageUrl || hydrated?.imageUrl || this.servedUrlForGeneratedImagePath(exact.imagePath),
-      } as GeneratedImage;
-    }
-
-    try {
-      const fs = await import('fs/promises');
-      const path = await import('path');
-      const files = await fs.readdir(imagesDir);
-      const candidates: Array<{ name: string; fullPath: string; mtimeMs: number }> = [];
-      const imageExt = /\.(png|jpg|jpeg|webp)$/i;
-      for (const name of files) {
-        if (!imageExt.test(name)) continue;
-        if (!name.startsWith(`${baseIdentifier}-`)) continue;
-        if (!/-(qa-retry|retry|textfix|repair|recovery|fallback)/i.test(name)) continue;
-        const fullPath = path.join(imagesDir, name);
-        const stat = await fs.stat(fullPath);
-        candidates.push({ name, fullPath, mtimeMs: stat.mtimeMs });
-      }
-      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      return candidates[0] ? this.readImageArtifact(candidates[0].fullPath) : undefined;
-    } catch {
-      return undefined;
-    }
+    return this.imageResumeHydration().findExistingImageArtifact(imagesDir, baseIdentifier);
   }
 
   private async hydrateReferenceSheetsFromExistingImages(
     outputDirectory: string,
     characterBible: CharacterBible,
   ): Promise<number> {
-    const imagesDir = `${outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`}images/`;
-    let hydrated = 0;
-    for (const char of characterBible.characters || []) {
-      if (this.imageAgentTeam.hasReferenceSheet(char.id)) continue;
-      if (await this.hydrateReferenceSheetFromDisk(char, imagesDir)) hydrated += 1;
-    }
-    return hydrated;
-  }
-
-  private referenceIdentifierBasesForCharacter(char: CharacterProfile): string[] {
-    const candidates = [
-      char.id,
-      idSlugify(char.id),
-      idSlugify(char.name),
-      char.id.replace(/^character[-_]/i, 'char-'),
-      char.id.replace(/^char[-_]/i, 'char-'),
-      `char-${idSlugify(char.name)}`,
-    ];
-    return Array.from(new Set(candidates.filter(Boolean).map((value) => `ref_${value}`)));
+    return this.imageResumeHydration().hydrateReferenceSheetsFromExistingImages(outputDirectory, characterBible);
   }
 
   private async hydrateReferenceSheetFromDisk(char: CharacterProfile, imagesDir?: string): Promise<boolean> {
-    if (this.imageAgentTeam.hasReferenceSheet(char.id)) return true;
-    const resolvedImagesDir = imagesDir
-      || (this._activeImageResumeOutputDirectory
-        ? `${this._activeImageResumeOutputDirectory.endsWith('/') ? this._activeImageResumeOutputDirectory : `${this._activeImageResumeOutputDirectory}/`}images/`
-        : undefined);
-    if (!resolvedImagesDir) return false;
-
-    const views: Array<{ viewType: string; imageData: string; mimeType: string; imageUrl?: string; imagePath?: string }> = [];
-    const bases = this.referenceIdentifierBasesForCharacter(char);
-    for (const viewType of ['face', 'front', 'three-quarter', 'profile', 'composite']) {
-      for (const base of bases) {
-        const image = await this.findExistingImageArtifact(resolvedImagesDir, `${base}_${viewType}`);
-        if (!image?.imageData || !image.mimeType) continue;
-        views.push({
-          viewType,
-          imageData: image.imageData,
-          mimeType: image.mimeType,
-          imageUrl: image.imageUrl,
-          imagePath: image.imagePath,
-        });
-        break;
-      }
-    }
-    if (views.length === 0) return false;
-
-    const identityFingerprint = computeCharacterIdentityFingerprint(char);
-    const didHydrate = this.imageAgentTeam.hydrateReferenceSheetFromExistingImages({
-      characterId: char.id,
-      characterName: char.name,
-      images: views,
-      visualAnchors: [
-        char.physicalDescription,
-        ...(char.distinctiveFeatures || []),
-        char.typicalAttire,
-      ].filter(Boolean) as string[],
-      identityFingerprint,
-    });
-    if (didHydrate) {
-      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, identityFingerprint);
-      this.emit({
-        type: 'debug',
-        phase: 'reference_sheet',
-        message: `Resume scan hydrated existing reference for ${char.name} (${views.map((view) => view.viewType).join(', ')}); skipping reference regeneration.`,
-      });
-    }
-    return didHydrate;
+    return this.imageResumeHydration().hydrateReferenceSheetFromDisk(char, imagesDir);
   }
 
   private async hydrateStyleAnchorsFromExistingImages(outputDirectory: string, storyTitle: string): Promise<number> {
-    const imagesDir = `${outputDirectory.endsWith('/') ? outputDirectory : `${outputDirectory}/`}images/`;
-    const titleSlug = idSlugify(storyTitle || 'story');
-    let hydrated = 0;
-    const characterAnchor = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'character-anchor'));
-    if (characterAnchor?.imageData && characterAnchor.mimeType) {
-      this._styleAnchorPaths.character = characterAnchor.imagePath;
-      this.imageService.setSeasonStyleReference(characterAnchor.imageData, characterAnchor.mimeType);
-      hydrated += 1;
-    }
-    const arcStrip = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'arc-strip'));
-    if (arcStrip?.imagePath) {
-      this._styleAnchorPaths.arcStrip = arcStrip.imagePath;
-      hydrated += 1;
-    }
-    const environment = await this.findExistingImageArtifact(imagesDir, anchorIdentifier(titleSlug, 'environment-anchor'));
-    if (environment?.imagePath) {
-      this._styleAnchorPaths.environment = environment.imagePath;
-      hydrated += 1;
-    }
-    return hydrated;
+    return this.imageResumeHydration().hydrateStyleAnchorsFromExistingImages(outputDirectory, storyTitle);
   }
 
   private async markSlotFromExistingArtifact(slot: ImageSlot, imagesDir: string): Promise<boolean> {
-    this.assetRegistry.planSlot(slot);
-    if (this.assetRegistry.getResolvedAsset(slot.slotId)?.latestUrl) return true;
-
-    if (slot.continuitySourceSlotId) {
-      const source = this.assetRegistry.getResolvedAsset(slot.continuitySourceSlotId);
-      if (source?.latestUrl) {
-        this.assetRegistry.markSuccess(slot.slotId, {
-          prompt: { prompt: `image-resume linked continuity source ${slot.continuitySourceSlotId}` },
-          imageUrl: source.latestUrl,
-          imagePath: source.latestPath || source.latestUrl,
-          provider: source.provider,
-          model: source.model,
-        });
-        return true;
-      }
-    }
-
-    const artifact = await this.findExistingImageArtifact(imagesDir, slot.baseIdentifier);
-    if (!artifact?.imageUrl) return false;
-    this.assetRegistry.markSuccess(slot.slotId, artifact);
-    return true;
+    return this.imageResumeHydration().markSlotFromExistingArtifact(slot, imagesDir);
   }
 
   private collectPlannedReferenceCharacterIdsForResume(
@@ -2204,114 +2059,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     encounters: EncounterStructure[],
   ): string[] {
-    const planned = new Set<string>();
-    const addRaw = (raw: unknown) => {
-      if (typeof raw !== 'string' || !raw.trim()) return;
-      const resolved = this.resolveCharacterId(raw, characterBible);
-      if (resolved) planned.add(resolved);
-    };
-    const addMany = (raw: unknown) => {
-      if (Array.isArray(raw)) {
-        raw.forEach((item) => {
-          if (typeof item === 'string') addRaw(item);
-          else if (item && typeof item === 'object') {
-            const record = item as Record<string, unknown>;
-            addRaw(record.id);
-            addRaw(record.characterId);
-            addRaw(record.npcId);
-            addRaw(record.name);
-          }
-        });
-      } else {
-        addRaw(raw);
-      }
-    };
-    const addVisualCast = (visualCast: unknown) => {
-      if (!visualCast || typeof visualCast !== 'object') return;
-      const record = visualCast as Record<string, unknown>;
-      [
-        'sceneCharacterIds',
-        'activeCharacterIds',
-        'foregroundCharacterIds',
-        'backgroundCharacterIds',
-        'speakerCharacterId',
-        'addressedCharacterIds',
-        'listenerCharacterIds',
-        'observerCharacterIds',
-        'payoffRelevantCharacterIds',
-        'requiredVisibleCharacterIds',
-        'focalCharacterIds',
-      ].forEach((key) => addMany(record[key]));
-    };
-    const scanReferenceKeys = (value: unknown, parentKey = '', depth = 0) => {
-      if (!value || depth > 8) return;
-      if (Array.isArray(value)) {
-        value.forEach((item) => scanReferenceKeys(item, parentKey, depth + 1));
-        return;
-      }
-      if (typeof value !== 'object') return;
-      const record = value as Record<string, unknown>;
-      for (const [key, child] of Object.entries(record)) {
-        const lower = key.toLowerCase();
-        const isCharacterKey =
-          lower.includes('characterid') ||
-          lower.includes('characterids') ||
-          lower.includes('npcid') ||
-          lower.includes('npcids') ||
-          lower === 'speaker' ||
-          lower === 'speakercharacterid' ||
-          lower.includes('participant') ||
-          lower.includes('observer') ||
-          lower.includes('listener') ||
-          lower.includes('addressed') ||
-          lower.includes('payoffrelevant') ||
-          lower.includes('requiredvisible') ||
-          lower.includes('foregroundcharacter') ||
-          lower.includes('backgroundcharacter') ||
-          lower.includes('activecharacter') ||
-          lower.includes('focalcharacter');
-        if (isCharacterKey) addMany(child);
-        if (lower === 'visualcast' || lower === 'coverageplan') addVisualCast(child);
-        scanReferenceKeys(child, lower || parentKey, depth + 1);
-      }
-    };
-
-    for (const char of characterBible.characters || []) {
-      if (char.importance === 'core' || char.importance === 'major' || char.id === characterBible.protagonist?.id) {
-        planned.add(char.id);
-      }
-    }
-
-    for (const episode of story.episodes || []) {
-      for (const scene of episode.scenes || []) {
-        const sceneRecord = scene as unknown as Record<string, unknown>;
-        addMany(sceneRecord.charactersInvolved);
-        addMany(sceneRecord.characterIds);
-        addMany(sceneRecord.characters);
-        addMany(sceneRecord.npcIds);
-        addVisualCast(sceneRecord.visualCast);
-        scanReferenceKeys(sceneRecord.encounter, 'encounter');
-        for (const beat of scene.beats || []) {
-          const beatRecord = beat as unknown as Record<string, unknown>;
-          addMany(beatRecord.characters);
-          addMany(beatRecord.characterIds);
-          addMany(beatRecord.npcIds);
-          addRaw(beatRecord.speaker);
-          addRaw(beatRecord.speakerCharacterId);
-          addVisualCast(beatRecord.visualCast);
-          addVisualCast(beatRecord.coveragePlan);
-        }
-        for (const choice of (scene as Scene & { choices?: unknown[] }).choices || []) {
-          scanReferenceKeys(choice, 'choice');
-        }
-      }
-    }
-
-    for (const encounter of encounters || []) {
-      scanReferenceKeys(encounter, 'encounter');
-    }
-
-    return [...planned];
+    return this.imageResumeHydration().collectPlannedReferenceCharacterIdsForResume(story, characterBible, encounters);
   }
 
   private async preflightResumeReferenceSheets(
@@ -2320,89 +2068,8 @@ export class FullStoryPipeline {
     characterBible: CharacterBible,
     encounters: EncounterStructure[],
     brief: FullCreativeBrief,
-  ): Promise<{
-    plannedReferenceCharacterIds: string[];
-    alreadyAvailableReferenceCharacterIds: string[];
-    hydratedReferenceCharacterIds: string[];
-    generatedReferenceCharacterIds: string[];
-    missingReferenceCharacterIds: string[];
-  }> {
-    const plannedReferenceCharacterIds = this.collectPlannedReferenceCharacterIdsForResume(story, characterBible, encounters);
-    const alreadyAvailableReferenceCharacterIds: string[] = [];
-    const hydratedReferenceCharacterIds: string[] = [];
-    const generatedReferenceCharacterIds: string[] = [];
-    const missingReferenceCharacterIds: string[] = [];
-
-    this.emit({
-      type: 'debug',
-      phase: 'reference_sheet',
-      message: `Resume reference preflight checking ${plannedReferenceCharacterIds.length} planned visible/encounter character(s).`,
-      data: { plannedReferenceCharacterIds },
-    });
-
-    for (const id of plannedReferenceCharacterIds) {
-      await this.checkCancellation();
-      const char = characterBible.characters.find((candidate) => candidate.id === id);
-      if (!char) continue;
-      if (this.imageAgentTeam.hasReferenceSheet(id)) {
-        alreadyAvailableReferenceCharacterIds.push(id);
-        continue;
-      }
-      const hydrated = await this.hydrateReferenceSheetFromDisk(char);
-      if (hydrated || this.imageAgentTeam.hasReferenceSheet(id)) {
-        hydratedReferenceCharacterIds.push(id);
-        continue;
-      }
-
-      this.emit({
-        type: 'warning',
-        phase: 'reference_sheet',
-        message: `Resume reference preflight missing ${char.name}; generating reference before story images continue.`,
-        data: { characterId: id, characterName: char.name },
-      });
-      await this.generateCharacterReferenceSheet(char, brief);
-      const fingerprint = computeCharacterIdentityFingerprint(char);
-      this.imageAgentTeam.setReferenceSheetIdentityFingerprint(char.id, fingerprint);
-      if (this.imageAgentTeam.hasReferenceSheet(id)) {
-        generatedReferenceCharacterIds.push(id);
-      } else {
-        missingReferenceCharacterIds.push(id);
-      }
-    }
-
-    await saveEarlyDiagnostic(outputDirectory, 'image-reference-preflight.json', {
-      generatedAt: new Date().toISOString(),
-      plannedReferenceCharacterIds,
-      alreadyAvailableReferenceCharacterIds,
-      hydratedReferenceCharacterIds,
-      generatedReferenceCharacterIds,
-      missingReferenceCharacterIds,
-      plannedReferenceCharacters: plannedReferenceCharacterIds.map((id) => {
-        const char = characterBible.characters.find((candidate) => candidate.id === id);
-        return { id, name: char?.name };
-      }),
-    });
-
-    this.emit({
-      type: 'debug',
-      phase: 'reference_sheet',
-      message: `Resume reference preflight complete: ${alreadyAvailableReferenceCharacterIds.length + hydratedReferenceCharacterIds.length} available, ${generatedReferenceCharacterIds.length} generated, ${missingReferenceCharacterIds.length} missing.`,
-      data: {
-        plannedReferenceCharacterIds,
-        alreadyAvailableReferenceCharacterIds,
-        hydratedReferenceCharacterIds,
-        generatedReferenceCharacterIds,
-        missingReferenceCharacterIds,
-      },
-    });
-
-    return {
-      plannedReferenceCharacterIds,
-      alreadyAvailableReferenceCharacterIds,
-      hydratedReferenceCharacterIds,
-      generatedReferenceCharacterIds,
-      missingReferenceCharacterIds,
-    };
+  ): Promise<ResumeReferencePreflightReport> {
+    return this.imageResumeHydration().preflightResumeReferenceSheets(outputDirectory, story, characterBible, encounters, brief);
   }
 
   private async scanExistingImagesForResume(

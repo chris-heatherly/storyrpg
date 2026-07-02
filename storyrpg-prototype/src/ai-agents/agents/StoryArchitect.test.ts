@@ -2846,6 +2846,24 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(verdict.reason).toContain('valid branch scene');
   });
 
+  it('ensureBlueprintBranchAdequacy self-heals a feasible branchless blueprint instead of failing (bite-me 2026-07-02)', () => {
+    // Later repair steps can shift beat ownership after the branch repair ran,
+    // leaving a feasible slot with no synthesized branch at gate time. The gate
+    // must re-run the repair against current state rather than abort.
+    const architect = new StoryArchitect(config);
+    const blueprint: any = {
+      startingSceneId: 's1-1',
+      scenes: [linearScene('s1-1', ['s1-2']), linearScene('s1-2', ['s1-3']), linearScene('s1-3', [])],
+    };
+
+    const verdict = (architect as any).ensureBlueprintBranchAdequacy(blueprint);
+
+    expect(verdict.adequate).toBe(true);
+    expect(verdict.validBranchCount).toBeGreaterThanOrEqual(1);
+    const branch = blueprint.scenes.find((scene: any) => scene.choicePoint?.branches && new Set(scene.leadsTo).size >= 2);
+    expect(branch).toBeDefined();
+  });
+
   it('exempts linear-bottleneck episodes (never fires)', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const blueprint: any = { scenes: [linearScene('s1-1', ['enc-1']), { id: 'enc-1', isEncounter: true, leadsTo: [] }] };

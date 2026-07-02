@@ -1754,6 +1754,31 @@ export class StoryArchitect extends BaseAgent {
    * repair already produced a valid branch — so it only fires on genuinely
    * under-sized/branchless blueprints (golden parity).
    */
+  /**
+   * Adequacy check that self-heals before failing. repairSceneGraphBranchCoverage
+   * runs early in the repair pipeline; later repair steps can change beat
+   * ownership or scene shape enough that a branch slot only becomes feasible by
+   * gate time — assessBlueprintBranchAdequacy then demands a branch nobody
+   * re-attempted (bite-me 2026-07-02T19-39-25 BlueprintAdequacyGate abort:
+   * "0 valid branch scene(s); need at least 1"). Re-running the repair against
+   * the CURRENT graph state synthesizes the branch whenever the gate's own
+   * feasibility count says one fits, so the gate only fails when the plan is
+   * genuinely too small — never from repair/gate ordering drift.
+   */
+  private ensureBlueprintBranchAdequacy(blueprint: EpisodeBlueprint): {
+    adequate: boolean;
+    sceneCount: number;
+    validBranchCount: number;
+    reason: string;
+  } {
+    let adequacy = this.assessBlueprintBranchAdequacy(blueprint);
+    if (!adequacy.adequate) {
+      this.repairSceneGraphBranchCoverage(blueprint);
+      adequacy = this.assessBlueprintBranchAdequacy(blueprint);
+    }
+    return adequacy;
+  }
+
   private assessBlueprintBranchAdequacy(blueprint: EpisodeBlueprint): {
     adequate: boolean;
     sceneCount: number;
@@ -3994,7 +4019,7 @@ Remember: The encounter is the heart. Design outward from it.
       // hard-aborting later at content-time branch validation. The root cause is
       // upstream in the season scene-plan allocation; the message deliberately
       // avoids the phase-loop branch-retry keywords so it isn't retried in vain.
-      const elaborateAdequacy = this.assessBlueprintBranchAdequacy(blueprint);
+      const elaborateAdequacy = this.ensureBlueprintBranchAdequacy(blueprint);
       if (!elaborateAdequacy.adequate) {
         return {
           success: false,
@@ -4436,7 +4461,7 @@ REQUIREMENTS:
       // "must have at least" wording makes classifyBlueprintFailure treat it as a
       // hard/retryable structural error, and "scene-graph branching" lets the
       // EpisodeArchitecturePhase loop re-author too.
-      const adequacy = this.assessBlueprintBranchAdequacy(blueprint);
+      const adequacy = this.ensureBlueprintBranchAdequacy(blueprint);
       if (!adequacy.adequate) {
         throw new Error(
           `Blueprint must have at least ${MIN_SCENES_PER_EPISODE} scenes with a real scene-graph branching choice point: ${adequacy.reason}.`,

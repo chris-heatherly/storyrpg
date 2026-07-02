@@ -409,12 +409,41 @@ function eventCueScore(sourceText: string, targetText: string): number {
   return score;
 }
 
-function bestSceneForContract(contract: StoryCircleBeatRealizationContract, scenes: PlannedScene[]): PlannedScene | undefined {
-  const candidates = scenes.filter((scene) => scene.episodeNumber === contract.targetEpisodeNumber);
-  if (candidates.length === 0) return undefined;
+function bestSceneForContract(
+  contract: StoryCircleBeatRealizationContract,
+  scenes: PlannedScene[],
+  minSceneOrder?: number,
+): PlannedScene | undefined {
+  const episodeCandidates = scenes.filter((scene) => scene.episodeNumber === contract.targetEpisodeNumber);
+  if (episodeCandidates.length === 0) return undefined;
+  const floored = typeof minSceneOrder === 'number'
+    ? episodeCandidates.filter((scene) => scene.order >= minSceneOrder)
+    : episodeCandidates;
+  const candidates = floored.length > 0 ? floored : episodeCandidates;
   return candidates
     .map((scene) => ({ scene, score: scoreScene(contract, scene) }))
     .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order)[0]?.scene;
+}
+
+// Story-circle parts that NARRATE the aftermath of the episode's staged threat
+// (writing the post about the rescue, the post going viral) must not bind to a
+// scene before the threat happens — bite-me 2026-07-02T20-30-27 bound "She
+// starts Dating After Dusk" and "turns a terrifying rescue…into viral proof"
+// to scene 1, ahead of the attack, and QA read the whole episode as a
+// chronology contradiction.
+const POST_THREAT_NARRATION_RE = /\b(?:viral|blog|post(?:s|ed)?|publish(?:es|ed)?|readership|byline|writes?|wrote)\b/i;
+const THREAT_REFERENCE_RE = /\b(?:rescue[sd]?|attack(?:s|ed|er)?|terror|terrifying|danger)\b/i;
+
+function partNarratesThreatAftermath(sourceText: string): boolean {
+  return POST_THREAT_NARRATION_RE.test(sourceText) && THREAT_REFERENCE_RE.test(sourceText);
+}
+
+function firstEncounterOrder(contract: StoryCircleBeatRealizationContract, scenes: PlannedScene[]): number | undefined {
+  const encounter = scenes
+    .filter((scene) => scene.episodeNumber === contract.targetEpisodeNumber)
+    .filter((scene) => scene.kind === 'encounter' || Boolean(scene.encounter))
+    .sort((a, b) => a.order - b.order)[0];
+  return encounter?.order;
 }
 
 function storyCircleOwnsContract(contract: StoryCircleBeatRealizationContract, scenes: PlannedScene[]): boolean {
@@ -510,10 +539,23 @@ export function assignStoryCircleBeatContractsToScenes(
       continue;
     }
     const boundSceneIds: string[] = [];
+    // Parts of one contract are in narrative order (normalizeStoryCircleContract
+    // ForSceneProse emits atoms in source order): later parts must never bind to
+    // an earlier scene than a previous part, and parts narrating the threat's
+    // aftermath must bind at/after the episode's encounter.
+    let minSceneOrder: number | undefined;
     for (const sceneContract of sceneContracts) {
       if (storyCircleOwnsContract(sceneContract, scenes)) continue;
-      const target = bestSceneForContract(sceneContract, scenes);
+      let partFloor = minSceneOrder;
+      if (partNarratesThreatAftermath(sceneContract.sourceText)) {
+        const encounterOrder = firstEncounterOrder(sceneContract, scenes);
+        if (encounterOrder !== undefined) {
+          partFloor = Math.max(partFloor ?? encounterOrder, encounterOrder);
+        }
+      }
+      const target = bestSceneForContract(sceneContract, scenes, partFloor);
       if (!target) continue;
+      minSceneOrder = Math.max(minSceneOrder ?? target.order, target.order);
       sceneContract.targetSceneIds = dedupe([...sceneContract.targetSceneIds, target.id]);
       boundSceneIds.push(target.id);
       const existing = target.storyCircleBeatContracts ?? [];

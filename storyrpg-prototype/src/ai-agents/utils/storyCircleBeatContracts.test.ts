@@ -89,6 +89,68 @@ describe('storyCircleBeatContracts', () => {
     expect(target?.mechanicPressure?.some((pressure) => pressure.id.includes('story-circle-find'))).toBe(true);
   });
 
+  it('binds threat-aftermath parts at or after the episode encounter, in monotonic scene order (bite-me 2026-07-02)', () => {
+    const plan = {
+      totalEpisodes: 8,
+      storyCircle: {
+        you: 'Kylie arrives in Bucharest with two suitcases and her grandmother address. '
+          + 'She starts Dating After Dusk and writes her first blog post. '
+          + 'She turns a terrifying rescue by Mr Midnight into the first viral post that proves she can author a new life.',
+        need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      },
+      treatmentSeasonGuidance: {
+        seasonSpine: '- **You:** Kylie arrives in Bucharest with two suitcases and her grandmother address. She starts Dating After Dusk and writes her first blog post. She turns a terrifying rescue by Mr Midnight into the first viral post that proves she can author a new life.',
+        storyCircleBeatEpisodeAnchors: { you: 1 },
+      },
+    } as unknown as SeasonPlan;
+    const encounterScene: PlannedScene = {
+      ...scene('treatment-enc-1-1', 1, 3, 'turn'),
+      kind: 'encounter',
+      dramaticPurpose: 'Walking home through the park, she is attacked and rescued by a stranger.',
+      encounter: {
+        type: 'dramatic',
+        difficulty: 'moderate',
+        relevantSkills: ['notice'],
+        description: 'Walking home through the park, she is attacked and rescued by a stranger.',
+        isBranchPoint: false,
+      },
+    };
+    // The deterministic skeleton copies the whole story-circle text into the
+    // opening scene's composed purpose (run #5: "setup — <You text>"), which
+    // made scene 1 the highest-scoring owner for the aftermath narration.
+    const openingScene: PlannedScene = {
+      ...scene('s1-1', 1, 0, 'setup'),
+      dramaticPurpose: 'setup — Kylie arrives in Bucharest with two suitcases and her grandmother address. '
+        + 'She starts Dating After Dusk and writes her first blog post. '
+        + 'She turns a terrifying rescue by Mr Midnight into the first viral post that proves she can author a new life.',
+    };
+    const scenes = [
+      openingScene,
+      scene('s1-2', 1, 1, 'development'),
+      scene('s1-3', 1, 2, 'development'),
+      encounterScene,
+      scene('s1-5', 1, 4, 'development'),
+      scene('s1-6', 1, 5, 'release'),
+    ];
+
+    assignStoryCircleBeatContractsToScenes(plan, scenes);
+
+    const sceneOrderById = new Map(scenes.map((candidate) => [candidate.id, candidate.order]));
+    const boundParts = scenes.flatMap((candidate) =>
+      (candidate.storyCircleBeatContracts ?? []).map((contract) => ({
+        sceneId: candidate.id,
+        order: sceneOrderById.get(candidate.id) ?? -1,
+        text: contract.sourceText,
+      })));
+    const aftermathParts = boundParts.filter((part) => /viral|rescue/i.test(part.text) && /post|viral/i.test(part.text));
+    // Aftermath narration ("turns a terrifying rescue into the first viral post")
+    // must land at or after the encounter (order 3), never on the opening scenes.
+    expect(aftermathParts.length).toBeGreaterThan(0);
+    for (const part of aftermathParts) {
+      expect(part.order).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it('does not hard-bind duplicate Story Circle prose when Story Circle already owns the authored beat', () => {
     const hookText = "Avery lands in port city with two suitcases and her grandmother's address; by night three she's at a rooftop bar.";
     const plan = {

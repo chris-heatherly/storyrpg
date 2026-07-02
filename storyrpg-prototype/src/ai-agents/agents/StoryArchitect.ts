@@ -3938,6 +3938,7 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairSceneTurnContracts(blueprint);
       this.applySceneContractsToPlannedBlueprint(blueprint, input);
       this.repairBlueprintHygieneUnsafeText(blueprint, input);
+      this.repairDramaticStructureCraft(blueprint);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
@@ -4374,6 +4375,7 @@ REQUIREMENTS:
       // hygiene check throws. Observed live: three attempts in a row kept
       // "The protagonist wants …" in wantVsNeed and aborted the episode.
       this.repairBlueprintHygieneUnsafeText(blueprint, input);
+      this.repairDramaticStructureCraft(blueprint);
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
@@ -6588,6 +6590,55 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     );
     const verb = connector === 'but' ? 'reverses into' : 'escalates into';
     return `${fromPressure} ${verb} ${toPressure}.`;
+  }
+
+  /**
+   * Deterministic craft-gate repairs (repair-first). Observed live: the
+   * architecture craft gate aborted the episode on (a) residue typed with a
+   * non-enum alias ("flags") and (b) a missing pressurePeak — both fixable in
+   * place without burning an LLM retry.
+   */
+  private repairDramaticStructureCraft(blueprint: EpisodeBlueprint): void {
+    const residueAliases: Record<string, ResidueType> = {
+      flag: 'information',
+      flags: 'information',
+      state: 'information',
+      state_change: 'information',
+      knowledge: 'information',
+      info: 'information',
+      secret: 'information',
+      trust: 'relationship',
+      bond: 'relationship',
+      injury: 'wound',
+      threat: 'danger',
+      item: 'resource',
+      object: 'resource',
+      obligation: 'promise',
+      debt: 'promise',
+      standing: 'reputation',
+      status: 'reputation',
+      entry: 'access',
+      key: 'access',
+    };
+    for (const scene of blueprint.scenes || []) {
+      for (const item of scene.residue || []) {
+        const alias = residueAliases[String(item?.type ?? '').toLowerCase().trim()];
+        if (alias) {
+          console.log(`[StoryArchitect] Normalized residue type "${item.type}" -> "${alias}" on ${scene.id}`);
+          item.type = alias;
+        }
+      }
+      const ds = scene.dramaticStructure;
+      if (ds && !(ds.pressurePeak || '').trim()) {
+        const fallback = [ds.turn, ds.changedState, ds.question]
+          .map((value) => (value || '').trim())
+          .find(Boolean);
+        if (fallback) {
+          ds.pressurePeak = fallback;
+          console.log(`[StoryArchitect] Defaulted missing dramaticStructure.pressurePeak on ${scene.id} from the scene turn`);
+        }
+      }
+    }
   }
 
   private repairSceneTurnContracts(blueprint: EpisodeBlueprint): void {

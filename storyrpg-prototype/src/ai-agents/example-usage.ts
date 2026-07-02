@@ -16,6 +16,7 @@ import {
   generateIndexExport,
 } from './utils/storyExporter';
 import { runStoryGeneration } from './services/storyGenerationService';
+import { loadConfig } from './config';
 
 // Example creative brief for "The Velvet Job"
 const heistBrief: FullCreativeBrief = {
@@ -234,9 +235,16 @@ async function runExample() {
 
   const startTime = Date.now();
 
-  // Run the pipeline
+  // Run the pipeline. STORYRPG_STORY_ONLY=1 runs text-only (no image/video
+  // slots demanded by the registry coverage gate) — the CLI equivalent of the
+  // worker's assetGenerationMode: 'story-only'.
+  const config = loadConfig();
+  if (process.env.STORYRPG_STORY_ONLY === '1') {
+    config.generation = { ...(config.generation ?? {}), assetGenerationMode: 'story-only' };
+  }
   const { result } = await runStoryGeneration({
     brief,
+    config,
     onEvent: handleEvent,
   });
 

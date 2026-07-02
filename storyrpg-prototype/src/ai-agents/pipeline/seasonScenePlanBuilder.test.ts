@@ -465,6 +465,55 @@ describe('buildSeasonScenePlan', () => {
     expect(scenes.find((s) => s.id === 's1-1')?.requiredBeats ?? []).toHaveLength(0);
   });
 
+  it('floors the pacing start stage for treatment-declared prior bonds (bite-me 2026-07-02 Mika)', () => {
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 4,
+      mainCharacters: ['Mika Dragan', 'Stela Pavel'],
+      treatmentGuidance: {
+        episodeTurns: ['Mika Dragan pulls Kylie into a hug and adopts her into the group over negronis.'],
+      },
+    });
+    const p = plan([ep], {
+      sourceCanon: {
+        facts: [{
+          id: 'canon-npc-npc_profile-char-mika-dragan',
+          domain: 'npc',
+          kind: 'npc_profile',
+          subjectId: 'char-mika-dragan',
+          value: {
+            name: 'Mika Dragan',
+            role: 'ally',
+            relationshipToProtagonist: "Kylie's best friend, placed in Kylie's life before Kylie arrived.",
+          },
+        }, {
+          id: 'canon-npc-npc_profile-char-stela-pavel',
+          domain: 'npc',
+          kind: 'npc_profile',
+          subjectId: 'char-stela-pavel',
+          value: {
+            name: 'Stela Pavel',
+            role: 'ally',
+            relationshipToProtagonist: 'The reliable truth source Kylie meets at the bookshop.',
+          },
+        }],
+      } as never,
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(p), 1);
+
+    const contracts = scenes.flatMap((s) => s.relationshipPacing ?? []);
+    const mika = contracts.find((c) => c.npcId && /mika/i.test(String(c.npcId)));
+    const stela = contracts.find((c) => c.npcId && /stela/i.test(String(c.npcId)));
+    expect(mika).toBeDefined();
+    // Declared prior bond: warm-familiar language allowed from scene one.
+    expect(['acquaintance', 'tentative_ally', 'friend', 'trusted_ally', 'intimate']).toContain(mika!.startStage);
+    expect(mika!.blockedLabels).not.toContain('friend');
+    // No declared bond: the positional ladder still applies.
+    if (stela) {
+      expect(['unmet', 'noticed', 'spark']).toContain(stela.startStage);
+      expect(stela.blockedLabels).toContain('friend');
+    }
+  });
+
   it('scopes the story-circle cold-open hook to the first sentence, not the whole-episode summary (bite-me 2026-07-02)', () => {
     const youText = 'Kylie Marinescu arrives in Bucharest as a charming, wounded observer with two suitcases and the intent to rebuild. '
       + 'She forms the Dusk Club, starts Dating After Dusk, and turns a terrifying rescue by Mr. Midnight into the first viral proof that she can author a new life.';

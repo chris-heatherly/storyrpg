@@ -391,6 +391,21 @@
       "message": "SceneCritic pass reviewing 3 scene(s)"
     },
     {
+      "type": "checkpoint",
+      "phase": "scene_critic",
+      "message": "Rewrote 3 beat(s) in scene scene-1"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "scene_critic",
+      "message": "Rewrote 3 beat(s) in scene scene-2"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "scene_critic",
+      "message": "Rewrote 3 beat(s) in scene scene-3"
+    },
+    {
       "type": "debug",
       "phase": "episode_1_callbacks",
       "message": "Callback ledger: +12 new hook(s), +0 authored payoff(s), +2 auto-realized this episode; 6 total"
@@ -453,12 +468,12 @@
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract LLM repair skipped this round because 14 blocker(s) still require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair proceeding on 1 repairable issue(s); 14 architecture-class blocker(s) withheld from LLM repair this round."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract LLM repair skipped this round because 14 blocker(s) still require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair proceeding on 1 repairable issue(s); 14 architecture-class blocker(s) withheld from LLM repair this round."
     },
     {
       "type": "debug",
@@ -766,6 +781,21 @@
       "message": "SceneCritic pass reviewing 3 scene(s)"
     },
     {
+      "type": "checkpoint",
+      "phase": "scene_critic",
+      "message": "Rewrote 3 beat(s) in scene scene-4"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "scene_critic",
+      "message": "Rewrote 3 beat(s) in scene scene-5"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "scene_critic",
+      "message": "Rewrote 3 beat(s) in scene scene-6"
+    },
+    {
       "type": "debug",
       "phase": "episode_2_callbacks",
       "message": "Callback ledger: +10 new hook(s), +0 authored payoff(s), +6 auto-realized this episode; 12 total"
@@ -823,12 +853,12 @@
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract LLM repair skipped this round because 14 blocker(s) still require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract LLM repair skipped this round because 14 blocker(s) still require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
     },
     {
       "type": "checkpoint",

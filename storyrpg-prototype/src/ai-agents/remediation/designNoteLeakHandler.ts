@@ -18,9 +18,22 @@ import type { ContractRepairHandler } from './finalContractRepair';
 const normMeta = (s: unknown): string =>
   typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().toLowerCase() : '';
 
+// Stock sentences other repairs substitute when they strip a field down to
+// nothing (stripPrematureNpcSentences, this handler's own fallback). When one
+// of them ends up APPENDED to beat prose it is still meta — run #6
+// (bite-me 2026-07-02T22-53-53) shipped 15 echo_summary_variant blockers that
+// were all the premature-NPC repair's placeholder, a repair fighting a
+// validator. Paragraph-anchored so authored prose containing similar words is
+// never touched.
+const REPAIR_PLACEHOLDER_PATTERNS = [
+  /^\s*the moment leaves its consequence hanging in the air\.?\s*$/i,
+  /^\s*the consequence settles into the room, changing what the next choice can cost\.?\s*$/i,
+];
+
 const metaLeakPatterns = [
   ...READER_PROSE_LEAK_PATTERNS.map((p) => p.pattern),
   ...STRUCTURAL_SCAFFOLDING_PATTERNS.map((p) => p.pattern),
+  ...REPAIR_PLACEHOLDER_PATTERNS,
 ];
 
 function isMetaParagraph(paragraph: string, meta: Set<string>): boolean {
@@ -35,11 +48,13 @@ function stripMetaParagraphs(text: unknown, meta: Set<string>, fallback = GENERI
   const paragraphs = text.split(/\n{2,}/);
   if (paragraphs.length <= 1) {
     if (!isMetaParagraph(text, meta)) return undefined;
-    return fallback;
+    // The fallback itself is pattern-tracked meta; never report a "repair"
+    // that leaves the text byte-identical or the loop churns without fixpoint.
+    return text.trim() === fallback ? undefined : fallback;
   }
   const kept = paragraphs.filter((paragraph) => !isMetaParagraph(paragraph, meta));
   if (kept.length === paragraphs.length) return undefined;
-  if (kept.length === 0) return fallback;
+  if (kept.length === 0) return text.trim() === fallback ? undefined : fallback;
   return kept.join('\n\n').trim();
 }
 

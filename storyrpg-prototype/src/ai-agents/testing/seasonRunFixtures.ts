@@ -1225,5 +1225,22 @@ export function buildSeasonRunFixtureMap(): ScriptedFixtureMap {
       return sceneFixture('scene-1');
     },
     'Choice Author': (request) => seasonChoiceSetFixtureFor(request),
+    // No-op critic: echo the scene's own beats back as the "rewrite" so the
+    // critique pass is exercised without changing prose. Keyed by the
+    // `# Scene: <id>` header SceneCritic.buildPrompt emits.
+    'Scene Critic': (request) => {
+      const text = requestText(request);
+      const id = /#\s*Scene:\s*(scene-\d+)/.exec(text)?.[1] ?? 'scene-1';
+      const source = ['scene-4', 'scene-5', 'scene-6'].includes(id)
+        ? episode2SceneFixture(id)
+        : sceneFixture(id);
+      const parsed = JSON.parse(source) as { beats?: unknown[] };
+      return JSON.stringify({
+        sceneId: id,
+        rewrittenBeats: parsed.beats ?? [],
+        critiqueNotes: [],
+        overallCommentary: 'Prose holds; no rewrite needed.',
+      });
+    },
   };
 }

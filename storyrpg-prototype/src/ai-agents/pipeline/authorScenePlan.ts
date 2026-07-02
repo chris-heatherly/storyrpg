@@ -36,6 +36,7 @@ import type { ChoiceType } from '../../types/choice';
 import {
   bindAuthoredTurnsToScenes,
   buildEpisodeScenes,
+  collectPriorBondNpcKeys,
   encounterIsCoveredByAuthoredTurns,
   getAuthoredEpisodeEventTexts,
   storyCircleTextForEpisode,
@@ -543,10 +544,10 @@ export function normalizeAuthoredScenePlan(
     const rawScenes = rawByEpisode.get(ep.episodeNumber);
     if (!rawScenes || rawScenes.length === 0) {
       // Gap fill: deterministic scenes for an episode the model skipped.
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan)));
       continue;
     }
-    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger, plan.protagonist);
+    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan));
     // Floor guard: an authored episode below the structural minimum (the model
     // returned e.g. only a setup + an encounter) is too small to carry a
     // scene-graph branch and hard-aborts at branch validation downstream
@@ -555,7 +556,7 @@ export function normalizeAuthoredScenePlan(
     // skipped episode — so adequately-sized authored episodes are untouched and
     // golden parity holds (only fires when the floor is requested AND violated).
     if (normalized.length < minScenesPerEpisode) {
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan)));
       continue;
     }
     scenesByEpisode.set(ep.episodeNumber, normalized);
@@ -626,6 +627,7 @@ function normalizeEpisodeScenes(
   rawScenes: RawScene[],
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
   protagonist?: SeasonPlan['protagonist'],
+  priorBondNpcKeys?: Set<string>,
 ): PlannedScene[] {
   const encountersById = new Map((ep.plannedEncounters ?? []).map((e) => [e.id, e]));
   const usedEncounterIds = new Set<string>();
@@ -736,7 +738,7 @@ function normalizeEpisodeScenes(
   // treatment-sourced run carries discrete requiredBeats + a signatureMoment
   // regardless of what the model returned (§3.2 / §5). Shared with the
   // deterministic path via the same helper.
-  bindAuthoredTurnsToScenes(ep, built, infoLedger, protagonist);
+  bindAuthoredTurnsToScenes(ep, built, infoLedger, protagonist, priorBondNpcKeys);
   promoteCoveredAuthoredEncounters(ep, built, coveredEncounterIds);
   return built;
 }

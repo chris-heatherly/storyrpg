@@ -475,35 +475,85 @@ function relationshipSourceForScene(scene: PlannedScene): RelationshipPacingCont
   return 'planner';
 }
 
+// A treatment can DECLARE a bond that predates episode 1 (Mika is "Kylie's
+// best friend", placed in her life before arrival; they met online). The
+// positional pacing ladder starts every NPC at 'unmet', so scene-1 warmth with
+// a declared prior bond reads as an unearned-intimacy violation to the
+// relationship ledger (bite-me 2026-07-02T20-30-27 RelationshipArcLedger
+// blocker). Declared prior bonds floor the start stage at 'acquaintance' —
+// warm-familiar language is in-world truth; deeper trust is still earned.
+const PRIOR_BOND_RE = /\b(?:best friend|closest friend|old friend|childhood friend|met online|already (?:friends|close|knows?)|knew (?:each other|her|him|them) (?:before|for years)|friendship began before)\b|\bplaced in \w+(?:'s)? life\b|\bbefore \w+ arriv/i;
+
+export function collectPriorBondNpcKeys(plan: SeasonPlan): Set<string> {
+  const keys = new Set<string>();
+  const facts = (plan as unknown as { sourceCanon?: { facts?: Array<Record<string, unknown>> } }).sourceCanon?.facts ?? [];
+  for (const fact of facts) {
+    if (fact.domain !== 'npc') continue;
+    const value = (fact.value ?? {}) as Record<string, unknown>;
+    const evidence = [value.relationshipToProtagonist, value.leverage, value.role]
+      .filter((entry): entry is string => typeof entry === 'string')
+      .join(' ');
+    if (!PRIOR_BOND_RE.test(evidence)) continue;
+    if (typeof value.name === 'string') keys.add(slugId(value.name));
+    if (typeof fact.subjectId === 'string') keys.add(slugId(String(fact.subjectId)));
+  }
+  return keys;
+}
+
+function hasPriorBond(npcId: string, priorBondNpcKeys?: Set<string>): boolean {
+  if (!priorBondNpcKeys || priorBondNpcKeys.size === 0) return false;
+  const key = slugId(npcId);
+  if (priorBondNpcKeys.has(key)) return true;
+  return [...priorBondNpcKeys].some((bondKey) => bondKey.includes(key) || key.includes(bondKey));
+}
+
 function buildNpcPacingContract(
   scene: PlannedScene,
   npcId: string,
   priorScenes: number,
   text: string,
+  priorBondNpcKeys?: Set<string>,
 ): RelationshipPacingContract {
+  const priorBond = hasPriorBond(npcId, priorBondNpcKeys);
   const maxStage = sceneCanEarnRelationshipAdvancement(scene)
     ? 'intimate'
     : maxRelationshipStageWithoutChoice(priorScenes);
-  const startStage = lowerRelationshipStage(pacingStartStage(priorScenes), maxStage);
-  const targetStage = lowerRelationshipStage(pacingTargetStage(priorScenes, text), maxStage);
-  const early = priorScenes <= 1 && targetStage !== 'friend';
+  const positionalStart = pacingStartStage(priorScenes);
+  const startStage = priorBond
+    ? (RELATIONSHIP_STAGE_RANK[positionalStart] >= RELATIONSHIP_STAGE_RANK.acquaintance ? positionalStart : 'acquaintance')
+    : lowerRelationshipStage(positionalStart, maxStage);
+  const positionalTarget = lowerRelationshipStage(pacingTargetStage(priorScenes, text), maxStage);
+  const targetStage = priorBond && RELATIONSHIP_STAGE_RANK[positionalTarget] < RELATIONSHIP_STAGE_RANK[startStage]
+    ? startStage
+    : positionalTarget;
+  const early = !priorBond && priorScenes <= 1 && targetStage !== 'friend';
   return {
     id: `${scene.id}-rel-${slugId(npcId)}`,
     source: relationshipSourceForScene(scene),
     npcId,
     startStage,
     targetStage,
-    allowedLabels: early
-      ? ['spark', 'connection', 'new acquaintance', 'invitation', 'guarded warmth', 'testing trust']
-      : ['tentative ally', 'earned friend', 'trusted help', 'bond with history'],
-    blockedLabels: early
-      ? ['friend', 'best friend', 'trusted ally', 'inner circle', 'lover', 'family', 'one of us']
-      : ['best friend', 'soulmate', 'family', 'trusts completely'],
-    requiredEvidence: [
-      'show behavior before naming the bond',
-      'show reciprocity, testing, vulnerability, protection, or remembered detail',
-      'show aftermath or changed behavior after the relationship turn',
-    ],
+    allowedLabels: priorBond
+      ? ['established rapport', 'familiar warmth', 'friend', 'bond with history', 'shared shorthand']
+      : early
+        ? ['spark', 'connection', 'new acquaintance', 'invitation', 'guarded warmth', 'testing trust']
+        : ['tentative ally', 'earned friend', 'trusted help', 'bond with history'],
+    blockedLabels: priorBond
+      ? ['soulmate', 'trusts completely', 'family', 'lover']
+      : early
+        ? ['friend', 'best friend', 'trusted ally', 'inner circle', 'lover', 'family', 'one of us']
+        : ['best friend', 'soulmate', 'family', 'trusts completely'],
+    requiredEvidence: priorBond
+      ? [
+          'ground the familiarity in the declared prior bond (how they know each other)',
+          'show reciprocity, testing, vulnerability, protection, or remembered detail',
+          'show aftermath or changed behavior after the relationship turn',
+        ]
+      : [
+          'show behavior before naming the bond',
+          'show reciprocity, testing, vulnerability, protection, or remembered detail',
+          'show aftermath or changed behavior after the relationship turn',
+        ],
     minScenesSinceIntroduction: early ? 1 : 0,
     maxDeltaThisScene: pacingMaxDelta(priorScenes, text),
     mechanicDimensions: ['trust', 'affection', 'respect'],
@@ -552,7 +602,11 @@ function isProtagonistRelationshipRef(value: string, protagonistKeys: Set<string
   return protagonistKeys.has(slugId(value));
 }
 
-function applyRelationshipPacingContracts(scenes: PlannedScene[], protagonist?: SeasonPlan['protagonist']): void {
+function applyRelationshipPacingContracts(
+  scenes: PlannedScene[],
+  protagonist?: SeasonPlan['protagonist'],
+  priorBondNpcKeys?: Set<string>,
+): void {
   const npcSeen = new Map<string, number>();
   const groupSeen = new Map<string, number>();
   const protagonistKeys = protagonistRelationshipKeys(protagonist);
@@ -574,7 +628,7 @@ function applyRelationshipPacingContracts(scenes: PlannedScene[], protagonist?: 
       .filter((npc) => npc && !isProtagonistRelationshipRef(npc, protagonistKeys) && !contracts.some((c) => c.npcId === npc))
       .slice(0, 3);
     for (const npc of npcs) {
-      contracts.push(buildNpcPacingContract(scene, npc, npcSeen.get(npc) ?? 0, text));
+      contracts.push(buildNpcPacingContract(scene, npc, npcSeen.get(npc) ?? 0, text, priorBondNpcKeys));
     }
 
     if (GROUP_RE.test(text) && !contracts.some((c) => c.groupId)) {
@@ -1347,6 +1401,7 @@ export function bindAuthoredTurnsToScenes(
   scenes: PlannedScene[],
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
   protagonist?: SeasonPlan['protagonist'],
+  priorBondNpcKeys?: Set<string>,
 ): void {
   if (scenes.length === 0) return;
   const guidance = ep.treatmentGuidance;
@@ -1492,7 +1547,7 @@ export function bindAuthoredTurnsToScenes(
   }
 
   applySceneTurnContracts(scenes);
-  applyRelationshipPacingContracts(scenes, protagonist);
+  applyRelationshipPacingContracts(scenes, protagonist, priorBondNpcKeys);
   applyMechanicPressureContracts(scenes);
   assignTreatmentFieldContractsToScenes(ep, scenes);
 }
@@ -1509,6 +1564,7 @@ export function buildEpisodeScenes(
   storyCircleText: string | undefined,
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
   protagonist?: SeasonPlan['protagonist'],
+  priorBondNpcKeys?: Set<string>,
 ): PlannedScene[] {
   const encounters = ep.plannedEncounters ?? [];
   const turns = getAuthoredEpisodeEventTexts(ep);
@@ -1639,7 +1695,7 @@ export function buildEpisodeScenes(
 
   // Bind authored turns + the signature device deterministically (shared with the
   // LLM-authored path). This is the single source of truth for turn→scene binding.
-  bindAuthoredTurnsToScenes(ep, scenes, infoLedger, protagonist);
+  bindAuthoredTurnsToScenes(ep, scenes, infoLedger, protagonist, priorBondNpcKeys);
   promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
   repairUnsupportedPlanningEventPurposes(ep, scenes);
 
@@ -1668,11 +1724,12 @@ function payoffSceneId(scenes: PlannedScene[]): string | undefined {
  * `setupPayoffEdges` are derived from the season's cross-episode structures.
  */
 export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
+  const priorBondNpcKeys = collectPriorBondNpcKeys(plan);
   const episodes = [...plan.episodes].sort((a, b) => a.episodeNumber - b.episodeNumber);
 
   const scenesByEpisode = new Map<number, PlannedScene[]>();
   for (const ep of episodes) {
-    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist));
+    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, priorBondNpcKeys));
   }
 
   // Resolve setup/payoff edges from the season's cross-episode structures.

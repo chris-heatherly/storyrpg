@@ -147,6 +147,27 @@ describe('DramaticStructureValidator', () => {
     expect(result.metrics.protagonistAgencyRatio).toBe(1);
   });
 
+  it('accepts residue prose that merely contains a placeholder word (live FP regression)', () => {
+    const bp = blueprint();
+    bp.scenes[1].residue = [{
+      type: 'information',
+      description: 'What Victoria knows is still unknown to the crew, and none of them will say it aloud.',
+    }];
+
+    const result = new DramaticStructureValidator().validate(bp);
+
+    expect(result.issues.map(issue => issue.message).join('\n')).not.toContain('residue without description');
+  });
+
+  it('still rejects a whole-value placeholder residue description', () => {
+    const bp = blueprint();
+    bp.scenes[1].residue = [{ type: 'information', description: 'TBD.' }];
+
+    const result = new DramaticStructureValidator().validate(bp);
+
+    expect(result.issues.map(issue => issue.message).join('\n')).toContain('residue without description');
+  });
+
   it('fails an and-then transition with no therefore/but metadata', () => {
     const bp = blueprint();
     bp.scenes[0].transitionOut = [];

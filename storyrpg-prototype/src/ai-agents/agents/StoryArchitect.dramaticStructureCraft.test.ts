@@ -117,6 +117,25 @@ describe('StoryArchitect.repairDramaticStructureCraft', () => {
     ]);
   });
 
+  it('treats whole-value placeholders like "TBD" as missing and fills them', () => {
+    const blueprint = {
+      scenes: [{
+        id: 'scene-2',
+        residue: [{ type: 'information', description: 'TBD' }],
+        dramaticStructure: {
+          question: 'q',
+          turn: 'Victoria names the corridor before you do.',
+          pressurePeak: 'p',
+          changedState: 'Victoria knows you know.',
+        },
+      }],
+    } as unknown as EpisodeBlueprint;
+
+    repair(blueprint);
+
+    expect(blueprint.scenes[0].residue?.[0].description).toBe('Victoria knows you know.');
+  });
+
   it('leaves valid residue and populated pressurePeak untouched', () => {
     const blueprint = {
       scenes: [{

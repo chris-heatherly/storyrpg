@@ -4456,6 +4456,18 @@ REQUIREMENTS:
         // surface where in the ~20 repair helpers it died.
         console.error(`[StoryArchitect] Stack:`, error.stack.split('\n').slice(0, 6).join('\n'));
       }
+      if (/residue without description/.test(errorMsg) && parsedBlueprint) {
+        // Live-run diagnosis: the deterministic residue repair ran but the
+        // validator still saw an empty description — dump the exact shapes.
+        console.error('[StoryArchitect] residue-dump:', JSON.stringify(
+          (parsedBlueprint.scenes || []).map((scene) => ({
+            id: scene.id,
+            dramaticQuestion: scene.dramaticQuestion,
+            dramaticStructure: scene.dramaticStructure,
+            residue: scene.residue,
+          })),
+        ).slice(0, 6000));
+      }
 
       const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
 
@@ -6628,8 +6640,14 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           item.type = alias;
         }
       }
+      // Mirror DramaticStructureValidator.hasText: a whole-value placeholder
+      // ("TBD", "none") is as good as missing.
+      const craftText = (value?: string): string => {
+        const text = (value || '').trim();
+        return /^(?:tbd|none|n\/a|unknown|placeholder|not specified)[.!?…-]*$/i.test(text) ? '' : text;
+      };
       const firstOf = (...values: Array<string | undefined>): string | undefined =>
-        values.map((value) => (value || '').trim()).find(Boolean);
+        values.map(craftText).find(Boolean);
       const ds = scene.dramaticStructure;
       if (ds) {
         const residueDescription = (scene.residue || [])
@@ -6642,7 +6660,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
           ['changedState', firstOf(residueDescription, ds.turn, ds.pressurePeak)],
         ];
         for (const [field, fallback] of fills) {
-          if (!(ds[field] || '').trim() && fallback) {
+          if (!craftText(ds[field]) && fallback) {
             ds[field] = fallback;
             console.log(`[StoryArchitect] Defaulted missing dramaticStructure.${String(field)} on ${scene.id}`);
           }
@@ -6654,12 +6672,12 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       if (Array.isArray(scene.residue) && scene.residue.length > 0) {
         const residueFallback = firstOf(ds?.changedState, ds?.turn, scene.dramaticQuestion);
         for (const item of scene.residue) {
-          if (item && !(item.description || '').trim() && residueFallback) {
+          if (item && !craftText(item.description) && residueFallback) {
             item.description = residueFallback;
             console.log(`[StoryArchitect] Filled empty residue description on ${scene.id} from the scene's changed state`);
           }
         }
-        const kept = scene.residue.filter((item) => (item?.description || '').trim());
+        const kept = scene.residue.filter((item) => craftText(item?.description));
         if (kept.length !== scene.residue.length) {
           console.log(`[StoryArchitect] Dropped ${scene.residue.length - kept.length} empty residue entr(ies) on ${scene.id}`);
           scene.residue = kept.length > 0 || !residueFallback

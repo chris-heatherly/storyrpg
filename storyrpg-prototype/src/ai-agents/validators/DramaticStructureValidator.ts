@@ -54,7 +54,11 @@ const STAKES_LAYER_KEYS: Array<keyof StakesLayers> = ['material', 'relational', 
 const ABSTRACT_STAKES = /\b(everything|the world|the realm|the kingdom|the city|all hope|fate|destiny|survival|stakes are high|danger grows)\b/i;
 const PERSONAL_STAKES = /\b(friend|family|sibling|parent|child|lover|ally|mentor|home|name|reputation|trust|promise|vow|identity|future|memory|belonging|freedom|dignity|relationship|bond|wound|secret|debt|cost|lose|loss|save|protect|betray|exile|access)\b/i;
 const STAKES_LADDER_TERMS = /\b(risk|cost|costs|lose|loses|loss|lost|danger|threat|pressure|leverage|narrow|narrows|option|choice|consequence|worse|harder|turn|turns|reveal|reveals|expose|exposes|trust|reputation|identity|resource|debt|wound|damage|peak|climax)\b/i;
-const EMPTY_PLACEHOLDER = /\b(tbd|none|n\/a|unknown|placeholder|not specified)\b/i;
+// Whole-value match only: prose that merely CONTAINS "unknown"/"none"
+// ("her angle is unknown") is a real description, not a placeholder. The old
+// substring form aborted a live run on exactly that ("residue without
+// description" for a fully written sentence).
+const EMPTY_PLACEHOLDER = /^\s*(?:tbd|none|n\/a|unknown|placeholder|not specified)\s*[.!?…-]*\s*$/i;
 
 function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && !EMPTY_PLACEHOLDER.test(value);

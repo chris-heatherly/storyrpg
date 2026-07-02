@@ -1,7 +1,7 @@
 import type { Story } from '../../types/story';
-import type { SeasonScenePlan } from '../../types/scenePlan';
+import type { SceneEventOwnershipCue, SeasonScenePlan } from '../../types/scenePlan';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
-import { collectRelationshipScenes, sceneVisibleText } from '../utils/relationshipArcLedger';
+import { collectRelationshipScenes, sceneVisibleText, type RelationshipSceneRef } from '../utils/relationshipArcLedger';
 
 export interface SceneSpatialUnitInput {
   story: Story;
@@ -21,6 +21,19 @@ const DEPARTURE_CONTEXT_RE = /\b(?:leav(?:e|es|ing|t)|back\s+from|away\s+from|fa
 const ACTIVE_LOCATION_RE = /\b(?:at|inside|outside|behind|within|into|through|across|under|beside|on|in)\b[^.!?]{0,80}$|^\s*[^.!?]{0,80}\b(?:arrives?|appears?|waits?|stands?|looks?|says?|asks?|hands?|offers?|presses?|closes?|walks?|leads?|follows?|clocks?|pulls?|blocks?|meets?|introduces?)\b/i;
 const MEANINGFUL_ACTION_RE = /\b(?:says?|asks?|answers?|hands?|offers?|presses?|takes?|gives?|closes?|walks?|leads?|follows?|clocks?|starts?|meets?|introduces?|appears?|waits?|stands?|looks?|smiles?|touches?|pulls?|blocks?|warns?|reveals?|finds?|discovers?|attacks?|rescues?|chooses?|decides?)\b/i;
 const NAMED_VENUE_RE = /\b([A-ZÀ-Ž][A-Za-zÀ-ž'’-]+(?:\s+[A-ZÀ-Ž][A-Za-zÀ-ž'’-]+){0,3}\s+(?:Apartment|Apartments|Books|Bookshop|Bookstore|Club|Gardens?|Park|Bar|Rooftop|Store|House|Estate|Market|Hotel|Cafe|Café|Church|Museum|Station|Square|Theatre|Theater|Library))\b/g;
+
+// Owned events that are journeys: staging them on-page necessarily touches both
+// the origin and the destination, so a scene that owns one is allowed a second
+// active spatial anchor (bite-me 2026-07-02: "arrival" owned by s1-1 could not
+// be depicted without the spatial gate demanding the scene be split, while the
+// event-ledger gate demanded it stay).
+const MOVEMENT_EVENT_CUES: ReadonlySet<SceneEventOwnershipCue> = new Set([
+  'arrival',
+  'venueDoor',
+  'roadBreakdown',
+  'walkHome',
+  'endingAftermath',
+]);
 
 function normalize(value: string): string {
   return value
@@ -68,6 +81,30 @@ function collectKnownLocations(story: Story, scenePlan?: SeasonScenePlan): strin
     }
   }
   return Array.from(out.values());
+}
+
+/**
+ * Locations the plan sanctions for THIS scene: its declared plan locations and
+ * its timeline anchor. A scene whose active prose locations are all declared in
+ * its own plan entry is a sanctioned multi-location scene — the authoring
+ * decision was made at plan time, and bridge quality between the anchors is
+ * SceneTransitionContinuityValidator's concern, not a split demand.
+ */
+function sanctionedLocationKeys(ref: RelationshipSceneRef): Set<string> {
+  const keys = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== 'string') return;
+    const key = normalize(value);
+    if (key) keys.add(key);
+  };
+  add(ref.scene.timeline?.location);
+  for (const loc of ref.planned?.locations ?? []) add(loc);
+  return keys;
+}
+
+function ownsMovementEventCue(ref: RelationshipSceneRef): boolean {
+  return (ref.planned?.sceneEventOwnership?.ownedEvents ?? [])
+    .some((event) => MOVEMENT_EVENT_CUES.has(event.cue));
 }
 
 function sentenceWindow(text: string, index: number): string {
@@ -119,6 +156,9 @@ export class SceneSpatialUnitValidator extends BaseValidator {
       const hits = locationHits(text, locations);
       const activeLocations = Array.from(new Set(hits.filter((hit) => hit.active).map((hit) => hit.location)));
       if (activeLocations.length < 2) continue;
+      const sanctioned = sanctionedLocationKeys(ref);
+      if (activeLocations.every((location) => sanctioned.has(normalize(location)))) continue;
+      if (ownsMovementEventCue(ref) && activeLocations.length <= 2) continue;
       issues.push(this.error(
         `Scene "${ref.scene.id}" conducts meaningful action in multiple major locations: ${activeLocations.join(', ')}.`,
         `sceneSpatialUnit:ep${ref.episodeNumber}:${ref.scene.id}`,

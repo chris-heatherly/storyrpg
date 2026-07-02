@@ -33,6 +33,7 @@ import { TreatmentEventLedgerValidator } from './TreatmentEventLedgerValidator';
 import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { RouteContinuityValidator } from './RouteContinuityValidator';
 import { buildTreatmentObligationCanonicalReport } from './treatmentObligationCanonicalReport';
+import { reconcileConflictingFindings } from './reconcileConflictingFindings';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
 import { PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
@@ -1222,6 +1223,11 @@ export class FinalStoryContractValidator {
     this.validateIncrementalResults(input.incrementalValidationResults || [], issues, metrics);
     this.validateQAReports(input.story, input.qaReport, input.bestPracticesReport, issues, metrics, input.treatmentSourced === true);
     this.validateFidelityFindings(input, issues);
+
+    const conflictDowngrades = reconcileConflictingFindings(issues);
+    if (conflictDowngrades > 0) {
+      console.info(`[FinalStoryContract] conflicting-finding precedence: downgraded ${conflictDowngrades} heuristic finding(s) that contradicted an authored contract on the same scene`);
+    }
 
     this.reconcileFrozenIncrementalFlags(issues);
 

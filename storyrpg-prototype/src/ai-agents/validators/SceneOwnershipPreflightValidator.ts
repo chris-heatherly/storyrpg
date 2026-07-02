@@ -38,6 +38,17 @@ export interface SceneOwnershipPreflightInput {
 }
 
 const HARD_TIERS = new Set<RequiredBeat['tier']>(['authored', 'signature', 'coldopen']);
+
+// Journey-shaped owned events touch both origin and destination on-page, so a
+// scene that owns one is allowed a second location cue (mirrors the two-anchor
+// allowance in SceneSpatialUnitValidator so plan time and prose time agree).
+const MOVEMENT_EVENT_CUES = new Set<SceneEventOwnershipProfile['ownedEvents'][number]['cue']>([
+  'arrival',
+  'venueDoor',
+  'roadBreakdown',
+  'walkHome',
+  'endingAftermath',
+]);
 const TIME_CUE_RE = /\b(?:night (?:one|two|three|four|\d+)|\d+\s*(?:am|pm)|morning|dawn|dusk|sunset|midnight|noon|afternoon|evening|later|earlier|next (?:day|morning|night)|previous (?:day|night)|same night|the next day)\b/gi;
 
 function cleanText(value: unknown): string {
@@ -66,6 +77,10 @@ function uniqueLocationCues(scene: SceneOwnershipPreflightScene, texts: string[]
   // Declared location labels are one spatial anchor; only hard-beat texts can
   // introduce a genuinely conflicting second location (see anchoredSceneLocationCues).
   return anchoredSceneLocationCues([scene.location, ...(scene.locations ?? [])], texts);
+}
+
+function sceneOwnsMovementCue(scene: SceneOwnershipPreflightScene): boolean {
+  return (scene.sceneEventOwnership?.ownedEvents ?? []).some((event) => MOVEMENT_EVENT_CUES.has(event.cue));
 }
 
 function sceneOwnsEncounterCue(scene: SceneOwnershipPreflightScene): boolean {
@@ -171,7 +186,8 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
         ));
       }
       const locationCues = uniqueLocationCues(scene, hardTexts);
-      if (locationCues.length >= 2 && scene.kind !== 'encounter' && !scene.isEncounter) {
+      const movementAllowance = sceneOwnsMovementCue(scene) ? 2 : 1;
+      if (locationCues.length > movementAllowance && scene.kind !== 'encounter' && !scene.isEncounter) {
         issues.push(this.error(
           `Scene "${sceneId}" owns hard obligations tied to multiple major location cues (${locationCues.join(', ')}).`,
           sceneId,

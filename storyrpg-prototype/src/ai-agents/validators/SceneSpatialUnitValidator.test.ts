@@ -138,6 +138,93 @@ describe('SceneSpatialUnitValidator', () => {
     expect(result.issues).toHaveLength(0);
   });
 
+  it('allows a scene whose plan declares every active location (sanctioned multi-location scene)', () => {
+    const scene = {
+      id: 's1-4',
+      name: 'Club to Gardens',
+      timeline: { location: 'Valescu Club' },
+      startingBeatId: 'b1',
+      beats: [
+        {
+          id: 'b1',
+          text: 'You step inside Valescu Club, and Mika introduces you to the owner while he offers you wine. You walk into Cismigiu Gardens and a stranger blocks the path and warns you to turn back.',
+          choices: [],
+        },
+      ],
+    } as Scene;
+    const scenePlan: SeasonScenePlan = {
+      scenes: [{
+        id: 's1-4',
+        episodeNumber: 1,
+        order: 3,
+        kind: 'standard',
+        title: 'Club to gardens',
+        dramaticPurpose: 'The plan stages this scene across both places.',
+        narrativeRole: 'turn',
+        locations: ['Valescu Club', 'Cismigiu Gardens'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+      }],
+      byEpisode: { 1: ['s1-4'] },
+      setupPayoffEdges: [],
+    };
+
+    const result = new SceneSpatialUnitValidator().validate({ story: story(scene), scenePlan });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('allows two active anchors when the scene owns a movement event cue (arrival spans origin and destination)', () => {
+    const scene = {
+      id: 's1-5',
+      name: 'Arrival at the Club',
+      timeline: { location: 'Valescu Club' },
+      startingBeatId: 'b1',
+      beats: [
+        {
+          id: 'b1',
+          text: 'You step inside Valescu Club, and Mika introduces you to the owner while he offers you wine. You walk into Cismigiu Gardens and a stranger blocks the path and warns you to turn back.',
+          choices: [],
+        },
+      ],
+    } as Scene;
+    const scenePlan: SeasonScenePlan = {
+      scenes: [{
+        id: 's1-5',
+        episodeNumber: 1,
+        order: 4,
+        kind: 'standard',
+        title: 'Arrival',
+        dramaticPurpose: 'The arrival is owned here and touches both endpoints.',
+        narrativeRole: 'turn',
+        locations: ['Valescu Club'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+        sceneEventOwnership: {
+          id: 'own-s1-5',
+          sceneId: 's1-5',
+          ownedEvents: [{ key: 'arrival-club', cue: 'arrival', text: 'Kylie arrives at the club.', sourceContractIds: [] }],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+      }],
+      byEpisode: { 1: ['s1-5'] },
+      setupPayoffEdges: [],
+    };
+
+    const result = new SceneSpatialUnitValidator().validate({ story: story(scene), scenePlan });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
   it('still mines a prose venue that carries locative context', () => {
     const scene = {
       id: 's1-3',

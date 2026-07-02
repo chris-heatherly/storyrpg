@@ -243,6 +243,39 @@ describe('SceneOwnershipPreflightValidator', () => {
     expect(result.issues.map((issue) => issue.message).join(' ')).not.toContain('multiple major location');
   });
 
+  it('allows a second location cue when the scene owns a movement event (arrival spans endpoints)', () => {
+    const movementScene = scene({
+      id: 's1-arrive',
+      locations: ['Valescu Club'],
+      sceneEventOwnership: {
+        id: 'own-s1-arrive',
+        sceneId: 's1-arrive',
+        ownedEvents: [{ key: 'arrival-club', cue: 'arrival', text: 'She arrives at the club.', sourceContractIds: [] }],
+        incomingContext: [],
+        outgoingResidue: [],
+        forbiddenRestageEvents: [],
+        sourceContractIds: [],
+        diagnostics: [],
+        promptGuidance: [],
+      },
+      requiredBeats: [{
+        id: 'arrive-action',
+        tier: 'authored',
+        sourceTurn: 'From Cismigiu Gardens she walks until she arrives at Valescu Club, where the doorman waves her in.',
+        mustDepict: 'From Cismigiu Gardens she walks until she arrives at Valescu Club, where the doorman waves her in.',
+      }],
+    });
+
+    const withCue = new SceneOwnershipPreflightValidator().validate({ episodeNumber: 1, scenes: [movementScene] });
+    expect(withCue.issues.map((issue) => issue.message).join(' ')).not.toContain('multiple major location');
+
+    const withoutCue = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [scene({ ...movementScene, sceneEventOwnership: undefined })],
+    });
+    expect(withoutCue.issues.map((issue) => issue.message).join(' ')).toContain('multiple major location');
+  });
+
   it('treats city cues as containers rather than conflicting locations', () => {
     const result = new SceneOwnershipPreflightValidator().validate({
       episodeNumber: 1,

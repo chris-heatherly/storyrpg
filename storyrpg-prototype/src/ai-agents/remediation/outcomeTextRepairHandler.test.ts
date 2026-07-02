@@ -95,6 +95,21 @@ describe('buildOutcomeTextRepairHandler', () => {
     expect((agent.reauthorOutcomeTexts as any)).toHaveBeenCalledOnce();
   });
 
+  it('rejects a re-authored tier that echoes the choice prompt (would re-flag as equals-prompt)', async () => {
+    const story = storyWith([
+      { id: 'c1', text: 'Scramble away from the attacker', stakes: { want: 'escape' }, outcomeTexts: { success: STUB_SUCCESS, partial: REAL_PARTIAL, failure: REAL_FAILURE } },
+    ]);
+    // The re-author lazily returns the choice prompt itself.
+    const agent = mockAgent(async () => ({ success: 'Scramble away from the attacker!' }));
+    const handler = buildOutcomeTextRepairHandler({ author: () => agent });
+    const result = await handler({ story, blockingIssues: [] });
+
+    expect(result.changed).toBe(false);
+    const choice: any = (result.story as any).episodes[0].scenes[0].beats[0].choices[0];
+    // The stub is kept (gate still blocks) rather than replaced with an echo.
+    expect(isFallbackOutcomeText(choice.outcomeTexts.success)).toBe(true);
+  });
+
   it('is a no-op when nothing is stubbed', async () => {
     const story = storyWith([{ id: 'c1', text: 'Knock', outcomeTexts: { success: REAL, partial: REAL_PARTIAL, failure: REAL_FAILURE } }]);
     const agent = mockAgent(async () => ({}));

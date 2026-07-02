@@ -111,11 +111,23 @@ export function guardLlmContractRepairForArchitecture(
 ): ContractRepairHandler {
   return (ctx) => {
     const blockers = architecturalRepairBlockersFor(ctx.blockingIssues, routeIssue);
-    if (blockers.length > 0) {
-      emit(`Final contract LLM repair skipped this round because ${blockers.length} blocker(s) still require blueprint, route, or relationship architecture repair first.`);
+    if (blockers.length === 0) {
+      return handler(ctx);
+    }
+    // One architecture-class blocker must not starve repairs for INDEPENDENT
+    // issues in the same report — bite-me 2026-07-02T20-30-27: a relationship
+    // architecture blocker disabled every LLM handler for every round, so a
+    // trivially re-authorable outcome-text stub shipped unrepaired and the run
+    // aborted with both. Hand the handler the repairable subset instead of
+    // skipping it; skip only when NOTHING it could act on remains.
+    const architecturalIds = new Set(blockers.map((issue) => issue));
+    const repairable = ctx.blockingIssues.filter((issue) => !architecturalIds.has(issue));
+    if (repairable.length === 0) {
+      emit(`Final contract LLM repair skipped this round because all ${blockers.length} blocker(s) require blueprint, route, or relationship architecture repair first.`);
       return { story: ctx.story, changed: false };
     }
-    return handler(ctx);
+    emit(`Final contract LLM repair proceeding on ${repairable.length} repairable issue(s); ${blockers.length} architecture-class blocker(s) withheld from LLM repair this round.`);
+    return handler({ ...ctx, blockingIssues: repairable });
   };
 }
 

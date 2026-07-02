@@ -181,8 +181,15 @@ export function buildOutcomeTextRepairHandler(opts: OutcomeTextRepairOptions): C
         let choiceTouched = false;
         for (const tier of t.needTiers) {
           const value = out[tier];
-          // Only replace a stub with REAL authored prose — never another stub.
-          if (typeof value === 'string' && value.trim().length >= 12 && !isFallbackOutcomeText(value)) {
+          // Only replace a stub with REAL authored prose — never another stub,
+          // and never an echo of the choice prompt (the validator's
+          // equals-prompt rule would re-flag it and the loop would spin).
+          if (
+            typeof value === 'string'
+            && value.trim().length >= 12
+            && !isFallbackOutcomeText(value)
+            && normalizeOutcomeText(value) !== normalizeOutcomeText(t.choice.text)
+          ) {
             t.choice.outcomeTexts[tier] = value.trim();
             repairedTiers += 1;
             choiceTouched = true;
@@ -194,7 +201,12 @@ export function buildOutcomeTextRepairHandler(opts: OutcomeTextRepairOptions): C
       }
     }
 
-    if (repairedTiers === 0) return { story, changed: false };
+    if (repairedTiers === 0) {
+      if (calls > 0) {
+        opts.emit?.(`Outcome-text contract repair made ${calls} re-author call(s) but none produced usable prose (${batch.length} stub choice(s) remain).`);
+      }
+      return { story, changed: false };
+    }
     opts.emit?.(`Outcome-text contract repair: re-authored ${repairedTiers} stub tier(s) across ${repairedChoices} choice(s).`);
     return {
       story,

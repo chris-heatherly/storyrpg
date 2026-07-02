@@ -56,7 +56,11 @@ const passingReport = {
 } as unknown as FinalStoryContractReport;
 
 describe('scene-turn warning repair helpers', () => {
-  it('defers LLM repair only while current blockers still require architecture repair', async () => {
+  it('passes LLM handlers the repairable subset while architecture-class blockers coexist (bite-me 2026-07-02)', async () => {
+    // A relationship-architecture blocker used to disable EVERY LLM handler
+    // for every round, starving independent repairable issues (the outcome
+    // stub shipped unrepaired). The guard now withholds only the
+    // architecture-class issues and lets the handler work the rest.
     const localStory = storyWithBeat('You step into the room.');
     const architecturalIssue = {
       validator: 'ArchitecturalValidator',
@@ -72,24 +76,26 @@ describe('scene-turn warning repair helpers', () => {
     const secondReport: ContractRepairReport = { passed: false, blockingIssues: [localIssue] };
     const finalReport: ContractRepairReport = { passed: true, blockingIssues: [] };
     const emitted: string[] = [];
+    const llmSeenIssues: string[][] = [];
     let deterministicCalls = 0;
-    let llmCalls = 0;
+
+    const routeIssue = (issue: { validator?: string; sceneId?: string; episodeNumber?: number }) => ({
+      kind: issue.validator === 'ArchitecturalValidator' ? 'episode_replan' as const : 'same_scene_retry' as const,
+      validator: issue.validator,
+      episodeNumber: issue.episodeNumber,
+      sceneIds: issue.sceneId ? [issue.sceneId] : [],
+      reason: issue.validator === 'ArchitecturalValidator' ? 'Requires architecture.' : 'Localized prose miss.',
+      attemptBudget: issue.validator === 'ArchitecturalValidator' ? 1 : 2,
+      qualityFloor: { overall: 70, voice: 70, stakes: 70, rejectDrop: 8 },
+      unsafeForProsePatch: issue.validator === 'ArchitecturalValidator',
+    });
 
     const guardedLlm = guardLlmContractRepairForArchitecture(
-      ({ story }) => {
-        llmCalls += 1;
+      ({ story, blockingIssues }) => {
+        llmSeenIssues.push(blockingIssues.map((issue) => String(issue.validator)));
         return { story, changed: true };
       },
-      (issue) => ({
-        kind: issue.validator === 'ArchitecturalValidator' ? 'episode_replan' : 'same_scene_retry',
-        validator: issue.validator,
-        episodeNumber: issue.episodeNumber,
-        sceneIds: issue.sceneId ? [issue.sceneId] : [],
-        reason: issue.validator === 'ArchitecturalValidator' ? 'Requires architecture.' : 'Localized prose miss.',
-        attemptBudget: issue.validator === 'ArchitecturalValidator' ? 1 : 2,
-        qualityFloor: { overall: 70, voice: 70, stakes: 70, rejectDrop: 8 },
-        unsafeForProsePatch: issue.validator === 'ArchitecturalValidator',
-      }),
+      routeIssue as never,
       (message) => emitted.push(message),
     );
 
@@ -111,8 +117,43 @@ describe('scene-turn warning repair helpers', () => {
     });
 
     expect(outcome.passed).toBe(true);
-    expect(outcome.attempts).toBe(2);
-    expect(llmCalls).toBe(1);
+    // Round 1: the guard hands the LLM handler ONLY the non-architectural issue.
+    expect(llmSeenIssues[0]).toEqual(['SceneTurnRealizationValidator']);
+    expect(llmSeenIssues[0]).not.toContain('ArchitecturalValidator');
+    expect(emitted.some((message) => message.includes('withheld from LLM repair'))).toBe(true);
+  });
+
+  it('still skips LLM repair entirely when every blocker requires architecture repair', async () => {
+    const localStory = storyWithBeat('You step into the room.');
+    const architecturalIssue = {
+      validator: 'ArchitecturalValidator',
+      sceneId: 'scene-a',
+      message: 'Requires episode replan.',
+    };
+    const emitted: string[] = [];
+    let llmCalls = 0;
+
+    const guardedLlm = guardLlmContractRepairForArchitecture(
+      ({ story }) => {
+        llmCalls += 1;
+        return { story, changed: true };
+      },
+      () => ({
+        kind: 'episode_replan' as const,
+        validator: 'ArchitecturalValidator',
+        sceneIds: ['scene-a'],
+        reason: 'Requires architecture.',
+        attemptBudget: 1,
+        qualityFloor: { overall: 70, voice: 70, stakes: 70, rejectDrop: 8 },
+        unsafeForProsePatch: true,
+      }) as never,
+      (message) => emitted.push(message),
+    );
+
+    const result = await guardedLlm({ story: localStory, blockingIssues: [architecturalIssue] as never });
+
+    expect(result.changed).toBe(false);
+    expect(llmCalls).toBe(0);
     expect(emitted.some((message) => message.includes('skipped this round'))).toBe(true);
   });
 

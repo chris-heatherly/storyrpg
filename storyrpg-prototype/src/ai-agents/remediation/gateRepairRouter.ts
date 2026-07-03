@@ -646,16 +646,30 @@ export class GateRepairRouter {
     const unsafeDensity = Boolean(density && isUnsafeTreatmentDensityReport(density));
     const hasTimeOrOrderCue = hasTimelineCue(issueText) || hasCrossSceneCue(issueText);
 
-    if (validator === 'ResidueObligationValidator') {
+    if (validator === 'ResidueObligationValidator' || validator === 'ObligationLedgerValidator') {
+      // ObligationLedgerValidator is the unified ledger's final-contract voice
+      // (the flip, fec133ca). Its residue-kind findings must inherit the exact
+      // routing the legacy validator had — without this branch they fell to
+      // diagnostic_stop, which starves the LLM-repair guard (the same
+      // no-router-rule shape as the outcome-stub starvation, 595c8e89).
       if (
         (this.context.generatedThroughEpisode !== undefined
           && issue.episodeNumber !== undefined
           && issue.episodeNumber > this.context.generatedThroughEpisode)
         || /\b(?:future|later episode|outside|not due|partial(?:-|\s*)season|defer)\b/i.test(issueText)
       ) {
-        return directive('partial_scope_defer', issue, 'Residue payoff is outside the generated episode slice.');
+        return directive('partial_scope_defer', issue, 'Obligation payoff is outside the generated episode slice.');
       }
-      return directive('deterministic_cleanup', issue, 'Residue obligation is due in generated scope and can be handled mechanically first.');
+      if (/\bresidue obligation\b/i.test(issueText) || issue.type === 'planned_residue_debt') {
+        return directive('deterministic_cleanup', issue, 'Residue obligation is due in generated scope and can be handled mechanically first.');
+      }
+      if (/\btreatment seed\b|\bseed obligation\b/i.test(issueText)) {
+        return directive('blueprint_rebalance', issue, 'Seed obligation needs a setFlag consequence wired in its owning episode — consequence architecture, not prose.');
+      }
+      // Thread/callback debts have no mechanical or prose-local repair yet;
+      // keep them advisory-only (see FinalStoryContractValidator) — if one
+      // arrives here as a blocker, stop loudly rather than spend LLM budget.
+      return directive('diagnostic_stop', issue, 'Thread/callback obligation debt has no repair handler; promotion to blocking requires one first.');
     }
 
     if (validator === 'ContinuityChecker') {

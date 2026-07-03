@@ -727,3 +727,47 @@ describe('Bite Me regression harness', () => {
     expect(s11?.overloadReasons.join(' ')).toMatch(/hard units|time cue/);
   });
 });
+
+describe('ObligationLedgerValidator routing (unified-ledger flip, fec133ca)', () => {
+  // The flip changed the validator name on residue findings from
+  // ResidueObligationValidator to ObligationLedgerValidator; without its own
+  // rule they fell to diagnostic_stop — the guard-starving no-router-rule
+  // shape (595c8e89) all over again.
+  it('routes due residue-kind findings to deterministic cleanup like the legacy validator', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'ObligationLedgerValidator',
+      'residue obligation "flag:impressed_victor_ep1" (Kylie showed teeth during the rescue.) was planned to originate in episode 1 but no choice creates its flag.',
+    ));
+    expect(route.kind).toBe('deterministic_cleanup');
+  });
+
+  it('defers obligations outside the generated slice', () => {
+    const router = new GateRepairRouter({ generatedThroughEpisode: 1 });
+    const route = router.routeIssue(issue(
+      'ObligationLedgerValidator',
+      'residue obligation "flag:velvet_debt" is planned to pay off in a later episode outside this slice.',
+      's2-1',
+      3,
+    ));
+    expect(route.kind).toBe('partial_scope_defer');
+  });
+
+  it('routes seed obligations to blueprint rebalance (consequence wiring, not prose)', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'ObligationLedgerValidator',
+      'treatment seed "seed:drank_dark_negroni" has no setFlag consequence in its owning episode.',
+    ));
+    expect(route.kind).toBe('blueprint_rebalance');
+  });
+
+  it('stops loudly on thread/callback debts until a repair handler exists', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'ObligationLedgerValidator',
+      'thread obligation "thread:midnight-identity" was planted in episode 1 with no payoff by its window.',
+    ));
+    expect(route.kind).toBe('diagnostic_stop');
+  });
+});

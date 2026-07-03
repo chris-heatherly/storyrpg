@@ -15,6 +15,7 @@ import {
 } from '../codec/storyCodec';
 import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
+import { resolveMemoryConfig } from '../config';
 import { compileEpisode } from '../pipeline/episodeCompiler';
 import { isProviderQuotaError, PROVIDER_QUOTA_FAILURE_KIND } from '../utils/providerErrors';
 import { anthropicCreditPreflight } from './providerPreflight';
@@ -421,6 +422,23 @@ async function main() {
   const payloadRaw = await fs.readFile(payloadPath, 'utf8');
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);
+
+  // Memory (Cognee / file) is a server-only concern: the client bundle that
+  // builds `payload.config` only carries EXPO_PUBLIC_* env, so its memory block
+  // never sees COGNEE_* or the server MEMORY_DIR. Re-resolve it here from the
+  // worker's own process.env (which inherits the proxy's .env) so UI-enqueued
+  // jobs use the same memory provider as CLI/loadConfig runs. The one client
+  // field that survives is the memory-LLM preference: an explicit `custom`
+  // choice from the generator UX beats the env pin; otherwise the env/mirror
+  // default applies (mirror = follow the narrative model at run time).
+  if (payload.config && typeof payload.config === 'object') {
+    const clientMemoryLlm = payload.config.memory?.llm;
+    const serverMemory = resolveMemoryConfig(process.env);
+    payload.config.memory = clientMemoryLlm?.mode === 'custom' && clientMemoryLlm.provider
+      ? { ...serverMemory, llm: clientMemoryLlm }
+      : serverMemory;
+  }
+
   activeResultPath = payload.resultPath;
   markWorkerStatus({
     mode: payload.mode,

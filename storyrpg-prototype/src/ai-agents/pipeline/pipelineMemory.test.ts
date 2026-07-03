@@ -7,9 +7,10 @@ import {
   CogneeHttpMemoryProvider,
   PipelineMemory,
   renderPipelineMemoryPacket,
+  resolveCogneeLlmTarget,
   type PipelineMemoryPacket,
 } from './pipelineMemory';
-import type { PipelineConfig } from '../config';
+import { resolveMemoryConfig, type PipelineConfig } from '../config';
 
 function makeConfig(overrides: Record<string, unknown> = {}): PipelineConfig {
   return {
@@ -78,7 +79,11 @@ describe('CogneeHttpMemoryProvider', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/v1/add');
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
-    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer test-key' });
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ 'X-Api-Key': 'test-key' });
+    // /add requires `data` as an uploaded file, not a text field.
+    const addBody = fetchMock.mock.calls[0][1].body as FormData;
+    expect(addBody.get('data')).toBeInstanceOf(Blob);
+    expect(addBody.get('run_in_background')).toBe('true');
     expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/api/v1/cognify');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
       datasets: ['storyrpg-validator-history'],
@@ -207,5 +212,127 @@ describe('PipelineMemory', () => {
     expect(evidence.facts).toEqual([]);
     expect(evidence.priorFailures).toHaveLength(1);
     expect(evidence.retrievalWarnings.join('\n')).toContain('corroborated against current typed artifacts');
+  });
+});
+
+describe('resolveMemoryConfig', () => {
+  it('enables memory with the file default when no provider env is set (anthropic default LLM)', () => {
+    const config = resolveMemoryConfig({});
+    expect(config.enabled).toBe(true);
+    expect(config.provider).toBeUndefined();
+    expect(config.baseUrl).toBeUndefined();
+  });
+
+  it('routes to Cognee when STORYRPG_MEMORY_PROVIDER + COGNEE_BASE_URL are present', () => {
+    const config = resolveMemoryConfig({
+      STORYRPG_MEMORY_PROVIDER: 'cognee',
+      COGNEE_BASE_URL: 'http://cognee:8000',
+      COGNEE_API_KEY: 'ck_test',
+    });
+    expect(config.enabled).toBe(true);
+    expect(config.provider).toBe('cognee');
+    expect(config.baseUrl).toBe('http://cognee:8000');
+    expect(config.apiKey).toBe('ck_test');
+  });
+
+  it('disables memory when explicitly turned off', () => {
+    expect(resolveMemoryConfig({ STORYRPG_MEMORY_PROVIDER: 'disabled' }).enabled).toBe(false);
+  });
+
+  it('defaults the extraction LLM to mirror; STORYRPG_MEMORY_LLM_* pins a custom one', () => {
+    expect(resolveMemoryConfig({}).llm).toEqual({ mode: 'mirror' });
+    expect(resolveMemoryConfig({
+      STORYRPG_MEMORY_LLM_PROVIDER: 'anthropic',
+      STORYRPG_MEMORY_LLM_MODEL: 'claude-sonnet-4-6',
+      STORYRPG_MEMORY_LLM_API_KEY: 'k',
+    }).llm).toEqual({ mode: 'custom', provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' });
+  });
+});
+
+describe('resolveCogneeLlmTarget', () => {
+  const withAgents = (agents: Record<string, unknown>, memoryLlm?: unknown): PipelineConfig => ({
+    ...makeConfig(memoryLlm ? { llm: memoryLlm } : {}),
+    agents,
+  } as unknown as PipelineConfig);
+
+  it('mirrors the narrative model (SceneWriter) and applies the gemini/ litellm route prefix', () => {
+    const target = resolveCogneeLlmTarget(withAgents({
+      sceneWriter: { provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'gem-key' },
+      storyArchitect: { provider: 'openai', model: 'gpt-4o', apiKey: 'oa-key' },
+    }));
+    expect(target).toEqual({ provider: 'gemini', model: 'gemini/gemini-2.5-pro', apiKey: 'gem-key' });
+  });
+
+  it('prefers an explicit custom memory.llm over the narrative model', () => {
+    const target = resolveCogneeLlmTarget(withAgents(
+      { sceneWriter: { provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'gem-key' } },
+      { mode: 'custom', provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'ant-key' },
+    ));
+    expect(target).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'ant-key' });
+  });
+
+  it('returns null for providers Cognee does not support (openrouter)', () => {
+    const target = resolveCogneeLlmTarget(withAgents({
+      sceneWriter: { provider: 'openrouter', model: 'meta-llama/llama-3-70b', apiKey: 'or-key' },
+    }));
+    expect(target).toBeNull();
+  });
+});
+
+describe('CogneeHttpMemoryProvider LLM settings sync', () => {
+  it('POSTs the LLM target to /settings once, before the first memory operation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => '', json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new CogneeHttpMemoryProvider(
+      makeConfig().memory!,
+      { provider: 'gemini', model: 'gemini/gemini-2.5-flash', apiKey: 'gem-key' },
+    );
+    await provider.remember({ kind: 'generation', title: 'A', text: 'a' });
+    await provider.remember({ kind: 'generation', title: 'B', text: 'b' });
+
+    const settingsCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/settings'));
+    expect(settingsCalls).toHaveLength(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/v1/settings');
+    expect(JSON.parse(settingsCalls[0][1].body)).toEqual({
+      llm: { provider: 'gemini', model: 'gemini/gemini-2.5-flash', apiKey: 'gem-key' },
+    });
+  });
+
+  it('fails open: a settings sync error does not block memory writes', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('settings down'))
+      .mockResolvedValue({ ok: true, text: async () => '', json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new CogneeHttpMemoryProvider(
+      makeConfig().memory!,
+      { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+    );
+    await expect(provider.remember({ kind: 'generation', title: 'A', text: 'a' })).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/v1/add'))).toBe(true);
+  });
+});
+
+describe('FileMemoryProvider recall (bucket round-trip)', () => {
+  it('recalls the records that remember() actually wrote', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storyrpg-mem-'));
+    try {
+      const config = makeConfig({ provider: 'file', baseUrl: undefined, directory: dir });
+      const memory = new PipelineMemory({ config });
+
+      await memory.writeRecord({
+        kind: 'generation',
+        title: 'Round Trip Log',
+        text: 'branch fan-out collapsed at scene-3',
+      });
+
+      const packet = await memory.recallPacket();
+      expect(packet).not.toBeNull();
+      expect(packet!.sourceSnippets.join('\n')).toContain('branch fan-out collapsed at scene-3');
+      expect(packet!.datasetNames).toContain('file:pipeline-memories');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

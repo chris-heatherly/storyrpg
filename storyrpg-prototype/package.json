@@ -11,7 +11,7 @@
     "reader:export": "STORYRPG_APP_TARGET=reader npx expo export --platform web --output-dir dist-reader",
     "reader:export:with-content": "npm run reader:export && READER_CONTENT_OUTPUT_DIR=dist-reader/reader-content npm run content:reader:export",
     "reader:typecheck": "tsc -p tsconfig.reader.json --noEmit",
-    "generator:web": "STORYRPG_APP_TARGET=generator expo start --web --port 8082",
+    "generator:web": "node scripts/ensure-cognee.mjs && STORYRPG_APP_TARGET=generator expo start --web --port 8082",
     "generator:typecheck": "tsc -p tsconfig.generator.json --noEmit",
     "generator:export:internal": "STORYRPG_APP_TARGET=generator npx expo export --platform web --output-dir dist-generator-internal",
     "proxy": "node proxy-server.js",

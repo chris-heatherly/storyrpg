@@ -73,7 +73,7 @@ import { SeasonPlannerAgent } from '../ai-agents/agents/SeasonPlannerAgent';
 import { useImageJobStore } from '../stores/imageJobStore';
 import { useVideoJobStore } from '../stores/videoJobStore';
 import { useGenerationJobStore, PipelineEventData } from '../stores/generationJobStore';
-import { useGeneratorSettings } from '../hooks/useGeneratorSettings';
+import { useGeneratorSettings, type GeneratorMemoryLlmProvider } from '../hooks/useGeneratorSettings';
 import { useAvailableModels } from '../hooks/useAvailableModels';
 import { ModelDropdown } from '../components/ModelDropdown';
 import { ModelTaskSheet } from '../components/ModelTaskSheet';
@@ -503,6 +503,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     imageLlmModel,
     videoLlmProvider,
     videoLlmModel,
+    memoryLlmProvider,
+    memoryLlmModel,
     apiKey,
     openaiApiKey,
     openRouterApiKey,
@@ -534,6 +536,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     handleImageLlmModelChange,
     handleVideoLlmProviderChange,
     handleVideoLlmModelChange,
+    handleMemoryLlmProviderChange,
+    handleMemoryLlmModelChange,
     handleGenerationModeChange,
     handleAtlasCloudModelChange,
     handleGeminiSettingsChange,
@@ -1619,6 +1623,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     imageLlmModel,
     videoLlmProvider,
     videoLlmModel,
+    memoryLlmProvider,
+    memoryLlmModel,
     apiKey,
     openaiApiKey,
     openRouterApiKey,
@@ -3237,6 +3243,32 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                     <Text style={styles.advancedSettingsHint}>OPEN</Text>
                     <ChevronRight size={16} color={TERMINAL.colors.muted} style={{ marginLeft: 8 }} />
                   </TouchableOpacity>
+                </View>
+
+                <View style={styles.configItem}>
+                  <Text style={styles.configLabel}>MEMORY GRAPH LLM</Text>
+                  <Text style={styles.configHint}>
+                    Model Cognee uses to extract the pipeline-memory knowledge graph. Mirror follows the narrative model above, even when you change it later.
+                  </Text>
+                  <SegmentedControl<GeneratorMemoryLlmProvider>
+                    options={[
+                      { value: 'mirror', label: 'Mirror' },
+                      { value: 'anthropic', label: 'Claude' },
+                      { value: 'openai', label: 'OpenAI' },
+                      { value: 'gemini', label: 'Gemini' },
+                    ]}
+                    value={memoryLlmProvider}
+                    onChange={handleMemoryLlmProviderChange}
+                    ariaLabel="Memory graph LLM"
+                  />
+                  {memoryLlmProvider !== 'mirror' && (
+                    <ModelDropdown
+                      options={availableModels[memoryLlmProvider].map(o => ({ value: o.value, label: o.label, subtitle: o.value }))}
+                      value={memoryLlmModel}
+                      onSelect={handleMemoryLlmModelChange}
+                      placeholder="Select model…"
+                    />
+                  )}
                 </View>
 
                 <View style={styles.configItem}>

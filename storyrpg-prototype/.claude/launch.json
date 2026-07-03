@@ -4,7 +4,10 @@
     {
       "name": "reader",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "reader:web"],
+      "runtimeArgs": [
+        "run",
+        "reader:web"
+      ],
       "port": 8081
     }
   ]

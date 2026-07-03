@@ -993,12 +993,28 @@ export interface PipelineConfig {
   qualityCouncil?: QualityCouncilConfig;
 }
 
+/**
+ * Which LLM Cognee uses for graph extraction. Default mode is `mirror`: the
+ * pipeline pushes the narrative model (the SceneWriter agent's provider/model/
+ * key at run time) to Cognee's runtime settings API, so changing the narrative
+ * model in the generator automatically retargets memory extraction. `custom`
+ * pins an explicit provider/model instead (generator setting or
+ * STORYRPG_MEMORY_LLM_* env).
+ */
+export interface MemoryLlmConfig {
+  mode: 'mirror' | 'custom';
+  provider?: string;
+  model?: string;
+  apiKey?: string;
+}
+
 export interface MemoryConfig {
   enabled: boolean;
   provider?: 'cognee' | 'file' | 'disabled';
   directory?: string; // defaults to ./pipeline-memories
   baseUrl?: string;
   apiKey?: string;
+  llm?: MemoryLlmConfig;
   projectDataset?: string;
   runDatasetPrefix?: string;
   validatorDataset?: string;
@@ -1045,6 +1061,57 @@ const defaultValidationConfig: ValidationConfig = {
 };
 
 // Default configuration - override with environment variables
+/**
+ * Resolve the generator-side memory (Cognee / file) config from an env bag.
+ *
+ * Kept separate from {@link loadConfig} so server entrypoints (the worker) can
+ * re-resolve the memory block from their own `process.env` — the client bundle
+ * only carries `EXPO_PUBLIC_*`, so a UI-built config never sees `COGNEE_*` or
+ * the server `MEMORY_DIR`. Provider secrets stay server-side by construction.
+ */
+export function resolveMemoryConfig(env: Record<string, string | undefined>): MemoryConfig {
+  const defaultLlmProvider = env.EXPO_PUBLIC_LLM_PROVIDER || env.LLM_PROVIDER || 'anthropic';
+  // Ops-level pin for Cognee's extraction LLM. Without it the pipeline mirrors
+  // the narrative model at run time (see MemoryLlmConfig).
+  const memoryLlm: MemoryLlmConfig = env.STORYRPG_MEMORY_LLM_PROVIDER
+    ? {
+        mode: 'custom',
+        provider: env.STORYRPG_MEMORY_LLM_PROVIDER,
+        model: env.STORYRPG_MEMORY_LLM_MODEL || undefined,
+        apiKey: env.STORYRPG_MEMORY_LLM_API_KEY || undefined,
+      }
+    : { mode: 'mirror' };
+  return {
+    llm: memoryLlm,
+    enabled:
+      env.STORYRPG_MEMORY_PROVIDER !== 'disabled' &&
+      (
+        Boolean(env.STORYRPG_MEMORY_PROVIDER) ||
+        Boolean(env.COGNEE_BASE_URL) ||
+        env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' ||
+        env.CLAUDE_MEMORY === 'true' ||
+        defaultLlmProvider === 'anthropic'
+      ),
+    provider: (env.STORYRPG_MEMORY_PROVIDER === 'cognee' || env.STORYRPG_MEMORY_PROVIDER === 'file' || env.STORYRPG_MEMORY_PROVIDER === 'disabled')
+      ? env.STORYRPG_MEMORY_PROVIDER
+      : undefined,
+    directory: env.EXPO_PUBLIC_MEMORY_DIR || env.MEMORY_DIR || undefined,
+    baseUrl: env.COGNEE_BASE_URL || undefined,
+    apiKey: env.COGNEE_API_KEY || undefined,
+    projectDataset: env.COGNEE_PROJECT_DATASET || 'storyrpg-project',
+    runDatasetPrefix: env.COGNEE_RUN_DATASET_PREFIX || 'storyrpg-run',
+    validatorDataset: env.COGNEE_VALIDATOR_DATASET || 'storyrpg-validator-history',
+    recallEnabled: env.STORYRPG_MEMORY_RECALL !== '0',
+    writeEnabled: env.STORYRPG_MEMORY_WRITE !== '0',
+    cognifyEnabled: env.STORYRPG_MEMORY_COGNIFY !== '0',
+    maxPromptChars: Number.parseInt(env.STORYRPG_MEMORY_MAX_PROMPT_CHARS || '6000', 10) || 6000,
+    timeoutMs: Number.parseInt(env.STORYRPG_MEMORY_TIMEOUT_MS || '8000', 10) || 8000,
+    failOpen: env.STORYRPG_MEMORY_FAIL_OPEN !== '0',
+    pipelineOptimization: true,
+    characterKnowledge: true,
+  };
+}
+
 export function loadConfig(): PipelineConfig {
   const env = typeof process !== 'undefined' ? process.env : {} as any;
   const openaiSettingsFromEnv: Required<OpenAISettings> = {
@@ -1295,34 +1362,7 @@ export function loadConfig(): PipelineConfig {
       enableCharacterArcTracking:
         (env.EXPO_PUBLIC_STORYRPG_CHARACTER_ARC_TRACKING ?? env.STORYRPG_CHARACTER_ARC_TRACKING) !== '0',
     },
-    memory: {
-      enabled:
-        env.STORYRPG_MEMORY_PROVIDER !== 'disabled' &&
-        (
-          Boolean(env.STORYRPG_MEMORY_PROVIDER) ||
-          Boolean(env.COGNEE_BASE_URL) ||
-          env.EXPO_PUBLIC_CLAUDE_MEMORY === 'true' ||
-          env.CLAUDE_MEMORY === 'true' ||
-          defaultConfig.provider === 'anthropic'
-        ),
-      provider: (env.STORYRPG_MEMORY_PROVIDER === 'cognee' || env.STORYRPG_MEMORY_PROVIDER === 'file' || env.STORYRPG_MEMORY_PROVIDER === 'disabled')
-        ? env.STORYRPG_MEMORY_PROVIDER
-        : undefined,
-      directory: env.EXPO_PUBLIC_MEMORY_DIR || env.MEMORY_DIR || undefined,
-      baseUrl: env.COGNEE_BASE_URL || undefined,
-      apiKey: env.COGNEE_API_KEY || undefined,
-      projectDataset: env.COGNEE_PROJECT_DATASET || 'storyrpg-project',
-      runDatasetPrefix: env.COGNEE_RUN_DATASET_PREFIX || 'storyrpg-run',
-      validatorDataset: env.COGNEE_VALIDATOR_DATASET || 'storyrpg-validator-history',
-      recallEnabled: env.STORYRPG_MEMORY_RECALL !== '0',
-      writeEnabled: env.STORYRPG_MEMORY_WRITE !== '0',
-      cognifyEnabled: env.STORYRPG_MEMORY_COGNIFY !== '0',
-      maxPromptChars: Number.parseInt(env.STORYRPG_MEMORY_MAX_PROMPT_CHARS || '6000', 10) || 6000,
-      timeoutMs: Number.parseInt(env.STORYRPG_MEMORY_TIMEOUT_MS || '8000', 10) || 8000,
-      failOpen: env.STORYRPG_MEMORY_FAIL_OPEN !== '0',
-      pipelineOptimization: true,
-      characterKnowledge: true,
-    },
+    memory: resolveMemoryConfig(env),
   };
 }
 

@@ -72,6 +72,8 @@ export const GENERATOR_STORAGE_KEYS = {
   imageLlmModel: '@storyrpg_image_llm_model',
   videoLlmProvider: '@storyrpg_video_llm_provider',
   videoLlmModel: '@storyrpg_video_llm_model',
+  memoryLlmProvider: '@storyrpg_memory_llm_provider',
+  memoryLlmModel: '@storyrpg_memory_llm_model',
   generationMode: '@storyrpg_generation_mode',
   geminiApiKey: '@storyrpg_gemini_api_key',
   atlasCloudApiKey: '@storyrpg_atlas_cloud_api_key',
@@ -92,6 +94,17 @@ export const GENERATOR_STORAGE_KEYS = {
 
 function isGeneratorLlmProvider(value: string | null | undefined): value is GeneratorLlmProvider {
   return value === 'anthropic' || value === 'openai' || value === 'gemini' || value === 'openrouter';
+}
+
+/**
+ * The Cognee memory-graph LLM picker. `mirror` (the default) follows whatever
+ * the narrative model is at run time. OpenRouter is excluded because Cognee's
+ * settings API has no openrouter provider.
+ */
+export type GeneratorMemoryLlmProvider = 'mirror' | 'anthropic' | 'openai' | 'gemini';
+
+function isGeneratorMemoryLlmProvider(value: string | null | undefined): value is GeneratorMemoryLlmProvider {
+  return value === 'mirror' || value === 'anthropic' || value === 'openai' || value === 'gemini';
 }
 
 /**
@@ -184,6 +197,8 @@ interface ProxySettingsShape {
   imageLlmModel?: string;
   videoLlmProvider?: string;
   videoLlmModel?: string;
+  memoryLlmProvider?: string;
+  memoryLlmModel?: string;
   generationMode?: string;
   imageProvider?: string;
   artStyle?: string;
@@ -244,6 +259,8 @@ export function useGeneratorSettings() {
   const [imageLlmModel, setImageLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
   const [videoLlmProvider, setVideoLlmProvider] = useState<GeneratorLlmProvider>(DEFAULT_LLM_PROVIDER);
   const [videoLlmModel, setVideoLlmModel] = useState<string>(DEFAULT_LLM_MODELS[DEFAULT_LLM_PROVIDER]);
+  const [memoryLlmProvider, setMemoryLlmProvider] = useState<GeneratorMemoryLlmProvider>('mirror');
+  const [memoryLlmModel, setMemoryLlmModel] = useState<string>('');
   const [apiKey, setApiKey] = useState('');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openRouterApiKey, setOpenRouterApiKey] = useState('');
@@ -288,6 +305,15 @@ export function useGeneratorSettings() {
       const vp: GeneratorLlmProvider = isGeneratorLlmProvider(ps.videoLlmProvider) ? ps.videoLlmProvider : p;
       setVideoLlmProvider(vp);
       setVideoLlmModel(ps.videoLlmModel || DEFAULT_LLM_MODELS[vp]);
+
+      if (isGeneratorMemoryLlmProvider(ps.memoryLlmProvider)) {
+        setMemoryLlmProvider(ps.memoryLlmProvider);
+        setMemoryLlmModel(
+          ps.memoryLlmProvider === 'mirror'
+            ? ''
+            : ps.memoryLlmModel || DEFAULT_LLM_MODELS[ps.memoryLlmProvider],
+        );
+      }
 
       if (ps.generationMode === 'strict' || ps.generationMode === 'advisory' || ps.generationMode === 'disabled') {
         setGenerationMode(ps.generationMode);
@@ -394,6 +420,8 @@ export function useGeneratorSettings() {
           storedImageLlmModel,
           storedVideoLlmProvider,
           storedVideoLlmModel,
+          storedMemoryLlmProvider,
+          storedMemoryLlmModel,
           storedGeminiKey,
           storedAtlasKey,
           storedAtlasModel,
@@ -418,6 +446,8 @@ export function useGeneratorSettings() {
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.imageLlmModel),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.videoLlmProvider),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.videoLlmModel),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.memoryLlmProvider),
+          AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.memoryLlmModel),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.geminiApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.atlasCloudApiKey),
           AsyncStorage.getItem(GENERATOR_STORAGE_KEYS.atlasCloudModel),
@@ -474,6 +504,15 @@ export function useGeneratorSettings() {
                 ? resolvedLlmModel
                 : DEFAULT_LLM_MODELS[resolvedVideoProvider]
           );
+
+          if (isGeneratorMemoryLlmProvider(storedMemoryLlmProvider)) {
+            setMemoryLlmProvider(storedMemoryLlmProvider);
+            setMemoryLlmModel(
+              storedMemoryLlmProvider === 'mirror'
+                ? ''
+                : resolveModelForProvider(storedMemoryLlmProvider, storedMemoryLlmModel),
+            );
+          }
 
           if (storedAtlasModel) setAtlasCloudModel(storedAtlasModel);
 
@@ -610,6 +649,35 @@ export function useGeneratorSettings() {
       await saveValue(GENERATOR_STORAGE_KEYS.imageLlmModel, model.trim() ? model.trim() : null);
     } catch (error) {
       log.debug('Failed to save image LLM model:', error);
+    }
+  }, []);
+
+  const handleMemoryLlmProviderChange = useCallback(async (provider: GeneratorMemoryLlmProvider) => {
+    setMemoryLlmProvider(provider);
+    const nextModel = provider === 'mirror'
+      ? ''
+      : (FALLBACK_MODEL_OPTIONS[provider].map((option) => option.value).includes(memoryLlmModel.trim())
+          ? memoryLlmModel
+          : DEFAULT_LLM_MODELS[provider]);
+    if (nextModel !== memoryLlmModel) {
+      setMemoryLlmModel(nextModel);
+    }
+    patchProxySettings({ memoryLlmProvider: provider, memoryLlmModel: nextModel || undefined });
+    try {
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.memoryLlmProvider, provider);
+      await saveValue(GENERATOR_STORAGE_KEYS.memoryLlmModel, nextModel || null);
+    } catch (error) {
+      log.debug('Failed to save memory LLM provider:', error);
+    }
+  }, [memoryLlmModel]);
+
+  const handleMemoryLlmModelChange = useCallback(async (model: string) => {
+    setMemoryLlmModel(model);
+    patchProxySettings({ memoryLlmModel: model.trim() || undefined });
+    try {
+      await saveValue(GENERATOR_STORAGE_KEYS.memoryLlmModel, model.trim() ? model.trim() : null);
+    } catch (error) {
+      log.debug('Failed to save memory LLM model:', error);
     }
   }, []);
 
@@ -1010,6 +1078,8 @@ export function useGeneratorSettings() {
     imageLlmModel,
     videoLlmProvider,
     videoLlmModel,
+    memoryLlmProvider,
+    memoryLlmModel,
     apiKey,
     openaiApiKey,
     openRouterApiKey,
@@ -1040,6 +1110,8 @@ export function useGeneratorSettings() {
     handleImageLlmModelChange,
     handleVideoLlmProviderChange,
     handleVideoLlmModelChange,
+    handleMemoryLlmProviderChange,
+    handleMemoryLlmModelChange,
     handleGenerationModeChange,
     handleApiKeyChange,
     handleOpenaiApiKeyChange,

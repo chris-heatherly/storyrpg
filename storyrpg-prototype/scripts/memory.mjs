@@ -15,7 +15,8 @@ const runDatasetPrefix = process.env.COGNEE_RUN_DATASET_PREFIX || 'storyrpg-run'
 function headers(json = true) {
   const h = {};
   if (json) h['Content-Type'] = 'application/json';
-  if (apiKey) h.Authorization = `Bearer ${apiKey}`;
+  // Cognee authenticates minted API keys via `X-Api-Key` (Bearer is for JWTs).
+  if (apiKey) h['X-Api-Key'] = apiKey;
   return h;
 }
 
@@ -37,10 +38,11 @@ async function readIfExists(file) {
 
 async function addText(dataset, title, text, nodeSet = []) {
   const body = new FormData();
-  body.append('data', `# ${title}\n\n${text}`);
+  // /add expects `data` as uploaded file(s), not a text field.
+  body.append('data', new Blob([`# ${title}\n\n${text}`], { type: 'text/markdown' }), `${slugify(title)}.md`);
   body.append('datasetName', dataset);
   for (const node of nodeSet) body.append('node_set', node);
-  body.append('run_in_background', 'false');
+  body.append('run_in_background', 'true');
   const res = await fetch(endpoint('add'), {
     method: 'POST',
     headers: headers(false),
@@ -155,7 +157,9 @@ async function ask(args) {
 }
 
 async function health() {
-  const res = await fetch(endpoint('health'), { headers: headers(false) });
+  // Cognee serves health at the root (/health), NOT under /api/v1 (where the
+  // add/cognify/search data endpoints live).
+  const res = await fetch(`${baseUrl}/health`, { headers: headers(false) });
   if (!res.ok) throw new Error(`Cognee health failed: ${res.status} ${await res.text()}`);
   console.log(`Cognee healthy at ${baseUrl}`);
 }

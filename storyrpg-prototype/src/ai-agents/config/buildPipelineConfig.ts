@@ -40,6 +40,13 @@ export interface BuildPipelineConfigInput {
   videoLlmProvider: GeneratorLlmProvider;
   videoLlmModel: string;
   /**
+   * Cognee memory-graph LLM. `mirror` (default when omitted) makes memory
+   * extraction follow the narrative model at run time; a concrete provider
+   * pins it explicitly. OpenRouter is excluded (Cognee doesn't support it).
+   */
+  memoryLlmProvider?: 'mirror' | Exclude<GeneratorLlmProvider, 'openrouter'>;
+  memoryLlmModel?: string;
+  /**
    * Per-task model assignments (model-family presets + overrides). When present,
    * each pipeline role gets its own provider/model. When omitted, the legacy
    * single-model fields above are used (narrative roles → llmProvider/llmModel,
@@ -269,6 +276,26 @@ export function buildPipelineConfig(
       videoDirector: buildAgentConfig('video', { maxTokens: 8192, temperature: 0.7 }),
       ...councilAgentConfigs,
     },
+    // Only the memory-LLM preference travels from the client; the worker
+    // re-resolves the rest of the memory block (datasets, Cognee URL/key) from
+    // server env and honors an explicit `custom` choice over its own default.
+    // `enabled: false` keeps client-direct (non-worker) runs memoryless, as
+    // they were before this field existed.
+    ...(input.memoryLlmProvider && input.memoryLlmProvider !== 'mirror'
+      ? {
+          memory: {
+            enabled: false,
+            pipelineOptimization: false,
+            characterKnowledge: false,
+            llm: {
+              mode: 'custom' as const,
+              provider: input.memoryLlmProvider,
+              model: getScopedLlmModel(input.memoryLlmProvider, input.memoryLlmModel || ''),
+              apiKey: getScopedLlmApiKey(input.memoryLlmProvider, input),
+            },
+          },
+        }
+      : {}),
     validation: {
       enabled: input.generationMode !== 'disabled',
       mode: input.generationMode,

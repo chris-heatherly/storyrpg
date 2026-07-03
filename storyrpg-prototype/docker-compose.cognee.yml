@@ -7,7 +7,22 @@ services:
     env_file:
       - .env
     environment:
-      - LLM_API_KEY=${LLM_API_KEY:-}
+      # BOOT FALLBACK ONLY. At run time the pipeline pushes the narrative
+      # model (or the generator's explicit Memory Graph LLM setting) to
+      # Cognee's /api/v1/settings before the first memory operation, so the
+      # extraction LLM follows the narrative model automatically. These env
+      # values only cover operations that happen before any pipeline sync
+      # (e.g. scripts/memory.mjs seeding on a fresh volume).
+      - LLM_PROVIDER=anthropic
+      - LLM_MODEL=${EXPO_PUBLIC_LLM_MODEL:-claude-sonnet-4-6}
+      - LLM_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Anthropic has no embeddings endpoint and this image doesn't bundle
+      # fastembed, so embeddings run on Gemini (hosted). Only the LLM tracks the
+      # narrative model; embeddings are just a vector source.
+      - EMBEDDING_PROVIDER=gemini
+      - EMBEDDING_MODEL=gemini/gemini-embedding-001
+      - EMBEDDING_DIMENSIONS=3072
+      - EMBEDDING_API_KEY=${EXPO_PUBLIC_GEMINI_API_KEY:-}
     volumes:
       - cognee-data:/app/.cognee
 

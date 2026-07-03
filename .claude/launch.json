@@ -4,14 +4,42 @@
     {
       "name": "reader",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "storyrpg-prototype", "run", "reader:web"],
+      "runtimeArgs": [
+        "--prefix",
+        "storyrpg-prototype",
+        "run",
+        "reader:web"
+      ],
       "port": 8081
     },
     {
       "name": "generator",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "storyrpg-prototype", "run", "generator:web"],
+      "runtimeArgs": [
+        "--prefix",
+        "storyrpg-prototype",
+        "run",
+        "generator:web"
+      ],
       "port": 8082
+    },
+    {
+      "name": "generator-8083",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd storyrpg-prototype && node scripts/ensure-cognee.mjs && STORYRPG_APP_TARGET=generator npx expo start --web --port 8083"
+      ],
+      "port": 8083
+    },
+    {
+      "name": "generator-8084",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd storyrpg-prototype && node scripts/ensure-cognee.mjs && STORYRPG_APP_TARGET=generator npx expo start --web --port 8084"
+      ],
+      "port": 8084
     }
   ]
 }

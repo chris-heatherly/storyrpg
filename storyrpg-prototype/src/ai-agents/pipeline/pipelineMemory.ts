@@ -7,7 +7,7 @@
  * authoritative.
  */
 
-import { PipelineConfig, type MemoryConfig } from '../config';
+import { PipelineConfig, type MemoryConfig, type MemoryLlmConfig } from '../config';
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
 import type {
   PipelineFactRecord,
@@ -368,6 +368,34 @@ function normalizeSearchResults(payload: unknown): string[] {
   return snippets.filter((s) => s.trim().length > 0);
 }
 
+/**
+ * NodeMemoryStore `view` returns a directory listing whose entries are
+ * `<size>\t<path>` lines, and file bodies prefixed with a header line plus
+ * per-line `<lineNo>\t<content>`. These helpers recover the raw paths/content
+ * so the file fallback can enumerate the buckets remember() actually writes.
+ */
+function parseMemoryDirListing(listing: string, bucket: string): string[] {
+  return listing
+    .split('\n')
+    .map((line) => {
+      const idx = line.indexOf('\t');
+      return idx >= 0 ? line.slice(idx + 1).trim() : '';
+    })
+    .filter((entry) => entry.endsWith('.md') && entry.startsWith(`${bucket}/`));
+}
+
+function stripMemoryViewFormatting(viewOutput: string): string {
+  const firstNewline = viewOutput.indexOf('\n');
+  const body = firstNewline >= 0 ? viewOutput.slice(firstNewline + 1) : viewOutput;
+  return body
+    .split('\n')
+    .map((line) => {
+      const idx = line.indexOf('\t');
+      return idx >= 0 ? line.slice(idx + 1) : line;
+    })
+    .join('\n');
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -376,6 +404,54 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timer);
   }
+}
+
+export interface CogneeLlmTarget {
+  provider: string;
+  model: string;
+  apiKey?: string;
+}
+
+/** Providers Cognee's runtime settings API accepts (openrouter is not one). */
+const COGNEE_SUPPORTED_LLM_PROVIDERS = new Set(['openai', 'anthropic', 'gemini', 'mistral', 'ollama', 'bedrock']);
+
+/**
+ * Cognee routes models through litellm, which sends a bare `gemini-*` model to
+ * Vertex AI (needing google.auth, absent from the image) instead of the
+ * API-key AI-Studio route. The `gemini/` prefix forces the AI-Studio route.
+ * Anthropic/OpenAI bare model names route correctly as-is.
+ */
+function cogneeModelName(provider: string, model: string): string {
+  if (provider === 'gemini' && !model.includes('/')) return `gemini/${model}`;
+  return model;
+}
+
+/**
+ * Resolve which LLM Cognee should use for graph extraction on this run.
+ *
+ * Default (`mirror`) follows the narrative model: the SceneWriter agent's
+ * provider/model/key from the run config — so switching the narrative model in
+ * the generator retargets memory extraction with it. A `custom` memory.llm
+ * (generator setting or STORYRPG_MEMORY_LLM_* env) pins an explicit target.
+ * Returns null when nothing usable is configured (Cognee then keeps whatever
+ * its server is already set to).
+ */
+export function resolveCogneeLlmTarget(config: PipelineConfig): CogneeLlmTarget | null {
+  const memoryLlm: MemoryLlmConfig | undefined = config.memory?.llm;
+  if (memoryLlm?.mode === 'custom') {
+    if (!memoryLlm.provider || !memoryLlm.model) return null;
+    const provider = memoryLlm.provider === 'google' ? 'gemini' : memoryLlm.provider;
+    if (!COGNEE_SUPPORTED_LLM_PROVIDERS.has(provider)) return null;
+    return { provider, model: cogneeModelName(provider, memoryLlm.model), apiKey: memoryLlm.apiKey };
+  }
+  // Mirror: SceneWriter carries the narrative model; storyArchitect is the
+  // fallback for configs that omit it.
+  const agents = config.agents as Record<string, { provider?: string; model?: string; apiKey?: string } | undefined> | undefined;
+  const narrative = agents?.sceneWriter || agents?.storyArchitect;
+  if (!narrative?.provider || !narrative.model) return null;
+  const provider = narrative.provider === 'google' ? 'gemini' : narrative.provider;
+  if (!COGNEE_SUPPORTED_LLM_PROVIDERS.has(provider)) return null;
+  return { provider, model: cogneeModelName(provider, narrative.model), apiKey: narrative.apiKey };
 }
 
 class DisabledMemoryProvider implements MemoryProvider {
@@ -428,17 +504,33 @@ class FileMemoryProvider implements MemoryProvider {
 
   async recall(request: PipelineMemoryRecallRequest): Promise<PipelineMemoryPacket | null> {
     const store = this.getMemoryStoreInstance();
-    const parts: string[] = [];
-    for (const path of ['/memories/pipeline/generation-log.md', '/memories/pipeline/qa-learnings.md']) {
-      const result = await store.execute({ command: 'view', path });
-      if (!result.includes('does not exist')) parts.push(result);
-    }
-    if (parts.length === 0) return null;
+    // remember() writes generation/qa/pipeline records under /memories/pipeline
+    // and validator records under /memories/validators using title-derived
+    // slugs — so enumerate those buckets rather than reading fixed filenames
+    // that the write path never creates.
+    const buckets = ['/memories/pipeline', '/memories/validators'];
     const maxChars = request.maxPromptChars || this.config?.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS;
-    const text = parts.join('\n\n---\n\n');
+    const snippets: string[] = [];
+    let budget = maxChars;
+    for (const bucket of buckets) {
+      if (budget <= 0) break;
+      const listing = await store.execute({ command: 'view', path: bucket });
+      if (listing.includes('does not exist')) continue;
+      for (const filePath of parseMemoryDirListing(listing, bucket)) {
+        if (budget <= 0) break;
+        const raw = await store.execute({ command: 'view', path: filePath });
+        if (raw.includes('does not exist')) continue;
+        const content = stripMemoryViewFormatting(raw).trim();
+        if (!content) continue;
+        const clipped = content.length > budget ? content.slice(0, budget) : content;
+        snippets.push(`# ${filePath}\n${clipped}`);
+        budget -= clipped.length;
+      }
+    }
+    if (snippets.length === 0) return null;
     return {
-      summary: 'Local file memory fallback.',
-      sourceSnippets: [text.length > maxChars ? text.slice(0, maxChars) : text],
+      summary: `Local file memory: ${snippets.length} record(s) from pipeline/validator buckets.`,
+      sourceSnippets: snippets,
       datasetNames: ['file:pipeline-memories'],
       queryLog: [],
       warnings: [],
@@ -459,7 +551,42 @@ class FileMemoryProvider implements MemoryProvider {
 export class CogneeHttpMemoryProvider implements MemoryProvider {
   readonly name = 'cognee' as const;
 
-  constructor(private config: MemoryConfig) {}
+  private llmSyncPromise?: Promise<void>;
+
+  constructor(private config: MemoryConfig, private llmTarget?: CogneeLlmTarget | null) {}
+
+  /**
+   * Push the run's LLM target (narrative-model mirror or custom pin) to
+   * Cognee's runtime settings once per provider instance, before the first
+   * memory operation. Fail-open: on error Cognee keeps its current LLM and
+   * memory ops proceed.
+   */
+  private ensureLlmSynced(): Promise<void> {
+    if (!this.llmSyncPromise) {
+      this.llmSyncPromise = (async () => {
+        if (!this.llmTarget || !this.baseUrl) return;
+        try {
+          const response = await fetchWithTimeout(this.endpoint('settings'), {
+            method: 'POST',
+            headers: this.headers(true),
+            body: JSON.stringify({
+              llm: {
+                provider: this.llmTarget.provider,
+                model: this.llmTarget.model,
+                ...(this.llmTarget.apiKey ? { apiKey: this.llmTarget.apiKey } : {}),
+              },
+            }),
+          }, this.timeoutMs());
+          if (!response.ok) {
+            console.warn(`[Pipeline] Memory: Cognee LLM settings sync failed (${response.status}); keeping server's current LLM.`);
+          }
+        } catch (err) {
+          console.warn('[Pipeline] Memory: Cognee LLM settings sync failed; keeping server\'s current LLM.', err);
+        }
+      })();
+    }
+    return this.llmSyncPromise;
+  }
 
   private get baseUrl(): string {
     return (this.config.baseUrl || '').replace(/\/+$/, '');
@@ -468,7 +595,9 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
   private headers(json = true): Record<string, string> {
     const headers: Record<string, string> = {};
     if (json) headers['Content-Type'] = 'application/json';
-    if (this.config.apiKey) headers.Authorization = `Bearer ${this.config.apiKey}`;
+    // Cognee authenticates minted API keys via the `X-Api-Key` header; the
+    // `Authorization: Bearer` scheme is reserved for short-lived login JWTs.
+    if (this.config.apiKey) headers['X-Api-Key'] = this.config.apiKey;
     return headers;
   }
 
@@ -482,14 +611,19 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async remember(record: PipelineMemoryRecord): Promise<void> {
     if (!this.config.writeEnabled || !this.baseUrl) return;
+    await this.ensureLlmSynced();
     const dataset = record.dataset || this.config.projectDataset || DEFAULT_PROJECT_DATASET;
     const body = new FormData();
-    body.append('data', this.formatRecord(record));
+    // The /add endpoint expects `data` as uploaded file(s), not a text field.
+    const fileName = `${slugifyMemoryKey(record.title)}.md`;
+    body.append('data', new Blob([this.formatRecord(record)], { type: 'text/markdown' }), fileName);
     body.append('datasetName', dataset);
     if (record.nodeSet?.length) {
       for (const node of record.nodeSet) body.append('node_set', node);
     }
-    body.append('run_in_background', 'false');
+    // Ingest asynchronously: memory writes are advisory and must never block
+    // (or fail) generation on Cognee's LLM-backed graph extraction.
+    body.append('run_in_background', 'true');
 
     const addResponse = await fetchWithTimeout(this.endpoint('add'), {
       method: 'POST',
@@ -507,6 +641,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async recall(request: PipelineMemoryRecallRequest): Promise<PipelineMemoryPacket | null> {
     if (!this.config.recallEnabled || !this.baseUrl) return null;
+    await this.ensureLlmSynced();
     const defaults = memoryDefaults(this.config);
     const datasets = request.datasets?.length ? request.datasets : [defaults.projectDataset, defaults.validatorDataset];
     const queries = request.queries?.length ? request.queries : [
@@ -561,6 +696,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async cognify(datasets: string[], options: { background?: boolean } = {}): Promise<void> {
     if (!this.config.cognifyEnabled || !this.baseUrl || datasets.length === 0) return;
+    await this.ensureLlmSynced();
     const cognifyResponse = await fetchWithTimeout(this.endpoint('cognify'), {
       method: 'POST',
       headers: this.headers(true),
@@ -622,7 +758,7 @@ export class PipelineMemory {
     if (this.provider) return this.provider;
     const provider = resolveProvider(this.config);
     if (provider === 'cognee') {
-      this.provider = new CogneeHttpMemoryProvider(this.config!);
+      this.provider = new CogneeHttpMemoryProvider(this.config!, resolveCogneeLlmTarget(this.deps.config));
     } else if (provider === 'file') {
       this.provider = new FileMemoryProvider(this.config);
     } else {

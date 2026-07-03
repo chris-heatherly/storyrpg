@@ -286,6 +286,23 @@ describe('GateRepairRouter', () => {
     expect(route.unsafeForProsePatch).toBe(true);
   });
 
+  it('routes outcome-text stub findings to same-scene retry, never an architecture-class kind', () => {
+    // bite-me 2026-07-03T05-47-21: these findings carry NO sceneId, so they used
+    // to fall through to diagnostic_stop — architecture-class — and the LLM-repair
+    // guard withheld the outcome re-author handler from its own findings.
+    const router = new GateRepairRouter();
+    const route = router.routeIssue({
+      validator: 'OutcomeTextQualityValidator',
+      type: 'outcome_text_stub',
+      severity: 'error',
+      message: 'Choice "s1-2_b4_c1" outcomeTexts.success is the ChoiceAuthor fallback stub: "For once it goes your way, a little cleaner than you expected.". The tier was never authored.',
+      suggestion: 'Re-run ChoiceAuthor for this choice so every tier carries scene-specific prose.',
+    });
+
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.unsafeForProsePatch).toBe(false);
+  });
+
   it('routes relationship ledger target mismatches to episode replan instead of prose repair', () => {
     const router = new GateRepairRouter();
     const route = router.routeIssue(issue(

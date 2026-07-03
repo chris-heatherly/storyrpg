@@ -690,6 +690,17 @@ export class GateRepairRouter {
       return directive('blueprint_rebalance', issue, 'Relationship arc ledger issue requires relationship pacing or scene-plan correction.');
     }
 
+    if (validator === 'OutcomeTextQualityValidator') {
+      // Choice-level outcome-text findings (stub/echo/duplicate tiers) carry no
+      // sceneId, so without this rule they fell through to `diagnostic_stop` —
+      // an architecture-class kind that made the LLM-repair guard withhold the
+      // dedicated outcome re-author handler from its OWN findings (bite-me
+      // 2026-07-03T05-47-21: 6 stub blockers + 1 route blocker ⇒ repairable
+      // subset empty ⇒ stubs shipped unrepaired). They are localized,
+      // prose-only, and repaired by ChoiceAuthor.reauthorOutcomeTexts.
+      return directive('same_scene_retry', issue, 'Outcome-text finding is choice-level and repairable via the focused ChoiceAuthor re-author handler.');
+    }
+
     if (validator === 'EncounterAnchorContentValidator') {
       if (unsafeDensity) return directive('episode_replan', issue, `Encounter scene is overloaded: ${density?.overloadReasons.join('; ')}`);
       if (/\b(?:setup|surrounding|lead[ -]?in|context|before|after|transition)\b/i.test(issueText)) {

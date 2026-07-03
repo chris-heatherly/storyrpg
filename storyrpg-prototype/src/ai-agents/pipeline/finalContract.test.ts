@@ -17,6 +17,9 @@ import {
   sceneTurnWarningsForRepair,
 } from './finalContract';
 import { runFinalContractRepair, type ContractRepairReport } from '../remediation/finalContractRepair';
+import { buildOutcomeTextRepairHandler, type OutcomeReauthorAgent } from '../remediation/outcomeTextRepairHandler';
+import { GateRepairRouter } from '../remediation/gateRepairRouter';
+import { FALLBACK_OUTCOME_TEXT_POOLS } from '../constants/choiceTextFallbacks';
 
 function storyWithBeat(text: string): Story {
   return {
@@ -121,6 +124,113 @@ describe('scene-turn warning repair helpers', () => {
     expect(llmSeenIssues[0]).toEqual(['SceneTurnRealizationValidator']);
     expect(llmSeenIssues[0]).not.toContain('ArchitecturalValidator');
     expect(emitted.some((message) => message.includes('withheld from LLM repair'))).toBe(true);
+  });
+
+  it('still runs the outcome-text handler when stubs co-present with only architecture-class blockers (bite-me 2026-07-03T05-47-21)', async () => {
+    // Run shape that shipped 6 stub blockers unrepaired: every outcome_text_stub
+    // finding carries NO sceneId, and the only other blocker (route_duplicate_event)
+    // routes to blueprint_rebalance. With the REAL router, the stubs used to default
+    // to diagnostic_stop — architecture-class — so the guard's repairable subset was
+    // EMPTY and the outcome handler (which finds its own targets by walking the
+    // story) was never invoked. The router must classify stub findings as
+    // prose-repairable so their own handler still runs.
+    const stubSuccess = FALLBACK_OUTCOME_TEXT_POOLS.success[2];
+    const stubPartial = FALLBACK_OUTCOME_TEXT_POOLS.partial[2];
+    const story = {
+      id: 'story-1',
+      title: 'Story',
+      episodes: [{
+        id: 'ep1',
+        number: 1,
+        startingSceneId: 's1-2',
+        scenes: [{
+          id: 's1-2',
+          name: 'The Interview',
+          startingBeatId: 'b4',
+          beats: [{
+            id: 'b4',
+            text: 'The cafe hums around the recorder on the table between you.',
+            choices: [{
+              id: 's1-2_b4_c1',
+              text: 'Press him for the truth',
+              outcomeTexts: {
+                success: stubSuccess,
+                partial: stubPartial,
+                failure: 'He gives you a name you already had, and the door behind his eyes closes.',
+              },
+            }],
+          }],
+        }],
+      }],
+    } as unknown as Story;
+
+    const stubIssue = (choiceId: string, tier: string, stub: string) => ({
+      type: 'outcome_text_stub',
+      severity: 'error',
+      validator: 'OutcomeTextQualityValidator',
+      message: `Choice "${choiceId}" outcomeTexts.${tier} is the ChoiceAuthor fallback stub: "${stub.slice(0, 80)}". The tier was never authored.`,
+      suggestion: 'Re-run ChoiceAuthor for this choice so every tier carries scene-specific prose.',
+    });
+    const routeBlocker = {
+      type: 'route_duplicate_event',
+      severity: 'error',
+      validator: 'RouteContinuityValidator',
+      sceneId: 's1-5',
+      episodeNumber: 1,
+      message: 'Reader route s1-1 -> s1-2 -> s1-5 restages walkHome in "s1-5" after that event was already owned earlier.',
+    };
+    const failingReport: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [
+        stubIssue('s1-2_b4_c1', 'success', stubSuccess),
+        stubIssue('s1-2_b4_c1', 'partial', stubPartial),
+        routeBlocker,
+      ],
+    };
+
+    const router = new GateRepairRouter({ story, generatedThroughEpisode: 1 });
+    const reauthorCalls: string[] = [];
+    const author: OutcomeReauthorAgent = {
+      async reauthorOutcomeTexts({ needTiers }) {
+        reauthorCalls.push(needTiers.join(','));
+        return {
+          success: 'He slides the ledger across the table before he can talk himself out of it.',
+          partial: 'He gives you the where but not the who, and watches what you do with it.',
+        };
+      },
+    };
+    const emitted: string[] = [];
+    const guardedOutcomeHandler = guardLlmContractRepairForArchitecture(
+      buildOutcomeTextRepairHandler({ author: () => author, emit: (m) => emitted.push(m) }),
+      (issue) => router.routeIssue(issue),
+      (message) => emitted.push(message),
+    );
+
+    const outcome = await runFinalContractRepair({
+      story,
+      initialReport: failingReport,
+      handlers: [guardedOutcomeHandler],
+      revalidate: async () => ({ passed: false, blockingIssues: [routeBlocker] }),
+      maxAttempts: 2,
+      maxAttemptsPerIssue: 2,
+      dedupeIssueFingerprints: true,
+    });
+
+    // The outcome handler must have run and re-authored the stub tiers even
+    // though an architecture-class blocker was co-present in the same report.
+    expect(reauthorCalls).toEqual(['success,partial']);
+    expect(outcome.records.some((record) => record.rule === 'final_contract_outcome_text')).toBe(true);
+    const choice = (story as unknown as { episodes: Array<{ scenes: Array<{ beats: Array<{ choices: Array<{ outcomeTexts: Record<string, string> }> }> }> }> })
+      .episodes[0].scenes[0].beats[0].choices[0];
+    expect(choice.outcomeTexts.success).toBe('He slides the ledger across the table before he can talk himself out of it.');
+    expect(choice.outcomeTexts.partial).toBe('He gives you the where but not the who, and watches what you do with it.');
+    // Round 1: the guard withheld only the architecture-class route blocker and
+    // let the handler run. (Round 2 — where the route blocker is the ONLY issue
+    // left — correctly skips LLM repair, so assert order, not absence.)
+    const withheldAt = emitted.findIndex((message) => message.includes('withheld from LLM repair'));
+    const skippedAt = emitted.findIndex((message) => message.includes('skipped this round'));
+    expect(withheldAt).toBeGreaterThanOrEqual(0);
+    expect(skippedAt).toBeGreaterThan(withheldAt);
   });
 
   it('still skips LLM repair entirely when every blocker requires architecture repair', async () => {

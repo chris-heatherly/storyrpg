@@ -13,18 +13,32 @@ import {
 const findings: ContinuityFinding[] = [
   { severity: 'error', type: 'state_conflict', location: { sceneId: 'scene-4', beatId: 'beat-4-3' }, description: "Lysandra's blade-work wounds Vraxxan, but she is a scholar." },
   { severity: 'warning', type: 'state_conflict', location: { sceneId: 'scene-2' }, description: 'minor' },          // not error → skipped
-  { severity: 'error', type: 'missing_setup', location: { sceneId: 'scene-1' }, description: 'prop' },             // not a repairable type → skipped
+  { severity: 'error', type: 'missing_setup', location: { sceneId: 'scene-1' }, description: 'prop' },             // repairable since bite-me 2026-07-02
   { severity: 'error', type: 'impossible_knowledge', location: {}, description: 'no scene' },                       // no sceneId → skipped
 ];
 
 describe('selectRepairableContinuityFindings', () => {
-  it('keeps only error-severity prose-contradiction findings that point at a scene', () => {
+  it('keeps only error-severity scene-anchored findings', () => {
     const sel = selectRepairableContinuityFindings(findings);
-    expect(sel).toHaveLength(1);
-    expect(sel[0].location?.sceneId).toBe('scene-4');
+    expect(sel).toHaveLength(2);
+    expect(sel.map((f) => f.location?.sceneId).sort()).toEqual(['scene-1', 'scene-4']);
   });
   it('scenesNeedingRepair lists distinct scenes', () => {
-    expect(scenesNeedingRepair(findings)).toEqual(['scene-4']);
+    expect(scenesNeedingRepair(findings).sort()).toEqual(['scene-1', 'scene-4']);
+  });
+  it('treats a scene-anchored missing_setup as repairable (bite-me 2026-07-02T23-54-38)', () => {
+    const setup: ContinuityFinding[] = [
+      {
+        severity: 'error',
+        type: 'missing_setup',
+        location: { sceneId: 's1-2', beatId: 's1-2-b2' },
+        description: 'Mika is mentioned by name and speaks in s1-2-b2, but the reader has not been introduced to her on-page yet.',
+        suggestedFix: "Rephrase s1-2-b2 to introduce her as 'a friend' before naming her.",
+      },
+    ];
+    const sel = selectRepairableContinuityFindings(setup);
+    expect(sel).toHaveLength(1);
+    expect(buildContinuityRepairGuidance('s1-2', setup, [])).toContain('introduced to her on-page');
   });
   it('treats a scene-anchored timeline_error as repairable', () => {
     const timeline: ContinuityFinding[] = [

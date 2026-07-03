@@ -45,8 +45,14 @@ function reportUnmatchedRewrites(
  * `timeline_error` (e.g. an observation placed in the wrong scene relative to the
  * timeline) is scene-anchored and carries a concrete suggestedFix, so it is repaired
  * the same way — re-authoring the flagged beat to honor the corrected sequence.
+ * `missing_setup` is the same shape when it points at a scene: the judge's
+ * suggestedFix is a same-scene rephrase ("introduce her as 'a friend' before
+ * naming her") — bite-me 2026-07-02T23-54-38 aborted a QA-91 episode on one
+ * missing_setup error the repair pass classified as unrepairable and never
+ * attempted. Findings whose real fix lives in an earlier scene simply fail the
+ * re-check and the gate still holds.
  */
-const REPAIRABLE_TYPES = new Set(['state_conflict', 'impossible_knowledge', 'contradiction', 'timeline_error']);
+const REPAIRABLE_TYPES = new Set(['state_conflict', 'impossible_knowledge', 'contradiction', 'timeline_error', 'missing_setup']);
 
 /**
  * Pick repairable continuity findings: blocking-ish (error) defects of a prose

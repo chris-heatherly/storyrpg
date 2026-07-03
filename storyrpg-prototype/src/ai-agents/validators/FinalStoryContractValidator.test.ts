@@ -1826,3 +1826,56 @@ describe('FinalStoryContractValidator repeated high-pressure event gate', () => 
     ]));
   });
 });
+
+describe('unified obligation ledger at the final contract (the flip)', () => {
+  it('maps residue-kind findings to planned_residue_debt under the legacy severity policy', async () => {
+    const { CallbackLedger } = await import('../pipeline/callbackLedger');
+    const ledger = new CallbackLedger({ storyId: 's' });
+    ledger.add({
+      id: 'flag:consequence_treatment_chain_ep1_1',
+      kind: 'residue',
+      sourceEpisode: 1,
+      sourceSceneId: 's1-1',
+      sourceChoiceId: '',
+      flags: ['consequence_treatment_chain_ep1_1'],
+      summary: 'Planned residue obligation: chain ep1-1',
+      payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+    } as never);
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      callbackLedger: ledger.serialize(),
+    });
+
+    const finding = [...report.warnings, ...report.blockingIssues].find((i) => i.type === 'planned_residue_debt');
+    expect(finding).toBeDefined();
+    expect(finding?.validator).toBe('ObligationLedgerValidator');
+    expect(finding?.severity).toBe('warning'); // GATE_RESIDUE_CONSUME default-off
+    expect(finding?.message).toContain('no choice creates its flag');
+  });
+
+  it('surfaces non-residue kinds as advisory obligation_ledger_debt warnings only', async () => {
+    const { CallbackLedger } = await import('../pipeline/callbackLedger');
+    const ledger = new CallbackLedger({ storyId: 's' });
+    ledger.add({
+      id: 'thread:locked-drawer',
+      kind: 'thread',
+      sourceEpisode: 1,
+      sourceSceneId: 's1-1',
+      sourceChoiceId: '',
+      flags: [],
+      summary: 'The locked drawer',
+      payoffWindow: { minEpisode: 1, maxEpisode: 1 },
+    } as never);
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      callbackLedger: ledger.serialize(),
+    });
+
+    const finding = [...report.warnings].find((i) => i.type === 'obligation_ledger_debt');
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe('warning');
+    expect(report.blockingIssues.filter((i) => i.type === 'obligation_ledger_debt')).toHaveLength(0);
+  });
+});

@@ -11,7 +11,6 @@ import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../u
 import { findNpcPronounInconsistencies, findInternalPronounConflicts } from '../utils/npcPronounResolver';
 import { OutcomeTextQualityValidator } from './OutcomeTextQualityValidator';
 import { FlagContractValidator } from './FlagContractValidator';
-import { ResidueObligationValidator } from './ResidueObligationValidator';
 import { SentenceOpenerVarietyValidator } from './SentenceOpenerVarietyValidator';
 import { ReferencedEventPresenceValidator } from './ReferencedEventPresenceValidator';
 import { ChoiceTypePlanConformanceValidator } from './ChoiceTypePlanConformanceValidator';
@@ -42,6 +41,8 @@ import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
 import { rebalanceStoryEncounterSkills } from '../utils/encounterSkillRebalance';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
+import { CallbackLedger } from '../pipeline/callbackLedger';
+import { validateObligationLedger } from './ObligationLedgerValidator';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import {
   resolveFinalContractSeverity,
@@ -173,6 +174,7 @@ export type FinalStoryContractIssueType =
   | 'unrepaired_callback_debt'
   | 'callback_opportunity_advisory'
   | 'planned_residue_debt'
+  | 'obligation_ledger_debt'
   | 'source_role_mismatch'
   | 'partial_season_scope'
   | 'treatment_fidelity_violation'
@@ -766,34 +768,49 @@ export class FinalStoryContractValidator {
       }
     }
 
-    if (input.seasonResiduePlan?.length) {
+    // THE FLIP (audit item 2, greenlit by 3/3 parity on run
+    // bite-me_2026-07-03T04-57-59): the unified obligation ledger replaces
+    // ResidueObligationValidator's final-contract dispatch. Residue-kind
+    // findings keep the exact issue type and GATE_RESIDUE_CONSUME severity
+    // policy; the other kinds (thread/seed/callback due-unpaid) surface as
+    // advisory warnings under one notebook — their blocking promotion stays
+    // live-run-gated. (ResidueObligationValidator itself still runs in the
+    // episode-time quick-validation pass; retiring that half needs its own
+    // non-vacuous comparison.)
+    if (input.callbackLedger) {
       const blockResidue = isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final');
-      const residueValidator = new ResidueObligationValidator();
-      for (const episode of input.story.episodes || []) {
-        const result = residueValidator.validate({
-          episode,
-          seasonResiduePlan: input.seasonResiduePlan,
-          callbackLedger: input.callbackLedger,
-          episodeNumber: episode.number,
-          generatedThroughEpisode: input.generatedThroughEpisode || Math.max(...(input.story.episodes || []).map((ep) => ep.number || 0), 0),
+      try {
+        const ledger = CallbackLedger.deserialize(input.callbackLedger);
+        const generatedThrough = input.generatedThroughEpisode
+          || Math.max(...(input.story.episodes || []).map((ep) => ep.number || 0), 0);
+        const report = validateObligationLedger(ledger, {
+          episodeNumber: generatedThrough,
+          generatedThroughEpisode: generatedThrough,
         });
-        if (result.issues.length > 0) {
+        if (report.findings.length > 0) {
           console.info(
-            `[FinalStoryContract] residue contract ep${episode.number}: ` +
-            `${result.metrics.paidIncoming.length}/${result.metrics.dueIncoming.length} due paid, ` +
-            `${result.metrics.createdOutgoing.length}/${result.metrics.plannedOutgoing.length} outgoing created, ` +
-            `${result.metrics.unplannedConsequentialFlags.length} unplanned flag(s)`,
+            `[FinalStoryContract] obligation ledger: ${report.findings.length} finding(s) ` +
+            `(${report.paid} paid / ${report.open} open of ${report.totalObligations})`,
           );
         }
-        for (const issue of result.issues) {
+        const SUGGESTION_BY_KIND: Record<string, string> = {
+          residue: 'Create the planned flag via a choice consequence, or pay the due residue with acknowledgment prose in its window.',
+          thread: 'Pay off the planted thread on-page before its window closes, or re-plan the payoff episode.',
+          seed: 'Attach a setFlag consequence for the declared treatment seed in its owning episode.',
+        };
+        for (const finding of report.findings) {
+          const isResidue = finding.kind === 'residue';
           issues.push({
-            type: 'planned_residue_debt',
-            severity: blockResidue ? 'error' : 'warning',
-            message: issue.message,
-            validator: 'ResidueObligationValidator',
-            suggestion: issue.suggestion,
+            type: isResidue ? 'planned_residue_debt' : 'obligation_ledger_debt',
+            severity: isResidue && blockResidue && finding.severity === 'error' ? 'error' : 'warning',
+            message: finding.message,
+            validator: 'ObligationLedgerValidator',
+            suggestion: SUGGESTION_BY_KIND[finding.kind]
+              ?? 'Reference the promised moment in later prose (textVariant callbackHookId or flag-conditioned variant), or abandon the hook explicitly.',
           });
         }
+      } catch (ledgerErr) {
+        console.warn(`[FinalStoryContract] obligation ledger unavailable (${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}); skipping unified obligation findings`);
       }
     }
 

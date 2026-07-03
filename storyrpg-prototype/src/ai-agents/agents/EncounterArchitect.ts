@@ -2812,7 +2812,12 @@ RULES:
     // (current behavior); the flip to flat-canonical is live-run gated, after
     // which convertFlatToTree and the tree halves of the depth guards retire
     // (STORYRPG_RUN_GRAPH rollout pattern).
-    if (!this.isSustainedSetPieceInput(input) && !keepFlatEncounterSpine()) {
+    if (keepFlatEncounterSpine()) {
+      // W2b: one routing shape. The rich prompt authors nextSituation trees
+      // natively; flatten them into the beat spine deterministically instead
+      // of changing the prompt. No-op for already-flat (lean/sustained) output.
+      this.flattenTreeToBeats(structure);
+    } else if (!this.isSustainedSetPieceInput(input)) {
       this.convertFlatToTree(structure);
     }
 
@@ -3043,6 +3048,59 @@ RULES:
    * For each non-terminal outcome that references a nextBeatId, lift the target beat's
    * content into the outcome as a nextSituation with embedded choices.
    */
+  /**
+   * Encounter unification W2b — the inverse of {@link convertFlatToTree}.
+   * Under STORYRPG_ENCOUNTER_FLAT=1 the flat nextBeatId spine is the ONE
+   * routing shape, but the rich structure prompt authors nextSituation trees
+   * natively. Rather than change the prompt (golden churn + LLM compliance
+   * risk), materialize every embedded situation as a real beat and re-point
+   * the outcome via nextBeatId — deterministic, lossless (setupText, image,
+   * visual contract, choices carry over), recursive, and idempotent (a flat
+   * structure has no nextSituation to flatten). The engine plays the flat
+   * spine natively and deepenStructureRootWins repairs it natively.
+   */
+  private flattenTreeToBeats(structure: EncounterStructure): void {
+    const usedIds = new Set(structure.beats.map((beat) => beat.id));
+    const uniqueId = (base: string): string => {
+      let id = base;
+      let n = 2;
+      while (usedIds.has(id)) id = `${base}-${n++}`;
+      usedIds.add(id);
+      return id;
+    };
+    let flattened = 0;
+    const processBeat = (beat: EncounterBeat): void => {
+      for (const choice of beat.choices || []) {
+        if (!choice.outcomes) continue;
+        for (const tier of ['success', 'complicated', 'failure'] as const) {
+          const outcome = choice.outcomes[tier];
+          if (!outcome?.nextSituation) continue;
+          const situation = outcome.nextSituation;
+          const beatId = uniqueId(`${beat.id}-${choice.id || 'choice'}-${tier}`);
+          const newBeat: EncounterBeat = {
+            id: beatId,
+            phase: beat.phase ?? 'rising',
+            name: `${beat.name || beat.id} · ${tier}`,
+            description: (situation.setupText || '').slice(0, 160),
+            setupText: situation.setupText || '',
+            situationImage: situation.situationImage,
+            visualContract: situation.visualContract,
+            choices: (situation.choices || []) as EncounterChoice[],
+          };
+          structure.beats.push(newBeat);
+          outcome.nextBeatId = beatId;
+          delete outcome.nextSituation;
+          flattened += 1;
+          processBeat(newBeat);
+        }
+      }
+    };
+    for (const beat of [...structure.beats]) processBeat(beat);
+    if (flattened > 0) {
+      console.log(`[EncounterArchitect] Flattened ${flattened} embedded situation(s) into the flat beat spine (STORYRPG_ENCOUNTER_FLAT).`);
+    }
+  }
+
   private convertFlatToTree(structure: EncounterStructure): void {
     const beatMap = new Map<string, EncounterBeat>();
     for (const beat of structure.beats) {

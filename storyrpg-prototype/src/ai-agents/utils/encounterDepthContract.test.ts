@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Encounter } from '../../types/encounter';
 import { analyzeEncounterDepth, deepenRootTerminalWins, deepenStructureRootWins, shrinkClockToAttainable } from './encounterDepthContract';
 
@@ -374,5 +374,23 @@ describe('shrinkClockToAttainable', () => {
     expect(shrinkClockToAttainable(fillable).goalShrunk).toBe(false);
     const empty = enc([], 6);
     expect(shrinkClockToAttainable(empty).goalShrunk).toBe(false);
+  });
+});
+
+describe('keepFlatEncounterSpine (encounter unification W2 rollout flag)', () => {
+  afterEach(() => {
+    delete process.env.STORYRPG_ENCOUNTER_FLAT;
+  });
+
+  it('defaults OFF (current tree-converting behavior)', async () => {
+    const { keepFlatEncounterSpine } = await import('./encounterDepthContract');
+    delete process.env.STORYRPG_ENCOUNTER_FLAT;
+    expect(keepFlatEncounterSpine()).toBe(false);
+  });
+
+  it('turns on with STORYRPG_ENCOUNTER_FLAT=1', async () => {
+    const { keepFlatEncounterSpine } = await import('./encounterDepthContract');
+    process.env.STORYRPG_ENCOUNTER_FLAT = '1';
+    expect(keepFlatEncounterSpine()).toBe(true);
   });
 });

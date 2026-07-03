@@ -300,11 +300,27 @@ function buildSealChoices(
  * gone wrong at the finish never revokes the earned win — it downgrades a clean
  * victory to partialVictory at worst.
  *
- * Only tree-routed encounters (outcomes embed `nextSituation`) are repaired; in the
- * reader's flat nextBeatId mode an embedded situation is never walked, so flat
- * encounters are skipped rather than risk an unplayable beat. Idempotent: after the
- * lift the win sits at depth 2, so a re-run finds nothing to demote.
+ * BOTH routing modes are repaired: tree-routed encounters lift the win into an
+ * embedded `nextSituation`; flat-routed encounters append a finish beat and
+ * re-point the outcome via `nextBeatId` (the reader plays flat beats natively).
+ * The historical flat-mode skip is gone — `skipped` only records the degenerate
+ * no-beats case. Idempotent: after the lift the win sits at depth 2, so a
+ * re-run finds nothing to demote. (Encounter unification W2: with one flat
+ * representation, the tree branch of this repair retires at the flip.)
  */
+/**
+ * Encounter unification W2 rollout flag: when ON, EncounterArchitect keeps the
+ * LLM's native flat nextBeatId spine for ALL encounters instead of converting
+ * to the nextSituation tree (sustained set pieces already stay flat
+ * unconditionally). The engine plays flat natively and deepenRootTerminalWins
+ * repairs flat natively, so this only changes the STORED routing shape of
+ * newly generated encounters — never gameplay. Default OFF; the flip to
+ * flat-canonical is live-run gated (STORYRPG_RUN_GRAPH rollout pattern).
+ */
+export function keepFlatEncounterSpine(): boolean {
+  return process.env.STORYRPG_ENCOUNTER_FLAT === '1';
+}
+
 export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
   const result: DeepenResult = { lifted: [], flatRouted: [], skipped: [] };
   const encAny = enc as unknown as { id?: string; sceneId?: string; phases?: PhaseLike[]; startingBeatId?: string };

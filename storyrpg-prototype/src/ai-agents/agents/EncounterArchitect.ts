@@ -17,7 +17,7 @@ import { formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
 import { BaseAgent, AgentMessage, AgentResponse } from './BaseAgent';
 import { withTimeoutAbort, TimeoutError } from '../utils/withTimeout';
 import { shrinkClockToCoverage } from '../pipeline/encounterRemediation';
-import { deepenStructureRootWins } from '../utils/encounterDepthContract';
+import { deepenStructureRootWins, keepFlatEncounterSpine } from '../utils/encounterDepthContract';
 import { rebalanceEncounterSkills } from '../utils/encounterSkillRebalance';
 import {
   buildEncounterPhase1CompactJsonSchema,
@@ -2804,7 +2804,15 @@ RULES:
     // made every attempt AND the deterministic fallback fail for sustained
     // pieces (endsong-g13 ep3). The engine plays flat nextBeatId beats
     // natively, so keep the flat multi-beat spine.
-    if (!this.isSustainedSetPieceInput(input)) {
+    //
+    // AND EXCEPT under STORYRPG_ENCOUNTER_FLAT=1 (encounter unification W2):
+    // the flat multi-beat spine is the LLM's native output shape, the engine
+    // plays it natively, and the depth guard repairs it natively — the tree
+    // conversion exists only to force the tree rendering path. Default OFF
+    // (current behavior); the flip to flat-canonical is live-run gated, after
+    // which convertFlatToTree and the tree halves of the depth guards retire
+    // (STORYRPG_RUN_GRAPH rollout pattern).
+    if (!this.isSustainedSetPieceInput(input) && !keepFlatEncounterSpine()) {
       this.convertFlatToTree(structure);
     }
 

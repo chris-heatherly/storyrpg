@@ -212,7 +212,14 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Final assembly gate ---
   { validator: 'StructuralValidator', stage: 'final', tier: 'autofix', dispatchedFrom: 'FullStoryPipeline' },
   { validator: 'FinalStoryContractValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
-  { validator: 'ResidueObligationValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_RESIDUE_CONSUME', dispatchedFrom: 'FinalStoryContractValidator (planned residue source of truth)' },
+  // KEPT BY DESIGN (2026-07-03 retirement review): the final-contract dispatch
+  // was replaced by the unified ObligationLedgerValidator at the flip
+  // (fec133ca); THIS remaining dispatch is the episode-time quick-validation
+  // half, which does distinct work the unified ledger does not replicate —
+  // prose-evidence detection (findResidueEvidence over beat text / dialogue /
+  // choice text, not just ledger paid-ness) and driving the cheap episode-time
+  // residue auto-inject repair. Not a duplicate; do not retire on dedup grounds.
+  { validator: 'ResidueObligationValidator', stage: 'quick', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_RESIDUE_CONSUME', dispatchedFrom: 'IntegratedBestPracticesValidator (episode quick validation; prose-evidence + repair driver)' },
   { validator: 'EncounterQualityValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
   // Season Canon (P2) — state-scoped promise gate. Fires only when a promise is
   // due/dangling/invalid for the episode being sealed (never a blanket alarm).

@@ -150,12 +150,12 @@ describe('validatorRegistry (B4 dispatch map)', () => {
       'SignatureDevicePresenceValidator',
     ]);
     expect(validatorNamesForArtifact('runtime-episode')).toEqual([
+      'SetupPayoffValidator',
       'StructuralValidator',
       'FinalStoryContractValidator',
       'MechanicsLeakageValidator',
       'SceneGraphBranchValidator',
       'ArcDeltaValidator',
-      'SetupPayoffValidator',
       'TreatmentFidelityValidator',
       'SceneTurnRealizationValidator (episode Story Circle structural class)',
       'storyPathAnalyzer',
@@ -176,13 +176,14 @@ describe('validatorRegistry (B4 dispatch map)', () => {
       tier: 'blocking',
       validators: expect.arrayContaining(['ArcDeltaValidator']),
     });
-    // ChoiceDensity/SetupPayoff are runtime-blocking too since their plan gates
-    // (GATE_CHOICE_DENSITY / GATE_SETUP_PAYOFF) went default-ON blocking — the
-    // registry tier now mirrors the gate (audit 2026-07-01, 4.5/M11). Artifact
-    // contract tiers remain independent of runtime tiers; ArcDeltaValidator
-    // (autofix tier, remediation-kind gate) still demonstrates the separation.
+    // ChoiceDensity is runtime-blocking since its plan gate went default-ON
+    // (audit 2026-07-01, 4.5/M11). SetupPayoffValidator RETIRED from the live
+    // pipeline 2026-07-03 (unified ObligationLedgerValidator feeds
+    // GATE_SETUP_PAYOFF now) — it survives artifact-only, so it must NOT be
+    // runtime-blocking. Artifact contract tiers remain independent of runtime
+    // tiers; ArcDeltaValidator still demonstrates the separation.
     expect(runtimeBlocking).toContain('ChoiceDensityValidator');
-    expect(runtimeBlocking).toContain('SetupPayoffValidator');
+    expect(runtimeBlocking).not.toContain('SetupPayoffValidator');
     expect(runtimeBlocking).not.toContain('ArcDeltaValidator');
   });
 

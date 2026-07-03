@@ -16,8 +16,8 @@
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
 import { ConsequenceBudgetValidator } from '../validators/ConsequenceBudgetValidator';
 import { PropIntroductionValidator } from '../validators/PropIntroductionValidator';
-import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
-import { SetupPayoffValidator } from '../validators/SetupPayoffValidator';
+import { validateObligationLedger } from '../validators/ObligationLedgerValidator';
+import { CallbackLedger, type SerializedCallbackLedger } from '../pipeline/callbackLedger';
 import { buildPropIntroductionInput } from './propIntroductionGate';
 import { repairPropIntroduction } from './repairs/propIntroductionRepair';
 import { PLAN_GATE_FLAGS } from './planGatePolicy';
@@ -64,33 +64,6 @@ function errCount(result: { issues?: Array<{ severity?: string; level?: string }
   return (result.issues ?? []).filter((i) => i.severity === 'error' || i.level === 'error').length;
 }
 
-/** Minimal observed-thread ledger from beat plant/payoff markers (mirrors narrativeDiagnostics). */
-function deriveThreadLedger(scenes: SScene[]): { threads: any[]; designNotes: string } | undefined {
-  const byId = new Map<string, any>();
-  const ensure = (id: string) => {
-    let t = byId.get(id);
-    if (!t) {
-      t = { id, kind: 'seed', priority: 'minor', label: id, plants: [], payoffs: [], status: 'planned' };
-      byId.set(id, t);
-    }
-    return t;
-  };
-  for (const sc of scenes) {
-    for (const b of sc.beats ?? []) {
-      const sceneId = sc.id ?? '';
-      if (b.plantsThreadId) ensure(b.plantsThreadId).plants.push({ sceneId, beatId: b.id ?? '' });
-      if (b.paysOffThreadId) ensure(b.paysOffThreadId).payoffs.push({ sceneId, beatId: b.id ?? '' });
-    }
-  }
-  return byId.size === 0 ? undefined : { threads: Array.from(byId.values()), designNotes: 'derived (resume-proof shadow)' };
-}
-
-/**
- * Recompute plan-time would-gate counts from the assembled story, aggregated per gate
- * across all episodes. Each validator runs in strict mode so it surfaces the
- * error-severity findings the gate would block on. Defensive: a validator throwing
- * degrades to 0 for that gate rather than aborting.
- */
 export async function computePlanTimeShadow(opts: {
   story: PlanTimeShadowStory;
   callbackLedger?: unknown;
@@ -100,8 +73,8 @@ export async function computePlanTimeShadow(opts: {
     [PLAN_GATE_FLAGS.choiceDensity]: { validator: 'ChoiceDensityValidator', n: 0 },
     [PLAN_GATE_FLAGS.consequenceBudget]: { validator: 'ConsequenceBudgetValidator', n: 0 },
     [PLAN_GATE_FLAGS.propIntroduction]: { validator: 'PropIntroductionValidator', n: 0 },
-    [PLAN_GATE_FLAGS.callbackCoverage]: { validator: 'CallbackCoverageValidator', n: 0 },
-    [PLAN_GATE_FLAGS.setupPayoff]: { validator: 'SetupPayoffValidator', n: 0 },
+    [PLAN_GATE_FLAGS.callbackCoverage]: { validator: 'ObligationLedgerValidator', n: 0 },
+    [PLAN_GATE_FLAGS.setupPayoff]: { validator: 'ObligationLedgerValidator', n: 0 },
   };
   const bump = (gate: string, n: number) => { counts[gate].n += n; };
   // ChoiceDensity + ConsequenceBudget validate() are ASYNC; the rest are sync.
@@ -146,13 +119,15 @@ export async function computePlanTimeShadow(opts: {
       return 0;
     }, PLAN_GATE_FLAGS.propIntroduction);
 
+    // Unified-ledger gate source (2026-07-03): thread debt → GATE_SETUP_PAYOFF,
+    // callback-family debt → GATE_CALLBACK_COVERAGE, mirroring the fresh-run seam.
     if (opts.callbackLedger) {
-      guard(() => errCount(new CallbackCoverageValidator().validate({ ledger: opts.callbackLedger as any, currentEpisode: epNum, totalEpisodes: opts.totalEpisodes }, { strict: true }) as any), PLAN_GATE_FLAGS.callbackCoverage);
-    }
-
-    const ledger = deriveThreadLedger(scenes);
-    if (ledger) {
-      guard(() => errCount(new SetupPayoffValidator().validate({ ledger: ledger as any, currentEpisode: epNum, sceneContents: scenes.map((sc) => ({ sceneId: sc.id, beats: sc.beats })) as any }) as any), PLAN_GATE_FLAGS.setupPayoff);
+      guard(() => {
+        const unified = CallbackLedger.deserialize(opts.callbackLedger as SerializedCallbackLedger);
+        const findings = validateObligationLedger(unified, { episodeNumber: epNum, generatedThroughEpisode: epNum }).findings;
+        counts[PLAN_GATE_FLAGS.setupPayoff].n += findings.filter((f) => f.gateId === 'GATE_SETUP_PAYOFF' && f.severity === 'error').length;
+        return findings.filter((f) => f.gateId === 'GATE_CALLBACK_COVERAGE' && f.severity === 'error').length;
+      }, PLAN_GATE_FLAGS.callbackCoverage);
     }
   }
 

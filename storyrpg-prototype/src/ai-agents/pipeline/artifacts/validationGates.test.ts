@@ -34,9 +34,9 @@ describe('artifact validation gate registry', () => {
         'CharacterArcTracker',
       ],
       'npc-payoff-ledger': [
+        'SetupPayoffValidator',
         'NPCDepthValidator',
         'ReferencedEventPresenceValidator',
-        'SetupPayoffValidator',
       ],
       'thread-ledger': [
         'SetupPayoffValidator',
@@ -91,12 +91,12 @@ describe('artifact validation gate registry', () => {
         'OutcomeTextQualityValidator',
       ],
       'runtime-episode': [
+        'SetupPayoffValidator',
         'StructuralValidator',
         'FinalStoryContractValidator',
         'MechanicsLeakageValidator',
         'SceneGraphBranchValidator',
         'ArcDeltaValidator',
-        'SetupPayoffValidator',
         'TreatmentFidelityValidator',
         'SceneTurnRealizationValidator (episode Story Circle structural class)',
         'storyPathAnalyzer',

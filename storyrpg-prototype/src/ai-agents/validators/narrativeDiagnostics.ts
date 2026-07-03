@@ -5,11 +5,9 @@ import type { CharacterArcTargets } from '../agents/CharacterArcTracker';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
 import type { ValidationIssue as BaseValidationIssue, ValidationResult } from './BaseValidator';
 import type { ValidationIssue as ReportValidationIssue } from '../../types/validation';
-import { SetupPayoffValidator } from './SetupPayoffValidator';
 import { TwistQualityValidator } from './TwistQualityValidator';
 import { ArcDeltaValidator } from './ArcDeltaValidator';
 import { DivergenceValidator } from './DivergenceValidator';
-import { CallbackCoverageValidator } from './CallbackCoverageValidator';
 import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
 import { IntensityDistributionValidator } from './IntensityDistributionValidator';
 import { PropIntroductionValidator } from './PropIntroductionValidator';
@@ -86,23 +84,12 @@ export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): Narra
   const checks: NarrativeDiagnosticCheck[] = [];
   const sceneContents = input.sceneContents ?? [];
 
-  const threadLedger = input.threadLedger ?? deriveObservedThreadLedger(sceneContents);
   for (const entry of validatorsForLifecycle('narrative-diagnostics')) {
     switch (entry.validator) {
-      case 'SetupPayoffValidator':
-        if (threadLedger && sceneContents.length > 0) {
-          checks.push(fromBaseResult(
-            'setup_payoff',
-            new SetupPayoffValidator().validate({
-              ledger: threadLedger,
-              sceneContents,
-              currentEpisode: input.episodeNumber,
-            }),
-          ));
-        } else {
-          checks.push(skipped('setup_payoff', 'No ThreadPlanner ledger or beat-level thread markers were available.'));
-        }
-        break;
+      // setup_payoff + callback_coverage arms RETIRED (2026-07-03): zero
+      // findings across all 202 archived runs, and the plan gates they fed
+      // (GATE_SETUP_PAYOFF / GATE_CALLBACK_COVERAGE) now read the unified
+      // ObligationLedgerValidator's kind-filtered findings directly.
 
       case 'TwistQualityValidator':
         if (sceneContents.length > 0) {
@@ -142,21 +129,6 @@ export function runNarrativeDiagnostics(input: NarrativeDiagnosticsInput): Narra
           ));
         } else {
           checks.push(skipped('divergence', 'Episode assembly had not completed yet.'));
-        }
-        break;
-
-      case 'CallbackCoverageValidator':
-        if (input.callbackLedger && input.episodeNumber !== undefined) {
-          checks.push(fromReportResult(
-            'callback_coverage',
-            new CallbackCoverageValidator().validate({
-              ledger: input.callbackLedger,
-              currentEpisode: input.episodeNumber,
-              totalEpisodes: input.totalEpisodes ?? input.episodeNumber,
-            }),
-          ));
-        } else {
-          checks.push(skipped('callback_coverage', 'No serialized CallbackLedger was available.'));
         }
         break;
 
@@ -321,34 +293,6 @@ function collectMappableIssues(
       source: check.name,
     }))),
   ];
-}
-
-function deriveObservedThreadLedger(sceneContents: SceneContent[]): ThreadLedger | undefined {
-  const byId = new Map<string, NarrativeThread>();
-
-  for (const scene of sceneContents) {
-    for (const beat of scene.beats ?? []) {
-      const anyBeat = beat as unknown as {
-        id?: string;
-        plantsThreadId?: string;
-        paysOffThreadId?: string;
-      };
-      if (anyBeat.plantsThreadId) {
-        const thread = ensureObservedThread(byId, anyBeat.plantsThreadId);
-        thread.plants.push({ sceneId: scene.sceneId, beatId: anyBeat.id ?? `${scene.sceneId}:unknown` });
-      }
-      if (anyBeat.paysOffThreadId) {
-        const thread = ensureObservedThread(byId, anyBeat.paysOffThreadId);
-        thread.payoffs.push({ sceneId: scene.sceneId, beatId: anyBeat.id ?? `${scene.sceneId}:unknown` });
-      }
-    }
-  }
-
-  if (byId.size === 0) return undefined;
-  return {
-    threads: Array.from(byId.values()),
-    designNotes: 'Derived from generated beat thread markers because no ThreadPlanner ledger was supplied.',
-  };
 }
 
 function ensureObservedThread(byId: Map<string, NarrativeThread>, id: string): NarrativeThread {

@@ -196,12 +196,10 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'CliffhangerValidator', stage: 'full', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_CLIFFHANGER', dispatchedFrom: 'IntegratedBestPracticesValidator / FullStoryPipeline' },
 
   // --- Narrative diagnostics (narrativeDiagnostics.runNarrativeDiagnostics) ---
-  { validator: 'SetupPayoffValidator', stage: 'diagnostic', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_SETUP_PAYOFF', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'TwistQualityValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // tier stays 'advisory' (not 'blocking'): enforced via guaranteed autofix.
   { validator: 'ArcDeltaValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'autofix', rolloutFlag: 'GATE_ARC_DELTA', dispatchedFrom: 'narrativeDiagnostics' },
   { validator: 'DivergenceValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
-  { validator: 'CallbackCoverageValidator', stage: 'diagnostic', tier: 'blocking', remediation: 'plan-time', rolloutFlag: 'GATE_CALLBACK_COVERAGE', dispatchedFrom: 'narrativeDiagnostics (CallbackLedger hygiene)' },
   { validator: 'NarrativeFailureModeValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
   // E5 / #26C / D4 — advisory diagnostics added 2026-06.
   { validator: 'IntensityDistributionValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
@@ -376,13 +374,18 @@ export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
 
   { validator: 'ArcDeltaValidator', artifactKinds: ['character-arc-plan'], role: 'primary' },
   { validator: 'CharacterArcTracker', artifactKinds: ['character-arc-plan'], role: 'artifact-only' },
+  // SetupPayoff/CallbackCoverage retired from the LIVE pipeline (2026-07-03):
+  // the diagnostics arms are gone and GATE_SETUP_PAYOFF/GATE_CALLBACK_COVERAGE
+  // read the unified ObligationLedgerValidator. These classes now exist ONLY
+  // for the offline artifact-replay surface (thread-ledger / runtime-episode).
+  { validator: 'SetupPayoffValidator', artifactKinds: ['npc-payoff-ledger'], role: 'artifact-only' },
+  { validator: 'SetupPayoffValidator', artifactKinds: ['thread-ledger'], role: 'artifact-only' },
+  { validator: 'CallbackCoverageValidator', artifactKinds: ['thread-ledger'], role: 'artifact-only' },
+  { validator: 'SetupPayoffValidator', artifactKinds: ['runtime-episode'], role: 'artifact-only' },
 
   { validator: 'NPCDepthValidator', artifactKinds: ['npc-payoff-ledger'], role: 'primary' },
   { validator: 'ReferencedEventPresenceValidator', artifactKinds: ['npc-payoff-ledger'], role: 'artifact-only' },
-  { validator: 'SetupPayoffValidator', artifactKinds: ['npc-payoff-ledger'], role: 'primary' },
 
-  { validator: 'SetupPayoffValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
-  { validator: 'CallbackCoverageValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
   { validator: 'CallbackOpportunitiesValidator', artifactKinds: ['thread-ledger'], role: 'primary' },
 
   { validator: 'InformationLedgerValidator', artifactKinds: ['information-ledger'], role: 'primary' },
@@ -431,7 +434,6 @@ export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
   { validator: 'MechanicsLeakageValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'SceneGraphBranchValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'ArcDeltaValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
-  { validator: 'SetupPayoffValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'TreatmentFidelityValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'SceneTurnRealizationValidator (episode Story Circle structural class)', artifactKinds: ['runtime-episode'], role: 'regression-net' },
   { validator: 'storyPathAnalyzer', artifactKinds: ['runtime-episode'], role: 'artifact-only' },

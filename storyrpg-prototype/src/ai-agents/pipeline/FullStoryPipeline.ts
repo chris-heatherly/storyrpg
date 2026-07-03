@@ -319,7 +319,6 @@ import {
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
-import { CallbackCoverageValidator } from '../validators/CallbackCoverageValidator';
 import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
 import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 
@@ -6851,10 +6850,27 @@ export class FullStoryPipeline {
         const checkIssues = (name: NarrativeDiagnosticsReport['checks'][number]['name']) =>
           narrativeDiagnosticsReport.checks.find((c) => c.name === name)?.issues ?? [];
 
-        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, checkIssues('setup_payoff'), seasonGateEnforcement);
-        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'SetupPayoffValidator', setupPayoffGate.blockingCount, checkIssues('setup_payoff'), undefined);
+        // UNIFIED-LEDGER GATE SOURCE (2026-07-03): both setup-payoff and
+        // callback-coverage gates now read the ObligationLedgerValidator's
+        // kind-filtered findings instead of the legacy diagnostics arms
+        // (SetupPayoffValidator / CallbackCoverageValidator produced ZERO
+        // findings across all 202 archived runs — the unified ledger is the
+        // live source of truth for thread and callback debt).
+        const obligationGateFindings = (() => {
+          try {
+            return validateObligationLedger(this.callbackLedger, {
+              episodeNumber: i,
+              generatedThroughEpisode: i,
+            }).findings;
+          } catch {
+            return [];
+          }
+        })();
+        const setupPayoffIssues = obligationGateFindings.filter((f) => f.gateId === 'GATE_SETUP_PAYOFF');
+        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, setupPayoffIssues, seasonGateEnforcement);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'ObligationLedgerValidator', setupPayoffGate.blockingCount, setupPayoffIssues, undefined);
         if (setupPayoffGate.gate) {
-          const errs = checkIssues('setup_payoff').filter((iss) => iss.severity === 'error');
+          const errs = setupPayoffIssues.filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).
           await this.recordRemediationSafe({
             rule: 'setup_payoff_gate', scope: 'episode', attempted: 1,
@@ -6870,31 +6886,12 @@ export class FullStoryPipeline {
           );
         }
 
-        // CallbackCoverage strict seam: the advisory diagnostics run emits only
-        // warning/suggestion levels, so the gate would never fire on the report
-        // issues. When the rollout flag is on, re-run the validator in STRICT
-        // mode (a pure, deterministic, idempotent re-evaluation of the same
-        // serialized ledger + episode) so a genuine coverage failure surfaces as
-        // an 'error' that shouldGate can block on. The diagnostics report itself
-        // stays advisory/unchanged — only the gate sees the strict issues. With
-        // the flag OFF this branch is skipped and the historical report issues
-        // are used, so default behavior is byte-for-byte unchanged.
-        let callbackGateIssues: Array<{ severity: string; message?: string }> = checkIssues('callback_coverage');
-        // Run the strict re-eval when the gate is on OR when shadow logging wants
-        // the would-gate data. Pure/deterministic/idempotent — no LLM.
-        if (isEnabled(PLAN_GATE_FLAGS.callbackCoverage) || shadow) {
-          const strictResult = new CallbackCoverageValidator().validate(
-            {
-              ledger: this.callbackLedger.serialize(),
-              currentEpisode: i,
-              totalEpisodes: baseBrief.seasonPlan?.episodes?.length ?? i,
-            },
-            { strict: true },
-          );
-          callbackGateIssues = strictResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
-        }
+        // Callback-coverage gate: all callback-family obligation kinds
+        // (choice_callback / flag_promise / score_promise / forward_promise)
+        // route to GATE_CALLBACK_COVERAGE in the unified ledger.
+        const callbackGateIssues = obligationGateFindings.filter((f) => f.gateId === 'GATE_CALLBACK_COVERAGE');
         const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, seasonGateEnforcement);
-        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'CallbackCoverageValidator', callbackGate.blockingCount, callbackGateIssues, undefined);
+        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'ObligationLedgerValidator', callbackGate.blockingCount, callbackGateIssues, undefined);
         if (callbackGate.gate) {
           const errs = callbackGateIssues.filter((iss) => iss.severity === 'error');
           // S3: record the hard block before throwing (best-effort).

@@ -174,9 +174,9 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
       'GATE_DESIGN_NOTE_LEAK',
       'GATE_SENTENCE_OPENER_VARIETY',
       'GATE_REFERENCED_EVENT_PRESENCE',
-      'GATE_CHOICE_TYPE_CONFORMANCE',
-      'GATE_CONSEQUENCE_TIER_CONFORMANCE',
-      'GATE_SKILL_PLAN_CONFORMANCE',
+      // GATE_*_CONFORMANCE deleted 2026-07-03: plan-conformance findings are
+      // telemetry-only warnings now (criteria-reduction item 7) — the final
+      // contract no longer consults a flag for them.
       'GATE_ENCOUNTER_OUTCOME_VARIANT',
       'GATE_QA_CRITICAL_BLOCK',
     ];

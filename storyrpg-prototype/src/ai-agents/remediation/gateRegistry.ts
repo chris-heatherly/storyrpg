@@ -187,9 +187,6 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_CHOICE_TYPE_CONFORMANCE', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_CONSEQUENCE_TIER_CONFORMANCE', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_SKILL_PLAN_CONFORMANCE', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false },
   { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false },
   // WS0.2: deterministic generative half (inject a flag-gated read for every unread
   // consequential set-flag), so this is remediation + autofix, not a blocking abort.

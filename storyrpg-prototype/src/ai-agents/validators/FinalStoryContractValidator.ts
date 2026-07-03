@@ -944,7 +944,10 @@ export class FinalStoryContractValidator {
     // Choice-type plan conformance (G10, L2): each generated episode must realize the
     // choice types the SEASON PLAN budgeted for it. Balance itself is validated at plan
     // time over the whole season — this never compares a generated slice to the global
-    // target. Advisory; escalated when GATE_CHOICE_TYPE_CONFORMANCE is on.
+    // target. TELEMETRY-ONLY (criteria-reduction 2026-07-03): plan conformance has no
+    // per-episode remediation path (GATE_SKILL_PLAN_CONFORMANCE killed endsong-g14 at
+    // the final contract), so these findings never escalate; they surface as warnings
+    // and metrics. Re-promotion requires a per-episode rebalance autofix first.
     if (input.seasonChoicePlan) {
       const confResult = new ChoiceTypePlanConformanceValidator().validate({
         seasonPlan: input.seasonChoicePlan,
@@ -954,11 +957,10 @@ export class FinalStoryContractValidator {
       if (confResult.issues.length > 0) {
         console.info(`[FinalStoryContract] choice-type plan conformance: ${confResult.issues.length} finding(s)`);
       }
-      const blockConf = isGateEnabledAt('GATE_CHOICE_TYPE_CONFORMANCE', 'season-final');
       for (const issue of confResult.issues) {
         issues.push({
           type: 'choice_type_plan_nonconformance',
-          severity: blockConf ? 'error' : 'warning',
+          severity: 'warning',
           message: issue.message,
           validator: 'ChoiceTypePlanConformanceValidator',
           suggestion: issue.suggestion,
@@ -974,11 +976,10 @@ export class FinalStoryContractValidator {
       if (consequenceConf.issues.length > 0) {
         console.info(`[FinalStoryContract] consequence-tier plan conformance: ${consequenceConf.issues.length} finding(s)`);
       }
-      const blockConsequence = isGateEnabledAt('GATE_CONSEQUENCE_TIER_CONFORMANCE', 'season-final');
       for (const issue of consequenceConf.issues) {
         issues.push({
           type: 'consequence_tier_plan_nonconformance',
-          severity: blockConsequence ? 'error' : 'warning',
+          severity: 'warning',
           message: issue.message,
           validator: 'ConsequenceTierPlanConformanceValidator',
           suggestion: issue.suggestion,
@@ -997,11 +998,10 @@ export class FinalStoryContractValidator {
       if (skillConf.issues.length > 0) {
         console.info(`[FinalStoryContract] skill plan conformance: ${skillConf.issues.length} finding(s)`);
       }
-      const blockSkill = isGateEnabledAt('GATE_SKILL_PLAN_CONFORMANCE', 'season-final');
       for (const issue of skillConf.issues) {
         issues.push({
           type: 'skill_plan_nonconformance',
-          severity: blockSkill ? 'error' : 'warning',
+          severity: 'warning',
           message: issue.message,
           validator: 'SkillPlanConformanceValidator',
           suggestion: issue.suggestion,

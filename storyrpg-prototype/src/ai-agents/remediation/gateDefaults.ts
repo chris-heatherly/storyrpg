@@ -408,13 +408,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // GATE_SKILL_PLAN_CONFORMANCE killed the endsong-g14 run at the final contract
   // (failure-cycle audit): per-episode plan conformance has NO remediation path — the
   // season-level skill rebalance runs pre-contract but does not fix per-episode leaning,
-  // so a hit is an unavoidable end-of-run abort for a balance defect. Findings still
-  // surface as warnings. Re-promote with a per-episode rebalance autofix (reassign
+  // so a hit is an unavoidable end-of-run abort for a balance defect. DEMOTED TO
+  // TELEMETRY + FLAGS DELETED 2026-07-03 (criteria-reduction backlog item 7): the
+  // final contract emits conformance findings as warnings unconditionally, so the
+  // GATE_CHOICE_TYPE/CONSEQUENCE_TIER/SKILL_PLAN_CONFORMANCE kill-switches were dead
+  // and removed. Re-promotion requires a per-episode rebalance autofix (reassign
   // stat-check skills within the episode toward its planned set, mirroring
-  // rebalanceSeasonSkillCoverage), or move the check to scene/episode generation time.
-  GATE_CHOICE_TYPE_CONFORMANCE: false,
-  GATE_CONSEQUENCE_TIER_CONFORMANCE: false,
-  GATE_SKILL_PLAN_CONFORMANCE: false,
+  // rebalanceSeasonSkillCoverage), or moving the check to generation time.
   // G12: flag setter/consumer contract. Deterministic (a condition reading a flag
   // nothing sets is dead content), but authored orphan conditions are common until
   // the SceneWriter/ChoiceAuthor flag-context wiring beds in — findings ship as

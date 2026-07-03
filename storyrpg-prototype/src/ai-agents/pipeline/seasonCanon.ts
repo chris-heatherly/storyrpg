@@ -299,6 +299,12 @@ export class SeasonCanon {
 
   static deserialize(raw: SerializedSeasonCanon | string): SeasonCanon {
     const parsed: SerializedSeasonCanon = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    // Explicit version validation (audit item 2, constraint 8): an unknown
+    // future schema degrades loudly — the caller's try/catch starts fresh —
+    // instead of silently mis-parsing.
+    if (parsed.version !== 1) {
+      throw new Error(`SerializedSeasonCanon version ${String(parsed.version)} is not supported (expected 1)`);
+    }
     const canon = new SeasonCanon({ storyId: parsed.storyId });
     for (const e of parsed.sealedEpisodes ?? []) canon.sealedEpisodes.add(e);
     canon.worldFacts = [...(parsed.worldFacts ?? [])];

@@ -24,8 +24,40 @@ import type { TextVariant } from '../../types/content';
 import { normalizeTintFlag } from '../utils/tintVocabulary';
 import { isStructuralFlagKind, isTintFlagKind } from './flagRegistry';
 
+/**
+ * What KIND of promise an entry tracks (audit item 2 — the unified obligation
+ * ledger). One entry, one status: the callback ledger is becoming the single
+ * store for every "setup must pay off later" promise, with residue
+ * obligations, thread plants, and treatment seeds joining as kinds in later
+ * phases. Legacy (version-1) serialized hooks carry no kind; it is inferred
+ * from the id namespace on load, so old runs resume losslessly.
+ */
+export type ObligationKind =
+  | 'choice_callback'
+  | 'flag_promise'
+  | 'score_promise'
+  | 'tone'
+  | 'forward_promise'
+  | 'residue'
+  | 'thread'
+  | 'seed';
+
+/** Kind inference for hooks minted before kinds existed (id-namespace based). */
+export function inferObligationKind(hookId: string): ObligationKind {
+  if (hookId.startsWith('flag:')) return 'flag_promise';
+  if (hookId.startsWith('score:')) return 'score_promise';
+  if (hookId.startsWith('tone:')) return 'tone';
+  if (hookId.startsWith('later:')) return 'forward_promise';
+  if (hookId.startsWith('residue:')) return 'residue';
+  if (hookId.startsWith('thread:')) return 'thread';
+  if (hookId.startsWith('seed:')) return 'seed';
+  return 'choice_callback';
+}
+
 export interface CallbackHook {
   id: string;
+  /** Obligation kind; inferred from the id namespace when absent (legacy data). */
+  kind?: ObligationKind;
   sourceEpisode: number;
   sourceSceneId: string;
   sourceChoiceId: string;
@@ -207,7 +239,14 @@ function isToneHook(hook: CallbackHook): boolean {
 }
 
 export interface SerializedCallbackLedger {
-  version: 1;
+  /**
+   * 1 = pre-obligation-kind hooks (kind inferred on load).
+   * 2 = hooks carry explicit `kind` (audit item 2, 2026-07-03).
+   * Deserialize accepts both and THROWS on anything else — callers already
+   * wrap in try/catch and fall back to a fresh ledger, so an unknown future
+   * version degrades loudly instead of silently mis-parsing.
+   */
+  version: 1 | 2;
   storyId?: string;
   hooks: CallbackHook[];
   config: LedgerConfig;
@@ -246,6 +285,7 @@ export class CallbackLedger {
         : hook.payoffWindow;
     const merged: CallbackHook = {
       ...hook,
+      kind: hook.kind ?? existing?.kind ?? inferObligationKind(hook.id),
       payoffEpisode,
       payoffWindow,
       payoffCount: existing?.payoffCount ?? hook.payoffCount ?? 0,
@@ -831,7 +871,7 @@ export class CallbackLedger {
 
   serialize(): SerializedCallbackLedger {
     return {
-      version: 1,
+      version: 2,
       storyId: this.storyId,
       hooks: Array.from(this.hooks.values()),
       config: this.config,
@@ -842,6 +882,9 @@ export class CallbackLedger {
 
   static deserialize(raw: SerializedCallbackLedger | string): CallbackLedger {
     const parsed: SerializedCallbackLedger = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed.version !== 1 && parsed.version !== 2) {
+      throw new Error(`SerializedCallbackLedger version ${String(parsed.version)} is not supported (expected 1 or 2)`);
+    }
     const ledger = new CallbackLedger({
       storyId: parsed.storyId,
       config: parsed.config,
@@ -927,6 +970,7 @@ function normalizeHook(hook: CallbackHook): CallbackHook {
   const flags = hook.flags ?? [];
   return {
     ...hook,
+    kind: hook.kind ?? inferObligationKind(hook.id),
     flags,
     conditionKeys: hook.conditionKeys ?? flags,
     impactFactors: hook.impactFactors ?? [],

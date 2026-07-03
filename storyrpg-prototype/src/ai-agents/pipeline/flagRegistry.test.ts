@@ -125,3 +125,36 @@ describe('minting', () => {
     expect(registry.mintTreatmentSeedFlag(1, 3, 'test')).toBe('treatment_seed_ep1_3');
   });
 });
+
+describe('obligation kinds and versioned serialization (P2.1)', () => {
+  it('round-trips version 2 with explicit kinds and accepts version 1 with inference', async () => {
+    const { CallbackLedger, inferObligationKind } = await import('./callbackLedger');
+    const ledger = new CallbackLedger({ storyId: 's' });
+    ledger.recordFlagSet({ choice: { id: 'c1', text: 'x' } as never, flag: 'accepted_quartz', episode: 1, sceneId: 's1-1' });
+
+    const serialized = ledger.serialize();
+    expect(serialized.version).toBe(2);
+    expect(serialized.hooks.every((hook) => hook.kind !== undefined)).toBe(true);
+
+    const roundTripped = (await import('./callbackLedger')).CallbackLedger.deserialize(serialized);
+    expect(roundTripped.serialize().hooks[0]?.kind).toBe('flag_promise');
+
+    const v1 = { ...serialized, version: 1 as const, hooks: serialized.hooks.map(({ kind: _kind, ...hook }) => hook) };
+    const fromV1 = (await import('./callbackLedger')).CallbackLedger.deserialize(v1 as never);
+    expect(fromV1.serialize().hooks[0]?.kind).toBe('flag_promise');
+
+    expect(inferObligationKind('flag:x')).toBe('flag_promise');
+    expect(inferObligationKind('score:x')).toBe('score_promise');
+    expect(inferObligationKind('tone:x')).toBe('tone');
+    expect(inferObligationKind('later:c1')).toBe('forward_promise');
+    expect(inferObligationKind('residue:r1')).toBe('residue');
+    expect(inferObligationKind('some-moment')).toBe('choice_callback');
+  });
+
+  it('rejects unknown ledger and canon versions loudly', async () => {
+    const { CallbackLedger } = await import('./callbackLedger');
+    const { SeasonCanon } = await import('./seasonCanon');
+    expect(() => CallbackLedger.deserialize({ version: 99, hooks: [], config: {} } as never)).toThrow(/version 99/);
+    expect(() => SeasonCanon.deserialize({ version: 99 } as never)).toThrow(/version 99/);
+  });
+});

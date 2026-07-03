@@ -272,6 +272,7 @@ import {
   type InjectFallbackCallbacksParams,
 } from './callbackOrchestration';
 import { implementEpisodeResidueObligations } from './residueObligations';
+import { collectEpisodeSetFlags, registerSeedObligations, registerThreadObligations } from './obligationSeeding';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
@@ -6621,6 +6622,35 @@ export class FullStoryPipeline {
             `${residueContract.autoInjected.length} auto-injected, ${residueContract.unplannedConsequentialFlags.length} unplanned flag(s).`,
         });
       }
+      // Audit item 2, P2.3: threads + treatment seeds join the unified
+      // obligation ledger as kinds, so every setup->payoff promise has ONE
+      // tracked status. Non-fatal: the authored plans stay authoritative for
+      // their own validators until the P2.5 flip.
+      try {
+        const threadSeeding = registerThreadObligations(this.callbackLedger, this.seasonThreadLedger, i);
+        const seedSeeding = registerSeedObligations(
+          this.callbackLedger,
+          (blueprint?.scenes ?? []) as Parameters<typeof registerSeedObligations>[1],
+          collectEpisodeSetFlags(choiceSets as unknown as Parameters<typeof collectEpisodeSetFlags>[0]),
+          i,
+        );
+        if (threadSeeding.threadsRegistered > 0 || seedSeeding.seedsRegistered > 0) {
+          this.emit({
+            type: 'debug',
+            phase: `episode_${i}_obligations`,
+            message:
+              `Obligation ledger: ${threadSeeding.threadsRegistered} thread(s) registered (${threadSeeding.threadPayoffsCredited} paid), ` +
+              `${seedSeeding.seedsRegistered} seed(s) registered (${seedSeeding.seedPayoffsCredited} paid).`,
+          });
+        }
+      } catch (obligationErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_obligations`,
+          message: `Obligation seeding failed (non-fatal): ${obligationErr instanceof Error ? obligationErr.message : String(obligationErr)}`,
+        });
+      }
+
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-residue-contract.json`, residueContract);
       await saveEarlyDiagnostic(outputDirectory, '10-residue-ledger.json', {
         episodeNumber: i,

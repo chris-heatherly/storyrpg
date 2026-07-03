@@ -407,8 +407,13 @@
     },
     {
       "type": "debug",
+      "phase": "episode_1_obligations",
+      "message": "Obligation ledger: 1 thread(s) registered (1 paid), 0 seed(s) registered (0 paid)."
+    },
+    {
+      "type": "debug",
       "phase": "episode_1_callbacks",
-      "message": "Callback ledger: +12 new hook(s), +0 authored payoff(s), +2 auto-realized this episode; 6 total"
+      "message": "Callback ledger: +12 new hook(s), +0 authored payoff(s), +2 auto-realized this episode; 7 total"
     },
     {
       "type": "checkpoint",
@@ -797,8 +802,13 @@
     },
     {
       "type": "debug",
+      "phase": "episode_2_obligations",
+      "message": "Obligation ledger: 2 thread(s) registered (2 paid), 0 seed(s) registered (0 paid)."
+    },
+    {
+      "type": "debug",
       "phase": "episode_2_callbacks",
-      "message": "Callback ledger: +10 new hook(s), +0 authored payoff(s), +6 auto-realized this episode; 12 total"
+      "message": "Callback ledger: +10 new hook(s), +0 authored payoff(s), +6 auto-realized this episode; 14 total"
     },
     {
       "type": "checkpoint",
@@ -944,6 +954,11 @@
       "type": "warning",
       "phase": "season_canon_completion",
       "message": "[advisory] Promise \"The probing in how you have been moving carries into this moment too.\" (tone:probing) is still open at season end — never paid off or abandoned."
+    },
+    {
+      "type": "warning",
+      "phase": "season_canon_completion",
+      "message": "[advisory] Promise \"The name in the gallery ledger\" (thread:ledger-name) is still open at season end — never paid off or abandoned."
     },
     {
       "type": "phase_complete",

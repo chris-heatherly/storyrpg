@@ -13,6 +13,15 @@
       "port": 8081
     },
     {
+      "name": "reader-8085",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd storyrpg-prototype && STORYRPG_APP_TARGET=reader npx expo start --web --port 8085"
+      ],
+      "port": 8085
+    },
+    {
       "name": "generator",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

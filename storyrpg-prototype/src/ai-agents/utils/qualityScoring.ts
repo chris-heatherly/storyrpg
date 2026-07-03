@@ -7,10 +7,12 @@ import type {
   FinalStoryContractReport,
 } from '../validators/FinalStoryContractValidator';
 import type { QualityCouncilCheckpointReport, QualityCouncilReport } from '../quality-council/types';
+import { lookupQualityDomainTag } from './qualityDomainTags';
 
 export type QualityDomainId =
   | 'story_circle_spine'
   | 'dramatic_structure_architecture'
+  | 'prose_craft'
   | 'scene_coherence_prose_continuity'
   | 'choice_agency'
   | 'branching_consequence_memory'
@@ -41,6 +43,25 @@ export interface QualityConceptScore {
   warnings: number;
   suggestions: number;
   findings: QualityFinding[];
+  /** Graded base score from an LLM judge (replaces the implicit 100 base). */
+  gradedScore?: number;
+  /** One-line judge evidence for the graded score. */
+  gradedEvidence?: string;
+  /**
+   * Judge-only concepts are excluded from the domain average unless a judge
+   * actually graded them or a finding landed on them — "no signal" must not
+   * silently score 100.
+   */
+  judgeOnly?: boolean;
+}
+
+/** A graded 0-100 concept score produced by an LLM judge (prose craft, responsiveness). */
+export interface GradedConceptScore {
+  domainId: QualityDomainId;
+  conceptId: string;
+  score: number;
+  evidence?: string;
+  source: string;
 }
 
 export interface QualityDomainScore {
@@ -82,7 +103,7 @@ export interface StoryCircleBeatEvidence {
 }
 
 export interface StoryCircleQualityScoreBasis {
-  version: 3;
+  version: 4;
   profile: 'authored-treatment' | 'freeform';
   rawScore: number;
   finalScore: number;
@@ -142,6 +163,7 @@ type ConceptAccumulator = Omit<QualityConceptScore, 'score'>;
 type DomainAccumulator = Omit<QualityDomainScore, 'score' | 'concepts'> & {
   concepts: Record<string, ConceptAccumulator>;
   defaultConceptId: string;
+  requiresEvidence?: boolean;
 };
 
 interface StoryCircleEvidenceSummary {
@@ -184,6 +206,9 @@ interface SidecarFinding {
   validator?: string;
   message: string;
   location?: string;
+  /** Explicit routing set by the producer; wins over the keyword fallback. */
+  domainId?: QualityDomainId;
+  conceptId?: string;
 }
 
 interface QualityConceptDefinition {
@@ -191,6 +216,8 @@ interface QualityConceptDefinition {
   label: string;
   weight: number;
   keywords?: string[];
+  /** Excluded from the domain average unless graded by a judge or hit by a finding. */
+  judgeOnly?: boolean;
 }
 
 interface QualityDomainDefinition {
@@ -199,13 +226,26 @@ interface QualityDomainDefinition {
   weight: number;
   defaultConceptId: string;
   concepts: QualityConceptDefinition[];
+  /**
+   * Domain only participates in the weighted average when it has evidence
+   * (graded judge scores or findings). Prevents a judge-fed domain from
+   * scoring a free 100 on runs where the judge never ran.
+   */
+  requiresEvidence?: boolean;
 }
 
+/**
+ * v4 weights map the four product pillars:
+ *   well told   = story_circle_spine 15 + dramatic_structure 15  = 30
+ *   well written = prose_craft 15 + scene_coherence 10           = 25
+ *   agency       = choice_agency 18 + mechanics 5 + encounters 2 = 25
+ *   responsive   = branching 12 + character/NPC 8                = 20
+ */
 const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
   {
     id: 'story_circle_spine',
     label: 'Story Circle spine',
-    weight: 20,
+    weight: 15,
     defaultConceptId: 'complete_loop',
     concepts: [
       { id: 'complete_loop', label: 'Complete you -> need -> go -> search -> find -> take -> return -> change loop', weight: 16, keywords: ['complete loop', 'primary story circle beat', 'missing primary', 'episode local loop', 'episodecircle', 'episode circle'] },
@@ -223,7 +263,7 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
   {
     id: 'dramatic_structure_architecture',
     label: 'Dramatic structure / season story architecture',
-    weight: 18,
+    weight: 15,
     defaultConceptId: 'season_dramatic_question',
     concepts: [
       { id: 'season_dramatic_question', label: 'Season dramatic question / central promise', weight: 18, keywords: ['dramatic question', 'central promise', 'seasonpromise', 'source fidelity', 'authored'] },
@@ -238,9 +278,24 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
     ],
   },
   {
+    id: 'prose_craft',
+    label: 'Prose craft',
+    weight: 15,
+    defaultConceptId: 'sentence_craft',
+    requiresEvidence: true,
+    concepts: [
+      { id: 'sentence_craft', label: 'Sentence craft', weight: 20, judgeOnly: true, keywords: ['sentence craft', 'clumsy sentence', 'awkward phrasing'] },
+      { id: 'specificity_show_dont_tell', label: 'Specificity / show-don\'t-tell', weight: 20, judgeOnly: true, keywords: ['show don', 'generic description', 'abstract summary', 'specificity'] },
+      { id: 'filler_density', label: 'Filler density', weight: 18, judgeOnly: true, keywords: ['filler', 'padding', 'stub', 'scaffold text', 'outcome text', 'outcometextquality'] },
+      { id: 'rhythm_pacing', label: 'Rhythm and pacing', weight: 14, judgeOnly: true, keywords: ['monotony', 'opener', 'sentenceopener', 'repetitive rhythm', 'intensity_distribution', 'intensity distribution'] },
+      { id: 'dialogue_naturalness', label: 'Dialogue naturalness', weight: 14, judgeOnly: true, keywords: ['stilted dialogue', 'unnatural dialogue', 'on-the-nose'] },
+      { id: 'voice_style_consistency', label: 'Narrative voice / style consistency', weight: 14, judgeOnly: true, keywords: ['narrative voice', 'style drift', 'register shift'] },
+    ],
+  },
+  {
     id: 'scene_coherence_prose_continuity',
     label: 'Scene coherence / prose continuity',
-    weight: 17,
+    weight: 10,
     defaultConceptId: 'scene_clear_dramatic_turn',
     concepts: [
       { id: 'scene_clear_dramatic_turn', label: 'Scene has a clear dramatic turn', weight: 20, keywords: ['sceneturn', 'scene turn', 'dramatic turn'] },
@@ -256,7 +311,7 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
   {
     id: 'choice_agency',
     label: 'Choice agency',
-    weight: 15,
+    weight: 18,
     defaultConceptId: 'meaningful_agency',
     concepts: [
       { id: 'meaningful_agency', label: 'Meaningful agency', weight: 22, keywords: ['meaningful agency', 'no player choice', 'choice surface'] },
@@ -273,10 +328,11 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
   {
     id: 'branching_consequence_memory',
     label: 'Branching / consequence memory',
-    weight: 13,
+    weight: 12,
     defaultConceptId: 'branch_residue_survives',
     concepts: [
       { id: 'branch_residue_survives', label: 'Branch residue survives reconvergence', weight: 20, keywords: ['residue', 'reconvergence'] },
+      { id: 'choice_reflected_in_prose', label: 'Choice consequences visible in downstream prose', weight: 15, judgeOnly: true, keywords: ['choice_reflected_in_prose', 'downstream prose', 'consequence not visible'] },
       { id: 'specific_remembered_consequences', label: 'Consequences are specific and remembered', weight: 17, keywords: ['consequence memory', 'specific consequence', 'remembered'] },
       { id: 'cross_episode_payoffs', label: 'Cross-episode payoffs', weight: 15, keywords: ['cross-episode', 'callback', 'payoff'] },
       { id: 'meaningfully_different_branches', label: 'Branches create meaningfully different experiences', weight: 14, keywords: ['divergence', 'different experience'] },
@@ -290,10 +346,11 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
   {
     id: 'character_npc_relationship_quality',
     label: 'Character / NPC / relationship quality',
-    weight: 10,
+    weight: 8,
     defaultConceptId: 'protagonist_want_need_lie_truth',
     concepts: [
       { id: 'protagonist_want_need_lie_truth', label: 'Protagonist want / need / lie / truth', weight: 20, keywords: ['protagonist', 'want', 'need', 'lie', 'truth'] },
+      { id: 'npc_reacts_to_player_choice', label: 'NPCs react to player choices', weight: 15, judgeOnly: true, keywords: ['npc_reacts_to_player_choice', 'npc does not react', 'static npc'] },
       { id: 'character_change_pressure', label: 'Character change under pressure', weight: 18, keywords: ['character change', 'arcdelta', 'arc_delta'] },
       { id: 'npc_desire_pressure_function', label: 'NPCs have clear desire, pressure, and function', weight: 14, keywords: ['npc', 'desire', 'function'] },
       { id: 'relationship_pacing_earned', label: 'Relationship pacing is earned', weight: 12, keywords: ['relationship pacing', 'earned'] },
@@ -407,6 +464,7 @@ export function deriveStoryCircleQualityScore(
 
   addStoryCircleFindings(domains, storyCircle);
   addStaticSignalFindings(domains, staticSignals);
+  applyGradedConceptScores(domains, collectGradedConceptScores(inputs));
   collectedFindings.forEach((finding) => {
     const mappedDomain = mapFindingToDomain(finding);
     const qualityFinding = toQualityFinding(finding, mappedDomain);
@@ -417,17 +475,17 @@ export function deriveStoryCircleQualityScore(
     }
   });
 
-  if (unmappedFindings.length > 0) {
+  // Unmapped findings are routed INDIVIDUALLY (v3 collapsed any number of them
+  // into one -7 warning, silently discarding their weight). Routing confidence
+  // is low, so severity is dampened to warning — but each one still counts.
+  unmappedFindings.forEach((finding) => {
     addFinding(domains.scene_coherence_prose_continuity, {
-      id: makeFindingId('quality-score', 'unmapped-validator-evidence', 'warning'),
-      severity: 'warning',
-      source: 'quality-score',
-      validator: 'QualityScoreV3',
-      message: `${unmappedFindings.length} validator finding(s) did not map to a StoryRPG quality concept domain.`,
+      ...finding,
+      severity: finding.severity === 'critical' || finding.severity === 'error' ? 'warning' : finding.severity,
       mappedDomain: 'scene_coherence_prose_continuity',
       conceptId: 'natural_coherent_scene_read',
     });
-  }
+  });
 
   const finalStoryContractScore = legacyFinalStoryContractScore(inputs.finalStoryContractReport);
   const legacySubscores = {
@@ -461,7 +519,7 @@ export function deriveStoryCircleQualityScore(
   const qualityEligibility = buildQualityEligibility(caps);
 
   const basis: StoryCircleQualityScoreBasis = {
-    version: 3,
+    version: 4,
     profile,
     rawScore,
     finalScore,
@@ -488,14 +546,15 @@ export function deriveStoryCircleQualityScore(
       generatedAt: now.toISOString(),
       formula: {
         rawQualityScore: 'sum(domain.weight * domain.score) / sum(activeDomain.weight)',
-        domainScore: 'sum(concept.weight * concept.score) / sum(domain.concept.weight)',
-        conceptScore: 'clamp0to100(100 - criticalMisses*25 - errors*18 - warnings*7 - suggestions*2)',
+        domainScore: 'sum(concept.weight * concept.score) / sum(activeConcept.weight); judge-only concepts inactive until graded or hit',
+        conceptScore: 'clamp0to100((gradedScore ?? 100) - criticalMisses*25 - errors*18 - warnings*7 - suggestions*2)',
         finalQualityScore: 'applyCaps(round(rawQualityScore), caps)',
       },
       scoringNotes: [
         'Story Circle is the only structural scoring model.',
         'Legacy-structure fields are ignored; legacy-structure-only evidence receives no scoring credit.',
         'qaScore, validationScore, and finalStoryContractScore are retained only as diagnostics.',
+        'v4: LLM judge grades (prose craft, responsiveness) set concept base scores; evidence-requiring domains are excluded from the average when their judge never ran.',
       ],
     },
   };
@@ -525,13 +584,76 @@ function createDomainAccumulators(definitions: QualityDomainDefinition[]): Recor
           warnings: 0,
           suggestions: 0,
           findings: [],
+          judgeOnly: concept.judgeOnly,
         };
         return conceptAcc;
       }, {} as Record<string, ConceptAccumulator>),
       defaultConceptId: definition.defaultConceptId,
+      requiresEvidence: definition.requiresEvidence,
     };
     return acc;
   }, {} as Record<QualityDomainId, DomainAccumulator>);
+}
+
+const PROSE_CRAFT_CONCEPT_IDS = new Set([
+  'sentence_craft',
+  'specificity_show_dont_tell',
+  'filler_density',
+  'rhythm_pacing',
+  'dialogue_naturalness',
+  'voice_style_consistency',
+]);
+
+const RESPONSIVENESS_CONCEPT_DOMAINS: Record<string, QualityDomainId> = {
+  choice_reflected_in_prose: 'branching_consequence_memory',
+  npc_reacts_to_player_choice: 'character_npc_relationship_quality',
+};
+
+/**
+ * Pull graded concept scores out of the QA report's judge sections
+ * (ProseCraftJudge / ResponsivenessJudge, attached by QARunner). Judges SET
+ * concept base scores instead of the implicit 100 — the fix for the
+ * "no signal = perfect score" failure mode.
+ */
+function collectGradedConceptScores(inputs: StoryCircleQualityScoreInputs): GradedConceptScore[] {
+  const graded: GradedConceptScore[] = [];
+  const qa = inputs.qaReport as any;
+
+  (qa?.proseCraft?.conceptScores ?? []).forEach((entry: any) => {
+    const conceptId = String(entry?.conceptId ?? '');
+    const score = normalizeScore(entry?.score);
+    if (score === undefined || !PROSE_CRAFT_CONCEPT_IDS.has(conceptId)) return;
+    graded.push({ domainId: 'prose_craft', conceptId, score, evidence: entry?.evidence, source: 'prose-craft-judge' });
+  });
+
+  (qa?.responsiveness?.conceptScores ?? []).forEach((entry: any) => {
+    const conceptId = String(entry?.conceptId ?? '');
+    const score = normalizeScore(entry?.score);
+    const domainId = RESPONSIVENESS_CONCEPT_DOMAINS[conceptId];
+    if (score === undefined || !domainId) return;
+    graded.push({ domainId, conceptId, score, evidence: entry?.evidence, source: 'responsiveness-judge' });
+  });
+
+  return graded;
+}
+
+function applyGradedConceptScores(
+  domains: Record<QualityDomainId, DomainAccumulator>,
+  graded: GradedConceptScore[],
+): void {
+  graded.forEach((grade) => {
+    const concept = domains[grade.domainId]?.concepts[grade.conceptId];
+    if (!concept) return;
+    // Multiple grades for one concept (multi-episode QA merges): keep the lowest —
+    // a story reads as weak as its weakest graded stretch.
+    if (concept.gradedScore === undefined || grade.score < concept.gradedScore) {
+      concept.gradedScore = grade.score;
+      concept.gradedEvidence = grade.evidence;
+    }
+    domains[grade.domainId].evidence.push(
+      `${grade.source} graded ${grade.conceptId}: ${grade.score}${grade.evidence ? ` (${trimForEvidence(grade.evidence)})` : ''}`,
+    );
+  });
 }
 
 function resolveDomainDefinitions(weightsMarkdownPath?: string): QualityDomainDefinition[] {
@@ -866,6 +988,30 @@ function collectReportFindings(
       message: String(message),
     });
   });
+  (qa?.proseCraft?.issues ?? []).forEach((issue: any) => {
+    findings.push({
+      severity: normalizeJudgeSeverity(issue?.severity),
+      source: 'prose-craft-judge',
+      validator: 'ProseCraftJudge',
+      message: stringifyMessage(issue?.description ?? issue),
+      location: [issue?.location?.sceneId, issue?.location?.beatId].filter(Boolean).join('/') || undefined,
+      domainId: 'prose_craft',
+      conceptId: PROSE_CRAFT_CONCEPT_IDS.has(String(issue?.conceptId)) ? String(issue.conceptId) : undefined,
+    });
+  });
+  (qa?.responsiveness?.issues ?? []).forEach((issue: any) => {
+    const conceptId = String(issue?.conceptId ?? '');
+    const domainId = RESPONSIVENESS_CONCEPT_DOMAINS[conceptId] ?? 'branching_consequence_memory';
+    findings.push({
+      severity: normalizeJudgeSeverity(issue?.severity),
+      source: 'responsiveness-judge',
+      validator: 'ResponsivenessJudge',
+      message: stringifyMessage(issue?.description ?? issue),
+      location: [issue?.location?.sceneId, issue?.location?.beatId].filter(Boolean).join('/') || undefined,
+      domainId,
+      conceptId: RESPONSIVENESS_CONCEPT_DOMAINS[conceptId] ? conceptId : undefined,
+    });
+  });
 
   inputs.qualityCouncilReport?.checkpoints?.forEach((checkpoint) => {
     if (isOptionalFusionTransportError(checkpoint, inputs.qualityCouncilReport?.checkpoints || [])) return;
@@ -880,7 +1026,10 @@ function collectReportFindings(
 
     (checkpoint.findings || []).forEach((finding) => {
       findings.push({
-        severity: finding.severity === 'error' ? 'warning' : finding.severity === 'warning' ? 'warning' : 'suggestion',
+        // v4: council severities are honored as-is. The LLM judges are the only
+        // semantic reviewers in the loop; demoting their errors below regex
+        // validators' (v3 behavior) inverted the signal hierarchy.
+        severity: finding.severity === 'error' ? 'error' : finding.severity === 'warning' ? 'warning' : 'suggestion',
         source: 'quality-council',
         validator: finding.validatorMapping || `QualityCouncil:${finding.category}`,
         message: `${finding.category}: ${finding.evidence.join(' ')}`,
@@ -898,6 +1047,10 @@ function collectReportFindings(
   return findings;
 }
 
+function normalizeJudgeSeverity(severity: unknown): QualitySeverity {
+  return severity === 'error' ? 'error' : severity === 'suggestion' ? 'suggestion' : 'warning';
+}
+
 function finalContractIssueSeverity(issue: FinalStoryContractIssue, fallback: QualitySeverity): QualitySeverity {
   const severity = (issue as any).severity;
   if (severity === 'critical' || severity === 'error' || severity === 'warning' || severity === 'suggestion') {
@@ -911,6 +1064,16 @@ function finalContractIssueSeverity(issue: FinalStoryContractIssue, fallback: Qu
 }
 
 function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefined {
+  // Explicit routing wins: producer-set domain, then the validator tag registry.
+  // The keyword sniff below is a fallback for unregistered sources only.
+  if (finding.domainId) {
+    return finding.domainId;
+  }
+  const tag = lookupQualityDomainTag(finding.validator);
+  if (tag) {
+    return tag.domainId;
+  }
+
   const haystack = `${finding.validator ?? ''} ${finding.source} ${finding.message}`.toLowerCase();
 
   if (
@@ -924,17 +1087,6 @@ function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefine
     haystack.includes('return-with-difference')
   ) {
     return 'story_circle_spine';
-  }
-
-  if (
-    haystack.includes('encounter anchor') ||
-    haystack.includes('encounteranchor') ||
-    haystack.includes('encounter') ||
-    haystack.includes('clock') ||
-    haystack.includes('tactical') ||
-    haystack.includes('environmental')
-  ) {
-    return 'encounters';
   }
 
   if (
@@ -1054,6 +1206,21 @@ function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefine
     return 'character_npc_relationship_quality';
   }
 
+  // Encounters LAST among content domains: "encounter" appears incidentally in
+  // messages about choices/scenes set inside encounter scenes, and this domain
+  // carries the smallest weight — greedy matching here diluted real findings
+  // (v3 checked it second). Registered encounter validators route via tags above.
+  if (
+    haystack.includes('encounter anchor') ||
+    haystack.includes('encounteranchor') ||
+    haystack.includes('encounter') ||
+    haystack.includes('clock') ||
+    haystack.includes('tactical') ||
+    haystack.includes('environmental')
+  ) {
+    return 'encounters';
+  }
+
   if (
     haystack.includes('leak') ||
     haystack.includes('design note') ||
@@ -1069,6 +1236,10 @@ function mapFindingToDomain(finding: SidecarFinding): QualityDomainId | undefine
 function mapFindingToConcept(domainId: QualityDomainId, finding: SidecarFinding | QualityFinding): string | undefined {
   if ('conceptId' in finding && finding.conceptId) {
     return finding.conceptId;
+  }
+  const tag = lookupQualityDomainTag(finding.validator);
+  if (tag?.conceptId && tag.domainId === domainId) {
+    return tag.conceptId;
   }
   const domain = DEFAULT_DOMAIN_DEFINITIONS.find((definition) => definition.id === domainId);
   if (!domain) {
@@ -1152,13 +1323,28 @@ function normalizeFindingMessage(message: string): string {
 function finalizeDomainScore(domain: DomainAccumulator): QualityDomainScore {
   const concepts = Object.values(domain.concepts).map(finalizeConceptScore);
   const score = weightedConceptScore(concepts);
-  const { defaultConceptId: _defaultConceptId, concepts: _concepts, ...rest } = domain;
-  return { ...rest, concepts, score };
+  const { defaultConceptId: _defaultConceptId, concepts: _concepts, requiresEvidence, ...rest } = domain;
+  // Evidence-requiring domains (judge-fed, e.g. prose_craft) drop out of the
+  // weighted average entirely when nothing graded or hit them — a domain with
+  // no reader in the loop must not contribute a free 100.
+  const hasEvidence =
+    domain.findings.length > 0 ||
+    Object.values(domain.concepts).some(
+      (concept) => concept.gradedScore !== undefined || concept.findings.length > 0,
+    );
+  const active = rest.active && (!requiresEvidence || hasEvidence);
+  if (requiresEvidence && !hasEvidence) {
+    rest.missingEvidence.push('No judge grades or findings reached this evidence-requiring domain; it is excluded from the weighted score.');
+  }
+  return { ...rest, active, concepts, score };
 }
 
 function finalizeConceptScore(concept: ConceptAccumulator): QualityConceptScore {
+  // A judge grade replaces the implicit 100 base; validator findings still
+  // subtract on top of it.
+  const base = concept.gradedScore ?? 100;
   const score = clampScore(
-    100 -
+    base -
       concept.criticalMisses * 25 -
       concept.errors * 18 -
       concept.warnings * 7 -
@@ -1167,8 +1353,14 @@ function finalizeConceptScore(concept: ConceptAccumulator): QualityConceptScore 
   return { ...concept, score };
 }
 
+function conceptIsActive(concept: Pick<QualityConceptScore, 'weight' | 'judgeOnly' | 'gradedScore' | 'findings'>): boolean {
+  if (concept.weight <= 0) return false;
+  if (!concept.judgeOnly) return true;
+  return concept.gradedScore !== undefined || concept.findings.length > 0;
+}
+
 function weightedConceptScore(concepts: QualityConceptScore[]): number {
-  const activeConcepts = concepts.filter((concept) => concept.weight > 0);
+  const activeConcepts = concepts.filter(conceptIsActive);
   const weighted = activeConcepts.reduce((sum, concept) => sum + concept.weight * concept.score, 0);
   const totalWeight = activeConcepts.reduce((sum, concept) => sum + concept.weight, 0);
   return totalWeight > 0 ? Math.round(weighted / totalWeight) : 0;
@@ -1491,12 +1683,15 @@ function enforceAboveNinetyRequirements(
     .every((domain) => domain.score >= 85);
   const noLeakage = signals.leakage.length === 0;
   const meaningfulAgency = signals.totalChoices > 0 && signals.meaningfulChoices > 0;
+  // v4: a 90+ score is a claim about how the story READS, so it must be earned
+  // with the prose-craft judge in the loop — deficit-free is not the same as good.
+  const proseCraftJudged = domains.some((domain) => domain.id === 'prose_craft' && domain.active);
 
-  if (!noCaps || !allStoryCircleRealized || !allCoreDomainsAtLeast85 || !noLeakage || !meaningfulAgency) {
+  if (!noCaps || !allStoryCircleRealized || !allCoreDomainsAtLeast85 || !noLeakage || !meaningfulAgency || !proseCraftJudged) {
     addedCaps.push({
       id: 'above_90_requirements_not_met',
       maxScore: 89,
-      reason: 'Scores at or above 90 require no caps, all Story Circle beats realized on-page, all core domains at least 85, no leakage, and meaningful agency.',
+      reason: 'Scores at or above 90 require no caps, all Story Circle beats realized on-page, all core domains at least 85, no leakage, meaningful agency, and prose-craft judge evidence.',
     });
     return { score: Math.min(score, 89), addedCaps };
   }
@@ -1515,7 +1710,9 @@ function computeEvidenceCoverage(
     signals.sceneCount > 0 && signals.beatCount > 0,
     storyCircle.hasStoryCircleEvidence,
     Boolean(inputs.finalStoryContractReport),
-    true,
+    // v4: QA evidence counts toward coverage (v3 had a hardcoded `true` here
+    // that permanently inflated coverage by one slot).
+    Boolean(inputs.qaReport),
     signals.totalChoices > 0,
   ];
 
@@ -1956,7 +2153,7 @@ function collectStaticStorySignals(story?: Story | null): StaticStorySignals {
     });
   });
 
-  const leakage = detectLeakage(prose.join('\n'));
+  const leakageScan = detectLeakage(prose.join('\n'));
   return {
     finalStoryPresent,
     sceneCount,
@@ -1965,8 +2162,12 @@ function collectStaticStorySignals(story?: Story | null): StaticStorySignals {
     totalChoices,
     meaningfulChoices,
     choicesWithConsequences,
-    leakage,
-    repeatedOrCentralLeakage: leakage.length > 1,
+    leakage: leakageScan.findings,
+    // v4 calibration: "repeated or central" means the SAME pattern recurs or
+    // leakage is pervasive (3+ total occurrences). v3 counted distinct patterns
+    // once each, so two single slips hit the harsh 49 cap while fifty
+    // occurrences of one pattern did not.
+    repeatedOrCentralLeakage: leakageScan.maxPatternOccurrences >= 2 || leakageScan.totalOccurrences >= 3,
     invalidEncounterTargets: uniqueStrings(invalidEncounterTargets),
     cosmeticBranching: totalChoices > 0 && meaningfulChoices === 0,
   };
@@ -2025,27 +2226,39 @@ function proseForEvidenceItem(
   return scoped.map((segment) => segment.text).join('\n').toLowerCase();
 }
 
-function detectLeakage(prose: string): QualityFinding[] {
+interface LeakageScan {
+  findings: QualityFinding[];
+  totalOccurrences: number;
+  maxPatternOccurrences: number;
+}
+
+function detectLeakage(prose: string): LeakageScan {
   if (!prose.trim()) {
-    return [];
+    return { findings: [], totalOccurrences: 0, maxPatternOccurrences: 0 };
   }
-  return LEAKAGE_PATTERNS.flatMap(({ pattern, label }) => {
-    const matches = prose.match(pattern);
-    if (!matches) {
+  let totalOccurrences = 0;
+  let maxPatternOccurrences = 0;
+  const findings = LEAKAGE_PATTERNS.flatMap(({ pattern, label }) => {
+    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const count = Array.from(prose.matchAll(new RegExp(pattern.source, flags))).length;
+    if (count === 0) {
       return [];
     }
+    totalOccurrences += count;
+    maxPatternOccurrences = Math.max(maxPatternOccurrences, count);
     return [
       {
         id: makeFindingId('leakage-scan', label, 'error'),
         severity: 'error' as const,
         source: 'leakage-scan',
-        validator: 'QualityScoreV3',
-        message: `Player-facing prose contains ${label}.`,
+        validator: 'QualityScoreV4',
+        message: `Player-facing prose contains ${label}${count > 1 ? ` (${count} occurrences)` : ''}.`,
         mappedDomain: 'gameplay_mechanics_as_fiction' as const,
         conceptId: 'fiction_first_presentation',
       },
     ];
   });
+  return { findings, totalOccurrences, maxPatternOccurrences };
 }
 
 function readQualitySidecarFindings(outputDir?: string): SidecarFinding[] {

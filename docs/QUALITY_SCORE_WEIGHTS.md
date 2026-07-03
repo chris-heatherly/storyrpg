@@ -1,23 +1,42 @@
 # Quality Score Weights
 
-This file is the human-tweakable QualityScore v3 weight sheet.
+This file is the human-tweakable QualityScore v4 weight sheet.
 
 `storyrpg-prototype/src/ai-agents/utils/qualityScoring.ts` reads this file during Node/worker scoring and overrides matching weights by section/table label. Edit weights freely. Keep section and concept labels stable unless you also update the scorer labels/keywords.
 
 Top-level category weights should total 100. Concept weights are normalized within each category, so they may be treated as relative weights. The Story Circle concept values below intentionally preserve the approved 110-point relative spread.
 
+v4 maps the four product pillars: **well told** = Story Circle spine + Dramatic
+structure (30); **well written** = Prose craft + Scene coherence (25);
+**agency** = Choice agency + Mechanics + Encounters (25); **responsive world**
+= Branching/consequence + Character/NPC (20). Prose craft is judge-fed
+(ProseCraftJudge) and drops out of the average on runs where the judge never
+ran; the same holds for the judge-only responsiveness concepts.
+
 ## Category Weights
 
 | Category | Weight |
 |---|---:|
-| Story Circle spine | 20% |
-| Dramatic structure / season story architecture | 18% |
-| Scene coherence / prose continuity | 17% |
-| Choice agency | 15% |
-| Branching / consequence memory | 13% |
-| Character / NPC / relationship quality | 10% |
+| Story Circle spine | 15% |
+| Dramatic structure / season story architecture | 15% |
+| Prose craft | 15% |
+| Scene coherence / prose continuity | 10% |
+| Choice agency | 18% |
+| Branching / consequence memory | 12% |
+| Character / NPC / relationship quality | 8% |
 | Gameplay mechanics as fiction | 5% |
 | Encounters | 2% |
+
+## Prose craft
+
+| Concept | Weight |
+|---|---:|
+| Sentence craft | 20% |
+| Specificity / show-don't-tell | 20% |
+| Filler density | 18% |
+| Rhythm and pacing | 14% |
+| Dialogue naturalness | 14% |
+| Narrative voice / style consistency | 14% |
 
 ## Story Circle spine
 
@@ -80,6 +99,7 @@ Top-level category weights should total 100. Concept weights are normalized with
 | Concept | Weight |
 |---|---:|
 | Branch residue survives reconvergence | 20% |
+| Choice consequences visible in downstream prose | 15% |
 | Consequences are specific and remembered | 17% |
 | Cross-episode payoffs | 15% |
 | Branches create meaningfully different experiences | 14% |
@@ -94,6 +114,7 @@ Top-level category weights should total 100. Concept weights are normalized with
 | Concept | Weight |
 |---|---:|
 | Protagonist want / need / lie / truth | 20% |
+| NPCs react to player choices | 15% |
 | Character change under pressure | 18% |
 | NPCs have clear desire, pressure, and function | 14% |
 | Relationship pacing is earned | 12% |

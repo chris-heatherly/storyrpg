@@ -70,6 +70,109 @@ export function buildVoiceReportJsonSchema(): StructuredJsonSchema {
   };
 }
 
+const judgeIssueSchema = (conceptIds: readonly string[]) => ({
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['severity', 'conceptId', 'description'],
+    properties: {
+      severity: severitySchema,
+      conceptId: { type: 'string', enum: [...conceptIds] },
+      location: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          sceneId: shortString(),
+          beatId: shortString(),
+        },
+      },
+      description: shortString(),
+      suggestion: shortString(),
+    },
+  },
+}) as const;
+
+const judgeConceptScoreSchema = (conceptIds: readonly string[]) => ({
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['conceptId', 'score', 'evidence'],
+    properties: {
+      conceptId: { type: 'string', enum: [...conceptIds] },
+      score: { type: 'number' },
+      evidence: shortString(),
+    },
+  },
+}) as const;
+
+const PROSE_CRAFT_CONCEPT_IDS = [
+  'sentence_craft',
+  'specificity_show_dont_tell',
+  'filler_density',
+  'rhythm_pacing',
+  'dialogue_naturalness',
+  'voice_style_consistency',
+] as const;
+
+export function buildProseCraftReportJsonSchema(): StructuredJsonSchema {
+  return {
+    name: 'prose_craft_report',
+    description: 'Graded prose-craft judgment over sampled scene prose.',
+    maxOutputTokens: 3072,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['overallScore', 'conceptScores', 'issues', 'recommendations'],
+      properties: {
+        overallScore: { type: 'number' },
+        conceptScores: judgeConceptScoreSchema(PROSE_CRAFT_CONCEPT_IDS),
+        issues: judgeIssueSchema(PROSE_CRAFT_CONCEPT_IDS),
+        recommendations: stringArraySchema(),
+      },
+    },
+  };
+}
+
+const RESPONSIVENESS_CONCEPT_IDS = [
+  'choice_reflected_in_prose',
+  'npc_reacts_to_player_choice',
+] as const;
+
+export function buildResponsivenessReportJsonSchema(): StructuredJsonSchema {
+  return {
+    name: 'responsiveness_report',
+    description: 'Route-pair divergence judgment: do choices change the prose and NPC behavior?',
+    maxOutputTokens: 3072,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['overallScore', 'conceptScores', 'probeVerdicts', 'issues', 'recommendations'],
+      properties: {
+        overallScore: { type: 'number' },
+        conceptScores: judgeConceptScoreSchema(RESPONSIVENESS_CONCEPT_IDS),
+        probeVerdicts: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['probeId', 'verdict', 'npcReaction', 'notes'],
+            properties: {
+              probeId: shortString(),
+              verdict: { type: 'string', enum: ['divergent', 'cosmetic', 'unclear'] },
+              npcReaction: { type: 'string', enum: ['reactive', 'static', 'no_npcs'] },
+              notes: shortString(),
+            },
+          },
+        },
+        issues: judgeIssueSchema(RESPONSIVENESS_CONCEPT_IDS),
+        recommendations: stringArraySchema(),
+      },
+    },
+  };
+}
+
 export function buildStakesReportJsonSchema(): StructuredJsonSchema {
   return {
     name: 'stakes_report',

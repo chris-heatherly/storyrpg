@@ -21,9 +21,16 @@ export const QUALITY_SCORE_BANDS = {
 
 export type QualityBand = 'ship' | 'warn' | 'block';
 
-export function scoreBand(score: number | undefined): QualityBand {
+/**
+ * Band a run. `blockingCapCount` is the number of quality caps with
+ * maxScore < 90 — each one encodes a KNOWN shipped defect (missing treatment
+ * atom, cosmetic branching, false meaningful choice, …), so a run carrying any
+ * of them can score >= 70 but must not band "ship"; it lands in "warn" for
+ * review instead.
+ */
+export function scoreBand(score: number | undefined, blockingCapCount?: number): QualityBand {
   if (typeof score !== 'number') return 'block';
-  if (score >= QUALITY_SCORE_BANDS.ship) return 'ship';
+  if (score >= QUALITY_SCORE_BANDS.ship && !(blockingCapCount && blockingCapCount > 0)) return 'ship';
   if (score >= QUALITY_SCORE_BANDS.warn) return 'warn';
   return 'block';
 }
@@ -65,6 +72,10 @@ export interface QualityLedgerEntry {
   remediationsSucceeded?: number;
   /** S3: how many degraded gracefully (accepted imperfect output / budget exhausted). */
   remediationsDegraded?: number;
+  /** Quality-score cap ids applied to the run (see qualityScoring applyCaps). */
+  capIds?: string[];
+  /** How many of those caps have maxScore < 90 (known shipped defects). */
+  blockingCapCount?: number;
 }
 
 const LEDGER_FILENAME = 'quality-ledger.jsonl';
@@ -110,5 +121,5 @@ export async function appendQualityLedger(baseDir: string, entry: QualityLedgerE
 
 /** Attach the derived band so the JSONL is self-describing for dashboards. */
 function withBand(entry: QualityLedgerEntry): QualityLedgerEntry & { band: QualityBand } {
-  return { ...entry, band: scoreBand(entry.overallScore) };
+  return { ...entry, band: scoreBand(entry.overallScore, entry.blockingCapCount) };
 }

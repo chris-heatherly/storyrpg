@@ -2221,6 +2221,8 @@ export async function savePipelineOutputs(
       remediationsDegraded: outputs.remediationSummary?.degraded,
       secondPersonOpenerRatio: openerRatio,
       openerMonotonyPassages: openerMonotony,
+      capIds: quality.basis.caps.map((cap) => cap.id),
+      blockingCapCount: quality.basis.caps.filter((cap) => cap.maxScore < 90).length,
     });
   } catch { /* ledger is best-effort */ }
 

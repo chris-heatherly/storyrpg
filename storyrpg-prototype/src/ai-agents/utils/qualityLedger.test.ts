@@ -23,6 +23,13 @@ describe('scoreBand', () => {
     expect(scoreBand(10)).toBe('block');
     expect(scoreBand(undefined)).toBe('block');
   });
+
+  it('never ships a run carrying blocking caps (known defects), regardless of score', () => {
+    expect(scoreBand(85, 0)).toBe('ship');
+    expect(scoreBand(85, 1)).toBe('warn');
+    expect(scoreBand(74, 2)).toBe('warn');
+    expect(scoreBand(45, 3)).toBe('block');
+  });
 });
 
 describe('appendQualityLedger', () => {
@@ -40,6 +47,26 @@ describe('appendQualityLedger', () => {
     expect(first).toMatchObject({ outcome: 'success', overallScore: 82, band: 'ship', runDir: 'a' });
     const second = JSON.parse(lines[1]);
     expect(second).toMatchObject({ outcome: 'failed', errorCount: 3, band: 'block', runDir: 'b' });
+  });
+
+  it('bands a high-scoring run with blocking caps as warn, and records the caps', async () => {
+    const base = tmp();
+    await appendQualityLedger(base, {
+      timestamp: '2026-05-28T02:00:00Z',
+      outcome: 'success',
+      overallScore: 84,
+      runDir: 'c',
+      capIds: ['false_meaningful_choice'],
+      blockingCapCount: 1,
+    });
+
+    const line = readFileSync(path.join(base, 'quality-ledger.jsonl'), 'utf8').trim();
+    expect(JSON.parse(line)).toMatchObject({
+      overallScore: 84,
+      band: 'warn',
+      capIds: ['false_meaningful_choice'],
+      blockingCapCount: 1,
+    });
   });
 
   it('does not throw on an empty baseDir', async () => {

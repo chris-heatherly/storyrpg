@@ -15,6 +15,13 @@ import { CharacterProfile, VoiceProfile } from './CharacterDesigner';
 import { Beat, Choice } from '../../types';
 import { buildContinuityReportJsonSchema } from '../schemas/continuityReportSchema';
 import { buildStakesReportJsonSchema, buildVoiceReportJsonSchema } from '../schemas/qaReportSchemas';
+import {
+  ProseCraftJudge,
+  ProseCraftReport,
+  ResponsivenessJudge,
+  ResponsivenessReport,
+  judgeFlagEnabled,
+} from './QualityJudges';
 
 // ============================================
 // CONTINUITY CHECKER
@@ -1150,6 +1157,19 @@ export interface QAReport {
   criticalIssues: string[];
   summary: string;
   skippedChecks?: string[]; // Which checks were skipped due to incremental validation
+  /**
+   * Graded prose-craft judgment (QualityScore v4). Informational: feeds the
+   * quality score's prose_craft domain but does NOT enter overallScore /
+   * passesQA — the QA gate and repair loop are unchanged. Absent when the
+   * judge is disabled (STORYRPG_PROSE_JUDGE=0) or failed.
+   */
+  proseCraft?: ProseCraftReport;
+  /**
+   * Route-pair responsiveness judgment (QualityScore v4). Same contract as
+   * proseCraft: score-only, never gates QA. Absent when disabled
+   * (STORYRPG_RESPONSIVENESS_JUDGE=0) or failed.
+   */
+  responsiveness?: ResponsivenessReport;
 }
 
 /**
@@ -1257,6 +1277,10 @@ export interface QARunnerOptions {
   skipStakesAnalysis?: boolean;
   /** Focus continuity on cross-scene issues (local issues caught incrementally) */
   continuityFocusCrossScene?: boolean;
+  /** Skip the prose-craft judge (also disabled by STORYRPG_PROSE_JUDGE=0). */
+  skipProseCraft?: boolean;
+  /** Skip the responsiveness judge (also disabled by STORYRPG_RESPONSIVENESS_JUDGE=0). */
+  skipResponsiveness?: boolean;
   /** Pre-computed incremental validation results to include in report */
   incrementalResults?: {
     voiceIssueCount?: number;
@@ -1305,11 +1329,15 @@ export class QARunner {
   private continuityChecker: ContinuityChecker;
   private voiceValidator: VoiceValidator;
   private stakesAnalyzer: StakesAnalyzer;
+  private proseCraftJudge: ProseCraftJudge;
+  private responsivenessJudge: ResponsivenessJudge;
 
   constructor(config: AgentConfig) {
     this.continuityChecker = new ContinuityChecker(config);
     this.voiceValidator = new VoiceValidator(config);
     this.stakesAnalyzer = new StakesAnalyzer(config);
+    this.proseCraftJudge = new ProseCraftJudge(config);
+    this.responsivenessJudge = new ResponsivenessJudge(config);
   }
 
   async runFullQA(input: QAInput, options: QARunnerOptions = {}): Promise<QAReport> {
@@ -1369,6 +1397,40 @@ export class QARunner {
       );
     }
 
+    // Prose-craft judge (QualityScore v4). Never skipped for incremental
+    // coverage — nothing incremental reads the prose as prose. Non-blocking:
+    // a failure leaves report.proseCraft absent.
+    let proseCraftIdx = -1;
+    if (options.skipProseCraft || !judgeFlagEnabled('STORYRPG_PROSE_JUDGE')) {
+      skippedChecks.push('proseCraft');
+      console.info('[QARunner] Skipping prose-craft judge (disabled)');
+    } else {
+      proseCraftIdx = checks.length;
+      checks.push(
+        this.proseCraftJudge.execute({
+          sceneContents: input.sceneContents,
+          storyThemes: input.storyThemes,
+          targetTone: input.targetTone,
+        })
+      );
+    }
+
+    // Responsiveness judge (QualityScore v4): route-pair divergence + NPC
+    // reaction. Same non-blocking contract as the prose judge.
+    let responsivenessIdx = -1;
+    if (options.skipResponsiveness || !judgeFlagEnabled('STORYRPG_RESPONSIVENESS_JUDGE')) {
+      skippedChecks.push('responsiveness');
+      console.info('[QARunner] Skipping responsiveness judge (disabled)');
+    } else {
+      responsivenessIdx = checks.length;
+      checks.push(
+        this.responsivenessJudge.execute({
+          sceneContents: input.sceneContents,
+          choiceSets: input.choiceSets,
+        })
+      );
+    }
+
     // Run all enabled checks in parallel
     const results = await Promise.all(checks);
 
@@ -1402,6 +1464,25 @@ export class QARunner {
       stakes = stakesResult?.data || this.getDefaultStakesReport();
     }
 
+    // Judge reports are informational (score-only): absent on failure, never
+    // part of deriveQAOutcome, so the QA gate and repair loop are unchanged.
+    let proseCraft: ProseCraftReport | undefined;
+    if (proseCraftIdx >= 0) {
+      const proseCraftResult = results[proseCraftIdx] as Awaited<ReturnType<ProseCraftJudge['execute']>>;
+      proseCraft = proseCraftResult?.success ? proseCraftResult.data : undefined;
+      if (!proseCraft) {
+        console.warn(`[QARunner] Prose-craft judge produced no report${proseCraftResult?.error ? `: ${proseCraftResult.error}` : ''}`);
+      }
+    }
+    let responsiveness: ResponsivenessReport | undefined;
+    if (responsivenessIdx >= 0) {
+      const responsivenessResult = results[responsivenessIdx] as Awaited<ReturnType<ResponsivenessJudge['execute']>>;
+      responsiveness = responsivenessResult?.success ? responsivenessResult.data : undefined;
+      if (!responsiveness) {
+        console.warn(`[QARunner] Responsiveness judge produced no report${responsivenessResult?.error ? `: ${responsivenessResult.error}` : ''}`);
+      }
+    }
+
     // Score + critical-issue derivation lives in the pure deriveQAOutcome (so the
     // post-repair recompute uses the EXACT same formula — no drift).
     const { overallScore, criticalIssues, passesQA } = deriveQAOutcome(continuity, voice, stakes);
@@ -1418,6 +1499,8 @@ export class QARunner {
       criticalIssues,
       summary,
       skippedChecks: skippedChecks.length > 0 ? skippedChecks : undefined,
+      proseCraft,
+      responsiveness,
     };
   }
 

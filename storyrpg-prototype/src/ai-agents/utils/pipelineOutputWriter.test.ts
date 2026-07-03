@@ -22,17 +22,54 @@ vi.mock('expo-file-system', () => ({
 
 const tempDirs: string[] = [];
 
+/**
+ * QA report carrying high judge grades: QualityScore v4 only admits scores
+ * above 90 when the prose-craft judge actually graded the run, and counts a
+ * missing qaReport against evidence coverage.
+ */
+function judgedQAReport(overallScore = 44): any {
+  return {
+    overallScore,
+    passesQA: true,
+    criticalIssues: [],
+    proseCraft: {
+      overallScore: 93,
+      conceptScores: [
+        { conceptId: 'sentence_craft', score: 94, evidence: 'precise, active prose' },
+        { conceptId: 'specificity_show_dont_tell', score: 93, evidence: 'concrete detail throughout' },
+        { conceptId: 'filler_density', score: 92, evidence: 'no padding found' },
+        { conceptId: 'rhythm_pacing', score: 93, evidence: 'varied openers' },
+        { conceptId: 'dialogue_naturalness', score: 92, evidence: 'speech carries subtext' },
+        { conceptId: 'voice_style_consistency', score: 94, evidence: 'one controlled voice' },
+      ],
+      issues: [],
+      sampledSceneIds: ['scene-1'],
+      recommendations: [],
+    },
+    responsiveness: {
+      overallScore: 92,
+      conceptScores: [
+        { conceptId: 'choice_reflected_in_prose', score: 92, evidence: 'probes diverge' },
+        { conceptId: 'npc_reacts_to_player_choice', score: 91, evidence: 'NPCs register choices' },
+      ],
+      probeVerdicts: [],
+      issues: [],
+      recommendations: [],
+    },
+  };
+}
+
 describe('deriveRunQualityScore', () => {
   it('scores complete coherent Story Circle output above 90 while keeping legacy subscores diagnostic', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory(),
-      qaReport: { overallScore: 44, passesQA: true, criticalIssues: [] } as any,
+      qaReport: judgedQAReport(44),
       bestPracticesReport: { overallScore: 52, overallPassed: true, blockingIssues: [], warnings: [], suggestions: [] } as any,
       finalStoryContractReport: passingFinalStoryContract(),
     });
 
     expect(result.score).toBeGreaterThan(90);
-    expect(result.basis.version).toBe(3);
+    expect(result.basis.version).toBe(4);
     expect(result.basis.legacySubscores).toMatchObject({
       qaScore: 44,
       validationScore: 52,
@@ -41,12 +78,13 @@ describe('deriveRunQualityScore', () => {
     expect(result.basis.caps).toEqual([]);
     expect(result.basis.storyCircle.missingBeats).toEqual([]);
     expect(Object.fromEntries(result.basis.domains.map((domain) => [domain.id, domain.weight]))).toMatchObject({
-      story_circle_spine: 20,
-      dramatic_structure_architecture: 18,
-      scene_coherence_prose_continuity: 17,
-      choice_agency: 15,
-      branching_consequence_memory: 13,
-      character_npc_relationship_quality: 10,
+      story_circle_spine: 15,
+      dramatic_structure_architecture: 15,
+      prose_craft: 15,
+      scene_coherence_prose_continuity: 10,
+      choice_agency: 18,
+      branching_consequence_memory: 12,
+      character_npc_relationship_quality: 8,
       gameplay_mechanics_as_fiction: 5,
       encounters: 2,
     });
@@ -89,6 +127,7 @@ describe('deriveRunQualityScore', () => {
   it('does not cap when optional Fusion transport fails after the base final council passes', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory(),
+      qaReport: judgedQAReport(),
       finalStoryContractReport: passingFinalStoryContract(),
       qualityCouncilReport: {
         enabled: true,
@@ -352,6 +391,7 @@ describe('deriveRunQualityScore', () => {
 
     const result = deriveRunQualityScore({
       finalStory: story,
+      qaReport: judgedQAReport(),
       brief: {
         seasonPlan: {
           storyCircle: {
@@ -377,7 +417,9 @@ describe('deriveRunQualityScore', () => {
   it('caps leakage below 70 and repeated leakage below 50', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory({
-        extraProse: ' A visible skill check begins here. The DC 12 result is announced to the player.',
+        // Same pattern recurring (2x "skill check") plus a DC mention: 3 total
+        // occurrences — repeated/central under the v4 occurrence-count rule.
+        extraProse: ' A visible skill check begins here. Another skill check follows, and the DC 12 result is announced to the player.',
       }),
       finalStoryContractReport: passingFinalStoryContract(),
     });
@@ -851,6 +893,7 @@ describe('pipelineOutputWriter', () => {
         },
       },
       finalStory: makeStoryCircleStory(),
+      qaReport: judgedQAReport(),
       finalStoryContractReport: passingFinalStoryContract(),
     } as any, 123);
 
@@ -859,7 +902,7 @@ describe('pipelineOutputWriter', () => {
 
     const qualityReport = JSON.parse(await readFile(`${outputDir}07c-quality-score-report.json`, 'utf8'));
     expect(qualityReport).toMatchObject({
-      version: 3,
+      version: 4,
       finalScore: expect.any(Number),
       storyCircle: expect.objectContaining({ missingBeats: [] }),
       legacySubscores: expect.objectContaining({ finalStoryContractScore: 100 }),
@@ -875,7 +918,7 @@ describe('pipelineOutputWriter', () => {
       finalStoryContractBlockingIssues: 0,
       qualityScore: expect.any(Number),
       qualityScoreBasis: expect.objectContaining({
-        version: 3,
+        version: 4,
         evidenceCoverage: 100,
         legacySubscores: expect.objectContaining({ finalStoryContractScore: 100 }),
       }),

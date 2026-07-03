@@ -2,6 +2,7 @@ import type { Choice, Consequence } from '../../types';
 import { isPlaceholderStake } from '../constants/placeholderStakes';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { normalizeTintFlag } from '../utils/tintVocabulary';
+import { canonicalizeConditionOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { getFlagRegistry } from './flagRegistry';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
@@ -507,6 +508,9 @@ export function assembleChoiceForStory(
   choice: Choice,
   nextSceneId: string | undefined = choice.nextSceneId,
 ): Choice {
+  // Parse-time consumer canonicalization: encounter-outcome flag spellings in
+  // choice conditions fixed at assembly (mirrors SceneWriter's variant pass).
+  if (choice.conditions) canonicalizeConditionOutcomeFlags(choice.conditions);
   return {
     id: choice.id,
     text: choice.text,

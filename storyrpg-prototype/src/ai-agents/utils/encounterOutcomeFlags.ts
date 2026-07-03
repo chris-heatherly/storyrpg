@@ -69,6 +69,37 @@ export function canonicalizeEncounterOutcomeFlagName(flag: string): string {
 }
 
 /**
+ * Canonicalize encounter-outcome flag spellings inside ONE condition tree, in
+ * place — the parse-time (creation seam) counterpart of the story-wide
+ * normalizeEncounterOutcomeFlags walker below, so consumer-side misspellings
+ * are fixed where they are authored (SceneWriter textVariants, ChoiceAuthor
+ * conditions) instead of waiting for the final-contract net. Idempotent;
+ * returns the number of rewrites.
+ */
+export function canonicalizeConditionOutcomeFlags(condition: unknown): number {
+  let rewritten = 0;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.flag === 'string') {
+      const canonical = canonicalizeEncounterOutcomeFlagName(obj.flag);
+      if (canonical !== obj.flag) {
+        obj.flag = canonical;
+        rewritten += 1;
+      }
+    }
+    if (Array.isArray(obj.conditions)) visit(obj.conditions);
+    if (obj.condition && typeof obj.condition === 'object') visit(obj.condition);
+  };
+  visit(condition);
+  return rewritten;
+}
+
+/**
  * Deep-walk the story and rewrite every encounter-outcome flag reference — variant
  * conditions, setFlag consequences, storylet setsFlags, string conditions — to the
  * canonical spelling, so setters and consumers agree no matter which layer authored

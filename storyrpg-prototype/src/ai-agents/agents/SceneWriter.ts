@@ -39,6 +39,7 @@ import {
 } from '../prompts/storytellingPrinciples';
 import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSection';
 import { canonicalizeHookId, isStructuralFlag } from '../pipeline/callbackLedger';
+import { canonicalizeConditionOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { buildColdOpenProfileSection, buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import type {
   ArcPressureTreatmentContract,
@@ -1176,6 +1177,13 @@ Return exactly one complete SceneContent JSON object with:
                 text: v[keys[0]]
               } as TextVariant;
             }
+          }
+          // AUTO-FIX (parse-time consumer canonicalization): encounter-outcome
+          // flag spellings in variant conditions are fixed where they are
+          // authored (G12/G13: partial_victory vs partialVictory dead residue).
+          // The final-contract walker stays as a regression net.
+          if (variant?.condition) {
+            canonicalizeConditionOutcomeFlags(variant.condition);
           }
           // AUTO-FIX: a callbackHookId pointing at a STRUCTURAL flag
           // (`treatment_branch_`/`route_`/`tint:`) is always a mislabel — the ledger

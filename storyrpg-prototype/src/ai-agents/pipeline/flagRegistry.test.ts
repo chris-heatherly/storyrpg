@@ -84,6 +84,27 @@ describe('registration', () => {
   });
 });
 
+describe('parse-time condition canonicalization', () => {
+  it('rewrites misspelled encounter-outcome flags inside nested conditions', async () => {
+    const { canonicalizeConditionOutcomeFlags } = await import('../utils/encounterOutcomeFlags');
+    const condition = {
+      type: 'and',
+      conditions: [
+        { type: 'flag', flag: 'encounter_attack_partial_victory', value: true },
+        { type: 'not', condition: { type: 'flag', flag: 'encounter_attack-encounter_escaped', value: true } },
+        { type: 'flag', flag: 'accepted_quartz', value: true },
+      ],
+    };
+
+    const rewritten = canonicalizeConditionOutcomeFlags(condition);
+
+    expect(rewritten).toBe(2);
+    expect(condition.conditions[0]).toMatchObject({ flag: 'encounter_attack_partialVictory' });
+    expect((condition.conditions[1] as { condition: { flag: string } }).condition.flag).toBe('encounter_attack_escape');
+    expect(condition.conditions[2]).toMatchObject({ flag: 'accepted_quartz' });
+  });
+});
+
 describe('minting', () => {
   it('mints canonical encounter-outcome spellings', () => {
     const registry = resetFlagRegistry();

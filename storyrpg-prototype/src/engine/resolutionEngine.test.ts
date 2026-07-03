@@ -568,3 +568,61 @@ describe('validateGrowthDifficultySequence', () => {
     expect(issues).toHaveLength(0);
   });
 });
+
+describe('computeEncounterWeights (encounter unification W2 behavior lock)', () => {
+  // Encounters deliberately use their OWN probability model (40/35/25 baseline
+  // shifted +/-15% by effective stat), NOT the scene statCheck difficulty
+  // model. This lock exists so the W2 type unification can never silently
+  // reroute encounter choices through scene resolution math — the W2 parity
+  // gate found the models differ by construction, so the tactical skill API
+  // stays distinct BY DESIGN.
+  const player = () => {
+    const p = createPlayer();
+    p.skills.stealth = 50;
+    return p;
+  };
+
+  it('returns the exact baseline with no skill and no bonus', () => {
+    expect(computeEncounterWeights(player(), undefined, 0))
+      .toEqual({ success: 0.40, complicated: 0.35, failure: 0.25 });
+  });
+
+  it('returns the exact baseline at effective stat 50', () => {
+    const weights = computeEncounterWeights(player(), 'stealth', 0);
+    expect(weights.success).toBeCloseTo(0.40, 10);
+    expect(weights.complicated).toBeCloseTo(0.35, 10);
+    expect(weights.failure).toBeCloseTo(0.25, 10);
+  });
+
+  it('shifts by exactly +/-0.15 at the effective-stat extremes and always sums to 1', () => {
+    // Unknown skills bypass the attribute ceiling (effective = 50 + trained),
+    // so 'shadowcraft' at 50 reaches effective 100; a DEFINED skill is clamped
+    // by attributes, so zeroed attributes force effective 0.
+    const strong = player();
+    (strong.skills as Record<string, number>)['shadowcraft'] = 50;
+    const strongWeights = computeEncounterWeights(strong, 'shadowcraft', 0);
+    expect(strongWeights.success).toBeCloseTo(0.55, 10);
+    expect(strongWeights.failure).toBeCloseTo(0.10, 10);
+    expect(strongWeights.success + strongWeights.complicated + strongWeights.failure).toBeCloseTo(1.0, 10);
+
+    const weak = player();
+    for (const key of Object.keys(weak.attributes)) (weak.attributes as Record<string, number>)[key] = 0;
+    weak.skills.stealth = 0;
+    const weakWeights = computeEncounterWeights(weak, 'stealth', 0);
+    expect(weakWeights.success).toBeCloseTo(0.25, 10);
+    expect(weakWeights.failure).toBeCloseTo(0.40, 10);
+    expect(weakWeights.success + weakWeights.complicated + weakWeights.failure).toBeCloseTo(1.0, 10);
+  });
+
+  it('applies statBonus as an effective-stat addition capped at 100', () => {
+    const withBonus = player();
+    (withBonus.skills as Record<string, number>)['shadowcraft'] = 0;
+    const bonus = computeEncounterWeights(withBonus, 'shadowcraft', 10);
+    const equivalent = (() => {
+      const p = player();
+      (p.skills as Record<string, number>)['shadowcraft'] = 10;
+      return computeEncounterWeights(p, 'shadowcraft', 0);
+    })();
+    expect(bonus).toEqual(equivalent);
+  });
+});

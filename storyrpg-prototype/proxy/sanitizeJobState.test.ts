@@ -118,3 +118,45 @@ describe('sanitizeJobState planning-register scrub', () => {
     expect(scrubPlanningRegisterProse(text)).toBe(text);
   });
 });
+
+describe('sanitizeJobState resume payload preservation', () => {
+  it('never truncates or rewrites sourceText inside resumeContext.requestPayload', () => {
+    const treatment = `# StoryRPG Lite Treatment\n\nHook — Kylie unpacks in the Lipscani apartment.\n\n${'A'.repeat(30000)}\n\n## 7. Episode Outline\n\n### Episode 1: Dating After Dusk`;
+    const sanitized = sanitizeJobState([{
+      jobId: 'worker-test',
+      resumeContext: {
+        requestPayload: {
+          analysisInput: { sourceText: treatment, title: 'Bite Me' },
+          config: { agents: { sceneWriter: { apiKey: 'AIzaSyDzH8Xi2LJ1xNSVglVVvv-QvxyOahGKpz8', model: 'gemini-2.5-pro' } } },
+        },
+      },
+    }]);
+
+    const payload = sanitized[0].resumeContext.requestPayload;
+    expect(payload.analysisInput.sourceText).toBe(treatment);
+    expect(payload.analysisInput.sourceText).toContain('## 7. Episode Outline');
+    expect(payload.analysisInput.sourceText).toContain('Hook — Kylie unpacks');
+    expect(payload.config.agents.sceneWriter.apiKey).toBe('[redacted]');
+  });
+
+  it('scrubs secret values but preserves surrounding text inside requestPayload strings', () => {
+    const sanitized = sanitizeJobState({
+      resumeContext: {
+        requestPayload: {
+          analysisInput: { sourceText: `before AIzaSyDzH8Xi2LJ1xNSVglVVvv-QvxyOahGKpz8 after ${'B'.repeat(2000)}` },
+        },
+      },
+    });
+    const text = sanitized.resumeContext.requestPayload.analysisInput.sourceText;
+    expect(text).toContain('before [redacted] after');
+    expect(text.length).toBeGreaterThan(2000);
+    expect(text).not.toContain('[truncated');
+  });
+
+  it('still truncates large text outside requestPayload and does not re-truncate marked strings', () => {
+    const once = sanitizeJobState({ output: { sourceText: 'C'.repeat(5000) } });
+    expect(once.output.sourceText).toMatch(/\.\.\.\[truncated 3800 chars\]$/);
+    const twice = sanitizeJobState(once);
+    expect(twice.output.sourceText).toBe(once.output.sourceText);
+  });
+});

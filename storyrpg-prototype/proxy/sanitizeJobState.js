@@ -151,8 +151,11 @@ function hookPromiseStakesReplacement(hook, stakes) {
   return parts.length > 0 ? parts.join('; ') : 'The scene opens on concrete action and visible stakes.';
 }
 
+const TRUNCATION_MARKER_RE = /\.\.\.\[truncated \d+ chars\]$/;
+
 function truncateString(value, maxLength = 1200) {
   if (typeof value !== 'string' || value.length <= maxLength) return value;
+  if (TRUNCATION_MARKER_RE.test(value)) return value;
   return `${value.slice(0, maxLength)}...[truncated ${value.length - maxLength} chars]`;
 }
 
@@ -170,26 +173,39 @@ function scrubPlanningRegisterProse(value) {
     .trim();
 }
 
-function sanitizeString(value) {
-  const secretScrubbed = SECRET_VALUE_PATTERNS.reduce(
+function scrubSecretValues(value) {
+  return SECRET_VALUE_PATTERNS.reduce(
     (next, pattern) => next.replace(pattern, '[redacted]'),
     value,
   );
-  return scrubPlanningRegisterProse(secretScrubbed);
 }
 
-function sanitizeJobState(value) {
+function sanitizeString(value) {
+  return scrubPlanningRegisterProse(scrubSecretValues(value));
+}
+
+function sanitizeJobState(value, options) {
+  // preserveContent: inside resumeContext.requestPayload the strings ARE the
+  // work input (sourceText, prompts) replayed verbatim on resume — redact
+  // secrets but never truncate or rewrite them, or resumed jobs run on
+  // corrupted input.
+  const preserveContent = !!(options && options.preserveContent);
   if (!value || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(sanitizeJobState);
+  if (Array.isArray(value)) return value.map((item) => sanitizeJobState(item, options));
 
   const result = {};
   for (const [key, child] of Object.entries(value)) {
     if (SENSITIVE_KEY_RE.test(key)) {
       result[key] = typeof child === 'string' && child.trim() ? '[redacted]' : child;
     } else if (typeof child === 'string') {
-      result[key] = sanitizeString(LARGE_TEXT_KEY_RE.test(key) ? truncateString(child) : child);
+      result[key] = preserveContent
+        ? scrubSecretValues(child)
+        : sanitizeString(LARGE_TEXT_KEY_RE.test(key) ? truncateString(child) : child);
     } else if (child && typeof child === 'object') {
-      result[key] = sanitizeJobState(child);
+      result[key] = sanitizeJobState(
+        child,
+        preserveContent || key === 'requestPayload' ? { preserveContent: true } : options,
+      );
     } else {
       result[key] = child;
     }

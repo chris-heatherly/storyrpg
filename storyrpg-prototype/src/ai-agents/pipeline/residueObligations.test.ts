@@ -176,3 +176,32 @@ describe('planned residue obligations', () => {
     expect(variant?.text).toContain('Mika keeps half a step closer');
   });
 });
+
+describe('single-truth ledger seeding (P2.2)', () => {
+  it('gives an obligation with no setting choice a residue-kind ledger entry with the authored window', async () => {
+    const { CallbackLedger } = await import('./callbackLedger');
+    const ledger = new CallbackLedger({ storyId: 's' });
+    const planned = obligation({
+      id: 'residue:blog_priority',
+      flag: 'blog_prioritized',
+      conditionKey: 'blog_prioritized',
+      payoffPolicy: 'episode_window',
+      targetEpisodeNumbers: [2, 4],
+    });
+
+    implementEpisodeResidueObligations({
+      episodeNumber: 1,
+      sceneContents: [],
+      choiceSets: [],
+      seasonResiduePlan: [planned],
+      generatedThroughEpisode: 1,
+      callbackLedger: ledger,
+    });
+
+    const hook = ledger.serialize().hooks.find((h) => h.id === 'flag:blog_prioritized');
+    expect(hook).toBeDefined();
+    expect(hook?.kind).toBe('residue');
+    expect(hook?.residueObligationId).toBe('residue:blog_priority');
+    expect(hook?.payoffWindow).toEqual({ minEpisode: 2, maxEpisode: 4 });
+  });
+});

@@ -372,19 +372,57 @@ function seedCallbackHookForObligation(
   params: ImplementEpisodeResidueObligationsParams,
 ): void {
   if (!params.callbackLedger || !obligation.flag || isExcludedResidueFlag(obligation.flag)) return;
+  const targets = obligation.targetEpisodeNumbers?.length
+    ? obligation.targetEpisodeNumbers
+    : [params.episodeNumber];
+  const windowMin = Math.min(...targets);
+  const windowMax = Math.max(...targets);
   const choice = findChoiceSettingFlag(params.choiceSets, obligation.flag);
-  if (!choice) return;
-  const hook = params.callbackLedger.recordFlagSet({
-    choice,
-    flag: obligation.flag,
-    episode: params.episodeNumber,
-    sceneId: obligation.sourceSceneId || sceneIdForChoice(params.choiceSets, choice.id) || '',
+  if (choice) {
+    const hook = params.callbackLedger.recordFlagSet({
+      choice,
+      flag: obligation.flag,
+      episode: params.episodeNumber,
+      sceneId: obligation.sourceSceneId || sceneIdForChoice(params.choiceSets, choice.id) || '',
+      residueObligationId: obligation.id,
+      payoffEpisode: obligation.payoffPolicy === 'specific_episode' ? obligation.targetEpisodeNumbers[0] : undefined,
+    });
+    if (hook) {
+      // One truth for the due window (audit item 2, P2.2): the obligation's
+      // authored episode window widens the hook's, so a promise due in a later
+      // episode can never expire out of the ledger while the season plan still
+      // expects it (the "obligation open / hook resolved" split-status class).
+      params.callbackLedger.add({
+        ...hook,
+        payoffWindow: {
+          minEpisode: Math.min(hook.payoffWindow.minEpisode, windowMin),
+          maxEpisode: Math.max(hook.payoffWindow.maxEpisode, windowMax),
+        },
+      });
+      if (obligation.payoffPolicy === 'specific_episode' && obligation.targetEpisodeNumbers[0]) {
+        params.callbackLedger.setPayoffEpisode(hook.id, obligation.targetEpisodeNumbers[0], params.generatedThroughEpisode);
+      }
+    }
+    return;
+  }
+  // No choice sets the flag (yet): the planned promise still gets ONE tracked
+  // ledger entry (kind 'residue') instead of living only in validator metrics —
+  // pre-P2.2 it had no ledger presence at all, so the residue system and the
+  // callback system could disagree about the same promise's status.
+  params.callbackLedger.add({
+    id: `flag:${obligation.flag}`,
+    kind: 'residue',
+    sourceEpisode: obligation.sourceEpisodeNumber,
+    sourceSceneId: obligation.sourceSceneId || '',
+    sourceChoiceId: '',
     residueObligationId: obligation.id,
+    flags: [obligation.flag],
+    summary: obligation.sourceMaterial?.feedbackEcho
+      || obligation.authoringGuidance
+      || `Planned residue obligation: ${obligation.id}`,
+    payoffWindow: { minEpisode: windowMin, maxEpisode: windowMax },
     payoffEpisode: obligation.payoffPolicy === 'specific_episode' ? obligation.targetEpisodeNumbers[0] : undefined,
   });
-  if (hook && obligation.payoffPolicy === 'specific_episode' && obligation.targetEpisodeNumbers[0]) {
-    params.callbackLedger.setPayoffEpisode(hook.id, obligation.targetEpisodeNumbers[0], params.generatedThroughEpisode);
-  }
 }
 
 function findChoiceSettingFlag(choiceSets: ChoiceSet[], flag: string): Choice | undefined {

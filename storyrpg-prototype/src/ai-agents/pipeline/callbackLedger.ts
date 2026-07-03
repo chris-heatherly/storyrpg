@@ -290,6 +290,8 @@ export class CallbackLedger {
       payoffWindow,
       payoffCount: existing?.payoffCount ?? hook.payoffCount ?? 0,
       resolved: existing?.resolved ?? hook.resolved ?? false,
+      abandoned: existing?.abandoned ?? hook.abandoned,
+      abandonReason: existing?.abandonReason ?? hook.abandonReason,
       createdAt: existing?.createdAt ?? hook.createdAt ?? new Date().toISOString(),
       flags: Array.from(new Set([...(existing?.flags ?? []), ...hook.flags])),
       conditionKeys: Array.from(new Set([

@@ -120,3 +120,22 @@ describe('anchoredSceneLocationCues', () => {
     )).toEqual(['rooftop bar']);
   });
 });
+
+describe('person entities are not location anchors (bite-me 2026-07-03T15-30-01 victor regression)', () => {
+  it('rejects a bare pressure-entity name mined from a preposition phrase', () => {
+    expect(extractSceneLocationCues('She reads the note again, an invitation from Victor for the Equinox weekend.')).not.toContain('victor');
+  });
+
+  it('keeps venue-qualified entity phrases as places (label path)', () => {
+    // Scene location LABELS flow through normalizeSceneLocationCue directly;
+    // a venue word keeps an entity-prefixed label a real place.
+    expect(normalizeSceneLocationCue("Victor's estate")).toBeDefined();
+    expect(normalizeSceneLocationCue('Victor')).toBeUndefined();
+  });
+
+  it('still anchors ordinary places alongside entity mentions', () => {
+    const cues = extractSceneLocationCues('At the apartment she thinks of Victor.');
+    expect(cues).toContain('apartment');
+    expect(cues).not.toContain('victor');
+  });
+});

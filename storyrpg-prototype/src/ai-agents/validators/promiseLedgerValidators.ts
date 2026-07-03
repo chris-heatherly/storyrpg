@@ -59,7 +59,7 @@ export function validatePromisesDue(ledger: CallbackLedger, episode: number): Va
   const issues: ValidationIssue[] = [];
   for (const hook of ledger.all()) {
     if (hook.payoffEpisode !== episode) continue;
-    if (isPaid(hook)) continue;
+    if (isPaid(hook) || hook.abandoned) continue;
     issues.push({
       severity: 'error',
       message: `Promise "${hook.summary}" (${hook.id}) was due to pay off in episode ${episode} but was never referenced.`,

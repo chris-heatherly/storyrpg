@@ -156,3 +156,46 @@ describe('sealEpisodeIntoCanon', () => {
     expect(sealEpisodeIntoCanon({ canon, episode, episodeNumber: 1 })).toBeUndefined();
   });
 });
+
+describe('dead-promise sweep at the seal (bite-me 2026-07-03T15-39-14 negroni regression)', () => {
+  it('abandons a due promise whose flag no choice ever creates, as a warning not an abort', () => {
+    const ledger = new CallbackLedger();
+    // The exact failing shape: spine/seed-minted promise (sourceChoiceId empty),
+    // due this episode, never paid — its flag can never be true at runtime.
+    ledger.add({
+      id: 'flag:drank_dark_negroni', sourceEpisode: 1, sourceSceneId: 's1-3', sourceChoiceId: '',
+      flags: ['drank_dark_negroni'], summary: 'Kylie drank the spiked cocktail in Episode 1, dulling her senses.',
+      payoffEpisode: 1, payoffWindow: { minEpisode: 1, maxEpisode: 1 },
+    });
+    const canon = new SeasonCanon();
+    const result = evaluateEpisodeForSeal({ episode: { number: 1, scenes: [] }, episodeNumber: 1, seasonLength: 3, ledger, canon });
+
+    expect(result.clean).toBe(true);
+    const warning = result.issues.find((i) => i.location === 'promise:flag:drank_dark_negroni');
+    expect(warning?.severity).toBe('warning');
+    expect(warning?.message).toContain('auto-abandoned');
+    const hook = ledger.all().find((h) => h.id === 'flag:drank_dark_negroni');
+    expect(hook?.abandoned).toBe(true);
+  });
+
+  it('keeps the hard promise-due gate for choice-created promises', () => {
+    const ledger = new CallbackLedger();
+    ledger.add({
+      id: 'flag:real_debt', sourceEpisode: 0, sourceSceneId: 's', sourceChoiceId: 'c-real',
+      flags: ['real_debt'], summary: 'owed', payoffEpisode: 1, payoffWindow: { minEpisode: 1, maxEpisode: 1 },
+    });
+    const canon = new SeasonCanon();
+    const result = evaluateEpisodeForSeal({ episode: { number: 1, scenes: [] }, episodeNumber: 1, seasonLength: 3, ledger, canon });
+    expect(result.clean).toBe(false);
+    expect(result.issues.some((i) => i.location === 'promise:flag:real_debt' && i.severity === 'error')).toBe(true);
+  });
+
+  it('a re-add merge never resurrects an abandoned promise', () => {
+    const ledger = new CallbackLedger();
+    ledger.add({ id: 'flag:x', sourceEpisode: 1, sourceSceneId: 's', sourceChoiceId: '', flags: ['x'], summary: 'x', payoffEpisode: 1, payoffWindow: { minEpisode: 1, maxEpisode: 1 } });
+    ledger.abandon('flag:x', 'test');
+    // Re-seeding re-adds the same id (resume / next-episode seeding path).
+    ledger.add({ id: 'flag:x', sourceEpisode: 1, sourceSceneId: 's', sourceChoiceId: '', flags: ['x'], summary: 'x', payoffEpisode: 1, payoffWindow: { minEpisode: 1, maxEpisode: 1 } });
+    expect(ledger.all().find((h) => h.id === 'flag:x')?.abandoned).toBe(true);
+  });
+});

@@ -11,5 +11,10 @@ services:
     environment:
       - PORT=3001
       - STORYRPG_WORKER_MAX_OLD_SPACE_SIZE_MB=4096
+      # .env's COGNEE_BASE_URL points at localhost:8000 for HOST processes;
+      # inside this container localhost is the proxy itself, so memory recall
+      # died with "fetch failed" on every run (2026-07-03). The compose network
+      # alias is the right target here (environment overrides env_file).
+      - COGNEE_BASE_URL=http://cognee:8000
     volumes:
       - .:/app

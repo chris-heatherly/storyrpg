@@ -179,6 +179,30 @@ export function evaluateEpisodeForSeal(params: {
   // unplanted `flag:<X>` that only tints same-variant prose isn't treated as an
   // orphan cross-episode payoff (keeps condition.flag; surfaced as an advisory).
   const strippedTintHooks = [...new Set(sanitizeWithinEpisodeTintHooks(params.episode, params.ledger))];
+  // Dead-promise sweep: a promise due THIS episode whose gating flag no choice
+  // ever creates (sourceChoiceId empty — spine/seed-minted, never bound to a
+  // setter) can never display a payoff at runtime, so aborting the run over it
+  // punishes a contract-PASSED story for an unfulfillable, invisible debt
+  // (bite-me 2026-07-03T15-39-14: flag:drank_dark_negroni). Abandon it with a
+  // warning instead — the same creation-side semantics the unified
+  // ObligationLedgerValidator applies to residue kinds (planned_residue_debt,
+  // advisory). A promise whose flag IS choice-set keeps the hard gate.
+  const deadPromiseWarnings: ValidationIssue[] = [];
+  for (const hook of params.ledger.all()) {
+    if (hook.payoffEpisode !== params.episodeNumber) continue;
+    if (hook.resolved || hook.payoffCount > 0 || hook.abandoned) continue;
+    if (hook.sourceChoiceId) continue;
+    params.ledger.abandon(
+      hook.id,
+      `due in episode ${params.episodeNumber} but no choice ever creates its flag; auto-abandoned at the canon seal`,
+    );
+    deadPromiseWarnings.push({
+      severity: 'warning',
+      message: `Promise "${hook.summary}" (${hook.id}) was due in episode ${params.episodeNumber} but no choice ever creates its gating flag — auto-abandoned at the seal (a payoff variant could never display).`,
+      location: `promise:${hook.id}`,
+      suggestion: 'Wire a choice consequence that sets the flag in its planned episode, or drop the promise from the season spine.',
+    });
+  }
   const referencedHookIds = collectReferencedHookIds(params.episode);
   const promise = validatePromiseLedger({
     ledger: params.ledger,
@@ -193,7 +217,7 @@ export function evaluateEpisodeForSeal(params: {
     location: `tint-hook:${id}`,
     suggestion: 'Plant the flag as a cross-episode promise if a real payoff is intended, or rely on condition.flag alone for within-episode tints.',
   }));
-  const issues = [...promise.issues, ...canonIssues, ...tintWarnings];
+  const issues = [...promise.issues, ...canonIssues, ...tintWarnings, ...deadPromiseWarnings];
   return {
     clean: issues.every((i) => i.severity !== 'error'),
     issues,

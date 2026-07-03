@@ -7,6 +7,9 @@ const CATEGORY_LOCATION_RE = /\b(?:at|in|inside|outside|on|near|through|to|from)
 
 import { getStoryLexicon } from '../config/storyLexicon';
 
+// Venue category words that qualify a phrase as a real place.
+const VENUE_WORD_RE = /\b(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate)\b/;
+
 // Generic settlement words; story-specific city names come from the active
 // lexicon (audit Phase 6 — vocabulary lives in storyLexicon.ts, not here).
 const GENERIC_CONTAINER_CUES = ['city', 'town', 'village', 'new city', 'home city', 'city center'];
@@ -41,6 +44,15 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
   for (const place of lexicon.signaturePlaces) {
     if (normalized.includes(place)) return place;
   }
+  // Person/pressure entities are never location anchors on their own: "an
+  // invitation from Victor" mined 'victor' as a second major location and the
+  // SceneConstructionGate aborted the run (bite-me 2026-07-03T15-30-01).
+  // A venue word keeps the phrase a place ("Victor's estate" → still a cue).
+  {
+    const first = normalized.split(' ')[0];
+    const isEntity = lexicon.seasonPressureEntities.some((e) => first === e || first === `${e}s`);
+    if (isEntity && !VENUE_WORD_RE.test(normalized)) return undefined;
+  }
   // A cue that STARTS with a container city but names no venue is the city
   // plus stray following words — beat fields are space-joined without sentence
   // boundaries, so "…arrives in Bucharest␣Kylie unpacks…" mines the
@@ -50,7 +62,7 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
   // count toward the multi-location conflict.
   {
     const tokens = normalized.split(' ');
-    if (tokens.length > 1 && containerCues().has(tokens[0]) && !/\b(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate)\b/.test(normalized)) {
+    if (tokens.length > 1 && containerCues().has(tokens[0]) && !VENUE_WORD_RE.test(normalized)) {
       return tokens[0];
     }
   }

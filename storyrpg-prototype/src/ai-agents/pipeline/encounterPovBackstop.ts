@@ -210,6 +210,12 @@ export interface EncounterPovBackstopResult {
  * prose to second person. Returns how many strings changed and any residual breaks the
  * coercion could not safely clear (same-gender NPC ambiguity) — the gate routes those to regen.
  */
+/**
+ * W3 STATUS (2026-07-03): REGRESSION NET. Encounter prose is now authored
+ * under the shared house register (PROSE_AND_DIALOGUE_CRAFT) with the ABSOLUTE
+ * second-person POV block, so this coercion should be a no-op on healthy runs.
+ * Retire after one live cycle where its rewrite count stays 0.
+ */
 export function applyEncounterPovBackstop(
   story: Story,
   protagonist?: ProtagonistRef,

@@ -31,11 +31,6 @@ type EncounterLike = {
   phases?: Array<{ beats?: EncounterBeatLike[] }>;
 };
 
-function cloneNextSituation(nextSituation: unknown): unknown {
-  if (!nextSituation || typeof nextSituation !== 'object') return nextSituation;
-  return JSON.parse(JSON.stringify(nextSituation));
-}
-
 function terminalOutcomeForTier(tier: EncounterOutcomeTier): string {
   if (tier === 'success') return 'victory';
   if (tier === 'complicated') return 'partialVictory';
@@ -79,19 +74,12 @@ export function normalizeEncounterOutcomeNavigation(story: Story): number {
       const encounterBeats = collectEncounterBeats(encounter);
       if (encounterBeats.length === 0) continue;
 
-      const fallbackByTier = new Map<EncounterOutcomeTier, unknown>();
-      let anyFallback: unknown;
-      for (const beat of encounterBeats) {
-        for (const choice of beat.choices || []) {
-          for (const tier of ['success', 'complicated', 'failure'] as const) {
-            const nextSituation = choice.outcomes?.[tier]?.nextSituation;
-            if (!nextSituation) continue;
-            if (!fallbackByTier.has(tier)) fallbackByTier.set(tier, nextSituation);
-            if (!anyFallback) anyFallback = nextSituation;
-          }
-        }
-      }
-
+      // W3 (2026-07-03): the nextSituation-cloning fallback arm is DELETED —
+      // post-flip (2a9170f9) no generated encounter carries an embedded
+      // situation to clone, so an unrouted outcome chains to the next beat or
+      // terminates. Routing completeness for new content is already enforced
+      // at parse time (validateStructure + routeDanglingOutcomesToAuthoredStorylets);
+      // this pass remains the final-contract regression net for non-agent authors.
       for (let beatIndex = 0; beatIndex < encounterBeats.length; beatIndex += 1) {
         const beat = encounterBeats[beatIndex];
         const nextBeat = encounterBeats[beatIndex + 1];
@@ -99,10 +87,7 @@ export function normalizeEncounterOutcomeNavigation(story: Story): number {
           for (const tier of ['success', 'complicated', 'failure'] as const) {
             const outcome = choice.outcomes?.[tier];
             if (!outcome || outcome.nextSituation || outcome.nextBeatId || outcome.isTerminal) continue;
-            const fallback = fallbackByTier.get(tier) || anyFallback;
-            if (fallback) {
-              outcome.nextSituation = cloneNextSituation(fallback);
-            } else if (nextBeat?.id) {
+            if (nextBeat?.id) {
               outcome.nextBeatId = nextBeat.id;
             } else {
               outcome.isTerminal = true;

@@ -34,7 +34,7 @@ function storyWithEncounter(encounter: unknown): Story {
 }
 
 describe('normalizeEncounterOutcomeNavigation', () => {
-  it('attaches a same-tier nextSituation to prose outcomes with no route', () => {
+  it('terminates an unrouted outcome instead of cloning an embedded situation (W3: cloning arm deleted)', () => {
     const encounter = {
       beats: [
         {
@@ -47,31 +47,17 @@ describe('normalizeEncounterOutcomeNavigation', () => {
                 success: { tier: 'success', narrativeText: 'Your knee connects.' },
               },
             },
-            {
-              id: 'c2',
-              text: 'Study the man in the charcoal suit.',
-              outcomes: {
-                success: {
-                  tier: 'success',
-                  narrativeText: 'You read the room.',
-                  nextSituation: {
-                    setupText: 'The ring catches the streetlamp.',
-                    choices: [{ id: 'follow-up', text: 'Demand his name', outcomes: {} }],
-                  },
-                },
-              },
-            },
           ],
         },
       ],
     };
-
-    const story = storyWithEncounter(encounter);
-    expect(normalizeEncounterOutcomeNavigation(story)).toBe(1);
-    const repaired = ((story.episodes[0].scenes[0].encounter as any).beats[0].choices[0].outcomes.success);
-    expect(repaired.nextSituation?.setupText).toBe('The ring catches the streetlamp.');
-    expect(repaired.nextSituation?.choices[0].id).toBe('follow-up');
-    expect(repaired.isTerminal).toBeUndefined();
+    const story = { episodes: [{ number: 1, scenes: [{ id: 's1', encounter }] }] } as never;
+    const repaired = normalizeEncounterOutcomeNavigation(story);
+    expect(repaired).toBe(1);
+    const outcome = (encounter.beats[0].choices[0].outcomes as { success: { isTerminal?: boolean; encounterOutcome?: string; nextSituation?: unknown } }).success;
+    expect(outcome.nextSituation).toBeUndefined();
+    expect(outcome.isTerminal).toBe(true);
+    expect(outcome.encounterOutcome).toBe('victory');
   });
 
   it('marks the outcome terminal when no follow-up situation exists', () => {

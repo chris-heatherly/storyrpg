@@ -1,3 +1,11 @@
+/**
+ * W3 KEEP DECISION (2026-07-03): these walkers are NOT retired. The original
+ * W3 plan listed them for deletion, but the keep-list preserves EncounterView's
+ * situation/clock/escalation navigation — prose therefore stays inside the
+ * encounter structure, and these walkers ARE the adapter that gives the
+ * standard prose validators encounter coverage. Deleting them would remove
+ * coverage, not duplication.
+ */
 import type { Scene } from '../../types';
 import type { EncounterPhase } from '../../types/encounter';
 

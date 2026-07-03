@@ -18,6 +18,7 @@ import { BaseAgent, AgentMessage, AgentResponse } from './BaseAgent';
 import { withTimeoutAbort, TimeoutError } from '../utils/withTimeout';
 import { shrinkClockToCoverage } from '../pipeline/encounterRemediation';
 import { deepenStructureRootWins } from '../utils/encounterDepthContract';
+import { PROSE_AND_DIALOGUE_CRAFT } from '../prompts/proseCraftRegister';
 import { rebalanceEncounterSkills } from '../utils/encounterSkillRebalance';
 import {
   buildEncounterPhase1CompactJsonSchema,
@@ -2053,7 +2054,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
 - Include sequenceIntent on the storyboard and storylets. It is optional for legacy data compatibility but required-by-process for new output so storyboard panels read as one cinematic sequence with a narrative objective, visual thread, turning point, and aftermath state.
 - Keep mechanics fiction-first. Preserve existing clock feedback, but do not add visible stats, dice, numbers, panel markers, or extra meters
 
-## JSON STRUCTURE (flat with nextBeatId — system converts to tree)
+## JSON STRUCTURE (flat with nextBeatId — the canonical routing shape)
 
 {
   "sceneId": "${input.sceneId}",
@@ -4340,6 +4341,7 @@ ${choiceSection}
 10. Return ONLY valid JSON, no markdown
 11. Do not add any new visible mechanics beyond the current encounter clock visualization.
 
+${PROSE_AND_DIALOGUE_CRAFT}
 ## PROTAGONIST LANGUAGE (CRITICAL)
 
 All encounter text (setupText, narrativeText, storylet beat text) MUST use concrete player-facing prose.

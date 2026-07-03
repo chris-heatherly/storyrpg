@@ -56,6 +56,7 @@ import {
 import { buildSceneEventOwnershipPromptSection } from '../utils/sceneEventOwnership';
 import type { SceneTimelineHandoff } from '../utils/sceneTimeline';
 import { SCENE_WRITER_BEAT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
+import { PROSE_AND_DIALOGUE_CRAFT } from '../prompts/proseCraftRegister';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
@@ -615,25 +616,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - For visual metadata and image-facing fields: provide specific story intent, visible action, relationship dynamics, required details, and subtext cues. Do not add art-direction language that fights the active ArtStyleProfile, negative prompt, provider settings, or style-bible anchors.
 - Visual metadata should describe what must be understood, not impose a conflicting style. Avoid generic style words like cinematic, hyperreal, vivid colors, dramatic lighting, painterly, anime, flat, gritty, glossy, symmetrical, or high contrast unless they come from the active style contract.
 
-## Prose And Dialogue Craft
-- Use sensory detail selectively and purposefully. Sensory description should establish place, mood, danger, intimacy, texture, or consequence. Do not force all five senses into every beat.
-- Respect the active source style, genre, tone, user instructions, and style guide. Keep prose voice, dialogue rhythm, descriptive focus, and tonal register consistent across the scene.
-- Use precise, concrete, genre-appropriate language. "Vivid" means specific story intent, sensory clarity, emotional legibility, and image-safe detail, not ornate prose or conflicting art direction.
-- Make description dynamic. Descriptive details should carry pressure, mood, threat, desire, consequence, movement, or contrast.
-- Keep dialogue spare, natural, character-specific, pressure-aware, and subtextual. Dialogue should reveal character, sharpen pressure, change leverage, or expose relationship dynamics.
-- Vary sentence rhythm with scene pressure. Use shorter, sharper lines under danger, urgency, fear, or conflict. Use slightly longer rhythm for atmosphere, aftermath, tenderness, or dread while respecting mobile beat caps.
-- Vary sentence OPENERS. The reader is "you", so second person is correct — but do not stack subject-first "You …"/"Your …" declaratives. Never let two consecutive sentences begin with "You". Open instead with the object, a dependent clause, a sensory detail, an NPC's name or action, dialogue, or the environment as subject; let "you" fall mid-sentence. Avoid the flat "You X. You Y. You Z." cadence.
-- Avoid repeated ritual choreography. If a toast, glass-click, door-crossing, stare, hand touch, or reveal beat has already happened, do not restage it with the same line or action unless the repetition is an intentional callback with a new meaning.
-- Open every beat inside the moment, not on its packaging. Cut throat-clearing setup ("The adrenaline hasn't faded yet. You sit down and…") and start with the core action, sensation, or pressure already in motion; establishing context earns its place only when it IS the pressure.
-- Replace label-adjectives with the evidence for them. "Rougher, dressed for the mountains" tells; the scuffed boot heel, the rope-burned knuckles, the coat that has slept outdoors shows. When a description leans on a category word (elegant, dangerous, expensive, rough), swap in the one concrete detail that proves it.
-- Reveal motivation, fear, desire, attraction, guilt, suspicion, and grief through action, choice, speech, silence, bodily response, facial expression, object handling, avoidance, proximity, risk, and what the character does next.
-- Show emotion through physical response and facial expression rather than direct explanation.
-- Use environmental elements to enhance mood. The setting should pressure, contrast, reveal, or complicate the scene.
-- Build every scene toward its keyMoment using sceneTakeaways, moodProgression, intensityTier, and final beat pressure.
-- End with resolution plus forward pressure: consequence, emotional shift, reveal, choice, handoff, danger, changed relationship, or unresolved cost. Use true cliffhangers only when appropriate.
-- Avoid repetition. Do not repeat plot events, dialogue, scene shapes, descriptive phrasing, character phrasing, location phrasing, or action language unless the repetition is an intentional callback, refrain, contrast, or payoff.
-- Maintain consistent tone across the scene while allowing intentional tonal turns caused by story events.
-
+${PROSE_AND_DIALOGUE_CRAFT}
 ## Fight, Weapon, And Physical Action Scenes
 - If a scene includes fighting, weapons, pursuit, survival danger, or major physical action, make the danger concrete and serious.
 - Fight/action beats should include specific strikes, maneuvers, evasions, blocks, grapples, throws, falls, impacts, wounds, or damage.

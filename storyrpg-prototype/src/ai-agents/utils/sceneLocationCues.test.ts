@@ -59,6 +59,16 @@ describe('uniqueMajorLocationCues', () => {
     ).toBe(1);
   });
 
+  it('never mines a city + person-name run as a second location (bite-me 2026-07-03)', () => {
+    // Beat fields are space-joined without sentence boundaries, so
+    // "…arrives in Bucharest␣Kylie unpacks…" produces the capitalized run
+    // "Bucharest Kylie". It must collapse to the container city (which never
+    // counts toward the multi-location conflict), leaving only the apartment.
+    expect(
+      uniqueMajorLocationCues(['Lipscani Apartment', 'Kylie arrives in Bucharest Kylie unpacks her two suitcases in the apartment']),
+    ).toEqual(['apartment']);
+  });
+
   it('still counts two genuinely distinct venues as two locations', () => {
     expect(
       uniqueMajorLocationCues(['Rooftop Bar', 'Then she crosses to the Museum.']).sort(),

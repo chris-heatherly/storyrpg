@@ -41,6 +41,19 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
   for (const place of lexicon.signaturePlaces) {
     if (normalized.includes(place)) return place;
   }
+  // A cue that STARTS with a container city but names no venue is the city
+  // plus stray following words — beat fields are space-joined without sentence
+  // boundaries, so "…arrives in Bucharest␣Kylie unpacks…" mines the
+  // capitalized run "Bucharest Kylie" as a place (bite-me
+  // 2026-07-03T02-08-32: preflight counted it as a second major location on
+  // the arrival scene). Collapse to the container city; container cues never
+  // count toward the multi-location conflict.
+  {
+    const tokens = normalized.split(' ');
+    if (tokens.length > 1 && containerCues().has(tokens[0]) && !/\b(?:bar|club|park|station|apartment|archive|venue|hotel|house|garden|gardens|market|office|studio|library|bookshop|bookstore|rooftop|courtyard|cafe|café|museum|shop|dock|estate)\b/.test(normalized)) {
+      return tokens[0];
+    }
+  }
   if (/\brooftop\b/.test(normalized) && /\bbar\b/.test(normalized)) return 'rooftop bar';
   if (/\bbook(?:shop|store)\b/.test(normalized)) return 'bookshop';
   if (/\bapartment\b/.test(normalized)) return 'apartment';

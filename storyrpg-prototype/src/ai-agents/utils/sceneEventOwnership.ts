@@ -76,6 +76,9 @@ const WALK_HOME_ESCORT_RE = /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|e
 // RouteContinuityValidator walkHomeCueFires).
 const WALK_HOME_GESTURE_RE = /\b(?:small of your back|guiding you away|under your heels)\b/i;
 const WALK_HOME_CONTEXT_RE = /\b(?:walk(?:s|ing)?|home|door(?:step|way)?|threshold|apartment|building|stairs|street|park|alley|pavement|sidewalk|escort(?:s|ing)?|guid(?:es|ing)|steer(?:s|ing)|toward)\b/i;
+// Determiner+"walk home" noun phrases are recounting references, not stagings
+// (keep in sync with RouteContinuityValidator WALK_HOME_NOUN_PHRASE).
+const WALK_HOME_NOUN_PHRASE_RE = /\b(?:the|a|an|that|this|her|his|their|our|my|your|its)\s+walk\s+home\b/gi;
 
 function cleanText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -152,7 +155,8 @@ function contractTexts(scene: SceneEventOwnershipSceneLike): OwnershipSourceText
 function cuesFor(text: string): SceneEventOwnershipCue[] {
   const cues = new Set<SceneEventOwnershipCue>();
   for (const cue of detectPrimaryStoryEventCues(text)) cues.add(cue as StoryEventCue);
-  if (WALK_HOME_ESCORT_RE.test(text) || (WALK_HOME_GESTURE_RE.test(text) && WALK_HOME_CONTEXT_RE.test(text))) cues.add('walkHome');
+  const walkText = text.replace(WALK_HOME_NOUN_PHRASE_RE, ' ');
+  if (WALK_HOME_ESCORT_RE.test(walkText) || (WALK_HOME_GESTURE_RE.test(walkText) && WALK_HOME_CONTEXT_RE.test(walkText))) cues.add('walkHome');
   return [...cues].sort((a, b) => eventOrder(a) - eventOrder(b));
 }
 

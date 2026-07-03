@@ -554,6 +554,148 @@ describe('RouteContinuityValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('restages walkHome'))).toBe(true);
   });
 
+  // Regression: bite-me_2026-07-03T05-47-21 s1-5 — Kylie recounts the night
+  // while drafting the blog post; "the walk home" is a noun-phrase mention in
+  // a recounting enumeration, not a restaged walk-home event.
+  it('does not flag a recounting enumeration ("the walk home") as a walk-home restage', () => {
+    const walkHomeEvent = {
+      key: 'cue:walkHome',
+      cue: 'walkHome' as const,
+      text: 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes.',
+      sourceContractIds: ['walk-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'walk-owner',
+        name: 'Walk Owner',
+        startingBeatId: 'walk-beat',
+        sceneEventOwnership: {
+          id: 'walk-owner-event-ownership',
+          sceneId: 'walk-owner',
+          ownedEvents: [walkHomeEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['walk-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'walk-beat',
+          text: 'Avery Vale walks you home through the dark park to your threshold, then vanishes.',
+          nextSceneId: 'blog-draft',
+          choices: [],
+        }],
+        leadsTo: ['blog-draft'],
+      },
+      {
+        id: 'blog-draft',
+        name: 'Blog Draft',
+        startingBeatId: 'deadbolt-beat',
+        sceneEventOwnership: {
+          id: 'blog-draft-event-ownership',
+          sceneId: 'blog-draft',
+          ownedEvents: [{
+            key: 'cue:lateNightWriting',
+            cue: 'lateNightWriting' as const,
+            text: 'At 4am she turns the night into the first blog post.',
+            sourceContractIds: ['blog-turn'],
+          }],
+          incomingContext: [walkHomeEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [walkHomeEvent],
+          sourceContractIds: ['blog-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [
+          {
+            id: 'deadbolt-beat',
+            text: 'The heavy oak door slams shut, and you frantically slide the deadbolt home.',
+            nextBeatId: 'recount-beat',
+            choices: [],
+          },
+          {
+            id: 'recount-beat',
+            text: 'The rest pours out, The attack, the rescue, the walk home. Every detail sharp and strange. You hit publish just as the sky begins to lighten. The story is out there now, yours again.',
+            choices: [],
+          },
+        ],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('keeps the walk-home recap exemption when unrelated "home" idioms share the scene', () => {
+    const walkHomeEvent = {
+      key: 'cue:walkHome',
+      cue: 'walkHome' as const,
+      text: 'Walking home through the park, she is attacked and rescued by the stranger, who walks her to her threshold and vanishes.',
+      sourceContractIds: ['walk-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'walk-owner',
+        name: 'Walk Owner',
+        startingBeatId: 'walk-beat',
+        sceneEventOwnership: {
+          id: 'walk-owner-event-ownership',
+          sceneId: 'walk-owner',
+          ownedEvents: [walkHomeEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['walk-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'walk-beat',
+          text: 'Avery Vale walks you home through the dark park to your threshold, then vanishes.',
+          nextSceneId: 'memory-later',
+          choices: [],
+        }],
+        leadsTo: ['memory-later'],
+      },
+      {
+        id: 'memory-later',
+        name: 'Memory Later',
+        startingBeatId: 'memory-beat',
+        sceneEventOwnership: {
+          id: 'memory-later-event-ownership',
+          sceneId: 'memory-later',
+          ownedEvents: [],
+          incomingContext: [walkHomeEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [walkHomeEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [
+          {
+            id: 'memory-beat',
+            text: 'You remember how Avery Vale walks you home through the dark park.',
+            nextBeatId: 'idiom-beat',
+            choices: [],
+          },
+          {
+            id: 'idiom-beat',
+            text: 'The heavy oak door clicks shut, the deadbolt sliding home with a finality that doesn\'t feel entirely safe.',
+            choices: [],
+          },
+        ],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
   it('uses event ownership to block active restaging of an earlier owned route event', () => {
     const story = makeStory([
       {

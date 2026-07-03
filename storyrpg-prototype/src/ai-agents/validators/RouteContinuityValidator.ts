@@ -73,16 +73,24 @@ const WALK_HOME_ESCORT_PATTERN = /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guid
 // walk-home event when the same sentence carries movement toward a dwelling.
 const WALK_HOME_GESTURE_PATTERN = /\b(?:small of your back|guiding you away|under your heels)\b/i;
 const WALK_HOME_MOVEMENT_CONTEXT = /\b(?:walk(?:s|ing)?|home|door(?:step|way)?|threshold|apartment|building|stairs|street|park|alley|pavement|sidewalk|escort(?:s|ing)?|guid(?:es|ing)|steer(?:s|ing)|toward)\b/i;
+// A determiner+"walk home" noun phrase ("The attack, the rescue, the walk
+// home") names the event in a recounting/enumeration rather than staging it —
+// strip it before movement analysis so only escort verbs fire the cue.
+const WALK_HOME_NOUN_PHRASE = /\b(?:the|a|an|that|this|her|his|their|our|my|your|its)\s+walk\s+home\b/gi;
 
 const WALK_HOME_PATTERNS: RegExp[] = [
   WALK_HOME_ESCORT_PATTERN,
   WALK_HOME_GESTURE_PATTERN,
 ];
 
+function walkHomeWindowFires(window: string): boolean {
+  const staged = window.replace(WALK_HOME_NOUN_PHRASE, ' ');
+  return WALK_HOME_ESCORT_PATTERN.test(staged)
+    || (WALK_HOME_GESTURE_PATTERN.test(staged) && WALK_HOME_MOVEMENT_CONTEXT.test(staged));
+}
+
 function walkHomeCueFires(text: string): boolean {
-  return sentenceWindows(text).some((window) =>
-    WALK_HOME_ESCORT_PATTERN.test(window)
-    || (WALK_HOME_GESTURE_PATTERN.test(window) && WALK_HOME_MOVEMENT_CONTEXT.test(window)));
+  return sentenceWindows(text).some(walkHomeWindowFires);
 }
 
 const PUBLIC_BLOG_AFTERMATH_MARKERS = /\b(?:readership|viral|views|comments|dashboard|profile|public pressure|public signal|broke the internet|attention spike|audience growth)\b|\b\d[\d,]*\s+reads?\b/i;
@@ -94,7 +102,7 @@ const ROUTE_CUE_PATTERNS: Record<'walkHome', RegExp[]> = {
 };
 
 const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|write(?:s|ing)? about)\b/i;
-const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|remind(?:s|ed|er|ers|ing)?|phantom|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
+const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|remind(?:s|ed|er|ers|ing)?|phantom|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger|walk\s+home)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
 const ACTIVE_RESTAGE_MARKERS = /\b(?:attacks?|rescues?|saves?|pulls?|drags?|carries|blocks?|lunges?|strikes?|chases?|grabs?|hands?|offers?|presses?|meets?|introduces?|arrives?|walks?)\b/i;
 const ACTIVE_ARRIVAL_MARKERS = /\b(?:arriv(?:e|es|ed|ing)|lands?|landed|unpacks?|unpacked|taxi\s+(?:leaves?|drops?)|cab\s+(?:leaves?|drops?)|steps?\s+(?:off|out)|airport|station|dock)\b/i;
 
@@ -157,14 +165,10 @@ const CUE_WINDOW_PATTERNS: Partial<Record<RouteCue, RegExp>> = {
   threatEncounter: /\b(?:attack(?:s|ed|ing)?|threat|danger|rescue(?:s|d)?|save(?:s|d)?|lunges?|chases?|grabs?)\b/i,
   lateNightWriting: /\b(?:writes?|typing|draft|post|blog|late\s+night|notebook|laptop)\b/i,
   blogAftermath: PUBLIC_BLOG_AFTERMATH_MARKERS,
-  // Keep in sync with walkHomeCueFires: windows must cover the same phrases
-  // that fire the cue, or recap analysis inspects the wrong sentences. Bare
-  // `home` is NOT enough — "the deadbolt sliding home" (bolt-seats-in-socket
-  // idiom) polluted the recap analysis with non-recap windows and defeated the
-  // exemption on a scene whose only walk-home mention was a blog-post recap
-  // (bite-me 2026-07-03T05-47-21 s1-5). A window counts only when `home`
-  // travels with a walk/guide/escort shape, matching the firing pattern.
-  walkHome: /\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b|\b(?:small of your back|guiding you away|under your heels)\b/i,
+  // walkHome has no keyword window: recap analysis reuses walkHomeWindowFires
+  // so it inspects exactly the sentences that fired the cue (a loose "home"
+  // keyword drags in idioms like "the deadbolt slides home" and defeats the
+  // recap exemption).
 };
 
 function isTerminalSceneTarget(id: string | undefined): boolean {
@@ -344,9 +348,11 @@ function isRecapOnlyCue(scene: Scene, cue: RouteCue): boolean {
     ...collectEncounterMetaTexts(scene),
   ].join(' ');
   const pattern = CUE_WINDOW_PATTERNS[cue];
-  const windows = pattern
-    ? sentenceWindows(text).filter((window) => pattern.test(window))
-    : sentenceWindows(text);
+  const windows = cue === 'walkHome'
+    ? sentenceWindows(text).filter(walkHomeWindowFires)
+    : pattern
+      ? sentenceWindows(text).filter((window) => pattern.test(window))
+      : sentenceWindows(text);
   if (windows.length === 0) return false;
   if (cue === 'arrival' && windows.every((window) => !ACTIVE_ARRIVAL_MARKERS.test(window))) {
     return true;

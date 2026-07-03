@@ -108,7 +108,12 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('threatEncounter');
   }
 
-  if (/\b(?:walks?|takes?|escorts?|sees?)\b.{0,80}\b(?:you|her|him|them|the protagonist)?\s*home\b/.test(text)) {
+  // A determiner+"walk home" noun phrase ("the attack, the rescue, the walk
+  // home") names the event in a recounting rather than staging it — strip it
+  // before the verb test (keep in sync with RouteContinuityValidator
+  // WALK_HOME_NOUN_PHRASE and the sceneEventOwnership twin).
+  const walkHomeText = text.replace(/\b(?:the|a|an|that|this|her|his|their|our|my|your|its) walk home\b/g, ' ');
+  if (/\b(?:walks?|takes?|escorts?|sees?)\b.{0,80}\b(?:you|her|him|them|the protagonist)?\s*home\b/.test(walkHomeText)) {
     cues.add('walkHome');
   }
 

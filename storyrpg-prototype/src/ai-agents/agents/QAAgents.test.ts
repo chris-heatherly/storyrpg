@@ -5,6 +5,7 @@ import {
   normalizeContinuitySeverity,
   deriveContinuityScore,
   groundContinuityEvidence,
+  anchorContinuityIssueLocations,
   deriveVoiceScore,
   deriveEvidenceLimitedScore,
   deriveQAOutcome,
@@ -33,6 +34,91 @@ describe('QAAgents continuity normalization', () => {
       warnings: 1,
       suggestions: 1,
     });
+  });
+});
+
+describe('anchorContinuityIssueLocations (mine scene/beat ids out of judge prose)', () => {
+  // Mirrors bite-me 2026-07-02T23-54-38: the blocking finding's TEXT named
+  // s1-2-b2 but the structured location was empty, so the repair pass had
+  // nothing to target and the error shipped unrepaired to qa_blocker_present.
+  const scenes = [
+    { sceneId: 's1-arrival-cold-open', beats: [{ id: 's1-arrival-cold-open-b1' }] },
+    { sceneId: 's1-1', beats: [{ id: 's1-1-b1' }] },
+    { sceneId: 's1-2', beats: [{ id: 's1-2-b1' }, { id: 's1-2-b2' }] },
+    { sceneId: 's1-blog-aftermath', beats: [{ id: 's1-blog-aftermath-b1' }] },
+  ];
+  const mikaIssue = (location: unknown): ContinuityIssue => ({
+    severity: 'error',
+    type: 'missing_setup',
+    location: location as ContinuityIssue['location'],
+    description: 'Mika is mentioned by name and speaks in s1-2-b2, but the reader has not been introduced to her on-page yet. The first scene (s1-arrival-cold-open) only introduces Kylie.',
+    conflictsWith: "char-mika-dragan: Knows: Kylie's best friend",
+    suggestedFix: "Introduce Mika Dragan in an earlier scene, or rephrase s1-2-b2 to introduce her as 'a friend' before naming her.",
+  });
+
+  it('fills a missing location from a beat id named in the description (earliest mention wins)', () => {
+    const [anchored] = anchorContinuityIssueLocations([mikaIssue(undefined)], scenes);
+    expect(anchored.location).toEqual({ sceneId: 's1-2', beatId: 's1-2-b2' });
+  });
+
+  it('treats sentinel sceneIds ("None"/"unknown") as missing', () => {
+    for (const sentinel of ['None', 'unknown', '']) {
+      const [anchored] = anchorContinuityIssueLocations([mikaIssue({ sceneId: sentinel })], scenes);
+      expect(anchored.location.sceneId).toBe('s1-2');
+      expect(anchored.location.beatId).toBe('s1-2-b2');
+    }
+  });
+
+  it('never overrides a judge-supplied location, but fills a missing beatId for that scene', () => {
+    const supplied = anchorContinuityIssueLocations([mikaIssue({ sceneId: 's1-1', beatId: 's1-1-b1' })], scenes)[0];
+    expect(supplied.location).toEqual({ sceneId: 's1-1', beatId: 's1-1-b1' });
+    // sceneId supplied without beatId: only a beat BELONGING to that scene may be filled
+    const partial = anchorContinuityIssueLocations([mikaIssue({ sceneId: 's1-1' })], scenes)[0];
+    expect(partial.location.sceneId).toBe('s1-1');
+    expect(partial.location.beatId).toBeUndefined();
+  });
+
+  it('anchors word-segment scene ids like s1-blog-aftermath', () => {
+    const issue: ContinuityIssue = {
+      severity: 'error',
+      type: 'missing_setup',
+      location: {} as ContinuityIssue['location'],
+      description: 'The blog reaction in s1-blog-aftermath references a post the reader never saw published.',
+      suggestedFix: 'Show the post going live first.',
+    };
+    const [anchored] = anchorContinuityIssueLocations([issue], scenes);
+    expect(anchored.location.sceneId).toBe('s1-blog-aftermath');
+  });
+
+  it('falls back to scene-id-shaped tokens when no known ids are supplied', () => {
+    const [anchored] = anchorContinuityIssueLocations([mikaIssue(undefined)], []);
+    expect(anchored.location.sceneId).toBe('s1-2');
+    expect(anchored.location.beatId).toBe('s1-2-b2');
+  });
+
+  it('does not match a scene id embedded inside a longer id token', () => {
+    const issue: ContinuityIssue = {
+      severity: 'error',
+      type: 'contradiction',
+      location: {} as ContinuityIssue['location'],
+      description: 'Contradiction in s1-2-b1.',
+      suggestedFix: 'Fix it.',
+    };
+    // s1-2 must be derived by owning-beat lookup, not by substring-matching "s1-2" inside "s1-2-b1"
+    const [anchored] = anchorContinuityIssueLocations([issue], scenes);
+    expect(anchored.location).toEqual({ sceneId: 's1-2', beatId: 's1-2-b1' });
+  });
+
+  it('leaves issues without any id-shaped mention untouched', () => {
+    const issue: ContinuityIssue = {
+      severity: 'warning',
+      type: 'timeline_error',
+      location: {} as ContinuityIssue['location'],
+      description: 'The evening feels out of order.',
+      suggestedFix: 'Reorder.',
+    };
+    const [anchored] = anchorContinuityIssueLocations([issue], scenes);
+    expect(anchored.location.sceneId).toBeUndefined();
   });
 });
 

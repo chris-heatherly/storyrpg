@@ -23,6 +23,7 @@ import {
   QAReport,
   ContinuityChecker,
   type ContinuityIssue,
+  anchorContinuityIssueLocations,
   recomputeContinuityIssueCount,
   deriveContinuityScore,
   recomputeQAReportDerived,
@@ -32,10 +33,13 @@ import {
   scenesNeedingRepair,
   selectRepairableContinuityFindings,
   buildContinuityRepairGuidance,
+  resolveMissingSetupOwnerTargets,
+  buildMissingSetupOwnerGuidance,
   mergeRewrittenBeatsIntoStory,
   applyRewrittenBeatsToSceneContents,
   mergeRevalidatedContinuityIssues,
   type ContinuityFinding,
+  type OwnershipPlannedSceneLite,
 } from './continuityRepair';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
@@ -43,6 +47,17 @@ import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 import type { PipelineEvent } from './events';
+
+export interface ContinuityRepairOptions {
+  forceRevalidation?: boolean;
+  revalidationReason?: string;
+  /**
+   * Season scene plan slice (planned reading order) consulted to retarget
+   * missing_setup repairs at the scene that OWNED the dropped setup event
+   * (sceneEventOwnership), in addition to the flagged use-site scene.
+   */
+  plannedScenes?: OwnershipPlannedSceneLite[];
+}
 
 export interface SceneCriticContinuityDeps {
   config: PipelineConfig;
@@ -167,11 +182,25 @@ export class SceneCriticContinuity {
     qaReport: QAReport,
     outputDirectory: string,
     blueprint?: EpisodeBlueprint,
-    options?: { forceRevalidation?: boolean; revalidationReason?: string },
+    options?: ContinuityRepairOptions,
   ): Promise<void> {
-    const findings = (qaReport.continuity?.issues ?? []) as unknown as ContinuityFinding[];
-    const scenes = scenesNeedingRepair(findings).slice(0, 3); // bound the repair work
-    this.deps.emit({ type: 'debug', phase: 'continuity_repair', message: `Continuity repair: ${findings.length} continuity issue(s) seen, ${scenes.length} candidate scene(s).` });
+    // Judges often anchor the defect only in prose ("… speaks in s1-2-b2 …")
+    // with an empty/sentinel structured location. Mine those ids into
+    // location.sceneId/beatId — and write them back onto the report so the
+    // post-repair merge and the persisted artifacts key on the same anchors.
+    const findings = anchorContinuityIssueLocations(
+      (qaReport.continuity?.issues ?? []) as ContinuityIssue[],
+      sceneContents,
+    ) as unknown as ContinuityFinding[];
+    if (qaReport.continuity) qaReport.continuity.issues = findings as unknown as ContinuityIssue[];
+    const flaggedScenes = scenesNeedingRepair(findings);
+    // A missing_setup often means an EARLIER scene dropped the planned setup
+    // event (sceneEventOwnership) — repair the owning scene too, not just the
+    // use-site rephrase.
+    const ownerTargets = resolveMissingSetupOwnerTargets(findings, options?.plannedScenes)
+      .filter((target) => !flaggedScenes.includes(target.ownerSceneId));
+    const scenes = flaggedScenes.slice(0, 3); // bound the repair work
+    this.deps.emit({ type: 'debug', phase: 'continuity_repair', message: `Continuity repair: ${findings.length} continuity issue(s) seen, ${scenes.length} candidate scene(s), ${ownerTargets.length} owning-scene retarget(s).` });
     if (scenes.length === 0) {
       // ALWAYS persist the diagnostic — its absence was ambiguous ("0 to repair" vs
       // "repair never ran"). This records what the repair actually received, which
@@ -209,14 +238,31 @@ export class SceneCriticContinuity {
     const capabilityFacts = capabilityFactStrings(characterBible.characters);
     const repaired: Array<{ sceneId: string; beatIds: string[]; merged: number }> = [];
     const rewrittenSceneIds = new Set<string>();
-    for (const sceneId of scenes) {
+    // When an owning-scene repair lands, the flagged use-site must be
+    // re-checked too — its finding is resolved by the EARLIER scene's new
+    // introduction, so the re-check's fresh opinion on it is authoritative.
+    const alsoRevalidate = new Set<string>();
+    const tasks = [
+      ...scenes.map((sceneId) => ({
+        sceneId,
+        guidance: buildContinuityRepairGuidance(sceneId, findings, capabilityFacts),
+        flaggedBeatIds: selectRepairableContinuityFindings(findings)
+          .filter((f) => f.location?.sceneId === sceneId && f.location?.beatId)
+          .map((f) => f.location!.beatId!),
+        revalidateWith: [] as string[],
+      })),
+      ...ownerTargets.map((target) => ({
+        sceneId: target.ownerSceneId,
+        guidance: buildMissingSetupOwnerGuidance(target, capabilityFacts),
+        flaggedBeatIds: [] as string[],
+        revalidateWith: [target.findingSceneId],
+      })),
+    ].slice(0, 3); // bound the repair work across both kinds
+    for (const task of tasks) {
+      const { sceneId, guidance, flaggedBeatIds } = task;
       const scene = sceneContents.find((sc) => sc.sceneId === sceneId);
       if (!scene) continue;
-      const guidance = buildContinuityRepairGuidance(sceneId, findings, capabilityFacts);
       if (!guidance) continue;
-      const flaggedBeatIds = selectRepairableContinuityFindings(findings)
-        .filter((f) => f.location?.sceneId === sceneId && f.location?.beatId)
-        .map((f) => f.location!.beatId!);
       try {
         const critique = await withTimeout(
           critic.execute({ scene, characterBible, directorNotes: guidance, flaggedBeatIds }),
@@ -252,6 +298,7 @@ export class SceneCriticContinuity {
               this.deps.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair of ${sceneId} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — reverted to the original prose.` });
             } else {
               rewrittenSceneIds.add(sceneId);
+              for (const id of task.revalidateWith) alsoRevalidate.add(id);
               repaired.push({ sceneId, beatIds: flaggedBeatIds, merged });
               this.deps.emit({ type: 'debug', phase: 'continuity_repair', message: `Repaired ${merged} beat(s) in ${sceneId} for character-consistency continuity.` });
             }
@@ -273,7 +320,7 @@ export class SceneCriticContinuity {
         sceneContents,
         characterBible,
         qaReport,
-        [...rewrittenSceneIds],
+        [...new Set([...rewrittenSceneIds, ...alsoRevalidate])],
         blueprint,
         options?.forceRevalidation === true,
       );
@@ -284,7 +331,8 @@ export class SceneCriticContinuity {
     await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
       generatedAt: new Date().toISOString(),
       continuityIssuesSeen: findings.length,
-      candidateScenes: scenes,
+      candidateScenes: tasks.map((task) => task.sceneId),
+      ownerRetargets: ownerTargets.map(({ ownerSceneId, findingSceneId, cue, entity }) => ({ ownerSceneId, findingSceneId, cue, entity })),
       repaired,
       revalidation,
       forceRevalidation: options?.forceRevalidation === true,

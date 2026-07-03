@@ -206,7 +206,7 @@ import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
 import { DraftImageGeneration, type DraftImageGenerationDeps } from './draftImageGeneration';
 import { SceneGraphValidation, type SceneGraphValidationDeps } from './sceneGraphValidation';
-import { SceneCriticContinuity, type SceneCriticContinuityDeps } from './sceneCriticContinuity';
+import { SceneCriticContinuity, type SceneCriticContinuityDeps, type ContinuityRepairOptions } from './sceneCriticContinuity';
 import { FinalContract, type FinalContractDeps } from './finalContract';
 import { Assembly } from './assembly';
 import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
@@ -4298,7 +4298,7 @@ export class FullStoryPipeline {
     qaReport: QAReport,
     outputDirectory: string,
     blueprint?: EpisodeBlueprint,
-    options?: { forceRevalidation?: boolean; revalidationReason?: string },
+    options?: ContinuityRepairOptions,
   ): Promise<void> {
     return this.sceneCriticContinuity().repairContinuityFindings(
       story, sceneContents, characterBible, qaReport, outputDirectory, blueprint, options,
@@ -7120,17 +7120,13 @@ export class FullStoryPipeline {
           );
           await this.repairContinuityFindings(
             { episodes: [episode] } as unknown as Story,
-            sceneContents,
-            characterBible,
-            qaReport,
-            outputDirectory,
-            blueprint,
-            treatmentSourcedContinuityBlocks
-              ? {
-                  forceRevalidation: true,
-                  revalidationReason: 'treatment-sourced continuity findings escalate at final contract',
-                }
-              : undefined,
+            sceneContents, characterBible, qaReport, outputDirectory, blueprint,
+            {
+              plannedScenes: episodeBrief.seasonPlan?.scenePlan?.scenes,
+              ...(treatmentSourcedContinuityBlocks
+                ? { forceRevalidation: true, revalidationReason: 'treatment-sourced continuity findings escalate at final contract' }
+                : {}),
+            },
           );
           await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
           await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.post-repair.json`, qaReport);

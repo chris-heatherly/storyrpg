@@ -19,6 +19,7 @@ export interface ContinuityFinding {
   type: 'contradiction' | 'impossible_knowledge' | 'timeline_error' | 'state_conflict' | 'missing_setup';
   location?: { sceneId?: string; beatId?: string; choiceId?: string };
   description?: string;
+  conflictsWith?: string;
   suggestedFix?: string;
 }
 
@@ -94,6 +95,138 @@ export function buildContinuityRepairGuidance(
   for (const f of forScene) {
     lines.push(`- ${f.description ?? f.type}${f.suggestedFix ? ` (suggested: ${f.suggestedFix})` : ''}`);
   }
+  if (capabilityFacts.length > 0) {
+    lines.push('Respect this established canon — do not contradict it:');
+    for (const fact of capabilityFacts) lines.push(`- ${fact}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Planned-scene slice consulted for owning-scene retargeting — shaped after
+ * SeasonScenePlan.scenes[] (ordered by planned reading order), which is where
+ * `sceneEventOwnership` carries the treatment's event plan.
+ */
+export interface OwnershipPlannedSceneLite {
+  id?: string;
+  sceneEventOwnership?: { ownedEvents?: Array<{ cue?: string; text?: string }> };
+}
+
+export interface MissingSetupOwnerTarget {
+  /** Earlier scene that OWNED the dropped setup event — repair adds the introduction here. */
+  ownerSceneId: string;
+  /** Scene the judge flagged (first on-page use of the unintroduced element) — re-check it after the owner repair. */
+  findingSceneId: string;
+  cue?: string;
+  eventText: string;
+  /** The unintroduced entity that linked the finding to the owned event. */
+  entity: string;
+  finding: ContinuityFinding;
+}
+
+/** Capitalized words common in judge prose that are never the missing entity. */
+const ENTITY_STOPWORDS = new Set([
+  'The', 'A', 'An', 'In', 'On', 'At', 'It', 'Its', 'No', 'Yes', 'She', 'He', 'They', 'Her', 'His', 'Their',
+  'This', 'That', 'These', 'Those', 'But', 'And', 'While', 'However', 'Before', 'After', 'When', 'Where',
+  'Scene', 'Beat', 'Episode', 'Reader', 'Player', 'Introduce', 'Add', 'Ensure', 'Knows', 'First', 'Second',
+]);
+
+function mentionsEntity(text: string, entity: string): boolean {
+  const escaped = entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+}
+
+/**
+ * Names of the entity the finding says was used before being introduced.
+ * Structured character ids in the finding text (`char-mika-dragan` → mika,
+ * dragan) are the strongest signal; otherwise fall back to capitalized tokens
+ * from the description minus judge-prose stopwords.
+ */
+function missingEntityCandidates(finding: ContinuityFinding): string[] {
+  const text = [finding.description, finding.conflictsWith, finding.suggestedFix].filter(Boolean).join(' ');
+  const fromCharIds = new Set<string>();
+  for (const match of text.matchAll(/\bchar-([a-z0-9-]+)\b/gi)) {
+    for (const part of match[1].split('-')) {
+      if (part.length >= 3) fromCharIds.add(part);
+    }
+  }
+  if (fromCharIds.size > 0) return [...fromCharIds];
+  const fromProse = new Set<string>();
+  for (const match of (finding.description ?? '').matchAll(/\b[A-Z][a-z]{2,}\b/g)) {
+    if (!ENTITY_STOPWORDS.has(match[0])) fromProse.add(match[0]);
+  }
+  return [...fromProse];
+}
+
+/**
+ * For each repairable `missing_setup` finding, find the scene that should have
+ * SUPPLIED the missing setup: the closest earlier planned scene whose
+ * sceneEventOwnership owns an event naming the unintroduced entity. bite-me
+ * 2026-07-02T23-54-38: "Mika … speaks in s1-2-b2 [unintroduced]" while planned
+ * scene s1-1 owned the socialMeet cue "…forms the Dusk Club with Mika and
+ * Stela…" that was never depicted — the introduction belongs in s1-1, not in a
+ * same-scene rephrase alone. Pure; returns [] when no ownership plan is
+ * available or nothing links.
+ */
+export function resolveMissingSetupOwnerTargets(
+  findings: ContinuityFinding[] | undefined,
+  plannedScenes: OwnershipPlannedSceneLite[] | undefined,
+): MissingSetupOwnerTarget[] {
+  const scenes = plannedScenes ?? [];
+  if (scenes.length === 0) return [];
+  const out: MissingSetupOwnerTarget[] = [];
+  const seen = new Set<string>();
+  for (const finding of selectRepairableContinuityFindings(findings)) {
+    if (finding.type !== 'missing_setup') continue;
+    const findingSceneId = finding.location!.sceneId!;
+    const useIdx = scenes.findIndex((scene) => scene.id === findingSceneId);
+    if (useIdx <= 0) continue; // scene not in the plan, or nothing precedes it
+    const entities = missingEntityCandidates(finding);
+    if (entities.length === 0) continue;
+    for (let i = useIdx - 1; i >= 0; i -= 1) {
+      const scene = scenes[i];
+      if (!scene.id) continue;
+      const event = (scene.sceneEventOwnership?.ownedEvents ?? []).find((owned) =>
+        typeof owned.text === 'string' && entities.some((entity) => mentionsEntity(owned.text!, entity)),
+      );
+      if (!event) continue;
+      const entity = entities.find((candidate) => mentionsEntity(event.text ?? '', candidate))!;
+      const key = `${scene.id}::${findingSceneId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({
+          ownerSceneId: scene.id,
+          findingSceneId,
+          cue: event.cue,
+          eventText: event.text ?? '',
+          entity,
+          finding,
+        });
+      }
+      break; // closest preceding owner wins
+    }
+  }
+  return out;
+}
+
+/**
+ * Grounding guidance for re-authoring the OWNING scene of a dropped setup
+ * event: stage the introduction here, on-page, so the later use-site reads as
+ * set up. The sibling of {@link buildContinuityRepairGuidance}, which handles
+ * same-scene repairs of the flagged scene itself.
+ */
+export function buildMissingSetupOwnerGuidance(
+  target: MissingSetupOwnerTarget,
+  capabilityFacts: string[],
+): string {
+  const displayEntity = target.entity.charAt(0).toUpperCase() + target.entity.slice(1);
+  const lines: string[] = [
+    `This scene owned a planned story event that never made it on-page${target.cue ? ` (cue: ${target.cue})` : ''}:`,
+    `- ${target.eventText}`,
+    `A later scene (${target.findingSceneId}) uses ${displayEntity} without any prior on-page introduction:`,
+    `- ${target.finding.description ?? 'missing setup'}${target.finding.suggestedFix ? ` (suggested: ${target.finding.suggestedFix})` : ''}`,
+    `Rework this scene's existing beats so the introduction of ${displayEntity} happens HERE, in reader-facing prose. Keep every other staged moment intact.`,
+  ];
   if (capabilityFacts.length > 0) {
     lines.push('Respect this established canon — do not contradict it:');
     for (const fact of capabilityFacts) lines.push(`- ${fact}`);

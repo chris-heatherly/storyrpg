@@ -3,11 +3,14 @@ import {
   selectRepairableContinuityFindings,
   scenesNeedingRepair,
   buildContinuityRepairGuidance,
+  resolveMissingSetupOwnerTargets,
+  buildMissingSetupOwnerGuidance,
   mergeRewrittenBeatsIntoStory,
   mergeRewrittenEncounterBeatsIntoStory,
   applyRewrittenBeatsToSceneContents,
   mergeRevalidatedContinuityIssues,
   type ContinuityFinding,
+  type OwnershipPlannedSceneLite,
 } from './continuityRepair';
 
 const findings: ContinuityFinding[] = [
@@ -54,6 +57,96 @@ describe('selectRepairableContinuityFindings', () => {
     expect(sel).toHaveLength(1);
     expect(scenesNeedingRepair(timeline)).toEqual(['s3-3']);
     expect(buildContinuityRepairGuidance('s3-3', timeline, [])).toContain('car-window');
+  });
+});
+
+describe('resolveMissingSetupOwnerTargets (owning-scene retargeting)', () => {
+  // Mirrors bite-me 2026-07-02T23-54-38: Mika speaks unintroduced in s1-2 while
+  // planned scene s1-1 owned the socialMeet cue whose text names her — the
+  // TreatmentEventLedgerValidator advisory "socialMeet owned but not depicted"
+  // was the same defect, downgraded by the composite-treatment-bundle rule.
+  const mikaFinding: ContinuityFinding = {
+    severity: 'error',
+    type: 'missing_setup',
+    location: { sceneId: 's1-2', beatId: 's1-2-b2' },
+    description: 'Mika is mentioned by name and speaks in s1-2-b2, but the reader has not been introduced to her on-page yet.',
+    conflictsWith: "char-mika-dragan: Knows: Kylie's best friend",
+    suggestedFix: "Introduce Mika Dragan in an earlier scene, or rephrase s1-2-b2 to introduce her as 'a friend' before naming her.",
+  };
+  const plannedScenes: OwnershipPlannedSceneLite[] = [
+    {
+      id: 's1-arrival-cold-open',
+      sceneEventOwnership: { ownedEvents: [{ cue: 'arrival', text: 'Kylie Marinescu arrives in Bucharest as a charming, wounded observer.' }] },
+    },
+    {
+      id: 's1-1',
+      sceneEventOwnership: { ownedEvents: [{ cue: 'socialMeet', text: 'Kylie forms the Dusk Club with Mika and Stela over velvet booths and too-dark negronis.' }] },
+    },
+    { id: 's1-2', sceneEventOwnership: { ownedEvents: [] } },
+    { id: 's1-3', sceneEventOwnership: { ownedEvents: [{ cue: 'socialMeet', text: 'At a rooftop bar she catches the attention of a man in a charcoal suit.' }] } },
+  ];
+
+  it('retargets a missing_setup at the closest earlier scene whose owned event names the entity', () => {
+    const targets = resolveMissingSetupOwnerTargets([mikaFinding], plannedScenes);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toMatchObject({
+      ownerSceneId: 's1-1',
+      findingSceneId: 's1-2',
+      cue: 'socialMeet',
+      entity: 'mika',
+    });
+    expect(targets[0].eventText).toContain('Dusk Club');
+  });
+
+  it('builds owner guidance carrying the dropped event, the use-site, and the canon facts', () => {
+    const [target] = resolveMissingSetupOwnerTargets([mikaFinding], plannedScenes);
+    const guidance = buildMissingSetupOwnerGuidance(target, ['Mika Dragan is Kylie\'s best friend.']);
+    expect(guidance).toContain('cue: socialMeet');
+    expect(guidance).toContain('Dusk Club');
+    expect(guidance).toContain('s1-2');
+    expect(guidance).toContain('introduced to her on-page');
+    expect(guidance).toContain('best friend');
+  });
+
+  it('returns nothing without an ownership plan, a preceding owner, or an entity link', () => {
+    expect(resolveMissingSetupOwnerTargets([mikaFinding], undefined)).toEqual([]);
+    expect(resolveMissingSetupOwnerTargets([mikaFinding], [])).toEqual([]);
+    // finding scene first in the plan → nothing precedes it
+    expect(resolveMissingSetupOwnerTargets(
+      [{ ...mikaFinding, location: { sceneId: 's1-arrival-cold-open' } }],
+      plannedScenes,
+    )).toEqual([]);
+    // no earlier owned event mentions the entity
+    expect(resolveMissingSetupOwnerTargets([mikaFinding], [
+      { id: 's1-1', sceneEventOwnership: { ownedEvents: [{ cue: 'arrival', text: 'Kylie lands in Bucharest.' }] } },
+      { id: 's1-2' },
+    ])).toEqual([]);
+  });
+
+  it('only considers missing_setup errors (not warnings, not other repairable types)', () => {
+    const warning: ContinuityFinding = { ...mikaFinding, severity: 'warning' };
+    const stateConflict: ContinuityFinding = { ...mikaFinding, type: 'state_conflict' };
+    expect(resolveMissingSetupOwnerTargets([warning], plannedScenes)).toEqual([]);
+    expect(resolveMissingSetupOwnerTargets([stateConflict], plannedScenes)).toEqual([]);
+  });
+
+  it('falls back to capitalized description tokens when no char-* id is present', () => {
+    const noCharId: ContinuityFinding = {
+      severity: 'error',
+      type: 'missing_setup',
+      location: { sceneId: 's1-2' },
+      description: 'Stela speaks in this scene but the reader has never met her.',
+      suggestedFix: 'Introduce Stela earlier.',
+    };
+    const targets = resolveMissingSetupOwnerTargets([noCharId], plannedScenes);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].ownerSceneId).toBe('s1-1');
+    expect(targets[0].entity).toBe('Stela');
+  });
+
+  it('dedupes multiple findings resolving to the same owner/use-site pair', () => {
+    const second: ContinuityFinding = { ...mikaFinding, description: 'Mika hands over the folklore book unintroduced.' };
+    expect(resolveMissingSetupOwnerTargets([mikaFinding, second], plannedScenes)).toHaveLength(1);
   });
 });
 

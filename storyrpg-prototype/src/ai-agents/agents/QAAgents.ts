@@ -148,6 +148,108 @@ export function groundContinuityEvidence(
   return { issues: grounded, downgraded };
 }
 
+/** Scene slice the location anchor mines ids from (SceneContent-compatible). */
+export interface ContinuityAnchorScene {
+  sceneId?: string;
+  beats?: Array<{ id?: string }>;
+}
+
+/** location.sceneId values that mean "the judge gave us nothing" (seen: '', 'unknown', 'None'). */
+const LOCATION_SENTINELS = new Set(['', 'unknown', 'none', 'null', 'n/a', 'undefined']);
+
+/** Scene-id-shaped token for the no-known-ids fallback, e.g. `s1-2`, `s1-2-b2`, `s1-blog-aftermath`. */
+const SCENE_TOKEN_RE = /\bs\d+(?:-[a-z0-9]+)+\b/gi;
+/** Beat suffix on such a token: `s1-2-b2` / `s3-3-beat-3b` → owning scene is the prefix. */
+const BEAT_SUFFIX_RE = /-b(?:eat-)?\d+[a-z]?$/i;
+
+function hasAnchoredSceneId(location: { sceneId?: string } | undefined): boolean {
+  const sceneId = typeof location?.sceneId === 'string' ? location.sceneId.trim().toLowerCase() : '';
+  return !LOCATION_SENTINELS.has(sceneId);
+}
+
+/** Index of `id` in `text` as a standalone id token (hyphen-aware boundaries), or -1. */
+function idMentionIndex(text: string, id: string): number {
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'i').exec(text);
+  return match ? match.index : -1;
+}
+
+/**
+ * LLM continuity judges sometimes name the defect's scene/beat only in PROSE
+ * ("Mika … speaks in s1-2-b2, but the reader has not been introduced …") while
+ * leaving the structured `location` empty or sentinel ("None") — bite-me
+ * 2026-07-02T23-54-38 shipped its one blocking finding unrepaired because the
+ * continuity repair pass had no sceneId to target. Mine the issue text
+ * (description / conflictsWith / suggestedFix) for ids and fill ONLY
+ * missing/sentinel location fields; judge-supplied fields are never overridden.
+ * Ids that actually exist in the checked scenes win (earliest mention first —
+ * the first-named id is the defect's locus); a scene-id-shaped token is the
+ * fallback when no known id matches. Pure.
+ */
+export function anchorContinuityIssueLocations(
+  issues: ContinuityIssue[],
+  scenes: ContinuityAnchorScene[] | undefined,
+): ContinuityIssue[] {
+  const knownScenes = (scenes ?? [])
+    .map((scene) => scene.sceneId)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  const knownBeats: Array<{ beatId: string; sceneId: string }> = [];
+  for (const scene of scenes ?? []) {
+    if (!scene.sceneId) continue;
+    for (const beat of scene.beats ?? []) {
+      if (beat?.id) knownBeats.push({ beatId: beat.id, sceneId: scene.sceneId });
+    }
+  }
+
+  const earliestMention = <T>(items: T[], text: string, idOf: (item: T) => string): T | undefined => {
+    let best: T | undefined;
+    let bestIdx = Infinity;
+    for (const item of items) {
+      const idx = idMentionIndex(text, idOf(item));
+      if (idx >= 0 && idx < bestIdx) {
+        bestIdx = idx;
+        best = item;
+      }
+    }
+    return best;
+  };
+
+  return issues.map((issue) => {
+    const text = [issue.description, issue.conflictsWith, issue.suggestedFix].filter(Boolean).join(' ');
+    if (!text) return issue;
+    const location = { ...(issue.location ?? {}) } as ContinuityIssue['location'];
+
+    if (!hasAnchoredSceneId(location)) {
+      const beatHit = earliestMention(knownBeats, text, (b) => b.beatId);
+      const sceneHit = earliestMention(knownScenes, text, (id) => id);
+      if (beatHit && (!sceneHit || idMentionIndex(text, beatHit.beatId) <= idMentionIndex(text, sceneHit))) {
+        location.sceneId = beatHit.sceneId;
+        if (!location.beatId) location.beatId = beatHit.beatId;
+      } else if (sceneHit) {
+        location.sceneId = sceneHit;
+      } else {
+        const token = (text.match(SCENE_TOKEN_RE) ?? [])[0];
+        if (token && BEAT_SUFFIX_RE.test(token)) {
+          location.sceneId = token.replace(BEAT_SUFFIX_RE, '');
+          if (!location.beatId) location.beatId = token;
+        } else if (token) {
+          location.sceneId = token;
+        }
+      }
+    }
+    // Fill a missing beatId too, but only with a beat that belongs to the anchored scene.
+    if (hasAnchoredSceneId(location) && !location.beatId) {
+      const sceneBeats = knownBeats.filter((b) => b.sceneId === location.sceneId);
+      const beatHit = earliestMention(sceneBeats, text, (b) => b.beatId);
+      if (beatHit) location.beatId = beatHit.beatId;
+    }
+    if (location.sceneId === issue.location?.sceneId && location.beatId === issue.location?.beatId) {
+      return issue;
+    }
+    return { ...issue, location };
+  });
+}
+
 /**
  * Derive a continuity overallScore from the report's own signal when the model
  * omitted the numeric field. Returns null when the report carries no signal at
@@ -256,6 +358,11 @@ Be thorough but not pedantic. Focus on issues players would actually notice.
 
       // Normalize the report
       report = this.normalizeReport(report);
+
+      // Anchor structured locations: the repair pass can only target
+      // location.sceneId/beatId, but judges often name the scene/beat solely
+      // in the issue prose (or emit sentinel "None" locations).
+      report.issues = anchorContinuityIssueLocations(report.issues, input.sceneContents);
 
       // Evidence grounding: a blocking error whose quoted prose evidence does
       // not exist anywhere in the story is a judge hallucination, not a defect.

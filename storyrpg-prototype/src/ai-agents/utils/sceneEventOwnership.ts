@@ -93,7 +93,8 @@ function slug(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function eventOrder(cue: SceneEventOwnershipCue): number {
+/** Canonical route-chronology rank of a cue (exported for the season-plan order repair). */
+export function eventOrder(cue: SceneEventOwnershipCue): number {
   return ROUTE_CUE_ORDER[cue] ?? 999;
 }
 

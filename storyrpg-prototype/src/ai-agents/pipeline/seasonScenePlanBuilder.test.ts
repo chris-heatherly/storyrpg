@@ -5,7 +5,7 @@ import {
   edgesForEpisode,
   bindAuthoredTurnsToScenes,
   encounterIsCoveredByAuthoredTurns,
-} from './seasonScenePlanBuilder';
+  repairRouteCueSceneOrder,} from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
@@ -989,5 +989,59 @@ describe('mechanic pressure contracts', () => {
 
     expect(choiceScenes.length).toBeGreaterThan(0);
     expect(choiceScenes.every((scene) => (scene.mechanicPressure ?? []).length > 0)).toBe(true);
+  });
+});
+
+describe('repairRouteCueSceneOrder (plan-retry rung, bite-me 2026-07-03T18-19-01 regression)', () => {
+  const planned = (id: string, order: number, beatText: string, kind = 'standard') => ({
+    id,
+    episodeNumber: 1,
+    order,
+    kind,
+    title: id,
+    dramaticPurpose: 'x',
+    locations: [],
+    npcsInvolved: [],
+    setsUp: [],
+    paysOff: [],
+    stakes: 'x',
+    requiredBeats: [{ id: `${id}-rb1`, tier: 'authored', mustDepict: beatText, sourceTurn: beatText }],
+    // Ownership derives from slotted sources; the turn contract is the
+    // primary_turn slot real planned scenes carry.
+    turnContract: {
+      turnId: `${id}-turn`, source: 'treatment', centralTurn: beatText, turnEvent: beatText,
+      beforeState: 'x', afterState: 'x', handoff: 'x',
+    },
+  }) as never;
+
+  it('swaps an inverted adjacent standard pair (socialMeet before arrival)', () => {
+    const scenes = [
+      planned('s1-1', 0, 'Kylie forms the Dusk Club with Mika and Stela over velvet booths and negronis.'),
+      planned('s1-2', 1, 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.'),
+    ];
+    const swaps = repairRouteCueSceneOrder(scenes as never, 1);
+    expect(swaps).toBeGreaterThanOrEqual(1);
+    expect((scenes[0] as { id: string }).id).toBe('s1-2');
+    expect((scenes[0] as { order: number }).order).toBe(0);
+    expect((scenes[1] as { id: string }).id).toBe('s1-1');
+    expect((scenes[1] as { order: number }).order).toBe(1);
+  });
+
+  it('leaves a chronologically ordered plan untouched', () => {
+    const scenes = [
+      planned('s1-1', 0, 'Kylie arrives in Bucharest with two suitcases.'),
+      planned('s1-2', 1, 'Kylie forms the Dusk Club with Mika and Stela over velvet booths.'),
+    ];
+    expect(repairRouteCueSceneOrder(scenes as never, 1)).toBe(0);
+    expect((scenes[0] as { id: string }).id).toBe('s1-1');
+  });
+
+  it('does not move encounter scenes (setup-pair placement is not repairable here)', () => {
+    const scenes = [
+      planned('s1-1', 0, 'Walking home she is attacked in the park and rescued by a stranger.', 'encounter'),
+      planned('s1-2', 1, 'Kylie arrives in Bucharest with two suitcases.'),
+    ];
+    expect(repairRouteCueSceneOrder(scenes as never, 1)).toBe(0);
+    expect((scenes[0] as { id: string }).id).toBe('s1-1');
   });
 });

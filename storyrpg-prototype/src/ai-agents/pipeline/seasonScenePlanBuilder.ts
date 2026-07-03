@@ -49,7 +49,7 @@ import {
   compareEncounterEventSignatures,
 } from '../utils/encounterEventSignature';
 import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfile';
-import { attachSceneEventOwnershipProfiles } from '../utils/sceneEventOwnership';
+import { attachSceneEventOwnershipProfiles, eventOrder } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
@@ -1763,8 +1763,56 @@ export function buildEpisodeScenes(
   bindAuthoredTurnsToScenes(ep, scenes, infoLedger, protagonist, priorBondNpcKeys);
   promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
   repairUnsupportedPlanningEventPurposes(ep, scenes);
+  repairRouteCueSceneOrder(scenes, ep.episodeNumber);
 
   return scenes;
+}
+
+/**
+ * Deterministic route-cue order repair (plan-retry rung, 2026-07-03). The
+ * elaborate blueprint path derives deterministically from this plan, so a
+ * chronology inversion here ("s1-1 owns socialMeet, s1-2 owns arrival",
+ * bite-me 2026-07-03T18-19-01) is an unavoidable 2-minute SceneConstructionGate
+ * abort — retrying cannot help. Repair at the source instead: attach the SAME
+ * ownership profiles the gate reads, walk owned events in scene order, and swap
+ * the two scenes of the first inversion (positions + `.order`; ids stay — every
+ * consumer sorts by order). Only standard↔standard swaps are attempted;
+ * encounters keep their setup-pair placement and a violation involving one
+ * still fails fast at the gate. Bounded passes; converges or leaves the gate
+ * to do its job.
+ */
+export function repairRouteCueSceneOrder(scenes: PlannedScene[], episodeNumber: number): number {
+  let swaps = 0;
+  for (let pass = 0; pass < Math.max(1, scenes.length); pass += 1) {
+    attachSceneEventOwnershipProfiles(scenes, { episodeNumber });
+    let previous: { index: number; order: number } | undefined;
+    let swappedThisPass = false;
+    for (let index = 0; index < scenes.length && !swappedThisPass; index += 1) {
+      const scene = scenes[index];
+      for (const event of scene.sceneEventOwnership?.ownedEvents ?? []) {
+        const order = eventOrder(event.cue);
+        if (previous && previous.index !== index && order < previous.order) {
+          const other = scenes[previous.index];
+          if (scene.kind === 'standard' && other.kind === 'standard') {
+            scenes[previous.index] = scene;
+            scenes[index] = other;
+            const sceneOrder = scene.order;
+            scene.order = other.order;
+            other.order = sceneOrder;
+            console.info(
+              `[SeasonScenePlan] Route-cue order repair: moved "${scene.id}" (${event.cue}) before "${other.id}" in episode ${episodeNumber}.`,
+            );
+            swaps += 1;
+            swappedThisPass = true;
+            break;
+          }
+        }
+        if (!previous || order >= previous.order) previous = { index, order };
+      }
+    }
+    if (!swappedThisPass) break;
+  }
+  return swaps;
 }
 
 /** Pick the scene that best represents where a setup ORIGINATES in an episode. */

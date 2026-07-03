@@ -436,6 +436,43 @@ describe('content-agnostic final-contract prose repairs', () => {
     expect(earlyScene.beats[0].textVariants).toHaveLength(0);
   });
 
+  it('strips premature NPC names from encounter phase/storylet prose (bite-me 2026-07-03 Radu)', () => {
+    // Encounter prose lives in scene.encounter, not scene.beats — the repair
+    // previously never reached it, so an encounter naming an unintroduced NPC
+    // aborted the run on a strippable sentence.
+    const story = storyWithBeat('The fog thickens along the path.');
+    story.npcs = [
+      { id: 'char-radu-stoian', name: 'Radu Stoian' },
+      { id: 'char-victor-valcescu', name: 'Victor Valcescu' },
+    ] as any;
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.id = 'treatment-enc-1-1';
+    scene.charactersInvolved = ['char-victor-valcescu'];
+    scene.encounter = {
+      setupText: 'A rough shape moves near the kitchen door. Radu Stoian watches from the shadow.',
+      phases: [{
+        beats: [{
+          id: 'enc-b1',
+          text: 'The attacker lunges. Radu Stoian shifts his weight by the wall. Victor Valcescu steps between you and the dark.',
+          setupText: 'Radu Stoian is already watching.',
+        }],
+      }],
+      storylets: [{ beats: [{ id: 'enc-s1', text: 'Radu Stoian says nothing. The fog closes in around the willow.' }] }],
+    };
+
+    const touched = repairPrematureUncastNpcTextVariants(story);
+
+    expect(touched).toBeGreaterThanOrEqual(4);
+    expect(scene.encounter.setupText).not.toMatch(/Radu/);
+    expect(scene.encounter.phases[0].beats[0].text).not.toMatch(/Radu/);
+    // The cast-introduced NPC survives.
+    expect(scene.encounter.phases[0].beats[0].text).toMatch(/Victor/);
+    expect(scene.encounter.phases[0].beats[0].setupText).not.toMatch(/Radu/);
+    expect(scene.encounter.storylets[0].beats[0].text).not.toMatch(/Radu/);
+    // Non-naming prose survives alongside.
+    expect(scene.encounter.storylets[0].beats[0].text).toMatch(/fog closes in/);
+  });
+
   it('removes main beat prose sentences that name NPCs before their cast introduction', () => {
     const story = storyWithBeat('The phone chime cuts through the room. Avery Stone names the locked archive. Sam says the post is live.');
     story.npcs = [

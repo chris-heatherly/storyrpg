@@ -520,6 +520,46 @@ export function repairPrematureUncastNpcTextVariants(story: Story): number {
           (beat as any).textVariants = kept;
         }
       }
+      // Encounter prose lives in scene.encounter (setupText + phase/storylet
+      // beats), NOT scene.beats — CharacterIntroductionValidator reads it, so
+      // the repair must strip it too. bite-me 2026-07-03T03-29-57: the
+      // encounter's phase prose named "Radu Stoian" (the treatment keeps him
+      // an unnamed "rougher man" until episode 2) and this repair never
+      // reached it, so the run aborted on a strippable premature naming.
+      const enc = (scene as { encounter?: Record<string, unknown> }).encounter;
+      if (enc) {
+        const stripField = (holder: Record<string, unknown>, key: string): void => {
+          if (typeof holder[key] !== 'string') return;
+          const repaired = stripPrematureNpcSentences(holder[key] as string, npcs, allowed);
+          if (repaired.touched > 0) {
+            holder[key] = repaired.text;
+            touched += repaired.touched;
+          }
+        };
+        stripField(enc, 'setupText');
+        const stripBeats = (beats: unknown): void => {
+          if (!Array.isArray(beats)) return;
+          for (const beat of beats) {
+            if (!beat || typeof beat !== 'object') continue;
+            const record = beat as Record<string, unknown>;
+            stripField(record, 'text');
+            stripField(record, 'setupText');
+            stripField(record, 'escalationText');
+            for (const choice of (Array.isArray(record.choices) ? record.choices : [])) {
+              touched += repairPrematureNpcNestedStrings(choice, npcs, allowed);
+            }
+          }
+        };
+        for (const phase of (Array.isArray(enc.phases) ? enc.phases : [])) {
+          if (phase && typeof phase === 'object') stripBeats((phase as Record<string, unknown>).beats);
+        }
+        const storylets = Array.isArray(enc.storylets)
+          ? enc.storylets
+          : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
+        for (const storylet of storylets) {
+          if (storylet && typeof storylet === 'object') stripBeats((storylet as Record<string, unknown>).beats);
+        }
+      }
       for (const npc of npcs) {
         if (castIncludesNpc(scene, npc)) knownNpcIds.add(npc.id);
       }

@@ -32,12 +32,14 @@ const BORDER_MAP: Record<string, string> = {
   neutral: 'rgba(255, 255, 255, 0.2)',
 };
 
+// Two-line, left-aligned badge: line 1 is the fiction-first consequence
+// (narrativeHint), line 2 is the succinct game impact (direction + label).
+// The story text tells the story; this is compact gameplay feedback.
 const BadgeRow: React.FC<{
   item: AppliedConsequence;
   delay: number;
   animated: boolean;
-  compact: boolean;
-}> = ({ item, delay, animated, compact }) => {
+}> = ({ item, delay, animated }) => {
   const opacity = useRef(new Animated.Value(animated ? 0 : 1)).current;
   const translateX = useRef(new Animated.Value(animated ? 20 : 0)).current;
 
@@ -58,19 +60,15 @@ const BadgeRow: React.FC<{
       { borderColor: BORDER_MAP[item.direction] },
       { opacity, transform: [{ translateX }] },
     ]}>
-      <Text style={[styles.arrow, { color: COLOR_MAP[item.direction] }]}>
-        {ARROW_MAP[item.direction]}
-      </Text>
-      {compact ? (
-        <Text style={styles.label}>{item.narrativeHint || item.label}</Text>
-      ) : (
-        <>
-          <Text style={styles.label}>{item.label}</Text>
-          {item.narrativeHint && (
-            <Text style={styles.hint} numberOfLines={1}>{item.narrativeHint}</Text>
-          )}
-        </>
+      {!!item.narrativeHint && (
+        <Text style={styles.hint} numberOfLines={1}>{item.narrativeHint}</Text>
       )}
+      <View style={styles.impactLine}>
+        <Text style={[styles.arrow, { color: COLOR_MAP[item.direction] }]}>
+          {ARROW_MAP[item.direction]}
+        </Text>
+        <Text style={styles.label} numberOfLines={1}>{item.label}</Text>
+      </View>
     </Animated.View>
   );
 };
@@ -97,7 +95,6 @@ export const ConsequenceBadgeList: React.FC<ConsequenceBadgeListProps> = ({
           item={item}
           delay={animated ? i * staggerDelay : 0}
           animated={animated}
-          compact={isInline}
         />
       ))}
     </View>
@@ -107,40 +104,47 @@ export const ConsequenceBadgeList: React.FC<ConsequenceBadgeListProps> = ({
 const styles = StyleSheet.create({
   container: {
     marginTop: 12,
-    gap: 8,
+    gap: 6,
+    alignItems: 'flex-start',
   },
   containerInline: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 14,
-    justifyContent: 'center',
+    gap: 6,
+    marginTop: 12,
+    justifyContent: 'flex-start',
+    alignItems: 'flex-start',
   },
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
     borderWidth: 1,
     borderRadius: RADIUS.button,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    gap: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    gap: 2,
+  },
+  impactLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   arrow: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '900',
-    width: 18,
-    textAlign: 'center',
+    textAlign: 'left',
   },
   label: {
     color: TERMINAL.colors.textLight,
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
+    textAlign: 'left',
   },
   hint: {
-    color: 'rgba(255, 255, 255, 0.55)',
+    color: 'rgba(255, 255, 255, 0.72)',
     fontSize: 13,
     fontStyle: 'italic',
-    flex: 1,
+    textAlign: 'left',
   },
 });

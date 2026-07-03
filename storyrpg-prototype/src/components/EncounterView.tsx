@@ -364,6 +364,10 @@ const clockStyles = StyleSheet.create({
 interface EncounterViewProps {
   encounter: Encounter;
   onComplete: (outcome: EncounterOutcome, feedback?: AppliedConsequence[], lastImage?: string) => void;
+  /** Scene-seam transition line (scene.timeline.transitionIn) shown above the
+   * encounter's opening situation so entering an encounter never plays as a
+   * location/time teleport. */
+  transitionIn?: string;
 }
 
 // New simplified state for branching tree encounters
@@ -453,7 +457,24 @@ const ENCOUNTER_TIER_FALLBACKS: Record<EncounterOutcomeTier, string> = {
   failure: 'The move collapses, and danger closes in.',
 };
 
-function formatDevBeatLabel(beatId?: string | null): string | null {
+function getEncounterBeatNumber(encounter?: Encounter | null, phaseId?: string | null, beatId?: string | null): number | null {
+  if (!encounter?.phases || !beatId) return null;
+
+  let beatNumber = 0;
+  for (const phase of encounter.phases) {
+    for (const beat of phase.beats ?? []) {
+      beatNumber += 1;
+      if (beat.id === beatId && (!phaseId || phase.id === phaseId)) {
+        return beatNumber;
+      }
+    }
+  }
+
+  return null;
+}
+
+function formatDevBeatLabel(beatId?: string | null, beatNumber?: number | null): string | null {
+  if (beatNumber) return `B${beatNumber}`;
   if (!beatId) return null;
   const beatNum =
     beatId.match(/beat-([0-9]+[a-z]?)/i)?.[1] ||
@@ -508,6 +529,7 @@ function summarizeEncounterOutcome(text?: string): string | undefined {
 export const EncounterView: React.FC<EncounterViewProps> = ({
   encounter,
   onComplete,
+  transitionIn,
 }) => {
   const { player } = useGamePlayerState();
   const { currentStory } = useGameStoryState();
@@ -641,6 +663,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   // --- Cinematic reveal state ---
   const lastKnownImageRef = useRef<string | undefined>(undefined);
   const allEncounterFeedbackRef = useRef<AppliedConsequence[]>([]);
+  const entrySituationTextRef = useRef<string | null>(null);
   const [showNextSituation, setShowNextSituation] = useState(false);
   const [vignetteColor, setVignetteColor] = useState<string | null>(null);
   const [encounterStatCheck, setEncounterStatCheck] = useState<{ skillName: string; tier: 'success' | 'complicated' | 'failure' } | null>(null);
@@ -845,12 +868,23 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   const currentPhase = encounter.phases.find((p) => p.id === getPhaseId());
 
   const encounterDevLabel = useMemo(() => {
+    const phaseId = getPhaseId();
+    const screenBeatId = 'beatId' in screenState ? screenState.beatId : undefined;
+    const screenNextBeatId = 'nextBeatId' in screenState ? screenState.nextBeatId : undefined;
+    const screenBeatLabel = formatDevBeatLabel(
+      screenBeatId,
+      getEncounterBeatNumber(encounter, phaseId, screenBeatId)
+    );
+    const resultBeatLabel = formatDevBeatLabel(
+      screenNextBeatId || screenBeatId,
+      getEncounterBeatNumber(encounter, phaseId, screenNextBeatId || screenBeatId)
+    );
     const numberedBeat = encounterState?.beatNumber ? `B${encounterState.beatNumber}` : null;
     switch (screenState.type) {
       case 'phase':
-        return [encounterSceneLabel, formatDevBeatLabel(screenState.beatId)].filter(Boolean).join(' • ');
+        return [encounterSceneLabel, screenBeatLabel].filter(Boolean).join(' • ');
       case 'beat_outcome':
-        return [encounterSceneLabel, formatDevBeatLabel(screenState.nextBeatId || screenState.beatId), 'Result'].filter(Boolean).join(' • ');
+        return [encounterSceneLabel, resultBeatLabel, 'Result'].filter(Boolean).join(' • ');
       case 'phase_outcome':
       case 'encounter_outcome':
       case 'terminal':
@@ -862,7 +896,7 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
       default:
         return encounterSceneLabel;
     }
-  }, [encounterSceneLabel, encounterState?.beatNumber, screenState]);
+  }, [encounter, encounterSceneLabel, encounterState?.beatNumber, screenState]);
 
   // Initialize encounter on mount
   useEffect(() => {
@@ -1712,7 +1746,13 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
   if (screenState.type === 'active') {
     const { situation } = screenState;
     const hasOutcome = !!situation.previousOutcome;
-    
+    // Capture the encounter's opening situation so the scene-seam transition
+    // line renders exactly once, at entry.
+    if (entrySituationTextRef.current === null) {
+      entrySituationTextRef.current = situation.setupText;
+    }
+    const isEntrySituation = entrySituationTextRef.current === situation.setupText;
+
     const displayImage = resolveImageUrl(
       hasOutcome && situation.previousOutcome?.outcomeImage
         ? situation.previousOutcome.outcomeImage
@@ -1819,6 +1859,9 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
                   <View style={styles.situationDivider}>
                     <Text style={styles.situationDividerText}>THEN...</Text>
                   </View>
+                )}
+                {!!transitionIn && !hasOutcome && isEntrySituation && (
+                  <Text style={styles.encounterTransitionInText}>{transitionIn}</Text>
                 )}
                 <NarrativeText
                   text={tpl(activeSituationText)}
@@ -2482,6 +2525,13 @@ const styles = StyleSheet.create({
   contentScrollView: sharedStyles.contentScrollView,
   contentContainer: sharedStyles.contentContainer,
   textPanel: sharedStyles.textPanel,
+  encounterTransitionInText: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 14,
+    lineHeight: 20,
+    fontStyle: 'italic',
+    marginBottom: 10,
+  },
   resolutionPanel: sharedStyles.resolutionPanel,
   resolutionText: sharedStyles.resolutionText,
   choicesList: {

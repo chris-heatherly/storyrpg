@@ -93,6 +93,40 @@ function formatDevBeatNumber(beatId?: string | null): string | null {
   );
 }
 
+function getDevSceneNumber(
+  episode?: { number?: number; scenes?: Array<{ id: string }> } | null,
+  sceneId?: string | null
+): string | null {
+  const parsed = formatDevSceneNumber(sceneId);
+  if (parsed) return parsed;
+
+  if (!episode?.scenes || !sceneId) return null;
+  const sceneIndex = episode.scenes.findIndex((scene) => scene.id === sceneId);
+  if (sceneIndex < 0) return null;
+  const episodePrefix = episode.number ? `${episode.number}-` : '';
+  return `${episodePrefix}${sceneIndex + 1}`;
+}
+
+function getEpisodeBeatNumber(
+  episode?: { scenes?: Array<{ id: string; beats?: Array<{ id: string }> }> } | null,
+  sceneId?: string | null,
+  beatId?: string | null
+): number | null {
+  if (!episode?.scenes || !sceneId || !beatId) return null;
+
+  let beatNumber = 0;
+  for (const scene of episode.scenes) {
+    for (const beat of scene.beats ?? []) {
+      beatNumber += 1;
+      if (scene.id === sceneId && beat.id === beatId) {
+        return beatNumber;
+      }
+    }
+  }
+
+  return null;
+}
+
 const REFLECTION_PROSE: Record<string, string[]> = {
   victory: [
     'You take a breath. The dust settles, and you feel the weight of what you\'ve done.',
@@ -337,6 +371,12 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
 
   // Dev mode navigation history — tracks actual visited beats so "back" works correctly
   const devHistoryRef = useRef<Array<{ sceneId: string; beatId: string }>>([]);
+  // Dev time-travel cursor into devHistoryRef: null = at the live end.
+  // Back/forward must retrace the exact recorded path (bridge/payoff variants
+  // included) — never a chain re-derived from startingBeatId/nextBeatId, which
+  // diverges from what the reader actually saw.
+  const devNavCursorRef = useRef<number | null>(null);
+  const devTimeTravelingRef = useRef(false);
   const lastTrackedSceneRef = useRef<string | null>(null);
   const choiceShownRef = useRef<Set<string>>(new Set());
   const activeBeatKeyRef = useRef<string | null>(null);
@@ -925,12 +965,19 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     setShowChoices(false);
     setImageErrorId(null); // Reset error on new beat
 
-    // Track beat in dev navigation history for reliable back-button
-    const history = devHistoryRef.current;
-    const lastEntry = history.length > 0 ? history[history.length - 1] : null;
-    if (!lastEntry || lastEntry.sceneId !== currentScene.id || lastEntry.beatId !== currentBeatId) {
-      history.push({ sceneId: currentScene.id, beatId: currentBeatId });
-      if (history.length > 200) history.splice(0, history.length - 200);
+    // Track beat in dev navigation history for reliable back/forward. Dev
+    // time-travel jumps must NOT be re-recorded (that would corrupt the path
+    // being retraced); any normal advance resumes recording at the live end.
+    if (devTimeTravelingRef.current) {
+      devTimeTravelingRef.current = false;
+    } else {
+      const history = devHistoryRef.current;
+      const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+      if (!lastEntry || lastEntry.sceneId !== currentScene.id || lastEntry.beatId !== currentBeatId) {
+        history.push({ sceneId: currentScene.id, beatId: currentBeatId });
+        if (history.length > 200) history.splice(0, history.length - 200);
+      }
+      devNavCursorRef.current = null;
     }
 
     // === TRANSITION VARIETY BASED ON VISUAL STORYTELLING PRINCIPLES ===
@@ -1415,62 +1462,52 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     transitionTo(() => setBeat(nextBeatId), style);
   };
 
-  // Dev Mode: beat/scene shortcut navigation (doesn't apply consequences)
-  const getLinearBeatSequenceForScene = useCallback((scene: Scene): string[] => {
-    const seq: string[] = [];
-    const beatById = new Map(scene.beats.map(b => [b.id, b]));
-    let cursor: string | undefined = scene.startingBeatId;
-
-    for (let i = 0; i < scene.beats.length + 5; i++) {
-      if (!cursor) break;
-      if (seq.includes(cursor)) break; // loop guard
-      seq.push(cursor);
-
-      const beat = beatById.get(cursor);
-      if (!beat?.nextBeatId) break;
-      cursor = beat.nextBeatId;
+  // Dev Mode: beat/scene shortcut navigation (doesn't apply consequences).
+  // Back/forward is a NON-DESTRUCTIVE cursor over the recorded history, so
+  // retracing always shows exactly the beats the reader saw on the way
+  // forward. The old implementation popped history on "prev" and re-derived a
+  // startingBeatId/nextBeatId chain on "next" — a parallel derivation that
+  // omitted choice bridge/payoff beats and showed "entirely new beats" when
+  // stepping back through a linear section.
+  const devNavigateToHistoryEntry = useCallback((entry: { sceneId: string; beatId: string }) => {
+    devTimeTravelingRef.current = true;
+    if (entry.sceneId === currentScene?.id) {
+      devFastTransitionTo(() => setBeat(entry.beatId));
+    } else {
+      devFastTransitionTo(() => {
+        loadScene(entry.sceneId);
+        setBeat(entry.beatId);
+      });
     }
-    return seq;
-  }, []);
+  }, [currentScene, devFastTransitionTo, loadScene, setBeat]);
 
   const devGoPrev = useCallback(() => {
     const history = devHistoryRef.current;
-
-    // Pop the current entry (the beat we're on now)
-    if (history.length > 0) {
-      const current = history[history.length - 1];
-      if (current && currentScene && current.sceneId === currentScene.id && current.beatId === currentBeatId) {
-        history.pop();
-      }
-    }
-
-    // Now navigate to the previous entry
     if (history.length === 0) return;
-
-    const prev = history[history.length - 1];
+    const cursor = devNavCursorRef.current ?? history.length - 1;
+    const targetIdx = cursor - 1;
+    if (targetIdx < 0) return;
+    const prev = history[targetIdx];
     if (!prev) return;
-
-    if (prev.sceneId === currentScene?.id) {
-      devFastTransitionTo(() => setBeat(prev.beatId));
-    } else {
-      devFastTransitionTo(() => {
-        loadScene(prev.sceneId);
-        setBeat(prev.beatId);
-      });
-    }
-  }, [currentBeatId, currentScene, devFastTransitionTo, loadScene, setBeat]);
+    devNavCursorRef.current = targetIdx;
+    devNavigateToHistoryEntry(prev);
+  }, [devNavigateToHistoryEntry]);
 
   const devGoNext = useCallback(() => {
     if (!currentScene || !processedBeat) return;
 
-    const seq = getLinearBeatSequenceForScene(currentScene);
-    const idx = currentBeatId ? seq.indexOf(currentBeatId) : -1;
-
-    if (idx >= 0 && idx < seq.length - 1) {
-      devFastTransitionTo(() => setBeat(seq[idx + 1]));
+    // Replaying recorded history? Step forward along it.
+    const history = devHistoryRef.current;
+    const cursor = devNavCursorRef.current;
+    if (cursor !== null && cursor < history.length - 1) {
+      const next = history[cursor + 1];
+      devNavCursorRef.current = cursor + 1 >= history.length - 1 ? null : cursor + 1;
+      devNavigateToHistoryEntry(next);
       return;
     }
+    devNavCursorRef.current = null;
 
+    // At the live end: advance by the beat's own playback routing.
     if (processedBeat.nextBeatId) {
       const id = processedBeat.nextBeatId;
       devFastTransitionTo(() => setBeat(id));
@@ -1480,7 +1517,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
     } else {
       advanceToNextScene();
     }
-  }, [advanceToNextScene, currentBeatId, currentScene, devFastTransitionTo, getLinearBeatSequenceForScene, loadScene, processedBeat, setBeat]);
+  }, [advanceToNextScene, currentScene, devFastTransitionTo, devNavigateToHistoryEntry, loadScene, processedBeat, setBeat]);
 
   useEffect(() => {
     if (!devSkipAnimationsOnce) return;
@@ -1509,7 +1546,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
   // Dev overlay: compute contextual label and render helpers shared by every beat type
   const getDevLabel = (currentImageUrl?: string | null) => {
     if (!developerMode || !currentScene) return null;
-    const sn = formatDevSceneNumber(currentScene.id);
+    const sn = getDevSceneNumber(currentEpisode, currentScene.id);
     const withImagePanel = (baseLabel: string | null) => {
       const panelNumber = getImagePanelNumberFromStory(currentStory, currentImageUrl);
       if (!panelNumber) return baseLabel;
@@ -1523,7 +1560,8 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
       const sl = idx >= 0 ? `SL·B${idx + 1}` : 'SL';
       return withImagePanel(sn ? `S${sn}  ${sl}` : sl);
     }
-    const bn = formatDevBeatNumber(currentBeatId);
+    const bn = getEpisodeBeatNumber(currentEpisode, currentScene.id, currentBeatId)
+      ?? formatDevBeatNumber(currentBeatId);
     return withImagePanel(sn && bn ? `S${sn}  B${bn}` : sn ? `S${sn}` : bn ? `B${bn}` : null);
   };
 
@@ -1649,6 +1687,7 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         <EncounterView
           encounter={sceneEncounter}
           onComplete={handleEncounterComplete}
+          transitionIn={sanitizeReaderLine(currentScene?.timeline?.transitionIn)}
         />
         {renderDevBadgeOverlay()}
         {renderDevNavOverlay()}
@@ -1911,6 +1950,13 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         }
       : undefined;
 
+  // The generator plans every scene seam (timeline.transitionIn) — showing it
+  // at the scene's opening beat is what keeps location/time jumps readable.
+  const sceneTransitionIn = sanitizeReaderLine(currentScene?.timeline?.transitionIn) || undefined;
+  const isSceneOpeningBeat =
+    !!currentScene &&
+    currentBeatId === (currentScene.startingBeatId || currentScene.beats?.[0]?.id);
+
   return (
     <View style={{ flex: 1 }}>
       <ReadingShell
@@ -1956,7 +2002,16 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
         )}
 
         <View style={styles.textPanel}>
+          {!!sceneTransitionIn && isSceneOpeningBeat && (
+            <Text style={styles.sceneTransitionInText}>{sceneTransitionIn}</Text>
+          )}
+          {/* Keyed per beat: adjacent beats with IDENTICAL text otherwise reuse
+              the component, the typing animation never restarts, and
+              onAnimationComplete never fires — isAnimating sticks true and the
+              Continue button never returns (hard-lock seen on bite-me
+              2026-07-03 duplicate inserted beats). */}
           <NarrativeText
+            key={`${currentScene.id}:${processedBeat.id}`}
             text={[
               displayReaderText(processedBeat.text),
               ...(processedBeat.skillInsights ?? []),
@@ -2291,6 +2346,13 @@ const styles = StyleSheet.create({
   contentScrollView: sharedStyles.contentScrollView,
   contentContainer: sharedStyles.contentContainer,
   textPanel: sharedStyles.textPanel,
+  sceneTransitionInText: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 14,
+    lineHeight: 20,
+    fontStyle: 'italic',
+    marginBottom: 10,
+  },
   echoPanel: {
     backgroundColor: 'rgba(10, 10, 12, 0.72)',
     borderWidth: 1,

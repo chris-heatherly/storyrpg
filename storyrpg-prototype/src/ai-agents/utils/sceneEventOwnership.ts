@@ -70,7 +70,12 @@ const CANONICAL_CUE_KEYS = new Set<SceneEventOwnershipCue>([
   'endingAftermath',
 ]);
 
-const WALK_HOME_RE = /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b|\b(?:small of your back|guiding you away|under your heels)\b/i;
+const WALK_HOME_ESCORT_RE = /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b/i;
+// Escort body-language alone is a romance-prose staple — gestures only count
+// as walk-home when the text also moves toward a dwelling (keep in sync with
+// RouteContinuityValidator walkHomeCueFires).
+const WALK_HOME_GESTURE_RE = /\b(?:small of your back|guiding you away|under your heels)\b/i;
+const WALK_HOME_CONTEXT_RE = /\b(?:walk(?:s|ing)?|home|door(?:step|way)?|threshold|apartment|building|stairs|street|park|alley|pavement|sidewalk|escort(?:s|ing)?|guid(?:es|ing)|steer(?:s|ing)|toward)\b/i;
 
 function cleanText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -125,7 +130,7 @@ function contractTexts(scene: SceneEventOwnershipSceneLike): OwnershipSourceText
   }
   const turn = scene.turnContract;
   if (turn) {
-    out.push({ id: turn.turnId || `${scene.id ?? 'scene'}-turn`, text: [turn.centralTurn, turn.turnEvent].map(cleanText).filter(Boolean).join(' '), slot: 'primary_turn' });
+    out.push({ id: turn.turnId || `${scene.id ?? 'scene'}-turn`, text: [...new Set([turn.centralTurn, turn.turnEvent].map(cleanText).filter(Boolean))].join(' '), slot: 'primary_turn' });
   }
   for (const beat of scene.requiredBeats ?? []) {
     if (!isHardBeat(beat)) continue;
@@ -147,7 +152,7 @@ function contractTexts(scene: SceneEventOwnershipSceneLike): OwnershipSourceText
 function cuesFor(text: string): SceneEventOwnershipCue[] {
   const cues = new Set<SceneEventOwnershipCue>();
   for (const cue of detectPrimaryStoryEventCues(text)) cues.add(cue as StoryEventCue);
-  if (WALK_HOME_RE.test(text)) cues.add('walkHome');
+  if (WALK_HOME_ESCORT_RE.test(text) || (WALK_HOME_GESTURE_RE.test(text) && WALK_HOME_CONTEXT_RE.test(text))) cues.add('walkHome');
   return [...cues].sort((a, b) => eventOrder(a) - eventOrder(b));
 }
 

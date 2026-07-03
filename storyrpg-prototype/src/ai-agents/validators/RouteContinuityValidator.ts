@@ -66,10 +66,23 @@ const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
   'blogAftermath',
 ]);
 
+const WALK_HOME_ESCORT_PATTERN = /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b/;
+// Escort body-language alone is a romance-prose staple (a hand on the small of
+// the back at a desk or club is not a walk home) — gestures only count as the
+// walk-home event when the same sentence carries movement toward a dwelling.
+const WALK_HOME_GESTURE_PATTERN = /\b(?:small of your back|guiding you away|under your heels)\b/i;
+const WALK_HOME_MOVEMENT_CONTEXT = /\b(?:walk(?:s|ing)?|home|door(?:step|way)?|threshold|apartment|building|stairs|street|park|alley|pavement|sidewalk|escort(?:s|ing)?|guid(?:es|ing)|steer(?:s|ing)|toward)\b/i;
+
 const WALK_HOME_PATTERNS: RegExp[] = [
-  /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b/,
-  /\b(?:small of your back|guiding you away|under your heels)\b/i,
+  WALK_HOME_ESCORT_PATTERN,
+  WALK_HOME_GESTURE_PATTERN,
 ];
+
+function walkHomeCueFires(text: string): boolean {
+  return sentenceWindows(text).some((window) =>
+    WALK_HOME_ESCORT_PATTERN.test(window)
+    || (WALK_HOME_GESTURE_PATTERN.test(window) && WALK_HOME_MOVEMENT_CONTEXT.test(window)));
+}
 
 const PUBLIC_BLOG_AFTERMATH_MARKERS = /\b(?:readership|viral|views|comments|dashboard|profile|public pressure|public signal|broke the internet|attention spike|audience growth)\b|\b\d[\d,]*\s+reads?\b/i;
 
@@ -80,7 +93,7 @@ const ROUTE_CUE_PATTERNS: Record<'walkHome', RegExp[]> = {
 };
 
 const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|write(?:s|ing)? about)\b/i;
-const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
+const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|remind(?:s|ed|er|ers|ing)?|phantom|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
 const ACTIVE_RESTAGE_MARKERS = /\b(?:attacks?|rescues?|saves?|pulls?|drags?|carries|blocks?|lunges?|strikes?|chases?|grabs?|hands?|offers?|presses?|meets?|introduces?|arrives?|walks?)\b/i;
 const ACTIVE_ARRIVAL_MARKERS = /\b(?:arriv(?:e|es|ed|ing)|lands?|landed|unpacks?|unpacked|taxi\s+(?:leaves?|drops?)|cab\s+(?:leaves?|drops?)|steps?\s+(?:off|out)|airport|station|dock)\b/i;
 
@@ -140,7 +153,9 @@ const CUE_WINDOW_PATTERNS: Partial<Record<RouteCue, RegExp>> = {
   threatEncounter: /\b(?:attack(?:s|ed|ing)?|threat|danger|rescue(?:s|d)?|save(?:s|d)?|lunges?|chases?|grabs?)\b/i,
   lateNightWriting: /\b(?:writes?|typing|draft|post|blog|late\s+night|notebook|laptop)\b/i,
   blogAftermath: PUBLIC_BLOG_AFTERMATH_MARKERS,
-  walkHome: /\b(?:walks?|guides?|escorts?|home)\b/i,
+  // Keep in sync with walkHomeCueFires: windows must cover the same phrases
+  // that fire the cue, or recap analysis inspects the wrong sentences.
+  walkHome: /\b(?:walks?|guides?|escorts?|home|small of your back|guiding you away|under your heels)\b/i,
 };
 
 function isTerminalSceneTarget(id: string | undefined): boolean {
@@ -250,7 +265,7 @@ function sceneCueHits(scene: Scene, sceneIndex: number): CueHit[] {
     if (cue === 'roadBreakdown' || cue === 'friendDebrief' || cue === 'endingAftermath') continue;
     hits.push({ cue, order: ROUTE_CUE_ORDER[cue], scene, sceneIndex, text: routeText });
   }
-  if (ROUTE_CUE_PATTERNS.walkHome.some((pattern) => pattern.test(routeText))) {
+  if (walkHomeCueFires(routeText)) {
     hits.push({ cue: 'walkHome', order: ROUTE_CUE_ORDER.walkHome, scene, sceneIndex, text: routeText });
   }
   return hits.sort((a, b) => a.order - b.order);
@@ -301,6 +316,16 @@ function duplicateSensitiveHitRestagesEarlier(previous: CueHit, current: CueHit)
 function forbiddenHitRestagesEarlier(hit: CueHit, event: SceneOwnedEvent | undefined): boolean {
   if (hit.cue !== 'threatEncounter') return true;
   return threatRestagesEarlierEvent(event?.text, hit.text);
+}
+
+function isForbiddenRestageHit(scene: Scene, hit: CueHit): boolean {
+  if (isOwnedByThisScene(scene, hit.cue)) return false;
+  const forbidden = forbiddenOwnershipEvent(scene, hit.cue);
+  if (!forbidden) return false;
+  if (!forbiddenHitRestagesEarlier(hit, forbidden)) return false;
+  // A forbidden event carried only as memory/aftermath framing is the
+  // sanctioned way for later scenes to reference it — not a restage.
+  return !isRecapOnlyCue(scene, hit.cue);
 }
 
 function isRecapOnlyCue(scene: Scene, cue: RouteCue): boolean {
@@ -567,19 +592,14 @@ export class RouteContinuityValidator {
         const sceneIndex = (episode.scenes || []).findIndex((candidate) => candidate.id === scene.id);
         return sceneCueHits(scene, sceneIndex).filter((hit) => {
           if (hasEventOwnershipProfile(scene) && !isOwnedByThisScene(scene, hit.cue)) {
-            const forbidden = forbiddenOwnershipEvent(scene, hit.cue);
-            return Boolean(forbidden) && forbiddenHitRestagesEarlier(hit, forbidden);
+            return isForbiddenRestageHit(scene, hit);
           }
           if (isIncomingContextOnly(scene, hit.cue) && isRecapOnlyCue(scene, hit.cue)) return false;
           return !isRecapOnlyCue(scene, hit.cue);
         });
       });
 
-      const forbiddenRestage = cueHits.find((hit) =>
-        !isOwnedByThisScene(hit.scene, hit.cue)
-        && Boolean(forbiddenOwnershipEvent(hit.scene, hit.cue))
-        && forbiddenHitRestagesEarlier(hit, forbiddenOwnershipEvent(hit.scene, hit.cue))
-      );
+      const forbiddenRestage = cueHits.find((hit) => isForbiddenRestageHit(hit.scene, hit));
       if (forbiddenRestage) {
         const event = forbiddenOwnershipEvent(forbiddenRestage.scene, forbiddenRestage.cue);
         issues.push({

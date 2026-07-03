@@ -344,6 +344,125 @@ describe('RouteContinuityValidator', () => {
     expect(result.issues.map((issue) => issue.type)).not.toContain('role_fidelity_violation');
   });
 
+  it('does not flag escort body-language memory without movement context as a walk-home restage', () => {
+    const walkHomeEvent = {
+      key: 'cue:walkHome',
+      cue: 'walkHome' as const,
+      text: 'Walking home through the park, she is attacked and rescued by the stranger, who walks her to her threshold and vanishes.',
+      sourceContractIds: ['walk-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'walk-owner',
+        name: 'Walk Owner',
+        startingBeatId: 'walk-beat',
+        sceneEventOwnership: {
+          id: 'walk-owner-event-ownership',
+          sceneId: 'walk-owner',
+          ownedEvents: [walkHomeEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['walk-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'walk-beat',
+          text: 'Avery Vale walks you home through the dark park to your threshold, then vanishes.',
+          nextSceneId: 'writing-later',
+          choices: [],
+        }],
+        leadsTo: ['writing-later'],
+      },
+      {
+        id: 'writing-later',
+        name: 'Writing Later',
+        startingBeatId: 'writing-beat',
+        sceneEventOwnership: {
+          id: 'writing-later-event-ownership',
+          sceneId: 'writing-later',
+          ownedEvents: [],
+          incomingContext: [walkHomeEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [walkHomeEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'writing-beat',
+          text: 'You find it, finally: the sudden, impossible weight of a hand on the small of your back. You delete the draft twice before the sentence holds.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
+  it('still blocks an actual walk-home restage in a scene forbidden from restaging it', () => {
+    const walkHomeEvent = {
+      key: 'cue:walkHome',
+      cue: 'walkHome' as const,
+      text: 'Walking home through the park, she is attacked and rescued by the stranger, who walks her to her threshold and vanishes.',
+      sourceContractIds: ['walk-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'walk-owner',
+        name: 'Walk Owner',
+        startingBeatId: 'walk-beat',
+        sceneEventOwnership: {
+          id: 'walk-owner-event-ownership',
+          sceneId: 'walk-owner',
+          ownedEvents: [walkHomeEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['walk-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'walk-beat',
+          text: 'Avery Vale walks you home through the dark park to your threshold, then vanishes.',
+          nextSceneId: 'replay-later',
+          choices: [],
+        }],
+        leadsTo: ['replay-later'],
+      },
+      {
+        id: 'replay-later',
+        name: 'Replay Later',
+        startingBeatId: 'replay-beat',
+        sceneEventOwnership: {
+          id: 'replay-later-event-ownership',
+          sceneId: 'replay-later',
+          ownedEvents: [],
+          incomingContext: [walkHomeEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [walkHomeEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'replay-beat',
+          text: 'He walks you home again through the park with a hand on the small of your back, delivering you to your door as if this is the first night.',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).toContain('route_duplicate_event');
+    expect(result.issues.some((issue) => issue.message.includes('restages walkHome'))).toBe(true);
+  });
+
   it('uses event ownership to block active restaging of an earlier owned route event', () => {
     const story = makeStory([
       {

@@ -232,10 +232,51 @@ function sceneRequiresReaderProse(scene: ExpectedScene): boolean {
 }
 
 function sceneHasReaderProse(scene: ExpectedScene): boolean {
-  return (scene.beats ?? []).some((beat) => {
+  const hasBeatProse = (scene.beats ?? []).some((beat) => {
     if (!beat || typeof beat !== 'object') return false;
     const record = beat as Record<string, unknown>;
     return Boolean(cleanLockText(record.text) || cleanLockText(record.content));
+  });
+  if (hasBeatProse) return true;
+  // An encounter scene carries its reader-facing prose inside `scene.encounter`
+  // (setupText on the flat/phased beats, outcome narrativeText, storylet beats),
+  // NOT in `scene.beats`. Without this the gate false-flags every fully-authored
+  // encounter as "no prose beats" (bite-me 2026-07-03T21-36-20 treatment-enc-1-1:
+  // 10 beats, 90 outcome lines, 8 storylet beats — all missed).
+  return encounterHasReaderProse(scene.encounter);
+}
+
+function encounterHasReaderProse(encounter: unknown): boolean {
+  if (!encounter || typeof encounter !== 'object') return false;
+  const enc = encounter as Record<string, unknown>;
+
+  const beats: unknown[] = [];
+  if (Array.isArray(enc.beats)) beats.push(...enc.beats);
+  for (const phase of Array.isArray(enc.phases) ? enc.phases : []) {
+    const phaseBeats = (phase as Record<string, unknown> | null)?.beats;
+    if (Array.isArray(phaseBeats)) beats.push(...phaseBeats);
+  }
+  if (enc.storylets && typeof enc.storylets === 'object') {
+    for (const storylet of Object.values(enc.storylets as Record<string, unknown>)) {
+      const storyletBeats = (storylet as Record<string, unknown> | null)?.beats;
+      if (Array.isArray(storyletBeats)) beats.push(...storyletBeats);
+    }
+  }
+
+  return beats.some((beat) => {
+    if (!beat || typeof beat !== 'object') return false;
+    const record = beat as Record<string, unknown>;
+    if (cleanLockText(record.setupText) || cleanLockText(record.text) || cleanLockText(record.escalationText)) {
+      return true;
+    }
+    for (const choice of Array.isArray(record.choices) ? record.choices : []) {
+      const outcomes = (choice as Record<string, unknown> | null)?.outcomes;
+      if (!outcomes || typeof outcomes !== 'object') continue;
+      for (const outcome of Object.values(outcomes as Record<string, unknown>)) {
+        if (cleanLockText((outcome as Record<string, unknown> | null)?.narrativeText)) return true;
+      }
+    }
+    return false;
   });
 }
 

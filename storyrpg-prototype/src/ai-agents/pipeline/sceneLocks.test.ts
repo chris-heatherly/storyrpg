@@ -164,6 +164,94 @@ describe('sceneLocks', () => {
     }));
   });
 
+  it('passes an owned encounter scene whose reader prose lives in scene.encounter (flat beats)', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: {
+        number: 2,
+        title: 'Two',
+        scenes: [{
+          id: 's2-enc',
+          name: 'The ambush',
+          // Encounters carry no scene.beats; prose lives in the encounter.
+          beats: [],
+          isEncounter: true,
+          encounter: {
+            sceneId: 's2-enc',
+            startingBeatId: 'beat-1',
+            beats: [{
+              id: 'beat-1',
+              setupText: 'The shadows stretch long across the path. Heavy footsteps close in behind you.',
+              choices: [{
+                id: 'c1',
+                outcomes: {
+                  success: { tier: 'success', narrativeText: 'You pivot and drive an elbow into the attacker.' },
+                },
+              }],
+            }],
+          },
+        }],
+      } as unknown as Episode,
+      validationResults: [sceneValidation('s2-enc')],
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.validation.issues.map((issue) => issue.code)).not.toContain('empty_owned_scene_prose');
+  });
+
+  it('passes an owned encounter scene whose reader prose lives in phased encounter beats', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: {
+        number: 2,
+        title: 'Two',
+        scenes: [{
+          id: 's2-enc',
+          name: 'The ambush',
+          beats: [],
+          encounter: {
+            sceneId: 's2-enc',
+            phases: [{
+              id: 'p1',
+              startingBeatId: 'beat-1',
+              beats: [{ id: 'beat-1', setupText: 'The corridor narrows. The guard has not seen you yet.' }],
+            }],
+          },
+        }],
+      } as unknown as Episode,
+      validationResults: [sceneValidation('s2-enc')],
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.validation.issues.map((issue) => issue.code)).not.toContain('empty_owned_scene_prose');
+  });
+
+  it('still fails an encounter scene whose encounter carries no authored prose', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: {
+        number: 2,
+        title: 'Two',
+        scenes: [{
+          id: 's2-enc',
+          name: 'The ambush',
+          beats: [],
+          encounter: {
+            sceneId: 's2-enc',
+            beats: [{ id: 'beat-1', setupText: '   ', choices: [{ id: 'c1', outcomes: {} }] }],
+          },
+        }],
+      } as unknown as Episode,
+      validationResults: [sceneValidation('s2-enc')],
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.validation.issues.map((issue) => issue.code)).toContain('empty_owned_scene_prose');
+  });
+
   it('uses blueprint ownership metadata when assembled scenes lost generator-only profile fields', () => {
     const report = buildEpisodeSceneLockReport({
       episodeNumber: 2,

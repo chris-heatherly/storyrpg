@@ -61,7 +61,9 @@ export interface Scene {
    * Generator-authored diegetic timeline metadata (planned location/time-of-day
    * and the writer's transition phrase). Persisted at assembly so continuity
    * validators and audits can compare the PLANNED time/place against prose.
-   * Never rendered to the player.
+   * `transitionIn` IS player-visible: the reader shows it as an italic
+   * transition line above the scene's opening beat, so planned location/time
+   * jumps never play as teleports. The other fields stay generator-only.
    */
   timeline?: {
     location?: string;
@@ -238,6 +240,16 @@ export interface Story {
       startState?: string;
       endState?: string;
       keyBeats?: string[];
+    };
+    /**
+     * Structured species/nature and hard presence constraints persisted from
+     * the CharacterBible so validators can check character presence against a
+     * scene's time-of-day (world rules like "strigoi burn in sunlight").
+     */
+    species?: string;
+    timeOfDayConstraints?: {
+      unavailable: string[];
+      reason?: string;
     };
   }[];
 

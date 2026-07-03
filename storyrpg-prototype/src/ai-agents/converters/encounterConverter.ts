@@ -24,6 +24,8 @@ import {
   StoryletBeat,
 } from '../../types';
 
+import { normalizeBeatTypography } from '../utils/proseTypography';
+
 import {
   EncounterStructure,
   EncounterChoiceOutcome as LLMEncounterChoiceOutcome,
@@ -419,7 +421,7 @@ export function convertEncounterStructureToEncounter(
       statBonus: (choice as any).statBonus,
     }));
 
-    return {
+    return normalizeBeatTypography({
       id: beat.id,
       phase: beat.phase,
       name: beat.name,
@@ -434,7 +436,7 @@ export function convertEncounterStructureToEncounter(
       cinematicSetup: beat.cinematicSetup,
       storyboardFrameId: (beat as any).storyboardFrameId,
       storyboardRole: (beat as any).storyboardRole,
-    };
+    });
   });
 
   // Create encounter phase

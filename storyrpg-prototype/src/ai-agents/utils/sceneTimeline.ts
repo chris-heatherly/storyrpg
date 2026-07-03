@@ -126,6 +126,29 @@ export function sameLocation(a: string | undefined, b: string | undefined): bool
   return na.length > 0 && na === nb;
 }
 
+/**
+ * Human-readable label for a location value that may be a raw blueprint id
+ * ("loc-valescu-club" → "Valescu Club"). Raw ids leaked into timeline text and
+ * scene names (bite-me 2026-07-03) and, once transition text became player
+ * visible, into prose. Identity comparisons ({@link sameLocation}) must keep
+ * using the RAW value — this is display-only.
+ */
+export function prettifyLocationLabel(location: string | undefined): string {
+  const raw = String(location || '').trim();
+  if (!/^loc[-_][a-z0-9_-]+$/i.test(raw)) return raw;
+  return raw
+    .replace(/^loc[-_]/i, '')
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/** Replace raw location-id tokens embedded in free text ("… at loc-valescu-club"). */
+export function prettifyEmbeddedLocationIds(text: string | undefined): string {
+  return String(text || '').replace(/\bloc[-_][a-z0-9_-]+\b/gi, (token) => prettifyLocationLabel(token));
+}
+
 /** Agent-facing description of the gap between two adjacent scenes. */
 function describeJump(prev: TimelineScene, scene: TimelineScene): string {
   const samePlace = sameLocation(prev.location, scene.location);
@@ -136,7 +159,9 @@ function describeJump(prev: TimelineScene, scene: TimelineScene): string {
   }
   const parts: string[] = [];
   if (!sameTime) parts.push(`time passes (${prev.timeOfDay} → ${scene.timeOfDay})`);
-  if (!samePlace) parts.push(`the protagonist moves from ${prev.location} to ${scene.location}`);
+  if (!samePlace) {
+    parts.push(`the protagonist moves from ${prettifyLocationLabel(prev.location)} to ${prettifyLocationLabel(scene.location)}`);
+  }
   if (parts.length === 0) {
     // Same time band but at least one side's location is blank — treat as continuous.
     return 'continuous — directly follows the previous scene';

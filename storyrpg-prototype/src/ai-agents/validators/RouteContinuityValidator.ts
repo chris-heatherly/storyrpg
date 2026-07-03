@@ -33,7 +33,7 @@ export interface RouteContinuityResult {
   issues: RouteContinuityIssue[];
 }
 
-type RouteCue = Extract<StoryEventCue, 'arrival' | 'venueDoor' | 'objectHandoff' | 'socialMeet' | 'threatEncounter' | 'lateNightWriting' | 'blogAftermath'> | 'walkHome';
+type RouteCue = Extract<StoryEventCue, 'arrival' | 'venueDoor' | 'objectHandoff' | 'socialMeet' | 'threatEncounter' | 'lateNightWriting' | 'antagonistContact' | 'blogAftermath'> | 'walkHome';
 
 interface CueHit {
   cue: RouteCue;
@@ -64,6 +64,10 @@ const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
   'objectHandoff',
   'threatEncounter',
   'walkHome',
+  // A hidden watcher's FIRST contact is a one-time reveal — restaging it as a
+  // fresh chilling event in later scenes (bite-me 2026-07-03: three V.V.
+  // first contacts) resets the dread instead of escalating it.
+  'antagonistContact',
   'blogAftermath',
 ]);
 

@@ -183,22 +183,42 @@
     {
       "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and must choose how to face Edric.\": moment has timeline or cross-scene cues."
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
     },
     {
-      "type": "debug",
+      "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 deterministic authored-moment recovery inserted 3/4 beat(s); 0 under-realized moment(s) remain"
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:need] \"Name the episode want/lack that starts motion and makes the pressure active: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:go] \"Cross the episode threshold so old tactics stop working: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:find] \"Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 deterministic authored-moment recovery inserted 0/4 beat(s); 4 under-realized moment(s) remain"
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 defers 4 summary-shaped authored moment(s) to the season-final realization gate (never inserted as prose)."
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 6 beats for scene-1"
+      "message": "Wrote 3 beats for scene-1"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-1 written (6 beats)"
+      "message": "Scene scene-1 written (3 beats)"
     },
     {
       "type": "debug",
@@ -213,7 +233,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 6 beats... Found: beat-3"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -441,7 +461,7 @@
     {
       "type": "debug",
       "phase": "observability",
-      "message": "{\"imageCoverage\":{\"totalBeats\":18,\"beatsWithImages\":0,\"encounterBeatsTotal\":0,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
+      "message": "{\"imageCoverage\":{\"totalBeats\":15,\"beatsWithImages\":0,\"encounterBeatsTotal\":0,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
     }
   ],
   "checkpoints": [

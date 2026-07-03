@@ -178,6 +178,7 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SCENE_CHARACTER_AVAILABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_SCENE_TURN_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_EPISODE_STORY_CIRCLE_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_SCENE_TURN_CLUSTER_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },

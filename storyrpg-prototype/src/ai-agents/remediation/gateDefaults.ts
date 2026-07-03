@@ -350,6 +350,12 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // planned location/time jump must be grounded in bridge prose, transitionIn, or
   // the arriving scene's opening.
   GATE_SCENE_TRANSITION_CONTINUITY: true,
+  // Character presence vs time-of-day (bite-me 2026-07-03: daylight-bound Mika
+  // arriving in "weak afternoon light"): fires only for characters carrying
+  // structured timeOfDayConstraints from the CharacterBible. DEFAULT OFF —
+  // constraints are newly authored by CharacterDesigner; needs a shadow run to
+  // confirm the LLM emits sane bands before this blocks. Enable via =1.
+  GATE_SCENE_CHARACTER_AVAILABILITY: false,
   // Turn-centered scene realization: every generated scene with a turn contract
   // must show setup/pre-turn pressure, the central turn, and aftermath/handoff.
   // Treatment-authored turns block; non-treatment misses start as warnings unless

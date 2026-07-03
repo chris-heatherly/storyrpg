@@ -561,10 +561,17 @@ export class PhaseValidator {
     
     // Validate each scene's content
     const characterNames = new Set(characterBible.characters.map(c => c.name.toLowerCase()));
-    
+    const encounterSceneIds = new Set(
+      blueprint.scenes.filter((scene) => scene.isEncounter && scene.encounterType).map((scene) => scene.id),
+    );
+
     for (const content of sceneContents) {
-      // Check beats
+      // Check beats. Encounter scenes are legitimately beat-less at this
+      // phase: their reader-facing prose lives in the encounter's own phase
+      // beats (built by EncounterArchitect), and fabricating a scene-level
+      // scaffold beat shipped treatment text as prose (bite-me 2026-07-03).
       if (!content.beats || content.beats.length === 0) {
+        if (encounterSceneIds.has(content.sceneId)) continue;
         issues.push({
           severity: 'error',
           code: 'SCENE_NO_BEATS',

@@ -53,6 +53,12 @@ plot-point markers intact. You rewrite the *text* field of each beat (and
 **Priorities**
 1. **Show, don't tell.** Replace declarative emotion ("she was angry") with
    behavior ("she set the glass down too carefully"). Never add new plot.
+   This includes narrator emotion-labels on objects and events: "a chilling
+   message", "an ominous silence", "a terrifying sight" — cut the label and
+   make the DETAIL earn the feeling (what the message says, what the silence
+   interrupts, what the body does in response). If a quoted line is labeled
+   "chilling" but reads benign, rewrite the protagonist's reaction, not the
+   quote.
 2. **Subtext over declaration.** Characters rarely say what they mean in
    charged moments. Leverage irony, deflection, contradiction.
 3. **Micro-reversal.** If a beat drifts, invert expectation — the threat

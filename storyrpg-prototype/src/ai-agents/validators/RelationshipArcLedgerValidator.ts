@@ -92,6 +92,20 @@ function hasSettledGroupLanguage(text: string): boolean {
   );
 }
 
+// A Titlecase-named group inside a settled-language sentence ("The Dusk Club
+// is now three"). Requiring the proper name keeps generic venue prose ("the
+// club is theirs tonight") from flagging as an unplanned group.
+const NAMED_GROUP_RE = /\b([A-Z][A-Za-z0-9'’-]+(?:\s+[A-Z][A-Za-z0-9'’-]+){0,3}\s+(?:Club|Circle|Crew|Society))\b/;
+
+function unplannedSettledGroupName(text: string): string | undefined {
+  for (const window of sentenceWindows(text)) {
+    if (!GROUP_IDENTITY_RE.test(window) || PROVISIONAL_GROUP_CONTEXT_RE.test(window)) continue;
+    const named = NAMED_GROUP_RE.exec(window);
+    if (named) return named[1];
+  }
+  return undefined;
+}
+
 function isNegated(text: string, index: number): boolean {
   const prefix = text.slice(Math.max(0, index - 40), index);
   return NEGATED_WINDOW_RE.test(prefix);
@@ -466,6 +480,21 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
               `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:group`,
               'Keep the group name as a joke, dare, or fragile invitation until individual relationships and a group-defining choice earn membership.',
             ), `group:settled:${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:${entry.currentStage}`);
+          }
+        }
+        // Non-vacuous guard: settled language about a NAMED group with no group
+        // ledger entry at all means the group was never planned — the checks
+        // above have nothing to audit against and previously passed silently
+        // (bite-me 2026-07-03: Dusk Club founded on first hangout with
+        // relationshipPacing: [] everywhere).
+        if (groupEntries.length === 0) {
+          const unplannedGroup = unplannedSettledGroupName(text);
+          if (unplannedGroup) {
+            pushIssue(this.error(
+              `Scene "${ref.scene.id}" treats group "${unplannedGroup}" as settled membership but no relationship pacing contract or ledger entry exists for any group — the milestone was never planned or earned.`,
+              `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:group-unplanned`,
+              'Plan the group arc (relationshipPacing contracts on the founding and earlier scenes) and keep the name provisional — a joke, dare, or fragile invitation — until choices earn membership.',
+            ), `group:unplanned:${ref.episodeNumber}:${ref.scene.id}:${slug(unplannedGroup)}`);
           }
         }
       }

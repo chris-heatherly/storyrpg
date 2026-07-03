@@ -7,7 +7,7 @@ import {
 
 type RouteCue = Extract<
   StoryEventCue,
-  'arrival' | 'venueDoor' | 'objectHandoff' | 'socialMeet' | 'threatEncounter' | 'lateNightWriting' | 'blogAftermath'
+  'arrival' | 'venueDoor' | 'objectHandoff' | 'socialMeet' | 'threatEncounter' | 'lateNightWriting' | 'antagonistContact' | 'blogAftermath'
 >;
 
 export interface BlueprintRouteCueIssue {
@@ -26,6 +26,10 @@ const DUPLICATE_SENSITIVE_CUES = new Set<RouteCue>([
   'venueDoor',
   'objectHandoff',
   'threatEncounter',
+  // The hidden watcher's first contact is a one-time reveal (bite-me
+  // 2026-07-03 planned it into three scenes; keep in sync with
+  // RouteContinuityValidator + sceneEventOwnership twins).
+  'antagonistContact',
   'blogAftermath',
 ]);
 

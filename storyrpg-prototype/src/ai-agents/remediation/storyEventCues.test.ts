@@ -99,4 +99,28 @@ describe('detectStoryEventCues', () => {
     const attack = detectPrimaryStoryEventCues('In the corridor, the attacker closes a bruising grip around your arm.');
     expect(attack.has('threatEncounter')).toBe(true);
   });
+
+  it('detects the antagonist first-contact cue in each of the bite-me 2026-07-03 restagings', () => {
+    const blogComment = detectPrimaryStoryEventCues(
+      "A new user, 'V.V.', has left a simple, chilling message: 'I look forward to reading more.'",
+    );
+    expect(blogComment.has('antagonistContact')).toBe(true);
+
+    const privateDm = detectPrimaryStoryEventCues(
+      "A single notification, separate from the public feed. A direct message from a private account: V.V. The text is brief. 'An impressive memory, writer.'",
+    );
+    expect(privateDm.has('antagonistContact')).toBe(true);
+
+    const formalComment = detectPrimaryStoryEventCues(
+      "It's one name in particular, a formal account with a single, chilling comment: 'Intriguing.' V. Velescu.",
+    );
+    expect(formalComment.has('antagonistContact')).toBe(true);
+  });
+
+  it('does not fire antagonist contact for a message from a known friend', () => {
+    const friendly = detectPrimaryStoryEventCues(
+      "A text from Mika flashes across the screen: 'OMG. EVERYONE is reading this. We're famous.'",
+    );
+    expect(friendly.has('antagonistContact')).toBe(false);
+  });
 });

@@ -9,6 +9,7 @@ export type StoryEventCue =
   | 'roadBreakdown'
   | 'friendDebrief'
   | 'lateNightWriting'
+  | 'antagonistContact'
   | 'blogAftermath'
   | 'endingAftermath'
   | 'walkHome';
@@ -21,6 +22,7 @@ export const STORY_EVENT_CUE_ORDER: Partial<Record<StoryEventCue, number>> = {
   threatEncounter: 50,
   walkHome: 60,
   lateNightWriting: 70,
+  antagonistContact: 75,
   blogAftermath: 80,
 };
 
@@ -129,6 +131,23 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     || /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b.{0,100}\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b/.test(text);
   if (publicWritingLaunch || hasPublicWritingActionCueText(text)) {
     cues.add('lateNightWriting');
+  }
+
+  // First contact from a hidden/unknown watcher: an unsolicited comment, DM,
+  // or message from an anonymous/new/private sender. Staged fresh THREE times
+  // in bite-me 2026-07-03 (blog comment, private DM, formal-account comment)
+  // because nothing owned the event.
+  const anonymousSender = /\b(?:anonymous|unknown|unsigned|unfamiliar|new user|private account|formal account|no name|initials?|admirer|watcher)\b/;
+  const contactArtifact = /\b(?:comment|message|dm|direct message|reply|note|notification)\b/;
+  const contactVerb = /\b(?:leaves?|left|arrives?|arrived|appears?|appeared|sends?|sent|writes?|wrote|posts?|posted|flashes?)\b/;
+  const contactFromSender = /\b(?:comment|message|dm|direct message|reply|note|notification)\b.{0,60}\bfrom\b.{0,50}\b(?:anonymous|unknown|unsigned|unfamiliar|new user|private account|formal account|no name|initials?|admirer|watcher)\b/;
+  const senderWithContact = /\b(?:anonymous|unknown|unsigned|unfamiliar|new user|private account|formal account|no name|admirer|watcher)\b.{0,60}\b(?:with|leaves?|left|writes?|wrote|posts?|posted|sends?|sent)\b.{0,50}\b(?:comment|message|dm|direct message|reply|note|notification)\b/;
+  if (
+    contactFromSender.test(text)
+    || senderWithContact.test(text)
+    || (anonymousSender.test(text) && contactArtifact.test(text) && contactVerb.test(text))
+  ) {
+    cues.add('antagonistContact');
   }
 
   const publicBlogAftermath = (/\b(?:readership|viral|views?|comments?|dashboard|profile|public pressure|public signal|broke the internet|audience growth|attention spike)\b/.test(text)

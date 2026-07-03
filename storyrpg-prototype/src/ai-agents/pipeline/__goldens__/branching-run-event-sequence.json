@@ -183,22 +183,37 @@
     {
       "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": moment has timeline or cross-scene cues."
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
     },
     {
-      "type": "debug",
+      "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 deterministic authored-moment recovery inserted 2/3 beat(s); 0 under-realized moment(s) remain"
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:need] \"Name the episode want/lack that starts motion and makes the pressure active: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:go] \"Cross the episode threshold so old tactics stop working: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 deterministic authored-moment recovery inserted 0/3 beat(s); 3 under-realized moment(s) remain"
+    },
+    {
+      "type": "warning",
+      "phase": "scenes",
+      "message": "Scene scene-1 defers 3 summary-shaped authored moment(s) to the season-final realization gate (never inserted as prose)."
     },
     {
       "type": "agent_complete",
       "agent": "SceneWriter",
-      "message": "Wrote 5 beats for scene-1"
+      "message": "Wrote 3 beats for scene-1"
     },
     {
       "type": "debug",
       "phase": "content",
-      "message": "Scene scene-1 written (5 beats)"
+      "message": "Scene scene-1 written (3 beats)"
     },
     {
       "type": "debug",
@@ -213,7 +228,7 @@
     {
       "type": "debug",
       "phase": "choices",
-      "message": "Looking for choicePoint beat in 5 beats... Found: beat-3"
+      "message": "Looking for choicePoint beat in 3 beats... Found: beat-3"
     },
     {
       "type": "agent_start",
@@ -491,7 +506,7 @@
     {
       "type": "debug",
       "phase": "observability",
-      "message": "{\"imageCoverage\":{\"totalBeats\":18,\"beatsWithImages\":0,\"encounterBeatsTotal\":10,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
+      "message": "{\"imageCoverage\":{\"totalBeats\":15,\"beatsWithImages\":0,\"encounterBeatsTotal\":10,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
     }
   ],
   "checkpoints": [

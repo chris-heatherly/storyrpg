@@ -52,6 +52,7 @@ import { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationV
 import { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';
 import { CharacterTreatmentRealizationValidator } from './CharacterTreatmentRealizationValidator';
 import { NarrativeFailureModeValidator } from './NarrativeFailureModeValidator';
+import { SceneCharacterAvailabilityValidator } from './SceneCharacterAvailabilityValidator';
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
@@ -456,6 +457,11 @@ const FIDELITY_POLICY_BY_VALIDATOR: Record<string, Partial<FidelityFinding>> = {
     findingClass: 'repairable_contract',
     sourceKind: 'story',
   },
+  SceneCharacterAvailabilityValidator: {
+    gateId: 'GATE_SCENE_CHARACTER_AVAILABILITY',
+    findingClass: 'repairable_contract',
+    sourceKind: 'story',
+  },
   SceneTurnRealizationValidator: {
     gateId: 'GATE_SCENE_TURN_REALIZATION',
     findingClass: 'repairable_contract',
@@ -606,6 +612,7 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   EncounterSetPieceDepthValidator: 'GATE_ENCOUNTER_SETPIECE_DEPTH',
   RequiredBeatRealizationValidator: 'GATE_REQUIRED_BEAT_REALIZATION',
   SceneTransitionContinuityValidator: 'GATE_SCENE_TRANSITION_CONTINUITY',
+  SceneCharacterAvailabilityValidator: 'GATE_SCENE_CHARACTER_AVAILABILITY',
   SceneTurnRealizationValidator: 'GATE_SCENE_TURN_REALIZATION',
   SceneSpatialUnitValidator: 'GATE_SCENE_SPATIAL_UNIT',
   RelationshipArcLedgerValidator: 'GATE_RELATIONSHIP_ARC_LEDGER',
@@ -722,6 +729,17 @@ function collectFidelityFindings(
     guard(() => {
       const result = new SceneTransitionContinuityValidator().validate({ story, scenePlan });
       return toFindings('SceneTransitionContinuityValidator', result.issues);
+    });
+  }
+
+  // 2026-07-03 — character presence vs time-of-day: a character carrying
+  // structured timeOfDayConstraints (species/world rules) must not appear
+  // on-page in a scene whose planned or prose-inferred clock conflicts.
+  // Inert for stories whose characters carry no constraints.
+  if (isGateEnabled('GATE_SCENE_CHARACTER_AVAILABILITY')) {
+    guard(() => {
+      const result = new SceneCharacterAvailabilityValidator().validate({ story });
+      return toFindings('SceneCharacterAvailabilityValidator', result.issues);
     });
   }
 

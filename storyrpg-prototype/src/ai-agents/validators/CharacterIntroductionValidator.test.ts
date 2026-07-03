@@ -113,6 +113,47 @@ describe('CharacterIntroductionValidator', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('flags the Stela class: first appearance introduced via an unseen prior meeting ("the woman from the bookstore")', () => {
+    const story = makeStory(
+      [{ id: 'char-stela', name: 'Stela Pavel' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({ id: 's1-1', beats: [beat('You wrestle your luggage through the heavy oak door.')] }),
+          makeScene({
+            id: 's1-2',
+            charactersInvolved: ['char-stela'],
+            beats: [beat('You, Mika, and Stela Pavel—the woman from the bookstore—have claimed a corner, the low thrum of music a curtain around your table.')],
+          }),
+        ],
+      }],
+    );
+
+    const result = validator.validate({ story });
+    const errors = result.issues.filter((issue) => issue.severity === 'error');
+    expect(errors.some((issue) => issue.message.includes('back-reference') && issue.message.includes('s1-2'))).toBe(true);
+    expect(result.valid).toBe(false);
+  });
+
+  it('does not flag a first appearance that introduces the character in-scene', () => {
+    const story = makeStory(
+      [{ id: 'char-stela', name: 'Stela Pavel' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-2',
+            charactersInvolved: ['char-stela'],
+            beats: [beat('A woman with silver-streaked hair sets down her glass and offers a hand. "Stela Pavel," she says. "Mika collects strays; I vet them."')],
+          }),
+        ],
+      }],
+    );
+
+    const result = validator.validate({ story });
+    expect(result.issues.filter((issue) => issue.message.includes('back-reference'))).toEqual([]);
+  });
+
   it('matches accented names via the unique first token', () => {
     const story = makeStory(
       [{ id: 'char-ileana', name: 'Ileana Vâlcescu' }],

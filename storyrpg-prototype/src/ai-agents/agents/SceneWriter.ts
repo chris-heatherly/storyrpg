@@ -1710,7 +1710,7 @@ Return exactly one complete SceneContent JSON object with:
   - Pronouns: ${npc.pronouns}
   - Description: ${npc.description}${npc.physicalDescription ? `\n  - Physical Appearance (CANONICAL — use these exact details): ${npc.physicalDescription}` : ''}
   - Voice: ${npc.voiceNotes}
-  ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are, what the protagonist notices about them, and how the protagonist knows them (or that they are a stranger) — through action and dialogue, not a bio dump. Do NOT write them as already-familiar.` : ''}`)
+  ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are and what the protagonist notices about them — through action and dialogue, not a bio dump. Do NOT write them as already-familiar, and NEVER invent an off-page prior meeting the reader did not see (no "the woman from the bookstore", "the man from the train" appositives unless that meeting happened in an earlier scene or is authored backstory). If they are a stranger, meet them as a stranger.` : ''}`)
       .join('\n');
 
     const flagContext = input.relevantFlags

@@ -73,4 +73,14 @@ export const SYNTHETIC_FALLBACK_PROSE_PATTERNS: SyntheticFallbackPattern[] = [
     pattern: /\[Scene content generation failed/i,
     suggestion: 'The scene never generated; the episode must fail or regenerate — a failure marker is not story content.',
   },
+  {
+    label: 'encounter-bridge scaffold: the moment arrives',
+    pattern: /\bThe moment arrives before you can prepare for it:/i,
+    suggestion: REWRITE_AS_PROSE,
+  },
+  {
+    label: 'missing-content placeholder',
+    pattern: /\[Scene content was not generated\]/i,
+    suggestion: 'The scene never generated; the episode must fail or regenerate — a placeholder marker is not story content.',
+  },
 ];

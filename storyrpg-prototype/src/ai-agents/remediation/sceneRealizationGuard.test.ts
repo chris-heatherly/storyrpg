@@ -338,7 +338,7 @@ describe('insertMissingMomentBeats', () => {
     expect(beats.some((beat) => beat.text?.includes('the viral *Mr Midnight* post changes the aftermath by making her a name'))).toBe(true);
   });
 
-  it('allows deterministic recovery for arrival beats with public-breakup backstory', () => {
+  it('never pastes character-design summary text as prose, even for arrival beats (bite-me 2026-07-03 stub-beat regression)', () => {
     const beats = [
       { id: 'b1', text: 'The taxi turns into Lipscani with the city still wet from rain.', nextBeatId: 'b2' },
       { id: 'b2', text: 'The apartment key waits in her palm.' },
@@ -355,8 +355,30 @@ describe('insertMissingMomentBeats', () => {
       onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
     });
 
-    expect(skipped).toEqual([]);
-    expect(beats.some((beat) => beat.text?.includes('Kylie Marinescu arrives in Bucharest'))).toBe(true);
+    expect(beats.map((beat) => beat.id)).toEqual(['b1', 'b2']);
+    expect(skipped[0]).toContain('treatment/design summary');
+  });
+
+  it('never inserts story-circle contract text as prose regardless of shape or cold-open allowance', () => {
+    const beats = [
+      { id: 'b1', text: 'The taxi turns into Lipscani with the city still wet from rain.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The apartment key waits in her palm.' },
+    ];
+    const missing = [{
+      moment: 'Kylie Marinescu arrives in Bucharest with two suitcases and one crumpled address',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'storyCircle:you',
+      missingTokens: ['kylie', 'arrives', 'bucharest'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-1', beats, missing, {
+      allowColdOpenInsertion: true,
+      onSkip: (m, reason) => skipped.push(`${m.tier}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.id)).toEqual(['b1', 'b2']);
+    expect(skipped[0]).toContain('story-circle source text is an episode summary');
   });
 
   it('skips deterministic cold-open recovery unless the caller marks the scene as opening-capable', () => {
@@ -392,7 +414,7 @@ describe('insertMissingMomentBeats', () => {
       { id: 'b2', text: 'The publish button waits.' },
     ];
     const missing = [{
-      moment: 'Signal After Dusk turns the Dusk Circle rescue into proof the narrator can author a new life',
+      moment: 'Signal After Dusk turns the Dusk Circle rescue into a public dare pinned above the fold',
       validator: 'RequiredBeatRealizationValidator' as const,
       tier: 'authored',
       missingTokens: ['signal', 'dusk', 'circle'],
@@ -405,6 +427,27 @@ describe('insertMissingMomentBeats', () => {
 
     expect(skipped).toEqual([]);
     expect(beats.some((beat) => beat.text?.includes('Signal After Dusk turns the Dusk Circle rescue'))).toBe(true);
+  });
+
+  it('skips meta role labels ("the narrator") instead of shipping them as prose', () => {
+    const beats = [
+      { id: 'b1', text: 'The rescue leaves her hands shaking above the keyboard.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'The publish button waits.' },
+    ];
+    const missing = [{
+      moment: 'Signal After Dusk turns the Dusk Circle rescue into proof the narrator can author a new life',
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['signal', 'dusk', 'circle'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-blog-aftermath', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.moment}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.id)).toEqual(['b1', 'b2']);
+    expect(skipped[0]).toContain('treatment/design summary');
   });
 
   it('skips terse action summaries instead of pasting planning labels into prose', () => {

@@ -9,6 +9,14 @@ export interface RelationshipPacingSceneLike {
   plannedHasChoice?: boolean;
   choicePoint?: { type?: string };
   relationshipPacing?: RelationshipPacingContract[];
+  /** Plan-text surfaces scanned for un-contracted group formation. */
+  title?: string;
+  name?: string;
+  dramaticPurpose?: string;
+  description?: string;
+  turnContract?: { centralTurn?: string; turnEvent?: string; afterState?: string };
+  storyCircleBeatContracts?: Array<{ sourceText?: string }>;
+  requiredBeats?: Array<{ mustDepict?: string }>;
 }
 
 const STAGE_ORDER: RelationshipPacingStage[] = [
@@ -94,8 +102,80 @@ function sharpenEarlyLabels(contract: RelationshipPacingContract): boolean {
   return changed;
 }
 
+// Group-FORMATION language in plan text ("forms the Dusk Club with Mika and
+// Stela"). Formation verbs only — arrival/venue mentions ("meets them at the
+// Vâlcescu Club") must not match, since named clubs are often locations.
+const GROUP_FORMATION_RE =
+  /\b(?:forms?|found(?:s|ed)?|start(?:s|ed)?|creat(?:es?|ed)|names?|christen(?:s|ed)?)\b[^.!?\n]{0,80}?\b(?:the\s+)?([A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,3}\s+(?:Club|Circle|Crew|Society))\b/;
+
+function groupSlug(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function plannedGroupFormation(scene: RelationshipPacingSceneLike): string | undefined {
+  const surfaces = [
+    scene.title,
+    scene.name,
+    scene.dramaticPurpose,
+    scene.description,
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+    scene.turnContract?.afterState,
+    ...(scene.storyCircleBeatContracts ?? []).map((c) => c.sourceText),
+    ...(scene.requiredBeats ?? []).map((b) => b.mustDepict),
+  ];
+  for (const surface of surfaces) {
+    const match = GROUP_FORMATION_RE.exec(String(surface || ''));
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+/**
+ * A scene that STAGES a named-group formation must carry a group pacing
+ * contract — otherwise every group check downstream (ledger, settled-language
+ * validator, SceneWriter guidance) is vacuous and the group ships as settled
+ * membership on first hangout (bite-me 2026-07-03: the planner emitted
+ * relationshipPacing: [] for the Dusk Club founding scene and nothing could
+ * fire). Synthesizes a conservative spark-capped contract.
+ */
+export function ensureGroupFormationPacingContracts<T extends RelationshipPacingSceneLike>(scenes: T[]): number {
+  let added = 0;
+  for (const scene of scenes) {
+    const groupName = plannedGroupFormation(scene);
+    if (!groupName) continue;
+    const groupId = groupSlug(groupName);
+    const contracts = scene.relationshipPacing ?? [];
+    if (contracts.some((contract) => contract.groupId && groupSlug(contract.groupId) === groupId)) continue;
+    contracts.push({
+      id: `${scene.id ?? 'scene'}-group-pacing-${groupId}`,
+      source: 'planner',
+      groupId,
+      startStage: 'noticed',
+      targetStage: 'spark',
+      allowedLabels: [...SPARK_ALLOWED],
+      blockedLabels: [...GROUP_BLOCKED],
+      requiredEvidence: [
+        'keep the group name as a joke, dare, invitation, or fragile beginning',
+        'membership must be earned by later relationship choices and evidence, not declared at founding',
+      ],
+      minScenesSinceIntroduction: 1,
+      maxDeltaThisScene: 6,
+      mechanicDimensions: ['trust', 'affection'],
+    });
+    scene.relationshipPacing = contracts;
+    added += 1;
+  }
+  return added;
+}
+
 export function normalizeRelationshipPacingStages<T extends RelationshipPacingSceneLike>(scenes: T[]): number {
-  let changed = 0;
+  let changed = ensureGroupFormationPacingContracts(scenes);
   for (const scene of scenes) {
     for (const contract of scene.relationshipPacing ?? []) {
       if (contract.groupId) {

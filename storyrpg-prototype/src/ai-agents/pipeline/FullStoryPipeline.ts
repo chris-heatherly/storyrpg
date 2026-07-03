@@ -1380,7 +1380,12 @@ export class FullStoryPipeline {
         );
       }
       const generatedScene = generatedById.get(scene.id);
-      if (this.sceneBlueprintRequiresReaderProse(scene) && !this.sceneContentHasReaderProse(generatedScene)) {
+      // Encounter scenes carry their reader-facing prose in the encounter's
+      // own phase beats (asserted by the encounter-content gate above), not in
+      // scene-level beats — the old scaffold "bridge" beat that satisfied this
+      // check pasted treatment text as prose (bite-me 2026-07-03).
+      const isEncounterScene = Boolean(scene.isEncounter && scene.encounterType);
+      if (!isEncounterScene && this.sceneBlueprintRequiresReaderProse(scene) && !this.sceneContentHasReaderProse(generatedScene)) {
         throw new PipelineError(
           `Invariant violation: scene "${scene.id}" owns reader-facing obligations but generated no prose beats`,
           'content_generation',
@@ -4481,6 +4486,11 @@ export class FullStoryPipeline {
       voiceProfile: voiceSlice,
       secrets,
       arc,
+      // Structured presence constraints (species daylight rules etc.) so
+      // final-contract validators can check character presence against a
+      // scene's time-of-day without re-reading the character bible.
+      species: c.species,
+      timeOfDayConstraints: c.timeOfDayConstraints,
     };
   }
 

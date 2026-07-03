@@ -106,6 +106,26 @@ export interface CharacterProfile {
    */
   secrets?: string[];
 
+  /**
+   * Structured species/nature ("human", "strigoi", "succubus", …). Prose-only
+   * supernatural identity is invisible to downstream constraint checks —
+   * bite-me 2026-07-03 staged a daylight-bound character on an afternoon
+   * house call because her nature lived only in `overview`/`secrets` text.
+   */
+  species?: string;
+
+  /**
+   * Hard presence constraints derived from species + world rules. When a
+   * scene's planned time-of-day (or its prose) conflicts with `unavailable`,
+   * planning/validation must move the character or the scene.
+   */
+  timeOfDayConstraints?: {
+    /** Canonical time-of-day bands the character cannot appear in. */
+    unavailable: Array<'dawn' | 'morning' | 'midday' | 'afternoon' | 'dusk' | 'evening' | 'night'>;
+    /** The in-world rule that causes it ("strigoi burn in direct sunlight"). */
+    reason?: string;
+  };
+
   // Core identity
   overview: string; // 2-3 sentence summary
   fullBackground: string; // Detailed backstory
@@ -763,7 +783,9 @@ OUTPUT BUDGET:
       },
       "relationships": [{"targetId": "other-id", "targetName": "Name", "relationshipType": "friend/rival/etc", "currentDynamic": "brief"}],
       "arcPotential": {"growth": "How they could grow", "fall": "How they could fall"},
-      "secrets": ["One secret"]
+      "secrets": ["One secret"],
+      "species": "OPTIONAL — structured nature when not an ordinary human; use the world bible's own species vocabulary",
+      "timeOfDayConstraints": {"unavailable": ["morning", "midday", "afternoon"], "reason": "Include ONLY when species + world rules truly restrict when they can appear (e.g. a species the world rules bar from daylight); derive the bands from the world rules"}
     }
   ],
   "relationshipSummary": "Brief overview of how characters relate",
@@ -861,7 +883,9 @@ Return ONLY valid JSON with this shape:
       },
       "relationships": [{"targetId": "other-id", "targetName": "Name", "relationshipType": "friend/rival/etc", "currentDynamic": "brief"}],
       "arcPotential": {"growth": "How they could grow", "fall": "How they could fall"},
-      "secrets": ["One secret"]
+      "secrets": ["One secret"],
+      "species": "OPTIONAL — structured nature when not an ordinary human; use the world bible's own species vocabulary",
+      "timeOfDayConstraints": {"unavailable": ["morning", "midday", "afternoon"], "reason": "Include ONLY when species + world rules truly restrict when they can appear (e.g. a species the world rules bar from daylight); derive the bands from the world rules"}
     }
   ],
   "relationshipSummary": "Brief overview",
@@ -1034,6 +1058,26 @@ Requirements:
           character.arcPotential.triggerEvents = [];
         } else if (!Array.isArray(character.arcPotential.triggerEvents)) {
           character.arcPotential.triggerEvents = [character.arcPotential.triggerEvents as unknown as string];
+        }
+      }
+
+      // Normalize time-of-day constraints to the canonical band vocabulary;
+      // drop malformed constraint objects rather than shipping unusable data.
+      if (character.timeOfDayConstraints) {
+        const VALID_BANDS = new Set(['dawn', 'morning', 'midday', 'afternoon', 'dusk', 'evening', 'night']);
+        const rawBands = Array.isArray(character.timeOfDayConstraints.unavailable)
+          ? character.timeOfDayConstraints.unavailable
+          : [character.timeOfDayConstraints.unavailable as unknown as string];
+        const bands = rawBands
+          .map((band) => String(band || '').toLowerCase().trim())
+          .filter((band) => VALID_BANDS.has(band));
+        if (bands.length === 0) {
+          delete character.timeOfDayConstraints;
+        } else {
+          character.timeOfDayConstraints = {
+            unavailable: bands as NonNullable<CharacterProfile['timeOfDayConstraints']>['unavailable'],
+            reason: character.timeOfDayConstraints.reason,
+          };
         }
       }
 

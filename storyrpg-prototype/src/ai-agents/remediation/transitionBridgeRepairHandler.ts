@@ -1,5 +1,6 @@
-import type { Beat, Scene, Story } from '../../types';
+import type { Scene, Story } from '../../types';
 import type { SeasonScenePlan } from '../../types/scenePlan';
+import { prettifyLocationLabel } from '../utils/sceneTimeline';
 import { SceneTransitionContinuityValidator } from '../validators/SceneTransitionContinuityValidator';
 import type { ContractRepairHandler, ContractRepairReport } from './finalContractRepair';
 
@@ -39,26 +40,6 @@ function parseTransitionFinding(message: string | undefined): ParsedTransitionFi
   };
 }
 
-function findBridgeBeat(
-  story: Story,
-  episodeNumber: number,
-  sceneId: string | undefined,
-  targetSceneId: string,
-  beatId?: string,
-): Beat | undefined {
-  for (const episode of story.episodes || []) {
-    if (episode.number !== episodeNumber) continue;
-    for (const scene of episode.scenes || []) {
-      if (sceneId && scene.id !== sceneId) continue;
-      const beat = (scene.beats || []).find((candidate) =>
-        beatId ? candidate.id === beatId : candidate.nextSceneId === targetSceneId
-      );
-      if (beat) return beat;
-    }
-  }
-  return undefined;
-}
-
 function findScene(story: Story, episodeNumber: number, sceneId: string): Scene | undefined {
   for (const episode of story.episodes || []) {
     if (episode.number !== episodeNumber) continue;
@@ -68,20 +49,13 @@ function findScene(story: Story, episodeNumber: number, sceneId: string): Scene 
 }
 
 function transitionSentence(parsed: ParsedTransitionFinding): string {
-  const from = parsed.fromLocation || 'where you were';
-  const to = parsed.toLocation || parsed.targetSceneId;
+  const from = prettifyLocationLabel(parsed.fromLocation) || 'where you were';
+  const to = prettifyLocationLabel(parsed.toLocation) || prettifyLocationLabel(parsed.targetSceneId) || parsed.targetSceneId;
   const loweredTo = to.toLowerCase();
   if (/\bcar\b/.test(loweredTo)) {
     return `You drive out of ${from} and into the ${to}, the ride making the distance impossible to miss.`;
   }
   return `You leave ${from} behind and make your way to ${to}.`;
-}
-
-function prependTransition(beat: Beat, sentence: string): boolean {
-  const current = String(beat.text || '').trim();
-  if (current.toLowerCase().includes(sentence.toLowerCase())) return false;
-  beat.text = current ? `${sentence} ${current}` : sentence;
-  return true;
 }
 
 function setTransitionIn(scene: Scene, sentence: string): boolean {
@@ -103,14 +77,15 @@ export function repairTransitionBridgeContinuity(
     if (issue.validator !== 'SceneTransitionContinuityValidator') continue;
     const parsed = parseTransitionFinding(issue.message);
     if (!parsed) continue;
-    if (!parsed.bridgeBeatId) {
-      const scene = findScene(story, parsed.episodeNumber, parsed.targetSceneId);
-      if (scene && setTransitionIn(scene, transitionSentence(parsed))) touched += 1;
-      continue;
-    }
-    const beat = findBridgeBeat(story, parsed.episodeNumber, undefined, parsed.targetSceneId, parsed.bridgeBeatId);
-    if (!beat) continue;
-    if (prependTransition(beat, transitionSentence(parsed))) touched += 1;
+    // Always repair on the arriving scene's timeline.transitionIn — the reader
+    // renders it as a transition line above the scene's opening beat. Never
+    // prepend movement prose into a choice bridge/payoff beat: that conflates
+    // the choice's outcome with scene movement in one line (bite-me 2026-07-03
+    // shipped "You leave Rooftop Bar behind and make your way to Cismigiu
+    // Gardens. Mika agrees, but…"), and only repairs the one route that took
+    // that bridge while sibling routes still teleport.
+    const scene = findScene(story, parsed.episodeNumber, parsed.targetSceneId);
+    if (scene && setTransitionIn(scene, transitionSentence(parsed))) touched += 1;
   }
   return touched;
 }

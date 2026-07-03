@@ -54,6 +54,9 @@ const DUPLICATE_SENSITIVE_CUES = new Set<SceneEventOwnershipCue>([
   'objectHandoff',
   'threatEncounter',
   'walkHome',
+  // First contact from the hidden watcher is a one-time reveal (bite-me
+  // 2026-07-03 staged it fresh in three scenes).
+  'antagonistContact',
   'blogAftermath',
 ]);
 const CANONICAL_CUE_KEYS = new Set<SceneEventOwnershipCue>([
@@ -66,6 +69,7 @@ const CANONICAL_CUE_KEYS = new Set<SceneEventOwnershipCue>([
   'roadBreakdown',
   'friendDebrief',
   'lateNightWriting',
+  'antagonistContact',
   'blogAftermath',
   'endingAftermath',
 ]);

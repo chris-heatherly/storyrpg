@@ -14,6 +14,7 @@ import type {
   StoryCircleBeatRealizationTarget,
 } from '../../types/scenePlan';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
+import { detectStoryEventCues } from '../remediation/storyEventCues';
 import {
   treatmentFieldCloseMatch,
   treatmentFieldTokens,
@@ -438,6 +439,20 @@ function partNarratesThreatAftermath(sourceText: string): boolean {
   return POST_THREAT_NARRATION_RE.test(sourceText) && THREAT_REFERENCE_RE.test(sourceText);
 }
 
+/**
+ * Parts that narrate writing/publishing the night up ("At 4am she turns the
+ * night into the first post…") belong AFTER the episode's encounter even when
+ * they carry no explicit threat word — the old threat-word requirement let the
+ * blog atom bind to the ARRIVAL scene (bite-me 2026-07-03: Mika pitching "a
+ * new blog" in s1-1 and a "Start a blog" choice in s1-2, when the treatment
+ * has the blog begin after the attack as the protagonist's own turn).
+ */
+function partBelongsAfterEncounter(sourceText: string): boolean {
+  if (partNarratesThreatAftermath(sourceText)) return true;
+  const cues = detectStoryEventCues(sourceText);
+  return cues.has('lateNightWriting') || cues.has('blogAftermath');
+}
+
 function firstEncounterOrder(contract: StoryCircleBeatRealizationContract, scenes: PlannedScene[]): number | undefined {
   const encounter = scenes
     .filter((scene) => scene.episodeNumber === contract.targetEpisodeNumber)
@@ -553,7 +568,7 @@ export function assignStoryCircleBeatContractsToScenes(
     for (const sceneContract of sceneContracts) {
       if (storyCircleOwnsContract(sceneContract, scenes)) continue;
       let partFloor = lastBoundOrder === undefined ? undefined : lastBoundOrder + 1;
-      if (partNarratesThreatAftermath(sceneContract.sourceText)) {
+      if (partBelongsAfterEncounter(sceneContract.sourceText)) {
         const encounterOrder = firstEncounterOrder(sceneContract, scenes);
         if (encounterOrder !== undefined) {
           partFloor = Math.max(partFloor ?? encounterOrder, encounterOrder);

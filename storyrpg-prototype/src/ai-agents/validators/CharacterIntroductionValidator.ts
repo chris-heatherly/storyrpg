@@ -136,6 +136,32 @@ function impliesOffPageFamiliarityOnFirstAppearance(rawProse: string, newNamesIn
   return newNamesInScene >= 2 && FIRST_APPEARANCE_SETTLED_GROUP_RE.test(rawProse);
 }
 
+// Back-reference appositive right after a name: "Stela Pavel—the woman from
+// the bookstore—", "Andrei, the man you met at the market,". On a FIRST
+// appearance any such reference points at an event the reader never saw
+// (an earlier on-page meeting would have made this scene not the first
+// appearance), so the prose is placing the reader in a memory they don't have
+// (bite-me 2026-07-03: no bookstore scene exists anywhere in the episode).
+const OFFPAGE_BACKREFERENCE_WINDOW = 90;
+const OFFPAGE_BACKREFERENCE_RE =
+  /^[\s,—–(-]*(?:the\s+)?(?:woman|man|girl|guy|one|lady|gentleman|waitress|waiter|clerk|owner|stranger)?\s*(?:from|you\s+(?:met|saw|noticed|talked\s+to)\s+(?:at|in|outside|near))\s+the\s+[a-z]/i;
+
+function offPageBackReferenceAfterName(rawProse: string, displayName: string): string | undefined {
+  const lowered = rawProse.toLowerCase();
+  const needle = displayName.toLowerCase();
+  let from = 0;
+  while (from < lowered.length) {
+    const idx = lowered.indexOf(needle, from);
+    if (idx < 0) return undefined;
+    const window = rawProse.slice(idx + needle.length, idx + needle.length + OFFPAGE_BACKREFERENCE_WINDOW);
+    if (OFFPAGE_BACKREFERENCE_RE.test(window)) {
+      return `${displayName}${window.split(/[.!?\n]/)[0]}`.trim();
+    }
+    from = idx + needle.length;
+  }
+  return undefined;
+}
+
 /** Whether a scene's cast (`charactersInvolved` mixes ids and display names) carries this NPC. */
 function castIncludes(entry: RosterEntry, scene: Scene): boolean {
   for (const ref of scene.charactersInvolved || []) {
@@ -223,6 +249,16 @@ export class CharacterIntroductionValidator extends BaseValidator {
               `"${npc.name}" first appears in scene "${at.scene.id}" (episode ${at.episodeNumber}) inside prose that implies off-page familiarity or settled group belonging before the reader has met them.`,
               `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}:offpage-familiarity`,
               `Introduce ${npc.name} with first-contact behavior before using time-jump familiarity, group shorthand, or belonging language.`,
+            ));
+          }
+          // Class 4 — off-page back-reference at first appearance: the name is
+          // introduced via an event the reader never saw.
+          const backReference = offPageBackReferenceAfterName(at.rawProse, npc.name);
+          if (backReference) {
+            issues.push(this.error(
+              `"${npc.name}" is introduced in scene "${at.scene.id}" (episode ${at.episodeNumber}) via a back-reference to an event the reader never saw ("${backReference.slice(0, 120)}"). This is their FIRST on-page appearance — there is no earlier scene for that reference to point at.`,
+              `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}:offpage-backreference`,
+              `Introduce ${npc.name} on-page in this scene (first-contact behavior, or an in-scene identifying detail) instead of referencing an unseen prior meeting — or stage that prior meeting in an earlier scene.`,
             ));
           }
         }

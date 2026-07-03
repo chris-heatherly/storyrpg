@@ -307,6 +307,7 @@ export type SceneEventOwnershipCue =
   | 'roadBreakdown'
   | 'friendDebrief'
   | 'lateNightWriting'
+  | 'antagonistContact'
   | 'blogAftermath'
   | 'endingAftermath'
   | 'walkHome';

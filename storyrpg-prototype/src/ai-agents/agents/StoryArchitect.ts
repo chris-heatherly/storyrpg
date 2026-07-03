@@ -40,7 +40,7 @@ import type {
 } from '../../types/seasonPlan';
 import { assignInfoLedgerPhasesToScenes } from '../pipeline/infoRevealAssignment';
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
-import { assignBlueprintTimeline, normalizeTimeOfDay, type SceneTimeOfDay } from '../utils/sceneTimeline';
+import { assignBlueprintTimeline, normalizeTimeOfDay, prettifyEmbeddedLocationIds, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
 import { applySceneContract } from '../utils/sceneContractBuilders';
@@ -3359,7 +3359,9 @@ Remember: The encounter is the heart. Design outward from it.
       );
       const scene: SceneBlueprint = {
         id: p.id,
-        name: p.title || `Scene ${idx + 1}`,
+        // Titles may embed raw location ids ("… at loc-valescu-club") — scene
+        // names are reader-adjacent (dev overlay, diagnostics, prompts).
+        name: prettifyEmbeddedLocationIds(p.title) || `Scene ${idx + 1}`,
         description: localPurpose,
         location: repairedLocation || p.locations?.[0] || input.currentLocation,
         timeOfDay: normalizeTimeOfDay(p.timeOfDay),

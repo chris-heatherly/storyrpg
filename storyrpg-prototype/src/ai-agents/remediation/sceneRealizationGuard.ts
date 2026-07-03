@@ -246,11 +246,28 @@ function stripTitleCaseTimelineProperNouns(value: string): string {
 }
 
 function hasUnsafeDeterministicInsertionCue(moment: string): boolean {
-  const timelineText = stripTitleCaseTimelineProperNouns(moment)
-    .replace(/\bafter (?:a |the )?public breakup\b/ig, '')
-    .replace(/\bafter (?:a |the )?(?:humiliating|cancelled|canceled) (?:engagement|breakup)\b/ig, '');
+  const timelineText = stripTitleCaseTimelineProperNouns(moment);
   return /\b(?:night|morning|dawn|dusk|sunset|midnight|weekend|later|earlier|before|after|next|previous|second|third|fourth|return(?:s|ed)?|again|handoff|transition|[0-9]+\s*(?:am|pm|a\.m\.|p\.m\.))\b/i
     .test(timelineText);
+}
+
+/** Story-circle contract text is an episode-level summary by construction —
+ * it narrates arcs ("arrives as a charming, wounded observer… intent to
+ * rebuild"), never a stageable on-page moment. It must be realized by
+ * SceneWriter (or fail the realization gate), never pasted as beat prose.
+ * bite-me 2026-07-03 shipped "Kylie arrives in Bucharest." this way. */
+function isStoryCircleSummaryTier(tier: string): boolean {
+  return tier.toLowerCase().startsWith('storycircle');
+}
+
+/** Treatment/design-summary red flags that must never ship as player prose:
+ * meta role labels, character-design appositives ("as a charming, wounded
+ * observer"), and goal-statement language ("the intent to rebuild"). */
+function isTreatmentSummaryProse(moment: string): boolean {
+  if (/\bthe (?:narrator|protagonist)\b/i.test(moment)) return true;
+  if (/\bas an? [a-z'’-]+, [a-z'’-]+ [a-z'’-]+\b/i.test(moment)) return true;
+  if (/\b(?:with )?the intent to [a-z]/i.test(moment)) return true;
+  return false;
 }
 
 function isSameSceneViralAftermathMoment(moment: string): boolean {
@@ -333,6 +350,14 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
     }
     if (/^coldopen\b/i.test(m.tier) && !options.allowColdOpenInsertion) {
       options.onSkip?.(m, 'cold-open moment belongs in the opening scene');
+      return false;
+    }
+    if (isStoryCircleSummaryTier(m.tier)) {
+      options.onSkip?.(m, 'story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization');
+      return false;
+    }
+    if (isTreatmentSummaryProse(m.moment)) {
+      options.onSkip?.(m, 'moment reads as treatment/design summary, not stageable prose — needs SceneWriter realization');
       return false;
     }
     if (isTerseActionSummary(m.moment) && !hasConcreteActionRequirement(m)) {

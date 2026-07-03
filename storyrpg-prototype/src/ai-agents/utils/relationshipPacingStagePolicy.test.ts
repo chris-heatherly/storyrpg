@@ -1,7 +1,60 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRelationshipPacingStages } from './relationshipPacingStagePolicy';
+import {
+  ensureGroupFormationPacingContracts,
+  normalizeRelationshipPacingStages,
+} from './relationshipPacingStagePolicy';
 
 describe('relationshipPacingStagePolicy', () => {
+  it('synthesizes a spark-capped group contract when a scene stages a named-group founding with no contracts (bite-me 2026-07-03 vacuous pass)', () => {
+    const scenes = [{
+      id: 's1-2',
+      dramaticPurpose: 'Kylie forms the Dusk Club with Mika and Stela over velvet booths.',
+      relationshipPacing: [] as never[],
+    }];
+
+    const added = ensureGroupFormationPacingContracts(scenes as never);
+
+    expect(added).toBe(1);
+    const contract = (scenes[0].relationshipPacing as Array<{ groupId?: string; targetStage?: string; blockedLabels?: string[] }>)[0];
+    expect(contract.groupId).toBe('dusk-club');
+    expect(contract.targetStage).toBe('spark');
+    expect(contract.blockedLabels).toContain('settled membership');
+  });
+
+  it('does not mistake a venue mention for a group founding', () => {
+    const scenes = [{
+      id: 's1-3',
+      dramaticPurpose: 'Kylie meets Mika at the Vâlcescu Club and watches the crowd.',
+      relationshipPacing: [] as never[],
+    }];
+
+    expect(ensureGroupFormationPacingContracts(scenes as never)).toBe(0);
+    expect(scenes[0].relationshipPacing).toHaveLength(0);
+  });
+
+  it('does not duplicate an existing group contract for the same group', () => {
+    const scenes = [{
+      id: 's1-2',
+      dramaticPurpose: 'She names the Dusk Club with her new friends.',
+      relationshipPacing: [{
+        id: 'group-1',
+        source: 'treatment' as const,
+        groupId: 'dusk-club',
+        startStage: 'noticed' as const,
+        targetStage: 'spark' as const,
+        allowedLabels: ['joke'],
+        blockedLabels: [],
+        requiredEvidence: [],
+        minScenesSinceIntroduction: 1,
+        maxDeltaThisScene: 6,
+        mechanicDimensions: ['trust' as const],
+      }],
+    }];
+
+    expect(ensureGroupFormationPacingContracts(scenes)).toBe(0);
+    expect(scenes[0].relationshipPacing).toHaveLength(1);
+  });
+
   it('keeps unearned group identity at spark without a group-defining choice', () => {
     const scenes = [{
       id: 's1',

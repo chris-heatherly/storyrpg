@@ -1132,12 +1132,17 @@ export class ContentGenerationPhase {
         const incomingScenes = blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id));
         const isConvergencePoint = incomingScenes.length > 1;
         
+        // No scaffold beat: the encounter's own phase beats are the scene's
+        // reader-facing prose (gameStore falls back to the first encounter
+        // beat when a scene has no beats). A fabricated bridge beat pasted
+        // treatment text as player prose — bite-me 2026-07-03 shipped
+        // "The moment arrives before you can prepare for it: <treatment>".
         const encounterSceneContent: SceneContent = {
           sceneId: sceneBlueprint.id,
           sceneName: sceneBlueprint.name,
           locationId: sceneSettingContext.locationId,
-          beats: [this.buildEncounterBridgeBeat(sceneBlueprint)],
-          startingBeatId: `${sceneBlueprint.id}-encounter-bridge`,
+          beats: [],
+          startingBeatId: '',
           moodProgression: [sceneBlueprint.mood],
           charactersInvolved: sceneBlueprint.npcsPresent,
           keyMoments: [sceneBlueprint.encounterDescription || sceneBlueprint.description],
@@ -1218,11 +1223,17 @@ export class ContentGenerationPhase {
             // Prevention: append the capability constraint so the writer never
             // depicts a non-combatant fighting (Season Canon, Phase B).
             const capabilityNote = profile ? capabilityNoteForProfile(profile) : '';
+            // Prevention: append hard presence constraints so the writer never
+            // stages a daylight-bound character in the afternoon (bite-me
+            // 2026-07-03: vampiric ally on a daytime house call).
+            const availabilityNote = profile?.timeOfDayConstraints?.unavailable?.length
+              ? `HARD CONSTRAINT: ${profile.name} can NEVER appear during ${profile.timeOfDayConstraints.unavailable.join(', ')}${profile.timeOfDayConstraints.reason ? ` (${profile.timeOfDayConstraints.reason})` : ''}. If this scene's time of day conflicts, keep them off-page (text, call, note) or shift the scene's clock in prose.`
+              : '';
             return {
               id: npcId,
               name: profile?.name || npcId,
               pronouns: profile?.pronouns || 'they/them',
-              description: [profile?.overview || '', capabilityNote].filter(Boolean).join(' '),
+              description: [profile?.overview || '', capabilityNote, availabilityNote].filter(Boolean).join(' '),
               physicalDescription: profile?.physicalDescription,
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               currentMood: profile?.voiceProfile?.whenNervous,
@@ -1639,18 +1650,27 @@ export class ContentGenerationPhase {
                   message: `Realization retry ${attempt}/2 for ${sceneBlueprint.id}: ${missing.length} under-realized moment(s) remain`,
                 });
               }
+              // Moments the guard refuses to insert BECAUSE they are summary
+              // text (story-circle contracts, design-note prose) are not
+              // scene-fail material: their prose realization is judged
+              // semantically at season-final (judge+regen), where token
+              // heuristics don't force literal summary words into fiction.
+              const deferredSummaryMoments = new Set<string>();
               if (missing.length > 0) {
                 const beforeRecovery = missing;
                 const beatCountBeforeRecovery = sceneContent.beats.length;
                 insertMissingMomentBeats(sceneBlueprint.id, sceneContent.beats, missing, {
                   sceneDensityOverloaded: densityReport ? isUnsafeTreatmentDensityReport(densityReport) : false,
                   allowColdOpenInsertion: i === 0 || Boolean(sceneBlueprint.coldOpenProfile),
-                  onSkip: (m, reason) => context.emit({
-                    type: 'warning',
-                    phase: 'scenes',
-                    message: `Scene ${sceneBlueprint.id} skipped deterministic authored-moment insertion for [${m.tier}] "${m.moment}": ${reason}.`,
-                    data: { missing: m, densityReport },
-                  }),
+                  onSkip: (m, reason) => {
+                    if (reason.includes('needs SceneWriter realization')) deferredSummaryMoments.add(m.moment);
+                    context.emit({
+                      type: 'warning',
+                      phase: 'scenes',
+                      message: `Scene ${sceneBlueprint.id} skipped deterministic authored-moment insertion for [${m.tier}] "${m.moment}": ${reason}.`,
+                      data: { missing: m, densityReport },
+                    });
+                  },
                 });
                 sceneContent.startingBeatId = sceneContent.beats[0]?.id ?? sceneContent.startingBeatId;
                 missing = missingRequiredMoments(sceneRealizationBlueprint, sceneContent.beats);
@@ -1664,8 +1684,16 @@ export class ContentGenerationPhase {
                   data: { inserted: beforeRecovery.map((m) => ({ tier: m.tier, moment: m.moment })) },
                 });
               }
-              if (missing.length > 0) {
-                const unresolved = missing
+              const hardMissing = missing.filter((m) => !deferredSummaryMoments.has(m.moment));
+              if (missing.length > hardMissing.length) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'scenes',
+                  message: `Scene ${sceneBlueprint.id} defers ${missing.length - hardMissing.length} summary-shaped authored moment(s) to the season-final realization gate (never inserted as prose).`,
+                });
+              }
+              if (hardMissing.length > 0) {
+                const unresolved = hardMissing
                   .map((m) => `[${m.tier}] ${m.moment}`)
                   .join('; ');
                 throw new Error(
@@ -3381,48 +3409,25 @@ export class ContentGenerationPhase {
     return { sceneContents, choiceSets, encounters };
   }
 
+  /**
+   * Encounter scenes carry their reader-facing prose in the encounter's own
+   * phase beats — a scene-level scaffold beat is never real prose. Earlier
+   * builds fabricated a "bridge" beat here from raw treatment text
+   * ("The moment arrives before you can prepare for it: <treatment>") and it
+   * shipped verbatim (bite-me 2026-07-03). Now: strip any such stale
+   * placeholder from resumed checkpoints and leave the scene beat-less so
+   * playback enters the encounter directly.
+   */
   private ensureEncounterBridgeBeat(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
-    if (content.beats?.some((beat) => String(beat.text || beat.content || '').trim())) return;
-    const bridgeBeat = this.buildEncounterBridgeBeat(sceneBlueprint);
-    content.beats = [bridgeBeat];
-    content.startingBeatId = bridgeBeat.id;
-  }
-
-  private buildEncounterBridgeBeat(sceneBlueprint: SceneBlueprint): GeneratedBeat {
-    const sourceText = [
-      sceneBlueprint.turnContract?.turnEvent,
-      sceneBlueprint.encounterDescription,
-      sceneBlueprint.description,
-      sceneBlueprint.turnContract?.centralTurn,
-    ].map((value) => String(value || '').replace(/\s+/g, ' ').trim()).find(Boolean)
-      || 'The confrontation closes in, demanding action now.';
-    const clipped = sourceText.length > 260
-      ? `${sourceText.slice(0, 260).replace(/\s+\S*$/, '')}.`
-      : sourceText.replace(/[;:]\s*$/, '.');
-    const text = /[.!?]$/.test(clipped)
-      ? `The moment arrives before you can prepare for it: ${clipped}`
-      : `The moment arrives before you can prepare for it: ${clipped}.`;
-    return {
-      id: `${sceneBlueprint.id}-encounter-bridge`,
-      text,
-      primaryAction: sceneBlueprint.encounterDescription || sceneBlueprint.turnContract?.turnEvent || sceneBlueprint.description,
-      emotionalRead: sceneBlueprint.mood || 'Tension rises into immediate pressure.',
-      mustShowDetail: sceneBlueprint.encounterDescription || sceneBlueprint.description,
-      visualMoment: sceneBlueprint.encounterDescription || sceneBlueprint.description,
-      dramaticIntent: {
-        characterObjectives: {
-          protagonist: sceneBlueprint.dramaticPurpose || sceneBlueprint.turnContract?.centralTurn || 'Survive the encounter as it begins.',
-        },
-        obstacle: sceneBlueprint.encounterDescription || sceneBlueprint.turnContract?.turnEvent || 'The pressure becomes immediate.',
-        statusBefore: sceneBlueprint.turnContract?.beforeState,
-        statusAfter: sceneBlueprint.turnContract?.afterState,
-        subtext: 'The encounter is happening now, not being summarized after the fact.',
-        visibleTurn: sceneBlueprint.turnContract?.turnEvent || sceneBlueprint.encounterDescription || 'The scene crosses into active pressure.',
-        visualSubtextCue: sceneBlueprint.encounterDescription || sceneBlueprint.description,
-      },
-      intensityTier: 'dominant',
-      shotType: 'action',
-    };
+    const bridgeId = `${sceneBlueprint.id}-encounter-bridge`;
+    const beats = content.beats ?? [];
+    const withoutBridge = beats.filter((beat) => beat.id !== bridgeId);
+    if (withoutBridge.length !== beats.length) {
+      content.beats = withoutBridge;
+      if (content.startingBeatId === bridgeId) {
+        content.startingBeatId = withoutBridge[0]?.id ?? '';
+      }
+    }
   }
 
   private pruneUnscopedTreatmentSeedBeats(sceneBlueprint: SceneBlueprint): void {

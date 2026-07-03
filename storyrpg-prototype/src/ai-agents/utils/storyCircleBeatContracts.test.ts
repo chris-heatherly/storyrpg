@@ -151,6 +151,58 @@ describe('storyCircleBeatContracts', () => {
     }
   });
 
+  it('floors pure writing/publishing parts (no threat words) after the episode encounter (bite-me 2026-07-03 premature blog push)', () => {
+    const plan = {
+      totalEpisodes: 8,
+      storyCircle: {
+        you: 'Kylie arrives in Bucharest with two suitcases and her grandmother address. '
+          + 'At 4am she turns the night into the first Dating After Dusk post under the codename Mr Midnight, and by evening the post has gone viral.',
+        need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      },
+      treatmentSeasonGuidance: {
+        seasonSpine: '- **You:** Kylie arrives in Bucharest with two suitcases and her grandmother address. At 4am she turns the night into the first Dating After Dusk post under the codename Mr Midnight, and by evening the post has gone viral.',
+        storyCircleBeatEpisodeAnchors: { you: 1 },
+      },
+    } as unknown as SeasonPlan;
+    const encounterScene: PlannedScene = {
+      ...scene('treatment-enc-1-1', 1, 3, 'turn'),
+      kind: 'encounter',
+      dramaticPurpose: 'Walking home through the park, she is attacked and rescued by a stranger.',
+      encounter: {
+        type: 'dramatic',
+        difficulty: 'moderate',
+        relevantSkills: ['notice'],
+        description: 'Walking home through the park, she is attacked and rescued by a stranger.',
+        isBranchPoint: false,
+      },
+    };
+    const scenes = [
+      scene('s1-1', 1, 0, 'setup'),
+      scene('s1-2', 1, 1, 'development'),
+      scene('s1-3', 1, 2, 'development'),
+      encounterScene,
+      scene('s1-5', 1, 4, 'development'),
+      scene('s1-6', 1, 5, 'release'),
+    ];
+
+    assignStoryCircleBeatContractsToScenes(plan, scenes);
+
+    const sceneOrderById = new Map(scenes.map((candidate) => [candidate.id, candidate.order]));
+    const boundParts = scenes.flatMap((candidate) =>
+      (candidate.storyCircleBeatContracts ?? []).map((contract) => ({
+        sceneId: candidate.id,
+        order: sceneOrderById.get(candidate.id) ?? -1,
+        text: contract.sourceText,
+      })));
+    // The 4am first-post part has no threat vocabulary; it must still bind at
+    // or after the encounter (writing the night up requires the night).
+    const writingParts = boundParts.filter((part) => /4\s?am|first dating after dusk post|codename/i.test(part.text));
+    expect(writingParts.length).toBeGreaterThan(0);
+    for (const part of writingParts) {
+      expect(part.order).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it('does not hard-bind duplicate Story Circle prose when Story Circle already owns the authored beat', () => {
     const hookText = "Avery lands in port city with two suitcases and her grandmother's address; by night three she's at a rooftop bar.";
     const plan = {

@@ -115,6 +115,10 @@ const SAME_SCENE_STYLE_VALIDATORS = new Set([
 const CLUSTER_DEFAULT_VALIDATORS = new Set([
   'SceneTurnRealizationValidator',
   'SceneTransitionContinuityValidator',
+  // Presence-vs-clock conflicts repair by moving the scene's clock in prose or
+  // taking the constrained character off-page — a scene-local rewrite, but the
+  // fix can ripple into the neighbors' time continuity, so cluster scope.
+  'SceneCharacterAvailabilityValidator',
 ]);
 
 export function repairHistoryKey(issue: RepairIssue): string {

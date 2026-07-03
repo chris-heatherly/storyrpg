@@ -29,6 +29,7 @@ import { WorldBible } from '../agents/WorldBuilder';
 import { CharacterBible } from '../agents/CharacterDesigner';
 import { SceneContent } from '../agents/SceneWriter';
 import { normalizeOnShowFlagConsequences } from './consequenceNormalization';
+import { normalizeBeatTypography } from '../utils/proseTypography';
 import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
@@ -227,7 +228,9 @@ export class Assembly {
         // presence, plus the backward-navigation guard). See assembleBeatChoices.
         beat.choices = this.assembleBeatChoices(sceneBlueprint, blueprint, genBeat, choiceMap);
 
-        return beat;
+        // Mechanical quote/punctuation cleanup on everything the reader sees
+        // (bite-me 2026-07-03: "…reading more. '." shipped verbatim).
+        return normalizeBeatTypography(beat);
       });
 
       return {

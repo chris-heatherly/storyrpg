@@ -82,13 +82,18 @@ describe('buildTransitionBridgeRepairHandler', () => {
 
     expect(result.changed).toBe(true);
     expect(bridge.nextSceneId).toBe('enc-3');
-    expect(bridge.text.startsWith("You drive out of Kylie's Lipscani Apartment")).toBe(true);
-    expect(bridge.text).toContain('Black Car');
+    // The choice bridge keeps its outcome prose — movement never gets crammed
+    // into a payoff line (it conflates choice outcome with scene transition
+    // and leaves sibling routes unrepaired). The arriving scene's rendered
+    // transitionIn carries the movement instead.
+    expect(bridge.text).toBe('You accept the cost because waiting would be worse.');
+    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn?.startsWith("You drive out of Kylie's Lipscani Apartment")).toBe(true);
+    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn).toContain('Black Car');
     const repaired = new SceneTransitionContinuityValidator().validate({ story: inputStory });
     expect(repaired.valid).toBe(true);
   });
 
-  it('repairs detected long bridge prose by prepending transition language inside the validator window', () => {
+  it('repairs a detected bridge-route jump on the arriving scene without touching bridge prose', () => {
     const bridge = beat({
       id: 's3-6-b6-payoff-3',
       text: `${'The dread in your gut hardens. '.repeat(25)}The black car waits outside and the engine turns over.`,
@@ -112,7 +117,8 @@ describe('buildTransitionBridgeRepairHandler', () => {
     const touched = repairDetectedTransitionBridgeContinuity(inputStory);
 
     expect(touched).toBe(1);
-    expect(bridge.text.startsWith("You drive out of Kylie's Lipscani Apartment")).toBe(true);
+    expect(bridge.text.startsWith('The dread in your gut hardens.')).toBe(true);
+    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn?.startsWith("You drive out of Kylie's Lipscani Apartment")).toBe(true);
     expect(new SceneTransitionContinuityValidator().validate({ story: inputStory }).valid).toBe(true);
   });
 

@@ -120,7 +120,11 @@ export function buildProseCraftReportJsonSchema(): StructuredJsonSchema {
   return {
     name: 'prose_craft_report',
     description: 'Graded prose-craft judgment over sampled scene prose.',
-    maxOutputTokens: 3072,
+    // 3072 truncated live (bite-me 2026-07-03T19-38-17: 3062/3072 tokens,
+    // finishReason=MAX_TOKENS, judge report ABSENT → prose_craft scored 0 and
+    // the run capped at 89): six concept evidences + per-scene issues over 7
+    // samples need headroom. Ceiling, not a charge.
+    maxOutputTokens: 6144,
     schema: {
       type: 'object',
       additionalProperties: false,

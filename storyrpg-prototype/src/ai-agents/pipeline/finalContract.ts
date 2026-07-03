@@ -41,6 +41,7 @@ import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
+import { buildObligationPayoffRepairHandler } from '../remediation/obligationPayoffRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
 import type { FidelityValidationScope } from '../validators/runFidelityValidators';
@@ -1019,6 +1020,13 @@ export class FinalContract {
           );
       };
       const handlers = buildDeterministicContractHandlers();
+      // Obligation debt (thread/callback/residue kinds from the unified ledger)
+      // repairs deterministically via the auto-callback realizer; payoffs credit
+      // the live ledger, which runValidation re-serializes each round.
+      handlers.push(buildObligationPayoffRepairHandler({
+        ledger: this.deps.callbackLedger,
+        emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message } as any),
+      }));
       // Shared prose/cluster state: once cluster repair has attempted a center,
       // the prose handler stops deferring that scene (see SceneProseRepairOptions).
       const clusterAttemptedCenters = new Set<string>();

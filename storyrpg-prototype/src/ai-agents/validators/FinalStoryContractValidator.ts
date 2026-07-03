@@ -779,6 +779,17 @@ export class FinalStoryContractValidator {
     // non-vacuous comparison.)
     if (input.callbackLedger) {
       const blockResidue = isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final');
+      // NON-RESIDUE PROMOTION (2026-07-03): thread/seed/callback kinds now
+      // escalate under their own gates — repair-first is satisfied by the
+      // deterministic obligation-payoff handler (router: deterministic_cleanup),
+      // and the unified validator demotes dead promises (no creating choice)
+      // to warnings, so promotion cannot re-introduce the negroni seal abort.
+      const blockByGate: Record<string, boolean> = {
+        GATE_RESIDUE_CONSUME: blockResidue,
+        GATE_SETUP_PAYOFF: isGateEnabledAt('GATE_SETUP_PAYOFF', 'season-final'),
+        GATE_TREATMENT_SEED_ONPAGE: isGateEnabledAt('GATE_TREATMENT_SEED_ONPAGE', 'season-final'),
+        GATE_CALLBACK_COVERAGE: isGateEnabledAt('GATE_CALLBACK_COVERAGE', 'season-final'),
+      };
       try {
         const ledger = CallbackLedger.deserialize(input.callbackLedger);
         const generatedThrough = input.generatedThroughEpisode
@@ -802,7 +813,7 @@ export class FinalStoryContractValidator {
           const isResidue = finding.kind === 'residue';
           issues.push({
             type: isResidue ? 'planned_residue_debt' : 'obligation_ledger_debt',
-            severity: isResidue && blockResidue && finding.severity === 'error' ? 'error' : 'warning',
+            severity: (blockByGate[finding.gateId] ?? false) && finding.severity === 'error' ? 'error' : 'warning',
             message: finding.message,
             validator: 'ObligationLedgerValidator',
             suggestion: SUGGESTION_BY_KIND[finding.kind]

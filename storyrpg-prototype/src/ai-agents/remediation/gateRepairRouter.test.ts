@@ -762,12 +762,12 @@ describe('ObligationLedgerValidator routing (unified-ledger flip, fec133ca)', ()
     expect(route.kind).toBe('blueprint_rebalance');
   });
 
-  it('stops loudly on thread/callback debts until a repair handler exists', () => {
+  it('routes thread/callback debts to the deterministic payoff realizer', () => {
     const router = new GateRepairRouter();
     const route = router.routeIssue(issue(
       'ObligationLedgerValidator',
       'thread obligation "thread:midnight-identity" was planted in episode 1 with no payoff by its window.',
     ));
-    expect(route.kind).toBe('diagnostic_stop');
+    expect(route.kind).toBe('deterministic_cleanup');
   });
 });

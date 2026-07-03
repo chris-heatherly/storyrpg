@@ -666,10 +666,10 @@ export class GateRepairRouter {
       if (/\btreatment seed\b|\bseed obligation\b/i.test(issueText)) {
         return directive('blueprint_rebalance', issue, 'Seed obligation needs a setFlag consequence wired in its owning episode — consequence architecture, not prose.');
       }
-      // Thread/callback debts have no mechanical or prose-local repair yet;
-      // keep them advisory-only (see FinalStoryContractValidator) — if one
-      // arrives here as a blocker, stop loudly rather than spend LLM budget.
-      return directive('diagnostic_stop', issue, 'Thread/callback obligation debt has no repair handler; promotion to blocking requires one first.');
+      // Thread/callback debts repair deterministically via the auto-callback
+      // realizer (buildObligationPayoffRepairHandler) — flag-gated payoff
+      // variants sourced from authored choice metadata, credited on the ledger.
+      return directive('deterministic_cleanup', issue, 'Obligation debt is repairable by the deterministic fallback-callback realizer.');
     }
 
     if (validator === 'ContinuityChecker') {

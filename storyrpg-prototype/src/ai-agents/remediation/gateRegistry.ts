@@ -130,8 +130,8 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
 
   // ── Wave 4: plan-time gates (blocking is cheap fail-fast before prose) ──
-  { id: 'GATE_SETUP_PAYOFF', placement: 'plan', kind: 'blocking', defaultOn: true },
-  { id: 'GATE_CALLBACK_COVERAGE', placement: 'plan', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_SETUP_PAYOFF', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_CALLBACK_COVERAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_CHOICE_DENSITY', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_CONSEQUENCE_BUDGET', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_PROP_INTRODUCTION', placement: 'plan', kind: 'blocking', defaultOn: false, repair: 'autofix' },
@@ -149,7 +149,7 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_DRAMATIC_STRUCTURE', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SCENE_TURN_CONTRACT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
 

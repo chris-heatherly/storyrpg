@@ -106,11 +106,19 @@ export function validateObligationLedger(
     // Due (or overdue). Error when the due window closed inside the generated
     // slice; warning when later generated episodes could still pay it.
     const windowClosedInSlice = dueBy <= generatedThroughEpisode;
+    // Dead-promise demotion (mirrors the canon seal's auto-abandon sweep,
+    // 966b03d4): a FLAG-GATED promise no choice ever creates can never display
+    // a payoff at runtime, so it must never escalate to a blocking error —
+    // the seal abandons it with a warning downstream. Threads pay by prose
+    // reference (not flag state), so an empty sourceChoiceId is normal there
+    // and keeps full severity.
+    const flagGated = hook.kind !== 'thread'; // tone already excluded above
+    const deadPromise = flagGated && !hook.sourceChoiceId;
     findings.push({
       gateId: gateFor(hook.kind),
       kind: hook.kind ?? 'choice_callback',
       hookId: hook.id,
-      severity: windowClosedInSlice && dueBy <= episodeNumber ? 'error' : 'warning',
+      severity: !deadPromise && windowClosedInSlice && dueBy <= episodeNumber ? 'error' : 'warning',
       message:
         `${hook.kind ?? 'choice_callback'} obligation "${hook.id}" (${hook.summary}) is unpaid: ` +
         `due by episode ${dueBy}, currently at episode ${episodeNumber}.`,

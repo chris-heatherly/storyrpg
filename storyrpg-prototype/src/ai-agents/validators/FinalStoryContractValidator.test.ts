@@ -1854,7 +1854,7 @@ describe('unified obligation ledger at the final contract (the flip)', () => {
     expect(finding?.message).toContain('no choice creates its flag');
   });
 
-  it('surfaces non-residue kinds as advisory obligation_ledger_debt warnings only', async () => {
+  it('promotes a due-unpaid thread debt to blocking under GATE_SETUP_PAYOFF (2026-07-03 promotion)', async () => {
     const { CallbackLedger } = await import('../pipeline/callbackLedger');
     const ledger = new CallbackLedger({ storyId: 's' });
     ledger.add({
@@ -1873,9 +1873,36 @@ describe('unified obligation ledger at the final contract (the flip)', () => {
       callbackLedger: ledger.serialize(),
     });
 
-    const finding = [...report.warnings].find((i) => i.type === 'obligation_ledger_debt');
-    expect(finding).toBeDefined();
-    expect(finding?.severity).toBe('warning');
+    // Repair-first is satisfied by the deterministic obligation-payoff handler,
+    // so a genuinely closed-window thread debt now blocks instead of warning.
+    const blocker = report.blockingIssues.find((i) => i.type === 'obligation_ledger_debt');
+    expect(blocker).toBeDefined();
+    expect(blocker?.validator).toBe('ObligationLedgerValidator');
+  });
+
+  it('keeps dead flag promises (no creating choice) advisory — never a blocker', async () => {
+    const { CallbackLedger } = await import('../pipeline/callbackLedger');
+    const ledger = new CallbackLedger({ storyId: 's' });
+    // The negroni shape: flag-gated promise, due in slice, no choice sets its flag.
+    ledger.add({
+      id: 'flag:drank_dark_negroni',
+      kind: 'flag_promise',
+      sourceEpisode: 1,
+      sourceSceneId: 's1-3',
+      sourceChoiceId: '',
+      flags: ['drank_dark_negroni'],
+      summary: 'Kylie drank the spiked cocktail.',
+      payoffEpisode: 1,
+      payoffWindow: { minEpisode: 1, maxEpisode: 1 },
+    } as never);
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      callbackLedger: ledger.serialize(),
+    });
+
     expect(report.blockingIssues.filter((i) => i.type === 'obligation_ledger_debt')).toHaveLength(0);
+    const warning = [...report.warnings].find((i) => i.type === 'obligation_ledger_debt');
+    expect(warning?.severity).toBe('warning');
   });
 });

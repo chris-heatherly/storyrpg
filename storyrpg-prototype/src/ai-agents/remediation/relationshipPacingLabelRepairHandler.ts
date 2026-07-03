@@ -4,7 +4,7 @@ import type { RelationshipPacingContract, RelationshipPacingStage } from '../../
 
 type MutableRecord = Record<string, unknown>;
 
-const RELATIONSHIP_VALIDATORS = new Set(['RelationshipPacingValidator', 'RelationshipArcLedgerValidator']);
+const RELATIONSHIP_VALIDATORS = new Set(['RelationshipArcLedgerValidator']);
 
 const LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bfor\s+the\s+([A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group))\b/gi, 'for whatever this $1 becomes'],
@@ -73,7 +73,7 @@ function hasRelationshipPacingBlocker(
 function isRelationshipPacingIssue(
   issue: Parameters<ContractRepairHandler>[0]['blockingIssues'][number],
 ): boolean {
-  return RELATIONSHIP_VALIDATORS.has(String(issue.validator)) || issue.type === 'relationship_pacing_violation';
+  return RELATIONSHIP_VALIDATORS.has(String(issue.validator));
 }
 
 function sceneIdsForRelationshipPacing(

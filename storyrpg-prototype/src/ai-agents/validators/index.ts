@@ -272,7 +272,5 @@ export { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
 export type { PlanningRegisterLeakFinding, PlanningRegisterLeakResult } from './PlanningRegisterLeakValidator';
 export { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 export type { SceneTurnRealizationInput } from './SceneTurnRealizationValidator';
-export { RelationshipPacingValidator } from './RelationshipPacingValidator';
-export type { RelationshipPacingInput } from './RelationshipPacingValidator';
 export { NarrativeMechanicPressureValidator } from './NarrativeMechanicPressureValidator';
 export type { NarrativeMechanicPressureInput } from './NarrativeMechanicPressureValidator';

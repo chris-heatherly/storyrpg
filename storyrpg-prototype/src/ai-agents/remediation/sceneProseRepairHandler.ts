@@ -69,7 +69,7 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   // gives them a wider repair window when the issue is structural.
   'SceneTurnRealizationValidator',
   'SceneTransitionContinuityValidator',
-  'RelationshipPacingValidator',
+  'RelationshipArcLedgerValidator',
   'NarrativeMechanicPressureValidator',
   'TreatmentEventLedgerValidator',
   'ReferencedEventPresenceValidator',
@@ -83,7 +83,7 @@ const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
   'TreatmentEventLedgerValidator',
   'SceneTurnRealizationValidator',
   'SceneTransitionContinuityValidator',
-  'RelationshipPacingValidator',
+  'RelationshipArcLedgerValidator',
   'NarrativeMechanicPressureValidator',
 ]);
 
@@ -194,7 +194,7 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
       );
       continue;
     }
-    if (issue.validator === 'RelationshipPacingValidator') {
+    if (issue.validator === 'RelationshipArcLedgerValidator') {
       lines.push(
         '  NON-NEGOTIABLE: preserve instant chemistry if it is present, but downgrade unearned friendship, trust, intimacy, or group-membership labels into behavior: invitation, testing, guarded warmth, teasing, changed distance, vulnerability, or a fragile beginning.',
       );

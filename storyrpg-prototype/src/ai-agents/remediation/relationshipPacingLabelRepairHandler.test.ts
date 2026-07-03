@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Story } from '../../types/story';
-import { RelationshipPacingValidator } from '../validators/RelationshipPacingValidator';
+import { RelationshipArcLedgerValidator } from '../validators/RelationshipArcLedgerValidator';
 import { buildRelationshipPacingLabelRepairHandler } from './relationshipPacingLabelRepairHandler';
 
 function makeStory(): Story {
@@ -107,14 +107,14 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     const targetBeat = story.episodes[0].scenes[1].beats[0];
     const beforeChoice = JSON.stringify(targetBeat.choices?.[0]);
     const beforeNext = targetBeat.choices?.[0]?.nextSceneId;
-    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    const initial = new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true });
     expect(initial.valid).toBe(false);
 
     const handler = buildRelationshipPacingLabelRepairHandler();
     const result = await handler({
       story,
       blockingIssues: initial.issues.map((issue) => ({
-        validator: 'RelationshipPacingValidator',
+        validator: 'RelationshipArcLedgerValidator',
         type: 'relationship_pacing_violation',
         sceneId: 's1-5',
         severity: issue.severity,
@@ -132,20 +132,20 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(afterChoice.reactionText).toContain('people moving around him');
     expect(targetBeat.text).toContain('new circle');
     expect(targetBeat.textVariants?.[0]?.text).toContain('new companions');
-    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+    expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
   it('caps unearned group membership contracts to a provisional stage', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1];
     scene.beats[0].text = 'Stela presses rose quartz into your palm, and the Dusk Club is now three.';
-    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
-    expect(initial.issues.some((issue) => issue.message.includes('settled group membership'))).toBe(true);
+    const initial = new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true });
+    expect(initial.issues.some((issue) => issue.message.includes('settled membership'))).toBe(true);
 
     const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: initial.issues.map((issue) => ({
-        validator: 'RelationshipPacingValidator',
+        validator: 'RelationshipArcLedgerValidator',
         type: 'relationship_pacing_violation',
         sceneId: scene.id,
         severity: issue.severity,
@@ -156,7 +156,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
 
     expect(result.changed).toBe(true);
     expect(scene.relationshipPacing?.[0]?.targetStage).toBe('spark');
-    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+    expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
   it('recognizes final-contract provisional spark wording as a relationship cap', async () => {
@@ -182,13 +182,13 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1];
     scene.beats[0].text = 'The Dusk Club is real now, and a refusal would damage the club\'s trust.';
-    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    const initial = new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true });
     expect(initial.valid).toBe(false);
 
     const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: initial.issues.map((issue) => ({
-        validator: 'RelationshipPacingValidator',
+        validator: 'RelationshipArcLedgerValidator',
         type: 'relationship_pacing_violation',
         sceneId: scene.id,
         severity: issue.severity,
@@ -210,14 +210,14 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     scene.beats[0].text = 'Mika and Stela compare the night like a dare, not a settled bond.';
     scene.beats[0].textVariants = [];
     scene.beats[0].choices = [];
-    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    const initial = new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true });
     expect(initial.valid).toBe(false);
-    expect(initial.issues.some((issue) => issue.message.includes('high relationship stage'))).toBe(true);
+    expect(initial.issues.some((issue) => issue.message.includes('relationship language'))).toBe(true);
 
     const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: initial.issues.map((issue) => ({
-        validator: 'RelationshipPacingValidator',
+        validator: 'RelationshipArcLedgerValidator',
         type: 'relationship_pacing_violation',
         sceneId: scene.id,
         severity: issue.severity,
@@ -229,7 +229,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(result.changed).toBe(true);
     expect(scene.name).toBe('ally debrief');
     expect(scene.title).toBe('ally debrief');
-    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+    expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
   it('downgrades friend-priority and friendship residue in choices and reactions', async () => {
@@ -250,13 +250,13 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
       nextSceneId: 's1-6',
     } as any];
 
-    const initial = new RelationshipPacingValidator().validate({ story, treatmentSourced: true });
+    const initial = new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true });
     expect(initial.valid).toBe(false);
 
     const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
       blockingIssues: initial.issues.map((issue) => ({
-        validator: 'RelationshipPacingValidator',
+        validator: 'RelationshipArcLedgerValidator',
         type: 'relationship_pacing_violation',
         sceneId: scene.id,
         severity: issue.severity,
@@ -270,7 +270,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(choice.text).toContain('sharp new ally');
     expect(choice.stakes.identity).toContain('these companions');
     expect(choice.reactionText).toContain('guarded warmth');
-    expect(new RelationshipPacingValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
+    expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
   it('caps relationship pacing target stages from validator-owned permitted-stage findings', async () => {

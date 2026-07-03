@@ -292,7 +292,6 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Relationship pacing: generated prose may show instant chemistry, but earned
   // labels like friend/trusted ally/inner circle must match scene history and
   // relationship mechanics.
-  { validator: 'RelationshipPacingValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_RELATIONSHIP_PACING', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Spatial unit enforcement: major named locations are full scene units. A scene
   // may hand off to the next place, but it cannot conduct introductions, choices,
   // encounters, reveals, or relationship turns in two major locations at once.

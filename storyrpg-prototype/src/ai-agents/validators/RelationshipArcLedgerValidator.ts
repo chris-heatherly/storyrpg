@@ -30,10 +30,14 @@ const NEGATED_WINDOW_RE = /\b(?:not|not yet|no|never|almost|maybe|trying to beco
 // RelationshipPacingValidator's compressed-familiarity check; now gated on the
 // deterministic ledger stage instead of the contract target).
 const COMPRESSED_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:hours?|days?|nights?|weeks?)\b[^.!?]{0,220}\b(?:comfortable\s+habit\s+of\s+years|known\s+(?:her|him|them|each\s+other)\s+for\s+years|known\s+(?:her|him|them|each\s+other)\s+forever|feels?\s+like\s+(?:years|home|family)|old\s+friend|every\s+easy\s+gesture|refills?\s+your\s+(?:wine|glass)|watches?\s+over\s+the\s+rim|what\s+you\s+do\s+with\s+kindness|let\s+yourself\s+belong|belonging)\b/i;
+// Settled-word class includes the numeral/possessive forms the deleted
+// RelationshipPacingValidator's SETTLED_GROUP_RE covered ("the Dusk Club is
+// now three", "the club is theirs") — ported at its deletion (2026-07-03).
+const GROUP_SETTLED_WORDS = String.raw`(?:now\s+)?(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable|three|family|theirs?)`;
 const GROUP_IDENTITY_RE = new RegExp([
-  String.raw`\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b[^.!?\n]{0,140}\b(?:complete|official|real|inside|belong(?:s|ed|ing)?|one\s+of\s+us|friends?|members?|membership|settled|permanent|unbreakable)\b`,
-  String.raw`\b(?:is|are|becomes?|became)\s+(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable)\b[^.!?\n]{0,80}\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b`,
-  String.raw`\b(?:club|crew|circle|group)\b[^.!?\n]{0,80}\b(?:is|are|becomes?|became)\s+(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable)\b`,
+  String.raw`\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b[^.!?\n]{0,140}\b(?:belong(?:s|ed|ing)?|one\s+of\s+us|membership|(?:is|are|becomes?|became)\s+${GROUP_SETTLED_WORDS})\b`,
+  String.raw`\b(?:is|are|becomes?|became)\s+${GROUP_SETTLED_WORDS}\b[^.!?\n]{0,80}\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b`,
+  String.raw`\b(?:club|crew|circle|group)\b[^.!?\n]{0,80}\b(?:is|are|becomes?|became)\s+${GROUP_SETTLED_WORDS}\b`,
 ].join('|'), 'i');
 const PROVISIONAL_GROUP_CONTEXT_RE = /\b(?:joke|dare|fragile|provisional|not\s+official|not\s+real\s+yet|invitation|almost|maybe|promise|becoming|could\s+become|whatever\s+(?:this|it)\s+becomes)\b/i;
 const VISIBLE_CALLBACK_RE = /\b(?:remember|remembers|remembered|last\s+time|because\s+you|after\s+what\s+you|the\s+promise|the\s+warning|the\s+favor|what\s+happened|again|still)\b/i;

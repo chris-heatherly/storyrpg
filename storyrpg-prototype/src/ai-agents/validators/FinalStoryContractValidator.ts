@@ -145,7 +145,6 @@ const FIDELITY_FALLBACK_POLICY: Record<string, FidelitySeverityMetadata> = {
   StoryCircleAnchorConformanceValidator: { findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   SceneTransitionContinuityValidator: { gateId: 'GATE_SCENE_TRANSITION_CONTINUITY', findingClass: 'repairable_contract', sourceKind: 'story' },
   SceneTurnRealizationValidator: { gateId: 'GATE_SCENE_TURN_REALIZATION', findingClass: 'repairable_contract', sourceKind: 'story' },
-  RelationshipPacingValidator: { gateId: 'GATE_RELATIONSHIP_PACING', findingClass: 'repairable_contract', sourceKind: 'story' },
   NarrativeMechanicPressureValidator: { gateId: 'GATE_NARRATIVE_MECHANIC_PRESSURE', findingClass: 'repairable_contract', sourceKind: 'story' },
   TreatmentFieldUtilizationValidator: { gateId: 'GATE_TREATMENT_FIELD_UTILIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   SeasonPromiseRealizationValidator: { gateId: 'GATE_SEASON_PROMISE_REALIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
@@ -197,7 +196,6 @@ export type FinalStoryContractIssueType =
   | 'continuity_error'
   | 'transition_continuity_violation'
   | 'scene_turn_realization_violation'
-  | 'relationship_pacing_violation'
   | 'mechanic_pressure_violation'
   | 'treatment_field_utilization_violation'
   | 'treatment_event_ledger_violation'
@@ -2090,7 +2088,6 @@ export class FinalStoryContractValidator {
       const isFidelity = isTreatmentFidelityFinding(finding);
       const isTransitionContinuity = finding.validator === 'SceneTransitionContinuityValidator';
       const isSceneTurn = finding.validator === 'SceneTurnRealizationValidator';
-      const isRelationshipPacing = finding.validator === 'RelationshipPacingValidator';
       const isMechanicPressure = finding.validator === 'NarrativeMechanicPressureValidator';
       const isTreatmentFieldUtilization = finding.validator === 'TreatmentFieldUtilizationValidator';
       const isSeasonPromiseRealization = finding.validator === 'SeasonPromiseRealizationValidator';
@@ -2122,8 +2119,6 @@ export class FinalStoryContractValidator {
           ? 'transition_continuity_violation'
           : isSceneTurn
           ? 'scene_turn_realization_violation'
-          : isRelationshipPacing
-          ? 'relationship_pacing_violation'
           : isMechanicPressure
           ? 'mechanic_pressure_violation'
           : isTreatmentFieldUtilization

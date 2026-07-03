@@ -355,13 +355,6 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // Treatment-authored turns block; non-treatment misses start as warnings unless
   // the validator detects structural risk. Reversible via =0.
   GATE_SCENE_TURN_REALIZATION: true,
-  // Relationship pacing: MERGED into GATE_RELATIONSHIP_ARC_LEDGER (2026-07-02).
-  // The prose-heuristic checks (unearned labels, contact-before-intro,
-  // compressed familiarity, gated-choice reachability) now run ledger-gated
-  // inside RelationshipArcLedgerValidator, so an earned bond can never be
-  // forced into cold rewrites by regex alone. Shadow for one live run
-  // (re-enable via =1 to compare), then delete RelationshipPacingValidator.
-  GATE_RELATIONSHIP_PACING: false,
   // Relationship/location slow-burn enforcement: major named locations are full
   // scene units; relationship stages and thematic-square surfaces are computed
   // from a deterministic ledger rather than accepted from prose or prompt intent.

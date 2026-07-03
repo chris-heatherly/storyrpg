@@ -226,7 +226,7 @@ function classifyTreatmentFinding(finding: TreatmentFindingInput): Pick<Treatmen
       if (!/treatment|authored|central turn/i.test(message)) return undefined;
       return { contract: 'treatment_obligation_realization', repairRoute: 'scene-regen', targetSurface: 'scene-prose' };
 
-    case 'RelationshipPacingValidator':
+    case 'RelationshipArcLedgerValidator':
     case 'NarrativeMechanicPressureValidator':
     case 'CharacterIntroductionValidator':
       if (!/treatment|authored|contract/i.test(message)) return undefined;

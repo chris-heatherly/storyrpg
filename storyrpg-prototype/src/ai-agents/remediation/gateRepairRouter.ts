@@ -109,7 +109,6 @@ const HARD_VALIDATOR_NAMES = new Set([
 const SAME_SCENE_STYLE_VALIDATORS = new Set([
   'SentenceOpenerVarietyValidator',
   'EncounterProseIntegrityValidator',
-  'RelationshipPacingValidator',
   'NarrativeMechanicPressureValidator',
 ]);
 
@@ -677,6 +676,14 @@ export class GateRepairRouter {
     }
 
     if (validator === 'RelationshipArcLedgerValidator') {
+      // Label-class findings (unearned friend/trusted/intimate language,
+      // custom blocked labels, compressed familiarity) are prose-repairable:
+      // the deterministic label handler + a same-scene style rewrite fix them
+      // without touching architecture. (Route inherited from the deleted
+      // RelationshipPacingValidator at the Pair-B merge completion.)
+      if (/\b(?:relationship language|unearned relationship label|old-friend familiarity|private contact|phone\/contact access)\b/i.test(issueText)) {
+        return directive('same_scene_retry', issue, 'Unearned relationship label or access language is repairable in this scene\'s prose.');
+      }
       if (/\b(?:relationship choice|group-defining player choice|only permits|target(?:s|ed)?\s+\w+|before any player relationship choice|ledger-earned)\b/i.test(issueText)) {
         return directive('episode_replan', issue, 'Relationship arc ledger mismatch requires choice/relationship architecture, not prose-only repair.');
       }

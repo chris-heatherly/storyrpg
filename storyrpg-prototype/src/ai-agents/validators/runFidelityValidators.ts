@@ -47,7 +47,6 @@ import { InformationLedgerScheduleValidator } from './InformationLedgerScheduleV
 import { SignatureDevicePresenceValidator } from './SignatureDevicePresenceValidator';
 import { EncounterSetPieceDepthValidator } from './EncounterSetPieceDepthValidator';
 import { RequiredBeatRealizationValidator } from './RequiredBeatRealizationValidator';
-import { RelationshipPacingValidator } from './RelationshipPacingValidator';
 import { NarrativeMechanicPressureValidator } from './NarrativeMechanicPressureValidator';
 import { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
 import { SeasonPromiseRealizationValidator } from './SeasonPromiseRealizationValidator';
@@ -462,11 +461,6 @@ const FIDELITY_POLICY_BY_VALIDATOR: Record<string, Partial<FidelityFinding>> = {
     findingClass: 'repairable_contract',
     sourceKind: 'story',
   },
-  RelationshipPacingValidator: {
-    gateId: 'GATE_RELATIONSHIP_PACING',
-    findingClass: 'repairable_contract',
-    sourceKind: 'story',
-  },
   SceneSpatialUnitValidator: {
     gateId: 'GATE_SCENE_SPATIAL_UNIT',
     findingClass: 'repairable_contract',
@@ -613,7 +607,6 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   RequiredBeatRealizationValidator: 'GATE_REQUIRED_BEAT_REALIZATION',
   SceneTransitionContinuityValidator: 'GATE_SCENE_TRANSITION_CONTINUITY',
   SceneTurnRealizationValidator: 'GATE_SCENE_TURN_REALIZATION',
-  RelationshipPacingValidator: 'GATE_RELATIONSHIP_PACING',
   SceneSpatialUnitValidator: 'GATE_SCENE_SPATIAL_UNIT',
   RelationshipArcLedgerValidator: 'GATE_RELATIONSHIP_ARC_LEDGER',
   ThematicSquareTurnValidator: 'GATE_THEMATIC_SQUARE_TURN',
@@ -745,16 +738,6 @@ function collectFidelityFindings(
         enforceStructuralStoryCircle: Boolean(options.enforceStructuralStoryCircle),
       });
       return toFindings('SceneTurnRealizationValidator', result.issues);
-    });
-  }
-
-  // Relationship pacing: instant chemistry is allowed, but friendship, trust,
-  // intimacy, and group membership must be earned by prior scenes, visible
-  // behavior, and relationship consequences.
-  if (isGateEnabled('GATE_RELATIONSHIP_PACING')) {
-    guard(() => {
-      const result = new RelationshipPacingValidator().validate({ story, scenePlan, treatmentSourced });
-      return toFindings('RelationshipPacingValidator', result.issues);
     });
   }
 

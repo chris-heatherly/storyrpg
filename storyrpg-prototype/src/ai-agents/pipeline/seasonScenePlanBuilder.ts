@@ -1456,13 +1456,19 @@ export function bindAuthoredTurnsToScenes(
     .map((b) => String(b.mustDepict || b.sourceTurn || '').trim())
     .filter(Boolean);
   const hookTokenSets = coldOpenHookTexts.map((text) => new Set(bindTokens(text)));
+  // Bidirectional overlap: either text mostly covered by the other means the
+  // same event. One direction alone misses the short-hook case — run #9's
+  // hook was just "Kylie arrives in Bucharest", so the longer arrival
+  // sentence scored 3/10 against it and consumed s1-2 again (chronology
+  // conflict at the re-enabled preflight gate).
   const duplicatesColdOpenHook = (turn: string): boolean =>
     hookTokenSets.some((hookSet) => {
       if (hookSet.size === 0) return false;
       const turnTokens = bindTokens(turn);
       if (turnTokens.length === 0) return false;
-      const hits = tokenHitCount(turnTokens, hookSet);
-      return hits / turnTokens.length >= 0.6;
+      const turnCovered = tokenHitCount(turnTokens, hookSet) / turnTokens.length;
+      const hookCovered = tokenHitCount([...hookSet], new Set(turnTokens)) / hookSet.size;
+      return Math.max(turnCovered, hookCovered) >= 0.6;
     });
   const spineTurns = turns.filter((turn) => !duplicatesColdOpenHook(turn));
   const dedupedTurns = spineTurns.length > 0 ? spineTurns : turns;
@@ -1725,12 +1731,22 @@ export function buildEpisodeScenes(
     ]);
     // Only pin the opening scene's location when the FIRST event itself names
     // it — a venue mentioned later in the beat must not relocate the arrival.
-    // When the hook names none, the skeleton default (first episode location)
-    // can be a nightlife venue; an arrival cold-open staged "at the club" is
-    // the location-mismatch abort of bite-me 2026-07-02T23-54-38. Prefer a
-    // dwelling-shaped episode location for the arrival when one exists.
+    // "Names it" means the label's own distinctive tokens appear in the hook:
+    // run #9 pinned the arrival to "Bucharest Rooftop Bar" off the single
+    // shared city token in "arrives in Bucharest". When the hook names none,
+    // the skeleton default (first episode location) can be a nightlife venue;
+    // an arrival cold-open staged "at the club" is the location-mismatch
+    // abort of bite-me 2026-07-02T23-54-38. Prefer a dwelling-shaped episode
+    // location for the arrival when one exists.
     const namedLocation = inferAuthoredLocationFromText(hookText, locations);
-    if (namedLocation) {
+    const hookTokens = new Set(bindTokens(hookText));
+    const labelEvidenced = (label: string): boolean => {
+      const labelTokens = bindTokens(label);
+      if (labelTokens.length === 0) return false;
+      const hits = labelTokens.filter((token) => hookTokens.has(token)).length;
+      return hits >= Math.min(2, labelTokens.length);
+    };
+    if (namedLocation && labelEvidenced(namedLocation)) {
       openingScene.locations = [namedLocation];
     } else if (/\barriv/i.test(hookText)) {
       const dwelling = locations.find((loc) => /\b(?:apartment|flat|home|house|residence|walk-?up|lodging|room)\b/i.test(loc));

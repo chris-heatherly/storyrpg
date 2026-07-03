@@ -540,13 +540,19 @@ export function assignStoryCircleBeatContractsToScenes(
     }
     const boundSceneIds: string[] = [];
     // Parts of one contract are in narrative order (normalizeStoryCircleContract
-    // ForSceneProse emits atoms in source order): later parts must never bind to
-    // an earlier scene than a previous part, and parts narrating the threat's
-    // aftermath must bind at/after the episode's encounter.
-    let minSceneOrder: number | undefined;
+    // ForSceneProse emits atoms in source order): they narrate SEQUENTIAL
+    // events, so each later part binds STRICTLY after the previous part's
+    // scene (two parts on one scene stacks incompatible location/event
+    // obligations — run #9 put "forms the Dusk Club" on the arrival cold-open
+    // and the preflight gate refused the two-venue scene). The floor is soft:
+    // bestSceneForContract falls back to the full episode list when no scene
+    // remains at/after it, so scarce-scene episodes never drop a part.
+    // Threat-aftermath narration additionally floors at the episode's
+    // encounter.
+    let lastBoundOrder: number | undefined;
     for (const sceneContract of sceneContracts) {
       if (storyCircleOwnsContract(sceneContract, scenes)) continue;
-      let partFloor = minSceneOrder;
+      let partFloor = lastBoundOrder === undefined ? undefined : lastBoundOrder + 1;
       if (partNarratesThreatAftermath(sceneContract.sourceText)) {
         const encounterOrder = firstEncounterOrder(sceneContract, scenes);
         if (encounterOrder !== undefined) {
@@ -555,7 +561,7 @@ export function assignStoryCircleBeatContractsToScenes(
       }
       const target = bestSceneForContract(sceneContract, scenes, partFloor);
       if (!target) continue;
-      minSceneOrder = Math.max(minSceneOrder ?? target.order, target.order);
+      lastBoundOrder = Math.max(lastBoundOrder ?? target.order, target.order);
       sceneContract.targetSceneIds = dedupe([...sceneContract.targetSceneIds, target.id]);
       boundSceneIds.push(target.id);
       const existing = target.storyCircleBeatContracts ?? [];

@@ -31,6 +31,7 @@ import type {
   SetupPayoffEdge,
 } from '../../types/scenePlan';
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
+import { PLAN_TIME_MAJOR_EVIDENCE_RE } from '../constants/evidenceProse';
 import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldContracts';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import { isQuestionShapedAnchor } from '../remediation/storyEventCues';
@@ -400,8 +401,6 @@ const RELATIONSHIP_TURN_RE =
   /\b(friend|friends|ally|allies|trust|trusted|bond|belong|club|crew|circle|adopts?|invites?|joins?|together|with you|love|lover|kiss|date|romance|protects?|rescues?|vow|promise)\b/i;
 const HIGH_RELATIONSHIP_LABEL_RE =
   /\b(friend|friends|ally|allies|trusted|trusts|inner circle|lover|lovers|family|crew|club|is now|are now|becomes?|joined|joins)\b/i;
-const MAJOR_EVIDENCE_RE =
-  /\b(rescue|rescues|saves|protects|sacrifice|bleeds?|wound|secret|confess|confesses|risk|risks|vow|promise|key|card|threshold)\b/i;
 const GROUP_RE = /\b(dusk club|club|crew|circle|group)\b/i;
 
 function slugId(value: string): string {
@@ -426,7 +425,7 @@ function relationshipTextForScene(scene: PlannedScene): string {
 }
 
 function pacingTargetStage(priorScenes: number, text: string): RelationshipPacingContract['targetStage'] {
-  if (priorScenes <= 0) return MAJOR_EVIDENCE_RE.test(text) ? 'acquaintance' : 'spark';
+  if (priorScenes <= 0) return PLAN_TIME_MAJOR_EVIDENCE_RE.test(text) ? 'acquaintance' : 'spark';
   if (priorScenes === 1) return 'acquaintance';
   if (priorScenes === 2) return 'tentative_ally';
   return HIGH_RELATIONSHIP_LABEL_RE.test(text) ? 'friend' : 'tentative_ally';
@@ -463,7 +462,7 @@ function maxRelationshipStageWithoutChoice(priorScenes: number): RelationshipPac
 }
 
 function pacingMaxDelta(priorScenes: number, text: string): number {
-  if (priorScenes <= 0) return MAJOR_EVIDENCE_RE.test(text) ? 8 : 6;
+  if (priorScenes <= 0) return PLAN_TIME_MAJOR_EVIDENCE_RE.test(text) ? 8 : 6;
   if (priorScenes === 1) return 8;
   return 12;
 }

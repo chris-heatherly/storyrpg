@@ -1,5 +1,6 @@
 import type { Story } from '../../types';
 import { nearestSetter } from '../validators/FlagContractValidator';
+import { isRuntimeReadableFlag } from './flagRegistry';
 
 /**
  * WS1.1 — flag-vocabulary reconciliation. The SET side (ChoiceAuthor consequences) and the
@@ -76,13 +77,15 @@ function scan(story: Story): FlagScan {
   return { setterNames, readSites };
 }
 
-/** Engine namespaces a condition may legitimately read without an in-story setter. */
+/**
+ * Engine namespaces a condition may legitimately read without an in-story
+ * setter. Pattern truth lives in the flag registry; note this is now slightly
+ * broader than the old local list (ui_/debug_/visited_/choice_seen_ count as
+ * runtime-readable too, so engine-set bookkeeping flags are never rewritten to
+ * a near-miss story setter).
+ */
 function isRuntimeFlag(flag: string): boolean {
-  return (
-    /^encounter[_.]/.test(flag) ||
-    flag.startsWith('route_') ||
-    flag.startsWith('_outcome_')
-  );
+  return isRuntimeReadableFlag(flag);
 }
 
 export interface FlagReconcileResult {

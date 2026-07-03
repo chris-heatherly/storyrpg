@@ -2,6 +2,7 @@ import type { Choice, Consequence } from '../../types';
 import { isPlaceholderStake } from '../constants/placeholderStakes';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { normalizeTintFlag } from '../utils/tintVocabulary';
+import { getFlagRegistry } from './flagRegistry';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 
@@ -410,10 +411,17 @@ export function normalizeConsequence(c: Consequence): Consequence {
   // G12: authored tints rarely matched the identity engine's canonical vocabulary
   // (tint:bold vs tint:boldness), leaving the whole tint tier inert at runtime.
   if (c.type === 'setFlag' && typeof raw.flag === 'string' && (raw.flag as string).startsWith('tint:')) {
-    const canonical = normalizeTintFlag(raw.flag as string);
+    const canonical = getFlagRegistry().mintTintFlag(raw.flag as string, 'choiceAssembly');
     if (canonical !== raw.flag) {
       return { ...(c as unknown as Record<string, unknown>), flag: canonical } as unknown as Consequence;
     }
+  }
+  // Every authored setter is registered at assembly, so late-stage
+  // reconciliation and validators can consult the registry instead of
+  // re-scanning the story (audit item 2).
+  if (c.type === 'setFlag' && typeof raw.flag === 'string') {
+    const registry = getFlagRegistry();
+    registry.register(raw.flag as string, registry.kindOf(raw.flag as string), 'choiceAssembly');
   }
   if (c.type === 'relationship' && !('dimension' in c)) {
     const dimensionAlias = raw.relationshipType ?? raw.aspect;

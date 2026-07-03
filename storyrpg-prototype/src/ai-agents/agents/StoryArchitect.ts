@@ -119,6 +119,7 @@ import {
 } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
+import { getFlagRegistry } from '../pipeline/flagRegistry';
 import {
   detectPrimaryStoryEventCues,
   STORY_EVENT_CUE_ORDER,
@@ -2532,6 +2533,7 @@ export class StoryArchitect extends BaseAgent {
       (input.seasonPlanDirectives?.flagsToSet || []).map((f) => [f.flag, f.description]),
     );
     for (const flag of axisFlags) {
+      getFlagRegistry().registerBranchAxis(flag, `blueprint:${blueprint.episodeId ?? 'episode'}`);
       if (knownFlagNames.has(flag)) continue;
       knownFlagNames.add(flag);
       blueprint.suggestedFlags.push({
@@ -2650,7 +2652,7 @@ export class StoryArchitect extends BaseAgent {
     const flagsByHost = new Map<EpisodeBlueprint['scenes'][number], string[]>();
 
     seeds.slice(0, 4).forEach((seed, index) => {
-      const flagName = `treatment_seed_ep${episodeNumber}_${index + 1}`;
+      const flagName = getFlagRegistry().mintTreatmentSeedFlag(episodeNumber, index + 1, `blueprint:${blueprint.episodeId ?? 'episode'}`);
       emittedFlags.push(flagName);
       if (!knownFlagNames.has(flagName)) {
         knownFlagNames.add(flagName);

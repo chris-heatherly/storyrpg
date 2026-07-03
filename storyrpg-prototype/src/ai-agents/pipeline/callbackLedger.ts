@@ -22,6 +22,7 @@ import type { Choice } from '../../types/choice';
 import type { ChoiceConsequenceTier, ChoiceImpactFactor } from '../../types/choice';
 import type { TextVariant } from '../../types/content';
 import { normalizeTintFlag } from '../utils/tintVocabulary';
+import { isStructuralFlagKind, isTintFlagKind } from './flagRegistry';
 
 export interface CallbackHook {
   id: string;
@@ -182,13 +183,8 @@ export function canonicalizeHookId(rawId: string, isKnownHookId: (id: string) =>
  * `flag:`-prefixed hook id.
  */
 export function isStructuralFlag(flagOrHookId: string): boolean {
-  const flag = flagOrHookId.startsWith('flag:') ? flagOrHookId.slice('flag:'.length) : flagOrHookId;
-  return (
-    flag.startsWith('tint:') ||
-    flag.startsWith('route_') ||
-    flag.startsWith('treatment_branch_') ||
-    flag.startsWith('encounter_')
-  );
+  // Pattern truth lives in ONE place — the flag registry (audit item 2).
+  return isStructuralFlagKind(flagOrHookId);
 }
 
 /**
@@ -202,8 +198,7 @@ export function isStructuralFlag(flagOrHookId: string): boolean {
  * {@link recordTintSet} / {@link trackableTintsOf}.
  */
 export function isTintFlag(flag: string): boolean {
-  const bare = flag.startsWith('flag:') ? flag.slice('flag:'.length) : flag;
-  return bare.startsWith('tint:');
+  return isTintFlagKind(flag);
 }
 
 /** True when a hook is a (lower-priority) tone callback seeded from a `tint:` flag. */

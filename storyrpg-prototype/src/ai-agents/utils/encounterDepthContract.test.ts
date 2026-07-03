@@ -213,6 +213,49 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     const seal = c4.outcomes.success.nextSituation.choices[0];
     expect(seal.outcomes.success.consequences).toEqual([{ type: 'setFlag', flag: 'authored_flag', value: true }]);
   });
+
+  it('never re-seals its own finish beats, even when an upstream pass breaks every nextBeatId edge (4,924-beat explosion regression)', () => {
+    // bite-me_2026-07-03T13-21-36: StructuralValidator.autoFix renamed every
+    // encounter beat to sequential beat-N while rewriting only choice-level
+    // nextBeatId, so all outcome-level edges dangled. Every beat then looked
+    // like a root, and the finish beats' seal choices — whose 9 outcomes are
+    // ALL terminal wins — were demoted again each contract round: ~9× beat
+    // growth per round. The renamer is fixed separately; this pins that the
+    // repair itself converges under broken edges instead of compounding.
+    const e = {
+      id: 'e1', type: 'social', name: '', description: '',
+      goalClock: { id: 'g', name: '', description: '', segments: 4, filled: 0, type: 'goal' },
+      threatClock: { id: 't', name: '', description: '', segments: 4, filled: 0, type: 'threat' },
+      stakes: { victory: '', defeat: '' },
+      startingPhaseId: 'p1', startingBeatId: 'beat-1', outcomes: {},
+      phases: [{
+        id: 'p1', name: '', description: '', startingBeatId: 'beat-1',
+        beats: [
+          { id: 'beat-1', choices: [
+            { id: 'b1-win', outcomes: { success: { tier: 'success', goalTicks: 2, threatTicks: 0, narrativeText: 'x', isTerminal: true, encounterOutcome: 'victory' } } },
+          ] },
+        ],
+      }],
+    } as unknown as Encounter;
+
+    const first = deepenRootTerminalWins(e);
+    expect(first.flatRouted).toHaveLength(1);
+    const beats = e.phases[0].beats as any[];
+    expect(beats).toHaveLength(2);
+
+    // Simulate the edge-breaker: sequential renames, outcome refs untouched.
+    beats.forEach((beat, i) => { beat.id = `beat-${i + 1}`; });
+
+    const second = deepenRootTerminalWins(e);
+    expect(second.flatRouted).toHaveLength(0);
+    expect(second.lifted).toHaveLength(0);
+    expect(e.phases[0].beats).toHaveLength(2);
+
+    // A third pass stays converged too.
+    const third = deepenRootTerminalWins(e);
+    expect(third.flatRouted).toHaveLength(0);
+    expect(e.phases[0].beats).toHaveLength(2);
+  });
 });
 
 describe('deepenStructureRootWins (G13 source-side guard, EncounterArchitect draft shape)', () => {

@@ -940,27 +940,52 @@ export class StructuralValidator {
               }
             }
             
-            // Renumber beats to be sequential
-            for (let i = 0; i < (phase.beats?.length || 0); i++) {
-              const beat = phase.beats![i] as any;
-              const expectedId = `beat-${i + 1}`;
-              if (beat.id !== expectedId) {
-                const oldId = beat.id;
-                beat.id = expectedId;
-                
-                // Update references in choices
+            // Renumber beats to be sequential — LEGACY LINEAR PHASES ONLY.
+            // Flat graph-routed encounters (encounter unification W2) carry
+            // their routing at outcome level (choice.outcomes[tier].nextBeatId),
+            // and their beat ids are load-bearing (flatten/seal provenance, QA
+            // repair anchors). Renaming them here while only rewriting
+            // choice-level nextBeatId orphaned every edge, so each contract
+            // round the depth guard saw all beats as roots and re-sealed every
+            // terminal win — 9× beat growth per round (4,924-beat explosion,
+            // bite-me_2026-07-03T13-21-36). Skip renumbering whenever any beat
+            // routes via outcome-level nextBeatId or embeds a nextSituation.
+            const graphRouted = (phase.beats || []).some((b: any) =>
+              (b.choices || []).some((c: any) =>
+                Object.values(c.outcomes || {}).some((o: any) => o?.nextBeatId || o?.nextSituation)
+              )
+            );
+            if (!graphRouted) {
+              // Two-phase, map-based rename: collect old→new for every beat
+              // first, then apply ids and rewrite ALL reference sites via the
+              // map (in-place sequential renaming could collide with a later
+              // beat that already holds the target id).
+              const idMap = new Map<string, string>();
+              (phase.beats || []).forEach((b: any, i: number) => {
+                const expectedId = `beat-${i + 1}`;
+                if (b.id !== expectedId) idMap.set(b.id, expectedId);
+              });
+              if (idMap.size > 0) {
+                for (const [oldId, newId] of idMap) {
+                  fixes.push(`Fixed encounter beat ${oldId} -> ${newId}`);
+                  fixedCount++;
+                }
                 for (const b of phase.beats || []) {
-                  if ((b as any).choices) {
-                    for (const choice of (b as any).choices) {
-                      if (choice.nextBeatId === oldId) {
-                        choice.nextBeatId = expectedId;
-                      }
+                  const beat = b as any;
+                  if (idMap.has(beat.id)) beat.id = idMap.get(beat.id);
+                  for (const choice of beat.choices || []) {
+                    if (choice.nextBeatId && idMap.has(choice.nextBeatId)) {
+                      choice.nextBeatId = idMap.get(choice.nextBeatId);
                     }
                   }
                 }
-                
-                fixes.push(`Fixed encounter beat ${oldId} -> ${expectedId}`);
-                fixedCount++;
+                if ((phase as any).startingBeatId && idMap.has((phase as any).startingBeatId)) {
+                  (phase as any).startingBeatId = idMap.get((phase as any).startingBeatId);
+                }
+                const encAny = scene.encounter as any;
+                if (encAny.startingBeatId && idMap.has(encAny.startingBeatId)) {
+                  encAny.startingBeatId = idMap.get(encAny.startingBeatId);
+                }
               }
             }
             

@@ -49,6 +49,15 @@ interface BeatLike {
   description?: string;
   setupText?: string;
   choices?: ChoiceLike[];
+  /**
+   * Set on finish beats appended by deepenRootTerminalWins. A re-run never
+   * demotes a marked beat's wins — its seal choices ARE the intended terminal
+   * finish. Without this, any upstream pass that breaks nextBeatId edges (e.g.
+   * a beat renamer missing outcome-level refs) made every finish beat look
+   * like a root again, and each re-seal multiplied beats ~9× per pass
+   * (4,924-beat explosion, bite-me_2026-07-03T13-21-36).
+   */
+  sealFinish?: boolean;
 }
 
 interface PhaseLike {
@@ -338,8 +347,13 @@ export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
     const baseDepth = beatBaseDepths(phase, encAny);
     const originalBeats = [...(phase.beats || [])];
     for (const beat of originalBeats) {
+      // Never re-seal a finish beat we appended ourselves (see BeatLike.sealFinish).
+      if (beat.sealFinish) continue;
       if ((baseDepth.get(beat.id ?? '') ?? 1) !== 1) continue;
       for (const choice of beat.choices || []) {
+        // Seal choices' terminal wins ARE the finish — never demote them, even
+        // on pre-marker artifacts where only the choice-id convention survives.
+        if (typeof choice.id === 'string' && choice.id.endsWith('-seal')) continue;
         for (const outcome of Object.values(choice.outcomes || {})) {
           if (!outcome?.isTerminal) continue;
           const won = String(outcome.encounterOutcome ?? '');
@@ -360,6 +374,7 @@ export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
               name: won === 'victory' ? 'Finish the opening' : 'Hold the opening',
               description: prose.setupText,
               setupText: prose.setupText,
+              sealFinish: true,
               choices: buildSealChoices(encSlug, choice, outcome, won, choiceId),
             });
             outcome.isTerminal = false;

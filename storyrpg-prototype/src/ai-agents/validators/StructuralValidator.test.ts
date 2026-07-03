@@ -574,3 +574,89 @@ describe('StructuralValidator unreachable-scene gate (C3)', () => {
     expect(report.issues.some((i) => i.type === 'unreachable_scene')).toBe(false);
   });
 });
+
+describe('StructuralValidator.autoFix encounter beat renumbering', () => {
+  const flatGraphEncounter = () => ({
+    id: 'enc-1',
+    outcomes: {},
+    phases: [
+      {
+        id: 'p1',
+        startingBeatId: 'beat-1',
+        situationImage: 'http://localhost:3001/p1.png',
+        beats: [
+          {
+            id: 'beat-1',
+            choices: [
+              {
+                id: 'c1',
+                outcomes: {
+                  success: { tier: 'success', goalTicks: 1, threatTicks: 0, narrativeText: 'x', nextBeatId: 'beat-1-c1-success' },
+                  failure: { tier: 'failure', goalTicks: 0, threatTicks: 1, narrativeText: 'x', nextBeatId: 'beat-1-c1-failure' },
+                },
+              },
+            ],
+          },
+          {
+            id: 'beat-1-c1-success',
+            choices: [{ id: 'c1-s-c1', outcomes: { success: { tier: 'success', goalTicks: 1, threatTicks: 0, narrativeText: 'x', isTerminal: true, encounterOutcome: 'victory' } } }],
+          },
+          {
+            id: 'beat-1-c1-failure',
+            choices: [{ id: 'c1-f-c1', outcomes: { success: { tier: 'success', goalTicks: 1, threatTicks: 0, narrativeText: 'x', isTerminal: true, encounterOutcome: 'partialVictory' } } }],
+          },
+        ],
+      },
+    ],
+  });
+
+  it('never renames beats of a graph-routed (outcome-level nextBeatId) encounter — the 4,924-beat explosion regression', () => {
+    // bite-me_2026-07-03T13-21-36: renaming these beats to sequential beat-N
+    // while rewriting only choice-level nextBeatId orphaned every edge; the
+    // depth guard then re-sealed all "roots" each contract round (9× growth).
+    const story = makeStory();
+    (story.episodes[0].scenes[0] as any).encounter = flatGraphEncounter();
+    const result = new StructuralValidator().autoFix(story);
+
+    const enc = (result.story.episodes[0].scenes[0] as any).encounter;
+    const ids = enc.phases[0].beats.map((b: any) => b.id);
+    expect(ids).toEqual(['beat-1', 'beat-1-c1-success', 'beat-1-c1-failure']);
+    // Every outcome-level edge still resolves.
+    const beatIds = new Set(ids);
+    for (const beat of enc.phases[0].beats) {
+      for (const choice of beat.choices || []) {
+        for (const outcome of Object.values(choice.outcomes || {}) as any[]) {
+          if (outcome?.nextBeatId) expect(beatIds.has(outcome.nextBeatId)).toBe(true);
+        }
+      }
+    }
+    expect(result.fixes.some((f) => f.startsWith('Fixed encounter beat'))).toBe(false);
+  });
+
+  it('still renumbers legacy linear phase beats, rewriting choice refs and startingBeatId together', () => {
+    const story = makeStory();
+    (story.episodes[0].scenes[0] as any).encounter = {
+      id: 'enc-1',
+      outcomes: {},
+      phases: [
+        {
+          id: 'p1',
+          startingBeatId: 'opening',
+          situationImage: 'http://localhost:3001/p1.png',
+          beats: [
+            { id: 'opening', choices: [{ id: 'c1', nextBeatId: 'middle', outcomes: {} }] },
+            { id: 'middle', choices: [{ id: 'c2', nextBeatId: 'ending', outcomes: {} }] },
+            { id: 'ending', choices: [{ id: 'c3', outcomes: {} }] },
+          ],
+        },
+      ],
+    };
+    const result = new StructuralValidator().autoFix(story);
+
+    const phase = (result.story.episodes[0].scenes[0] as any).encounter.phases[0];
+    expect(phase.beats.map((b: any) => b.id)).toEqual(['beat-1', 'beat-2', 'beat-3']);
+    expect(phase.beats[0].choices[0].nextBeatId).toBe('beat-2');
+    expect(phase.beats[1].choices[0].nextBeatId).toBe('beat-3');
+    expect(phase.startingBeatId).toBe('beat-1');
+  });
+});

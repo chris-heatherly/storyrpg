@@ -1845,8 +1845,11 @@ ${input.sceneBlueprint.turnContract ? `
 
 This is the dramatic center of the scene. The prose must make the before-state readable, dramatize the turn event on-page, and show the after-state or handoff before the scene routes onward.
 ` : ''}
-${input.sceneBlueprint.relationshipPacing?.length ? `
-### Relationship Pacing Contracts
+${(input.sceneBlueprint.relationshipPacing?.length || input.sceneBlueprint.mechanicPressure?.length || input.sceneBlueprint.authoredTreatmentFields?.length || input.sceneBlueprint.seasonPromiseContracts?.length || input.sceneBlueprint.stakesArchitectureContracts?.length || input.sceneBlueprint.storyCircleBeatContracts?.length || input.sceneBlueprint.arcPressureContracts?.length || input.sceneBlueprint.worldTreatmentContracts?.length || input.sceneBlueprint.characterTreatmentContracts?.length || input.sceneBlueprint.failureModeAuditContracts?.length) ? `
+### Planning-Contract Realization (binding)
+Every contract in the subsections below is binding for this scene. Never paste contract text, labels, or planning notes into prose, and do not state flags, scores, thresholds, or contract labels — no structural/QA language of any kind. Stage each contract as reader-facing action, behavior, choice pressure, information movement, cost, altered access, or visible residue.
+` : ''}${input.sceneBlueprint.relationshipPacing?.length ? `
+#### Relationship Pacing
 Write the relationship at the earned stage, not the future desired stage. Instant chemistry is allowed; instant friendship, trust, intimacy, or settled group membership is not.
 ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; allowed labels: ${joinPromptList(c.allowedLabels, ', ', 'earned current-stage labels only')}; blocked labels: ${joinPromptList(c.blockedLabels, ', ', 'unearned future-stage labels')}; evidence required: ${joinPromptList(c.requiredEvidence, '; ', 'show the on-page behavior that earns any movement')}`).join('\n')}
 - Show relationship movement through behavior: proximity, eye contact, teasing, withholding, invitation, remembered detail, vulnerability, challenge, refusal, protection, or changed access.
@@ -1857,32 +1860,30 @@ ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npc
 - Do not use blocked labels in narration, scene takeaways, visual metadata, relationshipDynamic, or transition/bridge prose.
 ` : ''}
 ${input.sceneBlueprint.mechanicPressure?.length ? `
-### Narrative Mechanic Pressure Contracts
-Mechanics are hidden story-dynamics accounting. Do not state flags, scores, thresholds, or contract labels. Dramatize what each mechanic means in the fiction: access, leverage, memory, suspicion, vulnerability, debt, identity pressure, learned pattern, changed permission, or narrowed options.
+#### Narrative Mechanic Pressure
+Mechanics are hidden story-dynamics accounting: dramatize what each means in the fiction — access, leverage, memory, suspicion, vulnerability, debt, identity pressure, learned pattern, changed permission, or narrowed options.
 ${input.sceneBlueprint.mechanicPressure.map((c) => `- ${c.id}: ${c.domain}/${c.function} — ${authorFacingMechanicPressureText(c)}; evidence: ${joinPromptList(c.evidenceRequired, '; ', 'show the on-page event that earns it')}; visible residue: ${joinPromptList(c.visibleResidue, '; ', 'show changed behavior, access, cost, clue, posture, or aftermath')}; allowed payoffs: ${joinPromptList(c.allowedPayoffs, '; ', 'small believable future permission')}; blocked payoffs: ${joinPromptList(c.blockedPayoffs, '; ', 'payoffs not yet earned')}`).join('\n')}
 - If this scene creates pressure, show the event that earns it and the immediate residue before routing onward.
 - If this scene spends prior pressure, make the payoff visible on-page as behavior, access, a clue, cost, altered tone, route permission, or changed NPC posture.
 - A bridge/payoff beat may carry mechanics only if it also contains aftermath/residue and grounded movement or elapsed-time language when it routes to a new scene.
 ` : ''}
 ${input.sceneBlueprint.authoredTreatmentFields?.length ? `
-### Authored Treatment Field Contracts
-These authored treatment fields are binding for this scene. Do not copy them as labels or planning notes; stage what they mean as reader-facing action, choice pressure, encounter behavior, information movement, consequence residue, ending turnout, or cliffhanger pressure.
+#### Authored Treatment Fields
 ${input.sceneBlueprint.authoredTreatmentFields.map((c) => `- ${c.fieldName}: ${authorFacingTreatmentFieldText(c)}; must realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}`).join('\n')}
 - Pressure lanes must become visible pressure, not abstract summary.
 - Encounter fields must show up inside setup, phase action, choices, or outcome prose.
 - Ending/cliffhanger fields must land as a changed state plus forward question or pressure, not vague mood.
 ` : ''}
 ${input.sceneBlueprint.seasonPromiseContracts?.length ? `
-### Season Promise Realization Contracts
-These top-level season promises are binding for this scene. Do not quote them as labels, stats, or explanatory notes; make them visible as staged story material: premise engine, core fantasy, genre/tone movement, theme test, inaction cost, consequence pressure, or changed state.
+#### Season Promises
 ${input.sceneBlueprint.seasonPromiseContracts.map((c) => `- ${c.contractKind}: ${c.sourceText}; realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}`).join('\n')}
 - Genre/tone promises should read through scene texture, stakes, behavior, and pressure, not through comparison-title name-drops.
 - Theme and inaction promises must be tested by action, cost, choice, encounter pressure, narrowing options, loss, or altered permission.
 - Premise/core-fantasy promises should become playable affordances, relationship/identity pressure, setting texture, or an engine the player can feel.
 ` : ''}
 ${input.sceneBlueprint.stakesArchitectureContracts?.length ? `
-### Stakes Architecture Realization Contracts
-These authored stakes are binding for this scene. Do not paste stake labels, categories, or explanatory treatment language. Make the pressure visible as something the protagonist can lose, protect, betray, claim, spend, or transform.
+#### Stakes Architecture
+Make each stake visible as something the protagonist can lose, protect, betray, claim, spend, or transform.
 ${input.sceneBlueprint.stakesArchitectureContracts.map((c) => `- ${c.fieldName} (${c.contractKind}${c.stakeLayer ? ` / ${c.stakeLayer}` : ''}): ${c.sourceText}; realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}${c.prerequisiteContractIds?.length ? `; prerequisites: ${joinPromptList(c.prerequisiteContractIds)}` : ''}`).join('\n')}
 - Material stakes should become resource, access, object, reputation, information, safety, or opportunity pressure.
 - Relational stakes should become behavior: distance, loyalty, withholding, betrayal, repair, trust, alliance, route pressure, or changed posture.
@@ -1891,16 +1892,15 @@ ${input.sceneBlueprint.stakesArchitectureContracts.map((c) => `- ${c.fieldName} 
 - Emotional anchors should be planted or used as concrete objects, places, promises, rituals, names, visual motifs, or relationship tells that carry future pressure.
 ` : ''}
 ${input.sceneBlueprint.storyCircleBeatContracts?.length ? `
-### Legacy-Structure Beat Realization Contracts
-These authored Hook / Plot Turn / Pinch / Midpoint / Climax / Resolution contracts are binding for this scene. Do not paste the structural label into prose; stage the actual beat event and the state change it creates.
+#### Legacy-Structure Beats (Hook / Plot Turn / Pinch / Midpoint / Climax / Resolution)
+Stage the actual beat event and the state change it creates.
 ${input.sceneBlueprint.storyCircleBeatContracts.map((c) => `- ${c.beat}: ${c.sourceText}; event atoms: ${joinPromptList(c.eventAtoms, ' | ', c.sourceText)}${c.stateChange ? `; visible state change: ${c.stateChange}` : ''}`).join('\n')}
 - Give the beat a local before -> event -> after/handoff shape.
 - If this is a midpoint, pinch, climax, or resolution, make the recontextualization, cost, decisive choice, route consequence, or changed end state visible on-page.
 - Do not satisfy this with summary narration. Use action, reveal, choice pressure, altered access, information movement, relationship posture, or ending state.
 ` : ''}
 ${input.sceneBlueprint.arcPressureContracts?.length ? `
-### Arc Pressure Treatment Realization Contracts
-These authored arc-plan fields are binding for this scene. Do not write arc labels, act labels, or treatment-summary sentences. Stage the pressure movement as behavior, choice pressure, information movement, cost, reframe, aftermath, episode turnout, or handoff.
+#### Arc Pressure
 ${input.sceneBlueprint.arcPressureContracts.map((c) => `- ${c.arcTitle} / ${c.fieldName} (${c.contractKind}): ${c.sourceText}; event atoms: ${joinPromptList(c.eventAtoms, ' | ', c.sourceText)}; realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}`).join('\n')}
 - Arc questions must be tested, not answered in narration.
 - Midpoint/recontextualization contracts must change what the player understands.
@@ -1908,16 +1908,16 @@ ${input.sceneBlueprint.arcPressureContracts.map((c) => `- ${c.arcTitle} / ${c.fi
 - Finale/turnout/handoff contracts must leave visible residue in the scene's after-state.
 ` : ''}
 ${input.sceneBlueprint.worldTreatmentContracts?.length ? `
-### World/Location Treatment Realization Contracts
-These authored setting and location fields are binding for this scene when they carry story law, access, faction pressure, taboo/cost, information movement, or location choice pressure. Do not paste lore as exposition; dramatize what the rule or place lets characters do, prevents, costs, hides, or tempts.
+#### World / Location
+Dramatize what each rule or place lets characters do, prevents, costs, hides, or tempts — never lore as exposition.
 ${input.sceneBlueprint.worldTreatmentContracts.map((c) => `- ${c.fieldName} (${c.contractKind}${c.locationName ? ` @ ${c.locationName}` : ''}): ${c.sourceText}; realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}`).join('\n')}
 - Major locations must not read as interchangeable backdrops. Let purpose, danger, sanctuary, faction ownership, sacred/costly objects, or choice pressure shape the visible action.
 - Supernatural/world rules should appear as planted evidence, withheld information, behavior under constraint, altered access, or consequence pressure. Do not reveal future rules early unless this scene is the planned reveal/spend.
 - Mood is guidance for texture; purpose, history, dramatic rules, and choice pressure should change what happens.
 ` : ''}
 ${input.sceneBlueprint.characterTreatmentContracts?.length ? `
-### Protagonist Treatment Realization Contracts
-These authored protagonist fields are binding for this scene. Do not expose contract labels, Lie/Need labels, route math, or ending mechanics. Dramatize them as behavior, choice pressure, subtext, vulnerability, memory, appetite, refusal, visible baseline, changed posture, or route/ending pressure.
+#### Protagonist
+Dramatize as behavior, subtext, vulnerability, memory, appetite, refusal, visible baseline, changed posture, or route/ending pressure — never Lie/Need labels, route math, or ending mechanics.
 ${input.sceneBlueprint.characterTreatmentContracts.map((c) => `- ${c.fieldName} (${c.contractKind}): ${c.sourceText}; realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}`).join('\n')}
 - Starting identity and role facts should appear as lived baseline, not biography dump.
 - Want/Need/Lie/Wound/Truth pressure must change the scene's behavior, choice stakes, aftermath, or handoff.
@@ -1925,8 +1925,8 @@ ${input.sceneBlueprint.characterTreatmentContracts.map((c) => `- ${c.fieldName} 
 - Visual identity should inform concrete attire/props when natural, but do not force every wardrobe detail into prose.
 ` : ''}
 ${input.sceneBlueprint.failureModeAuditContracts?.length ? `
-### Failure Mode Audit Realization Contracts
-These authored Section 15 audit fields are binding mitigations for this scene. Do not write failure-mode labels, QA language, or explanatory assurances. Stage the protection fiction-first as agency, causal setup, fair-play clue, irreversible residue, personal-before-existential grounding, thematic rhyme, or in-world mitigation.
+#### Failure-Mode Mitigations
+Stage each protection fiction-first as agency, causal setup, fair-play clue, irreversible residue, personal-before-existential grounding, thematic rhyme, or in-world mitigation.
 ${input.sceneBlueprint.failureModeAuditContracts.map((c) => `- ${c.label} (${c.status} / ${c.contractKind}): ${c.sourceText}; realize through ${joinPromptList(c.requiredRealization, ', ', 'final prose')}`).join('\n')}
 - If this is a watch item, show the mitigation before or during the risky event, not after as explanation.
 - If this is agency, the protagonist/player must cause the decisive turn through choice, preparation, sacrifice, leverage, or earned information.

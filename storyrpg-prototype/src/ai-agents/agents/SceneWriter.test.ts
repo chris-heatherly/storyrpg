@@ -1654,9 +1654,10 @@ describe('SceneWriter structural guards', () => {
     } as any;
 
     const prompt = (writer as any).buildPrompt(input);
-    expect(prompt).toContain('Narrative Mechanic Pressure Contracts');
+    expect(prompt).toContain('Narrative Mechanic Pressure');
+    expect(prompt).toContain('Planning-Contract Realization (binding)');
     expect(prompt).toContain('The key card creates access leverage and obligation.');
-    expect(prompt).toContain('Do not state flags, scores, thresholds, or contract labels.');
+    expect(prompt).toContain('do not state flags, scores, thresholds, or contract labels');
     expect(prompt).toContain('access, leverage, memory, suspicion');
   });
 

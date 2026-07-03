@@ -74,6 +74,61 @@ function normalizeIssues(raw: unknown, knownConcepts: Set<string>, fallbackConce
 }
 
 // ============================================
+// MULTI-EPISODE AGGREGATION
+// ============================================
+
+/**
+ * Merge per-episode judge reports into one season-level report. Concept grades
+ * keep the LOWEST score seen (a season reads as weak as its weakest graded
+ * stretch — same policy the scorer applies to duplicate grades); issues and
+ * probe verdicts accumulate. Used by the multi-episode QA aggregation so judge
+ * evidence survives into final scoring instead of being dropped with the
+ * last-episode-only field rebuild.
+ */
+function mergeConceptScores<T extends { conceptId: string; score: number; evidence: string }>(
+  reports: Array<{ conceptScores: T[] }>,
+): T[] {
+  const byConcept = new Map<string, T>();
+  for (const report of reports) {
+    for (const conceptScore of report.conceptScores ?? []) {
+      const existing = byConcept.get(conceptScore.conceptId);
+      if (!existing || conceptScore.score < existing.score) {
+        byConcept.set(conceptScore.conceptId, conceptScore);
+      }
+    }
+  }
+  return [...byConcept.values()];
+}
+
+export function aggregateProseCraftReports(
+  reports: Array<ProseCraftReport | undefined>,
+): ProseCraftReport | undefined {
+  const present = reports.filter((report): report is ProseCraftReport => Boolean(report));
+  if (present.length === 0) return undefined;
+  return {
+    overallScore: Math.min(...present.map((report) => report.overallScore)),
+    conceptScores: mergeConceptScores(present),
+    issues: present.flatMap((report) => report.issues ?? []),
+    sampledSceneIds: Array.from(new Set(present.flatMap((report) => report.sampledSceneIds ?? []))),
+    recommendations: Array.from(new Set(present.flatMap((report) => report.recommendations ?? []))).slice(0, 5),
+  };
+}
+
+export function aggregateResponsivenessReports(
+  reports: Array<ResponsivenessReport | undefined>,
+): ResponsivenessReport | undefined {
+  const present = reports.filter((report): report is ResponsivenessReport => Boolean(report));
+  if (present.length === 0) return undefined;
+  return {
+    overallScore: Math.min(...present.map((report) => report.overallScore)),
+    conceptScores: mergeConceptScores(present),
+    probeVerdicts: present.flatMap((report) => report.probeVerdicts ?? []),
+    issues: present.flatMap((report) => report.issues ?? []),
+    recommendations: Array.from(new Set(present.flatMap((report) => report.recommendations ?? []))).slice(0, 5),
+  };
+}
+
+// ============================================
 // PROSE CRAFT JUDGE
 // ============================================
 

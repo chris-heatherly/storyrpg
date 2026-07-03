@@ -36,6 +36,7 @@ import {
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
+import { aggregateProseCraftReports, aggregateResponsivenessReports } from '../agents/QualityJudges';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
 import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
@@ -5413,6 +5414,11 @@ export class FullStoryPipeline {
           passedChecks: [],
           recommendations: Array.from(new Set(episodeQAReports.flatMap(r => r.continuity?.recommendations ?? []))),
         } as QAReport['continuity'];
+        // Judge reports (QualityScore v4) must survive aggregation or the
+        // prose_craft / responsiveness grades never reach final scoring on
+        // multi-episode runs; weakest concept grade wins across episodes.
+        const aggregatedProseCraft = aggregateProseCraftReports(episodeQAReports.map(r => r.proseCraft));
+        const aggregatedResponsiveness = aggregateResponsivenessReports(episodeQAReports.map(r => r.responsiveness));
         aggregatedQAReport = {
           continuity: mergedContinuity,
           voice: episodeQAReports[episodeQAReports.length - 1].voice,
@@ -5421,6 +5427,8 @@ export class FullStoryPipeline {
           passesQA: allEpisodesPassedQA,
           criticalIssues: episodeQAReports.flatMap(r => r.criticalIssues),
           summary: `Aggregated QA across ${episodeQAReports.length} episode(s): score ${aggregateScore}/100 (avg ${avgScore}/100, weakest ${minScore}/100)`,
+          ...(aggregatedProseCraft ? { proseCraft: aggregatedProseCraft } : {}),
+          ...(aggregatedResponsiveness ? { responsiveness: aggregatedResponsiveness } : {}),
         };
         this.addCheckpoint('Aggregated QA Report', aggregatedQAReport, !aggregatedQAReport.passesQA);
         await saveEarlyDiagnostic(outputDirectory, '06-qa-report.json', aggregatedQAReport);

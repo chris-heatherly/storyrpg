@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ProseCraftJudge,
   ResponsivenessJudge,
+  aggregateProseCraftReports,
+  aggregateResponsivenessReports,
   buildResponsivenessProbes,
   judgeFlagEnabled,
   sampleSceneProse,
@@ -236,6 +238,69 @@ describe('ResponsivenessJudge', () => {
       'npc_reacts_to_player_choice',
     ]);
     expect(report.issues[0].severity).toBe('error');
+  });
+});
+
+describe('multi-episode judge aggregation', () => {
+  it('keeps the weakest concept grade across episodes and accumulates issues', () => {
+    const merged = aggregateProseCraftReports([
+      {
+        overallScore: 80,
+        conceptScores: [
+          { conceptId: 'sentence_craft', score: 82, evidence: 'ep1 solid' },
+          { conceptId: 'filler_density', score: 88, evidence: 'ep1 tight' },
+        ],
+        issues: [{ severity: 'warning', conceptId: 'sentence_craft', description: 'ep1 wobble' }],
+        sampledSceneIds: ['s1-1'],
+        recommendations: ['tighten openers'],
+      },
+      undefined,
+      {
+        overallScore: 61,
+        conceptScores: [
+          { conceptId: 'sentence_craft', score: 91, evidence: 'ep2 clean' },
+          { conceptId: 'filler_density', score: 55, evidence: 'ep2 padded' },
+        ],
+        issues: [{ severity: 'error', conceptId: 'filler_density', description: 'ep2 padding' }],
+        sampledSceneIds: ['s2-1'],
+        recommendations: ['tighten openers', 'cut padding'],
+      },
+    ]);
+
+    expect(merged?.overallScore).toBe(61);
+    expect(merged?.conceptScores.find((c) => c.conceptId === 'sentence_craft')?.score).toBe(82);
+    expect(merged?.conceptScores.find((c) => c.conceptId === 'filler_density')?.score).toBe(55);
+    expect(merged?.issues).toHaveLength(2);
+    expect(merged?.sampledSceneIds).toEqual(['s1-1', 's2-1']);
+    expect(merged?.recommendations).toEqual(['tighten openers', 'cut padding']);
+  });
+
+  it('returns undefined when no episode carried a judge report', () => {
+    expect(aggregateProseCraftReports([undefined, undefined])).toBeUndefined();
+    expect(aggregateResponsivenessReports([])).toBeUndefined();
+  });
+
+  it('accumulates responsiveness probe verdicts across episodes', () => {
+    const merged = aggregateResponsivenessReports([
+      {
+        overallScore: 70,
+        conceptScores: [{ conceptId: 'choice_reflected_in_prose', score: 70, evidence: 'ep1' }],
+        probeVerdicts: [{ probeId: 's1:b1', verdict: 'divergent', npcReaction: 'reactive', notes: '' }],
+        issues: [],
+        recommendations: [],
+      },
+      {
+        overallScore: 40,
+        conceptScores: [{ conceptId: 'choice_reflected_in_prose', score: 40, evidence: 'ep2' }],
+        probeVerdicts: [{ probeId: 's2:b1', verdict: 'cosmetic', npcReaction: 'static', notes: '' }],
+        issues: [],
+        recommendations: [],
+      },
+    ]);
+
+    expect(merged?.overallScore).toBe(40);
+    expect(merged?.conceptScores[0].score).toBe(40);
+    expect(merged?.probeVerdicts.map((p) => p.probeId)).toEqual(['s1:b1', 's2:b1']);
   });
 });
 

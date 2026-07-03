@@ -403,6 +403,71 @@ describe('RouteContinuityValidator', () => {
     expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
   });
 
+  it('does not count deadbolt-slides-home idiom windows against the walk-home recap exemption', () => {
+    // bite-me 2026-07-03T05-47-21 s1-5: the only walk-home mention is a
+    // blog-post recap ("The attack, the rescue, the walk home"), but two
+    // "deadbolt sliding home" idiom sentences matched the old bare-`home`
+    // window pattern as non-recap windows and defeated the exemption.
+    const walkHomeEvent = {
+      key: 'cue:walkHome',
+      cue: 'walkHome' as const,
+      text: 'Walking home through the park, she is attacked and rescued by the stranger, who walks her to her threshold and vanishes.',
+      sourceContractIds: ['walk-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'walk-owner',
+        name: 'Walk Owner',
+        startingBeatId: 'walk-beat',
+        sceneEventOwnership: {
+          id: 'walk-owner-event-ownership',
+          sceneId: 'walk-owner',
+          ownedEvents: [walkHomeEvent],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['walk-turn'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [{
+          id: 'walk-beat',
+          text: 'Avery Vale walks you home through the dark park to your threshold, then vanishes.',
+          nextSceneId: 'writing-later',
+          choices: [],
+        }],
+        leadsTo: ['writing-later'],
+      },
+      {
+        id: 'writing-later',
+        name: 'Writing Later',
+        startingBeatId: 'writing-beat',
+        sceneEventOwnership: {
+          id: 'writing-later-event-ownership',
+          sceneId: 'writing-later',
+          ownedEvents: [],
+          incomingContext: [walkHomeEvent],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [walkHomeEvent],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+        beats: [
+          {
+            id: 'writing-beat',
+            text: 'The heavy oak door clicks shut, the deadbolt sliding home with a finality that does not feel entirely safe. The rest pours out, The attack, the rescue, the walk home. Every detail sharp and strange. You hit publish just as the sky begins to lighten.',
+            choices: [],
+          },
+        ],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.map((issue) => issue.type)).not.toContain('route_duplicate_event');
+  });
+
   it('still blocks an actual walk-home restage in a scene forbidden from restaging it', () => {
     const walkHomeEvent = {
       key: 'cue:walkHome',

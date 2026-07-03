@@ -2,6 +2,7 @@ import type { Beat, Choice, Episode, Scene, Story } from '../../types';
 import type { SceneOwnedEvent } from '../../types/scenePlan';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { READER_PROSE_LEAK_PATTERNS, STRUCTURAL_SCAFFOLDING_PATTERNS } from '../constants/metaProse';
+import { SYNTHETIC_FALLBACK_PROSE_PATTERNS } from '../constants/syntheticFallbackProse';
 import {
   detectPrimaryStoryEventCues,
   STORY_EVENT_CUE_ORDER,
@@ -98,6 +99,9 @@ const ACTIVE_RESTAGE_MARKERS = /\b(?:attacks?|rescues?|saves?|pulls?|drags?|carr
 const ACTIVE_ARRIVAL_MARKERS = /\b(?:arriv(?:e|es|ed|ing)|lands?|landed|unpacks?|unpacked|taxi\s+(?:leaves?|drops?)|cab\s+(?:leaves?|drops?)|steps?\s+(?:off|out)|airport|station|dock)\b/i;
 
 const UNSAFE_ROUTE_FALLBACK_PATTERNS: Array<{ label: string; pattern: RegExp; suggestion: string }> = [
+  // Synthetic filler/scaffold sentences from removed pipeline producers —
+  // blocking tripwire so filler can never ship as story content.
+  ...SYNTHETIC_FALLBACK_PROSE_PATTERNS,
   {
     label: 'composed-surface fallback',
     pattern: /\bcomposed\s+surface\s+slips\b/i,
@@ -154,8 +158,13 @@ const CUE_WINDOW_PATTERNS: Partial<Record<RouteCue, RegExp>> = {
   lateNightWriting: /\b(?:writes?|typing|draft|post|blog|late\s+night|notebook|laptop)\b/i,
   blogAftermath: PUBLIC_BLOG_AFTERMATH_MARKERS,
   // Keep in sync with walkHomeCueFires: windows must cover the same phrases
-  // that fire the cue, or recap analysis inspects the wrong sentences.
-  walkHome: /\b(?:walks?|guides?|escorts?|home|small of your back|guiding you away|under your heels)\b/i,
+  // that fire the cue, or recap analysis inspects the wrong sentences. Bare
+  // `home` is NOT enough — "the deadbolt sliding home" (bolt-seats-in-socket
+  // idiom) polluted the recap analysis with non-recap windows and defeated the
+  // exemption on a scene whose only walk-home mention was a blog-post recap
+  // (bite-me 2026-07-03T05-47-21 s1-5). A window counts only when `home`
+  // travels with a walk/guide/escort shape, matching the firing pattern.
+  walkHome: /\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b|\b(?:small of your back|guiding you away|under your heels)\b/i,
 };
 
 function isTerminalSceneTarget(id: string | undefined): boolean {

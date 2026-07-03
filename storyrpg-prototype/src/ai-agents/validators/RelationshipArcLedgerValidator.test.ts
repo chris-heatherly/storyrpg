@@ -251,6 +251,29 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
     expect(result.issues.some((issue) => issue.message.includes('friend/trusted/intimate relationship language'))).toBe(false);
   });
 
+  it('does not flag sensation-register intimate prose as a stage claim', () => {
+    const result = new RelationshipArcLedgerValidator().validate({
+      story: npcStory([beatScene('s1-1', [
+        { id: 'b1', text: 'The phantom of his grip lingers on your arm, a phantom warmth that feels strangely intimate. You do not even know his name.', choices: [] },
+      ], [npcContract()])]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('friend/trusted/intimate relationship language'))).toBe(false);
+  });
+
+  it('still blocks a claimed intimate stage before the ledger earns it', () => {
+    const result = new RelationshipArcLedgerValidator().validate({
+      story: npcStory([beatScene('s1-1', [
+        { id: 'b1', text: 'Mika pours the wine. The two of you are intimate now, the way only years can make people.', choices: [] },
+      ], [npcContract()])]),
+      treatmentSourced: true,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.message.includes('friend/trusted/intimate relationship language'))).toBe(true);
+  });
+
   it('fails when an unmet NPC is reachable by private text before an on-page introduction', () => {
     const result = new RelationshipArcLedgerValidator().validate({
       story: npcStory([beatScene('s1-1', [

@@ -97,11 +97,23 @@ function isNegated(text: string, index: number): boolean {
   return NEGATED_WINDOW_RE.test(prefix);
 }
 
+// "Intimate" as a felt quality ("feels strangely intimate", "almost intimate")
+// is spark-register perception of a moment, not a claimed relationship stage.
+const SENSATION_INTIMATE_PREFIX_RE = /\b(?:feels?|felt|seem(?:s|ed)?|strangely|oddly|almost|weirdly|unsettlingly|uncomfortably|disturbingly|unnervingly)\s+(?:\w+\s+)?$/i;
+
+function isSensationIntimate(text: string, index: number): boolean {
+  const prefix = text.slice(Math.max(0, index - 40), index);
+  return SENSATION_INTIMATE_PREFIX_RE.test(prefix);
+}
+
 function hasHighStageRelationshipLabel(text: string): boolean {
   HIGH_STAGE_LABEL_RE.lastIndex = 0;
   for (const match of text.matchAll(HIGH_STAGE_LABEL_RE)) {
     if (isNegated(text, match.index ?? 0)) continue;
     if (match[0].toLowerCase() === 'family' && !isFamilyRelationshipClaim(text, match.index ?? 0)) {
+      continue;
+    }
+    if (match[0].toLowerCase() === 'intimate' && isSensationIntimate(text, match.index ?? 0)) {
       continue;
     }
     return true;

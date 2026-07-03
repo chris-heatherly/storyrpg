@@ -32,6 +32,7 @@ import type {
 } from '../../types/scenePlan';
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
 import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldContracts';
+import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
 import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
 import { assignStakesArchitectureContractsToScenes } from '../utils/stakesArchitectureContracts';
@@ -1693,17 +1694,27 @@ export function buildEpisodeScenes(
 
   const openingScene = scenes.find((scene) => scene.narrativeRole === 'setup') ?? scenes[0];
   if (ep.treatmentGuidance && openingScene && ep.storyCircleRole?.some((role) => role.beat === 'you') && storyCircleText?.trim()) {
-    // Scope the cold-open hook to the FIRST SENTENCE of the Story Circle text.
+    // Scope the cold-open hook to the FIRST EVENT of the Story Circle text.
     // The full "You" beat is a whole-episode summary ("arrives… forms the Dusk
     // Club… starts the blog… viral proof") — as a single mustDepict it is
     // unstageable in one scene, so SceneWriter echoes it as meta-summary prose
     // and the realization guard injects it verbatim as a reader-facing beat,
     // while the actual opening event (the arrival) never gets dramatized
-    // (bite-me 2026-07-02T19-39-25 final-contract arrival blocker). The first
-    // sentence is the scene-sized opening event; the rest of the spine stays
-    // bound through story-circle part contracts and authored turns.
+    // (bite-me 2026-07-02T19-39-25 final-contract arrival blocker). First
+    // EVENT ATOM, not first sentence: an analysis roll can emit the whole beat
+    // as one run-on sentence ("arrives… while sipping dark negronis"), and a
+    // sentence-scoped hook then carries club imagery into the arrival scene —
+    // pinning its location to the club and making its turn unstageable
+    // (bite-me 2026-07-02T23-54-38 location-mismatch + turn-realization pair).
     const fullHookText = storyCircleText.trim();
-    const hookText = (fullHookText.match(/^[^.!?]+[.!?]/)?.[0] ?? fullHookText).trim();
+    const firstSentence = (fullHookText.match(/^[^.!?]+[.!?]/)?.[0] ?? fullHookText).trim();
+    const hookAtoms = atomizeTreatmentText({
+      episodeNumber: ep.episodeNumber,
+      text: firstSentence,
+      sourceSection: `storyCircleHook:${openingScene.id}`,
+      idPrefix: `${openingScene.id}-hook`,
+    });
+    const hookText = (hookAtoms[0]?.eventText || firstSentence).trim();
     appendRequiredBeats(openingScene, [
       {
         id: `${openingScene.id}-hook1`,
@@ -1712,8 +1723,19 @@ export function buildEpisodeScenes(
         tier: 'coldopen',
       },
     ]);
+    // Only pin the opening scene's location when the FIRST event itself names
+    // it — a venue mentioned later in the beat must not relocate the arrival.
+    // When the hook names none, the skeleton default (first episode location)
+    // can be a nightlife venue; an arrival cold-open staged "at the club" is
+    // the location-mismatch abort of bite-me 2026-07-02T23-54-38. Prefer a
+    // dwelling-shaped episode location for the arrival when one exists.
     const namedLocation = inferAuthoredLocationFromText(hookText, locations);
-    if (namedLocation) openingScene.locations = [namedLocation];
+    if (namedLocation) {
+      openingScene.locations = [namedLocation];
+    } else if (/\barriv/i.test(hookText)) {
+      const dwelling = locations.find((loc) => /\b(?:apartment|flat|home|house|residence|walk-?up|lodging|room)\b/i.test(loc));
+      if (dwelling) openingScene.locations = [dwelling];
+    }
   }
 
   // Bind authored turns + the signature device deterministically (shared with the

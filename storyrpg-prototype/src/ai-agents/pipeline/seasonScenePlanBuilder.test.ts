@@ -583,6 +583,34 @@ describe('buildSeasonScenePlan', () => {
     expect(joined).not.toContain('viral proof');
   });
 
+  it('scopes a run-on single-sentence You beat to its first event and never pins the arrival to a later venue (bite-me 2026-07-02T23-54-38)', () => {
+    // One giant sentence mixing arrival + club imagery: the hook must carry
+    // only the arrival event, and the opening scene's location must not be
+    // re-pinned to the club named later in the sentence.
+    const youText = 'Kylie Marinescu arrives in Bucharest as a charming, wounded observer with two suitcases, '
+      + 'hiding behind her grandmother address and a cancelled engagement, defaulting to letting others choose her '
+      + 'while sipping dark negronis at the Valescu Club with Mika.';
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 4,
+      locations: ['Valescu Club', 'Lipscani Apartment'],
+      storyCircleRole: [{ beat: 'you' }] as never,
+      treatmentGuidance: { episodePromise: 'Reinvention under new eyes.' },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep], {
+      storyCircle: {
+        you: youText, need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      },
+    })), 1);
+
+    const opening = scenes.find((s) => (s.requiredBeats ?? []).some((b) => b.tier === 'coldopen'));
+    expect(opening).toBeDefined();
+    const hook = (opening!.requiredBeats ?? []).find((b) => b.tier === 'coldopen')!;
+    expect(String(hook.mustDepict)).toContain('arrives in Bucharest');
+    // The club clause belongs to a later event, not the arrival hook.
+    expect(String(hook.mustDepict)).not.toMatch(/negronis|Valescu Club/);
+    expect(opening!.locations ?? []).not.toContain('Valescu Club');
+  });
+
   it('binds concrete cold-open beats and consequence seeds without treatment labels (WS1.3)', () => {
     const ep = episode(1, ['you'], {
       estimatedSceneCount: 4,

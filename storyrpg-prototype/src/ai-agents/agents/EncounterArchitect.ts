@@ -17,7 +17,7 @@ import { formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
 import { BaseAgent, AgentMessage, AgentResponse } from './BaseAgent';
 import { withTimeoutAbort, TimeoutError } from '../utils/withTimeout';
 import { shrinkClockToCoverage } from '../pipeline/encounterRemediation';
-import { deepenStructureRootWins, keepFlatEncounterSpine } from '../utils/encounterDepthContract';
+import { deepenStructureRootWins } from '../utils/encounterDepthContract';
 import { rebalanceEncounterSkills } from '../utils/encounterSkillRebalance';
 import {
   buildEncounterPhase1CompactJsonSchema,
@@ -2792,34 +2792,15 @@ RULES:
       structure.designNotes = '';
     }
 
-    // Convert flat nextBeatId encounters to tree-based nextSituation format.
-    // This ensures both the main prompt and simplified fallback produce
-    // encounters that use the tree rendering path in the UI.
-    //
-    // EXCEPT sustained set pieces: conversion prunes every beat but the
-    // starting one, collapsing the structure to a single top-level beat —
-    // which validateStructure and EncounterSetPieceDepthValidator reject
-    // (they need ≥3 top-level beats, because the runtime converter emits one
-    // phase and one tension-curve point per top-level beat). Converting here
-    // made every attempt AND the deterministic fallback fail for sustained
-    // pieces (endsong-g13 ep3). The engine plays flat nextBeatId beats
-    // natively, so keep the flat multi-beat spine.
-    //
-    // AND EXCEPT under STORYRPG_ENCOUNTER_FLAT=1 (encounter unification W2):
-    // the flat multi-beat spine is the LLM's native output shape, the engine
-    // plays it natively, and the depth guard repairs it natively — the tree
-    // conversion exists only to force the tree rendering path. Default OFF
-    // (current behavior); the flip to flat-canonical is live-run gated, after
-    // which convertFlatToTree and the tree halves of the depth guards retire
-    // (STORYRPG_RUN_GRAPH rollout pattern).
-    if (keepFlatEncounterSpine()) {
-      // W2b: one routing shape. The rich prompt authors nextSituation trees
-      // natively; flatten them into the beat spine deterministically instead
-      // of changing the prompt. No-op for already-flat (lean/sustained) output.
-      this.flattenTreeToBeats(structure);
-    } else if (!this.isSustainedSetPieceInput(input)) {
-      this.convertFlatToTree(structure);
-    }
+    // ONE routing shape (encounter unification W2, flipped after live
+    // validation on bite-me_2026-07-03T14-10-21): the flat nextBeatId spine is
+    // canonical. The rich prompt may still author nextSituation trees natively;
+    // flatten them into the beat spine deterministically instead of changing
+    // the prompt. No-op for already-flat (lean/sustained) output. The engine
+    // plays flat natively and the depth guard repairs it natively; only the
+    // reader's EncounterView keeps a tree traversal, as the legacy-load path
+    // for previously published stories.
+    this.flattenTreeToBeats(structure);
 
     const danglingRoutesRepaired = this.routeDanglingOutcomesToAuthoredStorylets(structure, input);
     if (danglingRoutesRepaired > 0) {
@@ -2935,20 +2916,13 @@ RULES:
     // ROOT-level terminal victory/partialVictory, yet the model keeps emitting a
     // 4th root choice (a treatment_branch-gated "c4") whose success/complicated
     // outcomes win the set-piece at depth 1 with zero consequences. Demote it into
-    // a two-step finish HERE — after convertFlatToTree, so the tree shape exists —
+    // a two-step finish HERE — on the flat beat spine, after flattenTreeToBeats —
     // before the draft is ever persisted, so the identical final-contract autofix
     // (applyEncounterQualityGate → deepenRootTerminalWins) stays a redundant net
-    // rather than the only repair. Idempotent; a flat sustained-set-piece draft is
-    // detected as non-tree-routed and skipped (logged), still blocking downstream.
+    // rather than the only repair. Idempotent.
     const rootWinFix = deepenStructureRootWins(
       structure as unknown as Parameters<typeof deepenStructureRootWins>[0],
     );
-    for (const lift of rootWinFix.lifted) {
-      console.info(
-        `[EncounterArchitect] ${structure.sceneId}: root terminal ${lift.outcome} on choice ${lift.choiceId} ` +
-        `demoted into a two-step finish (source-side one-click-win guard).`
-      );
-    }
     for (const flat of rootWinFix.flatRouted) {
       console.info(
         `[EncounterArchitect] ${structure.sceneId}: root terminal ${flat.outcome} on choice ${flat.choiceId} ` +
@@ -3044,14 +3018,9 @@ RULES:
   }
 
   /**
-   * Convert flat encounters (nextBeatId linking) to tree format (embedded nextSituation).
-   * For each non-terminal outcome that references a nextBeatId, lift the target beat's
-   * content into the outcome as a nextSituation with embedded choices.
-   */
-  /**
-   * Encounter unification W2b — the inverse of {@link convertFlatToTree}.
-   * Under STORYRPG_ENCOUNTER_FLAT=1 the flat nextBeatId spine is the ONE
-   * routing shape, but the rich structure prompt authors nextSituation trees
+   * Encounter unification W2b (flipped to always-on after live validation on
+   * bite-me_2026-07-03T14-10-21): the flat nextBeatId spine is the ONE routing
+   * shape, but the rich structure prompt authors nextSituation trees
    * natively. Rather than change the prompt (golden churn + LLM compliance
    * risk), materialize every embedded situation as a real beat and re-point
    * the outcome via nextBeatId — deterministic, lossless (setupText, image,
@@ -3097,57 +3066,7 @@ RULES:
     };
     for (const beat of [...structure.beats]) processBeat(beat);
     if (flattened > 0) {
-      console.log(`[EncounterArchitect] Flattened ${flattened} embedded situation(s) into the flat beat spine (STORYRPG_ENCOUNTER_FLAT).`);
-    }
-  }
-
-  private convertFlatToTree(structure: EncounterStructure): void {
-    const beatMap = new Map<string, EncounterBeat>();
-    for (const beat of structure.beats) {
-      beatMap.set(beat.id, beat);
-    }
-
-    let converted = false;
-
-    for (const beat of structure.beats) {
-      if (!beat.choices) continue;
-      for (const choice of beat.choices) {
-        if (!choice.outcomes) continue;
-        for (const tier of ['success', 'complicated', 'failure'] as const) {
-          const outcome = choice.outcomes[tier];
-          if (!outcome) continue;
-
-          // Already tree-based or terminal — skip
-          if (outcome.nextSituation || outcome.isTerminal) continue;
-
-          const targetId = outcome.nextBeatId || (choice as any).nextBeatId;
-          if (!targetId) continue;
-
-          const targetBeat = beatMap.get(targetId);
-          if (!targetBeat) continue;
-
-          // Embed the target beat's content as nextSituation
-          outcome.nextSituation = {
-            setupText: targetBeat.setupText || '',
-            situationImage: targetBeat.situationImage,
-            choices: (targetBeat.choices || []).map(tc => ({
-              ...tc,
-            })),
-            visualContract: targetBeat.visualContract || this.buildDefaultVisualContract(targetBeat.setupText || targetBeat.description, 'setup'),
-          };
-
-          // Clear the flat reference
-          delete outcome.nextBeatId;
-          converted = true;
-        }
-      }
-    }
-
-    if (converted) {
-      // Prune beats that are now fully embedded (only keep the starting beat)
-      const startId = structure.startingBeatId || structure.beats[0]?.id;
-      structure.beats = structure.beats.filter(b => b.id === startId);
-      console.log(`[EncounterArchitect] Converted flat encounter to tree format (kept beat: ${startId})`);
+      console.log(`[EncounterArchitect] Flattened ${flattened} embedded situation(s) into the flat beat spine.`);
     }
   }
 

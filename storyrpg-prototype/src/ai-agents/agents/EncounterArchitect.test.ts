@@ -837,7 +837,7 @@ describe('Phase prompt builders', () => {
 // ========================================================================
 
 describe('EncounterArchitect tree validation', () => {
-  it('accepts simplified flat encounters after flat-to-tree conversion', () => {
+  it('accepts simplified flat encounters (flat spine is canonical)', () => {
     const architect = new EncounterArchitect(config);
     const structure: any = {
       sceneId: 'scene-3',
@@ -943,7 +943,8 @@ describe('EncounterArchitect tree validation', () => {
     };
 
     const normalized = (architect as any).normalizeStructure(structure, input);
-    expect(normalized.beats).toHaveLength(1);
+    // W2 flip: the flat two-beat spine survives (no tree collapse).
+    expect(normalized.beats).toHaveLength(2);
     expect(() => (architect as any).validateStructure(normalized, input)).not.toThrow();
   });
 });
@@ -1203,16 +1204,17 @@ describe('authored anchor (G12)', () => {
     }
   });
 
-  it('keeps flat→tree conversion for non-sustained encounters', () => {
+  it('keeps the flat multi-beat spine for non-sustained encounters (W2 flip: no tree conversion)', () => {
     const architect = new EncounterArchitect(config);
     let plain = withAuthoredStorylets((architect as any).buildDeterministicFallback(input));
     plain = (architect as any).normalizeStructure(plain, input);
-    // Non-sustained flat encounters still convert to the single-beat tree form.
-    expect(plain.beats).toHaveLength(1);
-    const hasEmbeddedBranch = plain.beats[0].choices.some((c: any) =>
+    // Flat-canonical: the multi-beat nextBeatId spine survives normalization
+    // and no outcome embeds a nextSituation.
+    expect(plain.beats.length).toBeGreaterThanOrEqual(2);
+    const hasEmbeddedBranch = plain.beats.some((b: any) => (b.choices || []).some((c: any) =>
       ['success', 'complicated', 'failure'].some(t => c.outcomes?.[t]?.nextSituation)
-    );
-    expect(hasEmbeddedBranch).toBe(true);
+    ));
+    expect(hasEmbeddedBranch).toBe(false);
   });
 });
 
@@ -1281,21 +1283,12 @@ describe('flattenTreeToBeats (encounter unification W2b)', () => {
     expect(JSON.stringify(structure)).toBe(once);
   });
 
-  it('normalizeStructure flattens under STORYRPG_ENCOUNTER_FLAT=1 instead of converting to tree', () => {
-    process.env.STORYRPG_ENCOUNTER_FLAT = '1';
-    try {
-      const architect = makeArchitect();
-      const structure = treeStructure();
-      // normalizeStructure needs a fuller input; drive the branch directly via
-      // the same gate it uses.
-      // gate check via the exported helper (imported at top of the util)
-
-      (architect as any).flattenTreeToBeats(structure);
-      const treeRouted = structure.beats.some((b: any) => (b.choices || []).some((c: any) =>
-        Object.values(c.outcomes || {}).some((o: any) => o?.nextSituation)));
-      expect(treeRouted).toBe(false);
-    } finally {
-      delete process.env.STORYRPG_ENCOUNTER_FLAT;
-    }
+  it('flattenTreeToBeats leaves no embedded situations (flat spine is canonical)', () => {
+    const architect = makeArchitect();
+    const structure = treeStructure();
+    (architect as any).flattenTreeToBeats(structure);
+    const treeRouted = structure.beats.some((b: any) => (b.choices || []).some((c: any) =>
+      Object.values(c.outcomes || {}).some((o: any) => o?.nextSituation)));
+    expect(treeRouted).toBe(false);
   });
 });

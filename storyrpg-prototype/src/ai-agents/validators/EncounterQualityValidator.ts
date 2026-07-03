@@ -326,19 +326,18 @@ export function applyEncounterQualityGate(
         shrinkClockToCoverage(sceneEnc as Parameters<typeof shrinkClockToCoverage>[0]);
       }
       // G13 one-click-win pass (telemetry-independent): demote root-level
-      // terminal wins into a two-step finish so the depth contract holds without
-      // a regen. Runs BEFORE the clock shrink so the injected finish ticks are
-      // counted. Idempotent; flat (nextBeatId-routed) encounters are skipped and
-      // still block, since an embedded situation would be unplayable there.
+      // terminal wins into a two-step finish (appended flat finish beat) so the
+      // depth contract holds without a regen. Runs BEFORE the clock shrink so
+      // the injected finish ticks are counted. Idempotent.
       const deepen = deepenRootTerminalWins(sceneEnc as never);
-      for (const lift of deepen.lifted) {
+      for (const flat of deepen.flatRouted) {
         console.info(
-          `[EncounterQuality] scene ${scene.id}: root terminal ${lift.outcome} on choice ${lift.choiceId} demoted into a two-step finish`,
+          `[EncounterQuality] scene ${scene.id}: root terminal ${flat.outcome} on choice ${flat.choiceId} routed to finish beat ${flat.finishBeatId}`,
         );
       }
       for (const skip of deepen.skipped) {
         console.warn(
-          `[EncounterQuality] scene ${scene.id}: root terminal ${skip.outcome} on choice ${skip.choiceId} NOT repairable (flat-routed encounter) — will block`,
+          `[EncounterQuality] scene ${scene.id}: root terminal ${skip.outcome} on choice ${skip.choiceId} NOT repairable (degenerate no-beats phase) — will block`,
         );
       }
       // G12 honest-clock pass (telemetry-independent): if no authored path can

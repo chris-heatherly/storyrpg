@@ -333,7 +333,7 @@
     {
       "type": "agent_complete",
       "agent": "EncounterArchitect",
-      "message": "Designed 1-beat moderate encounter with 4 storylets for scene-2b"
+      "message": "Designed 10-beat moderate encounter with 4 storylets for scene-2b"
     },
     {
       "type": "debug",
@@ -343,7 +343,7 @@
     {
       "type": "incremental_validation",
       "phase": "encounter",
-      "message": "Encounter scene-2b: PASSED (1 beats)"
+      "message": "Encounter scene-2b: PASSED (10 beats)"
     },
     {
       "type": "debug",
@@ -438,7 +438,7 @@
     {
       "type": "checkpoint",
       "phase": "branch_validation",
-      "message": "SceneGraphBranchValidator: 6 choices, 6 scene branches, 1 encounters, 3 encounter choices, 4 storylets"
+      "message": "SceneGraphBranchValidator: 6 choices, 6 scene branches, 1 encounters, 30 encounter choices, 4 storylets"
     },
     {
       "type": "phase_start",
@@ -491,7 +491,7 @@
     {
       "type": "debug",
       "phase": "observability",
-      "message": "{\"imageCoverage\":{\"totalBeats\":18,\"beatsWithImages\":0,\"encounterBeatsTotal\":1,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
+      "message": "{\"imageCoverage\":{\"totalBeats\":18,\"beatsWithImages\":0,\"encounterBeatsTotal\":10,\"encounterBeatsWithImages\":0},\"cacheHitRate\":\"N/A\",\"textArtifactRejections\":0,\"transientRetries\":0,\"permanentFailures\":0,\"choicePayoffPresence\":0,\"choicePayoffTotal\":0,\"unresolvedTokensDetected\":0,\"phaseDurationsMs\":{},\"providerCalls\":{\"totalCalls\":0,\"successCalls\":0,\"failedCalls\":0,\"avgDurationMs\":0,\"avgQueueWaitMs\":0},\"dependencyScheduler\":{\"hasCycle\":false,\"waveCount\":3,\"fallbackToSerial\":false}}"
     }
   ],
   "checkpoints": [

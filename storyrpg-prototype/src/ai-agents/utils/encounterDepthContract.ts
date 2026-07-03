@@ -198,9 +198,7 @@ export function shrinkClockToAttainable(enc: Encounter, analysis?: EncounterDept
 }
 
 export interface DeepenResult {
-  /** Root wins demoted into a two-layer finish (the depth contract now holds). */
-  lifted: Array<{ beatId: string; choiceId: string; outcome: string }>;
-  /** Flat root wins routed through an appended top-level finish beat. */
+  /** Root wins routed through an appended top-level finish beat. */
   flatRouted: Array<{ beatId: string; choiceId: string; outcome: string; finishBeatId: string }>;
   /** Root wins left alone because no playable repair shape was available. */
   skipped: Array<{ beatId: string; choiceId: string; outcome: string }>;
@@ -309,39 +307,17 @@ function buildSealChoices(
  * gone wrong at the finish never revokes the earned win — it downgrades a clean
  * victory to partialVictory at worst.
  *
- * BOTH routing modes are repaired: tree-routed encounters lift the win into an
- * embedded `nextSituation`; flat-routed encounters append a finish beat and
- * re-point the outcome via `nextBeatId` (the reader plays flat beats natively).
- * The historical flat-mode skip is gone — `skipped` only records the degenerate
- * no-beats case. Idempotent: after the lift the win sits at depth 2, so a
- * re-run finds nothing to demote. (Encounter unification W2: with one flat
- * representation, the tree branch of this repair retires at the flip.)
+ * One routing shape (encounter unification W2, flipped after live validation
+ * on bite-me_2026-07-03T14-10-21): the repair appends a finish beat and
+ * re-points the outcome via `nextBeatId` (the reader plays flat beats
+ * natively). `skipped` only records the degenerate no-beats case. Idempotent:
+ * after the lift the win sits at depth 2 (and finish beats carry the
+ * sealFinish marker), so a re-run finds nothing to demote.
  */
-/**
- * Encounter unification W2 rollout flag: when ON, EncounterArchitect keeps the
- * LLM's native flat nextBeatId spine for ALL encounters instead of converting
- * to the nextSituation tree (sustained set pieces already stay flat
- * unconditionally). The engine plays flat natively and deepenRootTerminalWins
- * repairs flat natively, so this only changes the STORED routing shape of
- * newly generated encounters — never gameplay. Default OFF; the flip to
- * flat-canonical is live-run gated (STORYRPG_RUN_GRAPH rollout pattern).
- */
-export function keepFlatEncounterSpine(): boolean {
-  return process.env.STORYRPG_ENCOUNTER_FLAT === '1';
-}
-
 export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
-  const result: DeepenResult = { lifted: [], flatRouted: [], skipped: [] };
+  const result: DeepenResult = { flatRouted: [], skipped: [] };
   const encAny = enc as unknown as { id?: string; sceneId?: string; phases?: PhaseLike[]; startingBeatId?: string };
   const encSlug = flagSlug(String(encAny.id ?? encAny.sceneId ?? 'encounter'));
-
-  // Mirrors the reader's isTreeBasedEncounter(): first phase → first beat → first
-  // choice → any outcome embeds nextSituation.
-  const firstChoice = encAny.phases?.[0]?.beats?.[0]?.choices?.[0];
-  const treeRouted = !!(
-    firstChoice?.outcomes &&
-    Object.values(firstChoice.outcomes).some((o) => o?.nextSituation)
-  );
 
   for (const phase of encAny.phases || []) {
     const baseDepth = beatBaseDepths(phase, encAny);
@@ -360,40 +336,26 @@ export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
           if (!WIN_OUTCOMES.has(won)) continue;
 
           const record = { beatId: beat.id ?? '(unnamed)', choiceId: choice.id ?? '(unnamed)', outcome: won };
-          if (!treeRouted) {
-            if (!phase.beats) {
-              result.skipped.push(record);
-              continue;
-            }
-            const prose = SEAL_PROSE[won as keyof typeof SEAL_PROSE];
-            const choiceId = choice.id ?? 'choice';
-            const finishBeatId = uniqueBeatId(phase, `${beat.id ?? 'beat'}-${choiceId}-${flagSlug(won)}-finish`);
-            phase.beats.push({
-              id: finishBeatId,
-              phase: 'resolution',
-              name: won === 'victory' ? 'Finish the opening' : 'Hold the opening',
-              description: prose.setupText,
-              setupText: prose.setupText,
-              sealFinish: true,
-              choices: buildSealChoices(encSlug, choice, outcome, won, choiceId),
-            });
-            outcome.isTerminal = false;
-            delete outcome.encounterOutcome;
-            outcome.nextBeatId = finishBeatId;
-            result.flatRouted.push({ ...record, finishBeatId });
+          if (!phase.beats) {
+            result.skipped.push(record);
             continue;
           }
-
           const prose = SEAL_PROSE[won as keyof typeof SEAL_PROSE];
           const choiceId = choice.id ?? 'choice';
-
+          const finishBeatId = uniqueBeatId(phase, `${beat.id ?? 'beat'}-${choiceId}-${flagSlug(won)}-finish`);
+          phase.beats.push({
+            id: finishBeatId,
+            phase: 'resolution',
+            name: won === 'victory' ? 'Finish the opening' : 'Hold the opening',
+            description: prose.setupText,
+            setupText: prose.setupText,
+            sealFinish: true,
+            choices: buildSealChoices(encSlug, choice, outcome, won, choiceId),
+          });
           outcome.isTerminal = false;
           delete outcome.encounterOutcome;
-          outcome.nextSituation = {
-            setupText: prose.setupText,
-            choices: buildSealChoices(encSlug, choice, outcome, won, choiceId),
-          };
-          result.lifted.push(record);
+          outcome.nextBeatId = finishBeatId;
+          result.flatRouted.push({ ...record, finishBeatId });
         }
       }
     }
@@ -414,9 +376,7 @@ export function deepenRootTerminalWins(enc: Encounter): DeepenResult {
  * `beats` array IS `structure.beats`, and every beat/choice/outcome is shared by
  * reference, so the in-place demotion the delegate performs propagates straight back
  * into the draft. Inherits the delegate's guarantees: idempotent (a re-run finds the
- * win already at depth 2), and shape-preserving — a flat sustained-set-piece draft is
- * detected as non-tree-routed and SKIPPED, exactly as in the final-contract pass, so
- * it still blocks downstream rather than getting an unplayable embedded situation.
+ * win already at depth 2, and finish beats carry the sealFinish marker).
  */
 export function deepenStructureRootWins(structure: {
   id?: string;

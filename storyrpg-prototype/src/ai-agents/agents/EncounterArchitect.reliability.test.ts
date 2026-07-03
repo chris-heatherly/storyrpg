@@ -672,9 +672,11 @@ describe('phase-3 conditional choices resolve terminally (no template branch)', 
       }],
     };
     const normalized = architect.normalizeStructure(structure, input);
-    // Should remain a single beat (no synthesized template change beat).
-    expect(normalized.beats).toHaveLength(1);
+    // W2 flip: the embedded situation is flattened into real beats (no tree
+    // shape survives), but NO synthesized template change beat may appear.
+    expect(normalized.beats.length).toBeGreaterThanOrEqual(1);
     const blob = JSON.stringify(normalized);
+    expect(blob.includes('nextSituation')).toBe(false);
     expect(blob.includes('This is the moment that decides everything')).toBe(false);
     expect(blob.includes('Push for a decisive outcome')).toBe(false);
   });

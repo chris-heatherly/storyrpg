@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Encounter } from '../../types/encounter';
 import { analyzeEncounterDepth, deepenRootTerminalWins, deepenStructureRootWins, shrinkClockToAttainable } from './encounterDepthContract';
 
@@ -122,7 +122,9 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
   it('demotes root terminal wins into a two-step finish that satisfies the depth contract', () => {
     const e = g13Enc();
     const result = deepenRootTerminalWins(e);
-    expect(result.lifted).toEqual([
+    // Flat-canonical (W2 flip): every root win routes through an appended
+    // top-level finish beat, never an embedded situation.
+    expect(result.flatRouted.map(({ beatId, choiceId, outcome }) => ({ beatId, choiceId, outcome }))).toEqual([
       { beatId: 'b1', choiceId: 'c4', outcome: 'victory' },
       { beatId: 'b1', choiceId: 'c4', outcome: 'partialVictory' },
     ]);
@@ -135,9 +137,13 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     expect(c4.outcomes.success.isTerminal).toBe(false);
     expect(c4.outcomes.success.narrativeText).toBe('Two voices, one rhythm.');
     expect(c4.outcomes.success.encounterOutcome).toBeUndefined();
-    // The follow-up covers all three tiers (a missing tier dead-ends the reader)
-    // and every terminal carries consequences.
-    const sealChoices = c4.outcomes.success.nextSituation.choices;
+    expect(c4.outcomes.success.nextBeatId).toBe('b1-c4-victory-finish');
+    expect(c4.outcomes.success.nextSituation).toBeUndefined();
+    // The finish beat covers all three tiers (a missing tier dead-ends the
+    // reader) and every terminal carries consequences.
+    const finish = (e.phases[0].beats as any[]).find((b) => b.id === 'b1-c4-victory-finish');
+    expect(finish.sealFinish).toBe(true);
+    const sealChoices = finish.choices;
     expect(sealChoices.map((seal: any) => seal.approach)).toEqual(['aggressive', 'cautious', 'clever']);
     const seal = sealChoices[0];
     expect(seal.id).toBe('c4-aggressive-seal');
@@ -158,7 +164,7 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     const e = g13Enc();
     deepenRootTerminalWins(e);
     const second = deepenRootTerminalWins(e);
-    expect(second.lifted).toHaveLength(0);
+    expect(second.flatRouted).toHaveLength(0);
     expect(analyzeEncounterDepth(e).oneClickWins).toHaveLength(0);
   });
 
@@ -184,7 +190,6 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
       }],
     } as unknown as Encounter;
     const result = deepenRootTerminalWins(e);
-    expect(result.lifted).toHaveLength(0);
     expect(result.skipped).toHaveLength(0);
     expect(result.flatRouted).toEqual([{
       beatId: 'beat-1',
@@ -210,7 +215,8 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
     const c4 = (e.phases[0].beats[0] as any).choices[1];
     c4.outcomes.success.consequences = [{ type: 'setFlag', flag: 'authored_flag', value: true }];
     deepenRootTerminalWins(e);
-    const seal = c4.outcomes.success.nextSituation.choices[0];
+    const finish = (e.phases[0].beats as any[]).find((b) => b.id === 'b1-c4-victory-finish');
+    const seal = finish.choices[0];
     expect(seal.outcomes.success.consequences).toEqual([{ type: 'setFlag', flag: 'authored_flag', value: true }]);
   });
 
@@ -248,7 +254,6 @@ describe('deepenRootTerminalWins (G13 one-click-win autofix)', () => {
 
     const second = deepenRootTerminalWins(e);
     expect(second.flatRouted).toHaveLength(0);
-    expect(second.lifted).toHaveLength(0);
     expect(e.phases[0].beats).toHaveLength(2);
 
     // A third pass stays converged too.
@@ -305,7 +310,7 @@ describe('deepenStructureRootWins (G13 source-side guard, EncounterArchitect dra
   it('demotes the gated root c4 win in the flat draft, mutating it in place', () => {
     const draft = g13Draft();
     const result = deepenStructureRootWins(draft);
-    expect(result.lifted).toEqual([
+    expect(result.flatRouted.map(({ beatId, choiceId, outcome }) => ({ beatId, choiceId, outcome }))).toEqual([
       { beatId: 'beat-1', choiceId: 'c4', outcome: 'victory' },
       { beatId: 'beat-1', choiceId: 'c4', outcome: 'partialVictory' },
     ]);
@@ -314,11 +319,15 @@ describe('deepenStructureRootWins (G13 source-side guard, EncounterArchitect dra
     const c4 = draft.beats[0].choices[1] as any;
     // The branch gate survives — the gated choice now leads to a two-step finish.
     expect(c4.conditions).toEqual({ type: 'flag', flag: 'treatment_branch_alpha', value: true });
-    // Authored win prose survives as the intermediate result; terminal lifted to depth 2.
+    // Authored win prose survives as the intermediate result; the terminal now
+    // routes to an appended finish beat on the draft's flat spine (W2 flip).
     expect(c4.outcomes.success.isTerminal).toBe(false);
     expect(c4.outcomes.success.encounterOutcome).toBeUndefined();
     expect(c4.outcomes.success.narrativeText).toBe('Two voices, one rhythm.');
-    const sealChoices = c4.outcomes.success.nextSituation.choices;
+    expect(c4.outcomes.success.nextBeatId).toBe('beat-1-c4-victory-finish');
+    const finish = (draft.beats as any[]).find((b) => b.id === 'beat-1-c4-victory-finish');
+    expect(finish.sealFinish).toBe(true);
+    const sealChoices = finish.choices;
     expect(sealChoices.map((seal: any) => seal.approach)).toEqual(['aggressive', 'cautious', 'clever']);
     const seal = sealChoices[0];
     expect(seal.id).toBe('c4-aggressive-seal');
@@ -339,7 +348,7 @@ describe('deepenStructureRootWins (G13 source-side guard, EncounterArchitect dra
     const draft = g13Draft();
     deepenStructureRootWins(draft);
     const second = deepenStructureRootWins(draft);
-    expect(second.lifted).toHaveLength(0);
+    expect(second.flatRouted).toHaveLength(0);
   });
 
   it('repairs many flat root-terminal wins in the EncounterArchitect draft shape', () => {
@@ -420,20 +429,3 @@ describe('shrinkClockToAttainable', () => {
   });
 });
 
-describe('keepFlatEncounterSpine (encounter unification W2 rollout flag)', () => {
-  afterEach(() => {
-    delete process.env.STORYRPG_ENCOUNTER_FLAT;
-  });
-
-  it('defaults OFF (current tree-converting behavior)', async () => {
-    const { keepFlatEncounterSpine } = await import('./encounterDepthContract');
-    delete process.env.STORYRPG_ENCOUNTER_FLAT;
-    expect(keepFlatEncounterSpine()).toBe(false);
-  });
-
-  it('turns on with STORYRPG_ENCOUNTER_FLAT=1', async () => {
-    const { keepFlatEncounterSpine } = await import('./encounterDepthContract');
-    process.env.STORYRPG_ENCOUNTER_FLAT = '1';
-    expect(keepFlatEncounterSpine()).toBe(true);
-  });
-});

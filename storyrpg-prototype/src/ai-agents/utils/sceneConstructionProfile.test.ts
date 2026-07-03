@@ -945,3 +945,42 @@ describe('sceneConstructionProfile compiler', () => {
     expect(out).toContain('one dramatic center');
   });
 });
+
+describe('duplicate-text obligation flooding (bite-me 2026-07-03T18-26-54 s1-3 regression)', () => {
+  it('demotes same-text treatment atoms to metadata_only so they do not occupy active slots', () => {
+    // The same treatment event atomized from N source sections arrives as N
+    // distinct atom ids with identical text; only the first may hold an
+    // active slot.
+    const scene = {
+      id: 's1-3',
+      episodeNumber: 1,
+      kind: 'standard',
+      title: 'Rooftop',
+      dramaticPurpose: 'At a rooftop bar she catches the attention of a man in a charcoal suit.',
+      turnContract: {
+        turnId: 's1-3-turn', source: 'treatment',
+        centralTurn: 'At a rooftop bar she catches the attention of a man in a charcoal suit.',
+        turnEvent: 'At a rooftop bar she catches the attention of a man in a charcoal suit.',
+        beforeState: 'x', afterState: 'x', handoff: 'x',
+      },
+      treatmentAtomIds: ['a1', 'a2', 'a3', 'a4'],
+      nonCopyableContext: [
+        { id: 'a1', eventText: 'Kylie forms the Dusk Club with Mika, Stela over velvet booths' },
+        { id: 'a2', eventText: 'Kylie forms the Dusk Club with Mika, Stela over velvet booths' },
+        { id: 'a3', eventText: 'Kylie forms the Dusk Club with Mika, Stela over velvet booths' },
+        { id: 'a4', eventText: 'Kylie forms the Dusk Club with Mika, Stela over velvet booths' },
+      ],
+    } as never;
+
+    attachSceneConstructionProfiles([scene]);
+    const profile = (scene as { sceneConstructionProfile?: { obligations: Array<{ slot: string; text: string; mergedInto?: string }> } }).sceneConstructionProfile;
+    const duskActive = (profile?.obligations ?? []).filter(
+      (o) => /dusk club/i.test(o.text) && (o.slot === 'must_stage' || o.slot === 'must_support') && !o.mergedInto,
+    );
+    expect(duskActive).toHaveLength(1);
+
+    const section = buildSceneConstructionProfileSection(scene as never);
+    const mentions = (section.match(/Dusk Club/gi) ?? []).length;
+    expect(mentions).toBeLessThanOrEqual(1);
+  });
+});

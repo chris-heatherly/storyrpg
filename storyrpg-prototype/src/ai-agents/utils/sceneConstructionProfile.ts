@@ -757,14 +757,29 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
 
     const key = normalize(next.text);
     const existing = seen.get(key);
-    if (existing) {
+    const activeSlot = (slot: SceneConstructionSlot): boolean =>
+      slot === 'primary_turn' || slot === 'must_stage' || slot === 'must_support';
+    if (existing && activeSlot(existing.slot) && !next.mergedInto && next.source === 'treatmentAtom') {
+      // The text already has an ACTIVE representative — demote this duplicate
+      // out of the active slots entirely. A merged duplicate that kept its
+      // must_stage slot still occupied one of the prompt's 8 active lines, so
+      // the same treatment event atomized from N source sections flooded the
+      // window and crowded out DISTINCT obligations (bite-me
+      // 2026-07-03T18-26-54 s1-3: 16 of 22 "active" obligations were the same
+      // two dusk-club texts).
       next = {
         ...next,
         mergedInto: existing.id,
+        slot: 'metadata_only',
         hardUnits: 0,
         softUnits: 0,
         reason: `${next.reason} Merged with ${existing.source}:${existing.id} so provenance is preserved without extra load.`,
       };
+    } else if (existing) {
+      // The existing copy was routed away/inactive: this instance becomes the
+      // active representative (previous behavior), and later duplicates merge
+      // into IT.
+      if (activeSlot(next.slot)) seen.set(key, next);
     } else {
       seen.set(key, next);
     }
@@ -1226,7 +1241,9 @@ export function buildSceneConstructionProfileSection(scene: SceneConstructionSce
   if (!profile) return '';
   const active = profile.obligations.filter((item) => item.slot === 'must_stage' || item.slot === 'must_support').slice(0, 8);
   const texture = profile.obligations.filter((item) => item.slot === 'texture').slice(0, 6);
-  const routed = profile.obligations.filter((item) => item.slot === 'route_later' || item.slot === 'metadata_only').slice(0, 6);
+  const routed = profile.obligations
+    .filter((item) => (item.slot === 'route_later' || item.slot === 'metadata_only') && !item.mergedInto)
+    .slice(0, 6);
   const conflicts = profile.conflictDiagnostics;
 
   return `

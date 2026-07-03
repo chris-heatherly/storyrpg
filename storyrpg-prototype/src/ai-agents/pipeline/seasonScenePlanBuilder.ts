@@ -33,6 +33,7 @@ import type {
 import { SCENE_BUDGET_WEIGHT, ENCOUNTER_BUDGET_WEIGHT } from '../../types/scenePlan';
 import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldContracts';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
+import { isQuestionShapedAnchor } from '../remediation/storyEventCues';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
 import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
 import { assignStakesArchitectureContractsToScenes } from '../utils/stakesArchitectureContracts';
@@ -1417,7 +1418,11 @@ export function bindAuthoredTurnsToScenes(
   // first `Encounter anchor` (its staged hinge), which well-formed treatments carry
   // even when they omit a dedicated visual-anchor line.
   const explicitVisualAnchor = guidance?.visualAnchor?.trim();
-  const fallbackEncounterAnchor = guidance?.encounterAnchors?.[0]?.trim();
+  // The signature device must be a stageable event: a question-shaped anchor
+  // ("Can Kylie start over…?") cannot be depicted, so the prose reads as its
+  // negation and SignatureDevicePresenceValidator flags INVERTED (bite-me
+  // 2026-07-03T03-29-57 s1-5). Skip question-shaped anchors for the fallback.
+  const fallbackEncounterAnchor = guidance?.encounterAnchors?.find((anchor) => !isQuestionShapedAnchor(anchor))?.trim();
   const fallbackAnchorAlreadyCovered = Boolean(
     fallbackEncounterAnchor
     && turns.length > 0

@@ -24,6 +24,21 @@ export const STORY_EVENT_CUE_ORDER: Partial<Record<StoryEventCue, number>> = {
   blogAftermath: 80,
 };
 
+/**
+ * A staged anchor/signature moment must be a stageable EVENT, not a rhetorical
+ * question or abstract pressure. Question-shaped text ("Can Kylie start
+ * over…?") gives SceneWriter nothing to depict: as an encounter anchor it
+ * becomes an abstract shell scene (bite-me 2026-07-02 treatment-enc-1-1); as
+ * a signature device the prose reads as negation and
+ * SignatureDevicePresenceValidator flags INVERTED (bite-me 2026-07-03 s1-5).
+ */
+export function isQuestionShapedAnchor(value: string | undefined): boolean {
+  const text = (value ?? '').trim();
+  if (!text) return true;
+  if (/\?\s*$/.test(text)) return true;
+  return /^(?:can|could|will|would|should|does|do|did|is|are|was|were|who|what|when|where|why|how)\b/i.test(text);
+}
+
 export function normalizeEventCueText(value: string | undefined): string {
   return (value ?? '')
     .toLowerCase()

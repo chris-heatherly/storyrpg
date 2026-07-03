@@ -60,7 +60,7 @@ import {
   normalizeEncounterStoryCircleTarget,
 } from '../utils/encounterStoryCircleTarget';
 import { SEASON_PLANNER_CRAFT_EXAMPLE } from '../prompts/examples/storyCraftExamples';
-import { detectStoryEventCues } from '../remediation/storyEventCues';
+import { detectStoryEventCues, isQuestionShapedAnchor } from '../remediation/storyEventCues';
 import { buildSeasonPromiseContracts } from '../utils/seasonPromiseContracts';
 import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
 import { buildStoryCircleBeatContracts } from '../utils/storyCircleBeatContracts';
@@ -170,20 +170,6 @@ export interface SeasonPlannerInput {
    * order is REJECTED (execute throws). Default ON.
    */
   storyCircleBlocking?: boolean;
-}
-
-/**
- * A planned encounter's anchor must be a stageable EVENT, not a rhetorical
- * question or abstract pressure. Question-shaped anchors ("Can Kylie start
- * over…?") turn into abstract encounter-shell scenes whose turn is the
- * question verbatim — SceneConstructionGate rejects them and SceneWriter has
- * nothing to stage (bite-me 2026-07-02 treatment-enc-1-1).
- */
-function isQuestionShapedAnchor(value: string | undefined): boolean {
-  const text = (value ?? '').trim();
-  if (!text) return true;
-  if (/\?\s*$/.test(text)) return true;
-  return /^(?:can|could|will|would|should|does|do|did|is|are|was|were|who|what|when|where|why|how)\b/i.test(text);
 }
 
 /**

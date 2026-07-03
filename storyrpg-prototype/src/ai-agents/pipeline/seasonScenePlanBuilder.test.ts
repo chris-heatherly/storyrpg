@@ -583,6 +583,31 @@ describe('buildSeasonScenePlan', () => {
     expect(joined).not.toContain('viral proof');
   });
 
+  it('never uses a question-shaped encounter anchor as the signature device (bite-me 2026-07-03 s1-5 INVERTED)', () => {
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 4,
+      treatmentGuidance: {
+        episodeTurns: ['Walking home through the park, she is attacked and rescued by a stranger.'],
+        encounterAnchors: [
+          'Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her?',
+          'Walking home through the park, she is attacked and rescued by a stranger.',
+        ],
+      },
+    });
+    const scenes = scenesForEpisode(buildSeasonScenePlan(plan([ep])), 1);
+
+    const signatures = scenes
+      .map((s) => s.signatureMoment)
+      .filter((value): value is string => Boolean(value));
+    for (const signature of signatures) {
+      expect(signature).not.toContain('Can Kylie start over');
+    }
+    const signatureBeats = scenes.flatMap((s) => (s.requiredBeats ?? []).filter((b) => b.tier === 'signature'));
+    for (const beat of signatureBeats) {
+      expect(String(beat.mustDepict)).not.toContain('Can Kylie start over');
+    }
+  });
+
   it('scopes a run-on single-sentence You beat to its first event and never pins the arrival to a later venue (bite-me 2026-07-02T23-54-38)', () => {
     // One giant sentence mixing arrival + club imagery: the hook must carry
     // only the arrival event, and the opening scene's location must not be

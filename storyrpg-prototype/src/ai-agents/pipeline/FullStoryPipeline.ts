@@ -273,6 +273,7 @@ import {
 } from './callbackOrchestration';
 import { implementEpisodeResidueObligations } from './residueObligations';
 import { collectEpisodeSetFlags, registerSeedObligations, registerThreadObligations } from './obligationSeeding';
+import { validateObligationLedger } from '../validators/ObligationLedgerValidator';
 import { assembleStoryAssetsFromRegistry } from '../images/storyAssetAssembler';
 import { StoryboardV2Pipeline, type StoryboardV2Result } from '../images/storyboard-v2/StoryboardV2Pipeline';
 import { runPlaywrightQA, runPlaywrightQAMultiPath, type PlaywrightQAResult } from '../validators/playwrightQARunner';
@@ -6648,6 +6649,33 @@ export class FullStoryPipeline {
           type: 'warning',
           phase: `episode_${i}_obligations`,
           message: `Obligation seeding failed (non-fatal): ${obligationErr instanceof Error ? obligationErr.message : String(obligationErr)}`,
+        });
+      }
+
+      // P2.4/P2.5 shadow: the unified per-kind obligation check runs as a
+      // diagnostic only — the legacy validators stay authoritative for gating
+      // until the live-run-gated flip. Findings land in the run dir for
+      // shadow comparison.
+      try {
+        const obligationReport = validateObligationLedger(this.callbackLedger, {
+          episodeNumber: i,
+          generatedThroughEpisode: this.totalEpisodes,
+        });
+        await saveEarlyDiagnostic(outputDirectory, `episode-${i}-obligation-ledger.json`, obligationReport);
+        if (obligationReport.findings.length > 0) {
+          this.emit({
+            type: 'debug',
+            phase: `episode_${i}_obligation_shadow`,
+            message:
+              `Obligation shadow: ${obligationReport.findings.length} unpaid due obligation(s) ` +
+              `(${obligationReport.paid} paid, ${obligationReport.open} open, ${obligationReport.abandoned} abandoned of ${obligationReport.totalObligations}).`,
+          });
+        }
+      } catch (shadowErr) {
+        this.emit({
+          type: 'warning',
+          phase: `episode_${i}_obligation_shadow`,
+          message: `Obligation shadow validation failed (non-fatal): ${shadowErr instanceof Error ? shadowErr.message : String(shadowErr)}`,
         });
       }
 

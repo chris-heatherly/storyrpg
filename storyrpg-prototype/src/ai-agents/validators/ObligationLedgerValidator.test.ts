@@ -73,3 +73,51 @@ describe('validateObligationLedger (P2.4)', () => {
     expect(partialSlice.findings[0]?.severity).toBe('warning');
   });
 });
+
+describe('creation-side residue check (shadow parity gap, bite-me 2026-07-03T03-29-57)', () => {
+  it('flags a residue obligation whose origin episode passed with no setting choice', () => {
+    const ledger = ledgerWith([
+      hook('flag:consequence_treatment_chain_1', {
+        kind: 'residue',
+        sourceChoiceId: '',
+        sourceEpisode: 1,
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+      }),
+    ]);
+
+    const report = validateObligationLedger(ledger, { episodeNumber: 1, generatedThroughEpisode: 1 });
+
+    expect(report.findings).toHaveLength(1);
+    expect(report.findings[0].gateId).toBe('GATE_RESIDUE_CONSUME');
+    expect(report.findings[0].severity).toBe('warning');
+    expect(report.findings[0].message).toContain('no choice creates its flag');
+  });
+
+  it('does not flag once a real choice has set the flag (sourceChoiceId merged in)', () => {
+    const ledger = ledgerWith([
+      hook('flag:consequence_treatment_chain_1', {
+        kind: 'residue',
+        sourceChoiceId: 'c7',
+        sourceEpisode: 1,
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+      }),
+    ]);
+
+    const report = validateObligationLedger(ledger, { episodeNumber: 1, generatedThroughEpisode: 1 });
+    expect(report.findings).toHaveLength(0);
+  });
+
+  it('does not flag before the origin episode is generated', () => {
+    const ledger = ledgerWith([
+      hook('flag:later_chain', {
+        kind: 'residue',
+        sourceChoiceId: '',
+        sourceEpisode: 3,
+        payoffWindow: { minEpisode: 3, maxEpisode: 4 },
+      }),
+    ]);
+
+    const report = validateObligationLedger(ledger, { episodeNumber: 1, generatedThroughEpisode: 1 });
+    expect(report.findings).toHaveLength(0);
+  });
+});

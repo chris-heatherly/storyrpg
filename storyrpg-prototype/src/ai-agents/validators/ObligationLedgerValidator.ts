@@ -75,6 +75,26 @@ export function validateObligationLedger(
       abandoned += 1;
       continue;
     }
+    // CREATION-side check (shadow-run finding, bite-me 2026-07-03T03-29-57):
+    // a residue obligation seeded with NO setting choice (P2.2 marks these
+    // with an empty sourceChoiceId) whose origin episode has been generated
+    // means the planned flag was never authored — the legacy
+    // ResidueObligationValidator's "did not create flag" class. Checked
+    // before paid-ness: an auto-injected payoff can credit the hook while
+    // the choice-side flag still doesn't exist.
+    if (hook.kind === 'residue' && !hook.sourceChoiceId && hook.sourceEpisode <= episodeNumber) {
+      findings.push({
+        gateId: gateFor(hook.kind),
+        kind: 'residue',
+        hookId: hook.id,
+        severity: 'warning',
+        message:
+          `residue obligation "${hook.id}" (${hook.summary}) was planned to originate in episode ${hook.sourceEpisode} ` +
+          `but no choice creates its flag.`,
+        sourceEpisode: hook.sourceEpisode,
+        dueByEpisode: hook.payoffEpisode ?? hook.payoffWindow.maxEpisode,
+      });
+    }
     if (isKept(hook)) {
       paid += 1;
       continue;

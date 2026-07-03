@@ -1079,3 +1079,81 @@ describe('selectSceneProseRepairs — EncounterAnchorContent is repairable (bite
     expect(groups.has('x')).toBe(false); // non-prose validator stays excluded
   });
 })
+
+describe('prose/cluster deferral deadlock (bite-me 2026-07-03T14-10-21 s1-1 regression)', () => {
+  const proseCritic = () => ({
+    execute: vi.fn().mockImplementation(async ({ scene }: { scene: { sceneId: string; beats: Array<{ id?: string }> } }) => ({
+      success: true,
+      data: {
+        sceneId: scene.sceneId,
+        rewrittenBeats: scene.beats.map((beat) => ({
+          id: beat.id,
+          text: 'A strategy argument over the route sharpens the old hostility on the page.',
+        })),
+        critiqueNotes: [],
+        overallCommentary: '',
+      },
+    })),
+  });
+
+  const clusterRoute = (repairIssue: { validator?: string; episodeNumber?: number; sceneId?: string }) => ({
+    kind: 'scene_cluster_rewrite' as const,
+    validator: repairIssue.validator,
+    episodeNumber: repairIssue.episodeNumber,
+    sceneIds: repairIssue.sceneId ? [repairIssue.sceneId] : [],
+    reason: 'treatment event has sequence context',
+    attemptBudget: 2,
+    qualityFloor: { overall: 90, voice: 85, stakes: 85, rejectDrop: 5 },
+    unsafeForProsePatch: true,
+  });
+
+  it('prose handler stops deferring a scene once cluster repair has attempted it', async () => {
+    // Round-2 shape of the deadlock: the scene's blocker routes
+    // scene_cluster_rewrite, the cluster handler already attempted the center
+    // (attemptedCenters), and without the shared set the prose handler kept
+    // deferring while the cluster handler kept skipping — the blocker survived
+    // every remaining round and failed the run.
+    const shared = new Set<string>();
+    const issue = requiredBeatIssue('s2-1');
+    const emitted: string[] = [];
+
+    const cluster = buildSceneClusterRepairHandler({
+      critic: () => proseCritic() as never,
+      routeIssue: clusterRoute,
+      clusterAttemptedCenters: shared,
+    });
+    await cluster({ story: makeStory(), blockingIssues: [issue] });
+    expect(shared.has('2:s2-1')).toBe(true);
+
+    const critic = proseCritic();
+    const prose = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      routeIssue: clusterRoute,
+      clusterAttemptedCenters: shared,
+      emit: (message) => emitted.push(message),
+    });
+    const result = await prose({ story: makeStory(), blockingIssues: [issue] });
+
+    // Not deferred, not routed away: taken same-scene as the fallback.
+    expect(emitted.some((message) => message.includes('deferred'))).toBe(false);
+    expect(emitted.some((message) => message.includes('same-scene after cluster repair'))).toBe(true);
+    expect(result.changed).toBe(true);
+    expect(critic.execute).toHaveBeenCalled();
+  });
+
+  it('prose handler still defers to cluster repair on the first round', async () => {
+    const shared = new Set<string>();
+    const emitted: string[] = [];
+    const critic = proseCritic();
+    const prose = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      routeIssue: clusterRoute,
+      clusterAttemptedCenters: shared,
+      emit: (message) => emitted.push(message),
+    });
+    const result = await prose({ story: makeStory(), blockingIssues: [requiredBeatIssue('s2-1')] });
+    expect(emitted.some((message) => message.includes('deferred'))).toBe(true);
+    expect(result.changed).toBe(false);
+    expect(critic.execute).not.toHaveBeenCalled();
+  });
+});

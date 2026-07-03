@@ -737,6 +737,17 @@ export interface SceneProseRepairOptions {
    * authored moment; other callers may keep degraded partial-repair behavior.
    */
   requirePredictedClear?: boolean;
+  /**
+   * Shared between the prose and cluster handlers of ONE final-contract loop:
+   * cluster centers already attempted (episodeNumber:sceneId keys). The prose
+   * handler defers a scene to cluster repair while any of its blockers route
+   * scene_cluster_rewrite — but the cluster handler never re-attempts a
+   * center. Without this set the two handlers deadlock from round 2 on: prose
+   * keeps deferring, cluster keeps skipping, and the scene's blocker survives
+   * to fail the run (bite-me 2026-07-03T14-10-21 s1-1). Once cluster has had
+   * its attempt, the prose handler takes the scene's same-scene findings.
+   */
+  clusterAttemptedCenters?: Set<string>;
 }
 
 function plannedMomentSourceFor(
@@ -782,12 +793,19 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
       opts.routeIssue
         ? (issue) => {
             const sceneKey = `${issue.episodeNumber ?? ''}:${issue.sceneId}`;
-            if (clusterRoutedSceneKeys.has(sceneKey)) {
+            if (clusterRoutedSceneKeys.has(sceneKey) && !opts.clusterAttemptedCenters?.has(sceneKey)) {
               opts.emit?.(`Scene-prose contract repair deferred ${issue.sceneId || '(unknown scene)'} to cluster repair because the scene has scene-cluster routed blocker(s).`);
               return false;
             }
             const route = opts.routeIssue!(issue);
             if (route.kind !== 'same_scene_retry') {
+              // Cluster-routed issue on a center cluster repair already tried:
+              // take it same-scene rather than orphaning it (the cluster
+              // handler never re-attempts a center).
+              if (route.kind === 'scene_cluster_rewrite' && opts.clusterAttemptedCenters?.has(sceneKey)) {
+                opts.emit?.(`Scene-prose contract repair taking ${issue.sceneId || '(unknown scene)'} same-scene after cluster repair already attempted it.`);
+                return true;
+              }
               opts.emit?.(`Scene-prose contract repair routed away from ${issue.sceneId || '(unknown scene)'}: ${route.kind} (${route.reason})`);
               return false;
             }
@@ -968,7 +986,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
 }
 
 export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): ContractRepairHandler {
-  const attemptedCenters = new Set<string>();
+  const attemptedCenters = opts.clusterAttemptedCenters ?? new Set<string>();
   return async ({ story, blockingIssues }) => {
     const candidates = blockingIssues.filter(
       (issue) => {

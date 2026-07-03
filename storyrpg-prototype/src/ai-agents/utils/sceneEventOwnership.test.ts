@@ -473,7 +473,7 @@ describe('sceneEventOwnership', () => {
 
     const prompt = buildSceneEventOwnershipPromptSection(scenes[1]);
 
-    expect(prompt).toContain('Owned events to dramatize here');
+    expect(prompt).toContain('Owned events — HARD CONTRACT');
     expect(prompt).toContain('Already happened before this scene');
     expect(prompt).toContain('Do not restage');
   });

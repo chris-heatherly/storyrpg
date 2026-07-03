@@ -348,9 +348,13 @@ export function buildSceneEventOwnershipPromptSection(scene: SceneEventOwnership
   const context = profile.incomingContext.slice(-6);
   const forbidden = profile.forbiddenRestageEvents.slice(-6);
   if (owned.length === 0 && context.length === 0 && forbidden.length === 0) return '';
+  // Chronology keys arrive as slugs ("kylie-forms-dusk-club-mika-stela");
+  // render them as words so the directive reads as an event, not an id.
+  const ownedText = (event: SceneOwnedEvent): string =>
+    /^[a-z0-9]+(?:-[a-z0-9]+){2,}$/.test(event.text) ? event.text.replace(/-/g, ' ') : event.text;
   return `
 ### Scene Event Ownership
-${owned.length ? `Owned events to dramatize here:\n${owned.map((event) => `- ${event.cue}: ${event.text}`).join('\n')}\n` : ''}
+${owned.length ? `Owned events — HARD CONTRACT: each must be depicted as on-page action in THIS scene (the final story contract fails otherwise; a mention or recap does not count):\n${owned.map((event) => `- ${event.cue}: ${ownedText(event)}`).join('\n')}\n` : ''}
 ${context.length ? `Already happened before this scene; use only as consequence, residue, or brief recap:\n${context.map((event) => `- ${event.cue}: ${event.text}`).join('\n')}\n` : ''}
 ${forbidden.length ? `Do not restage these events in this scene:\n${forbidden.map((event) => `- ${event.cue}`).join('\n')}\n` : ''}
 If an already-owned event must be mentioned, make the sentence clearly aftermath, memory, public reaction, changed access, or consequence. Do not write it as if it is happening for the first time.

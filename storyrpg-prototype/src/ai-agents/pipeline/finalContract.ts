@@ -1019,6 +1019,9 @@ export class FinalContract {
           );
       };
       const handlers = buildDeterministicContractHandlers();
+      // Shared prose/cluster state: once cluster repair has attempted a center,
+      // the prose handler stops deferring that scene (see SceneProseRepairOptions).
+      const clusterAttemptedCenters = new Set<string>();
       if (isGateEnabled('GATE_FINAL_CONTRACT_SCENE_REGEN')) {
         handlers.push(
           guardLlmHandler(buildSceneProseRepairHandler({
@@ -1035,6 +1038,7 @@ export class FinalContract {
             allowRequiredBeatFallback,
             plannedMomentSources,
             requirePredictedClear: true,
+            clusterAttemptedCenters,
           })),
         );
       }
@@ -1054,6 +1058,7 @@ export class FinalContract {
             routeIssue,
             allowRequiredBeatFallback,
             plannedMomentSources,
+            clusterAttemptedCenters,
           })),
         );
       }

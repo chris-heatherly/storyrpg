@@ -59,6 +59,24 @@ describe('IncrementalSensitivityChecker — military vs personal "assault"', () 
   });
 });
 
+describe('IncrementalSensitivityChecker — innocent "cock-" words (Scunthorpe FPs)', () => {
+  const sceneWith = (text: string): SceneContent =>
+    makeScene({ beats: [{ id: 'b1', text }] });
+
+  it('does NOT flag "cocktail" as strong language (bite-me 2026-07-03 scene-lock false positive)', () => {
+    const checker = new IncrementalSensitivityChecker('T');
+    const result = checker.checkScene(sceneWith('You sip a cocktail sharp with lime as Mika and Stela debate vintage band tees.'));
+    expect(result.passed).toBe(true);
+    expect(result.flags.filter((f) => f.category === 'language')).toHaveLength(0);
+  });
+
+  it('still flags the bare profanity as strong language', () => {
+    const checker = new IncrementalSensitivityChecker('T');
+    const result = checker.checkScene(sceneWith('He grabs his cock and laughs.'));
+    expect(result.flags.some((f) => f.category === 'language' && f.severity === 'strong')).toBe(true);
+  });
+});
+
 describe('IncrementalValidationRunner — sensitivity is advisory, not a hard block', () => {
   it('records sensitivity flags without changing overallPassed (no silent contract dead-end)', async () => {
     const runner = new IncrementalValidationRunner([], [], []);

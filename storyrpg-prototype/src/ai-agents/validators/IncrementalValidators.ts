@@ -596,7 +596,11 @@ export class IncrementalSensitivityChecker extends BaseValidator {
     language: {
       mild: /\b(damn|hell|crap|ass|butt)\b/gi,
       moderate: /\b(bastard|bitch|shit|piss)\b/gi,
-      strong: /\b(fuck|cock|cunt|motherfuck)/gi,
+      // "cock" needs its own word shape (bare/plural/verb forms): the open-ended
+      // prefix match hit "cocktail" and HARD-BLOCKED a scene lock on "You sip a
+      // cocktail sharp with lime" (bite-me 2026-07-03T03-29-57). The other stems
+      // keep prefix matching for suffixed forms ("fucking").
+      strong: /\b(fuck|cunt|motherfuck)|\bcock(?:s|ed|ing)?\b/gi,
     },
     substance: {
       mild: /\b(drink|drunk|beer|wine|alcohol|tipsy|buzz)\b/gi,

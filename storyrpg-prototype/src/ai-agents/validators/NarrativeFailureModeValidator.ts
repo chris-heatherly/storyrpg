@@ -251,27 +251,36 @@ export class NarrativeFailureModeValidator extends BaseValidator {
   }
 
   private detectRepetitiveMotif(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
-    const motifUses: Array<{ sceneId: string; beatId?: string; text: string }> = [];
+    // Group per SCENE: a toast in the club scene and another three scenes
+    // later is normal craft (and some treatments make drinks a core motif —
+    // bite-me's dark wine drives its endings). Only same-scene repetition is
+    // choreography padding, and two-in-one-scene is a polish note, not an
+    // abort: run bite-me 2026-07-02T23-54-38 hard-failed a QA-94 episode on
+    // two glass beats in a rooftop-bar scene.
+    const usesByScene = new Map<string, Array<{ sceneId: string; beatId?: string }>>();
     for (const scene of sceneContents) {
       for (const beat of scene.beats ?? []) {
         const text = typeof beat.text === 'string' ? beat.text : '';
         if (!text) continue;
         if (/\braises?\s+(?:her|his|their|your|a|the)?\s*glass\b/i.test(text) || /\bglasses?\s+click/i.test(text) || /\bglass\s+clicked\b/i.test(text)) {
-          motifUses.push({ sceneId: scene.sceneId, beatId: beat.id, text });
+          usesByScene.set(scene.sceneId, [...(usesByScene.get(scene.sceneId) ?? []), { sceneId: scene.sceneId, beatId: beat.id }]);
         }
       }
     }
 
-    if (motifUses.length < 2) return [];
-
-    return [{
-      code: 'repetitive_toast_motif',
-      severity: 'error',
-      message: `[Repetitive motif] Toast/glass choreography appears in ${motifUses.length} beats without a clear new turn.`,
-      location: motifUses.map((use) => use.beatId ? `${use.sceneId}.${use.beatId}` : use.sceneId).join(', '),
-      suggestion: 'Keep at most one toast/glass beat unless the repetition changes meaning through new pressure, revelation, or consequence.',
-      source: 'prose_style_consistency',
-    }];
+    const issues: NarrativeFailureModeIssue[] = [];
+    for (const uses of usesByScene.values()) {
+      if (uses.length < 2) continue;
+      issues.push({
+        code: 'repetitive_toast_motif',
+        severity: uses.length >= 3 ? 'error' : 'warning',
+        message: `[Repetitive motif] Toast/glass choreography appears in ${uses.length} beats of scene ${uses[0].sceneId} without a clear new turn.`,
+        location: uses.map((use) => use.beatId ? `${use.sceneId}.${use.beatId}` : use.sceneId).join(', '),
+        suggestion: 'Keep at most one toast/glass beat per scene unless the repetition changes meaning through new pressure, revelation, or consequence.',
+        source: 'prose_style_consistency',
+      });
+    }
+    return issues;
   }
 
   private detectTenseDrift(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {

@@ -52,16 +52,44 @@ describe('NarrativeFailureModeValidator', () => {
     expect(result.issues.some((issue) => issue.code === 'telegraphed_twist')).toBe(false);
   });
 
-  it.skip('flags repeated toast/click choreography as a prose-style failure', () => {
+  it('warns (not errors) on two toast beats within one scene', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', [
+          'Mika raises her glass. "To the Dusk Club."',
+          'Your glass clicked against theirs, the sound thin in the open air.',
+        ]),
+      ],
+    });
+
+    const motif = result.issues.find((issue) => issue.code === 'repetitive_toast_motif');
+    expect(motif?.severity).toBe('warning');
+  });
+
+  it('errors on three toast beats within one scene', () => {
+    const result = new NarrativeFailureModeValidator().validate({
+      sceneContents: [
+        scene('s1', [
+          'Mika raises her glass. "To the Dusk Club."',
+          'Your glass clicked against theirs, the sound thin in the open air.',
+          'Stela raises her glass again, slower this time.',
+        ]),
+      ],
+    });
+
+    const motif = result.issues.find((issue) => issue.code === 'repetitive_toast_motif');
+    expect(motif?.severity).toBe('error');
+  });
+
+  it('does not flag toasts spread across different scenes (bite-me 2026-07-02T23-54-38)', () => {
     const result = new NarrativeFailureModeValidator().validate({
       sceneContents: [
         scene('s1', ['Mika raises her glass. "To the Dusk Club."']),
-        scene('s2', ['Stela touches the quartz at her throat. "To the Dusk Club."']),
         scene('s3', ['Your glass clicked against theirs, the sound thin in the open air.']),
       ],
     });
 
-    expect(result.issues.some((issue) => issue.code === 'repetitive_toast_motif')).toBe(true);
+    expect(result.issues.some((issue) => issue.code === 'repetitive_toast_motif')).toBe(false);
   });
 
   it('flags live-action past tense without a past-event marker', () => {

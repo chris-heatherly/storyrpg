@@ -126,6 +126,40 @@ function buildLockedReason(choice: Choice, player: PlayerState, story: Story): s
   return 'This option is not available.';
 }
 
+/** The gate/lock fields shared by scene and encounter choices. */
+type GateableChoice = Pick<Choice, 'conditions' | 'showWhenLocked' | 'lockedText' | 'feedbackCue'>;
+
+export interface ChoiceAvailability {
+  visible: boolean;
+  isLocked: boolean;
+  lockedReason?: string;
+}
+
+/**
+ * Availability of ANY choice shape (scene or encounter) — one skeleton for
+ * condition gating, showWhenLocked visibility, and the locked reason.
+ * (Encounter unification W1: EncounterView previously re-implemented this.)
+ */
+export function getChoiceAvailability(
+  choice: GateableChoice,
+  player: PlayerState,
+  story: Story,
+): ChoiceAvailability {
+  const meetsConditions = choice.conditions
+    ? evaluateCondition(choice.conditions, player)
+    : true;
+  if (!meetsConditions && !choice.showWhenLocked) {
+    return { visible: false, isLocked: true };
+  }
+  return {
+    visible: true,
+    isLocked: !meetsConditions,
+    lockedReason: !meetsConditions
+      ? buildLockedReason(choice as Choice, player, story)
+      : undefined,
+  };
+}
+
 function evaluateStatCheckModifiers(
   modifiers: StatCheckModifier[] | undefined,
   player: PlayerState
@@ -306,6 +340,93 @@ export function processBeat(
 }
 
 /**
+ * Shape-specific display facets — the ONLY parts that differ between scene
+ * choices and encounter choices (encounter unification W1). Everything else
+ * (conditions, locked display, templates, skill readout, feedback cues) is
+ * the shared skeleton in processChoiceList.
+ */
+interface ChoiceDisplayFacets {
+  skillKey?: string;
+  hasStatCheck: boolean;
+  statCheckInfo?: ProcessedChoice['statCheckInfo'];
+  advantageText?: string;
+  checkClassFallback?: ProcessedChoice['checkClass'];
+}
+
+function sceneChoiceFacets(choice: Choice, player: PlayerState): ChoiceDisplayFacets {
+  const skillKey = getSkillKeyFromChoice(choice);
+  const activeModifiers = evaluateStatCheckModifiers(choice.statCheck?.modifiers, player).active
+    .filter((modifier) => modifier.hint?.trim())
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  return {
+    skillKey,
+    hasStatCheck: !!choice.statCheck,
+    statCheckInfo: choice.statCheck
+      ? {
+          attribute: choice.statCheck.attribute,
+          skill: choice.statCheck.skill ?? skillKey,
+        }
+      : undefined,
+    advantageText: activeModifiers[0]?.hint,
+    checkClassFallback: choice.statCheck?.retryableAfterChange ? 'retryable' : undefined,
+  };
+}
+
+function encounterChoiceFacets(choice: EncounterChoice): ChoiceDisplayFacets {
+  return {
+    skillKey: choice.primarySkill,
+    hasStatCheck: !!choice.primarySkill,
+    statCheckInfo: choice.primarySkill ? { skill: choice.primarySkill } : undefined,
+    advantageText: choice.statBonus?.flavorText,
+  };
+}
+
+/** Structural shape both choice types satisfy for shared display processing. */
+interface DisplayableChoice extends GateableChoice {
+  id: string;
+  text: string;
+  reminderPlan?: Choice['reminderPlan'];
+}
+
+/** The one skeleton both choice shapes share for display processing. */
+function processChoiceList<T extends DisplayableChoice>(
+  choices: T[],
+  player: PlayerState,
+  story: Story,
+  facetsOf: (choice: T) => ChoiceDisplayFacets,
+): ProcessedChoice[] {
+  const processed: ProcessedChoice[] = [];
+
+  for (const choice of choices) {
+    const availability = getChoiceAvailability(choice, player, story);
+    if (!availability.visible) continue;
+
+    const facets = facetsOf(choice);
+    const skillDisplay = resolveChoiceSkillDisplay({ skillKey: facets.skillKey, player });
+
+    processed.push({
+      id: choice.id,
+      text: processTemplate(choice.text, player, story),
+      isLocked: availability.isLocked,
+      lockedReason: availability.lockedReason,
+      hasStatCheck: facets.hasStatCheck,
+      statCheckInfo: facets.statCheckInfo,
+      primarySkillKey: skillDisplay.skillKey,
+      primarySkillLabel: skillDisplay.skillLabel,
+      effectiveSkillValue: skillDisplay.effectiveSkillValue,
+      skillBonusValue: skillDisplay.skillBonusValue,
+      hasAdvantage: !!facets.advantageText,
+      advantageText: facets.advantageText,
+      echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
+      progressSummary: choice.feedbackCue?.progressSummary ?? choice.reminderPlan?.shortTerm,
+      checkClass: choice.feedbackCue?.checkClass ?? facets.checkClassFallback,
+    });
+  }
+
+  return processed;
+}
+
+/**
  * Process EncounterChoice[] for display.
  * Evaluates conditions so pre-encounter choices can unlock or lock options.
  */
@@ -314,47 +435,7 @@ function processEncounterChoices(
   player: PlayerState,
   story: Story
 ): ProcessedChoice[] {
-  const processed: ProcessedChoice[] = [];
-
-  for (const choice of choices) {
-    const meetsConditions = choice.conditions
-      ? evaluateCondition(choice.conditions, player)
-      : true;
-
-    // If conditions not met and the choice is not configured to show locked, skip it
-    if (!meetsConditions && !choice.showWhenLocked) {
-      continue;
-    }
-
-    const skillDisplay = resolveChoiceSkillDisplay({
-      skillKey: choice.primarySkill,
-      player,
-    });
-
-    processed.push({
-      id: choice.id,
-      text: processTemplate(choice.text, player, story),
-      isLocked: !meetsConditions,
-      lockedReason: !meetsConditions
-        ? buildLockedReason(choice as unknown as Choice, player, story)
-        : undefined,
-      hasStatCheck: !!choice.primarySkill,
-      statCheckInfo: choice.primarySkill
-        ? { skill: choice.primarySkill }
-        : undefined,
-      primarySkillKey: skillDisplay.skillKey,
-      primarySkillLabel: skillDisplay.skillLabel,
-      effectiveSkillValue: skillDisplay.effectiveSkillValue,
-      skillBonusValue: skillDisplay.skillBonusValue,
-      hasAdvantage: !!(choice.statBonus && choice.statBonus.flavorText),
-      advantageText: choice.statBonus?.flavorText,
-      echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
-      progressSummary: choice.feedbackCue?.progressSummary ?? choice.reminderPlan?.shortTerm,
-      checkClass: choice.feedbackCue?.checkClass,
-    });
-  }
-
-  return processed;
+  return processChoiceList(choices, player, story, encounterChoiceFacets);
 }
 
 /**
@@ -365,54 +446,7 @@ function processChoices(
   player: PlayerState,
   story: Story
 ): ProcessedChoice[] {
-  const processed: ProcessedChoice[] = [];
-
-  for (const choice of choices) {
-    const meetsConditions = choice.conditions
-      ? evaluateCondition(choice.conditions, player)
-      : true;
-
-    // If conditions not met and not configured to show locked, skip
-    if (!meetsConditions && !choice.showWhenLocked) {
-      continue;
-    }
-
-    const skillDisplay = resolveChoiceSkillDisplay({
-      skillKey: getSkillKeyFromChoice(choice),
-      player,
-    });
-    const activeModifiers = evaluateStatCheckModifiers(choice.statCheck?.modifiers, player).active
-      .filter((modifier) => modifier.hint?.trim())
-      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-    const advantageText = activeModifiers[0]?.hint;
-
-    processed.push({
-      id: choice.id,
-      text: processTemplate(choice.text, player, story),
-      isLocked: !meetsConditions,
-      lockedReason: !meetsConditions
-        ? buildLockedReason(choice, player, story)
-        : undefined,
-      hasStatCheck: !!choice.statCheck,
-      statCheckInfo: choice.statCheck
-        ? {
-            attribute: choice.statCheck.attribute,
-            skill: choice.statCheck.skill ?? skillDisplay.skillKey,
-          }
-        : undefined,
-      primarySkillKey: skillDisplay.skillKey,
-      primarySkillLabel: skillDisplay.skillLabel,
-      effectiveSkillValue: skillDisplay.effectiveSkillValue,
-      skillBonusValue: skillDisplay.skillBonusValue,
-      hasAdvantage: !!advantageText,
-      advantageText,
-      echoSummary: choice.feedbackCue?.echoSummary ?? choice.reminderPlan?.immediate,
-      progressSummary: choice.feedbackCue?.progressSummary ?? choice.reminderPlan?.shortTerm,
-      checkClass: choice.feedbackCue?.checkClass ?? (choice.statCheck?.retryableAfterChange ? 'retryable' : undefined),
-    });
-  }
-
-  return processed;
+  return processChoiceList(choices, player, story, (choice) => sceneChoiceFacets(choice, player));
 }
 
 /**

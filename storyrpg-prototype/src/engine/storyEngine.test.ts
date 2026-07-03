@@ -418,3 +418,71 @@ describe('isTerminalSceneTarget', () => {
     }
   });
 });
+
+describe('storyEngine unified choice processing (encounter unification W1)', () => {
+  const story: Story = {
+    id: 'story-w1',
+    title: 'Story',
+    synopsis: 'Test',
+    genre: 'Mystery',
+    coverImage: '',
+    initialState: { attributes: {} as any, skills: {} as any, tags: [], inventory: [] },
+    npcs: [],
+    episodes: [],
+  };
+
+  it('getChoiceAvailability matches legacy gating for both shapes', async () => {
+    const { getChoiceAvailability } = await import('./storyEngine');
+    const player = createPlayer();
+    player.flags = { met_mika: true };
+
+    // Unlocked
+    expect(getChoiceAvailability({ conditions: { type: 'flag', flag: 'met_mika', value: true } } as any, player, story))
+      .toEqual({ visible: true, isLocked: false, lockedReason: undefined });
+    // Hidden when locked and not showWhenLocked
+    expect(getChoiceAvailability({ conditions: { type: 'flag', flag: 'nope', value: true } } as any, player, story).visible)
+      .toBe(false);
+    // Locked with authored lockedText
+    const locked = getChoiceAvailability(
+      { conditions: { type: 'flag', flag: 'nope', value: true }, showWhenLocked: true, lockedText: 'She is not ready.' } as any,
+      player,
+      story,
+    );
+    expect(locked).toEqual({ visible: true, isLocked: true, lockedReason: 'She is not ready.' });
+    // Retryable fallback copy
+    const retryable = getChoiceAvailability(
+      { conditions: { type: 'flag', flag: 'nope', value: true }, showWhenLocked: true, feedbackCue: { checkClass: 'retryable' } } as any,
+      player,
+      story,
+    );
+    expect(retryable.lockedReason).toContain('Not yet.');
+  });
+
+  it('encounter beat choices keep their tactical display facets through the shared skeleton', () => {
+    const player = createPlayer();
+    player.skills.stealth = 40;
+    const encounterBeat = {
+      id: 'enc-b1',
+      setupText: 'Guards block the door.',
+      phase: 'rising',
+      choices: [{
+        id: 'enc-c1',
+        text: 'Slip past the guards',
+        approach: 'cautious',
+        primarySkill: 'stealth',
+        statBonus: { condition: { type: 'flag', flag: 'nope', value: true }, difficultyReduction: 10, flavorText: 'The shadows favor you.' },
+        outcomes: { success: {}, complicated: {}, failure: {} },
+      }],
+    };
+
+    const processed = processBeat(encounterBeat as any, player, story);
+    expect(processed.choices).toHaveLength(1);
+    const choice = processed.choices[0];
+    expect(choice.hasStatCheck).toBe(true);
+    expect(choice.statCheckInfo).toEqual({ skill: 'stealth' });
+    expect(choice.primarySkillKey).toBe('stealth');
+    expect(choice.hasAdvantage).toBe(true);
+    expect(choice.advantageText).toBe('The shadows favor you.');
+    expect(choice.isLocked).toBe(false);
+  });
+});

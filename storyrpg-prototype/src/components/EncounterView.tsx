@@ -49,6 +49,7 @@ import {
   executeChoice,
   findBeat,
   findChoice,
+  getChoiceAvailability,
   ProcessedBeat,
   ProcessedChoice,
 } from '../engine/storyEngine';
@@ -75,35 +76,17 @@ function resolveStatBonus(
   }
 }
 
+/**
+ * Availability of an encounter choice — thin wrapper over the engine's shared
+ * getChoiceAvailability (encounter unification W1: this file previously
+ * re-implemented the condition/lock/reason skeleton by hand).
+ */
 function getEncounterChoiceAvailability(
   choice: EncounterChoice | EmbeddedEncounterChoice,
   player: PlayerState,
   currentStory?: { [key: string]: any } | null
 ): { visible: boolean; isLocked: boolean; lockedReason?: string } {
-  const meetsConditions = choice.conditions
-    ? evaluateCondition(choice.conditions as any, player)
-    : true;
-
-  if (!meetsConditions && !choice.showWhenLocked) {
-    return { visible: false, isLocked: true };
-  }
-
-  let lockedReason: string | undefined;
-  if (!meetsConditions) {
-    if (choice.lockedText) {
-      lockedReason = processTemplate(choice.lockedText, player, currentStory as any);
-    } else if (choice.feedbackCue?.checkClass === 'retryable') {
-      lockedReason = 'Not yet. A different approach, ally, or hard-won lesson could change this.';
-    } else {
-      lockedReason = 'This option is not available.';
-    }
-  }
-
-  return {
-    visible: true,
-    isLocked: !meetsConditions,
-    lockedReason,
-  };
+  return getChoiceAvailability(choice as any, player, currentStory as any);
 }
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');

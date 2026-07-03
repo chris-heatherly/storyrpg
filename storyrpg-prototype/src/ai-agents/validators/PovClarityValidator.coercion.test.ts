@@ -101,3 +101,34 @@ describe('coerceThirdPersonProtagonistToSecond (WS0.3 encounter-POV backstop)', 
     expect(text).toBe('Mika watches as you straighten her collar.');
   });
 });
+
+describe('coerceThirdPersonProtagonistToSecond full-name subject (run-11 "You Marinescu" bug)', () => {
+  it('collapses the full name to "you" instead of leaving the surname behind', () => {
+    const { text, changed } = coerceThirdPersonProtagonistToSecond(
+      'Kylie Marinescu arrives in Bucharest.',
+      KYLIE,
+      pronouns,
+    );
+    expect(changed).toBe(true);
+    expect(text).toBe('You arrive in Bucharest.');
+    expect(text).not.toContain('Marinescu');
+  });
+
+  it('handles full-name possessives without surname residue', () => {
+    const { text } = coerceThirdPersonProtagonistToSecond(
+      "Kylie Marinescu's suitcases block the doorway.",
+      KYLIE,
+      pronouns,
+    );
+    expect(text).toBe('Your suitcases block the doorway.');
+  });
+
+  it('leaves other Marinescu family references alone', () => {
+    const { text } = coerceThirdPersonProtagonistToSecond(
+      'Kylie Marinescu studies the photograph; the Marinescu line did not end in 1962.',
+      KYLIE,
+      pronouns,
+    );
+    expect(text).toBe('You study the photograph; the Marinescu line did not end in 1962.');
+  });
+});

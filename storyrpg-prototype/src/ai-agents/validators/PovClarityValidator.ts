@@ -327,6 +327,13 @@ export function coerceThirdPersonProtagonistToSecond(
   if (!text || !protagonistName) return { text, changed: false };
   const names = Array.from(new Set([protagonistName, protagonistName.split(/\s+/)[0]].filter(Boolean)));
   const escapedNames = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  // The subject pass below replaces word-by-word, so a multi-word name must be
+  // collapsed to its first token first — otherwise "Kylie Marinescu arrives"
+  // coerces to "You Marinescu arrives".
+  const nameTokens = protagonistName.trim().split(/\s+/);
+  const fullNameSequenceRe = nameTokens.length > 1
+    ? new RegExp(`\\b${nameTokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')}\\b(?!['’]s)`, 'gi')
+    : null;
   const nameRe = new RegExp(`^(?:${escapedNames.join('|')})$`, 'i');
   const nameAnywhereRe = new RegExp(`\\b(?:${escapedNames.join('|')})\\b`, 'i');
   const nameAnywhereOrPossessiveRe = new RegExp(`\\b(?:${escapedNames.join('|')})\\b(?:['’]s)?`, 'i');
@@ -379,6 +386,11 @@ export function coerceThirdPersonProtagonistToSecond(
       changed = true;
       return m === m.toUpperCase() && /[A-Z]/.test(m) ? 'YOUR' : 'your';
     });
+
+    if (fullNameSequenceRe) {
+      s = s.replace(fullNameSequenceRe, (m) =>
+        m === m.toUpperCase() && /[A-Z]/.test(m) ? nameTokens[0].toUpperCase() : nameTokens[0]);
+    }
 
     // Subject pass: protagonist NAME (always) and subject pronoun (when coercing pronouns)
     // → "you", de-inflecting the verb it governs.

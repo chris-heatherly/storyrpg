@@ -170,7 +170,8 @@ describe('buildTransitionBridgeRepairHandler', () => {
     const touched = repairDetectedTransitionBridgeContinuity(inputStory, scenePlan);
 
     expect(touched).toBe(1);
-    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn?.startsWith("You leave Kylie's Lipscani Apartment and arrive at Vâlcescu Club")).toBe(true);
+    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn?.startsWith("You leave Kylie's Lipscani Apartment behind and make your way to Vâlcescu Club")).toBe(true);
+    expect(inputStory.episodes[0].scenes[1].timeline?.transitionIn).not.toContain('grounding the next step');
     expect(new SceneTransitionContinuityValidator().validate({ story: inputStory, scenePlan }).valid).toBe(true);
   });
 });

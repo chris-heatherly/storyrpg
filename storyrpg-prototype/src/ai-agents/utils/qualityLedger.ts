@@ -39,6 +39,8 @@ export interface QualityLedgerEntry {
   /** Validation (best-practices) overall score, 0-100. */
   overallScore?: number;
   qaScore?: number;
+  /** QA checks that were skipped (score derived from incremental evidence, not a full run). */
+  qaSkippedChecks?: string[];
   validationScore?: number;
   validationPassed?: boolean;
   finalStoryContractPassed?: boolean;

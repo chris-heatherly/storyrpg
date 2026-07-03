@@ -2212,6 +2212,7 @@ export async function savePipelineOutputs(
       outcome: 'success',
       overallScore: manifest.summary?.qualityScore,
       qaScore: manifest.summary?.qaScore,
+      qaSkippedChecks: outputs.qaReport?.skippedChecks,
       validationScore: manifest.summary?.validationScore,
       validationPassed: manifest.summary?.validationPassed,
       finalStoryContractPassed: manifest.summary?.finalStoryContractPassed,

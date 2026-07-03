@@ -1152,6 +1152,13 @@ export interface QAReport {
   skippedChecks?: string[]; // Which checks were skipped due to incremental validation
 }
 
+/**
+ * Ceiling for a skipped check whose incremental evidence carries no numeric
+ * scores: "issues were watched for and none surfaced" is good evidence, but it
+ * is not a measured 100 — a perfect score must be earned by a check that ran.
+ */
+export const UNQUANTIFIED_EVIDENCE_BASE_SCORE = 85;
+
 export function deriveEvidenceLimitedScore(input: {
   scores?: number[];
   evidenceCount: number;
@@ -1162,7 +1169,7 @@ export function deriveEvidenceLimitedScore(input: {
   const scores = (input.scores ?? []).filter((score) => typeof score === 'number' && Number.isFinite(score));
   const baseScore = scores.length > 0
     ? scores.reduce((sum, score) => sum + score, 0) / scores.length
-    : 100;
+    : UNQUANTIFIED_EVIDENCE_BASE_SCORE;
   const penalty = (input.errorCount ?? 0) * 20 + (input.warningCount ?? 0) * 8;
   return Math.max(0, Math.min(100, Math.round(baseScore - penalty)));
 }

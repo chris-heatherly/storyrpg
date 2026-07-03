@@ -26,7 +26,7 @@
 25: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=36bd838d411d2448
 26: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=bf2be94a02384eb3
 27: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=59393423b91e8c51
-28: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=3008fd0394de8150
+28: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=c4dc87aaf9884985
 29: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=4490f5230f2d302e
 30: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=487a701e98ebd080
 31: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=07d21a04a6dcd311

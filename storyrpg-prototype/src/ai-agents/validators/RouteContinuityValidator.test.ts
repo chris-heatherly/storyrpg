@@ -246,6 +246,32 @@ describe('RouteContinuityValidator', () => {
     expect(result.issues.map((issue) => issue.type)).toContain('unsafe_fallback_prose');
   });
 
+  it('blocks synthetic lead-in filler from removed SceneWriter padding as unsafe fallback prose', () => {
+    const story = makeStory([{
+      id: 'filler-scene',
+      name: 'Filler Scene',
+      startingBeatId: 'beat-1',
+      beats: [
+        {
+          id: 'beat-1',
+          text: 'Pressure is already mounting around you as this moment opens.',
+          nextBeatId: 'beat-2',
+          choices: [],
+        },
+        {
+          id: 'beat-2',
+          text: 'Kylie Marinescu reads another specific shift in the moment before choosing a response.',
+          choices: [],
+        },
+      ],
+    }]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    const fillerIssues = result.issues.filter((issue) => issue.type === 'unsafe_fallback_prose');
+    expect(fillerIssues.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('scans textVariant prose without treating callback control fields as reader-facing prose', () => {
     const story = makeStory([{
       id: 'callback-scene',

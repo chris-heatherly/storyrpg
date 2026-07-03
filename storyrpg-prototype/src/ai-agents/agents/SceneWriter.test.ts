@@ -128,7 +128,7 @@ describe('SceneWriter structural guards', () => {
     expect(issues.some((issue: string) => issue.includes('MALFORMED TEXT VARIANT'))).toBe(true);
   });
 
-  it('deterministically expands single-beat non-choice scenes before hard validation', () => {
+  it('leaves single-beat scenes unpadded so SINGLE BEAT surfaces to the revision loop', () => {
     const writer = createWriter();
     const input = {
       sceneBlueprint: {
@@ -157,11 +157,13 @@ describe('SceneWriter structural guards', () => {
     }, input);
     const issues = (writer as any).collectIssues(content, input);
 
-    expect(content.beats).toHaveLength(3);
-    expect(content.beats[0].nextBeatId).toBe('beat-2');
-    expect(content.beats[1].nextBeatId).toBe('beat-3');
-    expect(content.beats[2].nextBeatId).toBeUndefined();
-    expect(issues.some((issue: string) => issue.startsWith('SINGLE BEAT'))).toBe(false);
+    // Padding a 1-beat scene with synthetic lead-ins used to mask SINGLE BEAT
+    // from the revision loop and ship filler prose (bite-me T04-57-59 s1-1).
+    // Filler never ships: the defect must stay visible so revision fixes it or
+    // the scene fails the pipeline.
+    expect(content.beats).toHaveLength(1);
+    expect(JSON.stringify(content.beats)).not.toContain('Pressure is already mounting');
+    expect(issues.some((issue: string) => issue.startsWith('SINGLE BEAT'))).toBe(true);
   });
 
   it('reports empty text variant conditions as malformed boilerplate', () => {
@@ -202,7 +204,7 @@ describe('SceneWriter structural guards', () => {
     expect(issues.some((issue: string) => issue.includes('MALFORMED TEXT VARIANT'))).toBe(true);
   });
 
-  it('normalizes underfilled scene-length choice scenes to the validator minimum', () => {
+  it('keeps underfilled scene-length choice scenes unpadded and reports UNDERFILL', () => {
     const writer = createWriter();
     const input = {
       sceneBlueprint: {
@@ -239,23 +241,16 @@ describe('SceneWriter structural guards', () => {
     };
 
     const normalized = (writer as any).normalizeContent(content, input);
-    expect(normalized.beats).toHaveLength(6);
-    expect(normalized.beats[5].isChoicePoint).toBe(true);
-    expect(normalized.beats.map((beat: any) => beat.id)).toEqual([
-      'beat-1',
-      'beat-2',
-      'beat-3',
-      'beat-4',
-      'beat-5',
-      'beat-6',
-    ]);
-    expect(JSON.stringify(normalized.beats)).not.toMatch(/Decide how to handle|Forward pressure|serves the you beat/i);
+    // Filler never ships: a 3-beat scene stays 3 beats so the UNDERFILL issue
+    // reaches the revision loop (and fails the scene if revision cannot fix it).
+    expect(normalized.beats).toHaveLength(3);
+    expect(JSON.stringify(normalized.beats)).not.toMatch(/Pressure is already mounting|reads another specific shift/i);
 
     const issues = (writer as any).collectIssues(normalized, input);
-    expect(issues.join('\n')).not.toContain('SCENE-LENGTH UNDERFILL');
+    expect(issues.join('\n')).toContain('SCENE-LENGTH UNDERFILL');
   });
 
-  it('terminates deterministic choice-scene expansion when source lead-ins are unsafe or duplicate', () => {
+  it('keeps single-beat choice scenes unpadded even when blueprint lead-ins are unsafe or duplicate', () => {
     const writer = createWriter();
     const input = {
       sceneBlueprint: {
@@ -290,9 +285,11 @@ describe('SceneWriter structural guards', () => {
     };
 
     const normalized = (writer as any).normalizeContent(content, input);
-    expect(normalized.beats).toHaveLength(6);
-    expect(normalized.beats[5].isChoicePoint).toBe(true);
+    expect(normalized.beats).toHaveLength(1);
     expect(JSON.stringify(normalized.beats)).not.toMatch(/Forward pressure|serves the change beat|decision register/i);
+
+    const issues = (writer as any).collectIssues(normalized, input);
+    expect(issues.some((issue: string) => issue.startsWith('SINGLE BEAT'))).toBe(true);
   });
 
   it('compacts short over-fragmented beat prose before hard cap validation', () => {
@@ -1061,12 +1058,34 @@ describe('SceneWriter structural guards', () => {
             {
               id: 'beat-1',
               text: 'You step into Vâlcescu Club before the velvet rope has stopped swaying, and every nearby conversation tilts toward you.',
+              nextBeatId: 'beat-2',
               shotType: 'character',
               visualMoment: 'Lena enters the club with the rope still moving behind her.',
               primaryAction: 'steps confidently into the club',
               emotionalRead: 'confident but watchful',
               relationshipDynamic: 'attention shifts toward Lena',
               mustShowDetail: 'the moving velvet rope behind Lena',
+            },
+            {
+              id: 'beat-2',
+              text: 'A hostess with a clipboard she never consults appraises your dress, then steps aside without being asked.',
+              nextBeatId: 'beat-3',
+              shotType: 'character',
+              visualMoment: 'The hostess steps aside, clipboard untouched.',
+              primaryAction: 'passes the hostess without breaking stride',
+              emotionalRead: 'testing how far confidence carries',
+              relationshipDynamic: 'the room grants access it usually charges for',
+              mustShowDetail: 'the unconsulted clipboard',
+            },
+            {
+              id: 'beat-3',
+              text: 'At the bar, a man in a charcoal suit sets down his glass a moment too precisely, as if your arrival were an appointment.',
+              shotType: 'character',
+              visualMoment: 'The charcoal suit sets down his glass with deliberate precision.',
+              primaryAction: 'meets the stranger\u2019s glance across the bar',
+              emotionalRead: 'flattered and alert at once',
+              relationshipDynamic: 'mutual notice with unequal information',
+              mustShowDetail: 'the too-precise glass on the bar',
             },
           ],
           moodProgression: ['electric'],
@@ -1235,7 +1254,7 @@ describe('SceneWriter structural guards', () => {
     expect(prompt).toContain('Mika makes the city feel watched.');
   });
 
-  it('expands underspecified choice scenes into a stable three-beat structure', () => {
+  it('keeps collapsed single-beat choice scenes unpadded so revision or failure handles them', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',
       model: 'test-model',
@@ -1244,6 +1263,23 @@ describe('SceneWriter structural guards', () => {
       temperature: 0,
     });
 
+    const input = {
+      sceneBlueprint: {
+        id: 'scene-2',
+        name: 'The Law of the Ember',
+        description: 'While the caravan clears customs, a freezing traveler reaches for the wagon heat.',
+        choicePoint: {
+          type: 'dilemma',
+          description: 'Do you intervene?',
+        },
+        npcsPresent: ['char-cassandra-goldmere'],
+        keyBeats: ['A freezing traveler reaches for the heat'],
+      },
+      protagonistInfo: { name: 'Lyralei', pronouns: 'she/her', description: 'A merchant daughter under pressure.' },
+      npcs: [],
+      targetBeatCount: 5,
+      dialogueHeavy: true,
+    };
     const normalized = (writer as any).normalizeContent(
       {
         sceneId: 'scene-2',
@@ -1261,141 +1297,14 @@ describe('SceneWriter structural guards', () => {
         keyMoments: ['The traveler reaches for warmth'],
         continuityNotes: [],
       },
-      {
-        sceneBlueprint: {
-          id: 'scene-2',
-          name: 'The Law of the Ember',
-          description: 'While the caravan clears customs, a freezing traveler reaches for the wagon heat.',
-          location: 'ice-gates',
-          mood: 'tense',
-          purpose: 'branch',
-          narrativeFunction: 'Introduces the moral law of Frosthold.',
-          dramaticQuestion: 'Will Lyralei uphold the city law or her mother?',
-          wantVsNeed: 'Keep social safety vs honor the law',
-          conflictEngine: 'Cassandra demands compliance while a desperate stranger pleads for warmth.',
-          npcsPresent: ['char-cassandra-goldmere'],
-          keyBeats: [
-            'A freezing traveler reaches for the heat',
-            'Cassandra orders the guards to push them back',
-          ],
-          leadsTo: ['scene-3'],
-          choicePoint: {
-            type: 'dilemma',
-            description: 'Do you intervene?',
-            stakes: {
-              want: 'Honor the sacred law',
-              cost: 'Defy Cassandra in public',
-              identity: 'Merchant obedience versus human decency',
-            },
-            optionHints: ['Help the traveler', 'Look away'],
-          },
-        },
-        storyContext: {
-          title: 'Test Story',
-          genre: 'fantasy',
-          tone: 'dramatic',
-          worldContext: 'A frozen mountain city.',
-        },
-        protagonistInfo: {
-          name: 'Lyralei',
-          pronouns: 'she/her',
-          description: 'A merchant daughter under pressure.',
-        },
-        npcs: [],
-        targetBeatCount: 5,
-        dialogueHeavy: true,
-      }
+      input,
     );
 
-    expect(normalized.beats).toHaveLength(3);
-    expect(normalized.startingBeatId).toBe('beat-1');
-    expect(normalized.beats.map((beat: any) => beat.id)).toEqual(['beat-1', 'beat-2', 'beat-3']);
-    expect(normalized.beats[2].isChoicePoint).toBe(true);
-    expect(normalized.beats[0].nextBeatId).toBe('beat-2');
-    expect(normalized.beats[1].nextBeatId).toBe('beat-3');
-    expect(normalized.beats[2].nextBeatId).toBeUndefined();
-    expect(normalized.beats[0].text).toMatch(/\byou\b/i);
-    expect(normalized.beats[1].text).toMatch(/\byou\b/i);
-    expect(normalized.beats[0].text).not.toMatch(/\bLyralei\b.+\bshe\b/i);
-    expect(normalized.beats[1].text).not.toMatch(/\bLyralei\b.+\bshe\b/i);
-  });
-
-  it('anchors synthetic lead-ins from third-person scene summaries to player POV', () => {
-    const writer = new SceneWriter({
-      provider: 'anthropic',
-      model: 'test-model',
-      apiKey: 'test-key',
-      maxTokens: 1024,
-      temperature: 0,
-    });
-
-    const normalized = (writer as any).normalizeContent(
-      {
-        sceneId: 'scene-rescue',
-        sceneName: 'The Rescue in the Park',
-        beats: [
-          {
-            id: 'collapsed-beat',
-            text: 'The rooftop bar fades behind you as the trees close in.',
-            isChoicePoint: true,
-          },
-        ],
-        startingBeatId: 'collapsed-beat',
-        moodProgression: ['uneasy'],
-        charactersInvolved: ['Kylie Marinescu', 'Victor Valcescu'],
-        keyMoments: ['The rescue in the fog'],
-        sceneTakeaways: ['The city is not safe.'],
-        continuityNotes: [],
-      },
-      {
-        sceneBlueprint: {
-          id: 'scene-rescue',
-          name: 'The Rescue in the Park',
-          description: 'Walking home through the park, she is attacked and rescued by the impossibly handsome stranger.',
-          location: 'park',
-          mood: 'dangerous',
-          purpose: 'branch',
-          narrativeFunction: 'The rescue turns glamour into danger.',
-          dramaticQuestion: 'How does the city answer when Kylie is alone?',
-          wantVsNeed: 'Feel wanted vs stay safe',
-          conflictEngine: 'The city narrows around Kylie before Victor intervenes.',
-          npcsPresent: ['Victor Valcescu'],
-          keyBeats: [
-            'Walking home through the park, she is attacked and rescued by the impossibly handsome stranger.',
-          ],
-          leadsTo: ['scene-next'],
-          choicePoint: {
-            type: 'dilemma',
-            description: 'How do you respond to the rescue?',
-            stakes: {
-              want: 'Reach safety',
-              cost: 'Owe attention to a dangerous stranger',
-              identity: 'Observer versus participant',
-            },
-            optionHints: ['Thank him', 'Question him'],
-          },
-        },
-        storyContext: {
-          title: 'Test Story',
-          genre: 'paranormal romance',
-          tone: 'dangerous',
-          worldContext: 'A city with teeth.',
-        },
-        protagonistInfo: {
-          name: 'Kylie Marinescu',
-          pronouns: 'she/her',
-          description: 'A writer starting over.',
-        },
-        npcs: [],
-        targetBeatCount: 5,
-        dialogueHeavy: false,
-      }
-    );
-
-    expect(normalized.beats).toHaveLength(3);
-    expect(normalized.beats[0].text).toContain('You are walking home through the park');
-    expect(normalized.beats[0].text).not.toMatch(/\bshe\b/i);
-    expect(normalized.beats[1].text).toMatch(/\byou\b/i);
+    // Synthetic three-beat expansion is gone: the collapse stays visible.
+    expect(normalized.beats).toHaveLength(1);
+    expect(JSON.stringify(normalized.beats)).not.toMatch(/Pressure is already mounting|reads another specific shift|You register the first shift/i);
+    const issues = (writer as any).collectIssues(normalized, input);
+    expect(issues.some((issue: string) => issue.startsWith('SINGLE BEAT'))).toBe(true);
   });
 
   it('promotes a turn beat to dominant when the writer returns no dominant beat', () => {

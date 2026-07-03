@@ -74,7 +74,7 @@ function transitionSentence(parsed: ParsedTransitionFinding): string {
   if (/\bcar\b/.test(loweredTo)) {
     return `You drive out of ${from} and into the ${to}, the ride making the distance impossible to miss.`;
   }
-  return `You leave ${from} and arrive at ${to}, grounding the next step before the scene changes.`;
+  return `You leave ${from} behind and make your way to ${to}.`;
 }
 
 function prependTransition(beat: Beat, sentence: string): boolean {

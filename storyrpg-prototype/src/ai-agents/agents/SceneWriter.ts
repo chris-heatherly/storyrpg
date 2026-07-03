@@ -23,11 +23,7 @@ import {
   StoryCircleStructure,
 } from '../../types/sourceAnalysis';
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
-import {
-  coerceThirdPersonProtagonistToSecond,
-  hasPlayerReference,
-  PovClarityValidator,
-} from '../validators/PovClarityValidator';
+import { PovClarityValidator } from '../validators/PovClarityValidator';
 import { auditFictionFirstTurns, FICTION_FIRST_TURN_DOMAINS } from '../validators/turnAudit';
 import type { CliffhangerPlan } from '../../types/seasonPlan';
 import {
@@ -874,6 +870,16 @@ ${CHOICE_DENSITY_REQUIREMENTS}
         return this.executeRevision(input, content, issues);
       }
 
+      // Out of revision budget: structural defects are a scene failure, never a
+      // soft accept — filler/underfilled scenes must fail the pipeline.
+      const hardIssues = issues.filter((issue) => this.isHardPostRevisionIssue(issue));
+      if (hardIssues.length > 0) {
+        return {
+          success: false,
+          error: `SceneWriter out of revision budget with ${hardIssues.length} hard issue(s): ${hardIssues.slice(0, 5).join(' | ')}`,
+        };
+      }
+
       console.log(`[SceneWriter] Scene has ${content.beats?.length || 0} beats`);
 
       // DEBUG: Log choice point status
@@ -1286,11 +1292,12 @@ Return exactly one complete SceneContent JSON object with:
     }
 
 
-    // Guard against degenerate choice scenes. If the writer returns only one beat for a
-    // scene that needs a decision, the whole scene can collapse into "choice beat + payoff beat"
-    // and skip the setup that branch scenes need for pacing, QA, and image coverage.
-    this.ensureMinimumChoiceSceneBeats(content, input);
-    this.ensureMinimumSceneBeats(content, input);
+    // Degenerate scenes (single beat, underfilled choice scenes) are NOT padded
+    // with synthetic beats here — padding before collectIssues() used to mask
+    // SINGLE BEAT / SCENE-LENGTH UNDERFILL from the revision loop, shipping
+    // filler prose as story content. Underfill now surfaces as a hard issue:
+    // revision gets a real chance to fix it, and if it can't, the scene fails
+    // the pipeline instead of shipping filler.
 
     // Every scene needs an emotional peak. The LLM occasionally returns no
     // dominant-tier beat (the intensity_distribution diagnostic flags these as
@@ -1574,87 +1581,6 @@ Return exactly one complete SceneContent JSON object with:
     );
   }
 
-  private ensureMinimumChoiceSceneBeats(content: SceneContent, input?: SceneWriterInput): void {
-    if (!input?.sceneBlueprint.choicePoint) return;
-
-    const minimumBeats = input.targetBeatCount >= 6 ? 6 : input.targetBeatCount >= 3 ? 3 : 2;
-    if (content.beats.length >= minimumBeats) return;
-
-    const leadInCount = minimumBeats - 1;
-    const existingLeadIns = content.beats.slice(0, -1);
-    const choiceSeed = content.beats[content.beats.length - 1];
-    const leadInTexts = this.buildSyntheticLeadInTexts(input, leadInCount, existingLeadIns.map(beat => beat.text));
-    const rebuiltBeats: GeneratedBeat[] = [];
-
-    for (let i = 0; i < leadInCount; i++) {
-      const existingBeat = existingLeadIns[i];
-      const id = `beat-${i + 1}`;
-      const nextBeatId = `beat-${i + 2}`;
-
-      if (existingBeat) {
-        rebuiltBeats.push({
-          ...existingBeat,
-          id,
-          isChoicePoint: false,
-          nextBeatId,
-        });
-        continue;
-      }
-
-      rebuiltBeats.push(this.createSyntheticLeadInBeat(leadInTexts[i], id, nextBeatId, i === 0));
-    }
-
-    const finalBeatId = `beat-${minimumBeats}`;
-    const fallbackChoiceText = this.ensureTerminalPunctuation(
-      choiceSeed?.text?.trim()
-      || input.sceneBlueprint.choicePoint.description
-      || `The moment turns on a decision ${input.protagonistInfo.name} cannot avoid`
-    );
-
-    rebuiltBeats.push({
-      ...(choiceSeed || {}),
-      id: finalBeatId,
-      text: fallbackChoiceText,
-      isChoicePoint: true,
-      nextBeatId: undefined,
-    });
-
-    content.beats = rebuiltBeats;
-    content.startingBeatId = 'beat-1';
-    content.continuityNotes.push(
-      `Auto-expanded underspecified choice scene from ${existingLeadIns.length + (choiceSeed ? 1 : 0)} to ${minimumBeats} beats.`
-    );
-  }
-
-  private ensureMinimumSceneBeats(content: SceneContent, input?: SceneWriterInput): void {
-    if (!input || input.sceneBlueprint.choicePoint) return;
-    if (!Array.isArray(content.beats) || content.beats.length !== 1 || input.targetBeatCount < 3) return;
-    if (!input.protagonistInfo?.name || !input.sceneBlueprint?.name) return;
-
-    const minimumBeats = Math.min(3, Math.max(2, input.targetBeatCount));
-    const originalBeat = content.beats[0];
-    const followUpTexts = this.buildSyntheticLeadInTexts(input, minimumBeats - 1, [originalBeat.text]);
-    const rebuiltBeats: GeneratedBeat[] = [{
-      ...originalBeat,
-      id: 'beat-1',
-      nextBeatId: 'beat-2',
-      isChoicePoint: false,
-    }];
-
-    for (let i = 1; i < minimumBeats; i++) {
-      const id = `beat-${i + 1}`;
-      const nextBeatId = i === minimumBeats - 1 ? undefined : `beat-${i + 2}`;
-      rebuiltBeats.push(this.createSyntheticLeadInBeat(followUpTexts[i - 1], id, nextBeatId || '', false));
-      rebuiltBeats[rebuiltBeats.length - 1].nextBeatId = nextBeatId;
-    }
-
-    content.beats = rebuiltBeats;
-    content.startingBeatId = 'beat-1';
-    content.continuityNotes.push(
-      `Auto-expanded underspecified scene from 1 to ${minimumBeats} beats.`
-    );
-  }
-
   /**
    * Guarantee at least one `dominant`-tier beat per scene. The LLM is asked for
    * 1-2 dominant beats but sometimes returns none, leaving the scene without an
@@ -1675,141 +1601,6 @@ Return exactly one complete SceneContent JSON object with:
       beats[Math.floor(beats.length / 2)] ||
       beats[0];
     if (turnBeat) turnBeat.intensityTier = 'dominant';
-  }
-
-  private buildSyntheticLeadInTexts(
-    input: SceneWriterInput,
-    count: number,
-    existingTexts: string[]
-  ): string[] {
-    const scene = input.sceneBlueprint;
-    const uniqueTexts = new Set<string>();
-    const leadIns: string[] = [];
-
-    const pushText = (value?: string) => {
-      const normalized = this.prepareSyntheticLeadInText(value, input);
-      if (!normalized || uniqueTexts.has(normalized)) return;
-      if (this.isUnsafeSyntheticBeatText(normalized)) return;
-      uniqueTexts.add(normalized);
-      leadIns.push(normalized);
-    };
-
-    for (const text of existingTexts) {
-      pushText(text);
-    }
-
-    pushText(scene.description);
-    for (const keyBeat of scene.keyBeats || []) {
-      if (isAgentFacingPressureNote(keyBeat)) continue;
-      pushText(stripAgentFacingPressureLabel(keyBeat));
-    }
-    pushText(this.stripAgentFacingPressureParagraphs(scene.narrativeFunction, scene.description || scene.name));
-    pushText(scene.encounterBuildup);
-
-    const fallbackLeadIns = [
-      'Pressure is already mounting around you as this moment opens',
-      'You catch the first sign that this moment will demand a choice',
-      `A concrete detail changes the room, narrowing what ${input.protagonistInfo.name} can safely ignore`,
-      `The people nearby reveal new stakes without saying them plainly`,
-      'The pressure tightens as the scene drives toward a decision you cannot avoid',
-    ];
-    for (const fallback of fallbackLeadIns) {
-      if (leadIns.length >= count) break;
-      pushText(fallback);
-    }
-
-    while (leadIns.length < count) {
-      leadIns.push(
-        this.ensureTerminalPunctuation(
-          `${input.protagonistInfo.name} reads another specific shift in the moment before choosing a response`
-        )
-      );
-    }
-
-    return leadIns.slice(0, count);
-  }
-
-  private isUnsafeSyntheticBeatText(text: string): boolean {
-    return isPlanningRegisterText(text)
-      || /\bserves\s+the\s+\w+\s+beat\b/i.test(text)
-      || /\bforward\s+pressure\s*:/i.test(text);
-  }
-
-  private prepareSyntheticLeadInText(value: string | undefined, input: SceneWriterInput): string | undefined {
-    const raw = (value || '').trim();
-    if (!raw) return undefined;
-
-    const subjectPronoun = this.protagonistSubjectPronoun(input);
-    const coerced = coerceThirdPersonProtagonistToSecond(raw, input.protagonistInfo.name, {
-      coercePronouns: true,
-      subjectPronoun,
-    }).text;
-    const anchored = this.anchorGerundSummaryToPlayer(coerced, subjectPronoun);
-    let normalized = this.ensureTerminalPunctuation(anchored.trim());
-    if (!normalized) return undefined;
-    if (!hasPlayerReference(normalized) && this.looksLikeThirdPersonSyntheticSummary(normalized, input, subjectPronoun)) {
-      return undefined;
-    }
-    if (!hasPlayerReference(normalized)) {
-      normalized = this.anchorUnanchoredSyntheticText(normalized);
-    }
-    return normalized;
-  }
-
-  private protagonistSubjectPronoun(input: SceneWriterInput): 'she' | 'he' {
-    return /\bhe\b/i.test(input.protagonistInfo.pronouns || '') ? 'he' : 'she';
-  }
-
-  private anchorGerundSummaryToPlayer(text: string, subjectPronoun: 'she' | 'he'): string {
-    if (hasPlayerReference(text)) return text;
-    const match = text.match(new RegExp(`^([A-Z][A-Za-z'’-]+ing\\b[^,]{0,120}),\\s*${subjectPronoun}\\s+(.+)$`, 'i'));
-    if (!match) return text;
-
-    const activity = match[1].charAt(0).toLowerCase() + match[1].slice(1);
-    let rest = match[2].trim();
-    rest = rest
-      .replace(/^is\b/i, 'you are')
-      .replace(/^was\b/i, 'you were')
-      .replace(/^has\b/i, 'you have')
-      .replace(/^had\b/i, 'you had');
-    return `You are ${activity} when the moment turns: ${rest}`;
-  }
-
-  private anchorUnanchoredSyntheticText(text: string): string {
-    const trimmed = text.trim();
-    if (!trimmed) return trimmed;
-    const lower = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
-    return this.ensureTerminalPunctuation(`You register the first shift: ${lower}`);
-  }
-
-  private looksLikeThirdPersonSyntheticSummary(
-    text: string,
-    input: SceneWriterInput,
-    subjectPronoun: 'she' | 'he',
-  ): boolean {
-    const firstName = input.protagonistInfo.name.split(/\s+/)[0];
-    const escapedName = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`\\b(?:${escapedName}|${subjectPronoun})\\b`, 'i').test(text);
-  }
-
-  private createSyntheticLeadInBeat(
-    text: string,
-    id: string,
-    nextBeatId: string,
-    isEstablishing: boolean
-  ): GeneratedBeat {
-    return {
-      id,
-      text,
-      nextBeatId,
-      isChoicePoint: false,
-      shotType: isEstablishing ? 'establishing' : 'character',
-      visualMoment: text,
-      primaryAction: isEstablishing ? '' : 'the character shifts around the nearest object or threshold',
-      emotionalRead: isEstablishing ? '' : 'faces and posture show the moment tightening around the coming decision',
-      relationshipDynamic: isEstablishing ? '' : 'the characters are drawn into a tense, decision-shaped triangle of attention',
-      mustShowDetail: 'a concrete environmental or body-language clue that makes this setup beat visually distinct',
-    };
   }
 
   private ensureTerminalPunctuation(text: string): string {
@@ -3120,6 +2911,15 @@ Return ONLY valid JSON matching the SceneContent schema.
           }
         }
 
+        const originalHardIssues = this.collectIssues(originalContent, input)
+          .filter((issue) => this.isHardPostRevisionIssue(issue));
+        if (originalHardIssues.length > 0) {
+          return {
+            success: false,
+            error: `SceneWriter revision unparseable and original content has ${originalHardIssues.length} hard issue(s): ${originalHardIssues.slice(0, 5).join(' | ')}`,
+          };
+        }
+
         return {
           success: true,
           data: originalContent,
@@ -3187,6 +2987,15 @@ Return ONLY valid JSON matching the SceneContent schema.
         return {
           success: false,
           error: originalErrorMsg,
+        };
+      }
+
+      const fallbackHardIssues = this.collectIssues(originalContent, input)
+        .filter((issue) => this.isHardPostRevisionIssue(issue));
+      if (fallbackHardIssues.length > 0) {
+        return {
+          success: false,
+          error: `SceneWriter revision failed and original content has ${fallbackHardIssues.length} hard issue(s): ${fallbackHardIssues.slice(0, 5).join(' | ')}`,
         };
       }
 

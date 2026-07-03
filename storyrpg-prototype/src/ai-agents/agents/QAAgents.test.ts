@@ -304,6 +304,12 @@ describe('deriveEvidenceLimitedScore', () => {
   it('fails closed when no evidence was collected', () => {
     expect(deriveEvidenceLimitedScore({ scores: [100], evidenceCount: 0 })).toBe(0);
   });
+
+  it('caps unquantified evidence below a perfect score (skipped checks cannot report 100)', () => {
+    expect(deriveEvidenceLimitedScore({ evidenceCount: 5 })).toBe(85);
+    expect(deriveEvidenceLimitedScore({ scores: [], evidenceCount: 3 })).toBe(85);
+    expect(deriveEvidenceLimitedScore({ scores: [], evidenceCount: 3, warningCount: 1 })).toBe(77);
+  });
 });
 
 describe('deriveQAOutcome / recomputeQAReportDerived', () => {

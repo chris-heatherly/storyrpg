@@ -151,11 +151,29 @@ export interface StatCheckModifier {
   hint?: string;
 }
 
-// A single choice option
-export interface Choice {
+/**
+ * Fields shared by EVERY choice shape — scene choices and encounter choices
+ * alike (encounter unification W2). The gate/display/feedback core: identity,
+ * player-facing text, condition gating, locked display, and feedback cues.
+ * The runtime's shared skeleton (getChoiceAvailability / processChoiceList in
+ * storyEngine) operates on exactly this surface. Pure type-level dedup: the
+ * serialized JSON shape of both choice families is unchanged.
+ */
+export interface ChoiceCore {
   id: string;
   text: string;
 
+  conditions?: ConditionExpression;
+  showWhenLocked?: boolean;
+  lockedText?: string;
+
+  consequenceDomain?: ConsequenceDomain;
+  reminderPlan?: ReminderPlan;
+  feedbackCue?: ChoiceFeedbackCue;
+}
+
+// A single choice option
+export interface Choice extends ChoiceCore {
   choiceType?: ChoiceType;
   choiceIntent?: ChoiceIntent;
   impactFactors?: ChoiceImpactFactor[];
@@ -166,11 +184,6 @@ export interface Choice {
     identity: string;
   };
   stakesLayers?: StakesLayers;
-
-  conditions?: ConditionExpression;
-
-  showWhenLocked?: boolean;
-  lockedText?: string;
 
   statCheck?: {
     skillWeights?: Record<string, number>;
@@ -183,11 +196,8 @@ export interface Choice {
     retryableAfterChange?: boolean;
   };
 
-  consequenceDomain?: ConsequenceDomain;
   storyVerb?: string;
   affordanceSource?: ChoiceAffordanceSource;
-  reminderPlan?: ReminderPlan;
-  feedbackCue?: ChoiceFeedbackCue;
   moralContract?: MoralContract;
   residueHints?: ChoiceResidueHint[];
   witnessReactions?: WitnessReaction[];

@@ -606,7 +606,7 @@ describe('computeEncounterWeights (encounter unification W2 behavior lock)', () 
     expect(strongWeights.success + strongWeights.complicated + strongWeights.failure).toBeCloseTo(1.0, 10);
 
     const weak = player();
-    for (const key of Object.keys(weak.attributes)) (weak.attributes as Record<string, number>)[key] = 0;
+    for (const key of Object.keys(weak.attributes)) (weak.attributes as unknown as Record<string, number>)[key] = 0;
     weak.skills.stealth = 0;
     const weakWeights = computeEncounterWeights(weak, 'stealth', 0);
     expect(weakWeights.success).toBeCloseTo(0.25, 10);

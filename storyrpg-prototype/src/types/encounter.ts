@@ -5,6 +5,7 @@
 import type { ConditionExpression } from './conditions';
 import type { Consequence } from './consequences';
 import type {
+  ChoiceCore,
   ConsequenceDomain,
   ReminderPlan,
   ChoiceFeedbackCue,
@@ -189,33 +190,37 @@ export interface EncounterChoiceOutcome {
   tacticalEffect?: string;
 }
 
-// Embedded choice for branching tree (avoids circular reference)
-export interface EmbeddedEncounterChoice {
-  id: string;
-  text: string;
+/**
+ * The tactical layer unique to encounter choices — INTENDED DESIGN, kept by
+ * the encounter unification (W2): approaches, the encounter skill model
+ * (primarySkill/skillAdvantage/statBonus resolve through
+ * computeEncounterWeights, a deliberately DIFFERENT probability model from
+ * scene statChecks — see the behavior lock in resolutionEngine.test.ts), and
+ * the three-tier outcome structure carrying clock ticks and routing.
+ */
+export interface EncounterTactics {
   approach: string;
   primarySkill?: string;
-  consequenceDomain?: ConsequenceDomain;
-  reminderPlan?: ReminderPlan;
-  feedbackCue?: ChoiceFeedbackCue;
-
-  outcomes: {
-    success: EncounterChoiceOutcome;
-    complicated: EncounterChoiceOutcome;
-    failure: EncounterChoiceOutcome;
-  };
-
   skillAdvantage?: SkillAdvantage;
-
-  conditions?: ConditionExpression;
-  showWhenLocked?: boolean;
-  lockedText?: string;
   statBonus?: {
     condition: ConditionExpression;
     difficultyReduction: number;
     flavorText?: string;
   };
+  outcomes: {
+    success: EncounterChoiceOutcome;
+    complicated: EncounterChoiceOutcome;
+    failure: EncounterChoiceOutcome;
+  };
 }
+
+/**
+ * Embedded choice for the branching tree. Composition, not duplication
+ * (encounter unification W2): the gate/display/feedback core is the same
+ * ChoiceCore scene choices use; everything encounter-specific lives in
+ * EncounterTactics. Serialized JSON shape unchanged.
+ */
+export interface EmbeddedEncounterChoice extends ChoiceCore, EncounterTactics {}
 
 export type EncounterApproach =
   | 'aggressive'
@@ -238,36 +243,14 @@ export interface OutcomeVisualDirection {
   mood: 'triumphant' | 'tense' | 'desperate' | 'bittersweet';
 }
 
-export interface EncounterChoice {
-  id: string;
-  text: string;
-  approach: string;
-  primarySkill?: string;
-  consequenceDomain?: ConsequenceDomain;
-  reminderPlan?: ReminderPlan;
-  feedbackCue?: ChoiceFeedbackCue;
-
-  outcomes: {
-    success: EncounterChoiceOutcome;
-    complicated: EncounterChoiceOutcome;
-    failure: EncounterChoiceOutcome;
-  };
-
+/**
+ * A top-level encounter choice — an EmbeddedEncounterChoice plus the two
+ * top-level-only affordances. (Pre-W2 these were a third hand-maintained
+ * copy of the same field list.)
+ */
+export interface EncounterChoice extends EmbeddedEncounterChoice {
   impliedApproach?: EncounterApproach;
-
-  skillAdvantage?: SkillAdvantage;
-
   specialChoiceType?: 'press_your_luck' | 'desperate_gambit' | 'environmental' | 'signature_move';
-
-  conditions?: ConditionExpression;
-  showWhenLocked?: boolean;
-  lockedText?: string;
-
-  statBonus?: {
-    condition: ConditionExpression;
-    difficultyReduction: number;
-    flavorText?: string;
-  };
 }
 
 export interface EncounterBeat {

@@ -731,6 +731,106 @@ export class GateRepairRouter {
       }
     }
 
+    if (validator === 'EncounterSetPieceDepthValidator') {
+      // A collapsed sustained set piece is missing STRUCTURE (>= 2 phases or a
+      // >= 3-point tension curve). A prose rewrite cannot add encounter phases
+      // or tension-curve points, so this is honestly architectural at the
+      // final contract — the generative half lives in EncounterArchitect
+      // (sustained-set-piece beat floor at encounter build time). This explicit
+      // rule replaces the silent diagnostic_stop fall-through: the finding is
+      // classified as architecture instead of "no route registered", and the
+      // gateRegistry entry now documents the gap as a policyException instead
+      // of a fictitious autofix.
+      return directive('blueprint_rebalance', issue, 'Sustained set-piece depth is encounter structure (phases/tension curve); prose rewrite cannot add escalation structure — enforce/regen at encounter build time.');
+    }
+
+    if (validator === 'EmptyPlayableSceneValidator') {
+      // An empty playable scene is exactly what an LLM scene re-author fixes.
+      // The scene-prose repair handler seeds an EMPTY beat scaffold (ids and
+      // wiring only — never reader-facing text) and SceneCritic authors the
+      // prose. Previously this always-blocking class fell to diagnostic_stop
+      // with no targeted handler — a guaranteed run-killer after full
+      // generation. Findings always carry the sceneId (the validator sets it).
+      if (issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Empty playable scene is scene-local: scaffold empty beats and have the LLM author the scene prose.');
+      }
+      return directive('diagnostic_stop', issue, 'Empty-scene finding carries no sceneId; nothing to target.');
+    }
+
+    if (validator === 'FinalStoryContractValidator' && issue.type === 'echo_summary_variant') {
+      // A leaked echo-summary/reminder one-liner strips deterministically
+      // (buildDesignNoteLeakStripHandler deletes the bogus textVariant or the
+      // appended meta paragraph — the beat's real prose is fine). Without this
+      // rule the class fell to diagnostic_stop even though its dedicated
+      // deterministic handler was already registered in the repair loop.
+      return directive('deterministic_cleanup', issue, 'Echo-summary/design-note leak is stripped deterministically by the design-note-leak handler.');
+    }
+
+    if (validator === 'AuthoredEpisodeConformanceValidator') {
+      // Episode-list conformance (split/merged/dropped/re-titled episodes) is
+      // season architecture in EVERY finding shape — no scene rewrite can
+      // reconcile an episode list, so nothing here is prose-repairable (the
+      // scene-prose handler deliberately excludes this validator). Classified
+      // explicitly so it never falls to the unclassified diagnostic_stop.
+      return directive('blueprint_rebalance', issue, 'Episode-list conformance is season architecture (split/merged/dropped/re-titled episodes), not prose.');
+    }
+
+    if (
+      validator === 'InformationLedgerScheduleValidator'
+      || validator === 'StoryCircleAnchorConformanceValidator'
+    ) {
+      // Plan-contract gates re-executing at the final regression net (mid-run
+      // plan drift; audit 2026-07-01 item 4.4). A drift finding that names a
+      // concrete scene is prose-repairable — dramatize the authored beat/
+      // reveal in its scene — while genuinely architectural findings (ledger
+      // schedule with no scene target, season-spine beat placement) stay
+      // classified as architecture instead of falling to the unclassified
+      // diagnostic_stop dead end.
+      if (issue.sceneId) {
+        if (unsafeDensity) return directive('blueprint_rebalance', issue, `Authored-contract drift sits on an overloaded scene: ${density?.overloadReasons.join('; ')}`);
+        if (hasTimeOrOrderCue) return directive('scene_cluster_rewrite', issue, 'Authored-contract drift carries time/order context; repair with the scene cluster.');
+        return directive('same_scene_retry', issue, 'Authored-contract drift is localized to a scene; LLM re-author dramatizes the authored beat/reveal in place.');
+      }
+      if (validator === 'InformationLedgerScheduleValidator') {
+        return directive('episode_replan', issue, 'Information setup/reveal scheduling must be repaired in its owning episode plan, not by prose stuffing.');
+      }
+      return directive('blueprint_rebalance', issue, 'Story Circle anchor placement is season-spine architecture, not prose.');
+    }
+
+    if (validator === 'SeasonPromiseRealizationValidator' || validator === 'CharacterTreatmentRealizationValidator') {
+      // Treatment-realization contracts carry their target scene in the issue
+      // location (`seasonPromise:ep2:s2-1:promise-1`). A scene-targeted miss is
+      // the same shape as a treatment-field miss: dramatize the authored
+      // promise/obligation in its scene. `sceneId === 'episode'` is the
+      // no-target fallback the location builder emits — treat it as
+      // unlocalized. Without this rule both classes fell to diagnostic_stop.
+      const sceneLocalized = Boolean(issue.sceneId && issue.sceneId !== 'episode');
+      if (sceneLocalized) {
+        if (unsafeDensity) return directive('blueprint_rebalance', issue, `Treatment-realization finding sits on an overloaded scene: ${density?.overloadReasons.join('; ')}`);
+        if (hasTimeOrOrderCue) return directive('scene_cluster_rewrite', issue, 'Treatment-realization finding carries time/order context; repair with the scene cluster.');
+        return directive('same_scene_retry', issue, 'Treatment-realization finding is localized; LLM re-author dramatizes the authored promise/obligation in its scene.');
+      }
+      return directive('blueprint_rebalance', issue, 'Treatment-realization finding has no scene target; realization requires plan architecture.');
+    }
+
+    if (validator === 'ThematicSquareTurnValidator') {
+      // Thematic-square findings are relationship-turn ARCHITECTURE: the
+      // relationshipValueEvidence rungs and allowed surfaces live in choice
+      // metadata and episode structure, not in any one scene's prose.
+      return directive('episode_replan', issue, 'Thematic-square relationship turns require choice/relationship architecture, not prose-only repair.');
+    }
+
+    if (validator === 'SceneSpatialUnitValidator') {
+      // A scene conducting meaningful action in two major locations is a
+      // scene-flow prose defect: the rewrite grounds the action in one place
+      // (or converts the second location into a handoff), and the fix can
+      // ripple into the neighbors' transitions — cluster scope.
+      if (issue.sceneId) {
+        return directive('scene_cluster_rewrite', issue, 'Spatial-unit violation repairs by rewriting the scene to stay in one location, with neighbor transitions kept coherent.');
+      }
+      return directive('blueprint_rebalance', issue, 'Spatial-unit finding without a scene target requires scene-plan correction.');
+    }
+
     if (validator === 'NarrativeFailureModeValidator') {
       // Prose-style consistency findings (tense drift, repetitive motifs) are
       // beat-local prose defects: the deterministic tense handler plus a
@@ -741,6 +841,17 @@ export class GateRepairRouter {
       // architecture aborted an otherwise-shippable run).
       if (issue.type === 'prose_style_violation' && issue.sceneId) {
         return directive('same_scene_retry', issue, 'Prose-style violation is scene-local prose; deterministic tense repair plus a same-scene rewrite clears it.');
+      }
+      // Authored failure-mode audit contracts (GATE_FAILURE_MODE_AUDIT_REALIZATION):
+      // an unrealized authored mitigation spans its target scenes' dramatic
+      // architecture. With a scene target the cluster rewrite can dramatize the
+      // mitigation; without one this is plan architecture — either way it must
+      // not fall to the unclassified diagnostic_stop dead end.
+      if (issue.type === 'narrative_failure_mode_violation') {
+        if (issue.sceneId) {
+          return directive('scene_cluster_rewrite', issue, 'Authored failure-mode mitigation is scene-targeted; dramatize it with the scene cluster.');
+        }
+        return directive('blueprint_rebalance', issue, 'Authored failure-mode mitigation has no scene target; realization requires plan architecture.');
       }
     }
 

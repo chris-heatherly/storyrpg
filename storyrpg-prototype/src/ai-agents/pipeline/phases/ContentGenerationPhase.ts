@@ -63,7 +63,7 @@ import {
 import { attachSceneEventOwnershipProfiles } from '../../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacingStagePolicy';
-import { isSceneWideTenseDrift, sceneTenseCensus } from '../../utils/proseTense';
+import { detectBeatTenseDrift, isSceneWideTenseDrift, sceneTenseCensus } from '../../utils/proseTense';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/dependencyGraph';
 import { slugify as idSlugify } from '../../utils/idUtils';
 import { forbiddenNpcNames, introducedNpcIds, isIntroducedNpc, npcIdsNamedInProse } from '../../utils/npcIntroductionLedger';
@@ -1687,13 +1687,24 @@ export class ContentGenerationPhase {
         // 2026-07-05T20-47-31: s1-2). Runs before the realization check so a
         // full-scene rewrite cannot drop realization patches applied later.
         if (isGateEnabled('GATE_SCENE_TENSE_CHECK')) {
+          // Per-beat detection is shared with the final contract
+          // (NarrativeFailureModeValidator via detectBeatTenseDrift) so any
+          // beat that would block there is caught here first, where it costs
+          // one SceneWriter retry instead of final-contract repair rounds
+          // (R7 — one detector per defect class). The scene-wide census stays
+          // as a secondary trigger for scenes drifted in aggregate below the
+          // per-beat blocking threshold.
           const tenseCensus = sceneTenseCensus(sceneContent.beats);
-          if (isSceneWideTenseDrift(tenseCensus)) {
+          const beatDrifts = detectBeatTenseDrift(sceneContent.beats);
+          if (beatDrifts.length > 0 || isSceneWideTenseDrift(tenseCensus)) {
+            const driftedBeatIds = beatDrifts.length > 0
+              ? beatDrifts.map((drift) => drift.beatId ?? '')
+              : tenseCensus.driftedBeatIds;
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} narrates live action in past tense (${tenseCensus.driftedBeats}/${tenseCensus.eligibleBeats} narration beats) — retrying with tense feedback`,
-              data: { driftedBeatIds: tenseCensus.driftedBeatIds },
+              message: `Scene ${sceneBlueprint.id} narrates live action in past tense (${beatDrifts.length} blocking beat(s); ${tenseCensus.driftedBeats}/${tenseCensus.eligibleBeats} narration beats drifted) — retrying with tense feedback`,
+              data: { driftedBeatIds },
             });
             const tenseRetry = await withTimeout(
               this.deps.sceneWriter.execute({
@@ -1711,8 +1722,11 @@ export class ContentGenerationPhase {
               error: err instanceof Error ? err.message : String(err),
             }));
             if (tenseRetry.success && tenseRetry.data) {
+              const retryBeatDrifts = detectBeatTenseDrift(tenseRetry.data.beats ?? []);
               const retryCensus = sceneTenseCensus(tenseRetry.data.beats ?? []);
-              if (retryCensus.driftedBeats < tenseCensus.driftedBeats) {
+              const improved = retryBeatDrifts.length < beatDrifts.length
+                || (retryBeatDrifts.length === beatDrifts.length && retryCensus.driftedBeats < tenseCensus.driftedBeats);
+              if (improved) {
                 Object.assign(sceneContent, tenseRetry.data);
                 sceneContent.sceneId = sceneBlueprint.id;
                 sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
@@ -1723,17 +1737,18 @@ export class ContentGenerationPhase {
                 context.emit({
                   type: 'debug',
                   phase: 'scenes',
-                  message: `Tense retry for ${sceneBlueprint.id} adopted: drifted narration beats ${tenseCensus.driftedBeats} -> ${retryCensus.driftedBeats}`,
+                  message: `Tense retry for ${sceneBlueprint.id} adopted: blocking beats ${beatDrifts.length} -> ${retryBeatDrifts.length}; drifted narration beats ${tenseCensus.driftedBeats} -> ${retryCensus.driftedBeats}`,
                 });
               }
             }
+            const residualBeatDrifts = detectBeatTenseDrift(sceneContent.beats);
             const residualCensus = sceneTenseCensus(sceneContent.beats);
-            if (isSceneWideTenseDrift(residualCensus)) {
+            if (residualBeatDrifts.length > 0 || isSceneWideTenseDrift(residualCensus)) {
               context.emit({
                 type: 'warning',
                 phase: 'scenes',
-                message: `Scene ${sceneBlueprint.id} still narrates in past tense after tense retry (${residualCensus.driftedBeats}/${residualCensus.eligibleBeats} beats) — deferring to the final-contract tense repair route.`,
-                data: { driftedBeatIds: residualCensus.driftedBeatIds },
+                message: `Scene ${sceneBlueprint.id} still narrates in past tense after tense retry (${residualBeatDrifts.length} blocking beat(s); ${residualCensus.driftedBeats}/${residualCensus.eligibleBeats} beats) — deferring to the final-contract tense repair route.`,
+                data: { driftedBeatIds: residualBeatDrifts.length > 0 ? residualBeatDrifts.map((drift) => drift.beatId ?? '') : residualCensus.driftedBeatIds },
               });
             }
           }

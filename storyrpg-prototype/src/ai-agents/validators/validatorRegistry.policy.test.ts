@@ -22,6 +22,12 @@ const BLOCKING_WITHOUT_REPAIR_ALLOWLIST: ReadonlySet<string> = new Set([
   'PromiseLedgerValidators',
   // Season Canon knowledge-state seal gate (P4); impossible-knowledge failures have no automated repair yet.
   'CanonConsistencyValidator',
+  // R5 honesty fix (2026-07-06): no final-contract repair can add encounter
+  // phases/tension-curve structure, so the entry carries a written
+  // allowBlockingWithoutRepair exception (see GATE_ENCOUNTER_SETPIECE_DEPTH
+  // policyException in gateRegistry). Prevention is EncounterArchitect's
+  // sustained-set-piece beat floor at build time.
+  'EncounterSetPieceDepthValidator',
 ]);
 
 /** True when the entry has a wired repair: a remediation route that is not 'none'. */

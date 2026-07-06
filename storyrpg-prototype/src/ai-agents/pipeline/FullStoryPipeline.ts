@@ -214,6 +214,7 @@ import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
 import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
 import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phases/ContentGenerationPhase';
 import { AssemblyPhase } from './phases/AssemblyPhase';
+import { bindStoryMediaAssets, rethrowAsImagePhaseFailure } from './mediaBinding';
 import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
 import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
 import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
@@ -3261,7 +3262,7 @@ export class FullStoryPipeline {
         encounters,
       );
 
-      // === PHASE 5.5: IMAGE GENERATION (single-episode mode) ===
+      // === PHASE 5.5: RUN SETUP (output directory, asset registry, branch repair) ===
       await this.checkCancellation();
       // Create output directory EARLY so images are saved to the right location
       // (outputDirectory itself is hoisted above the try for the catch block)
@@ -3339,6 +3340,82 @@ export class FullStoryPipeline {
           choiceSets,
           residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
         });
+      } catch (setupError) {
+        await rethrowAsImagePhaseFailure(setupError, {
+          isLlmQuotaFailure: (err) => this.isLlmQuotaFailure(err),
+          emit: this.emit.bind(this),
+          outputDirectory,
+        });
+      }
+
+      // === PHASE 6: TEXT ASSEMBLY (contract-first: runs BEFORE media spend) ===
+      // Extracted to phases/AssemblyPhase.ts: assembly + registry asset merge,
+      // structural/craft auto-fix, template resolution, and the deterministic
+      // flag-chronology/quote-recall scans (which escalate onto qaReport in
+      // place). The media completeness pass (image gate, asset HTTP checks,
+      // imagesStatus stamp) runs after media generation + binding below.
+      story = await this.assemblyPhase().runTextAssembly(
+        {
+          brief, worldBible, characterBible, episodeBlueprint, sceneContents,
+          choiceSets, encounters, outputDirectory, qaReport,
+        },
+        {
+          config: this.config,
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
+        }
+      );
+      await this.writeArtifactMemory({
+        artifactKind: 'story-json',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'assembly',
+        payload: story,
+        projection: {
+          title: `${story.title || brief.story.title} story JSON`,
+          summary: `Assembled story JSON with ${story.episodes?.length || 0} episode(s).`,
+          metrics: {
+            episodeCount: story.episodes?.length || 0,
+            npcCount: story.npcs?.length || 0,
+          },
+        },
+      });
+
+      finalStoryContractReport = await this.enforceFinalStoryContract({
+        story,
+        brief,
+        requestedEpisodeNumbers: [brief.episode.number],
+        qaReport,
+        bestPracticesReport,
+        phase: 'final_story_contract',
+        validationScope: {
+          mode: 'generated-slice',
+          requestedEpisodeNumbers: [brief.episode.number],
+          generatedEpisodeNumbers: story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? [brief.episode.number],
+          generatedThroughEpisode: brief.episode.number,
+        },
+      });
+      await this.qualityCouncil?.runRoutePlaytest({
+        brief,
+        story,
+        episodeBlueprint,
+        choiceSets,
+        finalStoryContractReport,
+        notes: 'Single-episode route playtest after final story contract validation.',
+      });
+      await this.qualityCouncil?.runFinal({
+        brief,
+        story,
+        qaReport,
+        bestPracticesReport,
+        finalStoryContractReport,
+        notes: 'Single-episode final council audit before saving.',
+      });
+      this.enforceQualityCouncilStrictMode('quality_council_final');
+
+      // === PHASE 6.5: IMAGE GENERATION (single-episode mode; after the text contract passed) ===
+      await this.checkCancellation();
+      try {
         // Set image service output directory to story's images folder
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
@@ -3486,48 +3563,14 @@ export class FullStoryPipeline {
         }
 
         this.seedAssetRegistryFromResults(brief, sceneContents, encounters, imageResults, encounterImageResults);
-        await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
+        await saveEarlyDiagnostic(outputDirectory as string, '08-registry-state.json', this.assetRegistry.toSnapshot());
       } catch (imgError) {
         // Fail fast on provider quota exhaustion to avoid silently degraded outputs.
-        if (this.isLlmQuotaFailure(imgError)) {
-          const quotaMsg = imgError instanceof Error ? imgError.message : String(imgError);
-          this.emit({ type: 'error', phase: 'images', message: `Image generation stopped: ${quotaMsg}` });
-          throw new PipelineError(`Image generation stopped due to LLM quota exhaustion: ${quotaMsg}`, 'images', {
-            agent: 'ImageAgentTeam',
-            context: { mode: 'single-episode' },
-            originalError: imgError instanceof Error ? imgError : undefined,
-          });
-        }
-        if (imgError instanceof PipelineError) {
-          throw imgError;
-        }
-        const imgErrorMsg = imgError instanceof Error ? imgError.message : String(imgError);
-        console.error(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
-        this.emit({
-          type: 'error',
-          phase: 'images',
-          message: `Image generation failed: ${imgErrorMsg}`,
+        await rethrowAsImagePhaseFailure(imgError, {
+          isLlmQuotaFailure: (err) => this.isLlmQuotaFailure(err),
+          emit: this.emit.bind(this),
+          outputDirectory,
         });
-        if (outputDirectory) {
-          try {
-            await savePipelineErrorLog(outputDirectory, [{
-              timestamp: new Date().toISOString(),
-              phase: 'images',
-              message: imgErrorMsg,
-            }]);
-          } catch { /* best-effort save */ }
-        }
-        throw new PipelineError(
-          `Image generation failed: ${imgErrorMsg}`,
-          'images',
-          {
-            context: {
-              outputDirectory,
-              failureKind: 'image_generation',
-            },
-            originalError: imgError instanceof Error ? imgError : undefined,
-          }
-        );
       }
 
       // === PHASE 5.7: VIDEO GENERATION (optional) ===
@@ -3605,71 +3648,27 @@ export class FullStoryPipeline {
         storyCoverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, outputDirectory);
       }
 
-      // === PHASE 6: ASSEMBLY ===
-      // Extracted to phases/AssemblyPhase.ts (pure move): assembly + registry
-      // asset merge, structural/craft auto-fix, template resolution, the
-      // completeness gate (registry coverage + missing-image walk), asset
-      // HTTP verification, and the deterministic flag-chronology/quote-recall
-      // scans (which escalate onto qaReport in place).
-      story = await this.assemblyPhase().run(
-        {
-          brief, worldBible, characterBible, episodeBlueprint, sceneContents,
-          choiceSets, encounters, imageResults, encounterImageResults,
-          storyCoverUrl, videoResults, outputDirectory, qaReport,
-        },
+      // === MEDIA BINDING + COMPLETENESS (post-media pass) ===
+      // Bind the just-generated media into the contract-passed story WITHOUT
+      // re-assembling from sceneContents (which would discard the contract's
+      // in-place repairs), then run the media completeness gate, asset HTTP
+      // verification, and imagesStatus stamp (phases/AssemblyPhase.ts).
+      story = bindStoryMediaAssets(story, {
+        assetRegistry: this.assetRegistry,
+        storyCoverUrl,
+        applyCoverToEpisodes: true,
+        videoResults,
+        imageAgentTeam: this.imageAgentTeam,
+      });
+      story = await this.assemblyPhase().runMediaCompleteness(
+        story,
+        { outputDirectory },
         {
           config: this.config,
           emit: this.emit.bind(this),
           addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
-      await this.writeArtifactMemory({
-        artifactKind: 'story-json',
-        storyId: brief.story.title,
-        episodeNumber: brief.episode.number,
-        lifecycle: 'assembly',
-        payload: story,
-        projection: {
-          title: `${story.title || brief.story.title} story JSON`,
-          summary: `Assembled story JSON with ${story.episodes?.length || 0} episode(s).`,
-          metrics: {
-            episodeCount: story.episodes?.length || 0,
-            npcCount: story.npcs?.length || 0,
-          },
-        },
-      });
-
-      finalStoryContractReport = await this.enforceFinalStoryContract({
-        story,
-        brief,
-        requestedEpisodeNumbers: [brief.episode.number],
-        qaReport,
-        bestPracticesReport,
-        phase: 'final_story_contract',
-        validationScope: {
-          mode: 'generated-slice',
-          requestedEpisodeNumbers: [brief.episode.number],
-          generatedEpisodeNumbers: story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? [brief.episode.number],
-          generatedThroughEpisode: brief.episode.number,
-        },
-      });
-      await this.qualityCouncil?.runRoutePlaytest({
-        brief,
-        story,
-        episodeBlueprint,
-        choiceSets,
-        finalStoryContractReport,
-        notes: 'Single-episode route playtest after final story contract validation.',
-      });
-      await this.qualityCouncil?.runFinal({
-        brief,
-        story,
-        qaReport,
-        bestPracticesReport,
-        finalStoryContractReport,
-        notes: 'Single-episode final council audit before saving.',
-      });
-      this.enforceQualityCouncilStrictMode('quality_council_final');
 
       this.addCheckpoint('Final Story', story, false);
 
@@ -5616,64 +5615,12 @@ export class FullStoryPipeline {
         message: `Story authoring complete for ${episodes.length} episode(s).`,
       });
 
-      if (this.config.imageGen?.enabled) {
-        await this.checkCancellation();
-        this.emit({
-          type: 'phase_start',
-          phase: 'post_story_media',
-          message: 'Story agents complete; starting image and optional media agents...',
-        });
-        this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
-        await this.imageWorkerQueue.run(() =>
-          this.measurePhase('multi_master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, baseBrief))
-        );
+      // 5. Assemble the season TEXT story (contract-first: the treatment
+      // fidelity + final story contract gates run on it BEFORE any image/
+      // media spend; media is generated and bound afterwards).
+      const storyCoverImage =
+        episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage as unknown as string : '';
 
-        const replaceEpisode = (episode: Episode): void => {
-          const idx = episodes.findIndex((candidate) => candidate.number === episode.number);
-          if (idx >= 0) {
-            episodes[idx] = episode;
-          } else {
-            episodes.push(episode);
-          }
-        };
-
-        const mediaArtifacts = [...authoredEpisodeArtifacts].sort((a, b) => (a.episode.number || 0) - (b.episode.number || 0));
-        for (const authored of mediaArtifacts) {
-          await this.checkCancellation();
-          const mediaResult = await this.generateMediaForAuthoredEpisode({
-            ...authored,
-            worldBible,
-            characterBible,
-            outputDirectory,
-          });
-          replaceEpisode(mediaResult.episode);
-          if (mediaResult.encounterImageDiagnostics?.length) {
-            allEncounterImageDiagnostics.push(...mediaResult.encounterImageDiagnostics);
-          }
-          if (mediaResult.storyletFailures?.length) {
-            allStoryletFailures.push(...mediaResult.storyletFailures);
-            const failMsg = mediaResult.storyletFailures.join('; ');
-            console.warn(`[Pipeline] Episode ${mediaResult.episode.number}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
-            this.emit({ type: 'warning', phase: `images_ep_${mediaResult.episode.number}`, message: `Storylet image gaps (continuing): ${failMsg}` });
-          }
-        }
-        episodes.sort((a, b) => (a.number || 0) - (b.number || 0));
-        this.emit({
-          type: 'phase_complete',
-          phase: 'post_story_media',
-          message: `Image/media pass complete for ${mediaArtifacts.length} newly authored episode(s).`,
-        });
-      }
-
-      // 5. Generate cover art + Assemble final story
-      let multiCoverUrl: string | undefined;
-      if (this.config.imageGen?.enabled) {
-        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible, outputDirectory);
-      }
-
-      const storyCoverImage = multiCoverUrl
-        || (episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage as unknown as string : '');
-        
       let story: Story = {
         id: idSlugify(baseBrief.story.title) || 'untitled-story',
         title: baseBrief.story.title,
@@ -5719,13 +5666,6 @@ export class FullStoryPipeline {
           },
         });
       }
-      if (this.config.generation?.assetGenerationMode === 'story-only') {
-        story.imagesStatus = 'pending';
-        await this.saveDraftImageManifest(outputDirectory, story);
-      } else if (this.config.imageGen?.enabled) {
-        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
-      }
-
       // STRUCTURAL AUTO-FIX (parity with the single-episode path, which runs
       // this before its contract): repair navigation/structure issues on the
       // merged season — including dangling choice nextBeatId references — so the
@@ -5796,6 +5736,66 @@ export class FullStoryPipeline {
       });
       this.enforceQualityCouncilStrictMode('quality_council_final');
 
+      // 6. Generate media (after the season text contract passed) and bind it
+      // into the contract-passed story via the asset registry — NOT by
+      // re-assembling episodes, which would discard the contract's in-place
+      // text repairs.
+      if (this.config.imageGen?.enabled) {
+        await this.checkCancellation();
+        this.emit({
+          type: 'phase_start',
+          phase: 'post_story_media',
+          message: 'Story agents complete; starting image and optional media agents...',
+        });
+        this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
+        await this.imageWorkerQueue.run(() =>
+          this.measurePhase('multi_master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, baseBrief))
+        );
+
+        const mediaArtifacts = [...authoredEpisodeArtifacts].sort((a, b) => (a.episode.number || 0) - (b.episode.number || 0));
+        for (const authored of mediaArtifacts) {
+          await this.checkCancellation();
+          const mediaResult = await this.generateMediaForAuthoredEpisode({
+            ...authored,
+            worldBible,
+            characterBible,
+            outputDirectory,
+          });
+          if (mediaResult.encounterImageDiagnostics?.length) {
+            allEncounterImageDiagnostics.push(...mediaResult.encounterImageDiagnostics);
+          }
+          if (mediaResult.storyletFailures?.length) {
+            allStoryletFailures.push(...mediaResult.storyletFailures);
+            const failMsg = mediaResult.storyletFailures.join('; ');
+            console.warn(`[Pipeline] Episode ${mediaResult.episode.number}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
+            this.emit({ type: 'warning', phase: `images_ep_${mediaResult.episode.number}`, message: `Storylet image gaps (continuing): ${failMsg}` });
+          }
+        }
+        this.emit({
+          type: 'phase_complete',
+          phase: 'post_story_media',
+          message: `Image/media pass complete for ${mediaArtifacts.length} newly authored episode(s).`,
+        });
+      }
+
+      // Cover art, then overlay every registry-tracked asset + covers +
+      // NPC portraits onto the contract-passed story (late binding).
+      let multiCoverUrl: string | undefined;
+      if (this.config.imageGen?.enabled) {
+        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible, outputDirectory);
+      }
+      story = bindStoryMediaAssets(story, {
+        assetRegistry: this.assetRegistry,
+        storyCoverUrl: multiCoverUrl,
+        imageAgentTeam: this.imageAgentTeam,
+      });
+      if (this.config.generation?.assetGenerationMode === 'story-only') {
+        story.imagesStatus = 'pending';
+        await this.saveDraftImageManifest(outputDirectory, story);
+      } else if (this.config.imageGen?.enabled) {
+        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
+      }
+
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
         outputDirectory,
@@ -5804,7 +5804,7 @@ export class FullStoryPipeline {
         story,
       );
 
-      // 6. Save results (using outputDirectory created earlier)
+      // 7. Save results (using outputDirectory created earlier)
       // Prepare visual planning outputs for saving
       const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
       

@@ -76,6 +76,25 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   'ReferencedEventPresenceValidator',
   'CharacterIntroductionValidator',
   'SentenceOpenerVarietyValidator',
+  // R5 (2026-07-06) — router/handler consistency: these validators' scene-
+  // localized findings route to same_scene_retry / scene_cluster_rewrite in
+  // gateRepairRouter, so the handler must admit them (a route with no admitting
+  // handler is the same dead end as no route). All name an authored obligation
+  // ("Season promise field X was planned but not realized…") whose fix is
+  // dramatizing it in the named scene; unlocalized findings never reach this
+  // handler (selectSceneProseRepairs requires a sceneId, and the router
+  // classifies them architectural). AuthoredEpisodeConformanceValidator stays
+  // deliberately EXCLUDED: episode-list mismatches are architecture in every
+  // finding shape (see the module doc comment above).
+  'TreatmentFieldUtilizationValidator',
+  'SeasonPromiseRealizationValidator',
+  'CharacterTreatmentRealizationValidator',
+  'InformationLedgerScheduleValidator',
+  'StoryCircleAnchorConformanceValidator',
+  // Spatial-unit violations repair by rewriting the scene to stay in one
+  // location; routed scene_cluster_rewrite (membership here covers the
+  // cluster-already-attempted same-scene fallback).
+  'SceneSpatialUnitValidator',
 ]);
 
 /**
@@ -103,6 +122,11 @@ function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
     issue.validator === 'EncounterQualityValidator'
     && (issue.type === 'encounter_template_collapse' || issue.type === 'encounter_malformed_prose')
   ) return true;
+  // An empty playable scene (R5 dead end #2) is exactly what an LLM scene
+  // re-author fixes: the handler seeds an empty beat scaffold (ids/wiring only
+  // — deterministic code never writes reader-facing text) and SceneCritic
+  // authors the prose. See scaffoldEmptySceneBeats.
+  if (issue.validator === 'EmptyPlayableSceneValidator') return true;
   return issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing';
 }
 
@@ -114,6 +138,12 @@ const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
   'SceneTransitionContinuityValidator',
   'RelationshipArcLedgerValidator',
   'NarrativeMechanicPressureValidator',
+  // R5 (2026-07-06): router/handler consistency for cluster-routed classes.
+  'SceneSpatialUnitValidator',
+  'SeasonPromiseRealizationValidator',
+  'CharacterTreatmentRealizationValidator',
+  'InformationLedgerScheduleValidator',
+  'StoryCircleAnchorConformanceValidator',
 ]);
 
 const MOMENT_REALIZATION_VALIDATORS = new Set([
@@ -206,6 +236,20 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
   ];
   for (const issue of issues) {
     lines.push(`- ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`);
+    if (issue.validator === 'EmptyPlayableSceneValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: this scene currently has NO playable content — its beats are empty scaffolds awaiting prose. ' +
+        'Author the scene from scratch in second person ("you/your"): give every beat concrete on-page action, dialogue, and sensory detail ' +
+        'that fits this scene\'s place in the story (use the scene name and surrounding context). Do not leave any beat empty and do not write meta or planning text.',
+      );
+      continue;
+    }
+    if (issue.validator === 'SceneSpatialUnitValidator') {
+      lines.push(
+        '  NON-NEGOTIABLE: keep this scene\'s meaningful action in ONE major location. Rewrite so introductions, choices, encounters, reveals, and relationship turns all happen in the primary location; a second location may only be mentioned as a destination/handoff at the very end, never as a second stage for on-page action.',
+      );
+      continue;
+    }
     if (issue.validator === 'EncounterProseIntegrityValidator') {
       lines.push(
         '  NON-NEGOTIABLE: fix malformed second-person rewrite residue everywhere in this scene. ' +
@@ -298,11 +342,12 @@ interface EncounterProseBeat {
   setupText?: string;
   escalationText?: string;
 }
-type RepairableTextCarrier = EncounterProseBeat & { textVariants?: Array<{ text?: string }> };
+type RepairableTextCarrier = EncounterProseBeat & { textVariants?: Array<{ text?: string }>; nextBeatId?: string };
 interface RepairableStoryScene {
   id?: string;
   name?: string;
   beats?: RepairableTextCarrier[];
+  startingBeatId?: string;
   requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
   signatureMoment?: string;
   encounter?: {
@@ -356,6 +401,68 @@ function gatherEncounterProseBeats(scene: RepairableStoryScene): Array<{ id?: st
 function repairableBeatsFor(scene: RepairableStoryScene): Array<{ id?: string; text?: string }> {
   if (scene.beats?.length) return scene.beats;
   return gatherEncounterProseBeats(scene);
+}
+
+/** Number of empty beat scaffolds seeded into a beat-less flagged scene. */
+const EMPTY_SCENE_SCAFFOLD_BEATS = 3;
+
+/**
+ * Seed EMPTY beat scaffolds into a scene with no beats at all so SceneCritic
+ * has rewrite targets (R5 dead end #2: EmptyPlayableSceneValidator). The
+ * scaffolds carry ids and nextBeatId wiring ONLY — text stays '' because
+ * deterministic code never authors reader-facing prose; the LLM writes the
+ * beats and pruneEmptyScaffoldBeats removes any scaffold it left empty, so an
+ * empty scaffold can never ship (and re-validation still blocks the scene if
+ * nothing was authored).
+ */
+function scaffoldEmptySceneBeats(scene: RepairableStoryScene): string[] {
+  if (scene.beats?.length) return [];
+  const sceneId = scene.id ?? 'scene';
+  const ids: string[] = [];
+  const beats: RepairableTextCarrier[] = [];
+  for (let i = 1; i <= EMPTY_SCENE_SCAFFOLD_BEATS; i++) {
+    const id = `${sceneId}-repair-b${i}`;
+    ids.push(id);
+    beats.push({ id, text: '' });
+  }
+  for (let i = 0; i < beats.length - 1; i++) beats[i].nextBeatId = ids[i + 1];
+  scene.beats = beats;
+  if (!scene.startingBeatId || !ids.includes(scene.startingBeatId)) {
+    scene.startingBeatId = ids[0];
+  }
+  return ids;
+}
+
+/**
+ * Remove scaffold beats the critic left empty and re-chain the survivors.
+ * Restores the pre-scaffold scene when NO scaffold received prose (the repair
+ * failed outright), so a failed empty-scene repair leaves the story exactly as
+ * it was — still empty, still blocked by re-validation.
+ */
+function pruneEmptyScaffoldBeats(
+  scene: RepairableStoryScene,
+  scaffoldedBeatIds: string[],
+  preScaffoldSnapshot: RepairableStoryScene | undefined,
+): number {
+  if (scaffoldedBeatIds.length === 0) return 0;
+  const scaffoldIds = new Set(scaffoldedBeatIds);
+  const beats = scene.beats ?? [];
+  const kept = beats.filter((beat) => !(beat.id && scaffoldIds.has(beat.id) && !(beat.text ?? '').trim()));
+  const removed = beats.length - kept.length;
+  if (removed === 0) return 0;
+  const keptScaffolds = kept.filter((beat) => beat.id && scaffoldIds.has(beat.id));
+  if (keptScaffolds.length === 0 && preScaffoldSnapshot) {
+    restoreRepairableScene(scene, preScaffoldSnapshot);
+    return removed;
+  }
+  scene.beats = kept;
+  for (let i = 0; i < keptScaffolds.length; i++) {
+    keptScaffolds[i].nextBeatId = keptScaffolds[i + 1]?.id;
+  }
+  if (scene.startingBeatId && scaffoldIds.has(scene.startingBeatId) && !kept.some((beat) => beat.id === scene.startingBeatId)) {
+    scene.startingBeatId = kept[0]?.id ?? preScaffoldSnapshot?.startingBeatId;
+  }
+  return removed;
 }
 
 function readerFacingTextForCarrier(carrier: RepairableTextCarrier): string {
@@ -896,6 +1003,22 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
       }
       const issues = mergeRepairIssues(currentIssues, cumulativeMomentIssues);
       const scene = findStoryScene(story, sceneId, issues[0]?.episodeNumber);
+      // Empty playable scene (R5 dead end #2): a flagged scene with NO beats
+      // gets an empty scaffold so SceneCritic has rewrite targets. Wiring only
+      // — the LLM authors the prose; unfilled scaffolds are pruned afterwards.
+      let scaffoldedBeatIds: string[] = [];
+      let preScaffoldSnapshot: RepairableStoryScene | undefined;
+      if (
+        scene
+        && repairableBeatsFor(scene).length === 0
+        && issues.some((issue) => issue.validator === 'EmptyPlayableSceneValidator')
+      ) {
+        preScaffoldSnapshot = cloneRepairableScene(scene);
+        scaffoldedBeatIds = scaffoldEmptySceneBeats(scene);
+        if (scaffoldedBeatIds.length > 0) {
+          opts.emit?.(`Scene-prose contract repair: seeded ${scaffoldedBeatIds.length} empty beat scaffold(s) in ${sceneId} for LLM authoring (empty playable scene).`);
+        }
+      }
       const initialBeats = scene ? repairableBeatsFor(scene) : [];
       if (!scene || initialBeats.length === 0) {
         opts.emit?.(`Scene-prose contract repair: scene ${sceneId} not found or has no rewritable prose; skipping.`);
@@ -1016,6 +1139,13 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         }
       } catch (err) {
         opts.emit?.(`Scene-prose contract repair for ${sceneId} failed (keeping original): ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        // Empty-scene scaffolds the LLM did not fill must never survive: prune
+        // them (restoring the pre-scaffold scene when nothing was authored).
+        const pruned = pruneEmptyScaffoldBeats(scene, scaffoldedBeatIds, preScaffoldSnapshot);
+        if (pruned > 0) {
+          opts.emit?.(`Scene-prose contract repair: pruned ${pruned} unfilled beat scaffold(s) from ${sceneId}.`);
+        }
       }
     }
 

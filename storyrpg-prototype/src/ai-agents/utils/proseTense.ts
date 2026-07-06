@@ -40,9 +40,46 @@ export interface SceneTenseCensus {
   driftedBeatIds: string[];
 }
 
-interface CensusBeat {
+export interface CensusBeat {
   id?: string;
   text?: unknown;
+}
+
+/**
+ * Per-beat blocking threshold: a single beat with this many subject+past-verb
+ * pairs in its dialogue-stripped narration is a blocking tense-drift finding.
+ * Shared by the scene-time gate and the final contract (R7 — one detector per
+ * defect class).
+ */
+export const BEAT_TENSE_DRIFT_MIN_MATCHES = 3;
+
+export interface BeatTenseDrift {
+  beatId?: string;
+  /** The beat's raw text (for excerpting in validator messages). */
+  text: string;
+  /** Past-tense live-action matches found in the beat's narration. */
+  matches: number;
+}
+
+/**
+ * Per-beat past-tense live-action detection — THE single detector for the
+ * blocking tense-drift defect class. Both the scene-time check
+ * (ContentGenerationPhase, GATE_SCENE_TENSE_CHECK) and the final contract
+ * (NarrativeFailureModeValidator.detectTenseDrift) run this same function
+ * over the same beat surface, so prose that passes at scene time cannot fail
+ * per-beat at the final contract unchanged.
+ */
+export function detectBeatTenseDrift(beats: CensusBeat[] | undefined): BeatTenseDrift[] {
+  const drifted: BeatTenseDrift[] = [];
+  for (const beat of beats ?? []) {
+    const text = typeof beat.text === 'string' ? beat.text : '';
+    if (!text || hasPastEventMarker(text)) continue;
+    const matches = pastTenseLiveActionMatches(text);
+    if (matches >= BEAT_TENSE_DRIFT_MIN_MATCHES) {
+      drifted.push({ beatId: beat.id, text, matches });
+    }
+  }
+  return drifted;
 }
 
 /**

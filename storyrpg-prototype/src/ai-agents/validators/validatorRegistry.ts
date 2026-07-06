@@ -313,8 +313,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // narrative permission.
   { validator: 'NarrativeMechanicPressureValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_NARRATIVE_MECHANIC_PRESSURE', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Sustained set pieces must preserve escalating encounter structure instead of
-  // collapsing to one decision plus summary.
-  { validator: 'EncounterSetPieceDepthValidator', stage: 'final', tier: 'blocking', remediation: 'regen-encounter', rolloutFlag: 'GATE_ENCOUNTER_SETPIECE_DEPTH', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
+  // collapsing to one decision plus summary. R5 honesty fix (2026-07-06): no
+  // regen-encounter route exists at the final contract — findings are missing
+  // encounter STRUCTURE (phases / tension curve), which prose repair cannot add.
+  // The router classifies them architectural; prevention is EncounterArchitect's
+  // sustained-set-piece beat floor at build time.
+  { validator: 'EncounterSetPieceDepthValidator', stage: 'final', tier: 'blocking', remediation: 'none', allowBlockingWithoutRepair: 'Structural encounter-depth findings have no final-contract repair route; the generative floor in EncounterArchitect (sustainedEncounter util) is the enforcement half. See GATE_ENCOUNTER_SETPIECE_DEPTH policyException in gateRegistry.', rolloutFlag: 'GATE_ENCOUNTER_SETPIECE_DEPTH', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },
   // Standard-scene required beats must be dramatized on-page, not merely present
   // in scene-plan metadata.
   { validator: 'RequiredBeatRealizationValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_REQUIRED_BEAT_REALIZATION', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract via runFidelityValidators)' },

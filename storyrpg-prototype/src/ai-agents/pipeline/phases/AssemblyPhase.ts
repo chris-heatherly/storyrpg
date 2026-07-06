@@ -1,14 +1,23 @@
 /**
  * Assembly Phase
  *
- * Phase 6 of story generation: assembles the final Story from the generated
- * parts (via the monolith's assembleStory closure), merges registry-tracked
- * assets onto it, runs the structural auto-fix and the gated craft auto-fix,
- * resolves player templates, enforces the pre-generation completeness gate
- * (registry coverage + the per-story missing-image walk), verifies asset
- * URLs over HTTP (Tier 1 QA), runs the deterministic flag-chronology and
- * quote-recall scans (escalating findings onto the QA report in place), and
- * stamps imagesStatus / the draft image manifest.
+ * Phase 6 of story generation, split into two passes so the final TEXT
+ * contract can run between them (contract-first ordering — validate text
+ * before any image/video/audio spend):
+ *
+ *   - `runTextAssembly` assembles the Story from the generated parts (via
+ *     the monolith's assembleStory closure), merges registry-tracked assets
+ *     onto it, runs the structural auto-fix and the gated craft auto-fix,
+ *     resolves player templates, and runs the deterministic flag-chronology
+ *     and quote-recall scans (escalating findings onto the QA report in
+ *     place). Everything here is text-level — no media required.
+ *   - `runMediaCompleteness` runs AFTER media generation + binding: the
+ *     pre-generation completeness gate (registry coverage + the per-story
+ *     missing-image walk), asset HTTP verification (Tier 1 QA), and the
+ *     imagesStatus / draft-image-manifest stamp.
+ *
+ * `run` composes both passes back-to-back (the original single-pass
+ * behavior, used by tests/callers that don't interleave the contract).
  *
  * Faithful port of the "PHASE 6: ASSEMBLY" region from
  * FullStoryPipeline.generate() (pure move): same gates, same events, same
@@ -114,8 +123,19 @@ export class AssemblyPhase {
 
   constructor(private readonly deps: AssemblyPhaseDeps) {}
 
-  /** Returns the assembled (and possibly auto-fixed) story for the caller to adopt. */
+  /** Original single-pass behavior: text assembly followed by the media completeness pass. */
   async run(input: AssemblyPhaseInput, context: PipelineContext): Promise<Story> {
+    const story = await this.runTextAssembly(input, context);
+    return this.runMediaCompleteness(story, input, context);
+  }
+
+  /**
+   * Text-level assembly: assemble, auto-fix, resolve templates, and run the
+   * deterministic scans. Safe to run BEFORE media generation — the final
+   * story contract gates on this story before any image/video/audio spend.
+   * Returns the assembled (and possibly auto-fixed) story for the caller to adopt.
+   */
+  async runTextAssembly(input: AssemblyPhaseInput, context: PipelineContext): Promise<Story> {
     const {
       brief,
       worldBible,
@@ -128,7 +148,6 @@ export class AssemblyPhase {
       encounterImageResults,
       storyCoverUrl,
       videoResults,
-      outputDirectory,
       qaReport,
     } = input;
 
@@ -218,6 +237,62 @@ export class AssemblyPhase {
       }
     }
     story = this.deps.resolveGeneratedStoryPlayerTemplates(story, brief);
+
+    // === DETERMINISTIC FLAG CHRONOLOGY SCAN ===
+    // Walk the assembled story to catch forward-reference paradoxes that the
+    // LLM-based QA may have missed or mis-classified. Any violations become
+    // criticalIssues on the QA report, which would have triggered the repair
+    // loop had they been caught earlier.
+    if (story && qaReport) {
+      const flagIssues = this.deps.runFlagChronologyScan(story);
+      if (flagIssues.length > 0) {
+        for (const issue of flagIssues) {
+          if (!qaReport.criticalIssues.includes(issue)) {
+            qaReport.criticalIssues.push(issue);
+          }
+        }
+        if (qaReport.criticalIssues.length > 0) {
+          qaReport.passesQA = false;
+        }
+        context.emit({
+          type: 'warning',
+          phase: 'qa',
+          message: `Deterministic flag chronology scan found ${flagIssues.length} forward-reference issue(s): ${flagIssues.join('; ')}`,
+        });
+      }
+
+      const quoteRecallIssues = findUnsupportedQuotedRecallIssues(story);
+      if (quoteRecallIssues.length > 0) {
+        for (const issue of quoteRecallIssues) {
+          if (!qaReport.criticalIssues.includes(issue.detail)) {
+            qaReport.criticalIssues.push(issue.detail);
+          }
+        }
+        qaReport.passesQA = false;
+        context.emit({
+          type: 'warning',
+          phase: 'qa',
+          message: `Deterministic quote recall scan found ${quoteRecallIssues.length} unsupported recalled quote(s): ${quoteRecallIssues.map(issue => issue.quote).join('; ')}`,
+        });
+      }
+    }
+
+    return story;
+  }
+
+  /**
+   * Media-completeness pass: runs AFTER media generation + binding. Enforces
+   * the pre-generation completeness gate, verifies asset URLs over HTTP
+   * (Tier 1 QA), and stamps imagesStatus / the draft image manifest.
+   * Returns the (possibly stamped) story.
+   */
+  async runMediaCompleteness(
+    storyInput: Story,
+    input: Pick<AssemblyPhaseInput, 'outputDirectory'>,
+    context: PipelineContext
+  ): Promise<Story> {
+    const story = storyInput;
+    const { outputDirectory } = input;
 
     // === PRE-GENERATION COMPLETENESS GATE ===
     // Strict: ANY missing image halts the pipeline. No silent fallbacks.
@@ -350,45 +425,6 @@ export class AssemblyPhase {
       } catch (err) {
         if (err instanceof PipelineError) throw err;
         console.warn('[Pipeline] Asset HTTP verification failed (non-fatal):', (err as Error).message);
-      }
-    }
-
-    // === DETERMINISTIC FLAG CHRONOLOGY SCAN ===
-    // Walk the assembled story to catch forward-reference paradoxes that the
-    // LLM-based QA may have missed or mis-classified. Any violations become
-    // criticalIssues on the QA report, which would have triggered the repair
-    // loop had they been caught earlier.
-    if (story && qaReport) {
-      const flagIssues = this.deps.runFlagChronologyScan(story);
-      if (flagIssues.length > 0) {
-        for (const issue of flagIssues) {
-          if (!qaReport.criticalIssues.includes(issue)) {
-            qaReport.criticalIssues.push(issue);
-          }
-        }
-        if (qaReport.criticalIssues.length > 0) {
-          qaReport.passesQA = false;
-        }
-        context.emit({
-          type: 'warning',
-          phase: 'qa',
-          message: `Deterministic flag chronology scan found ${flagIssues.length} forward-reference issue(s): ${flagIssues.join('; ')}`,
-        });
-      }
-
-      const quoteRecallIssues = findUnsupportedQuotedRecallIssues(story);
-      if (quoteRecallIssues.length > 0) {
-        for (const issue of quoteRecallIssues) {
-          if (!qaReport.criticalIssues.includes(issue.detail)) {
-            qaReport.criticalIssues.push(issue.detail);
-          }
-        }
-        qaReport.passesQA = false;
-        context.emit({
-          type: 'warning',
-          phase: 'qa',
-          message: `Deterministic quote recall scan found ${quoteRecallIssues.length} unsupported recalled quote(s): ${quoteRecallIssues.map(issue => issue.quote).join('; ')}`,
-        });
       }
     }
 

@@ -42,6 +42,7 @@ import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidato
 import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/scenePlan';
 import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
+import { PRESENCE_MIN_SCORE } from '../remediation/realizationEvaluator';
 
 /** Stopwords stripped before keyword overlap (mirrors TreatmentFidelityValidator). */
 const STOPWORDS = new Set([
@@ -83,8 +84,10 @@ const INVERSION_WINDOW_TOKENS = 6;
  */
 const INVERSION_MAX_SIG_TOKENS = 12;
 
-/** Minimum content-word overlap for a signature to count as "present". */
-const PRESENCE_MIN_SCORE = 0.5;
+// Minimum content-word overlap for a signature to count as "present" is
+// PRESENCE_MIN_SCORE, single-sourced from realizationEvaluator (R7 detector
+// unification) so the repair loop's local realization mirror and this
+// validator can never disagree about the threshold.
 
 function normalize(value: string): string {
   return value

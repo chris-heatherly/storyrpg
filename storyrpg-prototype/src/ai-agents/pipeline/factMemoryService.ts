@@ -365,11 +365,29 @@ export class FactMemoryService {
     return facts.slice(0, MAX_FACTS_PER_ARTIFACT);
   }
 
+  // Fact writes drain serially in the background: the old per-artifact
+  // Promise.all fan-out (dozens of concurrent /add posts) queued behind
+  // Cognee's single-writer ingestion and every write aborted at the client
+  // timeout while blocking the pipeline (2026-07-04). Memory is advisory, so
+  // queued-write errors are swallowed here (fail-open).
+  private writeQueue: Promise<void> = Promise.resolve();
+
+  private enqueueWrite(task: () => Promise<unknown>): void {
+    this.writeQueue = this.writeQueue.then(() => task().then(() => undefined, () => undefined));
+  }
+
+  /** Await all queued background memory writes (tests, end-of-run flush). */
+  async flush(): Promise<void> {
+    await this.writeQueue;
+  }
+
   async writeFactsForArtifact(envelope: PipelineArtifactEnvelope): Promise<PipelineFactRecord[]> {
     const facts = this.extractFacts(envelope);
-    await Promise.all(facts.map((fact) => this.memory.writeFactSnapshot(fact)));
+    for (const fact of facts) {
+      this.enqueueWrite(() => this.memory.writeFactSnapshot(fact));
+    }
     if (facts.length > 0) {
-      await this.memory.cognifyDatasets([`storyrpg-run-${slugifyMemoryKey(envelope.storyId)}`], { background: true });
+      this.enqueueWrite(() => this.memory.cognifyDatasets([`storyrpg-run-${slugifyMemoryKey(envelope.storyId)}`], { background: true }));
     }
     return facts;
   }

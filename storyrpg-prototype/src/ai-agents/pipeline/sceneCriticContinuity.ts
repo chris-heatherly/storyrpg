@@ -414,6 +414,7 @@ export class SceneCriticContinuity {
     // continuity rather than the stale pre-repair count.
     recomputeQAReportDerived(qaReport);
 
-    return { ran: true, succeeded, residueErrors: merged.filter((i) => i.severity === 'error').length };
+    const residueErrors = merged.filter((i) => i.severity === 'error').length;
+    return { ran: true, succeeded: succeeded && residueErrors === 0, residueErrors };
   }
 }

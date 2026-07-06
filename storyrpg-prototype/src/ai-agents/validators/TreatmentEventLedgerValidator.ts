@@ -1,6 +1,6 @@
 import type { Beat, Scene, Story } from '../../types';
 import type { PlannedScene, SceneOwnedEvent, SeasonScenePlan, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
-import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
+import { detectRealizedStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { buildEncounterEventSignature } from '../utils/encounterEventSignature';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
@@ -240,7 +240,7 @@ function finalSceneById(story: Story): Map<string, { scene: Scene; episode: NonN
 }
 
 function realizedOwnedCues(scene: Scene): Set<StoryEventCue> {
-  return detectPrimaryStoryEventCues(readerFacingSceneProse(scene));
+  return detectRealizedStoryEventCues(readerFacingSceneProse(scene));
 }
 
 function ownedCueMissing(event: SceneOwnedEvent, realized: Set<StoryEventCue>): boolean {

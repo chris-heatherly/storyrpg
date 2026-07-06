@@ -267,8 +267,11 @@ export function buildPipelineConfig(
       // 8192 runtime ceiling despite the default config documenting 16384.
       choiceAuthor: buildAgentConfig('choice', { maxTokens: 16384, temperature: 0.75 }),
       // Lower temperature for consistent grading; decorrelated from the author
-      // when a distinct QA model is assigned (within the same family).
-      qaRunner: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.3 }),
+      // when a distinct QA model is assigned (within the same family). maxTokens
+      // 8192 (was 4096) so the ProseCraft judge's structured cap reaches its
+      // schema ceiling min(8192, 6144)=6144 instead of truncating at 4096 —
+      // mirrors config.ts loadConfig(). Ceiling, not a charge; env-overridable.
+      qaRunner: buildAgentConfig('qa', { maxTokens: Number.parseInt(env.EXPO_PUBLIC_QA_MAX_TOKENS || env.QA_MAX_TOKENS || '8192', 10) || 8192, temperature: 0.3 }),
       // BranchManager only annotates a deterministic skeleton now — light enough
       // to ride the cheaper QA-tier model assignment (annotation temperature).
       branchManager: buildAgentConfig('qa', { maxTokens: 4096, temperature: 0.7 }),

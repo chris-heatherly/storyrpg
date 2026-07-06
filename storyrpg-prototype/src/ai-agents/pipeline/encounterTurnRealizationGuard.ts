@@ -1,3 +1,16 @@
+/**
+ * Assessment-only guard for authored encounter turn realization.
+ *
+ * DO NOT add a deterministic "repair" that writes contract/treatment text into
+ * encounter prose. A previous repair here prepended the raw authored moment
+ * plus a validator-register marker ("The encounter outcome changes on-page.")
+ * onto storylet outcome beats. Because the injected text carried exactly the
+ * tokens this assessment scores, it gamed the check, suppressed the LLM
+ * retry-with-feedback loop in ContentGenerationPhase, and shipped 3rd-person /
+ * planning-register / out-of-order prose to readers (bite-me, 2026-07).
+ * Under-realized encounters must fail this assessment so the caller's
+ * regeneration path fixes them in authored prose.
+ */
 import type { Scene } from '../../types';
 import type { RequiredBeat, SceneTurnContract } from '../../types/scenePlan';
 import type { EncounterStructure } from '../agents/EncounterArchitect';
@@ -17,10 +30,6 @@ export interface EncounterTurnRealizationAssessment {
   prose: string;
   misses: EncounterTurnRealizationMiss[];
 }
-
-type MutableEncounter = EncounterStructure & {
-  storylets?: Record<string, { beats?: Array<{ text?: string }> }> | Array<{ beats?: Array<{ text?: string }> }>;
-};
 
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
@@ -55,64 +64,6 @@ function missingTokensCoveredByEncounterSynonyms(miss: EncounterTurnRealizationM
   if (missing.size === 0) return false;
   if (![...missing].every((token) => declineEntryTokens.has(token))) return false;
   return depictsDeclinedEntry(miss.moment, prose);
-}
-
-function encounterStoryletEntries(encounter: MutableEncounter): Array<[string, { beats?: Array<{ text?: string }> }]> {
-  const storylets = encounter.storylets;
-  if (!storylets) return [];
-  if (Array.isArray(storylets)) {
-    return storylets.map((storylet, index) => [String(index), storylet]);
-  }
-  return Object.entries(storylets);
-}
-
-function isPositiveStoryletKey(key: string): boolean {
-  const normalized = normalizeForPattern(key);
-  return normalized === 'victory'
-    || normalized === 'success'
-    || normalized === 'partialvictory'
-    || normalized === 'partial victory'
-    || normalized === 'partial';
-}
-
-export function repairEncounterTurnRealization(
-  sceneBlueprint: Pick<SceneBlueprint, 'id' | 'name' | 'turnContract' | 'requiredBeats' | 'signatureMoment'>,
-  encounter: EncounterStructure,
-): number {
-  const assessment = assessEncounterTurnRealization(sceneBlueprint, encounter);
-  if (assessment.passed) return 0;
-
-  const positives = encounterStoryletEntries(encounter as MutableEncounter)
-    .filter(([key]) => isPositiveStoryletKey(key))
-    .map(([, storylet]) => storylet);
-  if (positives.length === 0) return 0;
-
-  const fallback = repairSentenceForMisses(assessment.misses);
-  let repaired = 0;
-  for (const storylet of positives) {
-    const beats = storylet.beats ?? [];
-    if (beats.length === 0) {
-      storylet.beats = [{ text: fallback }];
-      repaired += 1;
-      continue;
-    }
-    const first = beats[0];
-    const current = cleanText(first.text);
-    if (!current.includes(fallback)) {
-      first.text = current ? `${fallback} ${current}` : fallback;
-      repaired += 1;
-    }
-  }
-  return repaired;
-}
-
-function repairSentenceForMisses(misses: EncounterTurnRealizationMiss[]): string {
-  const joined = misses.map((miss) => miss.moment).join(' ');
-  if (/\bvictor\b/i.test(joined) && /\binterven/i.test(joined) && /\battack/i.test(joined)) {
-    return 'Victor intervenes before the attack can finish, saving Kylie and changing the outcome of the encounter.';
-  }
-  const moment = cleanText(misses[0]?.moment);
-  return moment ? `${moment} The encounter outcome changes on-page.` : 'The required encounter turn lands on-page.';
 }
 
 function concreteTurnMoment(contract: SceneTurnContract | undefined): string {

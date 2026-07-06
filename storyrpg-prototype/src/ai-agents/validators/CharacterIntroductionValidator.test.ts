@@ -74,6 +74,44 @@ describe('CharacterIntroductionValidator', () => {
     expect(errors[0].message).toContain('s2-4');
   });
 
+  it('does not flag a verbal forward reference the scene contract itself stages (storyrpg-lite 2026-07-05 Mika)', () => {
+    // The authored s1-2 turn has Stela speak OF "her other friend Mika" before
+    // Mika's on-page introduction in the next scene — the treatment demands
+    // the mention, so it is a planned reference, not a cold name-drop.
+    const story = makeStory(
+      [
+        { id: 'char-stela-pavel', name: 'Stela Pavel' },
+        { id: 'char-mika-dragan', name: 'Mika Dragan' },
+      ],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-2',
+            charactersInvolved: ['char-stela-pavel'],
+            beats: [beat("'My friend Mika and I are going to Valescu Club tonight,' Stela Pavel says. 'You should come.'")],
+          }),
+          makeScene({
+            id: 's1-3',
+            charactersInvolved: ['char-stela-pavel', 'char-mika-dragan'],
+            beats: [beat("'Mika, this is Kylie.' Mika Dragan gestures to the empty seat.")],
+          }),
+        ],
+      }],
+    );
+    const plannedSceneContractText = new Map([
+      ['s1-2', 'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.'],
+    ]);
+
+    const withContract = validator.validate({ story, plannedSceneContractText });
+    expect(withContract.issues.filter((i) => i.severity === 'error')).toEqual([]);
+
+    // Without the contract context the same story still flags — the exception
+    // is scoped to plan-staged references only.
+    const withoutContract = validator.validate({ story });
+    expect(withoutContract.issues.filter((i) => i.severity === 'error')).toHaveLength(1);
+  });
+
   it('flags the Sylvanor class: cast in metadata but never named in prose', () => {
     const story = makeStory(
       [{ id: 'char-sylvanor', name: 'Sylvanor Dawnheart' }],
@@ -152,6 +190,51 @@ describe('CharacterIntroductionValidator', () => {
 
     const result = validator.validate({ story });
     expect(result.issues.filter((issue) => issue.message.includes('back-reference'))).toEqual([]);
+  });
+
+  it('does not flag a multi-character bookshop introduction that mentions a club handoff', () => {
+    const story = makeStory(
+      [
+        { id: 'char-mika', name: 'Mika Dragan' },
+        { id: 'char-stela', name: 'Stela Pavel' },
+      ],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-2',
+            charactersInvolved: ['char-mika', 'char-stela'],
+            beats: [beat('You push through the bookshop door. Stela Pavel looks up from the counter and offers a hand. "Kylie?" she says. "Mika mentioned you might wander in. There is a private door at the Vâlcescu Club tonight if you want to see what her other friend means by nightlife."')],
+          }),
+        ],
+      }],
+    );
+
+    const result = validator.validate({ story });
+    expect(result.issues.filter((issue) => issue.message.includes('off-page familiarity'))).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('still flags summary-style third-person familiarity on a first meeting scene', () => {
+    const story = makeStory(
+      [
+        { id: 'char-mika', name: 'Mika Dragan' },
+        { id: 'char-stela', name: 'Stela Pavel' },
+      ],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-2',
+            charactersInvolved: ['char-mika', 'char-stela'],
+            beats: [beat('She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.')],
+          }),
+        ],
+      }],
+    );
+
+    const result = validator.validate({ story });
+    expect(result.issues.some((issue) => issue.message.includes('off-page familiarity'))).toBe(true);
   });
 
   it('matches accented names via the unique first token', () => {

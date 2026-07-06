@@ -442,7 +442,12 @@ describe('planned scene obligation binder', () => {
     expect(result.report.decisions.find((decision) => decision.contractId === 'park-rescue-chain')?.issueKind).toBe('valid_dense_scene_needs_more_beats');
   });
 
-  it('splits compact same-scene authored action series into independently enforced beats', () => {
+  it('keeps a same-scene authored action series as one beat instead of multiplying hard units', () => {
+    // 2026-07-05 SceneConstructionGate regression: splitting an action chain
+    // whose parts ALL route back to the same scene turned one hard obligation
+    // into three, pushing the scene over the hard-unit budget and aborting the
+    // run. Splitting is only allowed when the parts route to >= 2 distinct
+    // scenes (see the multi-scene chain test above).
     const keyCardSeed = {
       id: 'keycard-seed',
       sourceTurn: "The key card to Vâlcescu Club's side entrance.",
@@ -466,11 +471,8 @@ describe('planned scene obligation binder', () => {
     ], { episodeNumber: 1 });
 
     expect(result.scenes[0]?.requiredBeats?.map((beat) => beat.mustDepict)).toEqual([
-      'Mika adopts Kylie at the door of Vâlcescu Club on night two',
-      'Mika swaps out her "American shoes,"',
-      'Mika hands her a key card to the side entrance.',
+      'Mika adopts Kylie at the door of Vâlcescu Club on night two, swaps out her "American shoes," and hands her a key card to the side entrance.',
     ]);
-    expect(result.report.decisions.find((decision) => decision.contractId === 'club-door-chain')?.issueKind).toBe('valid_dense_scene_needs_more_beats');
   });
 
   it('ledgers future seed required beats instead of leaving them on the opening scene', () => {

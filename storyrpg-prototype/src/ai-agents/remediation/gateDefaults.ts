@@ -123,11 +123,44 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // written scene that under-realizes its authored moments gets ONE immediate
   // SceneWriter retry with the exact missing content words as feedback
   // (deterministic mirror of the final validators — no extra LLM to detect);
-  // if authored/signature moments remain missing after that retry, the scene
-  // fails locally instead of deferring the blocker to final-contract repair;
+  // if authored/signature moments remain missing after that retry, the miss is
+  // deferred to the season-final realization gate (which routes a bounded
+  // judge+regen repair) instead of aborting the run;
   // (b) polish/regen rewrites that would LOSE a depicted authored moment are
   // reverted (free).
   GATE_SCENE_REQUIRED_BEAT_CHECK: true,
+
+  // Scene-time narration-tense check (2026-07-05 abort analysis: bite-me
+  // s1-2 shipped a whole scene in past tense that only surfaced at the final
+  // contract). When the freshly written scene's narration census reads as
+  // scene-wide past tense (present tense is the story convention), route ONE
+  // SceneWriter retry with tense feedback immediately — one scene call here
+  // vs repair rounds (or an abort) at season-final. Residual drift is a
+  // warning; the final contract's deterministic tense handler + same-scene
+  // rewrite route finish the job.
+  GATE_SCENE_TENSE_CHECK: true,
+
+  // Two-tier gate policy (2026-07-05 stability audit). An under-realized scene
+  // after the bounded retry is a QUALITY finding, not a run-safety blocker: the
+  // prose is LLM-authored, the miss is re-detected identically at season-final
+  // (sceneContent.requiredBeats travels with the content), and the final
+  // contract routes a focused scene-regen repair there. Aborting mid-run
+  // discarded ~25 minutes of work per hit and was one of the top recurring
+  // blockers. OFF: warn + defer to the season-final realization gate (default).
+  // ON: restore the old hard abort at scene time.
+  GATE_SCENE_REALIZATION_ABORT: false,
+
+  // Authoring-time outcome-tier re-author (2026-07-04, late-detection audit).
+  // When ChoiceAuthor only partially authors a choice, normalizeChoiceSet fills
+  // the missing outcomeTexts tiers with deterministic fallback stubs; those
+  // stubs were only caught by OutcomeTextQualityValidator at the episode
+  // contract (`outcome_text_stub` — the #1 recent run blocker, 15 of the recent
+  // blocked runs) and then repaired by the focused reauthorOutcomeTexts call
+  // (38/39 success once routed). When ON, that same focused re-author runs
+  // INSIDE ChoiceAuthor.execute the moment a stub tier is detected, so the fix
+  // costs one small LLM call at authoring time instead of a contract round.
+  // The contract gate (GATE_OUTCOME_TEXT_QUALITY) stays on as the regression net.
+  GATE_CHOICE_OUTCOME_TIER_REAUTHOR: true,
 
   // Judge confirmation for HEURISTIC fidelity findings (WS3, 2026-06-11 audit).
   // RequiredBeatRealization / SignatureDevicePresence are keyword-overlap
@@ -138,6 +171,17 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // stays blocking) — so this gate can only PREVENT false-positive aborts,
   // never create one. ON by default.
   GATE_FIDELITY_JUDGE_CONFIRM: true,
+
+  // Route restage arbitration (2026-07-05 abort analysis). The route-continuity
+  // duplicate-event/chronology detectors are keyword cue regexes over creative
+  // prose — structurally prone to false positives ("Grab Mika's phone" in a
+  // blog-draft choice label read as restaging the park attack and aborted the
+  // run). Policy: a cue match ALONE never blocks. One bounded LLM call must
+  // CONFIRM the restage for the finding to stay blocking; refuted or
+  // uncorroborated (arbiter unavailable/failed) findings demote to annotated
+  // warnings. Deliberately the inverse of the fidelity judge's conservative
+  // default: blocking is reserved for corroborated defects. ON by default.
+  GATE_ROUTE_RESTAGE_ARBITER: true,
 
   // ── Wave 4: plan-time gates ──
   // PROMOTED ON after a clean shadow pass: across the six gen-3/4/5 runs recorded in
@@ -206,6 +250,19 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // conflicts to a blocking hard-abort (StoryArchitect regenerates; the
   // content-phase re-check aborts). Reversible via =0. Default-ON.
   GATE_SCENE_CONSTRUCTION_PREFLIGHT: true,
+  // Deterministic demote-to-aftermath ownership repair inside
+  // attachSceneEventOwnershipProfiles (2026-07-04 audit: SceneConstructionGate
+  // duplicate-ownership conflicts were the single largest hard-abort surface,
+  // 5/12 Bite-Me Ep1 runs, and the planned blueprint path has NO retry — the
+  // plan is deterministic so regeneration reproduces the identical conflict).
+  // When a later, NON-encounter-capable scene duplicates a duplicate-sensitive
+  // event an earlier scene owns (e.g. an aftermath blog-post scene "owning"
+  // threatEncounter off reference text), the event is dropped from that scene's
+  // ownership and routed through the existing forbidden-restage/aftermath
+  // machinery instead of aborting. Only removes ownership a non-encounter scene
+  // could never legally stage; encounter-vs-encounter duplicates still block.
+  // Reversible via =0 (restores the historical hard-abort).
+  GATE_OWNERSHIP_AFTERMATH_DEMOTION: true,
   // Treatment-seed on-page presence: every treatment_seed_* declared for an
   // episode must be set via a setFlag consequence on some choice in that episode.
   // Seeds are emitted deterministically upstream, so this is a pure backstop.
@@ -251,6 +308,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // false positives can't abort a run. Promoted ON at landing (user: promote the two
   // high-confidence blockers now). Reversible via =0.
   GATE_ENCOUNTER_POV: true,
+  // Opening-anchor POV: every scene's first prose beat must anchor the player
+  // (you/your or {{player.name}}). This rule was previously enforced ONLY at the
+  // scene-lock gate from stale scene-time validation results, where one degraded
+  // s1-1 opening hard-aborted an otherwise-complete run with no repair route
+  // (bite-me 2026-07-05T23-54-17). ON here preserves the same enforcement
+  // strength at the final contract, where the finding routes to a same-scene LLM
+  // rewrite (gateRepairRouter: pov_anchor_missing → same_scene_retry) instead of
+  // aborting. Reversible via GATE_POV_ANCHOR=0 (findings demote to warnings).
+  GATE_POV_ANCHOR: true,
   // bite-me-g22/g23: second-person encounter repair residue like "you rooftop",
   // "you candle", and "You kiss takes" is mechanically generated corruption,
   // not craft preference. Default-OFF after the g23 live failure-cycle audit:

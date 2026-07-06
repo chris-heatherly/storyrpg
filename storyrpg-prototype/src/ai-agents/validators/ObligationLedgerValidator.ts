@@ -12,11 +12,16 @@
  *   everything else (choice_callback / flag_promise / score_promise / tone /
  *   forward_promise) -> GATE_CALLBACK_COVERAGE
  *
- * SHADOW ROLLOUT (P2.5): this runs as a per-episode diagnostic — findings are
- * saved to episode-N-obligation-ledger.json and logged, while the legacy
- * validators stay authoritative for gating. The flip (routing these findings
- * into the final contract in place of the legacy validators') is live-run
- * gated, per repo policy.
+ * STATUS (flip live, 2026-07-03 — commits fec133ca / aac079b1 / 195dd24c):
+ * this is the authoritative source at the final contract. `FinalStoryContract`
+ * runs `validateObligationLedger` and routes findings under the gate ids above,
+ * replacing ResidueObligationValidator's final-contract dispatch; the plan-time
+ * GATE_SETUP_PAYOFF / GATE_CALLBACK_COVERAGE gates also read it. Per-kind
+ * BLOCKING still follows the normal per-gate flags (`isGateEnabledAt(gate,
+ * 'season-final')`) — that is standard gate policy, not shadow mode. Two things
+ * still run alongside it: the per-episode diagnostic (episode-N-obligation-
+ * ledger.json) and ResidueObligationValidator's episode-time quick-validation
+ * half (prose-evidence detection the ledger does not replicate).
  */
 
 import type { CallbackHook, CallbackLedger, ObligationKind } from '../pipeline/callbackLedger';

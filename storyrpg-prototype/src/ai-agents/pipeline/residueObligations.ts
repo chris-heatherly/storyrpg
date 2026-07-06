@@ -5,7 +5,7 @@ import type { SceneBlueprint, EpisodeBlueprint } from '../agents/StoryArchitect'
 import type { ChoiceSet } from '../agents/ChoiceAuthor';
 import type { SceneContent } from '../agents/SceneWriter';
 import type { CallbackLedger, SerializedCallbackLedger } from './callbackLedger';
-import { isStructuralFlag } from './callbackLedger';
+import { isResidueExcludedFlag } from './flagRegistry';
 import { buildCallbackCondition } from './callbackOrchestration';
 import {
   choiceSetsFlag,
@@ -47,8 +47,14 @@ export interface ImplementEpisodeResidueObligationsParams {
   maxPerEpisode?: number;
 }
 
+/**
+ * Flags outside residue-obligation scope (structural + treatment seeds).
+ * Delegates to the flag registry — the single naming office — so registered
+ * names classify by registration, not just prefix spelling (criteria-reduction
+ * item 5: retires the last duplicated residue-exclusion pattern list).
+ */
 export function isExcludedResidueFlag(flag: string): boolean {
-  return isStructuralFlag(flag) || flag.startsWith('treatment_seed_');
+  return isResidueExcludedFlag(flag);
 }
 
 export function residueObligationsForEpisode(

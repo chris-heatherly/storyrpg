@@ -48,7 +48,7 @@ function minimalStory(): Story {
             beats: [
               {
                 id: 'beat-1',
-                text: 'The old door waits in the rain.',
+                text: 'The old door waits for you in the rain.',
                 choices: [
                   {
                     id: 'choice-1',

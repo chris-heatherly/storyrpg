@@ -36,6 +36,7 @@ import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
+import { scenePassesCharacterIntroductionOffPageCheck } from '../validators/CharacterIntroductionValidator';
 import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
 import { contractRepairIssueFingerprint, type ContractRepairHandler, type ContractRepairReport } from './finalContractRepair';
 import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
@@ -76,6 +77,26 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   'CharacterIntroductionValidator',
   'SentenceOpenerVarietyValidator',
 ]);
+
+/**
+ * RouteContinuityValidator findings are architecture-class EXCEPT
+ * `unsafe_fallback_prose` — deterministic fallback/template prose (from the
+ * syntheticFallbackProse registry) that survived into reader-facing text.
+ * That class is a localized prose defect whose only correct fix is an LLM
+ * re-author of the affected scene, so it is admitted here by (validator, type)
+ * pair rather than by validator alone.
+ *
+ * PovClarityValidator `pov_anchor_missing` (a scene's first prose beat never
+ * anchors the player with you/your) is the same shape: scene-local prose whose
+ * only correct fix is an LLM rewrite of the opening — there may be nothing for
+ * deterministic pronoun coercion to work with when the beat never mentions the
+ * player at all (bite-me 2026-07-05T23-54-17 s1-1 establishing shot).
+ */
+function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
+  if (issue.validator && SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) return true;
+  if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') return true;
+  return issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing';
+}
 
 const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
   'RequiredBeatRealizationValidator',
@@ -144,7 +165,7 @@ export function selectSceneProseRepairs(
 ): Map<string, RepairableIssue[]> {
   const all = new Map<string, RepairableIssue[]>();
   for (const issue of blockingIssues ?? []) {
-    if (!issue?.validator || !SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) continue;
+    if (!issue?.validator || !isSceneProseRepairableIssue(issue)) continue;
     if (!issue.sceneId) continue;
     if (allowIssue && !allowIssue(issue)) continue;
     const existing = all.get(issue.sceneId);
@@ -194,6 +215,15 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
       );
       continue;
     }
+    if (issue.type === 'unsafe_fallback_prose') {
+      lines.push(
+        '  NON-NEGOTIABLE: the quoted text is a deterministic fallback/template sentence the pipeline ' +
+        'inserted when generation failed — it is not authored fiction. Replace it with specific, ' +
+        'in-world second-person prose that depicts THIS scene\'s concrete outcome (who, what, where, cost). ' +
+        'Do not reuse or lightly reword the template sentence.',
+      );
+      continue;
+    }
     if (issue.validator === 'RelationshipArcLedgerValidator') {
       lines.push(
         '  NON-NEGOTIABLE: preserve instant chemistry if it is present, but downgrade unearned friendship, trust, intimacy, or group-membership labels into behavior: invitation, testing, guarded warmth, teasing, changed distance, vulnerability, or a fragile beginning.',
@@ -219,8 +249,11 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
       continue;
     }
     if (issue.validator === 'CharacterIntroductionValidator') {
+      const offPage = /off-page familiarity|settled group belonging/i.test(issue.message ?? '');
       lines.push(
-        '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
+        offPage
+          ? '  NON-NEGOTIABLE: this is the reader\'s FIRST on-page meeting with the named character(s). Rewrite every beat in second person ("you/your"). Stage the bookshop encounter as live first contact: how you notice them, how they name themselves or are named to you, one concrete identifying detail, and guarded/testing warmth — NOT summary prose ("She explores… Stela who befriends her"), NOT time-jump familiarity, NOT "the woman from the bookstore", NOT club belonging or "friends now" language. Mentioning a later club as an invitation is fine; treating them as already-known company is not.'
+          : '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
       );
       continue;
     }
@@ -515,6 +548,19 @@ function plannedMissingMomentNotes(scene: RepairableStoryScene, plannedSource?: 
 }
 
 /** Predict the re-validation: does the scene's prose now depict every flagged and active planned moment? */
+function characterIntroductionIssuesCleared(
+  scene: RepairableStoryScene,
+  issues: RepairableIssue[],
+): boolean {
+  const introIssues = issues.filter((issue) => issue.validator === 'CharacterIntroductionValidator');
+  if (introIssues.length === 0) return true;
+  const names = introIssues
+    .map((issue) => /"([^"]+)"/.exec(issue.message ?? '')?.[1])
+    .filter((name): name is string => Boolean(name));
+  if (names.length === 0) return true;
+  return scenePassesCharacterIntroductionOffPageCheck(scene as unknown as import('../../types').Scene, names);
+}
+
 function allMomentsDepicted(
   scene: RepairableStoryScene,
   issues: RepairableIssue[],
@@ -522,6 +568,9 @@ function allMomentsDepicted(
 ): boolean {
   const prose = sceneProseForScoring(scene);
   return plannedSourceMomentsDepicted(scene, plannedSource) && issues.every((issue) => {
+    if (issue.validator === 'CharacterIntroductionValidator') {
+      return characterIntroductionIssuesCleared(scene, [issue]);
+    }
     const moment = requiredMomentFromMessage(issue.message);
     if (!moment) return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
     if (issue.validator === 'TreatmentEventLedgerValidator') {

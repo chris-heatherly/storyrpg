@@ -23,6 +23,7 @@
 
 import type { Story } from '../../types';
 import { findTemplateSignatures } from '../agents/EncounterArchitect';
+import { SYNTHETIC_FALLBACK_PROSE_PATTERNS } from '../constants/syntheticFallbackProse';
 import { computeAuthoredCoverage, isClockUnderCovered, shrinkClockToCoverage } from '../pipeline/encounterRemediation';
 import { analyzeEncounterDepth, deepenRootTerminalWins, shrinkClockToAttainable } from '../utils/encounterDepthContract';
 import { isGateEnabled } from '../remediation/gateDefaults';
@@ -66,18 +67,18 @@ const PROSE_KEYS = new Set([
 const PROSE_SCAN_MAX_DEPTH = 40;
 
 /** Recursively collect player-facing prose strings from an encounter object. */
-function collectEncounterProse(node: unknown, out: string[], depth = 0): void {
+function collectEncounterProse(node: unknown, out: string[], depth = 0, keys: Set<string> = PROSE_KEYS): void {
   if (node == null || depth > PROSE_SCAN_MAX_DEPTH) return;
   if (Array.isArray(node)) {
-    for (const item of node) collectEncounterProse(item, out, depth + 1);
+    for (const item of node) collectEncounterProse(item, out, depth + 1, keys);
     return;
   }
   if (typeof node === 'object') {
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
       if (typeof value === 'string') {
-        if (PROSE_KEYS.has(key)) out.push(value);
+        if (keys.has(key)) out.push(value);
       } else {
-        collectEncounterProse(value, out, depth + 1);
+        collectEncounterProse(value, out, depth + 1, keys);
       }
     }
   }
@@ -103,6 +104,39 @@ export function scanEncounterTemplateProse(encounter: unknown): string[] {
   const found = new Set<string>();
   for (const text of prose) {
     for (const sig of findTemplateSignatures(text)) found.add(sig);
+  }
+  return [...found];
+}
+
+/** Prose + cost/stakes keys the CONVERTED runtime encounter carries. */
+const FALLBACK_SCAN_KEYS = new Set([
+  ...PROSE_KEYS,
+  'immediateEffect',
+  'visibleComplication',
+  'lingeringEffect',
+  'victory',
+  'defeat',
+]);
+
+/**
+ * Registered deterministic fallback prose (syntheticFallbackProse registry)
+ * present in a CONVERTED runtime encounter. `scanEncounterTemplateProse`
+ * covers the EncounterArchitect's own template strings on the STRUCTURE, but
+ * `convertEncounterStructureToEncounter` injects its own fallbacks (missing
+ * storylet beats / stakes / choice outcomes) at conversion time — after the
+ * structure scan. ContentGenerationPhase trial-converts the structure and runs
+ * this scan in the same acceptance check, so a fallback-bearing encounter is
+ * regenerated with feedback (and, exhausted, fails the EPISODE at generation
+ * time) instead of aborting the whole season at the final contract.
+ */
+export function scanEncounterFallbackProse(convertedEncounter: unknown): string[] {
+  const prose: string[] = [];
+  collectEncounterProse(convertedEncounter, prose, 0, FALLBACK_SCAN_KEYS);
+  const found = new Set<string>();
+  for (const text of prose) {
+    for (const entry of SYNTHETIC_FALLBACK_PROSE_PATTERNS) {
+      if (entry.pattern.test(text)) found.add(entry.label);
+    }
   }
   return [...found];
 }

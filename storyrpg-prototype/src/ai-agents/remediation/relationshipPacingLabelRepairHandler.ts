@@ -12,6 +12,17 @@ const LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bthe\s+(club|circle|crew|group)'s\s+trust\b/gi, 'this fragile circle\'s trust'],
   [/\b([A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group))\s+is\s+real\b/gi, '$1 is still a dare'],
   [/\b(?:the\s+)?[A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group)\s+is\s+now\b/gi, 'the name stays provisional as'],
+  // "official first meeting" formalizes a group before it is earned ("Welcome to
+  // the Dusk Club, official first meeting."). Drop the premature "official"
+  // wherever it sits next to "first", noun-agnostic: the LLM keeps minting new
+  // milestone nouns faster than a list can chase them (bite-me 2026-07-04:
+  // "first official meeting", then "first official operation", then "first
+  // official mission" each survived a noun-list version of this rule and
+  // blocked the ep1 seal). Legitimate uses without "first" ("city official",
+  // "official business", "made it official") are untouched, and this handler
+  // only runs on scenes already flagged for the blocked label.
+  [/\bofficial\s+first\s+/gi, 'first '],
+  [/\bfirst\s+official\s+/gi, 'first '],
   [/\binner circle\b/gi, 'people moving around him'],
   [/\binside the circle\b/gi, 'near the edge of the circle'],
   [/\bone of us\b/gi, 'almost invited in'],

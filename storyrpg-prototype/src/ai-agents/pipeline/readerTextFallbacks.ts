@@ -24,21 +24,54 @@ export function ensureSentence(text: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-export function isUnsafeReaderFallbackText(text: string | undefined): boolean {
+/** Registered placeholder when beat prose is planning register — final contract blocks and routes LLM re-author. */
+export const BEAT_PROSE_NEEDS_REAUTHOR_PLACEHOLDER =
+  'The moment still needs authored prose before it can continue.';
+
+const AGENT_FACING_FIDELITY_PATTERNS: RegExp[] = [
+  /\bserves\s+the\s+\w+\s+beat\b/i,
+  /\bforward\s+pressure\s*:/i,
+  /\bcomposed surface slips through a small evasive movement\b/i,
+  /\bsmall evasive movement\b/i,
+  /\bmaking the subtext visible\b/i,
+  /\bposture, glance, and distance make the unspoken tension visible\b/i,
+  /\bvisibly changing the balance of the moment\b/i,
+  /\bbusy hands betray what the words avoid\b/i,
+  /\bvisible gesture, object cue, or shift in distance\b/i,
+];
+
+function matchesAgentFacingFidelityPatterns(cleaned: string): boolean {
+  return AGENT_FACING_FIDELITY_PATTERNS.some((pattern) => pattern.test(cleaned));
+}
+
+/** Planning register / agent scaffolding in reader prose — no length cap (beat prose may exceed 240 chars). */
+export function isPlanningRegisterProse(text: string | undefined): boolean {
   const cleaned = String(text || '').trim();
   if (!cleaned) return true;
   return isPlanningRegisterText(cleaned)
     || isPlaceholderStake(cleaned)
-    || cleaned.length > 240
-    || /\bserves\s+the\s+\w+\s+beat\b/i.test(cleaned)
-    || /\bforward\s+pressure\s*:/i.test(cleaned)
-    || /\bcomposed surface slips through a small evasive movement\b/i.test(cleaned)
-    || /\bsmall evasive movement\b/i.test(cleaned)
-    || /\bmaking the subtext visible\b/i.test(cleaned)
-    || /\bposture, glance, and distance make the unspoken tension visible\b/i.test(cleaned)
-    || /\bvisibly changing the balance of the moment\b/i.test(cleaned)
-    || /\bbusy hands betray what the words avoid\b/i.test(cleaned)
-    || /\bvisible gesture, object cue, or shift in distance\b/i.test(cleaned);
+    || matchesAgentFacingFidelityPatterns(cleaned);
+}
+
+/** Vet short fallback *candidates* (stakes, echo lines) — length cap applies here only. */
+export function isUnsafeReaderFallbackCandidate(text: string | undefined): boolean {
+  const cleaned = String(text || '').trim();
+  if (!cleaned) return true;
+  return isPlanningRegisterProse(cleaned) || cleaned.length > 240;
+}
+
+/** @deprecated Prefer {@link isUnsafeReaderFallbackCandidate} for fallbacks or {@link isPlanningRegisterProse} for beat prose. */
+export function isUnsafeReaderFallbackText(text: string | undefined): boolean {
+  return isUnsafeReaderFallbackCandidate(text);
+}
+
+function stripPressurePrefixedParagraphs(text: string): string {
+  return String(text || '')
+    .split(/\n{2,}|\r?\n/)
+    .map((part) => part.trim())
+    .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
+    .join('\n\n')
+    .trim();
 }
 
 export function safeFallbackReaderText(text: string | undefined, fallback: string, lastResort?: string): string {
@@ -78,14 +111,18 @@ export function fallbackResidueDescription(choiceText: string): string {
 }
 
 export function stripAgentFacingFidelityText(text: string, fallback: string): string {
-  const cleaned = String(text || '')
-    .split(/\n{2,}|\r?\n/)
-    .map((part) => part.trim())
-    .filter((part) => part && !/^(?:pressure|choice pressure|forward pressure):/i.test(part))
-    .join('\n\n')
-    .trim();
-  if (!cleaned || isUnsafeReaderFallbackText(cleaned)) {
+  const cleaned = stripPressurePrefixedParagraphs(text);
+  if (!cleaned || isUnsafeReaderFallbackCandidate(cleaned)) {
     return ensureSentence(fallback || 'The story pressure changes what can happen next.');
+  }
+  return cleaned;
+}
+
+/** Sanitize beat prose for the reader — never substitute blueprint descriptions; preserve long LLM prose. */
+export function stripBeatProseForReader(text: string): string {
+  const cleaned = stripPressurePrefixedParagraphs(text);
+  if (!cleaned || isPlanningRegisterProse(cleaned)) {
+    return ensureSentence(BEAT_PROSE_NEEDS_REAUTHOR_PLACEHOLDER);
   }
   return cleaned;
 }
@@ -231,10 +268,7 @@ export function sanitizeSceneContentForReader(sceneBlueprint: SceneBlueprint, co
   if (!Array.isArray(content.beats)) return;
   for (const beat of content.beats) {
     const sceneFallback = sceneBlueprint.description || sceneBlueprint.dramaticQuestion || sceneBlueprint.name || 'The story pressure changes.';
-    beat.text = stripAgentFacingFidelityText(
-      beat.text,
-      sceneFallback
-    );
+    beat.text = stripBeatProseForReader(beat.text);
     beat.visualMoment = stripAgentFacingFidelityText(
       beat.visualMoment || beat.text,
       beat.text || sceneFallback
@@ -291,4 +325,58 @@ export function ensureBlueprintFidelityText(sceneBlueprint: SceneBlueprint, cont
   if (!content.startingBeatId && content.beats?.[0]) {
     content.startingBeatId = content.beats[0].id;
   }
+}
+
+/** Normalize planning strings for verbatim-leak comparison. */
+export function normalizePlanningTextForCompare(text: string | undefined): string {
+  return String(text || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?]+$/g, '')
+    .toLowerCase();
+}
+
+/** Collect agent-facing strings from a scene blueprint that must never ship as beat.text verbatim. */
+export function collectSceneBlueprintPlanningStrings(sceneBlueprint: SceneBlueprint): string[] {
+  const out: string[] = [];
+  const push = (value: string | undefined) => {
+    const trimmed = String(value || '').trim();
+    if (trimmed.length >= 24) out.push(trimmed);
+  };
+  push(sceneBlueprint.description);
+  push(sceneBlueprint.dramaticQuestion);
+  push(sceneBlueprint.dramaticPurpose);
+  push(sceneBlueprint.narrativeFunction);
+  push(sceneBlueprint.conflictEngine);
+  push(sceneBlueprint.wantVsNeed);
+  push(sceneBlueprint.turnContract?.centralTurn);
+  push(sceneBlueprint.turnContract?.turnEvent);
+  push(sceneBlueprint.turnContract?.handoff);
+  for (const beat of sceneBlueprint.keyBeats ?? []) push(beat);
+  for (const beat of sceneBlueprint.requiredBeats ?? []) {
+    push(beat.mustDepict);
+    push(beat.sourceTurn);
+  }
+  return out;
+}
+
+export function beatTextMatchesBlueprintPlanning(
+  beatText: string | undefined,
+  sceneBlueprint: SceneBlueprint,
+): string | undefined {
+  const normalizedBeat = normalizePlanningTextForCompare(beatText);
+  if (!normalizedBeat || normalizedBeat.length < 24) return undefined;
+  for (const candidate of collectSceneBlueprintPlanningStrings(sceneBlueprint)) {
+    const normalizedCandidate = normalizePlanningTextForCompare(candidate);
+    if (!normalizedCandidate) continue;
+    if (normalizedBeat === normalizedCandidate) return candidate;
+    if (
+      normalizedBeat.length >= 40
+      && normalizedCandidate.length >= 40
+      && (normalizedBeat.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedBeat))
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
 }

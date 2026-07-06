@@ -9,7 +9,7 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
-import { FALLBACK_OUTCOME_TEXT_POOLS, isFallbackReminderStub } from '../constants/choiceTextFallbacks';
+import { FALLBACK_OUTCOME_TEXT_POOLS, isFallbackOutcomeText, isFallbackReminderStub } from '../constants/choiceTextFallbacks';
 import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
 import {
@@ -572,12 +572,25 @@ Before finalizing:
             const revisedIssues = await this.validateChoiceQuality(revisionResult.data, input);
             if (revisedIssues.length < issues.length) {
               console.log(`[ChoiceAuthor] Revision improved quality: ${issues.length} -> ${revisedIssues.length} issues`);
-              return revisionResult;
+              choiceSet = revisionResult.data;
+              rawResponse = revisionResult.rawResponse ?? rawResponse;
             } else {
               console.log(`[ChoiceAuthor] Revision did not improve quality, using original`);
             }
           }
         }
+      }
+
+      // Authoring-time stub repair: normalizeChoiceSet fills any tier the LLM
+      // omitted with a deterministic fallback line. Historically those stubs
+      // shipped and were only caught by OutcomeTextQualityValidator at the
+      // episode/season contract (`outcome_text_stub` — the #1 recent run
+      // blocker), burning a full contract round before the focused re-author
+      // ran. Run that same focused re-author HERE, while the choice is being
+      // authored, so a stub tier costs one small LLM call now instead of a
+      // contract failure later. The contract gate stays on as the regression net.
+      if (isGateEnabled('GATE_CHOICE_OUTCOME_TIER_REAUTHOR')) {
+        await this.reauthorStubOutcomeTiers(choiceSet, input);
       }
 
       return {
@@ -938,6 +951,64 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
     } catch (err) {
       console.warn(`[ChoiceAuthor] reauthorOutcomeTexts failed (stub kept): ${err instanceof Error ? err.message : String(err)}`);
       return {};
+    }
+  }
+
+  /**
+   * Authoring-time counterpart of the final-contract outcome-text repair
+   * (`buildOutcomeTextRepairHandler`): scan the just-normalized choice set for
+   * tiers that are deterministic fallback stubs and re-author ONLY those tiers
+   * via {@link reauthorOutcomeTexts}, before the set ever leaves this agent.
+   * A tier is replaced only with real prose (non-empty, not itself a stub, not
+   * an echo of the choice label); a failed re-author leaves the stub in place
+   * for the contract gate to catch — never worse than the pre-existing path.
+   * Mutates the choice set in place; never throws into the authoring flow.
+   */
+  private async reauthorStubOutcomeTiers(choiceSet: ChoiceSet, input: ChoiceAuthorInput): Promise<void> {
+    const tiers = ['success', 'partial', 'failure'] as const;
+    const normalize = (value: unknown): string =>
+      String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const beatSnippet = (input.beatText || '').trim();
+    const sceneLocation = beatSnippet.length >= 12
+      ? (beatSnippet.length > 200 ? `${beatSnippet.slice(0, 200)}…` : beatSnippet)
+      : undefined;
+
+    for (const choice of choiceSet.choices ?? []) {
+      const ot = choice.outcomeTexts;
+      if (!ot) continue;
+      const needTiers = tiers.filter((tier) => isFallbackOutcomeText(ot[tier]));
+      if (needTiers.length === 0) continue;
+
+      console.warn(
+        `[ChoiceAuthor] Choice "${choice.id}" carries ${needTiers.length} stub outcome tier(s) ` +
+        `(${needTiers.join(', ')}) — re-authoring at generation time.`,
+      );
+      const authored = await this.reauthorOutcomeTexts({
+        choiceText: String(choice.text || choice.id || 'the choice'),
+        stakes: choice.stakesAnnotation,
+        sceneName: input.sceneBlueprint?.name,
+        sceneLocation,
+        needTiers,
+      });
+      let replaced = 0;
+      for (const tier of needTiers) {
+        const value = authored[tier];
+        if (
+          typeof value === 'string'
+          && value.trim().length >= 12
+          && !isFallbackOutcomeText(value)
+          && normalize(value) !== normalize(choice.text)
+        ) {
+          ot[tier] = value.trim();
+          replaced += 1;
+        }
+      }
+      if (replaced < needTiers.length) {
+        console.warn(
+          `[ChoiceAuthor] Generation-time re-author left ${needTiers.length - replaced} stub tier(s) on ` +
+          `choice "${choice.id}" — the outcome-text contract gate remains the net.`,
+        );
+      }
     }
   }
 

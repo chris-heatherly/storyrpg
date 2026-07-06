@@ -78,9 +78,14 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     suggestion: 'Remove embedded treatment-card labels and keep only the concrete story moment.',
   },
   {
-    pattern: /(?:^|[.!?]\s+)(?:her|his|their|your)\s+grandmother['’]s\s+address\s*[.!?](?:\s|$)/i,
-    label: 'orphan treatment-card fragment',
-    suggestion: 'Fold the address into concrete arrival action; never ship treatment-card sentence fragments as prose.',
+    pattern: /(?:^|[.!?]\s+)(?:She|He|They)\s+(?:explores?|wanders?|arrives?|lands?|catches?)\b[^.!?]{12,}\b(?:bookshop|streets?|rooftop|nightlife|club)\b/i,
+    label: 'third-person treatment summary narration',
+    suggestion: 'Rewrite in second-person present-tense scene prose; treatment summaries must not ship as beat text.',
+  },
+  {
+    pattern: /(?:^|[.!?]\s+)At a\b[^.!?]{8,}\bshe\b[^.!?]{8,}\b(?:catches?|attention|man in)\b/i,
+    label: 'third-person treatment scene summary',
+    suggestion: 'Rewrite as concrete second-person staging; never paste treatment scene summaries into beat prose.',
   },
   {
     pattern: /\bA\s+FaceTime\s+gag\s+that\s+quietly\s+seeds\s+everything\b|\bFirst\s+strong\s+image\s*:|\bseason['’]s\s+thesis\s+in\s+disguise\b/i,

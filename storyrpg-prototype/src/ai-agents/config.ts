@@ -1243,6 +1243,12 @@ export function loadConfig(): PipelineConfig {
         provider: ((env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider,
         model: env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model,
         apiKey: resolveProviderApiKey(((env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER) as AgentConfig['provider']) || defaultConfig.provider),
+        // The QA judges inherited the 4096 default, which capped the ProseCraft
+        // judge's effective structured budget at min(4096, schema 6144) = 4096 —
+        // the report truncated (finishReason=MAX_TOKENS), prose_craft scored 0,
+        // and runs capped at 89. Lift to 8192 so prose_craft reaches its schema
+        // ceiling (min(8192, 6144) = 6144). Ceiling, not a charge. Env-overridable.
+        maxTokens: Number.parseInt(env.EXPO_PUBLIC_QA_MAX_TOKENS || env.QA_MAX_TOKENS || '8192', 10) || 8192,
         temperature: 0.3, // Lower temp for more consistent grading
       },
       branchManager: {

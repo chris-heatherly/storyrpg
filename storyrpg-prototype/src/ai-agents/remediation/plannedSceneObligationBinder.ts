@@ -484,7 +484,7 @@ function targetForBroadTurnoutPart(part: string, scenes: PlannedScene[], sourceS
   return fallbackNonArrivalScene(scenes, sourceScene);
 }
 
-const ACTION_VERB_RE = /\b(?:accepts?|adopts?|arrives?|asks?|assaults?|attacks?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|finds?|follows?|forms?|gathers?|gives?|hands?|interrupts?|kisses?|lands?|launches?|leaps?|leaves?|names?|offers?|opens?|pins?|presses?|publishes?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|trades?|turns?|unpacks?|vanishes?|walks?|warns?|writes?)\b/i;
+const ACTION_VERB_RE = /\b(?:accepts?|adopts?|arrives?|asks?|assaults?|attacks?|befriends?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|explores?|finds?|follows?|forms?|gathers?|gives?|hands?|interrupts?|introduces?|kisses?|lands?|launches?|leaps?|leaves?|meets?|names?|offers?|opens?|pins?|presses?|publishes?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|trades?|turns?|unpacks?|vanishes?|walks?|wand(?:er)?s?|warns?|writes?)\b/i;
 
 function protectQuotedCommas(text: string): string {
   return text.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’/g, (match) => match.replace(/,/g, '__COMMA__'));
@@ -2578,8 +2578,14 @@ export function rebindPlannedSceneObligations(
 
       const actionParts = splitActionChainedBeat(beat);
       if (actionParts.length > 1) {
+        const targets = actionParts.map((part) => bestSceneForBeat(part, scenes, beat.id) ?? scene);
+        const distinctTargetIds = new Set(targets.map((target) => target.id));
+        if (distinctTargetIds.size < 2) {
+          kept.push(beat);
+          continue;
+        }
         actionParts.forEach((part, index) => {
-          const target = bestSceneForBeat(part, scenes, beat.id) ?? scene;
+          const target = targets[index];
           const nextBeat: RequiredBeat = {
             ...beat,
             id: `${beat.id}-action-${index + 1}`,

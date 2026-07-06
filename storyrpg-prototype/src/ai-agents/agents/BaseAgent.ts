@@ -177,7 +177,14 @@ function resolveGeminiThinkingConfig(model: string | undefined, structured: bool
   }
   if (/gemini-2\.5/.test(normalized)) {
     if (Number.isFinite(envBudget)) return { thinkingBudget: envBudget };
-    return { thinkingBudget: normalized.includes('pro') ? 128 : 0 };
+    // gemini-2.5-pro cannot disable thinking, and 128 is the API minimum — a
+    // starvation-prone floor for planning large structured outputs. (The
+    // bite-me 2026-07-04 analyzer truncations were ultimately the SAFETY
+    // filter clipping the stream — see safetySettings below — but pro
+    // completed the 10k-token analysis cleanly at 2048, and 128 leaves no
+    // room to reason about schema-heavy prompts.) Flash keeps thinking off
+    // (0) as before. Override via GEMINI_STRUCTURED_THINKING_BUDGET.
+    return { thinkingBudget: normalized.includes('pro') ? 2048 : 0 };
   }
   return undefined;
 }
@@ -1434,11 +1441,16 @@ Do not use markdown code blocks around the JSON.
       // Gemini's DEFAULT safety filters over-block mature creative fiction — a dark
       // vampire-romance world (blood, predators, hunting, sensuality) trips them and the API
       // returns a candidate with finishReason=SAFETY and NO parts, surfacing as the opaque
-      // "Gemini returned empty content" abort (bite-me-g18 World Builder). Send permissive
-      // thresholds so legitimate fiction isn't blocked; egregious content still is.
-      // Env-overridable (GEMINI_SAFETY_THRESHOLD) — BLOCK_NONE if a run still over-blocks.
+      // "Gemini returned empty content" abort (bite-me-g18 World Builder). Worse, on
+      // STREAMED structured calls the filter can clip mid-stream, surfacing as a
+      // truncated-JSON parse failure with no SAFETY marker at all: gemini-2.5-pro
+      // aborted every bite-me analyzer run in ~25s at BLOCK_ONLY_HIGH (7-92 output
+      // tokens of cut JSON, 2026-07-04) and completed cleanly at BLOCK_NONE.
+      // Default BLOCK_NONE per this code's own promotion note ("BLOCK_NONE if a run
+      // still over-blocks"); Gemini's non-configurable core filters still apply.
+      // Env-overridable via GEMINI_SAFETY_THRESHOLD.
       safetySettings: ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
-        .map((category) => ({ category, threshold: process.env.GEMINI_SAFETY_THRESHOLD || 'BLOCK_ONLY_HIGH' })),
+        .map((category) => ({ category, threshold: process.env.GEMINI_SAFETY_THRESHOLD || 'BLOCK_NONE' })),
     };
 
     if (systemMessage) {

@@ -21,9 +21,64 @@ const STOPWORDS_BY_VALIDATOR: Record<string, Set<string>> = {
 
 export const PRESENCE_MIN_SCORE = 0.5;
 
+/**
+ * Protagonist POV context (2026-07-04, bite-me "Kylie Marinescu arrives in
+ * Bucharest." leak). Second-person prose NEVER contains the protagonist's
+ * name, so any authored moment phrased "ProtagonistName does X" was
+ * systematically under-scored (name tokens counted as missing), which made
+ * the scene-time realization guard fire on faithfully-dramatized scenes and
+ * ultimately paste the planning text verbatim into player prose.
+ *
+ * Armed once per run at pipeline start (mirrors setStoryLexicon). When the
+ * scanned prose addresses the player in second person, protagonist-name
+ * tokens are excluded from the needed-token set — the protagonist is
+ * axiomatically on-page as "you". Third-person-named stories are unaffected
+ * (the exclusion is conditioned on second-person address in the prose).
+ */
+export interface RealizationPovContext {
+  protagonistAliases: string[];
+}
+
+let activePovContext: RealizationPovContext | null = null;
+
+/** Arm/disarm the protagonist POV context for the current run (pipeline start / tests). */
+export function setRealizationPovContext(context: RealizationPovContext | null): void {
+  activePovContext = context;
+}
+
+export function getRealizationPovContext(): RealizationPovContext | null {
+  return activePovContext;
+}
+
+export function hasSecondPersonAddress(prose: string): boolean {
+  return /\b(?:you|your|yours|yourself)\b/i.test(prose);
+}
+
+/** Normalized protagonist-name tokens (≥4 chars, matching content-token shape). */
+export function protagonistAliasTokens(): Set<string> {
+  const tokens = new Set<string>();
+  for (const alias of activePovContext?.protagonistAliases ?? []) {
+    for (const token of normalizeRealizationText(alias).split(' ')) {
+      if (token.length >= 4) tokens.add(token);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Drop protagonist-name tokens from a needed-token list when the prose is
+ * second-person (the name is unknowable there, not "missing").
+ */
+function withoutProtagonistTokens(needed: string[], prose: string): string[] {
+  const aliasTokens = protagonistAliasTokens();
+  if (aliasTokens.size === 0 || !hasSecondPersonAddress(prose)) return needed;
+  return needed.filter((token) => !aliasTokens.has(token));
+}
+
 export type RealizationMode =
   | 'empty'
   | 'action-requirements'
+  | 'character-introduction'
   | 'concrete-seed'
   | 'normalized-substring'
   | 'compound-clauses'
@@ -69,7 +124,7 @@ function tokenPresent(token: string, hayTokens: string[], haySet: Set<string>): 
 }
 
 function overlapScore(moment: string, prose: string, stopwords: Set<string>): number {
-  const needed = [...new Set(contentTokensForRealization(moment, stopwords))];
+  const needed = withoutProtagonistTokens([...new Set(contentTokensForRealization(moment, stopwords))], prose);
   if (needed.length === 0) return 1;
   const hayTokens = [...new Set(contentTokensForRealization(prose, stopwords))];
   const haySet = new Set(hayTokens);
@@ -78,7 +133,7 @@ function overlapScore(moment: string, prose: string, stopwords: Set<string>): nu
 }
 
 function missingOverlapTokens(moment: string, prose: string, stopwords: Set<string>): string[] {
-  const needed = [...new Set(contentTokensForRealization(moment, stopwords))];
+  const needed = withoutProtagonistTokens([...new Set(contentTokensForRealization(moment, stopwords))], prose);
   const hayTokens = [...new Set(contentTokensForRealization(prose, stopwords))];
   const haySet = new Set(hayTokens);
   return needed.filter((token) => !tokenPresent(token, hayTokens, haySet));
@@ -228,6 +283,35 @@ function simpleMomentDepicted(moment: string, prose: string, stopwords: Set<stri
   return overlapScore(moment, prose, stopwords) >= PRESENCE_MIN_SCORE;
 }
 
+/**
+ * Character-introduction beats (StoryArchitect.ensureCharacterIntroductionBeats)
+ * carry writer DIRECTIVES as their mustDepict ("You meet Stela Pavel for the
+ * first time in this scene — show how they enter your attention, how they name
+ * themselves…"). Token/clause scoring against that meta text is unrealizable
+ * by construction: good prose never contains "identifying detail" or
+ * "group-belonging language" (storyrpg-lite 2026-07-04T21-46-05 s1-2 abort).
+ *
+ * The stageable requirement of such a moment is: the scene's prose actually
+ * NAMES the character. First-contact QUALITY (no off-page familiarity, real
+ * staging) is owned by CharacterIntroductionValidator, which judges it
+ * semantically at the final contract and routes an LLM prose repair.
+ */
+export function characterIntroductionMomentName(moment: string): string | undefined {
+  const match = /^you meet\s+(.{2,60}?)\s+for the first time\b/i.exec(moment.trim());
+  return match?.[1]?.trim() || undefined;
+}
+
+function characterNamePresent(name: string, prose: string): boolean {
+  const hay = normalizeRealizationText(prose);
+  const hayTokens = new Set(hay.split(' '));
+  const normalized = normalizeRealizationText(name);
+  if (!normalized) return false;
+  if (hay.includes(normalized)) return true;
+  // Prose may use just the given name ("Stela" for "Stela Pavel") — accept any
+  // name token long enough to be distinctive.
+  return normalized.split(' ').some((token) => token.length >= 4 && hayTokens.has(token));
+}
+
 export function evaluateMomentRealization(
   validator: string | undefined,
   moment: string,
@@ -249,6 +333,19 @@ export function evaluateMomentRealization(
   const stopwords = stopwordsForRealization(validatorName);
 
   if (validatorName === 'RequiredBeatRealizationValidator') {
+    const introducedName = characterIntroductionMomentName(moment);
+    if (introducedName) {
+      const depicted = characterNamePresent(introducedName, prose);
+      return {
+        depicted,
+        mode: 'character-introduction',
+        score: depicted ? 1 : 0,
+        missingTokens: depicted ? [] : contentTokensForRealization(introducedName, stopwords),
+        missingClauses: depicted ? [] : [`${introducedName} must be named on-page in this scene`],
+        matchedClauses: depicted ? [`${introducedName} named on-page`] : [],
+      };
+    }
+
     const concreteDepicted = concreteSeedDepicted(normalizedMoment, prose);
     if (typeof concreteDepicted === 'boolean') {
       const rule = concreteSeedRuleFor(normalizeSeedText(moment));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EncounterStructure } from '../agents/EncounterArchitect';
 import type { SceneBlueprint } from '../agents/StoryArchitect';
-import { assessEncounterTurnRealization, repairEncounterTurnRealization } from './encounterTurnRealizationGuard';
+import { assessEncounterTurnRealization } from './encounterTurnRealizationGuard';
 
 const CISMIGIU_TURN =
   'Walking home through Cișmigiu at 1am, Kylie is pinned to a willow by a shadow — and a second figure in a charcoal suit drops the attacker, walks her home, kisses her hand at the threshold, declines to come in, and vanishes.';
@@ -151,7 +151,7 @@ describe('assessEncounterTurnRealization', () => {
     expect(result.misses.map((miss) => miss.label)).toContain('required beat bite-me-cismigiu');
   });
 
-  it('repairs a missing Victor intervention into positive encounter storylets', () => {
+  it('stays failed for an under-realized encounter so the caller regenerates instead of injecting text', () => {
     const rescueBlueprint = blueprint({
       turnContract: {
         turnId: 'turn-cismigiu',
@@ -165,13 +165,12 @@ describe('assessEncounterTurnRealization', () => {
       requiredBeats: [],
     });
     const underRealized = encounter();
+    const before = JSON.stringify(underRealized);
 
-    expect(assessEncounterTurnRealization(rescueBlueprint, underRealized).passed).toBe(false);
+    const result = assessEncounterTurnRealization(rescueBlueprint, underRealized);
 
-    const repaired = repairEncounterTurnRealization(rescueBlueprint, underRealized);
-
-    expect(repaired).toBeGreaterThan(0);
-    expect(underRealized.storylets?.victory?.beats?.[0]?.text).toContain('Victor intervenes before the attack can finish');
-    expect(assessEncounterTurnRealization(rescueBlueprint, underRealized).passed).toBe(true);
+    expect(result.passed).toBe(false);
+    // Assessment must never mutate the encounter — no deterministic prose injection.
+    expect(JSON.stringify(underRealized)).toBe(before);
   });
 });

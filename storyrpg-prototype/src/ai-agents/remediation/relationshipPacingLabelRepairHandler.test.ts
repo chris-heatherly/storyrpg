@@ -202,6 +202,64 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(scene.beats[0].text).toContain('fragile circle');
   });
 
+  it('clears premature "official first meeting" labels in base beats and conditional variants without touching benign "official" uses', async () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    const beat = scene.beats[0];
+    beat.text = 'Welcome to the Dusk Club, official first meeting. A city official waved you past on official business.';
+    beat.textVariants = [{
+      condition: { type: 'flag', flag: 'info-mika-contract_setup', value: true },
+      text: 'Welcome to the Dusk Club, official first meeting.',
+    }];
+    beat.choices = [];
+
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: [{
+        validator: 'RelationshipArcLedgerValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: 'error',
+        message: `Scene "${scene.id}" uses unearned relationship label(s): official.`,
+        suggestion: 'Rewrite as invitation, dare until relationship choices and evidence earn the stronger label.',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(beat.text).toContain('Dusk Club, first meeting');
+    expect(beat.text).not.toMatch(/official first meeting/i);
+    expect(beat.text).toContain('city official');
+    expect(beat.text).toContain('official business');
+    expect(beat.textVariants?.[0]?.text).toBe('Welcome to the Dusk Club, first meeting.');
+    expect(beat.textVariants?.[0]?.text).not.toMatch(/official/i);
+  });
+
+  it('clears the reversed "first official" word order and sibling milestone nouns (bite-me 2026-07-04)', async () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    const beat = scene.beats[0];
+    beat.text = '"Okay, Dusk Club, first official meeting," Mika toasts. Later she calls the post the Dusk Club\'s first official operation.';
+    beat.textVariants = [];
+    beat.choices = [];
+
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: [{
+        validator: 'RelationshipArcLedgerValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: 'error',
+        message: `Scene "${scene.id}" uses unearned relationship label(s): official.`,
+        suggestion: 'Rewrite as invitation, dare until relationship choices and evidence earn the stronger label.',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(beat.text).not.toMatch(/official/i);
+    expect(beat.text).toContain('first meeting');
+    expect(beat.text).toContain('first operation');
+  });
+
   it('downgrades unearned relationship labels in scene headers', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1] as any;

@@ -97,6 +97,85 @@ describe('sceneEventOwnership', () => {
     expect(scenes[1].sceneEventOwnership?.forbiddenRestageEvents.map((event) => event.cue)).toContain('venueDoor');
   });
 
+  it('grants no cue ownership to a generic planner scaffold turn (bite-me 2026-07-04 s1-6)', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 's1-6-release',
+        kind: 'standard',
+        turnContract: {
+          turnId: 's1-6-turn',
+          source: 'planner' as const,
+          centralTurn: 'Let the fallout settle into the next pressure: Kylie arrives in Bucharest with two suitcases, meets the table on the rooftop terrace, and writes the first blog post at 4am.',
+          turnEvent: 'Let the fallout settle into the next pressure: Kylie arrives in Bucharest with two suitcases, meets the table on the rooftop terrace, and writes the first blog post at 4am.',
+          beforeState: 'Before.',
+          afterState: 'After.',
+          handoff: 'Bridge forward.',
+        },
+      },
+    ];
+
+    attachSceneEventOwnershipProfiles(scenes);
+
+    expect(scenes[0].sceneEventOwnership?.ownedEvents).toEqual([]);
+  });
+
+  it('demotes a non-encounter scene duplicating threatEncounter to aftermath instead of erroring (bite-me 2026-07-04 scene-4)', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 's3-ambush',
+        kind: 'encounter',
+        isEncounter: true,
+        sceneConstructionProfile: constructionProfile(
+          's3-ambush',
+          'In the park, rough hands grab your coat and an attacker pins you against the fence.',
+        ),
+      },
+      {
+        id: 's4-reflection',
+        kind: 'standard',
+        sceneConstructionProfile: constructionProfile(
+          's4-reflection',
+          'Rough hands grab your coat again as the memory of the attacker replays while you sit at your desk.',
+        ),
+      },
+    ];
+
+    const issues = attachSceneEventOwnershipProfiles(scenes);
+
+    expect(issues.filter((issue) => issue.severity === 'error')).toEqual([]);
+    expect(issues.some((issue) => issue.severity === 'warning' && issue.message.includes('Demoted duplicate ownership of threatEncounter'))).toBe(true);
+    expect(scenes[0].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toContain('threatEncounter');
+    expect(scenes[1].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).not.toContain('threatEncounter');
+    expect(scenes[1].sceneEventOwnership?.forbiddenRestageEvents.map((event) => event.cue)).toContain('threatEncounter');
+  });
+
+  it('keeps duplicate threatEncounter ownership blocking when the later scene is encounter-capable', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 's3-ambush',
+        kind: 'encounter',
+        isEncounter: true,
+        sceneConstructionProfile: constructionProfile(
+          's3-ambush',
+          'In the park, rough hands grab your coat and an attacker pins you against the fence.',
+        ),
+      },
+      {
+        id: 's5-second-ambush',
+        kind: 'encounter',
+        isEncounter: true,
+        sceneConstructionProfile: constructionProfile(
+          's5-second-ambush',
+          'In the alley, the attacker lunges and rough hands grab your wrist before you can scream.',
+        ),
+      },
+    ];
+
+    const issues = attachSceneEventOwnershipProfiles(scenes);
+
+    expect(issues.some((issue) => issue.severity === 'error' && issue.message.includes('threatEncounter'))).toBe(true);
+  });
+
   it('blocks out-of-order route event ownership before prose generation', () => {
     const scenes: SceneEventOwnershipSceneLike[] = [
       {

@@ -122,10 +122,20 @@ const RAW_GATE_REGISTRY = [
 
   // ── Repair / judge infrastructure (the routes other gates rely on) ──
   { id: 'GATE_SCENE_REQUIRED_BEAT_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  // Escalation switch for the above: hard-abort the run at scene time when the
+  // realization retry still misses (two-tier policy: default is warn + defer
+  // to the season-final realization gate's bounded repair).
+  { id: 'GATE_SCENE_REALIZATION_ABORT', placement: 'scene', kind: 'blocking', defaultOn: false },
+  // Scene-time narration-tense check: a scene written wholesale in past tense
+  // gets one SceneWriter retry with tense feedback at write time, where the
+  // fix costs one scene instead of final-contract repair rounds.
+  { id: 'GATE_SCENE_TENSE_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_CHOICE_OUTCOME_TIER_REAUTHOR', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  { id: 'GATE_ROUTE_RESTAGE_ARBITER', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_RECONVERGENCE_RESIDUE_REPAIR', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
 
@@ -149,6 +159,11 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  // Deterministic demote-to-aftermath repair for duplicate-sensitive event
+  // ownership on non-encounter-capable scenes (2026-07-04: SceneConstructionGate
+  // duplicate-ownership conflicts were the largest hard-abort surface with no
+  // retry path on the deterministic planned-blueprint route).
+  { id: 'GATE_OWNERSHIP_AFTERMATH_DEMOTION', placement: 'plan', kind: 'remediation', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_DRAMATIC_STRUCTURE', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SCENE_TURN_CONTRACT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
@@ -161,6 +176,11 @@ const RAW_GATE_REGISTRY = [
   // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender
   // NPC ambiguity) is reported for the EncounterArchitect regen route.
   { id: 'GATE_ENCOUNTER_POV', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  // Opening-anchor POV (first prose beat must anchor the player with you/your or
+  // {{player.name}}). Moved from the scene-lock gate — where a stale scene-time
+  // failure hard-aborted the run with no repair route (2026-07-05T23-54-17) — to
+  // the final contract, where a blocking finding routes to a same-scene rewrite.
+  { id: 'GATE_POV_ANCHOR', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // bite-me-g22/g23: malformed second-person encounter prose ("you rooftop",
   // "You kiss takes"). Shadow by default until nested encounter outcome repair
   // can clear the gate without a season-final abort.

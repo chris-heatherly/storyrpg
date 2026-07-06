@@ -29,6 +29,7 @@ import { WorldBible } from '../agents/WorldBuilder';
 import { CharacterBible } from '../agents/CharacterDesigner';
 import { SceneContent } from '../agents/SceneWriter';
 import { normalizeOnShowFlagConsequences } from './consequenceNormalization';
+import { beatTextMatchesBlueprintPlanning } from './readerTextFallbacks';
 import { normalizeBeatTypography } from '../utils/proseTypography';
 import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
@@ -194,6 +195,18 @@ export class Assembly {
       this.deps.ensureBlueprintFidelityText(sceneBlueprint, content);
       this.deps.ensureChoiceBridgeBeats(blueprint, sceneBlueprint, content, choiceMap);
       this.deps.sanitizeSceneContentForReader(sceneBlueprint, content);
+      for (const beat of content.beats ?? []) {
+        const leakedPlanning = beatTextMatchesBlueprintPlanning(beat.text, sceneBlueprint);
+        if (leakedPlanning) {
+          this.deps.emit({
+            type: 'warning',
+            phase: 'assembly',
+            message:
+              `Beat "${beat.id}" in "${sceneBlueprint.id}" matches blueprint planning text verbatim ` +
+              `("${leakedPlanning.slice(0, 80)}${leakedPlanning.length > 80 ? '…' : ''}") — route to LLM prose repair.`,
+          });
+        }
+      }
 
       const beats: Beat[] = content.beats.map(genBeat => {
         const compositeKey = this.deps.getEpisodeScopedBeatKey(brief, sceneBlueprint.id, genBeat.id);

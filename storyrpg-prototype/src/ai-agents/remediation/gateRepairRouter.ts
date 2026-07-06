@@ -684,13 +684,62 @@ export class GateRepairRouter {
     }
 
     if (validator === 'RouteContinuityValidator') {
+      // A duplicate-event RESTAGE names the exact later scene and its own
+      // suggestion is a prose rewrite ("rewrite the later scene as
+      // consequence, memory, ... instead of replaying the owned event").
+      // Routing it to blueprint_rebalance made it unrepairable at the final
+      // contract AND starved the LLM-repair guard for every other finding
+      // (bite-me 2026-07-05T20-47-31: one restage finding + one tense finding
+      // ⇒ zero repairable issues ⇒ abort). The scene graph is not wrong — the
+      // flagged scene's prose is.
+      if (issue.sceneId && /\b(?:route_duplicate_event|restages?)\b/i.test(issueText)) {
+        return directive('scene_cluster_rewrite', issue, 'Restaged owned event must be rewritten as aftermath/consequence in the flagged scene, preserving surrounding continuity.');
+      }
       if (/\b(?:route_chronology_violation|route_duplicate_event|chronology|duplicate|inverts?|stages?.+after|appears to stage)\b/i.test(issueText)) {
         return directive('blueprint_rebalance', issue, 'Route chronology or duplicate-event ownership must be repaired in the scene graph, not direct prose insertion.');
       }
       if (/\brole_fidelity_violation\b/i.test(issueText)) {
         return directive('scene_cluster_rewrite', issue, 'Named role-fidelity issues need the local scene cluster to preserve cause and aftermath.');
       }
+      // Deterministic fallback/template prose that survived into reader-facing
+      // text (`unsafe_fallback_prose`, sourced from the syntheticFallbackProse
+      // registry) is a localized prose defect: the fix is an LLM re-author of
+      // the affected scene, never more deterministic text. Without this rule
+      // these findings fell to `diagnostic_stop` — an architecture-class kind
+      // that both left them unrepaired and withheld LLM repair from other
+      // findings in the same report.
+      if (issue.type === 'unsafe_fallback_prose' && issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Deterministic fallback/template prose must be re-authored by the LLM in this scene.');
+      }
       return directive('diagnostic_stop', issue, 'Route continuity issue has no safe direct prose repair route.');
+    }
+
+    if (validator === 'NarrativeFailureModeValidator') {
+      // Prose-style consistency findings (tense drift, repetitive motifs) are
+      // beat-local prose defects: the deterministic tense handler plus a
+      // same-scene LLM rewrite clear them. Without this rule they fell to
+      // `diagnostic_stop` — an architecture-class kind that both left them
+      // unrepaired and withheld LLM repair from every other finding in the
+      // report (bite-me 2026-07-05T20-47-31: a tense-drift beat classified as
+      // architecture aborted an otherwise-shippable run).
+      if (issue.type === 'prose_style_violation' && issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Prose-style violation is scene-local prose; deterministic tense repair plus a same-scene rewrite clears it.');
+      }
+    }
+
+    if (validator === 'PovClarityValidator') {
+      // Opening-anchor findings ("scene opens without anchoring the player") are
+      // scene-local prose: the fix is an LLM rewrite of the first beat, never a
+      // structural change. Previously this rule only existed at the scene-lock
+      // gate, where it hard-aborted the run with NO repair route (bite-me
+      // 2026-07-05T23-54-17: s1-1 opened on an establishing shot and the whole
+      // run died at episode locking). Deterministic cleanup can't help here —
+      // there may be nothing to coerce when the beat never mentions the player.
+      if (issue.type === 'pov_anchor_missing' && issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Opening beat must anchor the player character; scene-local LLM rewrite of the opening prose.');
+      }
+      // pov_break person findings (third/first person narration) fall through to
+      // the deterministic pronoun-coercion cleanup via the catch-all below.
     }
 
     if (validator === 'RelationshipArcLedgerValidator') {

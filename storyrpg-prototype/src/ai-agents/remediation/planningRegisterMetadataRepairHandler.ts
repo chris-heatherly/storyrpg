@@ -26,6 +26,13 @@ const PLANNING_PREFIX_PATTERNS: RegExp[] = [
   /^\s*Escalate\s+the\s+episode\s+pressure\s+through\s+a\s+concrete\s+turn\s*:\s*/i,
   /^\s*Let\s+the\s+fallout\s+settle\s+into\s+the\s+next\s+pressure\s*:\s*/i,
   /^\s*Forward\s+pressure\s*:\s*/i,
+  // The retired encounterTurnRealizationGuard injector prepended
+  // "<raw authored moment> The encounter outcome changes on-page." onto
+  // storylet/outcome prose. Strip the whole injected span (moment + marker)
+  // so the original authored prose is restored.
+  /^[\s\S]{0,600}?\bThe\s+encounter\s+outcome\s+changes\s+on-page\.\s*/i,
+  /^\s*The\s+required\s+encounter\s+turn\s+lands\s+on-page\.\s*/i,
+  /^\s*[A-Z][^.!?]{0,200}\bintervenes\s+before\s+the\s+attack\s+can\s+finish,\s+saving\s+\w+\s+and\s+changing\s+the\s+outcome\s+of\s+the\s+encounter\.\s*/i,
 ];
 
 const OPEN_EPISODE_PREFIX_PATTERN =

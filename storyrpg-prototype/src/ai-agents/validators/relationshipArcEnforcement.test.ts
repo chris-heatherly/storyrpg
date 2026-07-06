@@ -114,7 +114,10 @@ describe('relationship arc enforcement', () => {
     expect(result.issues.some((issue) => issue.message.includes('multiple major locations'))).toBe(true);
   });
 
-  it('blocks a scene target that outruns the deterministic relationship ledger', () => {
+  it('clamps a scene target that outruns the deterministic relationship ledger instead of blocking (2026-07-04 policy)', () => {
+    // effectiveTargetStage() clamps to the ledger head: an over-reaching planned
+    // target validates at the EARNED stage rather than aborting the run
+    // (bite-me 2026-07-04: s1-3 targeted acquaintance, ledger permitted spark).
     const s = story([
       scene('s1-1', 'At Lumina Books, Stela Pavel looks up and says hello.', {
         relationshipPacing: [pacing({ targetStage: 'friend', allowedLabels: ['friend'] })],
@@ -122,31 +125,35 @@ describe('relationship arc enforcement', () => {
     ]);
 
     const result = new RelationshipArcLedgerValidator().validate({ story: s, treatmentSourced: true });
-    expect(result.valid).toBe(false);
-    expect(result.issues.some((issue) => issue.message.includes('only permits spark'))).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('only permits'))).toBe(false);
+    expect(result.valid).toBe(true);
   });
 
   it('deduplicates repeated relationship pacing contract findings without making them valid', () => {
     const duplicate = pacing({
-      id: 'rel-circle',
-      npcId: undefined,
-      groupId: 'circle',
-      targetStage: 'tentative_ally',
-      allowedLabels: ['tentative group'],
+      id: 'rel-stela-cap',
+      targetStage: 'spark',
+      maxDeltaThisScene: 2,
     });
     const s = story([
-      scene('s1-1', 'At the station, the circle name is still only a dare.', {
+      scene('s1-1', 'Stela offers more than the moment has earned.', {
         relationshipPacing: [duplicate, { ...duplicate }],
+        beats: [beat('s1-1-b1', 'Stela offers more than the moment has earned.', {
+          choices: [{
+            id: 'c1',
+            text: 'Lean in',
+            choiceType: 'relationship',
+            consequences: [{ type: 'relationship', npcId: 'stela', dimension: 'trust', change: 6 }],
+          }],
+        })],
       }),
     ]);
 
     const result = new RelationshipArcLedgerValidator().validate({ story: s, treatmentSourced: true });
-    const targetIssues = result.issues.filter((issue) => issue.message.includes('only permits spark'));
-    const choiceIssues = result.issues.filter((issue) => issue.message.includes('before any player relationship choice'));
+    const capIssues = result.issues.filter((issue) => issue.message.includes('above the ledger cap'));
 
     expect(result.valid).toBe(false);
-    expect(targetIssues).toHaveLength(1);
-    expect(choiceIssues).toHaveLength(1);
+    expect(capIssues).toHaveLength(1);
   });
 
   it('keeps repeated group mentions at spark without a group-defining relationship choice', () => {

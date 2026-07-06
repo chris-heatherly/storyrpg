@@ -1,0 +1,1037 @@
+{
+  "id": "s1-6",
+  "name": "Dating After Dusk becomes a real local curiosity as.. at Bucharest...",
+  "charactersInvolved": [
+    "char-kylie-marinescu",
+    "char-stela-pavel",
+    "char-mika-dragan"
+  ],
+  "startingBeatId": "beat-s1-6-01",
+  "beats": [
+    {
+      "id": "beat-s1-6-01",
+      "text": "Old plaster and someone else's cooking oil. The laptop is already on the kitchen table \u2014 you do not remember opening it. The cursor blinks in a blank document. Outside, the city makes its ordinary sounds. You sit down.",
+      "textVariants": [
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "encounter_treatment-enc-1-1_defeat",
+            "value": true
+          },
+          "text": "The apartment smells of old plaster and someone else's cooking oil. Your hands are still unsteady \u2014 the kind of tremor that starts in the chest and works outward. The laptop sits open on the kitchen table, cursor blinking. A question you almost know how to answer, if you can stay seated long enough."
+        },
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "encounter_treatment-enc-1-1_partialVictory",
+            "value": true
+          },
+          "text": "Your hem is damp, your mind still snagged on the moment he stepped back into the dark \u2014 that precise, deliberate retreat. The laptop sits open on the kitchen table, cursor blinking. Something happened tonight. You are going to find out what it was by writing it down."
+        },
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "kylie_suppressed_writer_reflex",
+            "value": true
+          },
+          "text": "The apartment smells of old plaster and someone else's cooking oil \u2014 the specific comfort of a place that does not know you yet. Your trench coat is still damp at the hem. The laptop sits open on the kitchen table, cursor blinking in a blank document like a question you almost know how to answer.",
+          "callbackHookId": "flag:kylie_suppressed_writer_reflex",
+          "sourceChoiceId": "choice-pocket-phone",
+          "reminderTag": "auto-callback"
+        }
+      ],
+      "callbackHookIds": [
+        "flag:kylie_suppressed_writer_reflex"
+      ],
+      "speaker": "Kylie Marinescu",
+      "speakerMood": "suspended",
+      "nextBeatId": "beat-s1-6-02",
+      "primaryAction": "Kylie sets her keys down and faces the empty document",
+      "emotionalRead": "Kylie's posture is contained, alert \u2014 like someone listening for a sound that already stopped",
+      "relationshipDynamic": "Kylie alone \u2014 pure interiority and object pressure",
+      "mustShowDetail": "the blinking cursor on the blank document, the damp hem of the trench coat",
+      "shotType": "character",
+      "intensityTier": "rest",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "MLS",
+        "cameraAngle": "eye-level",
+        "cameraSide": "front-left",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Kylie alone \u2014 pure interiority and object pressure",
+        "coverageReason": "pressure beat in the scene sequence: Kylie Marinescu Kylie sets her keys down and faces the empty document, and the room answers with a changed silence.",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Kylie Marinescu": "make the other person acknowledge what is visible"
+        },
+        "obstacle": "the other character resists the surface objective",
+        "statusBefore": "leverage is unresolved at the start of the beat",
+        "statusAfter": "Kylie Marinescu's visible action shifts attention and leverage",
+        "subtext": "the visible behavior reveals more than the spoken topic admits",
+        "visibleTurn": "Kylie Marinescu Kylie sets her keys down and faces the empty document, and the room answers with a changed silence.",
+        "visualSubtextCue": "Kylie Marinescu holds position a beat too long, giving the room time to read the silence."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Kylie Marinescu Kylie sets her keys down and faces the empty document, and the room answers with a changed silence.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Kylie Marinescu holds position a beat too long, giving the room time to read the silence.",
+        "mechanicThread": "promise",
+        "beatRole": "pressure"
+      }
+    },
+    {
+      "id": "beat-s1-6-02",
+      "text": "She types the title first: *Dating After Dusk.* Deletes it. Types it again. Her tortoiseshell glasses slide down and she pushes them back up \u2014 the way she does when committing to something she cannot take back.",
+      "textVariants": [
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "mika_trust_initial_positive",
+            "value": true
+          },
+          "text": "She types the title first: *Dating After Dusk.* Deletes it. Types it again. Her tortoiseshell glasses slide down and she pushes them back up \u2014 the way she does when committing to something she cannot take back.",
+          "callbackHookId": "flag:mika_trust_initial_positive",
+          "sourceChoiceId": "choice-pocket-phone",
+          "reminderTag": "auto-callback"
+        }
+      ],
+      "callbackHookIds": [
+        "flag:mika_trust_initial_positive"
+      ],
+      "speaker": "Kylie Marinescu",
+      "speakerMood": "driven",
+      "nextBeatId": "beat-s1-6-02b",
+      "primaryAction": "Kylie types the blog title and commits to writing",
+      "emotionalRead": "Focused, slightly reckless \u2014 the particular clarity that comes after surviving something",
+      "relationshipDynamic": "Kylie alone with her own voice",
+      "mustShowDetail": "tortoiseshell glasses pushed up, the title 'Dating After Dusk' on the screen",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "MS",
+        "cameraAngle": "high angle",
+        "cameraSide": "side-profile",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Kylie alone with her own voice",
+        "coverageReason": "pressure beat in the scene sequence: Kylie Marinescu Kylie types the blog title and commits to writing, and the room answers with a changed silence.",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Kylie Marinescu": "press for a visible change while keeping the deeper motive guarded"
+        },
+        "obstacle": "the other character resists the surface objective",
+        "statusBefore": "leverage is unresolved at the start of the beat",
+        "statusAfter": "Kylie Marinescu's visible action shifts attention and leverage",
+        "subtext": "the visible behavior reveals more than the spoken topic admits",
+        "visibleTurn": "Kylie Marinescu Kylie types the blog title and commits to writing, and the room answers with a changed silence.",
+        "visualSubtextCue": "Kylie Marinescu holds position a beat too long, giving the room time to read the silence."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Kylie Marinescu Kylie types the blog title and commits to writing, and the room answers with a changed silence.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Kylie Marinescu holds position a beat too long, giving the room time to read the silence.",
+        "mechanicThread": "promise",
+        "beatRole": "pressure"
+      }
+    },
+    {
+      "id": "beat-s1-6-02b",
+      "text": "The stranger gets a name \u2014 *Mr. Midnight* \u2014 and the night unspools fast: the attack as dark comedy, the rescue as something between fairy tale and fever dream. By 4am the post is done. Her lipstick is completely gone and she does not remember blotting it.",
+      "speaker": "Kylie Marinescu",
+      "speakerMood": "spent",
+      "nextBeatId": "beat-s1-6-03",
+      "primaryAction": "Kylie names the stranger Mr. Midnight and completes the post",
+      "emotionalRead": "Exhausted clarity \u2014 she has made something irreversible",
+      "relationshipDynamic": "Kylie's reflection watches her work \u2014 a doubling of self",
+      "mustShowDetail": "the codename 'Mr. Midnight' on screen, Kylie's ghosted reflection in the window",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "MLS",
+        "cameraAngle": "low angle",
+        "cameraSide": "front-right",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Kylie's reflection watches her work \u2014 a doubling of self",
+        "coverageReason": "pressure beat in the scene sequence: Kylie Marinescu Kylie names the stranger Mr. Midnight and completes the post, and the room answers with a changed silence.",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Kylie Marinescu": "press for a visible change while keeping the deeper motive guarded"
+        },
+        "obstacle": "the other character resists the surface objective",
+        "statusBefore": "leverage is unresolved at the start of the beat",
+        "statusAfter": "Kylie Marinescu's visible action shifts attention and leverage",
+        "subtext": "the visible behavior reveals more than the spoken topic admits",
+        "visibleTurn": "Kylie Marinescu Kylie names the stranger Mr. Midnight and completes the post, and the room answers with a changed silence.",
+        "visualSubtextCue": "Kylie Marinescu holds position a beat too long, giving the room time to read the silence."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Kylie Marinescu Kylie names the stranger Mr. Midnight and completes the post, and the room answers with a changed silence.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Kylie Marinescu holds position a beat too long, giving the room time to read the silence.",
+        "mechanicThread": "promise",
+        "beatRole": "pressure"
+      }
+    },
+    {
+      "id": "beat-s1-6-03",
+      "text": "By evening \u2014 after sleep, after coffee she did not taste \u2014 the phone is loud with notifications. Mika arrives first in a leopard-print coat, bracelets clattering, already reading the post before the door is fully open. Stela comes ten minutes later with a jar that smells like honey and dried lavender, sets it on the kitchen table without explanation.",
+      "textVariants": [
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "accepted_nightlife_invite",
+            "value": true
+          },
+          "text": "By evening the phone is loud. Mika arrives in a leopard-print coat, already reading the post \u2014 'I *told* you Bucharest was the right move,' she announces. Stela arrives quietly behind her with a jar of honey and dried lavender and sets it on the table without a word.",
+          "callbackHookId": "within-ep1-accepted_nightlife_invite"
+        },
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "kylie_anchors_to_stela",
+            "value": true
+          },
+          "text": "By evening the phone is loud. Stela arrives first \u2014 which surprises you \u2014 with a jar of honey and dried lavender. She sets it on the table without comment and reads the post over your shoulder in silence. Mika comes ten minutes later, bracelets announcing her from the stairwell.",
+          "callbackHookId": "within-ep1-kylie_anchors_to_stela"
+        }
+      ],
+      "callbackHookIds": [
+        "flag:accepted_nightlife_invite",
+        "flag:kylie_eager_joiner",
+        "flag:treatment_seed_ep1_2",
+        "flag:kylie_anchors_to_stela"
+      ],
+      "speaker": "Mika Dragan",
+      "speakerMood": "delighted",
+      "nextBeatId": "beat-s1-6-03b",
+      "primaryAction": "Mika and Stela arrive; the Dusk Club assembles around the viral post",
+      "emotionalRead": "Mika performing delight; Stela quieter, watching Kylie's face more than the screen",
+      "relationshipDynamic": "Mika close and loud, Stela quieter and positioned to observe \u2014 they bracket Kylie without quite touching her",
+      "mustShowDetail": "Mika's gold bracelets, Stela's jar of honey and lavender on the table",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "MS",
+        "cameraAngle": "overhead",
+        "cameraSide": "over-shoulder",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Mika close and loud, Stela quieter and positioned to observe \u2014 they bracket Kylie without quite touching her",
+        "coverageReason": "pressure beat in the scene sequence: Mika Dragan uses the phone as evidence, shifting the room's attention to the screen.",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Mika Dragan": "escape the exchange before the real feeling is exposed"
+        },
+        "obstacle": "the evidence is visible but contested",
+        "statusBefore": "the room has not yielded control yet",
+        "statusAfter": "Mika Dragan's visible action shifts attention and leverage",
+        "subtext": "an object is forcing an unspoken truth into the open",
+        "visibleTurn": "Mika Dragan uses the phone as evidence, shifting the room's attention to the screen.",
+        "visualSubtextCue": "Mika Dragan keeps a hand near the coffee, using the object as cover for what cannot be said."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Mika Dragan uses the phone as evidence, shifting the room's attention to the screen.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Mika Dragan keeps a hand near the coffee, using the object as cover for what cannot be said.",
+        "mechanicThread": "promise",
+        "beatRole": "pressure"
+      }
+    },
+    {
+      "id": "beat-s1-6-03b",
+      "text": "They gather around the laptop like it is a campfire, the numbers still climbing. Mika reads the Mr. Midnight passage aloud \u2014 *tall, devastatingly uncasual, the kind of handsome that is clearly someone else's problem* \u2014 and laughs in the middle of it, has to start the sentence over. 'He sounds\u2014' She waves a hand. 'Perfect. Obviously.'",
+      "speaker": "Mika Dragan",
+      "speakerMood": "too-delighted",
+      "nextBeatId": "beat-s1-6-04",
+      "primaryAction": "Mika reads the description aloud and declares Mr. Midnight perfect",
+      "emotionalRead": "Mika's delight arrives a beat too fast; Stela does not laugh",
+      "relationshipDynamic": "clear spatial and power dynamic between visible characters",
+      "mustShowDetail": "Mika laughing, Stela not \u2014 the contrast visible",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "MS",
+        "cameraAngle": "dutch angle",
+        "cameraSide": "high-side",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "clear spatial and power dynamic between visible characters",
+        "coverageReason": "escalation beat in the scene sequence: Mika Dragan lets one guarded reaction break through before recovering.",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Mika Dragan": "avoid revealing the truth while preserving control"
+        },
+        "obstacle": "the other character resists the surface objective",
+        "statusBefore": "leverage is unresolved at the start of the beat",
+        "statusAfter": "Mika Dragan's visible action shifts attention and leverage",
+        "subtext": "the surface reassurance is a cover for fear of exposure",
+        "visibleTurn": "Mika Dragan lets one guarded reaction break through before recovering.",
+        "visualSubtextCue": "Mika Dragan's smile holds a second too long before the mask settles again."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Mika Dragan lets one guarded reaction break through before recovering.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Mika Dragan's smile holds a second too long before the mask settles again.",
+        "mechanicThread": "promise",
+        "beatRole": "escalation"
+      }
+    },
+    {
+      "id": "beat-s1-6-04",
+      "text": "Stela sets her coffee cup down with both hands, careful not to make noise. She asks, in the same register she has been using all morning, whether the man who helped you said anything before he left. Mika's thumb stops moving on the screen. You tell it: the park, the figures, the stranger from nowhere, the walk back to the door. The walk only.",
+      "speaker": "Stela Pavel",
+      "speakerMood": "careful",
+      "nextBeatId": "beat-s1-6-04b",
+      "primaryAction": "Stela begins her quiet interrogation of the attack",
+      "emotionalRead": "Stela's stillness carries more weight than her words; Kylie registers the shift",
+      "relationshipDynamic": "Stela gains quiet informational leverage; Mika creates distance by not engaging",
+      "mustShowDetail": "Stela's two-handed grip on the coffee cup",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "MS",
+        "cameraAngle": "ground-level",
+        "cameraSide": "low-side",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Stela gains quiet informational leverage; Mika creates distance by not engaging",
+        "coverageReason": "escalation beat in the scene sequence: Stela Pavel changes the room by putting the hidden pressure into words.",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Stela Pavel": "make the other person acknowledge what is visible"
+        },
+        "obstacle": "the other character resists the surface objective",
+        "statusBefore": "leverage is unresolved at the start of the beat",
+        "statusAfter": "Stela Pavel's visible action shifts attention and leverage",
+        "subtext": "the visible behavior reveals more than the spoken topic admits",
+        "visibleTurn": "Stela Pavel changes the room by putting the hidden pressure into words.",
+        "visualSubtextCue": "Stela Pavel keeps a hand near the coffee, using the object as cover for what cannot be said."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Stela Pavel changes the room by putting the hidden pressure into words.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Stela Pavel keeps a hand near the coffee, using the object as cover for what cannot be said.",
+        "mechanicThread": "promise",
+        "beatRole": "escalation"
+      }
+    },
+    {
+      "id": "beat-s1-6-04b",
+      "text": "Stela asks \u2014 still quiet, still level \u2014 which direction he came from, Whether you invited him in. You did not. You had not thought about it until now. She nods once, like that is the answer she wanted.",
+      "speaker": "Stela Pavel",
+      "speakerMood": "relieved-and-guarded",
+      "nextBeatId": "beat-s1-6-04c",
+      "primaryAction": "Stela Pavel leans in and uses a concrete gesture to press the point",
+      "emotionalRead": "Stela's nod carries the stillness of someone relieved by a specific answer; Kylie unsettled",
+      "relationshipDynamic": "Stela holds knowledge Kylie doesn't; the gap between them widens quietly",
+      "mustShowDetail": "Stela's single nod \u2014 contained, deliberate",
+      "shotType": "character",
+      "intensityTier": "dominant",
+      "coveragePlan": {
+        "stagingPattern": "ensemble",
+        "shotDistance": "MCU",
+        "cameraAngle": "eye-level",
+        "cameraSide": "front-left",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Stela holds knowledge Kylie doesn't; the gap between them widens quietly",
+        "coverageReason": "turn beat in the scene sequence: Stela Pavel changes the room by putting the hidden pressure into words.",
+        "visualContinuity": {
+          "mode": "preserve_scene_axis",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Stela Pavel": "make the other person acknowledge what is visible"
+        },
+        "obstacle": "the other character resists the surface objective",
+        "statusBefore": "leverage is unresolved at the start of the beat",
+        "statusAfter": "Stela Pavel's visible action shifts attention and leverage",
+        "subtext": "the visible behavior reveals more than the spoken topic admits",
+        "visibleTurn": "Stela Pavel changes the room by putting the hidden pressure into words.",
+        "visualSubtextCue": "Stela Pavel holds position a beat too long, giving the room time to read the silence."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Stela Pavel changes the room by putting the hidden pressure into words.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Stela Pavel holds position a beat too long, giving the room time to read the silence.",
+        "mechanicThread": "promise",
+        "beatRole": "turn"
+      }
+    },
+    {
+      "id": "beat-s1-6-04c",
+      "text": "Stela turns the honey jar a quarter-turn on the table. 'For the threshold,' she says. 'A house gift.' Then Mika's phone buzzes and she holds it up without looking away from you first: *Dating After Dusk* is trending on Romanian Twitter. The three of you look at the screen. Nobody says anything for a moment.",
+      "speaker": "Stela Pavel",
+      "speakerMood": "careful",
+      "primaryAction": "Stela places the ward; Mika reveals the blog is trending",
+      "emotionalRead": "Stela quiet and finished; Mika bright and redirecting; Kylie between two different futures on the same table",
+      "relationshipDynamic": "Mika's notification defuses the tension before Kylie can follow Stela's question to its end",
+      "mustShowDetail": "Stela's quarter-turn of the honey jar; Mika's phone showing the trending notification",
+      "shotType": "character",
+      "intensityTier": "dominant",
+      "coveragePlan": {
+        "stagingPattern": "insert",
+        "shotDistance": "CU",
+        "cameraAngle": "high angle",
+        "cameraSide": "side-profile",
+        "focalCharacterIds": [
+          "char-kylie-marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-kylie-marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Mika's notification defuses the tension before Kylie can follow Stela's question to its end",
+        "coverageReason": "turn beat in the scene sequence: Stela Pavel changes the room by putting the hidden pressure into words.",
+        "visualContinuity": {
+          "mode": "preserve_scene_axis",
+          "reason": "SequenceDirector: preserve Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Stela Pavel": "press for a visible change while keeping the deeper motive guarded"
+        },
+        "obstacle": "the evidence is visible but contested",
+        "statusBefore": "the truth is still deniable",
+        "statusAfter": "Stela Pavel's visible action shifts attention and leverage",
+        "subtext": "an object is forcing an unspoken truth into the open",
+        "visibleTurn": "Stela Pavel changes the room by putting the hidden pressure into words.",
+        "visualSubtextCue": "Stela Pavel keeps a hand near the phone, using the object as cover for what cannot be said."
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-6-sequence-1",
+        "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "activity": "The room, the body, and the way people answer all register the turn.",
+        "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+        "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+        "turningPoint": "Stela Pavel changes the room by putting the hidden pressure into words.",
+        "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+        "visualThread": "Stela Pavel keeps a hand near the phone, using the object as cover for what cannot be said.",
+        "mechanicThread": "promise",
+        "beatRole": "turn"
+      },
+      "choices": [
+        {
+          "id": "c-s1-6-04c-01",
+          "text": "Grab Mika's phone and start drafting a new post right now.",
+          "choiceType": "relationship",
+          "choiceIntent": "branching",
+          "impactFactors": [
+            "outcome",
+            "relationship"
+          ],
+          "consequenceTier": "branchlet",
+          "stakes": {
+            "want": "Capitalize on the trend before it dies.",
+            "cost": "Mika reads hunger where she expected gratitude.",
+            "identity": "You are someone who moves faster than the moment."
+          },
+          "statCheck": {
+            "skillWeights": {
+              "persuasion": 0.3,
+              "investigation": 0.7
+            },
+            "difficulty": 50
+          },
+          "consequenceDomain": "identity",
+          "storyVerb": "confess",
+          "reminderPlan": {
+            "immediate": "A silence opens where the answer used to be.",
+            "shortTerm": "The next room has to move around what just changed."
+          },
+          "feedbackCue": {
+            "checkClass": "dramatic",
+            "echoSummary": "A silence opens where the answer used to be.",
+            "progressSummary": "The next room has to move around what just changed."
+          },
+          "residueHints": [
+            {
+              "kind": "relationship_behavior",
+              "description": "Mika keeps her phone closer to her chest for the rest of the night.",
+              "targetNpcId": "char-mika-drgan"
+            }
+          ],
+          "consequences": [
+            {
+              "type": "changeScore",
+              "score": "blog_reach",
+              "change": 2
+            },
+            {
+              "type": "relationship",
+              "flag": "mika_trust_down",
+              "value": true,
+              "npcId": "char-mika-dragan",
+              "change": -5
+            },
+            {
+              "type": "setFlag",
+              "flag": "kylie_seized_viral_moment",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "treatment_branch_s1_blog_aftermath",
+              "value": true
+            }
+          ],
+          "routeContext": {
+            "sourceSceneId": "s1-6",
+            "sourceBeatId": "beat-s1-6-04c",
+            "sourceChoiceId": "c-s1-6-04c-01",
+            "choiceSummary": "A silence opens where the answer used to be.",
+            "originalTargetSceneId": "s1-7",
+            "transitionIntent": "Bridge from \"Dating After Dusk becomes a real local curiosity as.. at Bucharest...\" to \"A concrete episode consequence becomes visible at Bucharest Lipscani...\" without teleporting the player.",
+            "bridgePurpose": "choice_transition"
+          },
+          "nextBeatId": "beat-s1-6-04c-bridge-c-s1-6-04c-01",
+          "outcomeTexts": {
+            "success": "The draft goes live in minutes; retweets cascade before Stela finishes her tea.",
+            "partial": "You get the post up, but Mika's expression has already cooled to something careful.",
+            "failure": "Your fingers move too fast; the draft posts half-finished, typos and all."
+          }
+        },
+        {
+          "id": "c-s1-6-04c-02",
+          "text": "Look to Stela first \u2014 her silence feels more important than the trending tab.",
+          "choiceType": "relationship",
+          "choiceIntent": "branching",
+          "impactFactors": [
+            "information",
+            "outcome",
+            "relationship"
+          ],
+          "consequenceTier": "structuralBranch",
+          "stakes": {
+            "want": "Understand what the honey jar and Stela actually mean.",
+            "cost": "The trending window closes while you look away.",
+            "identity": "You choose the uncanny over the comfortable and profitable."
+          },
+          "statCheck": {
+            "skillWeights": {
+              "perception": 0.6,
+              "persuasion": 0.4
+            },
+            "difficulty": 40
+          },
+          "consequenceDomain": "identity",
+          "storyVerb": "confess",
+          "reminderPlan": {
+            "immediate": "A silence opens where the answer used to be.",
+            "shortTerm": "The next room has to move around what just changed."
+          },
+          "feedbackCue": {
+            "checkClass": "dramatic",
+            "echoSummary": "A silence opens where the answer used to be.",
+            "progressSummary": "The next room has to move around what just changed."
+          },
+          "residueHints": [
+            {
+              "kind": "relationship_behavior",
+              "description": "Stela lingers after Mika leaves, as if she was waiting for exactly this.",
+              "targetNpcId": "char-stela-pavel"
+            }
+          ],
+          "consequences": [
+            {
+              "type": "changeScore",
+              "score": "blog_reach",
+              "change": 0
+            },
+            {
+              "type": "relationship",
+              "flag": "stela_trust_up",
+              "value": true,
+              "npcId": "char-stela-pavel",
+              "change": 8
+            },
+            {
+              "type": "setFlag",
+              "flag": "kylie_chose_stela_over_viral",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "treatment_branch_s1_7",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "tint:intuition",
+              "value": true
+            }
+          ],
+          "routeContext": {
+            "sourceSceneId": "s1-6",
+            "sourceBeatId": "beat-s1-6-04c",
+            "sourceChoiceId": "c-s1-6-04c-02",
+            "choiceSummary": "A silence opens where the answer used to be.",
+            "originalTargetSceneId": "s1-7",
+            "transitionIntent": "Bridge from \"Dating After Dusk becomes a real local curiosity as.. at Bucharest...\" to \"A concrete episode consequence becomes visible at Bucharest Lipscani...\" without teleporting the player.",
+            "bridgePurpose": "choice_transition"
+          },
+          "nextBeatId": "beat-s1-6-04c-bridge-c-s1-6-04c-02",
+          "outcomeTexts": {
+            "success": "Stela's eyes soften a fraction; she slides the honey jar an inch closer to you.",
+            "partial": "Stela says nothing, but she doesn't leave \u2014 which feels like its own answer.",
+            "failure": "Stela only looks at the jar; whatever door you sensed shuts quietly before you reach it."
+          },
+          "reactionText": "Mika watches you ignore her phone with something between respect and bewilderment.",
+          "tintFlag": "tint:intuition"
+        },
+        {
+          "id": "c-s1-6-04c-03",
+          "text": "Laugh it off out loud \u2014 'Romanian Twitter found me before I found decent coffee.'",
+          "choiceType": "relationship",
+          "choiceIntent": "branching",
+          "impactFactors": [
+            "identity",
+            "outcome",
+            "relationship"
+          ],
+          "consequenceTier": "callback",
+          "stakes": {
+            "want": "Keep control of the room's energy and your own image.",
+            "cost": "The joke papers over a crack neither woman has missed.",
+            "identity": "Wit is your armor, even when the blade is already inside."
+          },
+          "statCheck": {
+            "skillWeights": {
+              "persuasion": 0.8,
+              "deception": 0.2
+            },
+            "difficulty": 35
+          },
+          "consequenceDomain": "identity",
+          "storyVerb": "confess",
+          "reminderPlan": {
+            "immediate": "A silence opens where the answer used to be.",
+            "shortTerm": "The next room has to move around what just changed."
+          },
+          "feedbackCue": {
+            "checkClass": "dramatic",
+            "echoSummary": "A silence opens where the answer used to be.",
+            "progressSummary": "The next room has to move around what just changed."
+          },
+          "residueHints": [
+            {
+              "kind": "relationship_behavior",
+              "description": "Stela later references 'your coffee line' with a tone that is not quite warm.",
+              "targetNpcId": "char-stela-pavel"
+            }
+          ],
+          "consequences": [
+            {
+              "type": "relationship",
+              "flag": "mika_affection_up",
+              "value": true,
+              "npcId": "char-mika-dragan",
+              "change": 5
+            },
+            {
+              "type": "relationship",
+              "flag": "stela_respect_down",
+              "value": true,
+              "npcId": "char-stela-pavel",
+              "change": -3
+            },
+            {
+              "type": "setFlag",
+              "flag": "kylie_deflected_with_humor",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "treatment_branch_s1_7",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "tint:expedience",
+              "value": true
+            }
+          ],
+          "routeContext": {
+            "sourceSceneId": "s1-6",
+            "sourceBeatId": "beat-s1-6-04c",
+            "sourceChoiceId": "c-s1-6-04c-03",
+            "choiceSummary": "A silence opens where the answer used to be.",
+            "originalTargetSceneId": "s1-7",
+            "transitionIntent": "Bridge from \"Dating After Dusk becomes a real local curiosity as.. at Bucharest...\" to \"A concrete episode consequence becomes visible at Bucharest Lipscani...\" without teleporting the player.",
+            "bridgePurpose": "choice_transition"
+          },
+          "nextBeatId": "beat-s1-6-04c-bridge-c-s1-6-04c-03",
+          "outcomeTexts": {
+            "success": "Mika barks a real laugh; even Stela's mouth curves, just barely, just once.",
+            "partial": "Mika smiles on cue, but Stela's gaze stays level \u2014 she heard what you didn't say.",
+            "failure": "The joke lands flat; the notification keeps blinking in the silence you made."
+          },
+          "reactionText": "Mika pockets her phone, grinning; Stela turns the honey jar back to its original position.",
+          "tintFlag": "tint:expedience"
+        }
+      ],
+      "isChoicePoint": true
+    },
+    {
+      "id": "beat-s1-6-04c-bridge-c-s1-6-04c-01",
+      "text": "Mika's bracelets slide to her wrist and stop as she reads the number again.",
+      "nextSceneId": "s1-7",
+      "primaryAction": "You get the post up, but Mika's expression has already cooled to something careful.",
+      "emotionalRead": "the chosen decision visibly turns into motion",
+      "relationshipDynamic": "the decision changes posture, pace, or distance before the moment moves on",
+      "mustShowDetail": "a concrete transition toward loc-valescu-club,-calea-victoriei",
+      "intensityTier": "supporting",
+      "sequenceIntent": {
+        "objective": "Let the decision become visible movement without a jump in place or relationship.",
+        "activity": "decision, movement, and arrival",
+        "obstacle": "the decision needs a visible breath before the moment moves on",
+        "startState": "A silence opens where the answer used to be.",
+        "endState": "The decision has enough momentum to carry the moment onward.",
+        "beatRole": "handoff",
+        "mechanicThread": "identity"
+      },
+      "isChoiceBridge": true,
+      "routeContext": {
+        "sourceSceneId": "s1-6",
+        "sourceBeatId": "beat-s1-6-04c",
+        "sourceChoiceId": "c-s1-6-04c-01",
+        "choiceSummary": "A silence opens where the answer used to be.",
+        "originalTargetSceneId": "s1-7",
+        "transitionIntent": "Bridge from \"Dating After Dusk becomes a real local curiosity as.. at Bucharest...\" to \"A concrete episode consequence becomes visible at Bucharest Lipscani...\" without teleporting the player.",
+        "bridgePurpose": "choice_transition"
+      }
+    },
+    {
+      "id": "beat-s1-6-04c-bridge-c-s1-6-04c-02",
+      "text": "Stela pulls her coat a little closer and does not reach for her bag.",
+      "nextSceneId": "s1-7",
+      "primaryAction": "Stela says nothing, but she doesn't leave \u2014 which feels like its own answer.",
+      "emotionalRead": "the chosen decision visibly turns into motion",
+      "relationshipDynamic": "the decision changes posture, pace, or distance before the moment moves on",
+      "mustShowDetail": "a concrete transition toward Bucharest Lipscani apartment",
+      "intensityTier": "supporting",
+      "sequenceIntent": {
+        "objective": "Let the decision become visible movement without a jump in place or relationship.",
+        "activity": "decision, movement, and arrival",
+        "obstacle": "the decision needs a visible breath before the moment moves on",
+        "startState": "A silence opens where the answer used to be.",
+        "endState": "The decision has enough momentum to carry the moment onward.",
+        "beatRole": "handoff",
+        "mechanicThread": "identity"
+      },
+      "isChoiceBridge": true,
+      "routeContext": {
+        "sourceSceneId": "s1-6",
+        "sourceBeatId": "beat-s1-6-04c",
+        "sourceChoiceId": "c-s1-6-04c-02",
+        "choiceSummary": "A silence opens where the answer used to be.",
+        "originalTargetSceneId": "s1-7",
+        "transitionIntent": "Bridge from \"Dating After Dusk becomes a real local curiosity as.. at Bucharest...\" to \"A concrete episode consequence becomes visible at Bucharest Lipscani...\" without teleporting the player.",
+        "bridgePurpose": "choice_transition"
+      }
+    },
+    {
+      "id": "beat-s1-6-04c-bridge-c-s1-6-04c-03",
+      "text": "Mika smiles at the number on the screen. Stela's eyes move to the door, then back to you.",
+      "nextSceneId": "s1-7",
+      "primaryAction": "Mika smiles on cue, but Stela's gaze stays level \u2014 she heard what you didn't say.",
+      "emotionalRead": "the chosen decision visibly turns into motion",
+      "relationshipDynamic": "the decision changes posture, pace, or distance before the moment moves on",
+      "mustShowDetail": "a concrete transition toward Bucharest Lipscani apartment",
+      "intensityTier": "supporting",
+      "sequenceIntent": {
+        "objective": "Let the decision become visible movement without a jump in place or relationship.",
+        "activity": "decision, movement, and arrival",
+        "obstacle": "the decision needs a visible breath before the moment moves on",
+        "startState": "A silence opens where the answer used to be.",
+        "endState": "The decision has enough momentum to carry the moment onward.",
+        "beatRole": "handoff",
+        "mechanicThread": "identity"
+      },
+      "isChoiceBridge": true,
+      "routeContext": {
+        "sourceSceneId": "s1-6",
+        "sourceBeatId": "beat-s1-6-04c",
+        "sourceChoiceId": "c-s1-6-04c-03",
+        "choiceSummary": "A silence opens where the answer used to be.",
+        "originalTargetSceneId": "s1-7",
+        "transitionIntent": "Bridge from \"Dating After Dusk becomes a real local curiosity as.. at Bucharest...\" to \"A concrete episode consequence becomes visible at Bucharest Lipscani...\" without teleporting the player.",
+        "bridgePurpose": "choice_transition"
+      }
+    }
+  ],
+  "sequenceIntent": {
+    "sequenceId": "s1-6-sequence-1",
+    "objective": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+    "activity": "The room, the body, and the way people answer all register the turn.",
+    "obstacle": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+    "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+    "turningPoint": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+    "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+    "visualThread": "Track the visible consequence of Dating After Dusk becomes a real local curiosity as.. at Bucharest....",
+    "mechanicThread": "promise"
+  },
+  "leadsTo": [
+    "s1-7"
+  ],
+  "isBottleneck": false,
+  "isConvergencePoint": false,
+  "timeline": {
+    "location": "Bucharest Lipscani apartment",
+    "timeOfDay": "dusk",
+    "timeJumpFromPrevious": "the protagonist moves from Cismigiu Gardens to Bucharest Lipscani apartment",
+    "transitionIn": "Back at the apartment, hands still not quite steady"
+  },
+  "turnContract": {
+    "turnId": "s1-6-turn",
+    "source": "treatment",
+    "centralTurn": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+    "beforeState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+    "turnEvent": "Dating After Dusk becomes a real local curiosity as Kylie turns bad dates into material",
+    "afterState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+    "handoff": "Hand forward to the next planned scene without summarizing later episode events."
+  },
+  "relationshipPacing": [],
+  "mechanicPressure": [],
+  "sceneEventOwnership": {
+    "id": "s1-6-event-ownership",
+    "episodeNumber": 1,
+    "sceneId": "s1-6",
+    "ownedEvents": [],
+    "incomingContext": [
+      {
+        "key": "cue:arrival",
+        "cue": "arrival",
+        "text": "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+        "sourceContractIds": [
+          "s1-1-rb2",
+          "ep1-information-movement-3-kylie-arrives-in-bucharest-with-two-suitcases-an",
+          "chronology:kylie-arrives-bucharest-two-suitcases-grandmothers-address"
+        ]
+      },
+      {
+        "key": "cue:socialMeet",
+        "cue": "socialMeet",
+        "text": "LEVERAGE: At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen. narrows the protagonist's options and changes who holds information, access, or social power.",
+        "sourceContractIds": [
+          "s1-3-story-circle-you-ep1-kylie-marinescu-arrives-in-bucharest-as-a-charming-part-3-after-testing-kylie-the-three-become-friends-and-form--1-atom-1",
+          "chronology:testing-kylie-three-become-friends-form-dusk-club",
+          "s1-4-turn",
+          "demoted-required-beat:s1-4-rb1",
+          "keyBeat:0",
+          "keyBeat:1",
+          "keyBeat:2",
+          "keyBeat:3"
+        ]
+      },
+      {
+        "key": "cue:threatEncounter",
+        "cue": "threatEncounter",
+        "text": "REST: Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes. establishes what feels stable, desired, or controlled before pressure changes it.",
+        "sourceContractIds": [
+          "s1-5-turn",
+          "s1-5-rb1",
+          "treatment-enc-1-1-s1-5-rb1-atom-1-encounter",
+          "treatment-enc-1-1-s1-5-rb1-atom-1",
+          "treatment-enc-1-1-treatment-enc-1-1-s1-5-rb1-atom-1-encounter-atom-1",
+          "keyBeat:0",
+          "keyBeat:1",
+          "chronology:walking-home-through-cismigiu-attacked-rescued-impossibly-handsome"
+        ]
+      }
+    ],
+    "outgoingResidue": [],
+    "forbiddenRestageEvents": [
+      {
+        "key": "cue:threatEncounter",
+        "cue": "threatEncounter",
+        "text": "REST: Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes. establishes what feels stable, desired, or controlled before pressure changes it.",
+        "sourceContractIds": [
+          "s1-5-turn",
+          "s1-5-rb1",
+          "treatment-enc-1-1-s1-5-rb1-atom-1-encounter",
+          "treatment-enc-1-1-s1-5-rb1-atom-1",
+          "treatment-enc-1-1-treatment-enc-1-1-s1-5-rb1-atom-1-encounter-atom-1",
+          "keyBeat:0",
+          "keyBeat:1",
+          "chronology:walking-home-through-cismigiu-attacked-rescued-impossibly-handsome"
+        ]
+      }
+    ],
+    "sourceContractIds": [],
+    "diagnostics": [],
+    "promptGuidance": [
+      "Dramatize owned events on-page in this scene.",
+      "Treat incoming context as already happened; use it only as recap, consequence, or residue.",
+      "Do not restage forbidden events here. If they matter, show aftermath instead."
+    ]
+  },
+  "authoredTreatmentFields": [],
+  "storyCircleBeatContracts": []
+}

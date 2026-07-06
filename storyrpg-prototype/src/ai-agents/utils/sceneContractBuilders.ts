@@ -88,7 +88,20 @@ function keyBeatFingerprint(value: string): string {
 export function isGenericScenePlannerText(value: unknown): boolean {
   const text = cleanText(value);
   if (!text) return true;
-  return isBlueprintHygieneUnsafeText(text) || GENERIC_PLANNER_TEXT_RE.test(text) || GENERIC_TURN_RE.test(text);
+  return isBlueprintHygieneUnsafeText(text) || isGenericPlannerTurnScaffold(text);
+}
+
+/**
+ * Narrow scaffold-only check: matches the composeDramaticPurpose role templates
+ * ("Let the fallout settle into the next pressure: …") without the blueprint
+ * hygiene heuristics. Used by scene-event ownership, where hygiene-unsafe
+ * phrasing can still describe a real staged event but a scaffold turn (whose
+ * tail is a whole-episode summary) must never confer cue ownership.
+ */
+export function isGenericPlannerTurnScaffold(value: unknown): boolean {
+  const text = cleanText(value);
+  if (!text) return true;
+  return GENERIC_PLANNER_TEXT_RE.test(text) || GENERIC_TURN_RE.test(text);
 }
 
 function isConcreteRequiredBeat(beat: RequiredBeat | undefined): boolean {

@@ -34,7 +34,7 @@ import { RouteContinuityValidator } from './RouteContinuityValidator';
 import { buildTreatmentObligationCanonicalReport } from './treatmentObligationCanonicalReport';
 import { reconcileConflictingFindings } from './reconcileConflictingFindings';
 import { stripProtagonistFromEncounters } from '../utils/encounterProtagonistGuard';
-import { PovClarityValidator } from './PovClarityValidator';
+import { hasPlayerReference, PovClarityValidator } from './PovClarityValidator';
 import { applyEncounterPovBackstop } from '../pipeline/encounterPovBackstop';
 import { planResidueConsumption } from '../pipeline/residueConsumption';
 import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
@@ -193,6 +193,7 @@ export type FinalStoryContractIssueType =
   | 'encounter_prose_integrity'
   | 'encounter_pov_break'
   | 'pov_break'
+  | 'pov_anchor_missing'
   | 'protagonist_as_npc'
   | 'encounter_outcome_desync'
   | 'continuity_error'
@@ -1161,6 +1162,40 @@ export class FinalStoryContractValidator {
           }
         }
 
+        // Opening-anchor POV: the first prose beat of every narrative scene must
+        // anchor the player (you/your or {{player.name}}). Previously this rule
+        // was enforced only at the scene-lock gate from STALE scene-time
+        // validation results, where a failure hard-aborted the run with no repair
+        // route (bite-me 2026-07-05T23-54-17: s1-1 opened on an establishing shot
+        // and the run died at episode locking). Re-checking here evaluates the
+        // CURRENT text and, when blocking, routes to the same-scene LLM rewrite.
+        // Encounter scenes are exempt: their reader prose lives in the encounter
+        // and is covered by the GATE_ENCOUNTER_POV scan above.
+        const firstProseBeat = scene.encounter
+          ? undefined
+          : (scene.beats ?? []).find(
+              (beat) => String(beat.text ?? '').trim().length > 0,
+            );
+        if (firstProseBeat) {
+          const anchorText = [
+            String(firstProseBeat.text ?? ''),
+            ...(firstProseBeat.textVariants ?? []).map((variant) => String(variant.text ?? '')),
+          ].join('\n');
+          if (!hasPlayerReference(anchorText)) {
+            issues.push({
+              type: 'pov_anchor_missing',
+              severity: isGateEnabledAt('GATE_POV_ANCHOR', 'season-final') ? 'error' : 'warning',
+              message: `Scene "${scene.name || scene.id}" opens without anchoring the player character — the first prose beat never uses you/your or {{player.name}}.`,
+              episodeId: episode.id,
+              episodeNumber: episode.number,
+              sceneId: scene.id,
+              beatId: firstProseBeat.id,
+              validator: 'PovClarityValidator',
+              suggestion: 'Rewrite the first beat so it anchors the player with you/your or {{player.name}} before focusing on NPCs, setting, or exposition.',
+            });
+          }
+        }
+
         if (scene.encounter) {
           metrics.encounterScenesChecked++;
 
@@ -1826,10 +1861,16 @@ export class FinalStoryContractValidator {
     });
     metrics.mechanicsLeaks = result.metrics.leaksFound;
     for (const issue of result.issues) {
+      // The validator encodes the owning scene as the first segment of
+      // `location` (sceneId:beatId:id). Surfacing it makes the leak
+      // repair-targetable AND lets reconcileConflictingFindings resolve the
+      // MechanicsLeakage-vs-NarrativeMechanicPressure ping-pong on the same scene.
+      const sceneId = issue.location?.split(':')[0] || undefined;
       issues.push({
         type: 'qa_blocker_present',
         severity: 'error',
         message: issue.message,
+        sceneId,
         validator: 'MechanicsLeakageValidator',
         suggestion: issue.suggestion,
       });
@@ -1913,11 +1954,20 @@ export class FinalStoryContractValidator {
       // playability gate — advisory by default so the story ships with the score
       // recorded rather than producing zero output. GATE_QA_CRITICAL_BLOCK promotes
       // it to blocking once an auto-repair path exists (default-off ⇒ unchanged).
+      // Continuity-count criticals ("N continuity error(s)") are EXCLUDED from the
+      // contractual promotion: continuity errors are owned by the discrete W6
+      // continuity_error pathway below, whose blocking severity is deliberately
+      // gated (GATE_CONTINUITY_REMEDIATION / GATE_QA_CRITICAL_BLOCK). Letting the
+      // aggregate count re-enter as runtime_contract made the same finding block
+      // through an ungated side door (storyrpg-lite 2026-07-05T00-09-22: one
+      // advisory continuity contradiction aborted the run via this aggregate).
+      const nonContinuityCriticals = qaReport.criticalIssues
+        .filter((critical) => !/^\d+ continuity error\(s\)$/.test(String(critical)));
       issues.push({
         type: 'qa_blocker_present',
         severity: resolveFinalContractSeverity({
           requestedSeverity: qaReport.criticalIssues.length > 0 ? 'error' : 'warning',
-          findingClass: qaReport.criticalIssues.some(isContractualQaCritical)
+          findingClass: nonContinuityCriticals.some(isContractualQaCritical)
             ? 'runtime_contract'
             : 'craft_critic',
           treatmentSourced,

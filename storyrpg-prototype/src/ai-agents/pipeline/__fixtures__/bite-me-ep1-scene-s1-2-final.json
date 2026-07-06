@@ -1,0 +1,997 @@
+{
+  "id": "s1-2",
+  "name": "She wanders into a bookshop owned by Stela who.. at Lumina Books on...",
+  "charactersInvolved": [
+    "Kylie Marinescu",
+    "char-stela-pavel",
+    "char-mika-dragan"
+  ],
+  "startingBeatId": "beat-s1-2-01",
+  "beats": [
+    {
+      "id": "beat-s1-2-01",
+      "text": "The grandmother's address sent you down Lipscani three times \u2014 once by map, once by gut, once because you had already circled back twice and turning around again felt like a kind of defeat. Tall facades, peeling gold paint, a coffee queue that smelled of oat milk and ambition. Then: a dark-wood door, no sign, a brass handle rubbed to a mirror by ten thousand previous hands. You stood outside it longer than you needed to, cataloguing it the way you catalogue everything \u2014 the proportions, the wear pattern, the implied life of whoever had loved this particular brass into shine \u2014 before you realized you were doing it again and pushed the door open.",
+      "speaker": "Kylie Marinescu",
+      "speakerMood": "curious, slightly jet-lagged",
+      "nextBeatId": "beat-s1-2-02",
+      "primaryAction": "Kylie reaches for the brass door handle",
+      "emotionalRead": "Kylie hesitates \u2014 curious, slightly lost, drawn in by something she cannot name.",
+      "relationshipDynamic": "Kylie alone; the bookshop offers a threshold she did not plan to cross.",
+      "mustShowDetail": "the brass handle polished bright by years of hands",
+      "shotType": "character",
+      "intensityTier": "rest",
+      "coveragePlan": {
+        "stagingPattern": "single character at threshold",
+        "shotDistance": "medium",
+        "cameraAngle": "slightly low",
+        "cameraSide": "three-quarter front",
+        "focalCharacterIds": [
+          "Kylie Marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "Kylie Marinescu"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [
+          "char-stela-pavel"
+        ],
+        "relationshipBlocking": "Kylie alone, the door as implicit other",
+        "coverageReason": "Establish Kylie at the bookshop threshold",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Kylie Marinescu": "find the address, find her footing"
+        },
+        "obstacle": "the street keeps refusing to make sense",
+        "statusBefore": "Kylie disoriented",
+        "statusAfter": "Kylie drawn toward an unmarked door",
+        "subtext": "the grandmother's address is leading somewhere she didn't expect",
+        "visibleTurn": "Kylie stops at the dark door",
+        "visualSubtextCue": "her hand raised toward the polished brass handle"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Establish Kylie's arrival at Lumina Books as fated rather than random",
+        "activity": "Kylie navigating Lipscani on foot, finding the bookshop by accident",
+        "obstacle": "Disorientation, jet lag, a street that keeps looking wrong",
+        "startState": "Kylie lost on a Bucharest street, grandmother's address in her phone",
+        "turningPoint": "The dark door pulls her in",
+        "endState": "Kylie crosses the threshold into Lumina Books",
+        "visualThread": "the brass door handle \u2014 polished by countless hands before hers",
+        "mechanicThread": "promise",
+        "beatRole": "setup"
+      }
+    },
+    {
+      "id": "beat-s1-2-02",
+      "text": "Inside: floor-to-ceiling shelves, a small table with a ceramic pot, and a woman mid-forties who did not look up. She was rewrapping dried stems with rough string \u2014 dark eyes tracking the knot, gold hoops catching the thin column of light from a high window. Her fingers were stained faintly green. Not ink.",
+      "speaker": "char-stela-pavel",
+      "speakerMood": "measured, unhurried",
+      "nextBeatId": "beat-s1-2-02b",
+      "primaryAction": "Stela ties off a bundle of dried herbs without looking up",
+      "emotionalRead": "Stela is completely unrattled; you are slightly thrown by not being greeted.",
+      "relationshipDynamic": "Stela holds the room's stillness; you are the one who entered uninvited.",
+      "mustShowDetail": "herb-stained green fingertips on the rough string",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "counter and door \u2014 two characters, distance between them",
+        "shotDistance": "medium",
+        "cameraAngle": "level",
+        "cameraSide": "slight profile on Stela",
+        "focalCharacterIds": [
+          "char-stela-pavel"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-stela-pavel",
+          "Kylie Marinescu"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [
+          "char-mika-dragan"
+        ],
+        "relationshipBlocking": "Counter between them \u2014 Stela rooted, Kylie at the doorway",
+        "coverageReason": "First impression of Stela \u2014 show her stillness and stained fingers",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "char-stela-pavel": "Assess the newcomer without revealing she is doing so",
+          "Kylie Marinescu": "Find footing in an unfamiliar place"
+        },
+        "obstacle": "Stela's stillness refuses to give the expected social cue",
+        "statusBefore": "Kylie uncertain, Stela holding all the room's gravity",
+        "statusAfter": "Kylie's curiosity fully engaged",
+        "subtext": "Stela already knows more than a stranger should",
+        "visibleTurn": "Stela finishes the knot before looking up",
+        "visualSubtextCue": "herb-stained fingers complete the knot in unhurried sequence"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Introduce Stela as still, patient, capable of reading a room",
+        "activity": "Stela wrapping herb bundles; Kylie entering and being assessed",
+        "obstacle": "Stela does not perform welcome",
+        "startState": "Kylie just inside the door, Stela at the counter",
+        "turningPoint": "Stela finishes the knot before acknowledging Kylie",
+        "endState": "Kylie off-balance, interest sharpening",
+        "visualThread": "herb-stained fingertips",
+        "mechanicThread": "promise",
+        "beatRole": "pressure"
+      }
+    },
+    {
+      "id": "beat-s1-2-02b",
+      "text": "She finished the knot before she acknowledged you. Three full seconds, during which you read four shelf labels and noted the pot was hand-thrown and the string was butcher's twine and you were doing it again. \"You are looking for something,\" she said. Not a question.",
+      "speakerMood": "direct, assured",
+      "nextBeatId": "beat-s1-2-03",
+      "primaryAction": "the focal character reacts through dark eyes steady, unhurried, already knowing",
+      "emotionalRead": "Stela calm and certain; Kylie caught slightly off-guard.",
+      "relationshipDynamic": "Stela's timing is entirely her own \u2014 Kylie had no say in when she was acknowledged.",
+      "mustShowDetail": "Stela's dark eyes meeting Kylie's for the first time",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "over-shoulder toward Stela",
+        "shotDistance": "medium-close",
+        "cameraAngle": "level",
+        "cameraSide": "front on Stela",
+        "focalCharacterIds": [
+          "char-stela-pavel"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-stela-pavel"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [
+          "char-mika-dragan"
+        ],
+        "relationshipBlocking": "Counter still between them; Stela's gaze now closes the distance",
+        "coverageReason": "Stela's first sentence is the first leverage shift \u2014 she named Kylie's state before Kylie admitted it",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "char-stela-pavel": "Name what she sees",
+          "Kylie Marinescu": "Recover poise under unexpected directness"
+        },
+        "obstacle": "The sentence cannot be deflected with small talk",
+        "statusBefore": "Kylie holds social initiative by holding her silence",
+        "statusAfter": "Stela holds the dynamic with one sentence",
+        "subtext": "She is not asking about books",
+        "visibleTurn": "Stela looks up and speaks \u2014 on her schedule",
+        "visualSubtextCue": "dark eyes steady, unhurried, already knowing"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Stela's first words land like she already knows the answer",
+        "activity": "Eye contact made; the first sentence exchanged",
+        "obstacle": "The sentence is a diagnosis, not a greeting",
+        "startState": "Kylie waiting to be seen",
+        "turningPoint": "Stela speaks first without prompting",
+        "endState": "Kylie assessed before she has said a word",
+        "visualThread": "eye contact as leverage shift",
+        "mechanicThread": "knowledge_gain",
+        "beatRole": "escalation"
+      }
+    },
+    {
+      "id": "beat-s1-2-03",
+      "text": "\"Just looking.\" You pulled a book off the nearest shelf \u2014 Romanian, spine cracked, the particular smell of old paper and someone else's damp apartment \u2014 and held it open in front of you. The pages were handwritten. You did not register this for a full beat. When you did, you read the first line twice and almost said something, then didn't. The woman had not moved.",
+      "speakerMood": "deflecting",
+      "nextBeatId": "beat-s1-2-03b",
+      "primaryAction": "Kylie pulls a book from the shelf as social cover",
+      "emotionalRead": "Kylie deflecting with practiced ease; Stela unimpressed but patient.",
+      "relationshipDynamic": "Kylie tries to reclaim initiative; Stela lets her.",
+      "mustShowDetail": "the cracked spine of the Romanian book in Kylie's hands",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "Kylie at shelf, Stela at counter",
+        "shotDistance": "medium",
+        "cameraAngle": "level",
+        "cameraSide": "three-quarter",
+        "focalCharacterIds": [
+          "Kylie Marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "Kylie Marinescu",
+          "char-stela-pavel"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [
+          "char-mika-dragan"
+        ],
+        "relationshipBlocking": "Kylie turned toward shelf, Stela watching her back",
+        "coverageReason": "Show the deflection \u2014 the book Kylie grabs says more than she intends",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Kylie Marinescu": "Deflect with politeness while actually wanting to stay",
+          "char-stela-pavel": "Let the deflection land and say nothing"
+        },
+        "obstacle": "The book is Romanian \u2014 the deflection backfires quietly",
+        "statusBefore": "Kylie attempting to reclaim social footing",
+        "statusAfter": "The book gives her away",
+        "subtext": "Kylie is looking for something \u2014 just not on a shelf",
+        "visibleTurn": "Kylie holds up a Romanian book she cannot read as cover",
+        "visualSubtextCue": "cracked spine, smelling of someone's grandmother"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Kylie's deflection is seen through \u2014 the book is a mirror she didn't mean to pick up",
+        "activity": "Kylie reaching for a random book; Stela watching",
+        "obstacle": "Kylie's instinct is to not need anything",
+        "startState": "Two strangers across a counter",
+        "turningPoint": "Kylie grabs a Romanian book \u2014 her grandmother's language",
+        "endState": "The deflection reveals more than it hides",
+        "visualThread": "cracked-spine Romanian book as prop and accidental mirror",
+        "mechanicThread": "evidence_transfer",
+        "beatRole": "pressure"
+      }
+    },
+    {
+      "id": "beat-s1-2-03b",
+      "text": "She came around the counter: linen blouse, embroidered hem, a face that had made some early decision about economy \u2014 of expression, of unnecessary performance. \"Stela,\" she said, and offered her hand. \"This is my shop.\" The handshake was firm and brief. She did not release until she had looked at your face one beat longer than the handshake required \u2014 not rude, not searching, just unhurried in a way that made you realize you'd been rushing since the airport.",
+      "speaker": "char-stela-pavel",
+      "speakerMood": "direct, warm, assessing",
+      "nextBeatId": "beat-s1-2-04",
+      "primaryAction": "Stela crosses the shop and offers her hand in introduction",
+      "emotionalRead": "Stela measuring; Kylie charmed and slightly examined.",
+      "relationshipDynamic": "Stela closes distance deliberately \u2014 the introduction on her terms.",
+      "mustShowDetail": "the handshake that holds a beat too long",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "close two-shot, hands in frame",
+        "shotDistance": "medium-close",
+        "cameraAngle": "level",
+        "cameraSide": "slight angle to show both faces",
+        "focalCharacterIds": [
+          "char-stela-pavel",
+          "Kylie Marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-stela-pavel",
+          "Kylie Marinescu"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [
+          "char-mika-dragan"
+        ],
+        "relationshipBlocking": "Stela has crossed the room \u2014 inside Kylie's personal space by choice",
+        "coverageReason": "The handshake that holds too long is the first visible leverage shift",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "char-stela-pavel": "Name herself, assess at close range",
+          "Kylie Marinescu": "Accept the introduction while feeling assessed"
+        },
+        "obstacle": "Kylie's instinct is not to need anything; Stela makes needing something feel safe",
+        "statusBefore": "Kylie holding the social initiative with the book",
+        "statusAfter": "Stela holds the dynamic \u2014 she decided when the handshake ended",
+        "subtext": "Stela is checking something in Kylie's face that has nothing to do with bookselling",
+        "visibleTurn": "The handshake ends on Stela's timing",
+        "visualSubtextCue": "dark eyes on Kylie's face a full beat past the natural end"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Formal introduction \u2014 name, role, and the tell that she holds the handshake too long",
+        "activity": "Handshake exchange; Kylie still holding the Romanian book",
+        "obstacle": "Kylie's deflection is already seen through",
+        "startState": "Two strangers across a bookshop aisle",
+        "turningPoint": "Stela holds the handshake on her timing, not Kylie's",
+        "endState": "Kylie knows she has been read",
+        "visualThread": "cracked-spine Romanian book still in Kylie's free hand",
+        "mechanicThread": "proximity_shift",
+        "beatRole": "escalation"
+      }
+    },
+    {
+      "id": "beat-s1-2-04",
+      "text": "The door opened behind you \u2014 a gust of bergamot, the soft percussion of brass on brass. \"Stela, I forgot my\u2014\" The woman stopped. Platinum hair, red lips, a 1970s Halston jumpsuit on a Tuesday afternoon. She looked at you the way people look at a room they are already mentally redecorating: frank pleasure, total confidence.",
+      "speaker": "char-mika-dragan",
+      "speakerMood": "warm, delighted",
+      "nextBeatId": "beat-s1-2-04b",
+      "primaryAction": "Mika enters mid-errand and stops at the sight of Kylie",
+      "emotionalRead": "Mika openly charmed; Kylie caught off-guard; Stela quietly watching.",
+      "relationshipDynamic": "Mika commands the room on entry; Stela does not compete.",
+      "mustShowDetail": "the 1970s Halston jumpsuit \u2014 worn like it belongs to her",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "Mika at door, Kylie mid-shop, Stela at counter",
+        "shotDistance": "medium",
+        "cameraAngle": "level",
+        "cameraSide": "wide to show all three",
+        "focalCharacterIds": [
+          "char-mika-dragan"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-mika-dragan",
+          "Kylie Marinescu",
+          "char-stela-pavel"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Mika near the door, Kylie in the middle, Stela behind the counter \u2014 a triangle with Kylie at center",
+        "coverageReason": "Mika's entrance reframes the scene from private to nascent group",
+        "visualContinuity": {
+          "mode": "preserve_scene_axis",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "char-mika-dragan": "Assess the interesting newcomer",
+          "Kylie Marinescu": "Absorb a second stranger who feels suspiciously like a friend",
+          "char-stela-pavel": "Observe Mika's response to Kylie"
+        },
+        "obstacle": "The warmth is so immediate it outpaces Kylie's social defenses",
+        "statusBefore": "Kylie and Stela in nascent rapport",
+        "statusAfter": "Three women together; Mika's energy owns the room",
+        "subtext": "Mika's arrival is too well-timed \u2014 reads as charming spontaneity",
+        "visibleTurn": "Mika stops mid-sentence, arrested by Kylie",
+        "visualSubtextCue": "Stela does not smile at Mika's entrance \u2014 she watches"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Introduce Mika \u2014 glamorous, warm, immediate \u2014 and shift the scene's energy",
+        "activity": "Mika's mid-errand entrance; first eye contact with Kylie",
+        "obstacle": "Kylie didn't expect the room to fill",
+        "startState": "Kylie and Stela in quiet rapport",
+        "turningPoint": "Mika enters and the tone shifts",
+        "endState": "Three women in the same small space",
+        "visualThread": "Mika's Halston jumpsuit as character shorthand",
+        "mechanicThread": "risk_change",
+        "beatRole": "turn"
+      }
+    },
+    {
+      "id": "beat-s1-2-04b",
+      "text": "\"Oh. Who is this?\" \"Kylie,\" Stela said. \"She is looking for something.\" The platinum woman's grin widened as if Stela had confirmed a suspicion. She extended her hand and the bracelets slid together down her wrist \u2014 a small, self-possessed sound, like a sentence she had already finished. \"Mika.\"",
+      "speaker": "char-mika-dragan",
+      "speakerMood": "warm, instantly proprietary",
+      "nextBeatId": "beat-s1-2-05",
+      "primaryAction": "Mika introduces herself and extends her hand",
+      "emotionalRead": "Mika warm and proprietary; Kylie charmed; Stela still.",
+      "relationshipDynamic": "Mika claims social initiative before anyone offers it.",
+      "mustShowDetail": "gold bracelets sliding down Mika's wrist as she extends her hand",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "two-shot, Mika and Kylie, Stela background",
+        "shotDistance": "medium-close",
+        "cameraAngle": "level",
+        "cameraSide": "slight angle",
+        "focalCharacterIds": [
+          "char-mika-dragan",
+          "Kylie Marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "char-mika-dragan",
+          "Kylie Marinescu",
+          "char-stela-pavel"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Mika steps toward Kylie; Stela stays back \u2014 watching",
+        "coverageReason": "The handshake closes the triangle; Stela's background position shows she observes rather than competes",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "char-mika-dragan": "Claim the newcomer with ease",
+          "char-stela-pavel": "Watch and wait"
+        },
+        "obstacle": "Two women's warmth is faster than Kylie's defenses",
+        "statusBefore": "Kylie the subject of observation",
+        "statusAfter": "Kylie now a named person in this space \u2014 the group is possible",
+        "subtext": "The bracelets make her entrance musical \u2014 Mika knows the effect",
+        "visibleTurn": "Mika names herself before being asked",
+        "visualSubtextCue": "gold bracelets slide down \u2014 the sound before the name"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Mika names herself on her own terms \u2014 the third side of the triangle locks in",
+        "activity": "Introductions; the handshake with the bracelets",
+        "obstacle": "Kylie must decide whether to let these two women matter",
+        "startState": "Kylie unnamed to Mika",
+        "turningPoint": "Mika names herself before being asked",
+        "endState": "All three women named; an implicit group forming",
+        "visualThread": "gold bracelets \u2014 the percussive slide",
+        "mechanicThread": "risk_change",
+        "beatRole": "consequence"
+      }
+    },
+    {
+      "id": "beat-s1-2-05",
+      "text": "Stela put on tea without being asked. Mika draped herself over the reading chair with the ease of prior claim. The first cup went to the novel \u2014 the deadline, the Romanian grandmother, the angle your editor wanted. The second cup went further. You were mid-sentence, describing Bucharest as a city that made you feel like a tourist in your own attention span, when the ex-fianc\u00e9 arrived in the sentence without a formal introduction. You heard his name in your own voice and felt it land in the room a half-second after it left your mouth. Neither woman asked a follow-up. Stela poured. Mika turned her bracelets once around her wrist and said nothing, which turned out to be exactly enough.",
+      "speakerMood": "warm, unguarded",
+      "nextBeatId": "beat-s1-2-05b",
+      "primaryAction": "the focal character brings the key object into the space between the characters",
+      "emotionalRead": "Kylie genuinely warmed; Mika's ease infectious; Stela's stillness its own pull.",
+      "relationshipDynamic": "Mika pushes forward; Stela holds space \u2014 between them, Kylie is being offered something.",
+      "mustShowDetail": "Kylie's empty tea cup held in both hands",
+      "shotType": "character",
+      "intensityTier": "supporting",
+      "coveragePlan": {
+        "stagingPattern": "intimate three-shot around the small table and reading chair",
+        "shotDistance": "medium-close",
+        "cameraAngle": "slightly high",
+        "cameraSide": "slight angle showing all three",
+        "focalCharacterIds": [
+          "Kylie Marinescu"
+        ],
+        "requiredVisibleCharacterIds": [
+          "Kylie Marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Kylie at table, Mika in chair across, Stela standing beside \u2014 nearest to the cup",
+        "coverageReason": "Show the warmth of the hour before the invitation lands",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "Kylie Marinescu": "Stay guarded but cannot quite manage it",
+          "char-mika-dragan": "Make the room feel easy enough for disclosure",
+          "char-stela-pavel": "Hold space without pushing"
+        },
+        "obstacle": "Kylie doesn't do this \u2014 let strangers matter this fast",
+        "statusBefore": "Kylie an observer in someone else's city",
+        "statusAfter": "Kylie has given something away; the women have not asked for more",
+        "subtext": "The kindness of not asking is its own kind of claim",
+        "visibleTurn": "Kylie's fianc\u00e9e detail lands and neither woman presses",
+        "visualSubtextCue": "two women who did not lean in when they should have"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "Show the hour of warmth that earns the invitation",
+        "activity": "Tea, conversation, accidental self-disclosure",
+        "obstacle": "Kylie's instinct is to observe, not reveal",
+        "startState": "Three strangers in a bookshop",
+        "turningPoint": "Kylie reveals the fianc\u00e9e detail \u2014 more than she planned",
+        "endState": "Something has shifted; the city feels less foreign",
+        "visualThread": "the tea cup \u2014 held, refilled, present throughout",
+        "mechanicThread": "trust",
+        "beatRole": "aftermath"
+      }
+    },
+    {
+      "id": "beat-s1-2-05b",
+      "text": "\"You should come out with us tonight.\" Mika said it the way she'd said her own name \u2014 as information, not a request. She was already looking at her phone, scrolling with the particular decisiveness of someone who has already decided the agenda and is now simply selecting the venue. \"We know where the city actually lives after dark.\" Stela set the ceramic pot down on the table. Her hands stayed around it for a moment.",
+      "speaker": "char-mika-dragan",
+      "speakerMood": "warm, certain, steering",
+      "primaryAction": "Mika extends the invitation while Stela silently refills the cup",
+      "emotionalRead": "Mika certain and steering; Stela warm but leaving the door open; Kylie holding the weight of the choice.",
+      "relationshipDynamic": "Mika pushes; Stela holds \u2014 together they've made space for a yes.",
+      "mustShowDetail": "Stela refilling the cup without being asked, dark eyes watching Kylie over the rim",
+      "shotType": "character",
+      "intensityTier": "dominant",
+      "coveragePlan": {
+        "stagingPattern": "focus on Kylie and Stela, Mika background",
+        "shotDistance": "medium-close",
+        "cameraAngle": "level",
+        "cameraSide": "slight angle",
+        "focalCharacterIds": [
+          "Kylie Marinescu",
+          "char-stela-pavel"
+        ],
+        "requiredVisibleCharacterIds": [
+          "Kylie Marinescu",
+          "char-stela-pavel",
+          "char-mika-dragan"
+        ],
+        "optionalVisibleCharacterIds": [],
+        "offscreenCharacterIds": [],
+        "relationshipBlocking": "Stela closest to Kylie, pouring; Mika across, texting",
+        "coverageReason": "The invitation and the silent refill are the scene's peak \u2014 Stela's gaze is the punctuation",
+        "visualContinuity": {
+          "mode": "fresh_composition",
+          "reason": "SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on.... while varying shot size, camera side, and focal subject.",
+          "preserve": [
+            "environment",
+            "lighting"
+          ]
+        }
+      },
+      "dramaticIntent": {
+        "characterObjectives": {
+          "char-mika-dragan": "Deliver the invitation and make it feel inevitable",
+          "char-stela-pavel": "Let Kylie choose without pressure",
+          "Kylie Marinescu": "Decide whether to accept belonging from strangers"
+        },
+        "obstacle": "Saying yes means she is a person who does this",
+        "statusBefore": "Kylie an observer in someone else's friendship",
+        "statusAfter": "The invitation is live; Kylie holds the next move",
+        "subtext": "Stela's refill is the scene's real question \u2014 she is offering more than tea",
+        "visibleTurn": "Stela refills without asking \u2014 a small physical presumption that reads as care",
+        "visualSubtextCue": "Stela's dark eyes meeting Kylie's over the cup rim \u2014 warm, watchful, waiting"
+      },
+      "sequenceIntent": {
+        "sequenceId": "s1-2-sequence-1",
+        "objective": "The Dusk Club forms \u2014 Kylie is offered membership",
+        "activity": "Mika's invitation; Stela's silent refill as the scene's hinge",
+        "obstacle": "Kylie's survival posture is to observe, not to be claimed",
+        "startState": "Three women in easy warmth",
+        "turningPoint": "Mika invites; Stela's refill says: your call",
+        "endState": "Kylie holds the decision; the city is waiting",
+        "visualThread": "the tea cup \u2014 Stela's refill as small physical act carrying scene's emotional weight",
+        "mechanicThread": "trust",
+        "beatRole": "consequence"
+      },
+      "choices": [
+        {
+          "id": "choice-say-yes-mika",
+          "text": "Flash a grin at Mika. \"Tell me everything. I'm in.\"",
+          "choiceType": "relationship",
+          "choiceIntent": "blind",
+          "impactFactors": [
+            "relationship",
+            "identity"
+          ],
+          "consequenceTier": "callback",
+          "stakes": {
+            "want": "Win Mika's trust and see the city's hidden side",
+            "cost": "Forfeit Stela's quieter, steadier guidance tonight",
+            "identity": "Kylie leads with enthusiasm over caution"
+          },
+          "statCheck": {
+            "skillWeights": {
+              "intimidation": 1
+            },
+            "difficulty": 35
+          },
+          "consequenceDomain": "relationship",
+          "storyVerb": "confess",
+          "reminderPlan": {
+            "immediate": "A new silence opens around what can be said aloud.",
+            "shortTerm": "The next conversation has to step around the truth now in the room."
+          },
+          "feedbackCue": {
+            "checkClass": "dramatic"
+          },
+          "residueHints": [
+            {
+              "kind": "relationship_behavior",
+              "description": "Mika loops Kylie into group texts before the night even begins.",
+              "targetNpcId": "char-mika-drgan"
+            }
+          ],
+          "consequences": [
+            {
+              "type": "relationship",
+              "flag": "mika_trust_up",
+              "value": true,
+              "npcId": "char-mika-dragan",
+              "change": 5
+            },
+            {
+              "type": "setFlag",
+              "flag": "accepted_nightlife_invite",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "kylie_eager_joiner",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "treatment_seed_ep1_2",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "tint:boldness",
+              "value": true
+            }
+          ],
+          "nextBeatId": "beat-s1-2-05b-payoff-1",
+          "outcomeTexts": {
+            "success": "Mika's whole face lights up; she's already pulling you toward the door.",
+            "partial": "Mika grins, but Stela's refill slows \u2014 she's reserving judgment.",
+            "failure": "Your enthusiasm lands flat; Mika's text thread buzzes with someone else's name."
+          },
+          "reactionText": "Stela sets down the pot and watches you with quiet, unreadable patience.",
+          "tintFlag": "tint:boldness"
+        },
+        {
+          "id": "choice-check-stela",
+          "text": "Hold Stela's gaze. \"Are you coming too, or just sending me off?\"",
+          "choiceType": "relationship",
+          "choiceIntent": "blind",
+          "impactFactors": [
+            "relationship",
+            "information"
+          ],
+          "consequenceTier": "callback",
+          "stakes": {
+            "want": "Draw Stela out and deepen the nascent connection",
+            "cost": "Risk seeming hesitant, cooling Mika's momentum",
+            "identity": "Kylie chooses depth over speed"
+          },
+          "statCheck": {
+            "skillWeights": {
+              "intimidation": 0.5,
+              "deception": 0.5
+            },
+            "difficulty": 45
+          },
+          "consequenceDomain": "relationship",
+          "storyVerb": "confess",
+          "reminderPlan": {
+            "immediate": "A new silence opens around what can be said aloud.",
+            "shortTerm": "The next conversation has to step around the truth now in the room."
+          },
+          "feedbackCue": {
+            "checkClass": "dramatic"
+          },
+          "residueHints": [
+            {
+              "kind": "relationship_behavior",
+              "description": "Stela remembers the question; she arrives at the club earlier than expected.",
+              "targetNpcId": "char-stela-pavel"
+            }
+          ],
+          "consequences": [
+            {
+              "type": "relationship",
+              "flag": "mika_trust_slight_dip",
+              "value": true,
+              "npcId": "char-mika-dragan",
+              "change": -2
+            },
+            {
+              "type": "relationship",
+              "flag": "stela_affection_up",
+              "value": true,
+              "npcId": "char-stela-pavel",
+              "change": 6
+            },
+            {
+              "type": "setFlag",
+              "flag": "kylie_anchors_to_stela",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "tint:intuition",
+              "value": true
+            }
+          ],
+          "nextBeatId": "beat-s1-2-05b-payoff-2",
+          "outcomeTexts": {
+            "success": "Stela's mouth curves \u2014 barely \u2014 and she reaches for her coat.",
+            "partial": "Stela says she'll think about it; Mika fills the silence with nervous chatter.",
+            "failure": "Stela shakes her head gently, and the moment between you closes like a book."
+          },
+          "reactionText": "Mika pauses mid-text, eyebrows up, recalibrating who's really in charge here.",
+          "tintFlag": "tint:intuition"
+        },
+        {
+          "id": "choice-hedge-politely",
+          "text": "Wrap both hands around your cup. \"Maybe. Where exactly are we talking?\"",
+          "choiceType": "relationship",
+          "choiceIntent": "blind",
+          "impactFactors": [
+            "information",
+            "identity",
+            "relationship"
+          ],
+          "consequenceTier": "callback",
+          "stakes": {
+            "want": "Gather details before surrendering an evening to strangers",
+            "cost": "Signal hesitancy that neither Mika nor Stela will forget",
+            "identity": "Kylie measures before she leaps"
+          },
+          "statCheck": {
+            "skillWeights": {
+              "perception": 0.7,
+              "investigation": 0.3
+            },
+            "difficulty": 35
+          },
+          "consequenceDomain": "relationship",
+          "storyVerb": "confess",
+          "reminderPlan": {
+            "immediate": "A new silence opens around what can be said aloud.",
+            "shortTerm": "The next conversation has to step around the truth now in the room."
+          },
+          "feedbackCue": {
+            "checkClass": "dramatic"
+          },
+          "residueHints": [
+            {
+              "kind": "immediate_echo",
+              "description": "Mika files Kylie under 'hard sell' and plans a more persuasive pitch later.",
+              "targetNpcId": "char-mika-drgan"
+            }
+          ],
+          "consequences": [
+            {
+              "type": "relationship",
+              "flag": "mika_reads_kylie_as_guarded",
+              "value": true,
+              "npcId": "char-mika-dragan",
+              "change": -3
+            },
+            {
+              "type": "relationship",
+              "flag": "stela_respect_up",
+              "value": true,
+              "npcId": "char-stela-pavel",
+              "change": 4
+            },
+            {
+              "type": "setFlag",
+              "flag": "kylie_cautious_newcomer",
+              "value": true
+            },
+            {
+              "type": "setFlag",
+              "flag": "tint:caution",
+              "value": true
+            }
+          ],
+          "nextBeatId": "beat-s1-2-05b-payoff-3",
+          "outcomeTexts": {
+            "success": "Mika rattles off the name Valescu and you catch Stela's tiny confirming nod.",
+            "partial": "Mika gives the address but her enthusiasm dims a half-watt at your caution.",
+            "failure": "Mika shrugs and turns back to her phone; the invitation quietly expires."
+          },
+          "reactionText": "Stela hides a small smile behind her cup, clearly approving of the question.",
+          "tintFlag": "tint:caution"
+        }
+      ],
+      "isChoicePoint": true
+    },
+    {
+      "id": "beat-s1-2-05b-payoff-1",
+      "text": "Mika's thumb stops scrolling. She shows you the screen without comment \u2014 a street name, a time, three words in Romanian you don't catch. Stela looks at the pot.",
+      "textVariants": [
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "_outcome_success",
+            "value": true
+          },
+          "text": "Mika's whole face lights up; she's already pulling you toward the door."
+        },
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "_outcome_failure",
+            "value": true
+          },
+          "text": "Your enthusiasm lands flat; Mika's text thread buzzes with someone else's name."
+        }
+      ],
+      "nextSceneId": "s1-3",
+      "primaryAction": "Mika grins, but Stela's refill slows \u2014 she's reserving judgment.",
+      "emotionalRead": "Living out the consequences of the chosen action",
+      "relationshipDynamic": "The relationship pressure changes.",
+      "isChoiceBridge": true
+    },
+    {
+      "id": "beat-s1-2-05b-payoff-2",
+      "text": "Stela picks up the pot and moves it six inches to the left. It is the same distance from the edge either way. Mika watches her do it, then starts listing neighborhoods.",
+      "textVariants": [
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "_outcome_success",
+            "value": true
+          },
+          "text": "Stela's mouth curves \u2014 barely \u2014 and she reaches for her coat."
+        },
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "_outcome_failure",
+            "value": true
+          },
+          "text": "Stela shakes her head gently, and the moment between you closes like a book."
+        }
+      ],
+      "nextSceneId": "s1-3",
+      "primaryAction": "Stela says she'll think about it; Mika fills the silence with nervous chatter.",
+      "emotionalRead": "Living out the consequences of the chosen action",
+      "relationshipDynamic": "The relationship pressure changes.",
+      "isChoiceBridge": true
+    },
+    {
+      "id": "beat-s1-2-05b-payoff-3",
+      "text": "Mika reads the address aloud. Her voice doesn't change register, but her eyes cut to Stela once \u2014 quick, a question that arrives and gets no answer before she's already moving past it.",
+      "textVariants": [
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "_outcome_success",
+            "value": true
+          },
+          "text": "Mika rattles off the name Valescu and you catch Stela's tiny confirming nod."
+        },
+        {
+          "condition": {
+            "type": "flag",
+            "flag": "_outcome_failure",
+            "value": true
+          },
+          "text": "Mika shrugs and turns back to her phone; the invitation quietly expires."
+        }
+      ],
+      "nextSceneId": "s1-3",
+      "primaryAction": "Mika gives the address but her enthusiasm dims a half-watt at your caution.",
+      "emotionalRead": "Living out the consequences of the chosen action",
+      "relationshipDynamic": "The relationship pressure changes.",
+      "isChoiceBridge": true
+    }
+  ],
+  "sequenceIntent": {
+    "sequenceId": "s1-2-sequence-1",
+    "objective": "She wanders into a bookshop owned by Stela who befriends her",
+    "activity": "The room, the body, and the way people answer all register the turn.",
+    "obstacle": "She wanders into a bookshop owned by Stela who befriends her",
+    "startState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+    "turningPoint": "She wanders into a bookshop owned by Stela who befriends her",
+    "endState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+    "visualThread": "Track the visible consequence of She wanders into a bookshop owned by Stela who.. at Lumina Books on....",
+    "mechanicThread": "promise"
+  },
+  "leadsTo": [
+    "s1-3"
+  ],
+  "isBottleneck": false,
+  "isConvergencePoint": false,
+  "timeline": {
+    "location": "Lumina Books on Lipscani",
+    "timeJumpFromPrevious": "the protagonist moves from Bucharest Lipscani apartment to Lumina Books on Lipscani",
+    "transitionIn": "An hour later, still jet-lagged and mildly lost"
+  },
+  "turnContract": {
+    "turnId": "s1-2-turn",
+    "source": "treatment",
+    "centralTurn": "She wanders into a bookshop owned by Stela who befriends her",
+    "beforeState": "Before the authored turn, establish where the player is, who is present, and what pressure makes this moment happen.",
+    "turnEvent": "She wanders into a bookshop owned by Stela who befriends her",
+    "afterState": "After the authored turn, show the immediate emotional, social, practical, or informational consequence on-page.",
+    "handoff": "Hand forward to the next planned scene without summarizing later episode events."
+  },
+  "relationshipPacing": [],
+  "mechanicPressure": [
+    {
+      "id": "story-circle-you-ep1-kylie-marinescu-arrives-in-bucharest-as-a-charming-part-2-she-explores-the-streets-of-bucharest-and-wanders-into-pressure",
+      "source": "treatment",
+      "domain": "flag",
+      "mechanicRef": {
+        "flag": "story-circle-you-ep1-kylie-marinescu-arrives-in-bucharest-as-a-charming-part-2-she-explores-the-streets-of-bucharest-and-wanders-into"
+      },
+      "function": "intensify",
+      "storyPressure": "She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika",
+      "evidenceRequired": [
+        "She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika"
+      ],
+      "visibleResidue": [
+        "show the beat changing story state, options, relationships, access, information, tone, or episode pressure"
+      ],
+      "allowedPayoffs": [
+        "scene turn, choice pressure, reveal, route state, ending state, branch residue, or episode handoff"
+      ],
+      "blockedPayoffs": [
+        "structural label only, metadata-only arc text, or summary that skips the authored beat event"
+      ],
+      "originatingSceneId": "s1-2"
+    }
+  ],
+  "sceneEventOwnership": {
+    "id": "s1-2-event-ownership",
+    "episodeNumber": 1,
+    "sceneId": "s1-2",
+    "ownedEvents": [
+      {
+        "key": "cue:socialMeet",
+        "cue": "socialMeet",
+        "text": "After testing Kylie, the three become friends and form the Dusk Club",
+        "sourceContractIds": [
+          "s1-3-story-circle-you-ep1-kylie-marinescu-arrives-in-bucharest-as-a-charming-part-3-after-testing-kylie-the-three-become-friends-and-form--1-atom-1",
+          "chronology:testing-kylie-three-become-friends-form-dusk-club"
+        ]
+      }
+    ],
+    "incomingContext": [
+      {
+        "key": "cue:arrival",
+        "cue": "arrival",
+        "text": "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+        "sourceContractIds": [
+          "s1-1-rb2",
+          "ep1-information-movement-3-kylie-arrives-in-bucharest-with-two-suitcases-an",
+          "chronology:kylie-arrives-bucharest-two-suitcases-grandmothers-address"
+        ]
+      }
+    ],
+    "outgoingResidue": [
+      {
+        "key": "cue:socialMeet",
+        "cue": "socialMeet",
+        "text": "After testing Kylie, the three become friends and form the Dusk Club",
+        "sourceContractIds": [
+          "s1-3-story-circle-you-ep1-kylie-marinescu-arrives-in-bucharest-as-a-charming-part-3-after-testing-kylie-the-three-become-friends-and-form--1-atom-1",
+          "chronology:testing-kylie-three-become-friends-form-dusk-club"
+        ]
+      }
+    ],
+    "forbiddenRestageEvents": [],
+    "sourceContractIds": [
+      "s1-3-story-circle-you-ep1-kylie-marinescu-arrives-in-bucharest-as-a-charming-part-3-after-testing-kylie-the-three-become-friends-and-form--1-atom-1",
+      "chronology:testing-kylie-three-become-friends-form-dusk-club"
+    ],
+    "diagnostics": [],
+    "promptGuidance": [
+      "Dramatize owned events on-page in this scene.",
+      "Treat incoming context as already happened; use it only as recap, consequence, or residue.",
+      "Do not restage forbidden events here. If they matter, show aftermath instead."
+    ]
+  },
+  "authoredTreatmentFields": [],
+  "storyCircleBeatContracts": []
+}

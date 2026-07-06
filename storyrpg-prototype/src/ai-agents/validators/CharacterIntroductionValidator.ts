@@ -129,11 +129,39 @@ function proseNames(entry: RosterEntry, normalizedProse: string): boolean {
 }
 
 const FIRST_APPEARANCE_OFFPAGE_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:hours?|days?|nights?|weeks?)\s+(?:with|around)\b[^.!?]{0,220}\b(?:easy\s+gesture|refills?\s+your\s+(?:wine|glass)|watches?\s+over\s+the\s+rim|kindness|belong|belonging|inside\s+joke|the\s+club)\b/i;
-const FIRST_APPEARANCE_SETTLED_GROUP_RE = /\b(?:dusk\s+club|club|crew|circle|group)\b[^.!?]{0,160}\b(?:belong|belonging|inside\s+joke|usual|already|friend|friends|one\s+of\s+us)\b/i;
+// "her other friend Mika" is an introduction phrase, not settled membership.
+const FIRST_APPEARANCE_SETTLED_GROUP_RE = /\b(?:dusk\s+club|club|crew|circle|group)\b[^.!?]{0,160}\b(?:belong|belonging|inside\s+joke|usual|already|one\s+of\s+us|friends?\s+now|best\s+friend)\b/i;
+const FIRST_CONTACT_STAGING_RE = /\b(?:you\s+meet|meets?\s+you|offers?\s+(?:a\s+)?hand|introduces?\s+(?:herself|himself|themselves|you)|says?,?\s*["']|["'][^"']{0,80}["']\s*,?\s*(?:she|he|they)\s+says?|a\s+woman\b[^.!?]{0,80}\bsays?\b|stranger\b[^.!?]{0,80}\b(?:says?|offers?|steps?)\b)/i;
+const FIRST_APPEARANCE_THIRD_PERSON_SUMMARY_RE = /\b(?:she|he)\s+(?:explores?|wanders?|arrives?|steps?|walks?)\b/i;
+
+function hasPlayerReference(text: string): boolean {
+  return /\byou\b|\byour\b|\byours\b/i.test(text);
+}
+
+function hasFirstContactStaging(rawProse: string): boolean {
+  return FIRST_CONTACT_STAGING_RE.test(rawProse);
+}
 
 function impliesOffPageFamiliarityOnFirstAppearance(rawProse: string, newNamesInScene: number): boolean {
   if (FIRST_APPEARANCE_OFFPAGE_FAMILIARITY_RE.test(rawProse)) return true;
+  if (hasFirstContactStaging(rawProse)) return false;
+  if (newNamesInScene >= 1 && FIRST_APPEARANCE_THIRD_PERSON_SUMMARY_RE.test(rawProse) && !hasPlayerReference(rawProse)) {
+    return true;
+  }
   return newNamesInScene >= 2 && FIRST_APPEARANCE_SETTLED_GROUP_RE.test(rawProse);
+}
+
+/** Re-check whether a scene still trips the off-page-familiarity class after repair. */
+export function scenePassesCharacterIntroductionOffPageCheck(
+  scene: Scene,
+  npcNames: string[],
+): boolean {
+  const rawProse = sceneProse(scene);
+  const newNamesInScene = npcNames.filter((name) => {
+    const entry = { id: '', name, fullName: normalize(name) } as RosterEntry;
+    return proseNames(entry, normalize(rawProse));
+  }).length;
+  return !impliesOffPageFamiliarityOnFirstAppearance(rawProse, newNamesInScene);
 }
 
 // Back-reference appositive right after a name: "Stela Pavel—the woman from
@@ -176,6 +204,15 @@ export interface CharacterIntroductionInput {
   story: Story;
   /** Season plan introduction order, when the run has one (plan-drift check). */
   characterIntroductions?: Array<{ characterId: string; introducedInEpisode: number }>;
+  /**
+   * Per-scene planned-contract text (required-beat mustDepict turns, story-circle
+   * sourceText, signature moment), keyed by scene id. When a scene's OWN contract
+   * names an NPC, prose naming them there is a planned verbal staging, not a cold
+   * name-drop (storyrpg-lite 2026-07-05T00-09-22: the authored s1-2 turn has Stela
+   * speak OF "her other friend Mika" before Mika's on-page introduction in s1-3 —
+   * the treatment demands the forward reference).
+   */
+  plannedSceneContractText?: ReadonlyMap<string, string>;
 }
 
 export class CharacterIntroductionValidator extends BaseValidator {
@@ -215,13 +252,19 @@ export class CharacterIntroductionValidator extends BaseValidator {
       }
 
       // Class 1 — cold name-drop: named in prose before any scene casts them.
+      // Exception: the scene's own planned contract names this NPC — the plan
+      // stages the (verbal) reference there, so it is not a cold name-drop.
       if (firstProseIdx >= 0 && (firstCastIdx < 0 || firstProseIdx < firstCastIdx)) {
         const at = orderedScenes[firstProseIdx];
-        issues.push(this.error(
-          `"${npc.name}" is first named in the prose of scene "${at.scene.id}" (episode ${at.episodeNumber}) but no scene up to that point carries them in its cast — the reader has never met them and cannot know who this is.`,
-          `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
-          `Introduce ${npc.name} on-page (a scene with them present in the cast and an introduction beat) before any scene's prose names them casually.`,
-        ));
+        const contractText = input.plannedSceneContractText?.get(String(at.scene.id ?? ''));
+        const contractNamesNpc = !!contractText && proseNames(npc, normalize(contractText));
+        if (!contractNamesNpc) {
+          issues.push(this.error(
+            `"${npc.name}" is first named in the prose of scene "${at.scene.id}" (episode ${at.episodeNumber}) but no scene up to that point carries them in its cast — the reader has never met them and cannot know who this is.`,
+            `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
+            `Introduce ${npc.name} on-page (a scene with them present in the cast and an introduction beat) before any scene's prose names them casually.`,
+          ));
+        }
       }
 
       // Class 2 — metadata-only presence: cast somewhere, never named on-page by then.

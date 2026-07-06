@@ -153,6 +153,38 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
   });
 
+  it('strips the retired encounter turn-realization injection from encounter outcome prose', async () => {
+    const story = storyWithLeaks();
+    const encounter = (story.episodes[0].scenes[0] as any).encounter;
+    const original = 'The heavy oak door clicks shut, sealing out the damp chill of Cișmigiu. You lean against the wood, heart still hammering.';
+    encounter.outcomes = {
+      victory: {
+        outcomeText: `Walking home through Cismigiu, she is attacked The encounter outcome changes on-page. ${original}`,
+      },
+    };
+    encounter.storylets = {
+      victory: {
+        beats: [{ id: 'victory-b1', text: `Walking home through Cismigiu, she is attacked The encounter outcome changes on-page. ${original}` }],
+        cost: { immediateEffect: 'The required encounter turn lands on-page.' },
+      },
+    };
+
+    const result = await buildPlanningRegisterMetadataRepairHandler()({
+      story,
+      blockingIssues: [{
+        type: 'planning_register_prose',
+        validator: 'PlanningRegisterLeakValidator',
+        sceneId: 'scene-1',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(encounter.outcomes.victory.outcomeText).toBe(original);
+    expect(encounter.storylets.victory.beats[0].text).toBe(original);
+    expect(encounter.storylets.victory.cost.immediateEffect).not.toContain('lands on-page');
+    expect(new PlanningRegisterLeakValidator().validate({ story }).findings).toHaveLength(0);
+  });
+
   it('no-ops when the final contract is not blocked by planning-register prose', async () => {
     const story = storyWithLeaks();
     const before = JSON.stringify(story);

@@ -24,6 +24,7 @@
  */
 
 import { missingMomentTokens, momentDepicted } from './realizationScoring';
+import { characterIntroductionMomentName, getRealizationPovContext, hasSecondPersonAddress } from './realizationEvaluator';
 
 /** The contract surface both SceneBlueprint and (tagged) SceneContent carry. */
 export interface SceneContractSource {
@@ -270,6 +271,23 @@ function isTreatmentSummaryProse(moment: string): boolean {
   return false;
 }
 
+/** In a second-person story, a moment that NAMES the protagonist is planning
+ * register by construction ("Kylie Marinescu arrives in Bucharest") — pasting
+ * it as a beat ships a third-person POV break AND a synopsis card as player
+ * prose (bite-me / storyrpg-lite 2026-07-04 s1-1 leak). Such moments must be
+ * realized by SceneWriter or judged semantically at season-final, never
+ * inserted verbatim. */
+function momentNamesProtagonistInSecondPersonStory(moment: string, currentProse: string): boolean {
+  const aliases = getRealizationPovContext()?.protagonistAliases ?? [];
+  if (aliases.length === 0 || !hasSecondPersonAddress(currentProse)) return false;
+  return aliases.some((alias) => {
+    const trimmed = alias.trim();
+    if (!trimmed) return false;
+    const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(moment);
+  });
+}
+
 function isSameSceneViralAftermathMoment(moment: string): boolean {
   const normalized = normalizedWords(moment).join(' ');
   return /\bviral\b/.test(normalized)
@@ -356,8 +374,16 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
       options.onSkip?.(m, 'story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization');
       return false;
     }
+    if (characterIntroductionMomentName(m.moment)) {
+      options.onSkip?.(m, 'character-introduction directive is writer guidance, not stageable prose — needs SceneWriter realization');
+      return false;
+    }
     if (isTreatmentSummaryProse(m.moment)) {
       options.onSkip?.(m, 'moment reads as treatment/design summary, not stageable prose — needs SceneWriter realization');
+      return false;
+    }
+    if (momentNamesProtagonistInSecondPersonStory(m.moment, currentProse)) {
+      options.onSkip?.(m, 'moment names the protagonist in third person in a second-person story — needs SceneWriter realization, never verbatim insertion');
       return false;
     }
     if (isTerseActionSummary(m.moment) && !hasConcreteActionRequirement(m)) {

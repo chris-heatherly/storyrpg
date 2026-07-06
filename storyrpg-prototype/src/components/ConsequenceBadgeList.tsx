@@ -9,6 +9,8 @@ interface ConsequenceBadgeListProps {
   layout?: 'stack' | 'inline';
   animated?: boolean;
   maxVisible?: number;
+  /** `badge` = bordered chip (default). `plain` = text only, for panels that already have a frame. */
+  variant?: 'badge' | 'plain';
 }
 
 const BADGE_STAGGER_MS = 150;
@@ -39,7 +41,8 @@ const BadgeRow: React.FC<{
   item: AppliedConsequence;
   delay: number;
   animated: boolean;
-}> = ({ item, delay, animated }) => {
+  variant: 'badge' | 'plain';
+}> = ({ item, delay, animated, variant }) => {
   const opacity = useRef(new Animated.Value(animated ? 0 : 1)).current;
   const translateX = useRef(new Animated.Value(animated ? 20 : 0)).current;
 
@@ -56,8 +59,8 @@ const BadgeRow: React.FC<{
 
   return (
     <Animated.View style={[
-      styles.row,
-      { borderColor: BORDER_MAP[item.direction] },
+      variant === 'badge' ? styles.row : styles.rowPlain,
+      variant === 'badge' && { borderColor: BORDER_MAP[item.direction] },
       { opacity, transform: [{ translateX }] },
     ]}>
       {!!item.narrativeHint && (
@@ -79,6 +82,7 @@ export const ConsequenceBadgeList: React.FC<ConsequenceBadgeListProps> = ({
   layout = 'stack',
   animated = true,
   maxVisible = 5,
+  variant = 'badge',
 }) => {
   const visible = consequences
     .filter(c => c.type !== 'flag')
@@ -86,15 +90,19 @@ export const ConsequenceBadgeList: React.FC<ConsequenceBadgeListProps> = ({
   if (visible.length === 0) return null;
 
   const isInline = layout === 'inline';
+  const containerStyle = variant === 'plain'
+    ? (isInline ? styles.containerInlinePlain : styles.containerPlain)
+    : (isInline ? styles.containerInline : styles.container);
 
   return (
-    <View style={isInline ? styles.containerInline : styles.container}>
+    <View style={containerStyle}>
       {visible.slice(0, maxVisible).map((item, i) => (
         <BadgeRow
           key={`${item.type}-${item.label}-${i}`}
           item={item}
           delay={animated ? i * staggerDelay : 0}
           animated={animated}
+          variant={variant}
         />
       ))}
     </View>
@@ -115,6 +123,15 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     alignItems: 'flex-start',
   },
+  containerPlain: {
+    gap: 4,
+    alignItems: 'flex-start',
+  },
+  containerInlinePlain: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
   row: {
     flexDirection: 'column',
     alignItems: 'flex-start',
@@ -124,6 +141,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
     gap: 2,
+  },
+  rowPlain: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 4,
   },
   impactLine: {
     flexDirection: 'row',

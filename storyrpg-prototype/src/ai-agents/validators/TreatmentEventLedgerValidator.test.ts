@@ -473,6 +473,59 @@ describe('TreatmentEventLedgerValidator', () => {
     expect(result.findings[0].message).toContain('socialMeet');
   });
 
+  it('accepts a walkHome owner realized through dwelling synonyms (bite-me 2026-07-05 treatment-enc-1-1)', () => {
+    const scenePlan = {
+      scenes: [{
+        id: 'treatment-enc-1-1',
+        episodeNumber: 1,
+        order: 4,
+        kind: 'encounter',
+        title: 'Cișmigiu attack',
+        dramaticPurpose: 'Walking home through the park, the protagonist is attacked and rescued by a stranger.',
+        narrativeRole: 'turn',
+        locations: ['Park'],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+        sceneEventOwnership: {
+          id: 'seo-enc-1-1',
+          episodeNumber: 1,
+          sceneId: 'treatment-enc-1-1',
+          ownedEvents: [{
+            key: 'cue:walkHome',
+            cue: 'walkHome',
+            text: 'She is rescued by the stranger, who walks her home to her threshold and vanishes.',
+            sourceContractIds: ['s1-5-rb1-event-walkHome'],
+          }],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: ['s1-5-rb1-event-walkHome'],
+          diagnostics: [],
+          promptGuidance: [],
+        },
+      }],
+      byEpisode: { 1: ['treatment-enc-1-1'] },
+      setupPayoffEdges: [],
+    } as unknown as SeasonScenePlan;
+
+    const result = validator.validate({
+      story: story([
+        scene({
+          id: 'treatment-enc-1-1',
+          beats: [
+            beat('b1', "The walk to your apartment is five blocks of taut silence, the city's nightlife a world away."),
+            beat('b2', 'When you reach your door, he waits, his shadow falling over you as you fumble with the lock.'),
+          ],
+        }),
+      ]),
+      scenePlan,
+      treatmentSourced: true,
+    });
+
+    expect(result.findings.filter((finding) => finding.status === 'owned_event_missing')).toHaveLength(0);
+  });
+
   it('blocks when an abstract encounter shell displaces the concrete treatment encounter', () => {
     const scenePlan = {
       scenes: [

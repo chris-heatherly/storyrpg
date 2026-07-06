@@ -56,33 +56,150 @@ export interface IntroducedNpcsInput {
 }
 
 /**
- * The set of NPC ids the reader has met (on-page) before the scene about to be
- * written. See module doc for the derivation rules.
+ * The set of NPC id SLUGS the reader has met (on-page) before the scene about
+ * to be written. See module doc for the derivation rules.
+ *
+ * Membership is slug-normalized because the layers speak three id vocabularies
+ * for one character ('Stela Pavel' in planned casts, 'char-stela-pavel' in the
+ * roster, 'stela-pavel' in season-plan characterIntroductions) — raw string
+ * compares silently split them (storyrpg-lite 2026-07-04 s1-2 contradiction).
+ * Query with {@link isIntroducedNpc}, never with raw `.has(id)`.
  */
 export function introducedNpcIds(input: IntroducedNpcsInput): Set<string> {
   const introduced = new Set<string>();
+  const add = (idOrName: string) => {
+    const slug = normalizeCharacterSlug(idOrName);
+    if (slug) introduced.add(slug);
+  };
   const plan = input.characterIntroductions ?? [];
 
   if (plan.length > 0) {
     for (const entry of plan) {
-      if (entry.introducedInEpisode < input.episodeNumber) introduced.add(entry.characterId);
+      if (entry.introducedInEpisode < input.episodeNumber) add(entry.characterId);
     }
     // Roster NPCs the plan never schedules: treat as introduced for episodes
     // past the first (legacy cast carried in from prior seasons/episodes).
     if (input.episodeNumber > 1) {
-      const scheduled = new Set(plan.map((e) => e.characterId));
+      const scheduled = new Set(plan.map((e) => normalizeCharacterSlug(e.characterId)));
       for (const id of input.rosterNpcIds) {
-        if (!scheduled.has(id)) introduced.add(id);
+        if (!scheduled.has(normalizeCharacterSlug(id))) add(id);
       }
     }
   } else if (input.episodeNumber > 1) {
     // No plan data at all: prior episodes are invisible here, so assume their
     // cast is known rather than spamming re-introduction directives.
-    for (const id of input.rosterNpcIds) introduced.add(id);
+    for (const id of input.rosterNpcIds) add(id);
   }
 
-  for (const id of input.alreadyStagedNpcIds) introduced.add(id);
+  for (const id of input.alreadyStagedNpcIds) add(id);
   return introduced;
+}
+
+/**
+ * Roster NPC ids actually NAMED in generated scene prose. The writer's
+ * `charactersInvolved` metadata is LLM-authored and can omit a character the
+ * prose plainly stages (storyrpg-lite 2026-07-04T23-09-35: s1-2's prose said
+ * "'Bun venit, I'm Stela'" while its cast metadata listed only the
+ * protagonist) — for introduction tracking, the prose is ground truth.
+ * Matches the full name or a distinctive (>=3 char) first name on word
+ * boundaries, accent-insensitive. Pure and deterministic.
+ */
+export function npcIdsNamedInProse(
+  prose: string,
+  roster: Array<{ id: string; name: string }>,
+): string[] {
+  const normalized = ` ${prose
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()} `;
+  const out: string[] = [];
+  for (const npc of roster) {
+    const fullName = npc.name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    if (!fullName) continue;
+    const first = fullName.split(' ')[0];
+    if (
+      normalized.includes(` ${fullName} `)
+      || (first.length >= 3 && normalized.includes(` ${first} `))
+    ) {
+      out.push(npc.id);
+    }
+  }
+  return out;
+}
+
+/** Slug-normalized membership query — tolerant of raw-id sets from older callers. */
+export function isIntroducedNpc(introduced: Set<string>, idOrName: string): boolean {
+  const slug = normalizeCharacterSlug(idOrName);
+  if (introduced.has(slug)) return true;
+  for (const entry of introduced) {
+    if (normalizeCharacterSlug(entry) === slug) return true;
+  }
+  return false;
+}
+
+/** Normalize plan/roster ids and aliases to a comparable slug. */
+export function normalizeCharacterSlug(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^char-/, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function rosterSlugTokens(value: string): string[] {
+  return normalizeCharacterSlug(value)
+    .split('-')
+    .filter((token) => token.length > 1 && !['the', 'mr', 'ms', 'dr'].includes(token));
+}
+
+/**
+ * Resolve a season-plan character reference (id slug or display name) to the
+ * canonical roster entry. Plan layers often emit duplicate aliases such as
+ * `char-victor-valcescu-mr-midnight` and `victor-valcescu` for one NPC.
+ */
+export function resolveRosterCharacter(
+  idOrName: string,
+  roster: Array<{ id: string; name: string }>,
+): { id: string; name: string } | undefined {
+  const refSlug = normalizeCharacterSlug(idOrName);
+  if (!refSlug) return undefined;
+  const refTokens = rosterSlugTokens(idOrName);
+
+  let best: { id: string; name: string; score: number } | undefined;
+  for (const character of roster) {
+    const idSlug = normalizeCharacterSlug(character.id);
+    const nameSlug = normalizeCharacterSlug(character.name.replace(/\s+/g, '-'));
+    if (refSlug === idSlug || refSlug === nameSlug) {
+      return character;
+    }
+    if (idSlug && (refSlug.includes(idSlug) || idSlug.includes(refSlug))) {
+      const score = idSlug.length;
+      if (!best || score > best.score) best = { ...character, score };
+      continue;
+    }
+    const characterTokens = [...new Set([
+      ...rosterSlugTokens(character.id),
+      ...rosterSlugTokens(character.name),
+    ])];
+    const overlap = refTokens.filter((token) => characterTokens.includes(token)).length;
+    if (
+      overlap >= 2
+      || (overlap === 1 && refTokens.length === 1 && characterTokens.length === 1)
+    ) {
+      const score = overlap * 10 + characterTokens.length;
+      if (!best || score > best.score) best = { ...character, score };
+    }
+  }
+  return best ? { id: best.id, name: best.name } : undefined;
 }
 
 /**
@@ -96,24 +213,32 @@ export function introducedNpcIds(input: IntroducedNpcsInput): Set<string> {
 export function plannedIntroductionsForEpisode(opts: {
   episodeNumber: number;
   roster: Array<{ id: string; name: string }>;
+  protagonistId?: string;
   introducesCharacters?: string[];
-  characterIntroductions?: Array<{ characterId: string; characterName?: string; introducedInEpisode: number }>;
+  characterIntroductions?: Array<{
+    characterId: string;
+    characterName?: string;
+    introducedInEpisode: number;
+    role?: string;
+  }>;
 }): Array<{ id: string; name: string }> {
-  const norm = (s: string): string => s.toLowerCase().trim();
+  const protagonistSlug = opts.protagonistId ? normalizeCharacterSlug(opts.protagonistId) : '';
   const resolve = (idOrName: string): { id: string; name: string } => {
-    const match = opts.roster.find((c) => norm(c.id) === norm(idOrName) || norm(c.name) === norm(idOrName));
+    const match = resolveRosterCharacter(idOrName, opts.roster);
     return match ?? { id: idOrName, name: idOrName };
   };
   const out = new Map<string, { id: string; name: string }>();
-  for (const ref of opts.introducesCharacters ?? []) {
-    if (!String(ref || '').trim()) continue;
-    const c = resolve(ref);
-    out.set(c.id, c);
-  }
+  const add = (idOrName: string) => {
+    if (!String(idOrName || '').trim()) return;
+    const character = resolve(idOrName);
+    if (protagonistSlug && normalizeCharacterSlug(character.id) === protagonistSlug) return;
+    out.set(character.id, character);
+  };
+  for (const ref of opts.introducesCharacters ?? []) add(ref);
   for (const entry of opts.characterIntroductions ?? []) {
     if (entry.introducedInEpisode !== opts.episodeNumber) continue;
-    const c = resolve(entry.characterId || entry.characterName || '');
-    if (c.id.trim()) out.set(c.id, c);
+    if (entry.role === 'protagonist') continue;
+    add(entry.characterId || entry.characterName || '');
   }
   return Array.from(out.values());
 }
@@ -129,9 +254,11 @@ export function forbiddenNpcNames(opts: {
   introduced: Set<string>;
   sceneCastIds: string[];
 }): string[] {
-  const cast = new Set(opts.sceneCastIds);
+  const cast = new Set(opts.sceneCastIds.map((id) => normalizeCharacterSlug(id)));
   return opts.roster
-    .filter((npc) => !opts.introduced.has(npc.id) && !cast.has(npc.id))
+    .filter((npc) => !isIntroducedNpc(opts.introduced, npc.id)
+      && !cast.has(normalizeCharacterSlug(npc.id))
+      && !cast.has(normalizeCharacterSlug(npc.name)))
     .map((npc) => npc.name)
     .filter((name) => name.trim().length > 0);
 }

@@ -172,12 +172,15 @@ describe('scene-turn warning repair helpers', () => {
       suggestion: 'Re-run ChoiceAuthor for this choice so every tier carries scene-specific prose.',
     });
     const routeBlocker = {
-      type: 'route_duplicate_event',
+      // Chronology inversions stay architecture-class (blueprint_rebalance).
+      // (This used to be a route_duplicate_event, but restages now route to
+      // scene_cluster_rewrite — a prose repair — after the 2026-07-05 abort.)
+      type: 'route_chronology_violation',
       severity: 'error',
       validator: 'RouteContinuityValidator',
       sceneId: 's1-5',
       episodeNumber: 1,
-      message: 'Reader route s1-1 -> s1-2 -> s1-5 restages walkHome in "s1-5" after that event was already owned earlier.',
+      message: 'Reader route s1-1 -> s1-2 -> s1-5 stages arrival after walkHome. This inverts the event order.',
     };
     const failingReport: ContractRepairReport = {
       passed: false,
@@ -544,6 +547,62 @@ describe('content-agnostic final-contract prose repairs', () => {
 
     expect(touched).toBe(1);
     expect(earlyScene.beats[0].textVariants).toHaveLength(0);
+  });
+
+  it('never strips an NPC the scene contract itself stages, even when cast metadata omits them (storyrpg-lite 2026-07-04 Stela)', () => {
+    // SceneWriter's LLM-authored `charactersInvolved` omitted Stela in her own
+    // introduction scene; the strip trusted the metadata and deleted the
+    // naming sentence the authored required beat demanded, aborting the run.
+    const story = storyWithBeat("Inside, the air smells of aging paper. 'Bun venit, I'm Stela,' the owner says, bundling lavender.");
+    story.npcs = [{ id: 'char-stela-pavel', name: 'Stela Pavel' }] as any;
+    const introScene = story.episodes[0].scenes[0] as any;
+    introScene.id = 's1-2';
+    introScene.charactersInvolved = ['char-kylie-marinescu']; // metadata omission
+    story.episodes[0].scenes.push({
+      id: 's1-2b',
+      name: 'Bridge',
+      charactersInvolved: [],
+      beats: [{ id: 'b2', text: 'You keep thinking about Stela on the walk home.' }],
+      choices: [],
+    } as never);
+    const plannedMomentSources = new Map([
+      ['s1-2', {
+        requiredBeats: [{
+          tier: 'authored',
+          mustDepict: 'She wanders into a bookshop owned by Stela who befriends her.',
+        }],
+      }],
+    ]);
+
+    const touched = repairPrematureUncastNpcTextVariants(story, plannedMomentSources as never);
+
+    expect(touched).toBe(0);
+    expect(introScene.beats[0].text).toMatch(/I'm Stela/);
+    // The contract staged her in s1-2, so a later mention is no longer premature.
+    expect((story.episodes[0].scenes[1] as any).beats[0].text).toMatch(/Stela/);
+  });
+
+  it('reverts a scene strip that would un-realize a planned required moment', () => {
+    // The moment's mustDepict does not NAME the NPC, so the allowed-set fix
+    // cannot save the sentence — the post-strip realization check must.
+    const story = storyWithBeat('Stela pours lavender tea as the owner welcomes you into the bookshop.');
+    story.npcs = [{ id: 'char-stela-pavel', name: 'Stela Pavel' }] as any;
+    const scene = story.episodes[0].scenes[0] as any;
+    scene.id = 's1-2';
+    scene.charactersInvolved = [];
+    const plannedMomentSources = new Map([
+      ['s1-2', {
+        requiredBeats: [{
+          tier: 'authored',
+          mustDepict: 'The owner welcomes you into the bookshop with lavender tea.',
+        }],
+      }],
+    ]);
+
+    const touched = repairPrematureUncastNpcTextVariants(story, plannedMomentSources as never);
+
+    expect(touched).toBe(0);
+    expect(scene.beats[0].text).toMatch(/Stela pours lavender tea/);
   });
 
   it('strips premature NPC names from encounter phase/storylet prose (bite-me 2026-07-03 Radu)', () => {

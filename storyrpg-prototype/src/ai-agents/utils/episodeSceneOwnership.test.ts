@@ -161,7 +161,7 @@ describe('episodeSceneOwnership finalizer', () => {
       dramaticPurpose: `setup — ${synopsis}`,
       turnContract: {
         turnId: 's1-1-turn',
-        source: 'sceneTurn',
+        source: 'planner',
         centralTurn: 'The protagonist arrives in the city with two suitcases.',
         beforeState: 'Before the turn.',
         turnEvent: 'The protagonist arrives in the city with two suitcases.',
@@ -179,7 +179,7 @@ describe('episodeSceneOwnership finalizer', () => {
       locations: ['Park'],
       turnContract: {
         turnId: 's1-3-turn',
-        source: 'sceneTurn',
+        source: 'planner',
         centralTurn: attackTurn,
         beforeState: 'Before the turn.',
         turnEvent: attackTurn,

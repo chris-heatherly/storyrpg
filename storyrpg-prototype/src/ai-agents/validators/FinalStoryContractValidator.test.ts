@@ -39,7 +39,7 @@ function validStory(overrides: Partial<Story> = {}): Story {
             beats: [
               {
                 id: 'beat-1',
-                text: 'The old door waits in the rain.',
+                text: 'The old door waits for you in the rain.',
                 choices: [
                   {
                     id: 'choice-1',
@@ -1052,6 +1052,39 @@ describe('FinalStoryContractValidator', () => {
       expect.objectContaining({ type: 'qa_blocker_present', validator: 'QARunner' }),
     ]));
     expect(report.blockingIssues.some((issue) => issue.type === 'qa_blocker_present')).toBe(false);
+  });
+
+  it('does NOT block on continuity-count QA criticals while the continuity gates are off (storyrpg-lite 2026-07-05)', async () => {
+    // Continuity errors are owned by the discrete continuity_error pathway,
+    // whose blocking severity is gated (GATE_CONTINUITY_REMEDIATION /
+    // GATE_QA_CRITICAL_BLOCK, both default-off). The aggregate "N continuity
+    // error(s)" critical must not re-enter as a blocking runtime_contract issue
+    // through the qa_blocker_present side door.
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      qaReport: {
+        passesQA: false,
+        overallScore: 88,
+        criticalIssues: ['1 continuity error(s)'],
+        continuity: {
+          issues: [{
+            severity: 'error',
+            type: 'contradiction',
+            location: { sceneId: 's1-6', beatId: 's1-6-b4' },
+            description: 'Scene treats the club visit as novel despite the earlier introduction.',
+            suggestedFix: 'Acknowledge the return.',
+          }],
+        },
+      } as any,
+    });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'qa_blocker_present')).toBe(false);
+    expect(report.blockingIssues.some((issue) => issue.type === 'continuity_error')).toBe(false);
+    expect(report.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'qa_blocker_present', validator: 'QARunner' }),
+      expect.objectContaining({ type: 'continuity_error', validator: 'ContinuityChecker' }),
+    ]));
   });
 
   it('does NOT block treatment-sourced output on score-only QA failures', async () => {

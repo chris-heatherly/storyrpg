@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectPrimaryStoryEventCues, detectStoryEventCues } from './storyEventCues';
+import { detectPrimaryStoryEventCues, detectRealizedStoryEventCues, detectStoryEventCues } from './storyEventCues';
 
 describe('detectStoryEventCues', () => {
   it('does not treat a social group name alone as a venue-door event', () => {
@@ -92,6 +92,25 @@ describe('detectStoryEventCues', () => {
     expect(live.has('threatEncounter')).toBe(true);
   });
 
+  it('does not treat writing ABOUT an attack as owning the threat encounter (bite-me 2026-07-04 scene-4)', () => {
+    const framing = detectPrimaryStoryEventCues(
+      'How do you frame your blog post about Mr. Midnight and the attack?',
+    );
+    expect(framing.has('threatEncounter')).toBe(false);
+
+    const describing = detectPrimaryStoryEventCues(
+      'Kylie writes her Dating After Dusk post and must describe the terrifying attack without naming her rescuer.',
+    );
+    expect(describing.has('threatEncounter')).toBe(false);
+  });
+
+  it('still detects a freshly staged attack even when writing words are nearby', () => {
+    const staged = detectPrimaryStoryEventCues(
+      'As she drafts the post, the attacker returns and grabs her wrist before she can scream.',
+    );
+    expect(staged.has('threatEncounter')).toBe(true);
+  });
+
   it('does not treat a still grip on an object as a live threat', () => {
     const social = detectPrimaryStoryEventCues('At the reception, a stranger holds a glass with a grip of absolute stillness.');
     expect(social.has('threatEncounter')).toBe(false);
@@ -122,5 +141,34 @@ describe('detectStoryEventCues', () => {
       "A text from Mika flashes across the screen: 'OMG. EVERYONE is reading this. We're famous.'",
     );
     expect(friendly.has('antagonistContact')).toBe(false);
+  });
+});
+
+describe('detectRealizedStoryEventCues', () => {
+  it('accepts dwelling-synonym prose as a realized walk home (bite-me 2026-07-05 treatment-enc-1-1)', () => {
+    const prose = [
+      "The walk to your apartment is five blocks of taut silence, the city's nightlife a world away.",
+      'When you reach your door, he waits, his shadow falling over you as you fumble with the lock.',
+      'Once inside, you lean against the door until your breathing slows.',
+    ].join(' ');
+
+    expect(detectRealizedStoryEventCues(prose).has('walkHome')).toBe(true);
+    // Ownership assignment stays conservative: the strict detector must NOT fire here.
+    expect(detectPrimaryStoryEventCues(prose).has('walkHome')).toBe(false);
+  });
+
+  it('still detects a literal escorted walk home', () => {
+    const prose = 'He walks her home through the empty streets and vanishes at the corner.';
+    expect(detectRealizedStoryEventCues(prose).has('walkHome')).toBe(true);
+  });
+
+  it('does not treat a determiner "walk home" recounting as a realized staging', () => {
+    const prose = 'She keeps replaying the attack, the rescue, and the walk home in her head while she drafts the post.';
+    expect(detectRealizedStoryEventCues(prose).has('walkHome')).toBe(false);
+  });
+
+  it('does not treat unrelated door or threshold mentions as a walk home', () => {
+    const prose = 'At the threshold of the club, your hands shake while a stranger mentions danger.';
+    expect(detectRealizedStoryEventCues(prose).has('walkHome')).toBe(false);
   });
 });

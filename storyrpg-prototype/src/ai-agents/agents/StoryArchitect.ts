@@ -39,6 +39,7 @@ import type {
   SeasonResidueObligation,
 } from '../../types/seasonPlan';
 import { assignInfoLedgerPhasesToScenes } from '../pipeline/infoRevealAssignment';
+import { normalizeCharacterSlug, resolveRosterCharacter } from '../utils/npcIntroductionLedger';
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, prettifyEmbeddedLocationIds, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
@@ -120,6 +121,7 @@ import {
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { getFlagRegistry } from '../pipeline/flagRegistry';
+import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
 import {
   detectPrimaryStoryEventCues,
   STORY_EVENT_CUE_ORDER,
@@ -895,6 +897,89 @@ export class StoryArchitect extends BaseAgent {
     assignBlueprintTimeline(blueprint.scenes || []);
   }
 
+  private findIntroductionSceneForCharacter(
+    character: { id: string; name: string },
+    blueprint: EpisodeBlueprint,
+    input: StoryArchitectInput,
+  ): SceneBlueprint | undefined {
+    const planned = [...(input.seasonPlanDirectives?.plannedScenes ?? [])].sort((a, b) => a.order - b.order);
+    const normalizeName = (value: string) =>
+      value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const name = normalizeName(character.name);
+    const firstName = name.split(/\s+/).filter(Boolean)[0] ?? '';
+    const matchesCharacter = (text: string): boolean => {
+      const haystack = normalizeName(text);
+      if (!haystack) return false;
+      if (haystack.includes(name)) return true;
+      return firstName.length > 2 && new RegExp(`\\b${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(haystack);
+    };
+    const plannedStagingText = (scene: PlannedScene): string => [
+      scene.title,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.centralTurn,
+      ...(scene.requiredBeats ?? [])
+        .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
+        .map((beat) => beat.mustDepict || beat.sourceTurn),
+    ].filter(Boolean).join(' ');
+
+    const sceneForPlanned = (plannedScene: PlannedScene): SceneBlueprint | undefined =>
+      blueprint.scenes.find((candidate) => candidate.id === plannedScene.id);
+
+    const blueprintIndex = (scene: SceneBlueprint | undefined): number =>
+      scene ? blueprint.scenes.findIndex((candidate) => candidate.id === scene.id) : -1;
+
+    const isPassingMentionOnly = (text: string): boolean => {
+      if (!firstName) return false;
+      const escaped = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`\\b${escaped}\\s+wants\\b`, 'i').test(text)
+        || new RegExp(`warns that\\s+${escaped}\\b`, 'i').test(text);
+    };
+
+    const isForeshadowNameDropOnly = (text: string): boolean => {
+      if (!firstName || firstName.length < 3) return false;
+      const escaped = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const foreshadow = new RegExp(
+        `\\b(?:friend|introduces?|mentions?|names?|other friend|take you to|would take you)\\b[^.!?]{0,120}\\b${escaped}\\b`,
+        'i',
+      );
+      const physicalStaging = new RegExp(
+        `\\b${escaped}\\b[^.!?]{0,100}\\b(?:walks?|walking|slides?|appears?|arrives?|interrupts?|laughs?|greets?|says|calls?|links?|loops?|pulls?|meet)\\b`,
+        'i',
+      );
+      return foreshadow.test(text) && !physicalStaging.test(text);
+    };
+
+    const candidates: Array<{ scene: SceneBlueprint; index: number }> = [];
+    const considerPlannedScene = (plannedScene: PlannedScene, stagingText: string): void => {
+      if (!matchesCharacter(stagingText) || isPassingMentionOnly(stagingText) || isForeshadowNameDropOnly(stagingText)) return;
+      if (plannedScene.order === 0 && !matchesCharacter(plannedScene.turnContract?.turnEvent || plannedScene.title || '')) {
+        return;
+      }
+      const scene = sceneForPlanned(plannedScene);
+      if (!scene) return;
+      candidates.push({ scene, index: blueprintIndex(scene) });
+    };
+
+    const explicitCastScenes = planned.filter((plannedScene) =>
+      (plannedScene.npcsInvolved ?? []).some((npc) => matchesCharacter(String(npc || ''))),
+    );
+    const stagingSources = explicitCastScenes.length > 0 ? explicitCastScenes : planned;
+    for (const plannedScene of stagingSources) {
+      considerPlannedScene(plannedScene, plannedStagingText(plannedScene));
+    }
+
+    for (const plannedScene of planned) {
+      const ownedEvents = plannedScene.sceneEventOwnership?.ownedEvents ?? [];
+      if (!ownedEvents.some((event) => matchesCharacter(event.text || ''))) continue;
+      const scene = sceneForPlanned(plannedScene);
+      if (!scene) continue;
+      candidates.push({ scene, index: blueprintIndex(scene) });
+    }
+
+    candidates.sort((left, right) => left.index - right.index);
+    return candidates.find((entry) => entry.index >= 0)?.scene ?? candidates[0]?.scene;
+  }
+
   /**
    * On-page character introductions (uncontextualized-character fix,
    * 2026-06-09). The season plan schedules which episode introduces each
@@ -906,16 +991,18 @@ export class StoryArchitect extends BaseAgent {
    * introduction key beat the SceneWriter must hit. Idempotent.
    */
   private ensureCharacterIntroductionBeats(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
-    const intros = input.introducesCharacters ?? [];
+    const roster = (input.availableNPCs ?? []).map((npc) => ({ id: npc.id, name: npc.name }));
+    const intros = (input.introducesCharacters ?? []).map((character) =>
+      resolveRosterCharacter(character.id, roster)
+        ?? resolveRosterCharacter(character.name, roster)
+        ?? character,
+    );
     const scenes = blueprint.scenes || [];
     if (intros.length === 0 || scenes.length === 0) return;
     const normalizeName = (value: string) =>
       value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const introductionKeyFor = (value: string) =>
-      normalizeName(value)
-        .replace(/[^a-z0-9\s-]+/g, ' ')
-        .trim()
-        .split(/\s+/)[0] || normalizeName(value);
+    const introductionKeyFor = (character: { id: string; name: string }) =>
+      normalizeCharacterSlug(character.id || character.name);
     const sceneCastsCharacter = (scene: SceneBlueprint, characterId: string, characterName: string): boolean => {
       const id = normalizeName(characterId);
       const name = normalizeName(characterName);
@@ -934,39 +1021,104 @@ export class StoryArchitect extends BaseAgent {
         scene.dramaticQuestion,
         scene.narrativeFunction,
         scene.conflictEngine,
+        scene.turnContract?.turnEvent,
+        scene.turnContract?.centralTurn,
         ...(scene.requiredBeats ?? [])
           .filter((beat) => beat.tier !== 'seed' && beat.tier !== 'connective')
           .map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
       ].filter(Boolean).join(' '));
       return haystack.includes(needle);
     };
+    const sceneAlreadyHasIntroBeat = (
+      scene: SceneBlueprint,
+      character: { id: string; name: string },
+      introductionKey: string,
+    ): boolean => (scene.requiredBeats ?? []).some((beat) => {
+      if (beat.id === `${scene.id}-intro-${introductionKey}`) return true;
+      const text = normalizeName(`${beat.id || ''} ${beat.mustDepict || ''} ${beat.sourceTurn || ''}`);
+      return text.includes('-intro-')
+        && (text.includes(normalizeName(character.name)) || text.includes(introductionKey.replace(/-/g, ' ')));
+    });
+
     const introducedKeys = new Set<string>();
-    for (const character of intros) {
-      const introductionKey = introductionKeyFor(character.name || character.id);
-      if (introducedKeys.has(introductionKey)) continue;
-      let target = scenes.find((s) => sceneCastsCharacter(s, character.id, character.name));
-      if (!target) {
-        target = scenes.find((s) => sceneMentionsCharacter(s, character.name));
+    const planned = [...(input.seasonPlanDirectives?.plannedScenes ?? [])].sort((a, b) => a.order - b.order);
+    const plannedStagingText = (scene: PlannedScene): string => [
+      scene.title,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.centralTurn,
+      ...(scene.requiredBeats ?? [])
+        .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
+        .map((beat) => beat.mustDepict || beat.sourceTurn),
+    ].filter(Boolean).join(' ');
+    const introductionPriority = (character: { id: string; name: string }): number => {
+      const needle = normalizeName(character.name);
+      const firstName = needle.split(/\s+/).filter(Boolean)[0] ?? '';
+      for (const plannedScene of planned) {
+        const text = normalizeName(plannedStagingText(plannedScene));
+        const fullIndex = text.indexOf(needle);
+        const firstIndex = firstName.length > 2 ? text.search(new RegExp(`\\b${firstName}\\b`)) : -1;
+        const index = fullIndex >= 0 ? fullIndex : firstIndex;
+        if (index >= 0) return plannedScene.order * 1000 + index;
       }
+      return Number.MAX_SAFE_INTEGER;
+    };
+    const sortedIntros = [...intros].sort((left, right) => introductionPriority(left) - introductionPriority(right));
+    for (const character of sortedIntros) {
+      const introductionKey = introductionKeyFor(character);
+      if (introducedKeys.has(introductionKey)) continue;
+
+      // Conservative placement: a hard first-meeting beat goes ONLY on a scene
+      // whose authored staging text/cast actually stages the character. Season
+      // plans blanket-cast NPCs onto every scene, so blueprint-cast/mention
+      // fallbacks and socialMeet round-robin placed intros on unrelated scenes
+      // (storyrpg-lite 2026-07-04T21-46-05: Mika's "first meeting" forced onto
+      // the s1-7 consequence scene after she'd been cast in s1-2..s1-6).
+      // Characters the plan never stages textually are handled by the runtime
+      // first-appearance directive + CharacterIntroductionValidator repair.
+      const target = this.findIntroductionSceneForCharacter(character, blueprint, input);
       if (!target) {
         console.warn(
-          `[StoryArchitect] Episode ${input.episodeNumber} is planned to introduce "${character.name}" but no planned scene mentions or casts them; leaving introduction unresolved for scene-plan repair instead of defaulting to the opening scene.`,
+          `[StoryArchitect] Episode ${input.episodeNumber} is planned to introduce "${character.name}" but no planned scene stages them in its authored text; relying on the runtime first-appearance directive instead of forcing a hard intro beat.`,
         );
         continue;
       }
       introducedKeys.add(introductionKey);
-      if (!(target.npcsPresent || []).includes(character.id)) {
+      if (!sceneCastsCharacter(target, character.id, character.name)) {
         target.npcsPresent = [...(target.npcsPresent || []), character.id];
+      }
+      // Pre-intro cast trim: the reader cannot have "met" this character in a
+      // scene that plays before their first meeting — drop them from earlier
+      // planned casts so the writer and the introduction ledger agree.
+      const targetIndex = scenes.findIndex((scene) => scene.id === target.id);
+      for (let earlier = 0; earlier < targetIndex; earlier += 1) {
+        const scene = scenes[earlier];
+        if (!sceneCastsCharacter(scene, character.id, character.name)) continue;
+        if (sceneMentionsCharacter(scene, character.name)) continue; // authored text stages them — leave the cast honest
+        scene.npcsPresent = (scene.npcsPresent || []).filter((npc) =>
+          normalizeCharacterSlug(String(npc || '')) !== introductionKey);
       }
       const already = (target.keyBeats || []).some((beat) => {
         const normalizedBeat = normalizeName(String(beat || ''));
-        return normalizedBeat.includes(`introduce ${introductionKey} `)
-          || normalizedBeat.includes(`introduce ${normalizeName(character.name)} on-page`);
+        return normalizedBeat.includes(`first meeting with ${normalizeName(character.name)}`)
+          || normalizedBeat.includes(`introduce ${normalizeName(character.name)}`);
       });
       if (!already) {
         target.keyBeats = [
-          `Introduce ${character.name} on-page: this is the reader's FIRST meeting with them — establish who they are and how they relate to the protagonist through action or dialogue before they drive the plot`,
+          `First meeting with ${character.name}: this is the reader's FIRST time seeing them — establish who they are and how they relate to the protagonist through action or dialogue before they drive the plot`,
           ...(target.keyBeats || []),
+        ];
+      }
+      const introBeatId = `${target.id}-intro-${introductionKey}`;
+      if (!sceneAlreadyHasIntroBeat(target, character, introductionKey)) {
+        target.requiredBeats = [
+          ...(target.requiredBeats ?? []),
+          {
+            id: introBeatId,
+            sourceTurn: `First meeting with ${character.name}`,
+            mustDepict:
+              `You meet ${character.name} for the first time in this scene — show how they enter your attention, how they name themselves or are named to you, and one concrete identifying detail before any familiarity or group-belonging language.`,
+            tier: 'authored',
+          },
         ];
       }
     }
@@ -2956,11 +3108,26 @@ Remember: The encounter is the heart. Design outward from it.
     return cues.filter((cue) => cue.test(text)).length;
   }
 
+  private countActionVerbSeries(value: string | undefined): number {
+    const text = this.normalizePlannerText(value);
+    if (!text) return 0;
+    const matches = text.match(/\b(?:accepts?|adopts?|arrives?|befriends?|explores?|finds?|follows?|forms?|introduces?|lands?|leaves?|meets?|offers?|opens?|starts?|takes?|turns?|unpacks?|walks?|wand(?:er)?s?|writes?)\b/g);
+    return matches?.length ?? 0;
+  }
+
   private isBroadPlannedSceneSummary(value: string | undefined): boolean {
     const text = value?.trim();
     if (!text) return false;
     const cueCount = this.sceneEventCueCount(text);
     if (cueCount >= 3) return true;
+    if (this.countActionVerbSeries(text) >= 3 && text.length > 120) return true;
+    if (
+      cueCount >= 2
+      && text.length > 140
+      && /\b(?:who|and)\s+(?:\w+\s+){0,4}(?:befriends?|introduces?|forms?|meets?|owned by|wanders?|explores?)\b/i.test(text)
+    ) {
+      return true;
+    }
     return cueCount >= 2 && text.length > 170 && /,\s+.*,\s+/.test(text);
   }
 
@@ -3080,13 +3247,22 @@ Remember: The encounter is the heart. Design outward from it.
       scene.dramaticPurpose,
       scene.title,
     ];
-    return candidates.find((candidate) =>
+    const concrete = candidates.find((candidate) =>
       this.hasReaderSafeBlueprintText(candidate)
       && !this.isBroadPlannedSceneSummary(candidate)
       && !this.isGenericPlannedScenePlaceholder(candidate)
-    )
-      || this.firstConcreteRequiredBeat(requiredBeats)
-      || pickBlueprintSafeText(scene.title, scene.dramaticPurpose)
+    );
+    if (concrete) return concrete;
+
+    const requiredFallback = this.firstConcreteRequiredBeat(requiredBeats);
+    if (requiredFallback && !this.isBroadPlannedSceneSummary(requiredFallback)) {
+      const firstSentence = requiredFallback.match(/^[^.!?]+[.!?]/)?.[0]?.trim();
+      if (firstSentence && this.hasReaderSafeBlueprintText(firstSentence) && !this.isBroadPlannedSceneSummary(firstSentence)) {
+        return firstSentence;
+      }
+    }
+
+    return pickBlueprintSafeText(scene.title, scene.dramaticPurpose)
       || 'A concrete episode consequence becomes visible.';
   }
 
@@ -3169,7 +3345,51 @@ Remember: The encounter is the heart. Design outward from it.
       }
     }
 
-    return Array.from(present);
+    const roster = (input.availableNPCs || []).map((npc) => ({ id: npc.id, name: npc.name }));
+    const groupFormationText = this.normalizeNameMatchText([
+      scene.dramaticPurpose,
+      scene.turnContract?.centralTurn,
+      scene.turnContract?.turnEvent,
+      scene.stakes,
+      ...(scene.sceneEventOwnership?.ownedEvents ?? []).map((event) => event.text),
+    ].filter(Boolean).join(' '));
+    // Generic formation phrases + named story groups from the lexicon
+    // (e.g. "Dusk Club") — never hardcode a specific story's group names here.
+    const groupFormationRe = new RegExp(
+      `\\b(?:${lexiconAlternation(['three', 'become friends', 'form(?:s|ed)? the', 'social triangle', ...getStoryLexicon().socialGroupNames])})\\b`,
+    );
+    if (groupFormationRe.test(groupFormationText)) {
+      for (const character of input.introducesCharacters ?? []) {
+        const resolved = resolveRosterCharacter(character.id, roster)
+          ?? resolveRosterCharacter(character.name, roster);
+        if (resolved?.id) present.add(resolved.id);
+      }
+    }
+    for (const event of scene.sceneEventOwnership?.ownedEvents ?? []) {
+      if (event.cue !== 'socialMeet') continue;
+      const eventText = this.normalizeNameMatchText(event.text);
+      for (const npc of input.availableNPCs || []) {
+        const aliases = this.npcAliasesForPresence(npc);
+        if (aliases.some((alias) => new RegExp(`(?:^| )${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: |$)`).test(eventText))) {
+          present.add(npc.id);
+        }
+      }
+    }
+
+    // Canonicalize to roster ids and dedupe aliases: season plans cast by
+    // display name ('Stela Pavel') while text matching adds roster ids
+    // ('char-stela-pavel'); carrying both double-lists the character in the
+    // SceneWriter prompt and splits introduction-ledger membership.
+    const canonical = new Map<string, string>();
+    for (const entry of present) {
+      const value = String(entry || '').trim();
+      if (!value) continue;
+      const resolved = resolveRosterCharacter(value, roster);
+      const id = resolved?.id ?? value;
+      const slug = normalizeCharacterSlug(id);
+      if (!canonical.has(slug)) canonical.set(slug, id);
+    }
+    return Array.from(canonical.values());
   }
 
   private localChoicePressures(scene: SceneBlueprint): string[] {
@@ -3334,29 +3554,46 @@ Remember: The encounter is the heart. Design outward from it.
             handoff: this.hasReaderSafeBlueprintText(rawTurnContract.handoff) ? rawTurnContract.handoff : localPurpose,
           }
         : rawTurnContract;
-      const repairedLocation = this.inferPlannedSceneLocationFromRequiredBeats(
+      const locationHintTexts = [
+        p.title,
+        localPurpose,
+        p.turnContract?.turnEvent,
+        p.turnContract?.centralTurn,
+        p.signatureMoment,
+        p.encounter?.description,
+        p.encounter?.centralConflict,
+        ...(p.authoredTreatmentFields || [])
+          .filter((field) => [
+            'cliffhanger_hook',
+            'cliffhanger_question',
+            'ending_turnout',
+            'resolved_episode_tension',
+            'end_state_change',
+          ].includes(field.contractKind))
+          .map((field) => field.sourceText),
+        ...(this.isBroadPlannedSceneSummary(p.dramaticPurpose) ? [] : [p.dramaticPurpose]),
+      ];
+      const inferredLocation = this.inferPlannedSceneLocationFromRequiredBeats(
         requiredBeats,
         input.currentLocation,
-        [
-          p.title,
-          localPurpose,
-          p.turnContract?.turnEvent,
-          p.turnContract?.centralTurn,
-          p.signatureMoment,
-          p.encounter?.description,
-          p.encounter?.centralConflict,
-          ...(p.authoredTreatmentFields || [])
-            .filter((field) => [
-              'cliffhanger_hook',
-              'cliffhanger_question',
-              'ending_turnout',
-              'resolved_episode_tension',
-              'end_state_change',
-            ].includes(field.contractKind))
-            .map((field) => field.sourceText),
-          ...(this.isBroadPlannedSceneSummary(p.dramaticPurpose) ? [] : [p.dramaticPurpose]),
-        ],
+        locationHintTexts,
       );
+      // The season plan's location is authoritative when the scene's authored
+      // text corroborates it. Inference exists to repair STALE planned
+      // locations (episode-default carry-over, raw loc-ids) — it must not
+      // override a correct one: storyrpg-lite 2026-07-04T21-46-05 moved the
+      // Lumina Books first-meeting scene to Valescu Club because the turn text
+      // mentioned the club in passing ("…introduces Kylie to the secret
+      // nightlife world of Valescu Club…").
+      const repairedLocation = this.resolvePlannedSceneLocation({
+        plannedLocation: p.locations?.[0],
+        inferredLocation,
+        currentLocation: input.currentLocation,
+        authoredText: [
+          ...requiredBeats.map((beat) => beat.mustDepict || beat.sourceTurn || ''),
+          ...locationHintTexts,
+        ].filter(Boolean).join(' '),
+      });
       const scene: SceneBlueprint = {
         id: p.id,
         // Titles may embed raw location ids ("… at loc-valescu-club") — scene
@@ -3494,7 +3731,13 @@ Remember: The encounter is the heart. Design outward from it.
     for (const scene of scenes) {
       const kept: NonNullable<SceneBlueprint['requiredBeats']> = [];
       for (const beat of scene.requiredBeats ?? []) {
-        const text = `${beat.sourceTurn || ''} ${beat.mustDepict || ''}`;
+        // sourceTurn and mustDepict usually carry the SAME sentence — naive
+        // concatenation self-doubles the text and lets cue regexes match
+        // across the seam ("…vanishes. Walking home…" normalizes to
+        // "walks…home"), inventing a phantom cue whose sliced beat then
+        // carries the doubled text no prose can realize (bite-me 2026-07-05:
+        // s1-5-rb1 grew an unfulfillable walkHome beat that blocked the run).
+        const text = [...new Set([beat.sourceTurn, beat.mustDepict].map((part) => (part || '').trim()).filter(Boolean))].join(' ');
         if (/\b(?:event|cue)-[a-z-]+$/i.test(beat.id || '')) {
           kept.push(beat);
           continue;
@@ -3924,16 +4167,50 @@ Remember: The encounter is the heart. Design outward from it.
     if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(authoredText)) {
       return 'Rooftop Bar';
     }
+    // Bookshop before club: a first-meeting bookshop scene often name-drops the
+    // club it leads to ("…introduces Kylie to the secret nightlife world of
+    // Valescu Club…") — the bookshop staging must win (2026-07-04 s1-2).
+    if (/\b(?:bookshop|bookstore|quartz|crystal|talisman)\b/.test(authoredText)) {
+      return 'Bookshop';
+    }
     if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance|vip table)\b/.test(authoredText)) {
       return 'Venue';
-    }
-    if (/\b(?:bookshop|bookstore|quartz|crystal|stone|charm|talisman)\b/.test(authoredText)) {
-      return 'Bookshop';
     }
     if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(authoredText)) {
       return 'Estate';
     }
     return undefined;
+  }
+
+  /**
+   * Arbitrate between the season plan's location and the text-inferred one.
+   * Planned wins when it is a real, text-corroborated location; inference wins
+   * only for stale planned values (missing, raw loc-id, the episode-default
+   * carry-over, or a location the scene's authored text never gestures at).
+   */
+  private resolvePlannedSceneLocation(opts: {
+    plannedLocation: string | undefined;
+    inferredLocation: string | undefined;
+    currentLocation: string | undefined;
+    authoredText: string;
+  }): string | undefined {
+    const normalize = (value: string) =>
+      value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+    const planned = opts.plannedLocation?.trim();
+    if (!planned) return opts.inferredLocation;
+    if (!opts.inferredLocation) return undefined;
+    if (/^loc-/i.test(planned)) return opts.inferredLocation;
+    if (opts.currentLocation && normalize(planned) === normalize(opts.currentLocation)) {
+      // Episode-default carry-over — the classic stale value inference repairs.
+      return opts.inferredLocation;
+    }
+    const hay = normalize(opts.authoredText);
+    const hayTokens = hay.split(' ').filter(Boolean);
+    const plannedTokens = normalize(planned).split(' ').filter((token) => token.length >= 4);
+    const corroborated = plannedTokens.some((token) =>
+      hayTokens.some((hayToken) => hayToken.startsWith(token) || token.startsWith(hayToken)),
+    );
+    return corroborated ? undefined : opts.inferredLocation;
   }
 
   private extractNamedAuthoredLocation(text: string): string | undefined {

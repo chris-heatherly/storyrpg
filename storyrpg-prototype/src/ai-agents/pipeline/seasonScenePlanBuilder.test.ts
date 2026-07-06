@@ -128,6 +128,47 @@ describe('buildSeasonScenePlan', () => {
     expect(standardSceneText).not.toMatch(/attack in the park|rescue by Victor|Cismigiu/i);
   });
 
+  it('keeps raw multi-event treatment summaries and season-ledger meta out of scene contracts', () => {
+    // Live-run regression (Bite Me ep1, 2026-07-05): the episode guidance
+    // synopsis was the whole treatment paragraph (arrival + bookshop + Dusk
+    // Club formation + rooftop bar + attack + rescue + viral post) and
+    // endingPressure was a season-anchor ledger sentence. Both were joined
+    // into EVERY standard scene's dramaticPurpose, overloading s1-2's
+    // contract and eventually leaking treatment text into reader prose.
+    const broadSynopsis =
+      'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address. '
+      + 'She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her '
+      + 'and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika. '
+      + 'After testing Kylie, the three become friends and form the Dusk Club. '
+      + 'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen. '
+      + 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger. '
+      + 'At 4am she turns the night into the first Dating After Dusk post and by evening the post has gone viral.';
+    const ep = episode(1, ['you'], {
+      title: 'Dating After Dusk',
+      synopsis: broadSynopsis,
+      treatmentGuidance: {
+        episodePromise: 'Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her?',
+        synopsis: broadSynopsis,
+        endingPressure: "The blog, Dusk Club, Victor's staged courtship, Stela's protection, and Kylie's first authored act all become live season anchors.",
+      } as SeasonEpisode['treatmentGuidance'],
+    });
+
+    const sp = buildSeasonScenePlan(plan([ep]));
+
+    for (const scene of scenesForEpisode(sp, 1)) {
+      const contractText = [scene.dramaticPurpose, scene.stakes, scene.turnContract?.centralTurn].join(' ');
+      expect(contractText, `scene ${scene.id} contract carries the multi-event summary`)
+        .not.toContain('wanders into a bookshop');
+      expect(contractText, `scene ${scene.id} contract carries the multi-event summary`)
+        .not.toContain('rooftop bar');
+      expect(contractText, `scene ${scene.id} contract carries season-ledger meta`)
+        .not.toMatch(/live season anchors/i);
+      // The single-question episode promise is still allowed through.
+    }
+    const allText = scenesForEpisode(sp, 1).map((scene) => scene.dramaticPurpose).join(' ');
+    expect(allText).toContain('Can Kylie start over');
+  });
+
   it('represents encounters as kind:"encounter" scenes whose id is the encounter id', () => {
     const ep = episode(1, ['return'], {
       plannedEncounters: [
@@ -1043,5 +1084,29 @@ describe('repairRouteCueSceneOrder (plan-retry rung, bite-me 2026-07-03T18-19-01
     ];
     expect(repairRouteCueSceneOrder(scenes as never, 1)).toBe(0);
     expect((scenes[0] as { id: string }).id).toBe('s1-1');
+  });
+
+  it('converges deterministically when two scenes share a route cue (bite-me 2026-07-04 oscillation)', () => {
+    // s1-1 owns {arrival, socialMeet}, s1-2 owns {arrival}: the old
+    // first-inversion swap loop flip-flopped these forever (every ordering of
+    // the PAIR contains an inversion under the per-event walk unless the
+    // shorter sequence comes first). Lexicographic sort settles it: {arrival}
+    // before {arrival, socialMeet}, and repeated calls are a fixed point.
+    const build = () => [
+      planned('s1-1', 0, 'Kylie arrives in Bucharest and that same week forms the Dusk Club with Mika and Stela over velvet booths.'),
+      planned('s1-2', 1, 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.'),
+    ];
+    const scenes = build();
+    repairRouteCueSceneOrder(scenes as never, 1);
+    const firstPassIds = scenes.map((scene) => (scene as { id: string }).id);
+
+    // Fixed point: a second call must not move anything.
+    expect(repairRouteCueSceneOrder(scenes as never, 1)).toBe(0);
+    expect(scenes.map((scene) => (scene as { id: string }).id)).toEqual(firstPassIds);
+
+    // Deterministic: rebuilding from scratch reaches the same order.
+    const rebuilt = build();
+    repairRouteCueSceneOrder(rebuilt as never, 1);
+    expect(rebuilt.map((scene) => (scene as { id: string }).id)).toEqual(firstPassIds);
   });
 });

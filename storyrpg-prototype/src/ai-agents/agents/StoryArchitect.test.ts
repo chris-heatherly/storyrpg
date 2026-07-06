@@ -550,6 +550,34 @@ describe('StoryArchitect treatment fidelity validation', () => {
     ]);
   });
 
+  it('does not invent cross-seam phantom cues from identical sourceTurn/mustDepict (bite-me 2026-07-05 walkHome)', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    // "…who walks her to her threshold and vanishes." + "Walking home through…"
+    // only produces a walks…home match when the sentence is self-concatenated;
+    // the single sentence carries threatEncounter alone and must stay one beat.
+    const sentence = 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes.';
+    const blueprint: any = {
+      scenes: [
+        {
+          id: 'treatment-enc-1-1',
+          name: 'Cișmigiu attack',
+          description: 'A shadow attacks in the park.',
+          location: 'Cișmigiu Gardens',
+          isEncounter: true,
+          requiredBeats: [
+            { id: 's1-5-rb1', tier: 'authored', mustDepict: sentence, sourceTurn: sentence },
+          ],
+        },
+      ],
+    };
+
+    (architect as any).repairBroadArrivalRequiredBeats(blueprint);
+
+    const beats = blueprint.scenes[0].requiredBeats;
+    expect(beats.map((beat: any) => beat.id)).toEqual(['s1-5-rb1']);
+    expect(beats[0].mustDepict).toBe(sentence);
+  });
+
   it('keeps signature beats while demoting composite seed bundles out of active beats', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const blueprint: any = {
@@ -3288,6 +3316,31 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(blueprint.scenes[2].location).toBe('Cișmigiu Gardens');
   });
 
+  it('does not override a corroborated planned location when the text name-drops another venue (2026-07-04 Lumina Books regression)', () => {
+    const architect = new StoryArchitect(config);
+    const turn = 'She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const input = makeInput({
+      episodeNumber: 1,
+      currentLocation: "Kylie's Lipscani Apartment",
+      seasonPlanDirectives: {
+        plannedScenes: [
+          { ...plannedStandard('s1-1', 0, 'development'), locations: ["Kylie's Lipscani Apartment"] },
+          {
+            ...plannedStandard('s1-2', 1, 'development'),
+            locations: ['Lumina Books'],
+            requiredBeats: [{ id: 's1-2-rb1', tier: 'authored', sourceTurn: turn, mustDepict: turn }],
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+
+    // "bookshop" in the turn corroborates Lumina Books — the passing mention of
+    // Valescu Club must not relocate the first-meeting scene to the club.
+    expect(blueprint.scenes[1].location).toBe('Lumina Books');
+  });
+
   it('does not carry stale late-arc crisis pressure into the wrong planned episode', () => {
     const architect = new StoryArchitect(config);
     const crisisText = 'At the Equinox weekend Victor makes clear that the blog and his privacy cannot both win.';
@@ -3684,8 +3737,8 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(blueprint.scenes[0].location).toBe('Vâlcescu Club');
     expect(blueprint.scenes[0].choicePoint.optionHints.join(' ')).toContain('key card');
     expect(blueprint.scenes[0].choicePoint.optionHints.join(' ')).not.toContain('park');
-    expect(blueprint.scenes[0].keyBeats.join(' ')).not.toContain('Introduce Victor Vâlcescu');
-    expect(blueprint.scenes[2].keyBeats.join(' ')).toContain('Introduce Victor Vâlcescu');
+    expect(blueprint.scenes[0].keyBeats.join(' ')).not.toContain('First meeting with Victor');
+    expect(blueprint.scenes[2].keyBeats.join(' ')).toContain('First meeting with Victor');
     expect(blueprint.scenes.find((scene: any) => scene.id === 's1-blog')?.location).toBe("Kylie's Lipscani Apartment");
     const release = blueprint.scenes.find((scene: any) => scene.id === 's1-4');
     expect(release?.description).toContain('DM pile');

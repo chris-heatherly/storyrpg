@@ -32,11 +32,27 @@ export const FALLBACK_REMINDER_STUBS: readonly string[] = [
   'The decision leaves visible residue.',
 ];
 
+/**
+ * Template suffixes appended by `readerTextFallbacks.fallbackOutcomeTexts`
+ * (the deterministic fallback CHOICE SET built when ChoiceAuthor fails after
+ * all retries): each tier is `"<choice text>. <suffix>"`. A tier ending in one
+ * of these was never authored — flag it so the focused LLM re-author
+ * (ChoiceAuthor.reauthorOutcomeTexts) rewrites it. Deterministic systems
+ * detect; LLMs rewrite.
+ */
+export const FALLBACK_OUTCOME_TEXT_SUFFIXES: readonly string[] = [
+  'The moment yields a clearer emotional footing.',
+  'The moment shifts, but the uncertainty stays close.',
+  'The hesitation leaves a visible complication behind.',
+];
+
 const ALL_FALLBACK_OUTCOME_TEXTS = new Set(
   Object.values(FALLBACK_OUTCOME_TEXT_POOLS).flat().map((s) => s.toLowerCase()),
 );
 
 const REMINDER_STUBS = new Set(FALLBACK_REMINDER_STUBS.map((s) => s.toLowerCase()));
+
+const FALLBACK_SUFFIXES_NORM = FALLBACK_OUTCOME_TEXT_SUFFIXES.map((s) => s.toLowerCase());
 
 function norm(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -45,7 +61,9 @@ function norm(s: string): string {
 /** True when the text is one of ChoiceAuthor's deterministic outcome-text fallbacks. */
 export function isFallbackOutcomeText(text: string | undefined): boolean {
   if (!text) return false;
-  return ALL_FALLBACK_OUTCOME_TEXTS.has(norm(text));
+  const normalized = norm(text);
+  if (ALL_FALLBACK_OUTCOME_TEXTS.has(normalized)) return true;
+  return FALLBACK_SUFFIXES_NORM.some((suffix) => normalized.endsWith(suffix));
 }
 
 /** True when the text is a ChoiceAuthor reminder-plan stub (planning register, never reader prose). */

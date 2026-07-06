@@ -62,6 +62,7 @@ import { ThematicSquareTurnValidator } from './ThematicSquareTurnValidator';
 import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
+import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 import {
   StoryCircleAnchorConformanceValidator,
@@ -217,6 +218,33 @@ function scopedPlannedScene(scene: PlannedScene, active: Set<number> | undefined
     characterTreatmentContracts: scopedContracts(scene.characterTreatmentContracts, active, activeSceneIds),
     worldTreatmentContracts: scopedContracts(scene.worldTreatmentContracts, active, activeSceneIds),
   };
+}
+
+/**
+ * Per-scene planned-contract text (required-beat turns, story-circle sourceText,
+ * signature moment) — the same view the final-contract strip uses. Consumed by
+ * CharacterIntroductionValidator so plan-staged verbal references are not
+ * flagged as cold name-drops.
+ */
+function plannedSceneContractTextFromScenePlan(
+  scenePlan: SeasonScenePlan | undefined,
+): ReadonlyMap<string, string> | undefined {
+  if (!scenePlan?.scenes?.length) return undefined;
+  const out = new Map<string, string>();
+  for (const scene of scenePlan.scenes) {
+    if (!scene.id) continue;
+    const view = buildSceneConstructionPromptView(scene);
+    const text = [
+      ...(view.requiredBeats ?? []).flatMap((beat) => [
+        beat?.mustDepict,
+        (beat as { sourceTurn?: string } | undefined)?.sourceTurn,
+      ]),
+      ...(view.storyCircleBeatContracts ?? []).map((contract) => contract?.sourceText),
+      (view as { signatureMoment?: string }).signatureMoment,
+    ].filter(Boolean).join(' ');
+    if (text) out.set(scene.id, text);
+  }
+  return out;
 }
 
 function scopedScenePlan(scenePlan: SeasonScenePlan | undefined, active: Set<number> | undefined): SeasonScenePlan | undefined {
@@ -877,12 +905,16 @@ function collectFidelityFindings(
 
   // 2026-06-09 — characters surfacing without on-page introduction: a roster NPC
   // name-dropped in prose before any scene casts them, or cast in a scene whose prose
-  // never names them. Gated separately (GATE_CHARACTER_INTRODUCTION).
+  // never names them. Gated separately (GATE_CHARACTER_INTRODUCTION). The planned
+  // per-scene contract text is passed so a verbal reference the treatment itself
+  // stages (an authored turn naming a not-yet-met NPC) is not flagged as a cold
+  // name-drop (storyrpg-lite 2026-07-05 s1-2 "her other friend Mika").
   if (isGateEnabled('GATE_CHARACTER_INTRODUCTION')) {
     guard(() => {
       const result = new CharacterIntroductionValidator().validate({
         story,
         characterIntroductions: seasonPlan?.characterIntroductions,
+        plannedSceneContractText: plannedSceneContractTextFromScenePlan(scenePlan),
       });
       return toFindings('CharacterIntroductionValidator', result.issues);
     });

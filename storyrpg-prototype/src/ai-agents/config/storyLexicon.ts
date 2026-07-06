@@ -27,6 +27,8 @@ export interface StoryLexicon {
   handoffObjectNouns: string[];
   /** Story-specific phrases that mark a social-meet beat. */
   socialMeetPhrases: string[];
+  /** Named in-fiction social groups (e.g. "Dusk Club") whose formation is a trackable story event. */
+  socialGroupNames: string[];
   /** Story-specific phrases that mark the episode-ending aftermath beat (regex fragments allowed). */
   endingAftermathPhrases: string[];
   /** Entities whose on-page presence realizes the season's central pressure. */
@@ -48,6 +50,7 @@ export const BITE_ME_LEXICON: StoryLexicon = {
   containerCities: ['bucharest', 'new york', 'london', 'paris', 'rome', 'tokyo', 'los angeles'],
   handoffObjectNouns: ['quartz', 'crystal', 'charm'],
   socialMeetPhrases: ['podcast', 'kitchen entrance', 'notices across'],
+  socialGroupNames: ['dusk club', 'our odd little club'],
   endingAftermathPhrases: ['9 ?am', 'dm pile', 'brand deal', 'message pile', 'horrible dream', 'coming over'],
   seasonPressureEntities: ['victor', 'charcoal', 'rescuer', 'savior', 'midnight'],
   seasonPressureAnchorPhrases: ['blog', 'dating after dusk', 'voice', 'chosen', 'saved', 'rescued', 'roses?', 'card'],
@@ -63,6 +66,7 @@ export const GENRE_NEUTRAL_LEXICON: StoryLexicon = {
   containerCities: ['city center'],
   handoffObjectNouns: [],
   socialMeetPhrases: [],
+  socialGroupNames: [],
   endingAftermathPhrases: ['cliffhanger', 'episode end'],
   seasonPressureEntities: [],
   seasonPressureAnchorPhrases: [],

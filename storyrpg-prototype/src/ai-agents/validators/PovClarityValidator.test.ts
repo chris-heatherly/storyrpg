@@ -104,6 +104,24 @@ describe('PovClarityValidator', () => {
     expect(hits[0]).toContain('Kylie smiles back');
   });
 
+  it('flags a bare full-name synopsis beat with no pronoun and no "you" (2026-07-04 arrival leak)', () => {
+    const validator = new PovClarityValidator();
+    const hits = validator.findThirdPersonProtagonistTexts(
+      ['Kylie Marinescu arrives in Bucharest.'],
+      'Kylie Marinescu',
+    );
+    expect(hits).toHaveLength(1);
+  });
+
+  it('does not flag a bare FIRST-name mention without pronouns or a full-name match', () => {
+    const validator = new PovClarityValidator();
+    const hits = validator.findThirdPersonProtagonistTexts(
+      ['The letter is addressed to Kylie, in a hand no one has used for decades. You turn it over.'],
+      'Kylie Marinescu',
+    );
+    expect(hits).toEqual([]);
+  });
+
   it('findThirdPersonProtagonistTexts returns nothing when every text addresses you', () => {
     const validator = new PovClarityValidator();
     const hits = validator.findThirdPersonProtagonistTexts(
@@ -171,6 +189,15 @@ describe('first-person POV detection (bite-me-g16 coda)', () => {
   it('does NOT flag clean second-person narration', () => {
     const hits = v.findFirstPersonProtagonistTexts([
       'You set down your glass. Your thumb hovers over the keyboard.',
+    ]);
+    expect(hits).toHaveLength(0);
+  });
+
+  it('does NOT flag short first-person encounter choice labels (player speech)', () => {
+    const hits = v.findFirstPersonProtagonistTexts([
+      'Get away from me.',
+      'I need to leave. Now.',
+      'Stay back!',
     ]);
     expect(hits).toHaveLength(0);
   });

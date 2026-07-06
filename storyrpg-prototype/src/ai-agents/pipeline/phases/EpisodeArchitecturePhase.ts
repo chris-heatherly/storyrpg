@@ -151,6 +151,7 @@ export class EpisodeArchitecturePhase {
       // each an on-page introduction beat (uncontextualized-character fix).
       introducesCharacters: plannedIntroductionsForEpisode({
         episodeNumber: brief.episode.number,
+        protagonistId: brief.protagonist.id,
         roster: characterBible.characters
           .filter((c) => c.id !== brief.protagonist.id)
           .map((c) => ({ id: c.id, name: c.name })),

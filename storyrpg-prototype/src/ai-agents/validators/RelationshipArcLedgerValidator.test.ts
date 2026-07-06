@@ -80,6 +80,44 @@ describe('RelationshipArcLedgerValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('targets acquaintance'))).toBe(false);
   });
 
+  it('does not flag a stale acquaintance target when the ledger head is still spark', () => {
+    const contract = pacing({ source: 'treatment', targetStage: 'acquaintance' });
+    const scene = {
+      id: 's1-3',
+      name: 'Club',
+      startingBeatId: 'b1',
+      relationshipPacing: [contract],
+      beats: [{
+        id: 'b1',
+        text: 'The Dusk Club name lands as a dare between strangers, not settled membership.',
+        choices: [],
+      }],
+    } as Scene;
+    const scenePlan: SeasonScenePlan = {
+      scenes: [{
+        id: 's1-3',
+        episodeNumber: 1,
+        order: 2,
+        kind: 'standard',
+        title: 'Club',
+        dramaticPurpose: 'Group forms provisionally.',
+        narrativeRole: 'turn',
+        locations: [],
+        npcsInvolved: [],
+        setsUp: [],
+        paysOff: [],
+        relationshipPacing: [contract],
+      }],
+      byEpisode: { 1: ['s1-3'] },
+      setupPayoffEdges: [],
+    };
+
+    const result = new RelationshipArcLedgerValidator().validate({ story: story(scene), scenePlan });
+
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((issue) => issue.message.includes('only permits spark'))).toBe(false);
+  });
+
   it('allows early group naming when the prose frames it as provisional', () => {
     const contract = pacing();
     const scene = {
@@ -244,6 +282,28 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
     const result = new RelationshipArcLedgerValidator().validate({
       story: npcStory([beatScene('s1-1', [
         { id: 'b1', text: 'Mika hands you the key card. You are not yet a friend, and she makes sure you know it.', choices: [] },
+      ], [npcContract()])]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('friend/trusted/intimate relationship language'))).toBe(false);
+  });
+
+  it('does not flag a possessive-negated claim ("not your friends") as a stage claim', () => {
+    const result = new RelationshipArcLedgerValidator().validate({
+      story: npcStory([beatScene('s1-1', [
+        { id: 'b1', text: '"We\'re not your friends," one of them says, his voice flat and cold.', choices: [] },
+      ], [npcContract()])]),
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.some((issue) => issue.message.includes('friend/trusted/intimate relationship language'))).toBe(false);
+  });
+
+  it('does not flag third-party possessive friend references as a stage claim', () => {
+    const result = new RelationshipArcLedgerValidator().validate({
+      story: npcStory([beatScene('s1-1', [
+        { id: 'b1', text: 'The man cries out, stumbling back into his friend. The other hesitates, glancing at his friend before both close in.', choices: [] },
       ], [npcContract()])]),
       treatmentSourced: true,
     });

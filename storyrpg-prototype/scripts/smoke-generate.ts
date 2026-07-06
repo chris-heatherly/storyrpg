@@ -50,7 +50,17 @@ async function main(): Promise<void> {
     title: brief.story?.title ?? 'Smoke Story',
     onEvent,
   });
-  console.log(`[smoke] analysis done — generating EPISODE 1 only…`);
+  // Attach the season plan to the brief, mirroring the generator UI path
+  // (buildCreativeBrief). Without it the pipeline silently degrades: plan-time
+  // fidelity checks skip, StoryArchitect invents its own scene graph, and the
+  // final contract blocks on season-promise plan-use (bite-me 2026-07-04:
+  // 4 "not consumed into concrete plan artifacts" errors after a full-spend run).
+  if (!analysis.seasonPlan) {
+    console.error('[smoke] ✗ season planning failed:', analysis.seasonPlanError ?? '(no seasonPlan returned)');
+    process.exit(1);
+  }
+  brief.seasonPlan = analysis.seasonPlan;
+  console.log(`[smoke] analysis done (season plan: ${analysis.seasonPlan.totalEpisodes} episodes, ${analysis.seasonPlan.scenePlan?.scenes.length ?? 0} planned scenes) — generating EPISODE 1 only…`);
 
   const { result } = await runStoryGeneration({
     config,
@@ -63,6 +73,14 @@ async function main(): Promise<void> {
     onEvent,
   });
 
+  // A pipeline failure resolves (rather than rejects) with success=false, so
+  // report it honestly and exit non-zero — the old unconditional "✅ generation
+  // complete" banner made failed runs look green to monitoring.
+  if (!result.success) {
+    console.error('\n[smoke] ✗ generation FAILED (pipeline reported success=false)');
+    console.log('RUN DIR:', (result as { outputDirectory?: string }).outputDirectory ?? '(none)');
+    process.exit(1);
+  }
   console.log('\n[smoke] ✅ generation complete');
   console.log('RUN DIR:', (result as { outputDirectory?: string }).outputDirectory);
 }

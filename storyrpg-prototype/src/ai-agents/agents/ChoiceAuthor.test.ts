@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { ChoiceAuthor } from './ChoiceAuthor';
 import { BaseAgent } from './BaseAgent';
 import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
+import { FALLBACK_OUTCOME_TEXT_POOLS } from '../constants/choiceTextFallbacks';
 
 const config = {
   provider: 'anthropic' as const,
@@ -1112,6 +1113,93 @@ describe('ChoiceAuthor.reauthorOutcomeTexts (final-contract stub repair)', () =>
     const author = new ChoiceAuthor(config);
     const out = await author.reauthorOutcomeTexts({ choiceText: 'x', needTiers: ['success'] });
     expect(out).toEqual({});
+  });
+});
+
+describe('ChoiceAuthor.reauthorStubOutcomeTiers (authoring-time stub repair)', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+
+  const STUB_PARTIAL = FALLBACK_OUTCOME_TEXT_POOLS.partial[0];
+  const STUB_FAILURE = FALLBACK_OUTCOME_TEXT_POOLS.failure[0];
+
+  function makeSetWithStubs(): any {
+    return makeChoiceSet({
+      choices: [
+        {
+          id: 'c1',
+          text: 'Force the rusted door',
+          choiceType: 'expression',
+          consequences: [],
+          stakesAnnotation: { want: 'get inside', cost: 'be heard', identity: 'bold' },
+          outcomeTexts: {
+            success: 'The lock gives and you slip into the dark hallway beyond.',
+            partial: STUB_PARTIAL,
+            failure: STUB_FAILURE,
+          },
+        },
+        {
+          id: 'c2',
+          text: 'Circle around the back',
+          choiceType: 'expression',
+          consequences: [],
+          outcomeTexts: {
+            success: 'The back window is open a crack; you ease it wide and climb through.',
+            partial: 'You get halfway up before your boot slips, loud against the siding.',
+            failure: 'A floodlight snaps on and pins you against the fence.',
+          },
+        },
+        { id: 'c3', text: 'Wait for the guard to pass', choiceType: 'expression', consequences: [] },
+      ],
+    });
+  }
+
+  it('re-authors only the stub tiers and leaves authored tiers untouched', async () => {
+    let calls = 0;
+    let lastPrompt = '';
+    BaseAgent.setLlmTransportOverride(async (req: any) => {
+      calls += 1;
+      lastPrompt = req.messages.map((m: any) => String(m.content)).join('\n');
+      return JSON.stringify({
+        partial: 'The hinge shears and the door sags open, but the screech carries down the street.',
+        failure: 'The door holds and a dog starts barking somewhere close, moving closer.',
+      });
+    });
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeSetWithStubs();
+    await author.reauthorStubOutcomeTiers(choiceSet, makeInput());
+
+    expect(calls).toBe(1); // only the choice carrying stubs triggers a call
+    expect(lastPrompt).toContain('partial, failure'); // only the stub tiers are requested
+    const c1 = choiceSet.choices[0];
+    expect(c1.outcomeTexts.success).toContain('slip into the dark hallway'); // authored tier untouched
+    expect(c1.outcomeTexts.partial).toContain('hinge shears');
+    expect(c1.outcomeTexts.failure).toContain('dog starts barking');
+    const c2 = choiceSet.choices[1];
+    expect(c2.outcomeTexts.partial).toContain('boot slips'); // fully authored choice untouched
+  });
+
+  it('keeps the stub (for the contract gate) when the re-author returns unusable text', async () => {
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
+      partial: STUB_PARTIAL, // itself a stub — must not be adopted
+      failure: 'Force the rusted door', // echo of the choice label — must not be adopted
+    }));
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeSetWithStubs();
+    await author.reauthorStubOutcomeTiers(choiceSet, makeInput());
+
+    const c1 = choiceSet.choices[0];
+    expect(c1.outcomeTexts.partial).toBe(STUB_PARTIAL);
+    expect(c1.outcomeTexts.failure).toBe(STUB_FAILURE);
+  });
+
+  it('makes no LLM call when no tier is a stub', async () => {
+    let calls = 0;
+    BaseAgent.setLlmTransportOverride(async () => { calls += 1; return '{}'; });
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeSetWithStubs();
+    choiceSet.choices = [choiceSet.choices[1]]; // only the fully authored choice
+    await author.reauthorStubOutcomeTiers(choiceSet, makeInput());
+    expect(calls).toBe(0);
   });
 });
 

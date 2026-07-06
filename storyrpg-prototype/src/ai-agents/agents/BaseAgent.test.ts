@@ -472,7 +472,9 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     expect(url).toContain(':generateContent?');
     expect(url).not.toContain(':streamGenerateContent');
     expect(body.generationConfig.maxOutputTokens).toBe(4096);
-    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 128 });
+    // 2048, not 128: a 128-token thinking budget starved gemini-2.5-pro into
+    // truncated structured JSON (bite-me 2026-07-04 analyzer aborts).
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 2048 });
     expect(body.generationConfig.responseMimeType).toBe('application/json');
     expect(body.generationConfig.responseSchema).toEqual({
       type: 'object',
@@ -513,7 +515,7 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     );
 
     expect(body.generationConfig.maxOutputTokens).toBe(12000);
-    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 128 });
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 2048 });
   });
 
   it('Gemini: uses low thinking level for Gemini 3 structured JSON calls', async () => {

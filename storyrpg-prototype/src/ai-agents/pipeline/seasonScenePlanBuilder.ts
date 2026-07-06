@@ -53,6 +53,7 @@ import { attachSceneEventOwnershipProfiles, eventOrder } from '../utils/sceneEve
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
+import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -182,6 +183,28 @@ function uniqueNonEmpty(values: Array<string | undefined>): string[] {
   return result;
 }
 
+/** Season/ledger meta language that must never ship inside a scene contract. */
+const PLAN_LEVEL_META_RE = /\b(?:season|series)\s+anchors?\b|\ball become live\b|\blive season\b/i;
+
+/**
+ * A treatment-guidance field is scene-contract-safe only when it is a single
+ * pressure statement — not a raw multi-event episode summary and not
+ * season-ledger metadata. Broad summaries are the root cause of overloaded
+ * scene contracts (one scene inheriting the whole episode's event chain),
+ * which downstream surfaces as SceneConstructionGate aborts, teleports, and
+ * rushed relationships. Keep them out of per-scene purposes at source; the
+ * authored events reach scenes as first-class RequiredBeats instead.
+ */
+function sceneSafeStructuralPressureField(value: string | undefined): string | undefined {
+  const trimmed = value?.replace(/\s+/g, ' ').trim();
+  if (!trimmed) return undefined;
+  if (looksLikeBroadEpisodeSummary(trimmed)) return undefined;
+  if (PLAN_LEVEL_META_RE.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+const STRUCTURAL_PRESSURE_MAX_CHARS = 320;
+
 function episodeLocalStructuralPressure(ep: SeasonEpisode): string | undefined {
   const guidance = ep.treatmentGuidance;
   if (!guidance) return undefined;
@@ -193,9 +216,17 @@ function episodeLocalStructuralPressure(ep: SeasonEpisode): string | undefined {
     ...(guidance.majorChoicePressures ?? []),
     guidance.endingPressure,
     guidance.cliffhangerHook,
-  ]);
+  ].map(sceneSafeStructuralPressureField));
   if (localPressure.length === 0) return undefined;
-  return localPressure.slice(0, 4).join(' ');
+  const parts: string[] = [];
+  let total = 0;
+  for (const field of localPressure) {
+    if (parts.length > 0 && total + field.length > STRUCTURAL_PRESSURE_MAX_CHARS) break;
+    parts.push(field);
+    total += field.length + 1;
+    if (parts.length >= 4) break;
+  }
+  return parts.join(' ');
 }
 
 function composeRoleOnlyDramaticPurpose(role: SceneNarrativeRole, ep: SeasonEpisode): string {
@@ -401,7 +432,15 @@ const RELATIONSHIP_TURN_RE =
   /\b(friend|friends|ally|allies|trust|trusted|bond|belong|club|crew|circle|adopts?|invites?|joins?|together|with you|love|lover|kiss|date|romance|protects?|rescues?|vow|promise)\b/i;
 const HIGH_RELATIONSHIP_LABEL_RE =
   /\b(friend|friends|ally|allies|trusted|trusts|inner circle|lover|lovers|family|crew|club|is now|are now|becomes?|joined|joins)\b/i;
-const GROUP_RE = /\b(dusk club|club|crew|circle|group)\b/i;
+function groupRe(): RegExp {
+  return new RegExp(`\\b(${lexiconAlternation([...getStoryLexicon().socialGroupNames, 'club', 'crew', 'circle', 'group'])})\\b`, 'i');
+}
+
+/** Stable id for a named story group when the text names one; scene-derived otherwise. */
+function groupIdForText(scene: PlannedScene, text: string): string {
+  const named = getStoryLexicon().socialGroupNames.find((name) => new RegExp(`\\b${name}\\b`, 'i').test(text));
+  return named ? slugId(named) : `${slugId(scene.title)}-group`;
+}
 
 function slugId(value: string): string {
   return value
@@ -562,7 +601,7 @@ function buildNpcPacingContract(
 }
 
 function buildGroupPacingContract(scene: PlannedScene, priorScenes: number, text: string): RelationshipPacingContract {
-  const groupId = /dusk club/i.test(text) ? 'dusk-club' : `${slugId(scene.title)}-group`;
+  const groupId = groupIdForText(scene, text);
   const maxStage = sceneCanEarnRelationshipAdvancement(scene)
     ? 'intimate'
     : maxRelationshipStageWithoutChoice(priorScenes);
@@ -632,8 +671,8 @@ function applyRelationshipPacingContracts(
       contracts.push(buildNpcPacingContract(scene, npc, npcSeen.get(npc) ?? 0, text, priorBondNpcKeys));
     }
 
-    if (GROUP_RE.test(text) && !contracts.some((c) => c.groupId)) {
-      const groupKey = /dusk club/i.test(text) ? 'dusk-club' : `${slugId(scene.title)}-group`;
+    if (groupRe().test(text) && !contracts.some((c) => c.groupId)) {
+      const groupKey = groupIdForText(scene, text);
       contracts.push(buildGroupPacingContract(scene, groupSeen.get(groupKey) ?? 0, text));
       groupSeen.set(groupKey, (groupSeen.get(groupKey) ?? 0) + 1);
     }
@@ -1260,11 +1299,14 @@ function inferAuthoredLocationFromText(text: string | undefined, locations: stri
   if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(normalized)) {
     return declaredMatch(/\b(?:rooftop|roof|bar|terrace)/) || 'Rooftop Bar';
   }
-  if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:club|venue|door|entrance)/) || 'Vâlcescu Club';
-  }
+  // Bookshop before club: bite-me ep1 bookshop turns also mention the nightlife
+  // club as a handoff, and the old club-first ordering pinned the scene to
+  // Vâlcescu Club while the turn still dramatizes the bookstore introduction.
   if (/\b(?:bookshop|bookstore|quartz|crystal|stone|charm|talisman)\b/.test(normalized)) {
     return declaredMatch(/\b(?:book|shop|store)/) || 'Lumina Books';
+  }
+  if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:club|venue|door|entrance)/) || 'Vâlcescu Club';
   }
   if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(normalized)) {
     return declaredMatch(/\b(?:estate|country|maze|garden)/) || "Victor's Estate";
@@ -1323,7 +1365,11 @@ function alignTurnsToScenes(turns: string[], targets: PlannedScene[]): number[] 
 
   const turnTokens = turns.map(bindTokens);
   const sceneTokenSets = targets.map((s) => new Set(bindTokens(sceneMatchText(s))));
-  const score = (t: number, s: number): number => turnSceneOverlap(turnTokens[t], sceneTokenSets[s]);
+  const score = (t: number, s: number): number => {
+    const turnTokenSet = new Set(turnTokens[t]);
+    const aliasBoost = locationAliasHitCount(turnTokenSet, sceneTokenSets[s]) * 0.2;
+    return turnSceneOverlap(turnTokens[t], sceneTokenSets[s]) + aliasBoost;
+  };
 
   // No discriminating signal anywhere → reproduce positional binding exactly.
   let maxSingle = 0;
@@ -1634,7 +1680,11 @@ export function buildEpisodeScenes(
       npcsInvolved: npcs.slice(0, 3),
       setsUp: [],
       paysOff: [],
-      stakes: ep.synopsis,
+      // Scene contracts never carry a raw multi-event episode summary — the
+      // authored events arrive as RequiredBeats; stakes stays one statement
+      // (or unset, so downstream falls back to the scene's own purpose).
+      stakes: sceneSafeStructuralPressureField(ep.synopsis)
+        ?? sceneSafeStructuralPressureField(ep.treatmentGuidance?.episodePromise),
       // Budget seed: mark choice-bearing standard scenes so the allocator picks
       // them up as weighted units. choiceType/consequenceTier stay unset here —
       // the allocator owns those.
@@ -1774,45 +1824,71 @@ export function buildEpisodeScenes(
  * chronology inversion here ("s1-1 owns socialMeet, s1-2 owns arrival",
  * bite-me 2026-07-03T18-19-01) is an unavoidable 2-minute SceneConstructionGate
  * abort — retrying cannot help. Repair at the source instead: attach the SAME
- * ownership profiles the gate reads, walk owned events in scene order, and swap
- * the two scenes of the first inversion (positions + `.order`; ids stay — every
- * consumer sorts by order). Only standard↔standard swaps are attempted;
- * encounters keep their setup-pair placement and a violation involving one
- * still fails fast at the gate. Bounded passes; converges or leaves the gate
- * to do its job.
+ * ownership profiles the gate reads and stable-sort the cue-carrying standard
+ * scenes (within the positions they already occupy) by the lexicographic order
+ * of their sorted cue-rank sequences. A stable sort is transitive and converges
+ * in a single pass — the previous first-inversion swap loop oscillated forever
+ * when two scenes shared the same cue (bite-me 2026-07-04: "moved s1-2 before
+ * s1-1" / "moved s1-1 before s1-2" repeated 6x per episode), leaving the final
+ * order arbitrary. Lexicographic (shorter-prefix-first) also settles the shared
+ * -cue case: {arrival} sorts before {arrival, socialMeet}, which the gate's
+ * strict-inequality walk accepts. Encounters and cue-less scenes keep their
+ * placement; a genuinely unrepairable inversion (overlapping rank ranges or an
+ * encounter involved) still fails fast at the gate.
  */
 export function repairRouteCueSceneOrder(scenes: PlannedScene[], episodeNumber: number): number {
-  let swaps = 0;
-  for (let pass = 0; pass < Math.max(1, scenes.length); pass += 1) {
-    attachSceneEventOwnershipProfiles(scenes, { episodeNumber });
-    let previous: { index: number; order: number } | undefined;
-    let swappedThisPass = false;
-    for (let index = 0; index < scenes.length && !swappedThisPass; index += 1) {
-      const scene = scenes[index];
-      for (const event of scene.sceneEventOwnership?.ownedEvents ?? []) {
-        const order = eventOrder(event.cue);
-        if (previous && previous.index !== index && order < previous.order) {
-          const other = scenes[previous.index];
-          if (scene.kind === 'standard' && other.kind === 'standard') {
-            scenes[previous.index] = scene;
-            scenes[index] = other;
-            const sceneOrder = scene.order;
-            scene.order = other.order;
-            other.order = sceneOrder;
-            console.info(
-              `[SeasonScenePlan] Route-cue order repair: moved "${scene.id}" (${event.cue}) before "${other.id}" in episode ${episodeNumber}.`,
-            );
-            swaps += 1;
-            swappedThisPass = true;
-            break;
-          }
-        }
-        if (!previous || order >= previous.order) previous = { index, order };
-      }
+  attachSceneEventOwnershipProfiles(scenes, { episodeNumber });
+  const rankSequence = (scene: PlannedScene): number[] =>
+    (scene.sceneEventOwnership?.ownedEvents ?? [])
+      .map((event) => eventOrder(event.cue))
+      .sort((a, b) => a - b);
+  const compareRankSequences = (a: number[], b: number[]): number => {
+    const shared = Math.min(a.length, b.length);
+    for (let i = 0; i < shared; i += 1) {
+      if (a[i] !== b[i]) return a[i] - b[i];
     }
-    if (!swappedThisPass) break;
+    return a.length - b.length;
+  };
+
+  // Encounters are barriers (their setup-pair placement is not repairable
+  // here, matching the old standard↔standard-only swap rule), so only sort
+  // cue-carrying standard scenes WITHIN each segment between encounters.
+  const segments: number[][] = [];
+  let current: number[] = [];
+  scenes.forEach((scene, index) => {
+    if (scene.kind !== 'standard') {
+      if (current.length > 0) segments.push(current);
+      current = [];
+      return;
+    }
+    if (rankSequence(scene).length > 0) current.push(index);
+  });
+  if (current.length > 0) segments.push(current);
+
+  let moves = 0;
+  for (const movableIndices of segments) {
+    if (movableIndices.length < 2) continue;
+    const entries = movableIndices.map((index) => ({ index, scene: scenes[index], seq: rankSequence(scenes[index]) }));
+    const sorted = [...entries].sort((a, b) => compareRankSequences(a.seq, b.seq) || a.index - b.index);
+    const orderValues = movableIndices.map((index) => scenes[index].order);
+    let segmentMoves = 0;
+    sorted.forEach((entry, position) => {
+      const targetIndex = movableIndices[position];
+      if (scenes[targetIndex] !== entry.scene) segmentMoves += 1;
+      scenes[targetIndex] = entry.scene;
+      entry.scene.order = orderValues[position];
+    });
+    if (segmentMoves > 0) {
+      console.info(
+        `[SeasonScenePlan] Route-cue order repair: reordered ${segmentMoves} scene(s) by route-cue rank in episode ${episodeNumber} (${sorted.map((entry) => `"${entry.scene.id}"`).join(' → ')}).`,
+      );
+    }
+    moves += segmentMoves;
   }
-  return swaps;
+  if (moves > 0) {
+    attachSceneEventOwnershipProfiles(scenes, { episodeNumber });
+  }
+  return moves;
 }
 
 /** Pick the scene that best represents where a setup ORIGINATES in an episode. */

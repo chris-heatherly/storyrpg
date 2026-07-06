@@ -30,6 +30,19 @@ const FINDING_PRECEDENCE_RULES: FindingPrecedenceRule[] = [
     loser: 'SceneSpatialUnitValidator',
     note: 'Downgraded: authored event ownership outranks the spatial-unit heuristic on this scene; stage the owned event and let transition-continuity handle the location bridge.',
   },
+  // MechanicsLeakage vs NarrativeMechanicPressure (criteria-reduction item 1c):
+  // one gate strips raw mechanics language, the other demands the mechanic
+  // surface as visible story pressure. Repairing the pressure gate by adding
+  // residue can trip the leak gate, and vice versa. Fiction-first is the
+  // non-negotiable (never ship an exposed stat/dice/DC), so the leak wins: its
+  // repair (FICTION_SAFE_RESIDUE_GUIDANCE) already re-adds fiction-safe residue,
+  // which also satisfies pressure. The pressure error on the same scene is
+  // downgraded so the loop acts on one instruction.
+  {
+    winner: 'MechanicsLeakageValidator',
+    loser: 'NarrativeMechanicPressureValidator',
+    note: 'Downgraded: strip the exposed mechanic first (fiction-first is non-negotiable), then re-surface it as fiction-safe residue in the same rewrite — that also satisfies mechanic pressure.',
+  },
 ];
 
 /**

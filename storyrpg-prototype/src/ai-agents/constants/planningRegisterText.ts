@@ -56,6 +56,13 @@ export const PLANNING_REGISTER_LEAK_PATTERNS: Array<{ label: string; pattern: Re
   { label: 'World pattern feedback fallback', pattern: /\bThe\s+world\s+gives\s+up\s+a\s+little\s+more\s+of\s+its\s+pattern\b/i },
   { label: 'Information ledger label', pattern: /\binformation\s+ledger\b/i },
   { label: 'Raw INFO token', pattern: /\bINFO[-_\s]+[A-Z0-9][A-Z0-9_-]*\b/i },
+  // Marker sentences from the retired encounterTurnRealizationGuard prose
+  // injector (removed 2026-07-04). Old checkpoints/artifacts may still carry
+  // them; treat them as blocking leaks so resume invalidation and the
+  // planning-register repair strip them.
+  { label: 'Encounter turn realization marker', pattern: /\bThe\s+encounter\s+outcome\s+changes\s+on-page\b/i },
+  { label: 'Encounter turn lands marker', pattern: /\bThe\s+required\s+encounter\s+turn\s+lands\s+on-page\b/i },
+  { label: 'Injected encounter intervention sentence', pattern: /\bintervenes\s+before\s+the\s+attack\s+can\s+finish,\s+saving\s+\w+\s+and\s+changing\s+the\s+outcome\s+of\s+the\s+encounter\b/i },
 ];
 
 export function isPlanningRegisterText(text: string | undefined): boolean {

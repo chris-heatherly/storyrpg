@@ -5,6 +5,7 @@ import type { FailureModeAuditContract } from '../../types/scenePlan';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
 import { failureModeAuditMatchThreshold } from '../utils/failureModeAuditContracts';
+import { PAST_TENSE_LIVE_ACTION, hasPastEventMarker, stripQuotedDialogue } from '../utils/proseTense';
 
 export type NarrativeFailureModeCode =
   | 'escalation_trap'
@@ -381,20 +382,6 @@ function sceneContentsFromStory(story: Story | undefined): SceneContent[] {
     }
   }
   return contents;
-}
-
-const PAST_TENSE_LIVE_ACTION =
-  /\b(?:you|your|the|a|an|he|she|it|they|[A-Z][a-z]+)\s+(?:was|were|had|did|didn't|felt|took|saw|heard|watched|looked|stepped|turned|reached|held|laughed|asked|said|met|found|made|walked|ran|wrote|gave|opened|closed|kept|thought|knew|wanted|needed|clicked|shattered|followed|stopped|bled)\b/g;
-
-const PAST_EVENT_MARKER =
-  /\b(?:remember|remembers|remembered|memory|back then|before you arrived|earlier|last night|yesterday|years? ago|once|used to|had been|had already|when you were|as a child|in 19\d{2}|in 20\d{2})\b/i;
-
-function hasPastEventMarker(text: string): boolean {
-  return PAST_EVENT_MARKER.test(text);
-}
-
-function stripQuotedDialogue(text: string): string {
-  return text.replace(/"[^"]*"/g, ' ');
 }
 
 function excerpt(text: string): string {

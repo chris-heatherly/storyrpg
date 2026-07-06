@@ -14,6 +14,8 @@ import {
   STORY_EVENT_CUE_ORDER,
   type StoryEventCue,
 } from '../remediation/storyEventCues';
+import { isGateEnabled } from '../remediation/gateDefaults';
+import { isGenericPlannerTurnScaffold } from './sceneContractBuilders';
 
 export interface SceneEventOwnershipSceneLike {
   id?: string;
@@ -198,6 +200,7 @@ function primaryCuesForScene(scene: SceneEventOwnershipSceneLike, sourceTexts: O
   if (turn) primaryTexts.push(turn.centralTurn, turn.turnEvent);
   const primary = new Set<SceneEventOwnershipCue>();
   for (const text of primaryTexts) {
+    if (isGenericPlannerTurnScaffold(text)) continue;
     for (const cue of cuesFor(cleanText(text))) primary.add(cue);
   }
   return primary;
@@ -210,6 +213,15 @@ function ownershipCuesForSource(
   if (source.id.startsWith('chronology:') && CANONICAL_CUE_KEYS.has(source.text as SceneEventOwnershipCue)) {
     return [source.text as SceneEventOwnershipCue];
   }
+  // A generic planner scaffold turn ("Let the fallout settle into the next
+  // pressure: <whole-episode summary>…") is not an event — the same rule
+  // SceneTurnRealizationValidator and encounterTurnRealizationGuard already
+  // apply. Detecting cues in it grants a filler scene ownership of events the
+  // episode SUMMARY mentions (bite-me 2026-07-04: release scene s1-6 "owned"
+  // arrival/socialMeet/lateNightWriting off its planner turn, so the route-cue
+  // order repair moved it ahead of s1-5 — fan-recognition before the blog
+  // exists, a blocking QA timeline error).
+  if (isGenericPlannerTurnScaffold(source.text)) return [];
   const cues = cuesFor(source.text);
   if (source.slot === 'primary_turn' || source.slot === 'must_stage') return cues;
   if (source.slot !== 'must_support' || cues.length === 0 || primaryCues.size === 0) return [];
@@ -288,9 +300,44 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
   options: { episodeNumber?: number } = {},
 ): SceneEventOwnershipDiagnostic[] {
   const diagnostics: SceneEventOwnershipDiagnostic[] = [];
+  const demoteToAftermath = isGateEnabled('GATE_OWNERSHIP_AFTERMATH_DEMOTION');
   let previousOwnedEvents: SceneOwnedEvent[] = [];
   scenes.forEach((scene) => {
     const profile = compileSceneEventOwnershipProfile(scene, previousOwnedEvents, options);
+    // Deterministic demote-to-aftermath repair (bite-me 2026-07-04: five of
+    // twelve Ep1 runs hard-aborted at SceneConstructionGate on duplicate
+    // ownership with NO retry path — the planned blueprint is deterministic,
+    // so regenerating reproduces the identical conflict). When a later,
+    // non-encounter-capable scene "owns" a duplicate-sensitive event an
+    // earlier scene already owns, it could never legally stage it anyway:
+    // drop it from ownership and let the existing forbidden-restage /
+    // incoming-context machinery route the reference as aftermath — exactly
+    // what the gate's own diagnostic instructs. Kill-switch:
+    // GATE_OWNERSHIP_AFTERMATH_DEMOTION=0 restores the hard-abort behavior.
+    if (demoteToAftermath && scene.kind !== 'encounter' && !scene.isEncounter) {
+      const incomingKeys = new Set(profile.incomingContext.map((event) => event.key));
+      const demoted = profile.ownedEvents.filter(
+        (event) => DUPLICATE_SENSITIVE_CUES.has(event.cue) && incomingKeys.has(event.key),
+      );
+      if (demoted.length > 0) {
+        const demotedKeys = new Set(demoted.map((event) => event.key));
+        profile.ownedEvents = profile.ownedEvents.filter((event) => !demotedKeys.has(event.key));
+        profile.outgoingResidue = profile.outgoingResidue.filter((event) => !demotedKeys.has(event.key));
+        profile.diagnostics = profile.diagnostics.filter(
+          (message) => !demoted.some((event) => message.includes(`also owns ${event.cue}`)),
+        );
+        for (const event of demoted) {
+          const message = `Demoted duplicate ownership of ${event.cue} on scene "${profile.sceneId}" to aftermath; an earlier scene owns it and this scene is not encounter-capable.`;
+          console.info(`[SceneEventOwnership] ${message}`);
+          diagnostics.push({
+            sceneId: scene.id,
+            episodeNumber: profile.episodeNumber,
+            severity: 'warning',
+            message,
+          });
+        }
+      }
+    }
     scene.sceneEventOwnership = profile;
     previousOwnedEvents = mergeEvents([...previousOwnedEvents, ...profile.ownedEvents]);
     for (const message of profile.diagnostics) {
@@ -344,6 +391,24 @@ export function validateSceneEventOwnershipPlan<T extends SceneEventOwnershipSce
   });
 
   return diagnostics;
+}
+
+export function overlayBlueprintSceneEventOwnership<T extends SceneEventOwnershipSceneLike>(
+  seasonScenes: T[] | undefined,
+  blueprintScenes: Array<SceneEventOwnershipSceneLike> | undefined,
+  episodeNumber: number,
+): number {
+  if (!seasonScenes?.length || !blueprintScenes?.length) return 0;
+  const byId = new Map(blueprintScenes.map((scene) => [scene.id, scene]));
+  let updated = 0;
+  for (const planned of seasonScenes) {
+    if (planned.episodeNumber !== episodeNumber) continue;
+    const blueprint = byId.get(planned.id);
+    if (!blueprint?.sceneEventOwnership) continue;
+    planned.sceneEventOwnership = blueprint.sceneEventOwnership;
+    updated += 1;
+  }
+  return updated;
 }
 
 export function buildSceneEventOwnershipPromptSection(scene: SceneEventOwnershipSceneLike | undefined): string {

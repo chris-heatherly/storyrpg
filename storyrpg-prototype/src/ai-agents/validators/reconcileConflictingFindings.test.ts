@@ -63,4 +63,31 @@ describe('reconcileConflictingFindings', () => {
     expect(downgraded).toBe(0);
     expect(issues[1].severity).toBe('error');
   });
+
+  it('downgrades the mechanic-pressure error when a mechanics leak blocks the same scene', () => {
+    const leak: FinalStoryContractIssue = {
+      type: 'qa_blocker_present',
+      severity: 'error',
+      message: 'Player-facing text "s1-2:b3" exposes numeric stat delta.',
+      sceneId: 's1-2',
+      validator: 'MechanicsLeakageValidator',
+      suggestion: 'Redact the raw stat delta.',
+    } as FinalStoryContractIssue;
+    const pressure: FinalStoryContractIssue = {
+      type: 'mechanic_pressure_violation',
+      severity: 'error',
+      message: 'Scene "s1-2" does not surface the mechanic as visible story pressure.',
+      sceneId: 's1-2',
+      validator: 'NarrativeMechanicPressureValidator',
+      suggestion: 'Surface the mechanic as fiction-safe pressure.',
+    } as FinalStoryContractIssue;
+    const issues = [leak, pressure];
+
+    const downgraded = reconcileConflictingFindings(issues);
+
+    expect(downgraded).toBe(1);
+    expect(issues[0].severity).toBe('error');
+    expect(issues[1].severity).toBe('warning');
+    expect(issues[1].suggestion).toContain('fiction-first is non-negotiable');
+  });
 });

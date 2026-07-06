@@ -63,9 +63,10 @@ import {
 import { attachSceneEventOwnershipProfiles } from '../../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacingStagePolicy';
+import { isSceneWideTenseDrift, sceneTenseCensus } from '../../utils/proseTense';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/dependencyGraph';
 import { slugify as idSlugify } from '../../utils/idUtils';
-import { forbiddenNpcNames, introducedNpcIds } from '../../utils/npcIntroductionLedger';
+import { forbiddenNpcNames, introducedNpcIds, isIntroducedNpc, npcIdsNamedInProse } from '../../utils/npcIntroductionLedger';
 import { saveEarlyDiagnostic } from '../../utils/pipelineOutputWriter';
 import { buildSceneTimelineHandoff } from '../../utils/sceneTimeline';
 import { StoryVerb } from '../../utils/storyVerbs';
@@ -81,7 +82,35 @@ import {
   aggregateValidationResults,
 } from '../../validators';
 import { SceneOwnershipPreflightValidator } from '../../validators/SceneOwnershipPreflightValidator';
-import { scanEncounterTemplateProse } from '../../validators/EncounterQualityValidator';
+import { scanEncounterFallbackProse, scanEncounterTemplateProse } from '../../validators/EncounterQualityValidator';
+import { convertEncounterStructureToEncounter } from '../../converters/encounterConverter';
+
+/**
+ * Generation-time acceptance scan (no-boilerplate mandate): the
+ * EncounterArchitect template signatures on the STRUCTURE plus registered
+ * deterministic fallback prose (syntheticFallbackProse registry) on a TRIAL
+ * CONVERSION of it. The converter injects its fallbacks for missing storylet
+ * beats / stakes / choice outcomes at assembly time — AFTER the structure
+ * scan — so without the trial conversion those strings only surfaced as
+ * blocking `unsafe_fallback_prose` findings at the final contract, once every
+ * remaining episode had already been paid for. Catching them here makes it a
+ * cheap per-scene regeneration-with-feedback instead.
+ */
+function scanEncounterBoilerplate(
+  structure: EncounterStructure | undefined,
+  sceneBlueprint: SceneBlueprint,
+): string[] {
+  if (!structure) return [];
+  const hits = new Set<string>(scanEncounterTemplateProse(structure));
+  try {
+    for (const hit of scanEncounterFallbackProse(convertEncounterStructureToEncounter(structure, sceneBlueprint))) {
+      hits.add(hit);
+    }
+  } catch {
+    // Trial conversion is best-effort; a genuine conversion crash surfaces at assembly.
+  }
+  return [...hits];
+}
 import { CallbackLedger } from '../callbackLedger';
 import {
   mergeDuplicatePublicAftermathScenes,
@@ -108,7 +137,7 @@ import {
 import { PipelineError } from '../errors';
 import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
 import { collectEncounterParticipantRefs, filterProtagonistEncounterRefs } from '../encounterParticipants';
-import { assessEncounterTurnRealization, formatEncounterTurnRealizationFeedback, repairEncounterTurnRealization } from '../encounterTurnRealizationGuard';
+import { assessEncounterTurnRealization, formatEncounterTurnRealizationFeedback } from '../encounterTurnRealizationGuard';
 import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPlan';
 import { buildOutcomeTextVariants } from '../outcomeVariants';
 import { buildSceneSettingContext } from '../planningHelpers';
@@ -1017,16 +1046,6 @@ export class ContentGenerationPhase {
         const resumedEncounter = sceneBlueprint.isEncounter && sceneBlueprint.encounterType
           ? this.deps.loadResumeUnit<EncounterStructure>(outputDirectory, encounterUnitId, encounterCheckpointPath)
           : undefined;
-        if (resumedEncounter) {
-          const repaired = repairEncounterTurnRealization(sceneBlueprint, resumedEncounter);
-          if (repaired > 0) {
-            context.emit({
-              type: 'debug',
-              phase: 'encounters',
-              message: `Repaired ${repaired} authored encounter turn surface(s) in resumed checkpoint for ${sceneBlueprint.id}.`,
-            });
-          }
-        }
         const resumedEncounterTurn = resumedEncounter
           ? assessEncounterTurnRealization(sceneBlueprint, resumedEncounter)
           : undefined;
@@ -1037,8 +1056,22 @@ export class ContentGenerationPhase {
             message: `Discarding resumed encounter checkpoint for ${sceneBlueprint.id}: authored encounter turn is under-realized. ${formatEncounterTurnRealizationFeedback(resumedEncounterTurn)}`,
           });
         }
+        // A resumed encounter carrying template/fallback prose was checkpointed
+        // before the producing bug was fixed — regenerate it now instead of
+        // replaying boilerplate into the episode (it would only fail later).
+        const resumedEncounterBoilerplate = resumedEncounter
+          ? scanEncounterBoilerplate(resumedEncounter, sceneBlueprint)
+          : [];
+        if (resumedEncounter && resumedEncounterBoilerplate.length > 0) {
+          context.emit({
+            type: 'warning',
+            phase: 'encounters',
+            message: `Discarding resumed encounter checkpoint for ${sceneBlueprint.id}: carries ${resumedEncounterBoilerplate.length} template/fallback prose signature(s) (${resumedEncounterBoilerplate.slice(0, 3).join(', ')}).`,
+          });
+        }
         const hasRequiredChoice = !sceneBlueprint.choicePoint || Boolean(resumedChoice);
-        const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType) || Boolean(resumedEncounter && resumedEncounterTurn?.passed);
+        const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType)
+          || Boolean(resumedEncounter && resumedEncounterTurn?.passed && resumedEncounterBoilerplate.length === 0);
         if (resumedScene && hasRequiredChoice && hasRequiredEncounter) {
           if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
             this.ensureEncounterBridgeBeat(sceneBlueprint, resumedScene);
@@ -1179,17 +1212,37 @@ export class ContentGenerationPhase {
 
         // On-page introduction state (uncontextualized-character fix): which roster
         // NPCs has the reader met before this scene in planned reading order?
+        // Staging is derived from the ACTUAL generated content of earlier scenes
+        // — `charactersInvolved` metadata PLUS roster names found in the prose
+        // itself — not the planned blueprint cast. Season plans can blanket-cast
+        // NPCs onto scenes whose prose never stages them (storyrpg-lite
+        // 2026-07-04T21-46-05: Stela "staged" in s1-1 by cast while the s1-1
+        // prose contained only the protagonist), and the LLM cast metadata can
+        // omit an NPC the prose plainly names (2026-07-04T23-09-35: s1-2's
+        // prose introduced Stela while its charactersInvolved listed only the
+        // protagonist). Prose is ground truth; metadata is a supplement.
         const rosterNpcs = characterBible.characters
           .filter((c) => c.id !== brief.protagonist.id)
           .map((c) => ({ id: c.id, name: c.name }));
-        const blueprintOrderIdx = (blueprint.scenes || []).findIndex((s) => s.id === sceneBlueprint.id);
         const introducedBeforeScene = introducedNpcIds({
           episodeNumber: brief.episode.number,
           rosterNpcIds: rosterNpcs.map((c) => c.id),
           characterIntroductions: brief.seasonPlan?.characterIntroductions,
-          alreadyStagedNpcIds: (blueprint.scenes || [])
-            .slice(0, Math.max(0, blueprintOrderIdx))
-            .flatMap((s) => s.npcsPresent || []),
+          alreadyStagedNpcIds: sceneContents.flatMap((content) => [
+            ...(content.charactersInvolved || []),
+            ...npcIdsNamedInProse(
+              (content.beats || [])
+                .flatMap((beat) => [
+                  beat.text,
+                  (beat as { setupText?: string }).setupText,
+                  (beat as { escalationText?: string }).escalationText,
+                  ...((beat as { textVariants?: Array<{ text?: string }> }).textVariants || []).map((v) => v.text),
+                ])
+                .filter(Boolean)
+                .join(' '),
+              rosterNpcs,
+            ),
+          ]),
         });
         this.pruneUnscopedTreatmentSeedBeats(sceneBlueprint);
         const sceneRealizationBlueprint = buildSceneConstructionPromptView(sceneBlueprint);
@@ -1237,7 +1290,7 @@ export class ContentGenerationPhase {
               physicalDescription: profile?.physicalDescription,
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               currentMood: profile?.voiceProfile?.whenNervous,
-              isFirstOnPageAppearance: !introducedBeforeScene.has(npcId),
+              isFirstOnPageAppearance: !isIntroducedNpc(introducedBeforeScene, npcId),
             };
           }),
           // Roster characters the reader hasn't met and who aren't in this scene's
@@ -1600,6 +1653,65 @@ export class ContentGenerationPhase {
           });
         }
 
+        // Scene-time narration-tense check (GATE_SCENE_TENSE_CHECK): the
+        // story's narration convention is present tense. A scene written
+        // wholesale in past tense costs ONE SceneWriter retry here; the same
+        // drift at the final contract costs repair rounds or the run (bite-me
+        // 2026-07-05T20-47-31: s1-2). Runs before the realization check so a
+        // full-scene rewrite cannot drop realization patches applied later.
+        if (isGateEnabled('GATE_SCENE_TENSE_CHECK')) {
+          const tenseCensus = sceneTenseCensus(sceneContent.beats);
+          if (isSceneWideTenseDrift(tenseCensus)) {
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} narrates live action in past tense (${tenseCensus.driftedBeats}/${tenseCensus.eligibleBeats} narration beats) — retrying with tense feedback`,
+              data: { driftedBeatIds: tenseCensus.driftedBeatIds },
+            });
+            const tenseRetry = await withTimeout(
+              this.deps.sceneWriter.execute({
+                ...sceneWriterInput,
+                storyContext: {
+                  ...sceneWriterInput.storyContext,
+                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nTENSE FEEDBACK: Your previous draft narrated live scene action in PAST tense (${tenseCensus.driftedBeats} of ${tenseCensus.eligibleBeats} narration beats). This story is narrated in PRESENT tense. Rewrite the scene with all live on-page action in present tense; use past tense ONLY inside dialogue or for explicit memories, backstory, or recaps.`,
+                },
+              }),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} tense-retry)`,
+            ).catch((err) => ({
+              success: false as const,
+              data: null as SceneContent | null,
+              error: err instanceof Error ? err.message : String(err),
+            }));
+            if (tenseRetry.success && tenseRetry.data) {
+              const retryCensus = sceneTenseCensus(tenseRetry.data.beats ?? []);
+              if (retryCensus.driftedBeats < tenseCensus.driftedBeats) {
+                Object.assign(sceneContent, tenseRetry.data);
+                sceneContent.sceneId = sceneBlueprint.id;
+                sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
+                sceneContent.locationId = sceneSettingContext.locationId;
+                sceneContent.settingContext = sceneSettingContext;
+                sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+                sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
+                context.emit({
+                  type: 'debug',
+                  phase: 'scenes',
+                  message: `Tense retry for ${sceneBlueprint.id} adopted: drifted narration beats ${tenseCensus.driftedBeats} -> ${retryCensus.driftedBeats}`,
+                });
+              }
+            }
+            const residualCensus = sceneTenseCensus(sceneContent.beats);
+            if (isSceneWideTenseDrift(residualCensus)) {
+              context.emit({
+                type: 'warning',
+                phase: 'scenes',
+                message: `Scene ${sceneBlueprint.id} still narrates in past tense after tense retry (${residualCensus.driftedBeats}/${residualCensus.eligibleBeats} beats) — deferring to the final-contract tense repair route.`,
+                data: { driftedBeatIds: residualCensus.driftedBeatIds },
+              });
+            }
+          }
+        }
+
         // Scene-time realization check (GATE_SCENE_REQUIRED_BEAT_CHECK):
         // verify the freshly written prose depicts every authored
         // requiredBeat/signatureMoment using the same scoring the season-final
@@ -1696,9 +1808,26 @@ export class ContentGenerationPhase {
                 const unresolved = hardMissing
                   .map((m) => `[${m.tier}] ${m.moment}`)
                   .join('; ');
-                throw new Error(
-                  `Scene ${sceneBlueprint.id} still under-realizes authored moment(s) after realization retry: ${unresolved}`,
-                );
+                if (isGateEnabled('GATE_SCENE_REALIZATION_ABORT')) {
+                  throw new Error(
+                    `Scene ${sceneBlueprint.id} still under-realizes authored moment(s) after realization retry: ${unresolved}`,
+                  );
+                }
+                // Two-tier policy: an under-realized scene after the bounded
+                // retry is a quality finding, not a run-safety blocker. The
+                // contract (sceneContent.requiredBeats) travels with the
+                // content, so the season-final realization gate re-detects the
+                // same miss and routes a bounded judge+regen repair there —
+                // degrading here keeps 25 minutes of prior work instead of
+                // discarding the run.
+                context.emit({
+                  type: 'warning',
+                  phase: 'scenes',
+                  message:
+                    `Scene ${sceneBlueprint.id} still under-realizes ${hardMissing.length} authored moment(s) after realization retry — ` +
+                    `deferring to the season-final realization gate: ${unresolved}`,
+                  data: { missing: hardMissing.map((m) => ({ tier: m.tier, moment: m.moment, missingTokens: m.missingTokens })) },
+                });
               }
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
@@ -2992,14 +3121,6 @@ export class ContentGenerationPhase {
               if (isEncounterNarrativelyHollow(attemptResult.data)) {
                 lastEncounterFailure = 'EncounterArchitect returned a hollow encounter: no beat contains player-facing narrative setup, description, escalation, or choice outcome prose.';
               } else {
-                const repaired = repairEncounterTurnRealization(sceneBlueprint, attemptResult.data);
-                if (repaired > 0) {
-                  context.emit({
-                    type: 'debug',
-                    phase: 'encounters',
-                    message: `Repaired ${repaired} authored encounter turn surface(s) for ${sceneBlueprint.id}.`,
-                  });
-                }
                 const turnRealization = assessEncounterTurnRealization(sceneBlueprint, attemptResult.data);
                 if (!turnRealization.passed) {
                   lastEncounterFailure = `EncounterArchitect under-realized authored encounter turn(s):\n${formatEncounterTurnRealizationFeedback(turnRealization)}\nAuthor the missing moment in setupText, outcome narrativeText, nested nextSituation setupText, or storylet beat prose before returning JSON.`;
@@ -3149,7 +3270,7 @@ export class ContentGenerationPhase {
               // substring scan is a superset of the phase-4 hash-match collisions:
               // it also catches gap-filled default storylets and partially-edited
               // template fragments anywhere in the tree.
-              let templateHits = scanEncounterTemplateProse(encounters.get(sceneBlueprint.id));
+              let templateHits = scanEncounterBoilerplate(encounters.get(sceneBlueprint.id), sceneBlueprint);
               if (templateHits.length > 0) {
                 context.emit({
                   type: 'warning',
@@ -3226,15 +3347,7 @@ export class ContentGenerationPhase {
 
                     const regenValidation = this.deps.incrementalValidator!.validators.encounter.validateEncounter(regenEncounterResult.data);
                     const regenCollisions = this.deps.getPhase4DefaultCollisions(regenEncounterResult.metadata);
-                    const regenTemplateHits = scanEncounterTemplateProse(regenEncounterResult.data);
-                    const repaired = repairEncounterTurnRealization(sceneBlueprint, regenEncounterResult.data);
-                    if (repaired > 0) {
-                      context.emit({
-                        type: 'debug',
-                        phase: 'encounters',
-                        message: `Repaired ${repaired} authored encounter turn surface(s) during regeneration for ${sceneBlueprint.id}.`,
-                      });
-                    }
+                    const regenTemplateHits = scanEncounterBoilerplate(regenEncounterResult.data, sceneBlueprint);
                     const regenTurnRealization = assessEncounterTurnRealization(sceneBlueprint, regenEncounterResult.data);
 
                     if (!regenTurnRealization.passed) {

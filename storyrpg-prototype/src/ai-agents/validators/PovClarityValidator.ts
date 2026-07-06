@@ -565,6 +565,25 @@ export class PovClarityValidator {
   }
 
   /**
+   * Short imperative/player-speech choice labels ("Get away from me.") legitimately use
+   * first person in a second-person story — same register as quoted dialogue, but often
+   * unquoted on encounter options (bite-me 2026-07-04 treatment-enc-1-1).
+   */
+  isLikelyPlayerChoiceUtterance(text: string): boolean {
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 120) return false;
+    const narration = stripDoubleQuotedSpans(trimmed);
+    if (hasPlayerReference(narration)) return false;
+    const hasFirstPerson = /\bI\b|\bI['’](?:m|ll|ve|d)\b/.test(narration)
+      || /\b(?:me|my|mine|myself)\b/i.test(narration);
+    if (!hasFirstPerson) return false;
+    const sentences = narration.split(/[.!?]+/).map((s) => s.trim()).filter(Boolean);
+    if (sentences.length > 2) return false;
+    const words = narration.split(/\s+/).filter(Boolean);
+    return words.length <= 15;
+  }
+
+  /**
    * True when narration (not dialogue) uses first-person for the protagonist in a
    * second-person story. Quoted dialogue is stripped first — characters legitimately say
    * "I" — then we require a first-person pronoun in the remaining narration AND no
@@ -575,6 +594,7 @@ export class PovClarityValidator {
   isFirstPersonProtagonistNarration(text: string): boolean {
     const trimmed = text.trim();
     if (trimmed.length === 0) return false;
+    if (this.isLikelyPlayerChoiceUtterance(trimmed)) return false;
     const narration = stripDoubleQuotedSpans(trimmed);
     // Second-person in NARRATION (not inside a quoted/italic message) → in-register, not a
     // break. Checking the stripped narration — rather than the whole text — matters when a
@@ -607,6 +627,19 @@ export class PovClarityValidator {
     if (namePossessiveRe.test(narration)) return true;
     // Any second-person address in narration means the beat is otherwise in the house POV.
     if (hasPlayerReference(narration)) return false;
+    // FULL multi-token name in narration with no second-person address is a break even
+    // without a pronoun: "Kylie Marinescu arrives in Bucharest." shipped as a beat
+    // (2026-07-04 leak) precisely because the old check demanded a she/her nearby.
+    // (Stylized self-naming like "You sign it: Kylie Marinescu" is exempt via the
+    // hasPlayerReference check above.)
+    const nameTokens = protagonistName.trim().split(/\s+/);
+    if (nameTokens.length > 1) {
+      const fullNameRe = new RegExp(
+        `\\b${nameTokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')}\\b`,
+        'i',
+      );
+      if (fullNameRe.test(narration)) return true;
+    }
     const nameRe = new RegExp(`\\b(?:${escapedNames.join('|')})\\b`, 'i');
     if (!nameRe.test(narration)) return false;
     // Protagonist named, third-person singular pronoun present, and no "you" anywhere →

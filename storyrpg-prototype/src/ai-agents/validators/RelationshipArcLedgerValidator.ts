@@ -25,7 +25,11 @@ export interface RelationshipArcLedgerInput {
 const HIGH_STAGE_LABEL_RE = /\b(?:friends?|friendship|best\s+friend|trusted\s+ally|trusts?\s+(?:you|her|him|them)\s+completely|intimate|inner\s+circle|one\s+of\s+us|family|soulmate)\b/ig;
 // Negated / not-yet claims ("not friends yet", "could become family") are pacing-correct
 // prose, not stage claims (ported from RelationshipPacingValidator in the merge).
-const NEGATED_WINDOW_RE = /\b(?:not|not yet|no|never|almost|maybe|trying to become|could become|might become)\s+(?:a\s+)?$/i;
+// The optional determiner/possessive between the negation and the label keeps
+// "We're not your friends" / "never her friend" negated (bite-me 2026-07-04:
+// the ambusher's cold "We're not your friends" blocked the ep1 seal as an
+// unearned friendship CLAIM — it is the opposite).
+const NEGATED_WINDOW_RE = /\b(?:not|not yet|no|never|almost|maybe|trying to become|could become|might become)\s+(?:(?:a|an|the|your|my|our|his|her|their)\s+)?$/i;
 // New-relationship prose narrated as years of established comfort (merge: was
 // RelationshipPacingValidator's compressed-familiarity check; now gated on the
 // deterministic ledger stage instead of the contract target).
@@ -120,6 +124,20 @@ function isSensationIntimate(text: string, index: number): boolean {
   return SENSATION_INTIMATE_PREFIX_RE.test(prefix);
 }
 
+// "His friend" / "their friends" is a third-party descriptor of NPCs' own
+// relationships, not a claim about the protagonist's bond. In second-person
+// prose the protagonist is "you", so player-side claims read "your friend" /
+// "we're friends" and still fire. (bite-me 2026-07-04: the Cismigiu ambush —
+// "stumbling back into his friend", one attacker glancing at the other —
+// blocked the ep1 seal as unearned dusk-club friendship.)
+const THIRD_PARTY_POSSESSIVE_PREFIX_RE = /\b(?:his|her|their)\s+(?:\w+\s+)?$/i;
+
+function isThirdPartyFriendLabel(matchText: string, text: string, index: number): boolean {
+  if (!/^friend/i.test(matchText)) return false;
+  const prefix = text.slice(Math.max(0, index - 40), index);
+  return THIRD_PARTY_POSSESSIVE_PREFIX_RE.test(prefix);
+}
+
 function hasHighStageRelationshipLabel(text: string): boolean {
   HIGH_STAGE_LABEL_RE.lastIndex = 0;
   for (const match of text.matchAll(HIGH_STAGE_LABEL_RE)) {
@@ -130,6 +148,7 @@ function hasHighStageRelationshipLabel(text: string): boolean {
     if (match[0].toLowerCase() === 'intimate' && isSensationIntimate(text, match.index ?? 0)) {
       continue;
     }
+    if (isThirdPartyFriendLabel(match[0], text, match.index ?? 0)) continue;
     return true;
   }
   return false;
@@ -246,23 +265,27 @@ function walkRelationshipConditions(condition: ConditionExpression, visit: (cond
 }
 
 function effectiveTargetStage(contract: RelationshipPacingContract, entry: RelationshipArcLedgerEntry): RelationshipPacingStage {
-  // Only derived contracts (planner/encounter) get their stale targets
-  // forgiven down to what plan-time normalization would have allowed
-  // (normalizeRelationshipPacingStages). Treatment- and choice-sourced
-  // contracts are authorial intent / earned advancement: if the ledger cannot
-  // support them, that is a real blocking defect, not planner drift.
-  if (contract.source !== 'planner' && contract.source !== 'encounter') {
-    return contract.targetStage;
-  }
-  if (contract.groupId) {
-    if (entry.relationshipChoiceSceneIds.length === 0) return 'spark';
-    if (stageRank(contract.startStage) <= stageRank('spark') && stageRank(contract.targetStage) > stageRank('acquaintance')) {
-      return 'acquaintance';
+  // Forgive stale planner/encounter targets down to what plan-time normalization
+  // would have allowed. Treatment- and choice-sourced contracts keep their authored
+  // intent unless the ledger head proves they overshoot what was earned on-page.
+  let target = contract.targetStage;
+  if (contract.source === 'planner' || contract.source === 'encounter') {
+    if (contract.groupId) {
+      if (entry.relationshipChoiceSceneIds.length === 0) target = 'spark';
+      else if (stageRank(contract.startStage) <= stageRank('spark') && stageRank(target) > stageRank('acquaintance')) {
+        target = 'acquaintance';
+      }
+    } else if (stageRank(contract.startStage) <= stageRank('unmet') && stageRank(target) > stageRank('spark')) {
+      target = 'spark';
     }
-  } else if (stageRank(contract.startStage) <= stageRank('unmet') && stageRank(contract.targetStage) > stageRank('spark')) {
-    return 'spark';
   }
-  return contract.targetStage;
+  // Never validate a contract target above the deterministic ledger head — spurious
+  // choice detection or duplicate plan/story contracts must not inflate the target
+  // (bite-me 2026-07-04: s1-3 targeted acquaintance while ledger only permitted spark).
+  if (stageRank(target) > stageRank(entry.currentStage)) {
+    target = entry.currentStage;
+  }
+  return target;
 }
 
 export class RelationshipArcLedgerValidator extends BaseValidator {

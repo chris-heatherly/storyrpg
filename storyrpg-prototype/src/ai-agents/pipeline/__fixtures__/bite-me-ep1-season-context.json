@@ -1,0 +1,137 @@
+{
+  "episode": {
+    "episodeNumber": 1,
+    "title": "Dating After Dusk",
+    "synopsis": "Kylie arrives in Bucharest with two suitcases and her grandmother's address. She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika. After testing Kylie, the three become friends and form the Dusk Club. At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen. Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes. At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight, and by evening the post has gone viral.",
+    "storyCircleRole": [
+      {
+        "beat": "you",
+        "roleKind": "primary",
+        "source": "treatment"
+      }
+    ],
+    "introducesCharacters": [
+      "char-victor-valcescu",
+      "char-radu-stoian",
+      "char-mika-dragan",
+      "char-stela-pavel",
+      "char-victor-valcescu-glimpsed",
+      "char-radu-stoian-glimpsed"
+    ]
+  },
+  "characterIntroductions": [
+    {
+      "characterId": "char-victor-valcescu",
+      "characterName": "Victor Valcescu",
+      "introducedInEpisode": 1,
+      "role": "antagonist"
+    },
+    {
+      "characterId": "char-radu-stoian",
+      "characterName": "Radu Stoian",
+      "introducedInEpisode": 1,
+      "role": "love_interest"
+    },
+    {
+      "characterId": "char-mika-dragan",
+      "characterName": "Mika Dragan",
+      "introducedInEpisode": 1,
+      "role": "ally"
+    },
+    {
+      "characterId": "char-stela-pavel",
+      "characterName": "Stela Pavel",
+      "introducedInEpisode": 1,
+      "role": "mentor"
+    },
+    {
+      "characterId": "char-carmen-iliescu",
+      "characterName": "Carmen Iliescu",
+      "introducedInEpisode": 2,
+      "role": "ally"
+    },
+    {
+      "characterId": "char-victor-valcescu-glimpsed",
+      "characterName": "Victor Valcescu (glimpsed)",
+      "introducedInEpisode": 1,
+      "role": "neutral"
+    },
+    {
+      "characterId": "char-radu-stoian-glimpsed",
+      "characterName": "Radu Stoian (glimpsed)",
+      "introducedInEpisode": 1,
+      "role": "neutral"
+    },
+    {
+      "characterId": "char-carmen-iliescu-anonymous",
+      "characterName": "Carmen Iliescu (anonymous)",
+      "introducedInEpisode": 2,
+      "role": "neutral"
+    }
+  ],
+  "protagonist": {
+    "id": null,
+    "name": null,
+    "description": "Her publicly cancelled engagement to Daniel Hayes made her feel simultaneously humiliated in front of the world and privately unknown — desired for a surface that was never the real her. Her grandmother Veronica's unexplained escape from Bucharest in 1962 left the Marinescu line with an unfinished s"
+  },
+  "npcs": [
+    {
+      "id": "char-victor-valcescu",
+      "name": "Victor Valcescu",
+      "role": "antagonist",
+      "tier": "major",
+      "description": "Centuries of strigoi existence in which power, beauty, and the ability to make mortals feel singular have substituted for genuine intimacy. His fixation on the Marinescu line, begun with Veronica in 1961, suggests he confuses obsession with devotion."
+    },
+    {
+      "id": "char-radu-stoian",
+      "name": "Radu Stoian",
+      "role": "foil",
+      "tier": "major",
+      "description": "Born into the Stoian pack curse near Bran, watching his father's monthly transformation corrupt the family; his scars are the physical record of that inheritance. He withholds because every man he has trusted the truth to has used it against the pack"
+    },
+    {
+      "id": "char-mika-dragan",
+      "name": "Mika Dragan",
+      "role": "mirror",
+      "tier": "major",
+      "description": "Bound to Victor since 1968 as a contracted succubus; placed in Kylie's life before Kylie arrived. Decades of performing friendship-by-assignment have eroded her ability to trust that any of her genuine feelings are actually hers."
+    },
+    {
+      "id": "char-stela-pavel",
+      "name": "Stela Pavel",
+      "role": "ally",
+      "tier": "major",
+      "description": "Daughter of a Romani strigoi-hunting clan with a past loss she is atoning for; trying to reconcile a modern queer urban life with the inherited responsibility of the old ways."
+    },
+    {
+      "id": "char-carmen-iliescu",
+      "name": "Carmen Iliescu",
+      "role": "warning",
+      "tier": "supporting",
+      "description": "Two years of building a victim spreadsheet in isolation, watching women disappear while her anonymity kept the story unpublished. Meeting Kylie collapses the wall she built."
+    },
+    {
+      "id": "char-victor-valcescu-glimpsed",
+      "name": "Victor Valcescu (glimpsed)",
+      "role": "foil",
+      "tier": "supporting",
+      "description": ""
+    }
+  ],
+  "storyCircle": {
+    "you": "Kylie Marinescu's known world is the identity she has reconstructed after public humiliation: she is the charming wounded observer, the professional writer who documents other people's lives rather than claiming her own, who orders second and watches the room and writes the piece later. She arrives in Bucharest with two suitcases, her grandmother's address, and a survival posture learned from a cancelled engagement — she makes herself useful and interesting by writing about others, never by demanding to be the subject. The Dusk Club and Dating After Dusk represent her 'new normal': a friend group, a blog with her name on it, a city that doesn't know her ex. But the default behavior is still observational self-erasure. The personal stake that would hurt if disrupted is the blog itself — the first thing in years that is unambiguously, publicly hers.",
+    "need": "Dating After Dusk's viral success creates the conscious want: Kylie wants to be desired again, to be the It girl in a beautiful foreign city, to have the gorgeous dangerous suitor and the story that comes with him. But the blog's success also makes her visible to Victor, to anonymous watchers, and to the city beneath the city — and this visibility exposes the deeper, active contradiction she has not yet faced. She wants to be wanted, but she also needs to protect the voice that finally belongs to her. These two drives are not compatible: the man who most wants her wants the blog gone. The pressure is hunger, desire, ambition, and a warning she is not sure she believes yet. It is not enough for Kylie to want a new beginning — she must choose whether she wants to be chosen or to choose.",
+    "go": "Kylie crosses the threshold by accepting Victor's invitation to Casa Stelarum for the Equinox weekend and choosing to be the woman inside the romance rather than only the writer observing it. This is a conscious decision made against Stela's unspoken concern and toward Mika's steering — she steps fully into Victor's courtship knowing the blog is already a friction point. The old rules (observe from a safe distance, write it up later, keep emotional distance) stop working the moment she kisses him in the hedge maze at midnight and lets herself feel lucky. Retreat is meaningfully harder because the romance is now real, the feeling is real, and the cracks that appear — crying model, impossible photograph, grandmother's name, dark wine, Radu's scarf on the doorstep — cannot be unfiled. The weekend also plants the first concrete evidence that the city has been watching her since before she arrived.",
+    "search": "Kylie adapts to the unfamiliar world through a series of increasingly costly tests: she drives to Casa Lupului to take the measure of Radu's alternative, discovers that warmth and honesty have their own withheld truths, and begins to understand that both men are operating on information she does not have. She lets Stela deepen the apartment's warding without fully understanding why. She processes Victor's escalating blog pressure and tests the limits of her own willingness to soften her voice for access. Plans fail: the anonymous warning becomes a real journalist who gets beaten. New rules are learned: Radu pulls back from an almost-kiss because of something he cannot say yet, and Ileana is found alive but changed. The question has shifted from which man is more beautiful to which relationship, if any, can survive truth — and whether Kylie herself can stop performing safety long enough to want something real.",
+    "find": "Kylie gets the wanted thing — the truth — in the mirror. Victor asks her to wind down the blog; she goes to his apartment; the romance turns inside out when the mirror shows her standing alone. This is the deep-bottom acquisition: she has finally seen what she was looking at. She runs barefoot to Lumina Books, and Stela gives her the full picture: Victor is a strigoi, Stela is from a hunter line, and the apartment has been warded all along. At sunrise Kylie opens her grandmother's old photograph and sees Victor's stag-crest ring on Veronica's wrist. The apparent victory — knowing the truth — immediately reveals the real problem: everyone she trusted has been operating in a world she was not told about, and now she must decide what to do with that knowledge rather than simply receive it.",
+    "take": "The story demands payment for Kylie's truth. She goes to Casa Lupului and extracts the same honest confrontation from Radu — he confesses his pricolici nature — and walks out with the second beautiful man changed by her pursuit of truth rather than comfortable lies. Then Victor's message arrives through Carmen's beaten body and Radu's crude framing. Kylie publishes 'Don't Tell Me What to Write' and finds a black rose inside the warded apartment, delivered by Mika because Victor asked her to. The cost is open war, a publicly targeted ally, and the discovery that the friend she trusted to steer her through the city has been steering her for Victor all along. The price answers the need directly: she wanted to be wanted, and what wanting her looks like when unchecked is this.",
+    "return": "Kylie carries the season's accumulated truth back to the friendship that has held her together — the Dusk Club, the apartment, the texts she is now rereading for seams. She brings the mirror-truth, the strigoi-truth, and the pricolici-truth back into her daily life and has to reintegrate with Mika, the person who knows all of it and is implicated in most of it. At midnight in the locked Dragan Vintage, Mika confesses and asks Kylie what to do. The reintegration pressure is the full weight of the season: Kylie now holds the choices that will determine the Hunter's Moon. Every faction is pointed at Casa Stelarum, Radu has returned beneath her balcony, and the question of whether betrayal can be answered with freedom, cruelty, abandonment, or forgiveness is the last thing she must answer before the finale.",
+    "change": "On the Hunter's Moon, Kylie publicly chooses who she is and what she will not become for love. The change is proven through action — which position she walks to in the ballroom, whose freedom she protects, whose offer she refuses, whether the blog survives. The ending rhymes with the beginning: the same world (a city full of men who want to possess or protect her, a blog with her name on it, a friendship whose terms she did not choose), but a different person. As Consort, she proves the Lie wins beautifully and returns to the observer's silence, this time permanent. As Mountain Wife, she proves the bravest reinvention is choosing to be known at cost. As Witness, she proves her voice belongs to her and that being adored was never the same as being seen or free. Veronica's letter surfaces in all three endings, ensuring the Marinescu line remains unfinished — the next loop's new need."
+  },
+  "anchors": {
+    "stakes": "Kylie's new identity and emerging writer's voice, her friendships, and her physical safety in Bucharest — all threatened simultaneously by Victor's centuries-old claim on the Marinescu line, the supernatural world she has stumbled into, and her own lie that being chosen is the same as being known.",
+    "goal": "Kylie is compelled to build a blog under her own name, reclaim her personal agency after public humiliation, and navigate the competing claims of Victor's seductive possession and Radu's honest love to find genuine self-definition rather than a new version of being owned.",
+    "incitingIncident": "Kylie arrives in Bucharest to rebuild her life after a publicly cancelled engagement and is immediately drawn into Victor's staged courtship when he rescues her from a manufactured attack in Cismigiu Gardens — an act of terror she converts into her first viral blog post, 'Dating After Dusk', simultaneously launching her new life and walking into the oldest trap in the city.",
+    "climax": "On the Hunter's Moon at Casa Stelarum, with Carmen's victim spreadsheet going live and the Strigoi Mama's emissary present to settle the Marinescu line, Kylie must walk to one of three positions in the ballroom — publicly choosing between Victor's possessive adoration, Radu's honest mortal life, and Stela's third path of self-authored freedom — in a choice that is about her name, her voice, Mika's freedom, and who Kylie Marinescu actually is."
+  }
+}

@@ -38,12 +38,14 @@ import { runFinalContractRepair, buildDeterministicContractHandlers, type Contra
 import { GateRepairRouter } from '../remediation/gateRepairRouter';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
+import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
 import { buildObligationPayoffRepairHandler } from '../remediation/obligationPayoffRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
+import { RouteRestageArbiter, arbitrateRouteRestageFindings } from '../validators/routeRestageArbiter';
 import type { FidelityValidationScope } from '../validators/runFidelityValidators';
 import type { ValidationPhaseBaseline } from '../validators/validationPhaseBaseline';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
@@ -488,16 +490,49 @@ function repairPrematureNpcNestedStrings(value: unknown, npcs: Array<{ id?: stri
   return touched;
 }
 
-export function repairPrematureUncastNpcTextVariants(story: Story): number {
+/**
+ * The concatenated planned-contract text for a scene: required-beat mustDepict
+ * turns, story-circle sourceText, and the signature moment. An NPC NAMED here
+ * is demanded on-page by the scene's own contract — the strip must never treat
+ * that naming as premature (storyrpg-lite 2026-07-04T23-09-35: SceneWriter's
+ * `charactersInvolved` metadata omitted Stela in her own intro scene, so the
+ * strip deleted "'Bun venit, I'm Stela'" and un-realized the authored beat).
+ */
+function plannedContractTextForScene(source: SceneContractSource | undefined): string {
+  if (!source) return '';
+  return [
+    ...(source.requiredBeats ?? []).flatMap((beat) => [
+      beat?.mustDepict,
+      (beat as { sourceTurn?: string } | undefined)?.sourceTurn,
+    ]),
+    ...(source.storyCircleBeatContracts ?? []).map((contract) => contract?.sourceText),
+    source.signatureMoment,
+  ].filter(Boolean).join(' ');
+}
+
+export function repairPrematureUncastNpcTextVariants(
+  story: Story,
+  plannedMomentSources?: ReadonlyMap<string, SceneContractSource>,
+): number {
   let touched = 0;
   const knownNpcIds = new Set<string>();
   const npcs = story.npcs || [];
   for (const episode of [...(story.episodes || [])].sort((a, b) => a.number - b.number)) {
     for (const scene of episode.scenes || []) {
+      const plannedSource = plannedMomentSources?.get(String(scene.id ?? ''));
+      const contractText = plannedContractTextForScene(plannedSource);
       const allowed = new Set(knownNpcIds);
       for (const npc of npcs) {
         if (castIncludesNpc(scene, npc)) allowed.add(npc.id);
+        // The scene's planned contract names this NPC — the contract itself
+        // stages them here, regardless of what the LLM cast metadata says.
+        if (contractText && textNamesNpc(contractText, npc)) allowed.add(npc.id);
       }
+      const touchedBeforeScene = touched;
+      const missingBeforeScene = plannedSource
+        ? missingRequiredMoments(plannedSource, scene.beats as never).length
+        : 0;
+      const sceneSnapshot = plannedSource ? JSON.parse(JSON.stringify(scene)) : undefined;
       for (const beat of scene.beats || []) {
         if (typeof beat.text === 'string') {
           const repaired = stripPrematureNpcSentences(beat.text, npcs, allowed);
@@ -527,7 +562,7 @@ export function repairPrematureUncastNpcTextVariants(story: Story): number {
       // encounter's phase prose named "Radu Stoian" (the treatment keeps him
       // an unnamed "rougher man" until episode 2) and this repair never
       // reached it, so the run aborted on a strippable premature naming.
-      const enc = (scene as { encounter?: Record<string, unknown> }).encounter;
+      const enc = (scene as unknown as { encounter?: Record<string, unknown> }).encounter;
       if (enc) {
         const stripField = (holder: Record<string, unknown>, key: string): void => {
           if (typeof holder[key] !== 'string') return;
@@ -561,8 +596,21 @@ export function repairPrematureUncastNpcTextVariants(story: Story): number {
           if (storylet && typeof storylet === 'object') stripBeats((storylet as Record<string, unknown>).beats);
         }
       }
+      // Belt-and-braces: a repair must never create the blocker class it
+      // exists to prevent. If stripping this scene un-realized a planned
+      // required moment, revert the scene's strip entirely.
+      if (sceneSnapshot && touched > touchedBeforeScene) {
+        const missingAfterScene = missingRequiredMoments(plannedSource, scene.beats as never).length;
+        if (missingAfterScene > missingBeforeScene) {
+          for (const key of Object.keys(scene)) delete (scene as unknown as Record<string, unknown>)[key];
+          Object.assign(scene, sceneSnapshot);
+          touched = touchedBeforeScene;
+        }
+      }
       for (const npc of npcs) {
         if (castIncludesNpc(scene, npc)) knownNpcIds.add(npc.id);
+        // An NPC the scene's contract stages counts as met for later scenes.
+        if (contractText && textNamesNpc(contractText, npc)) knownNpcIds.add(npc.id);
       }
     }
   }
@@ -775,6 +823,7 @@ export class FinalContract {
     // One validation pass = FinalStoryContractValidator + the encounter-quality
     // gate (merged in place). Factored into a closure so the Wave-4 repair loop can
     // re-validate a repaired story with identical inputs.
+    const plannedMomentSourcesForStrip = plannedMomentSourcesFromScenePlan(input.brief.seasonPlan?.scenePlan);
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
       const diceMetaphorRepairs = repairDiceMetaphorMechanicsLeakage(story);
       if (diceMetaphorRepairs > 0) {
@@ -800,7 +849,7 @@ export class FinalContract {
           message: `Choice residue planning-register leakage normalized ${residuePlanningRepairs} hint(s).`,
         } as any);
       }
-      const prematureVariantRepairs = repairPrematureUncastNpcTextVariants(story);
+      const prematureVariantRepairs = repairPrematureUncastNpcTextVariants(story, plannedMomentSourcesForStrip);
       if (prematureVariantRepairs > 0) {
         this.deps.emit({
           type: 'debug',
@@ -952,6 +1001,41 @@ export class FinalContract {
           type: 'checkpoint',
           phase: input.phase,
           message: `Fidelity judge reviewed ${outcome.judged} heuristic finding(s); ${outcome.downgraded} refuted (downgraded), ${outcome.judged - outcome.downgraded} confirmed blocking`,
+        });
+      }
+    }
+
+    // Route-continuity cue findings (duplicate-event / chronology) are keyword
+    // regexes over creative prose — structurally prone to false positives on
+    // fresh prose (bite-me 2026-07-05T20-47-31: "Grab Mika's phone" in a
+    // blog-draft choice label read as restaging the park attack and aborted
+    // the run). Policy: a cue match alone never blocks — one bounded LLM call
+    // must CONFIRM the restage for the finding to stay blocking; refuted or
+    // uncorroborated findings demote to annotated warnings.
+    if (!report.passed && isGateEnabled('GATE_ROUTE_RESTAGE_ARBITER')) {
+      const beforeArbiter = new Set(report.blockingIssues.map(fidelityKey));
+      const outcome = await arbitrateRouteRestageFindings({
+        report,
+        story: input.story,
+        arbiter: () => {
+          try {
+            return new RouteRestageArbiter(this.deps.config.agents.sceneWriter);
+          } catch (err) {
+            console.warn(`[Pipeline] Route restage arbiter unavailable (uncorroborated cue findings demote to warnings): ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+          }
+        },
+        emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+      });
+      // Demoted findings must not re-block when re-validation re-runs the cue
+      // heuristics fresh each repair round — reuse the refuted-keys carryover.
+      const afterArbiter = new Set(report.blockingIssues.map(fidelityKey));
+      for (const k of beforeArbiter) if (!afterArbiter.has(k)) refutedFidelityKeys.add(k);
+      if (outcome.considered > 0) {
+        this.deps.emit({
+          type: 'checkpoint',
+          phase: input.phase,
+          message: `Route restage arbiter reviewed ${outcome.considered} cue finding(s); ${outcome.confirmed} confirmed blocking, ${outcome.refuted} refuted, ${outcome.demotedUncorroborated} demoted uncorroborated`,
         });
       }
     }

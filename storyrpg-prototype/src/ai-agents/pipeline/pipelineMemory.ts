@@ -83,6 +83,11 @@ const AGENT_HISTORY_DATASET = 'storyrpg-agent-history';
 const DEFAULT_MAX_PROMPT_CHARS = 6000;
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_TOP_K = 6;
+const HEALTH_PROBE_TIMEOUT_MS = 3000;
+// After this many consecutive provider failures the run stops paying
+// per-call timeouts (2026-07-04: every write burst aborted at 8s against a
+// busy Cognee, ~20 warns/run).
+const BREAKER_THRESHOLD = 3;
 
 export type AgentMemoryRole =
   | 'SourceMaterialAnalyzer'
@@ -553,7 +558,36 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   private llmSyncPromise?: Promise<void>;
 
+  private healthPromise?: Promise<boolean>;
+
+  private cognifiedDatasets = new Set<string>();
+
   constructor(private config: MemoryConfig, private llmTarget?: CogneeLlmTarget | null) {}
+
+  /**
+   * Probe GET {baseUrl}/health once before the first memory operation. On
+   * failure the provider disables itself for the run with a single log line,
+   * instead of every write/recall paying a full timeout (2026-07-04).
+   */
+  private ensureHealthy(): Promise<boolean> {
+    if (!this.healthPromise) {
+      this.healthPromise = (async () => {
+        if (!this.baseUrl) return false;
+        try {
+          const response = await fetchWithTimeout(`${this.baseUrl}/health`, {
+            method: 'GET',
+            headers: this.headers(false),
+          }, Math.min(this.timeoutMs(), HEALTH_PROBE_TIMEOUT_MS));
+          if (!response.ok) throw new Error(`status ${response.status}`);
+          return true;
+        } catch (err) {
+          console.warn(`[Pipeline] Memory: Cognee health probe failed (${this.baseUrl}); memory disabled for this run.`, err);
+          return false;
+        }
+      })();
+    }
+    return this.healthPromise;
+  }
 
   /**
    * Push the run's LLM target (narrative-model mirror or custom pin) to
@@ -609,8 +643,18 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     return this.config.timeoutMs || DEFAULT_TIMEOUT_MS;
   }
 
+  /**
+   * Writes get 2x the recall budget: /add ingestion queues behind Cognee's
+   * single-writer DB while cognify's LLM extraction runs, so adds routinely
+   * outlive the 8s recall budget (2026-07-04 abort storm).
+   */
+  private writeTimeoutMs(): number {
+    return this.timeoutMs() * 2;
+  }
+
   async remember(record: PipelineMemoryRecord): Promise<void> {
     if (!this.config.writeEnabled || !this.baseUrl) return;
+    if (!(await this.ensureHealthy())) return;
     await this.ensureLlmSynced();
     const dataset = record.dataset || this.config.projectDataset || DEFAULT_PROJECT_DATASET;
     const body = new FormData();
@@ -629,7 +673,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
       method: 'POST',
       headers: this.headers(false),
       body,
-    }, this.timeoutMs());
+    }, this.writeTimeoutMs());
     if (!addResponse.ok) {
       throw new Error(`Cognee add failed: ${addResponse.status} ${await addResponse.text()}`);
     }
@@ -641,6 +685,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async recall(request: PipelineMemoryRecallRequest): Promise<PipelineMemoryPacket | null> {
     if (!this.config.recallEnabled || !this.baseUrl) return null;
+    if (!(await this.ensureHealthy())) return null;
     await this.ensureLlmSynced();
     const defaults = memoryDefaults(this.config);
     const datasets = request.datasets?.length ? request.datasets : [defaults.projectDataset, defaults.validatorDataset];
@@ -669,7 +714,11 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
           datasets,
           topK,
           onlyContext: true,
-          ...(nodeNames.length ? { nodeNames, nodeName: nodeNames[0] } : {}),
+          // The deployed Cognee search API declares `nodeName` as a LIST field;
+          // sending a scalar 400'd every recall (15 failures/run, bite-me
+          // 2026-07-04), silently disabling memory-graph recall. Send the list
+          // under both keys for version compatibility.
+          ...(nodeNames.length ? { nodeNames, nodeName: nodeNames } : {}),
         }),
       }, this.timeoutMs());
       if (!response.ok) {
@@ -696,12 +745,18 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async cognify(datasets: string[], options: { background?: boolean } = {}): Promise<void> {
     if (!this.config.cognifyEnabled || !this.baseUrl || datasets.length === 0) return;
+    // Cognify at most once per dataset per run: each call kicks off LLM graph
+    // extraction inside the Cognee container, and the per-artifact cadence
+    // starved concurrent /add ingestion into 8s aborts (2026-07-04).
+    const fresh = datasets.filter((dataset) => !this.cognifiedDatasets.has(dataset));
+    if (fresh.length === 0) return;
+    if (!(await this.ensureHealthy())) return;
     await this.ensureLlmSynced();
     const cognifyResponse = await fetchWithTimeout(this.endpoint('cognify'), {
       method: 'POST',
       headers: this.headers(true),
       body: JSON.stringify({
-        datasets,
+        datasets: fresh,
         runInBackground: options.background !== false,
         run_in_background: options.background !== false,
       }),
@@ -709,6 +764,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     if (!cognifyResponse.ok) {
       throw new Error(`Cognee cognify failed: ${cognifyResponse.status} ${await cognifyResponse.text()}`);
     }
+    for (const dataset of fresh) this.cognifiedDatasets.add(dataset);
   }
 
   async readCharacterMemory(characterName: string): Promise<string | null> {
@@ -744,6 +800,10 @@ function resolveProvider(config: MemoryConfig | undefined): PipelineMemoryProvid
 export class PipelineMemory {
   private provider?: MemoryProvider;
 
+  private consecutiveFailures = 0;
+
+  private breakerOpen = false;
+
   constructor(private deps: PipelineMemoryDeps) {}
 
   private get config(): MemoryConfig | undefined {
@@ -768,11 +828,21 @@ export class PipelineMemory {
   }
 
   private async bestEffort<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+    if (this.breakerOpen) return fallback;
     try {
-      return await fn();
+      const result = await fn();
+      this.consecutiveFailures = 0;
+      return result;
     } catch (err) {
       if (this.defaults.failOpen) {
-        console.warn(`[Pipeline] Memory: ${label} failed:`, err);
+        this.consecutiveFailures += 1;
+        if (this.breakerOpen) return fallback; // concurrent failure raced past the open breaker; already logged
+        if (this.consecutiveFailures >= BREAKER_THRESHOLD) {
+          this.breakerOpen = true;
+          console.warn(`[Pipeline] Memory: disabled for the rest of this run after ${this.consecutiveFailures} consecutive failures (last: ${label}):`, err);
+        } else {
+          console.warn(`[Pipeline] Memory: ${label} failed:`, err);
+        }
         return fallback;
       }
       throw err;

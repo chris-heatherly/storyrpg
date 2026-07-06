@@ -164,7 +164,7 @@ import {
 import { applySpinePlantMap, deriveSpinePlantMap } from './spinePlantMap';
 import { extractEpisodeKnowledge, collectReferencedFlags, episodeProseCorpus } from './knowledgeExtraction';
 import { applySceneConstructionProfilesToScenes } from '../utils/sceneConstructionProfile';
-import { attachSceneEventOwnershipProfiles } from '../utils/sceneEventOwnership';
+import { attachSceneEventOwnershipProfiles, overlayBlueprintSceneEventOwnership } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 
@@ -326,6 +326,7 @@ import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } 
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
+import { setRealizationPovContext } from '../remediation/realizationEvaluator';
 import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import {
   ComprehensiveValidationReport,
@@ -2513,12 +2514,29 @@ export class FullStoryPipeline {
   /**
    * Generate a complete story from a creative brief
    */
+  /**
+   * Arm the run-scoped protagonist POV context for realization scoring
+   * (realizationEvaluator). Second-person prose never names the protagonist,
+   * so realization token-overlap must know the name to exclude it — otherwise
+   * "ProtagonistName does X" moments are systematically scored as missing and
+   * the scene guard pastes planning text into player prose (bite-me
+   * 2026-07-04 "Kylie Marinescu arrives in Bucharest." leak).
+   */
+  private armRealizationPovContext(brief: FullCreativeBrief): void {
+    const aliases = [
+      brief.protagonist?.name,
+      ...((brief.protagonist as { aliases?: string[] })?.aliases ?? []),
+    ].filter((alias): alias is string => Boolean(alias && alias.trim()));
+    setRealizationPovContext(aliases.length > 0 ? { protagonistAliases: aliases } : null);
+  }
+
   async generate(
     brief: FullCreativeBrief,
     resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(brief);
+    this.armRealizationPovContext(brief);
     
     this.events = [];
     this.checkpoints = [];
@@ -4749,6 +4767,7 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(baseBrief);
+    this.armRealizationPovContext(baseBrief);
     BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
@@ -4767,6 +4786,23 @@ export class FullStoryPipeline {
 
     if (!analysis || !analysis.episodeBreakdown || analysis.episodeBreakdown.length === 0) {
       throw new Error('Invalid source analysis: no episode breakdown provided');
+    }
+
+    // A treatment-sourced multi-episode run without a season plan silently
+    // degrades everywhere downstream: plan-time fidelity checks skip (no
+    // baseline for the regression net), no season-plan artifact persists,
+    // StoryArchitect invents a scene graph instead of elaborating planned
+    // scenes, and the §4 final contract then fail-closes on season-promise
+    // plan-use AFTER the full generation spend (bite-me 2026-07-04: 4
+    // "not consumed into concrete plan artifacts" blockers at the ep1 seal).
+    // Callers must attach the SeasonPlanner output to `brief.seasonPlan`
+    // (the generator UI does via buildCreativeBrief). Warn loudly here.
+    if (!baseBrief.seasonPlan && (analysis.sourceFormat === 'story_treatment' || analysis.treatmentMetadata?.detected)) {
+      this.emit({
+        type: 'warning',
+        phase: 'multi_episode_init',
+        message: 'Treatment-sourced run has no brief.seasonPlan — plan-time fidelity checks will skip and the final story contract will likely fail-close on season-promise plan-use. Attach the SeasonPlanner output to the brief.',
+      });
     }
 
     // WS1 (contracts upstream): the two plan-checkable §4 fidelity gates
@@ -6145,8 +6181,16 @@ export class FullStoryPipeline {
           sceneLocksPassed: sceneLockReport.passed,
           sceneLockArtifact,
         };
+        if (sceneLockReport.deferredFindingCount > 0) {
+          this.emit({
+            type: 'warning',
+            phase: 'assembly',
+            message: `Episode ${episodeNumber} scene locks: deferred ${sceneLockReport.deferredFindingCount} craft finding(s) from scene-time validation to the final contract repair loop.`,
+          });
+        }
         if (!sceneLockReport.passed) {
           const detail = sceneLockReport.validation.issues
+            .filter((issue) => issue.severity === 'error')
             .slice(0, 5)
             .map((issue) => issue.message)
             .join('; ');
@@ -6157,6 +6201,7 @@ export class FullStoryPipeline {
           episodeNumber,
           episode,
           episodeBrief: episodeBrief!,
+          episodeBlueprint: blueprint,
           characterBible,
           qaReport,
           bestPracticesReport,
@@ -6296,12 +6341,13 @@ export class FullStoryPipeline {
     episodeNumber: number;
     episode: Episode;
     episodeBrief: FullCreativeBrief;
+    episodeBlueprint?: EpisodeBlueprint;
     characterBible: CharacterBible;
     qaReport?: QAReport;
     bestPracticesReport?: ComprehensiveValidationReport;
     outputDirectory: string;
   }): Promise<ArtifactValidationSummary> {
-    const { episodeNumber: i, episode, episodeBrief, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
+    const { episodeNumber: i, episode, episodeBrief, episodeBlueprint, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
     try {
       const protagonistId = episodeBrief.protagonist?.id;
       const npcs = (characterBible.characters || [])
@@ -6321,6 +6367,21 @@ export class FullStoryPipeline {
       // Keep episode-level diagnostics aligned with the final package contract:
       // outcome flags/variants are part of the episode seal, not post-season surgery.
       await this.authorEncounterOutcomeVariants(oneEpisodeStory);
+
+      if (episodeBlueprint && episodeBrief.seasonPlan?.scenePlan?.scenes?.length) {
+        const synced = overlayBlueprintSceneEventOwnership(
+          episodeBrief.seasonPlan.scenePlan.scenes,
+          episodeBlueprint.scenes,
+          i,
+        );
+        if (synced > 0) {
+          this.emit({
+            type: 'debug',
+            phase: `incremental_contract_ep_${i}`,
+            message: `Synced sceneEventOwnership from episode blueprint onto ${synced} season-plan scene(s) before incremental contract.`,
+          });
+        }
+      }
 
       const fidelity = runFidelityValidators({
         story: oneEpisodeStory,

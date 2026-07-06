@@ -23,6 +23,14 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
    when exposed (`PROXY_REQUIRE_AUTH=1`); keep it that way before any tunnel/deploy.
 4. **Fiction-first.** Player-facing prose never exposes stats, dice, DCs,
    percentages, or system math. See `docs/STORY_QUALITY_CONTRACT.md`.
+   **LLMs do the writing; deterministic systems enforce.** Deterministic code
+   never authors or injects reader-facing prose — it enforces facts/criteria
+   and, on failure, routes an LLM rewrite (retry-with-feedback or a repair
+   handler). A run-survival placeholder is allowed only if its exact string is
+   registered in `src/ai-agents/constants/syntheticFallbackProse.ts` (or
+   `choiceTextFallbacks.ts` for choice outcome tiers) so the final contract
+   blocks it and drives an LLM re-author. Enforced by
+   `deterministicProseNeverShips.test.ts`.
 5. **Don't edit generated artifacts.** `generated-stories/`, job-state JSON,
    `.model-cache.json`, and `*.backup-*` are runtime output (gitignored) — never
    hand-edit or commit them.

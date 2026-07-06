@@ -95,6 +95,62 @@ describe('sceneLocks', () => {
     expect(report.validation.issues).toEqual([]);
   });
 
+  // Two-tier lock policy pin — bite-me 2026-07-05T23-54-17: s1-1 was accepted
+  // as degraded at scene time with a PovClarity opening-anchor error; the lock
+  // gate then re-blocked on that STALE evidence and hard-aborted the whole run
+  // with no repair route. Craft findings must defer to the final contract
+  // (which re-validates the CURRENT text and owns repair); only SceneLockGate
+  // structural facts may block the lock.
+  it('defers craft findings (PovClarity opening-anchor, this run) instead of blocking the lock', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: makeEpisode(),
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      validationResults: [
+        sceneValidation('s2-1', {
+          overallPassed: false,
+          regenerationRequested: 'scene',
+          povClarity: {
+            passed: false,
+            score: 30,
+            shouldRegenerate: true,
+            issues: [{
+              beatId: 's2-1_b1',
+              issue: 'Opening beat does not establish the player character as the POV/focal character.',
+              severity: 'error',
+              suggestion: 'Rewrite the first beat so it anchors the player with you/your or {{player.name}}.',
+            }],
+          },
+        }),
+        sceneValidation('s2-2'),
+      ],
+    });
+
+    expect(report.passed).toBe(true);
+    expect(report.deferredFindingCount).toBe(1);
+    const deferred = report.validation.issues.find((issue) => issue.validator === 'PovClarityValidator');
+    expect(deferred).toMatchObject({ severity: 'warning' });
+    expect(deferred?.message).toContain('[deferred to final contract]');
+    // The per-scene lock evidence keeps the faithful audit trail.
+    expect(report.locks.find((lock) => lock.sceneId === 's2-1')?.passed).toBe(false);
+  });
+
+  it('still blocks the lock on an unexplained scene validation failure (structural, fail closed)', () => {
+    const report = buildEpisodeSceneLockReport({
+      episodeNumber: 2,
+      episode: makeEpisode(),
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      validationResults: [
+        sceneValidation('s2-1', { overallPassed: false, regenerationRequested: 'scene' }),
+        sceneValidation('s2-2'),
+      ],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.deferredFindingCount).toBe(0);
+    expect(report.validation.issues.map((issue) => issue.code)).toContain('scene_validation_failed');
+  });
+
   it('fails closed when an authored scene has no lock', () => {
     const report = buildEpisodeSceneLockReport({
       episodeNumber: 2,

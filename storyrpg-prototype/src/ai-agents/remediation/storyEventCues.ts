@@ -1,4 +1,4 @@
-import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
+import { getStoryLexicon, lexiconAlternation, lexiconMatcher } from '../config/storyLexicon';
 
 export type StoryEventCue =
   | 'arrival'
@@ -89,8 +89,12 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('objectHandoff');
   }
 
-  const socialGroupFormation = /\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\b.{0,100}\b(?:club|circle|crew|group|friends?|allies|companions|table|booth|bar|party)\b/.test(text)
-    || /\b(?:club|circle|crew|group|friends?|allies|companions|table|booth|bar|party)\b.{0,100}\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\b/.test(text);
+  // Generic group nouns + named story groups from the lexicon (e.g. "Dusk Club").
+  const groupNouns = lexiconAlternation(['club', 'circle', 'crew', 'group', 'friends?', 'allies', 'companions', 'table', 'booth', 'bar', 'party', ...getStoryLexicon().socialGroupNames]);
+  const namedGroupRe = lexiconMatcher(getStoryLexicon().socialGroupNames, 'i');
+  const socialGroupFormation = new RegExp(`\\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\\b.{0,100}\\b(?:${groupNouns})\\b`).test(text)
+    || new RegExp(`\\b(?:${groupNouns})\\b.{0,100}\\b(?:forms?|founds?|gathers?|joins?|meets?|convenes?|assembles?|pulls together)\\b`).test(text)
+    || (namedGroupRe.test(text) && /\b(?:form(?:s|ed)?|found(?:s|ed)?|join(?:s|ed)?|toast|official|we'?re a thing|become friends)\b/i.test(text));
   const socialMeetPhrases = lexiconAlternation(['rooftop', 'roof', 'terrace', 'bar', 'party', 'table', 'booth', 'dance floor', 'first meet', 'first meeting', 'social triangle', ...getStoryLexicon().socialMeetPhrases]);
   if (socialGroupFormation || new RegExp(`\\b(?:${socialMeetPhrases})\\b`).test(text)) {
     cues.add('socialMeet');
@@ -176,13 +180,50 @@ export function detectPrimaryStoryEventCues(value: string | undefined): Set<Stor
   }
 
   if (cues.has('threatEncounter')) {
-    const violentGrip = /\b(?:attacker|aggressor|rough hands?|hands?|fingers?)\b.{0,80}\bgrip\b/.test(text)
-      || /\bgrip\b.{0,80}\b(?:arm|wrist|throat|coat|collar|bicep|shoulder|skin|bone|pain|bruise|breath|attacker|aggressor)\b/.test(text);
-    const liveThreat = /\b(?:attacker|attacks?|attacked|aggressor|knife|scream|fight back|lunges?|chases?|ambush|rough hands?|grab(?:s|bed)?|don't scream)\b/.test(text)
+    // A recounting/writing context that names "the attack" as a determiner
+    // noun phrase is a REFERENCE, not a staging (bite-me 2026-07-04 scene-4:
+    // "frame your blog post about … the attack" / "describe the terrifying
+    // attack" owned threatEncounter, duplicating the real ambush scene and
+    // hard-aborting SceneConstructionGate). Mirror the walkHome
+    // determiner-noun-phrase strip before the live-threat verb test; fresh
+    // staging verbs ("attacks", "lunges", "grabs") survive the strip.
+    const recapContext = /\b(?:story|stories|post|posts|blog|prose|draft|codename|title|viral|proof|retelling|frames?|framed|recounts?|describes?|writes?|wrote|writing|publish(?:es|ed)?)\b/.test(text);
+    const threatText = recapContext
+      ? text.replace(/\b(?:the|a|an|that|this|her|his|their|our|my|your|its)\s+(?:\w+\s+){0,2}?attack\b/g, ' ')
+      : text;
+    const violentGrip = /\b(?:attacker|aggressor|rough hands?|hands?|fingers?)\b.{0,80}\bgrip\b/.test(threatText)
+      || /\bgrip\b.{0,80}\b(?:arm|wrist|throat|coat|collar|bicep|shoulder|skin|bone|pain|bruise|breath|attacker|aggressor)\b/.test(threatText);
+    const liveThreat = /\b(?:attacker|attacks?|attacked|aggressor|knife|scream|fight back|lunges?|chases?|ambush|rough hands?|grab(?:s|bed)?|don't scream)\b/.test(threatText)
       || violentGrip;
-    const liveRescue = /\b(?:rescues?|rescued|rescue|saves?|saved)\b/.test(text)
-      && /\b(?:attacker|attacks?|attacked|aggressor|knife|scream|fight|park|garden|alley|street|fog|shadow|hands?|grab(?:s|bed)?)\b/.test(text);
+    const liveRescue = /\b(?:rescues?|rescued|rescue|saves?|saved)\b/.test(threatText)
+      && /\b(?:attacker|attacks?|attacked|aggressor|knife|scream|fight|park|garden|alley|street|fog|shadow|hands?|grab(?:s|bed)?)\b/.test(threatText);
     if (!liveThreat && !liveRescue) cues.delete('threatEncounter');
+  }
+
+  return cues;
+}
+
+/**
+ * Realization-side cue detection: everything detectPrimaryStoryEventCues
+ * finds, plus generous synonyms for cues whose prose stagings rarely use the
+ * planning vocabulary. Ownership ASSIGNMENT must stay conservative (a loose
+ * detector would spray ownership across scenes), but ownership ENFORCEMENT
+ * must be generous — prose that stages a walk home as "the walk to your
+ * apartment … you reach your door … he waits at the threshold" depicts the
+ * event without ever saying "walks her home" (bite-me 2026-07-05:
+ * treatment-enc-1-1 staged the escorted walk home on-page and still blocked
+ * on TreatmentEventLedgerValidator's owned-cue check).
+ */
+export function detectRealizedStoryEventCues(value: string | undefined): Set<StoryEventCue> {
+  const cues = detectPrimaryStoryEventCues(value);
+  const text = normalizeEventCueText(value);
+  if (!text) return cues;
+
+  if (!cues.has('walkHome')) {
+    const walkText = text.replace(/\b(?:the|a|an|that|this|her|his|their|our|my|your|its) walk home\b/g, ' ');
+    const escortToDwelling = /\b(?:walks?|walking|walked|escorts?|escorting|guides?|guiding|leads?|leading|takes?)\b.{0,80}\b(?:home|apartment|threshold|door(?:step|way)?|building)\b/.test(walkText);
+    const dwellingArrival = /\b(?:reach(?:es|ed)?|arriv(?:es?|ed|ing) at)\s+(?:your|her|his|their|my)\s+(?:door(?:step|way)?|threshold|apartment|building)\b/.test(walkText);
+    if (escortToDwelling || dwellingArrival) cues.add('walkHome');
   }
 
   return cues;

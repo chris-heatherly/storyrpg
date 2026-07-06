@@ -1248,7 +1248,10 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
           // Prefer only authored, well-formed acknowledgment prose. Do not
           // synthesize generic reaction copy here; story reaction belongs in the
           // generated beat text or in authored feedback fields.
-          summary: echoSummary,
+          // When fiction-first consequence badges are present, they carry the
+          // reader-facing feedback; skip echoSummary so scene/setup copy does
+          // not stack above the badge lines.
+          summary: visible.length > 0 ? undefined : echoSummary,
           progress: echoProgress,
           consequences: visible.slice(0, 3),
           targetSceneId: echoTarget?.sceneId,
@@ -1996,7 +1999,13 @@ export const StoryReader: React.FC<StoryReaderProps> = ({
               <Text style={styles.echoProgressText}>{activeChoiceEcho.progress}</Text>
             )}
             {!!activeChoiceEcho.consequences?.length && (
-              <ConsequenceBadgeList consequences={activeChoiceEcho.consequences} layout="inline" maxVisible={3} />
+              <ConsequenceBadgeList
+                consequences={activeChoiceEcho.consequences}
+                layout="inline"
+                variant="plain"
+                animated={false}
+                maxVisible={3}
+              />
             )}
           </View>
         )}

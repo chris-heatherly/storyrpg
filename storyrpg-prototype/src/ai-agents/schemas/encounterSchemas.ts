@@ -48,6 +48,24 @@ const feedbackCue = {
   },
 } as const;
 
+// `immediateEffect` + `visibleComplication` are REQUIRED whenever a cost is
+// authored: these are the two reader-facing strings the converter otherwise
+// backfills with registered template prose ("Relief arrives with a
+// complication still attached."), which the no-boilerplate mandate then
+// blocks. Requiring them makes the LLM author the cost at the source.
+const encounterCost = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['immediateEffect', 'visibleComplication'],
+  properties: {
+    domain: shortString(80),
+    severity: shortString(80),
+    whoPays: shortString(120),
+    immediateEffect: shortString(260),
+    visibleComplication: shortString(260),
+  },
+} as const;
+
 const outcome = {
   type: 'object',
   additionalProperties: false,
@@ -58,6 +76,11 @@ const outcome = {
     threatTicks: { type: 'number' },
     isTerminal: { type: 'boolean' },
     encounterOutcome: { type: 'string' },
+    // A terminal partialVictory outcome MUST author its cost (prompt-enforced;
+    // the schema makes the field REACHABLE — with additionalProperties:false
+    // and no cost property, the LLM previously could not emit one at all, so
+    // the deterministic default cost was injected on every partial victory).
+    cost: encounterCost,
     relationshipConsequences: {
       type: 'array',
       maxItems: 2,
@@ -113,6 +136,11 @@ const phase2Outcome = {
     threatTicks: { type: 'number' },
     isTerminal: { type: 'boolean' },
     encounterOutcome: { type: 'string' },
+    // A terminal partialVictory outcome MUST author its cost (prompt-enforced;
+    // the schema makes the field REACHABLE — with additionalProperties:false
+    // and no cost property, the LLM previously could not emit one at all, so
+    // the deterministic default cost was injected on every partial victory).
+    cost: encounterCost,
   },
 } as const;
 
@@ -148,6 +176,9 @@ const compactOutcome = {
     threatTicks: { type: 'number' },
     isTerminal: { type: 'boolean' },
     encounterOutcome: { type: 'string' },
+    // See phase2Outcome.cost — reachable so partial victories carry an
+    // authored cost instead of the deterministic template.
+    cost: encounterCost,
   },
 } as const;
 
@@ -236,18 +267,6 @@ const leanStoryletBeat = {
   required: ['text'],
   properties: {
     text: shortString(420),
-  },
-} as const;
-
-const encounterCost = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    domain: shortString(80),
-    severity: shortString(80),
-    whoPays: shortString(120),
-    immediateEffect: shortString(260),
-    visibleComplication: shortString(260),
   },
 } as const;
 

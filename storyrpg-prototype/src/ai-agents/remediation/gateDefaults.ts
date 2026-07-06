@@ -150,6 +150,20 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // ON: restore the old hard abort at scene time.
   GATE_SCENE_REALIZATION_ABORT: false,
 
+  // No-boilerplate abort policy split (2026-07-06 encounter-cost postmortem).
+  // Generation-time template hits now carry a SOURCE: 'template' = the
+  // EncounterArchitect's own TEMPLATE_SIGNATURES survived regen (the build
+  // genuinely collapsed to deterministic filler — regeneration is the only
+  // fix, so failing the episode at generation time is correct and cheap);
+  // 'fallback' = a syntheticFallbackProse registry string DETERMINISTIC code
+  // injected because the LLM omitted a field. The fallback class NEVER aborts
+  // at generation time: the targeted cost-field re-author repairs it at the
+  // source, and any residue defers to the final contract where
+  // unsafe_fallback_prose blocks with a wired repair route. This gate only
+  // controls the 'template' (build-collapse) abort. OFF: defer template
+  // collapse to the final contract too (encounter_template_collapse).
+  GATE_ENCOUNTER_TEMPLATE_ABORT: true,
+
   // Authoring-time outcome-tier re-author (2026-07-04, late-detection audit).
   // When ChoiceAuthor only partially authors a choice, normalizeChoiceSet fills
   // the missing outcomeTexts tiers with deterministic fallback stubs; those

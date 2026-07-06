@@ -126,6 +126,13 @@ const RAW_GATE_REGISTRY = [
   // realization retry still misses (two-tier policy: default is warn + defer
   // to the season-final realization gate's bounded repair).
   { id: 'GATE_SCENE_REALIZATION_ABORT', placement: 'scene', kind: 'blocking', defaultOn: false },
+  // No-boilerplate abort split (2026-07-06): controls ONLY the 'template'
+  // (EncounterArchitect build-collapse) abort at encounter generation time.
+  // Registry-fallback (deterministic-injection) hits never abort — they get
+  // the targeted cost-field re-author and defer to the final contract's
+  // unsafe_fallback_prose net (repair: encounterCostRepairHandler +
+  // scene-prose rewrite).
+  { id: 'GATE_ENCOUNTER_TEMPLATE_ABORT', placement: 'scene', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // Scene-time narration-tense check: a scene written wholesale in past tense
   // gets one SceneWriter retry with tense feedback at write time, where the
   // fix costs one scene instead of final-contract repair rounds.

@@ -113,6 +113,12 @@ import {
 import { GeneratedStoryletDraft as GeneratedStorylet, StoryletBeatDraft as StoryletBeat } from '../types/encounterDraft';
 import { StateChange } from '../types/llm-output';
 import {
+  applyAuthoredCostFieldTexts,
+  buildCostReauthorPrompt,
+  collectFallbackCostFieldEntries,
+  type CostReauthorContext,
+} from '../utils/encounterFallbackCostFields';
+import {
   analyzeRelationshipDynamics,
   RelationshipDynamicsBrief,
   RelationshipSnapshot,
@@ -1603,6 +1609,10 @@ HARD RULES (violations fail validation):
   "defeat" outcome may terminate at the root.
 - EVERY terminal outcome carries at least one consequence (setFlag / score /
   relationship) — a costless, stateless exit is a defect.
+- EVERY terminal "partialVictory" outcome MUST include a \`cost\` object with
+  authored \`immediateEffect\` (the concrete price paid right now) and
+  \`visibleComplication\` (the visible complication that follows the protagonist
+  out). Omitting it forces a template placeholder, which fails validation.
 - THE GOAL CLOCK MUST BE FILLABLE: the sum of goalTicks along the best path must
   be ≥ the goal clock's segments. If your tree can tick at most 5, the clock has
   at most 5 segments — an objective the player can never visibly complete is a
@@ -2178,7 +2188,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
           "primarySkill": "${skill1}",
           "outcomes": {
             "success": { "tier": "success", "narrativeText": "string", "goalTicks": 3, "threatTicks": 0, "isTerminal": true, "encounterOutcome": "victory" },
-            "complicated": { "tier": "complicated", "narrativeText": "string", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory" },
+            "complicated": { "tier": "complicated", "narrativeText": "string", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory", "cost": { "immediateEffect": "1 sentence: the concrete price paid right now", "visibleComplication": "1 sentence: the visible complication that follows the protagonist out" } },
             "failure": { "tier": "failure", "narrativeText": "string", "goalTicks": 0, "threatTicks": 3, "isTerminal": true, "encounterOutcome": "defeat" }
           }
         },
@@ -3582,6 +3592,39 @@ RULES:
     };
   }
 
+  /**
+   * Targeted field re-author (mirror of ChoiceAuthor.reauthorOutcomeTexts):
+   * when the only boilerplate in an encounter is deterministic cost/stakes
+   * fallback (buildDefaultEncounterCost / deriveEncounterCost placeholders,
+   * injected because the LLM omitted the field), regenerating the WHOLE
+   * encounter cannot converge — the injection recurs on every omission. This
+   * makes one small focused call that authors exactly the offending strings
+   * and writes them back in place. Works on both the generation-time
+   * structure and the converted runtime encounter (key-based walk). Returns
+   * the number of fields repaired; never throws into the calling flow.
+   */
+  async reauthorFallbackCostFields(
+    encounterTree: unknown,
+    ctx: CostReauthorContext = {},
+  ): Promise<number> {
+    const entries = collectFallbackCostFieldEntries(encounterTree);
+    if (entries.length === 0) return 0;
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: buildCostReauthorPrompt(entries, ctx) }], 2);
+      const parsed = this.parseJSON<Record<string, unknown>>(raw);
+      const replaced = applyAuthoredCostFieldTexts(entries, parsed ?? {});
+      if (replaced < entries.length) {
+        console.warn(
+          `[EncounterArchitect] Cost-field re-author replaced ${replaced}/${entries.length} fallback field(s) — the contract gate remains the net for the rest.`,
+        );
+      }
+      return replaced;
+    } catch (err) {
+      console.warn(`[EncounterArchitect] reauthorFallbackCostFields failed (placeholders kept): ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
   private createDefaultStorylet(
     outcome: 'victory' | 'partialVictory' | 'defeat' | 'escape',
     input: EncounterArchitectInput
@@ -4503,7 +4546,7 @@ Beat 2 = "resolution" phase (the climax, all outcomes are terminal)
           "primarySkill": "${skill1}",
           "outcomes": {
             "success": { "tier": "success", "narrativeText": "string", "goalTicks": 3, "threatTicks": 0, "isTerminal": true, "encounterOutcome": "victory" },
-            "complicated": { "tier": "complicated", "narrativeText": "string", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory" },
+            "complicated": { "tier": "complicated", "narrativeText": "string", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory", "cost": { "immediateEffect": "1 sentence: the concrete price paid right now", "visibleComplication": "1 sentence: the visible complication that follows the protagonist out" } },
             "failure": { "tier": "failure", "narrativeText": "string", "goalTicks": 0, "threatTicks": 3, "isTerminal": true, "encounterOutcome": "defeat" }
           }
         },
@@ -5240,6 +5283,7 @@ For EACH outcome tier (afterSuccess, afterComplicated, afterFailure), generate:
 3. Each choice has success/complicated/failure outcomes, ALL terminal (isTerminal: true)
 4. Terminal outcomes must include encounterOutcome: "victory"|"partialVictory"|"defeat"|"escape"
 5. Include relationshipConsequences on outcomes where choices affect NPC relationships
+6. Every terminal "partialVictory" outcome MUST include a "cost" object with authored "immediateEffect" and "visibleComplication" (1 concrete sentence each — omitting it forces a template placeholder that fails validation)
 
 ${ENCOUNTER_PROSE_DISCIPLINE}
 
@@ -5272,7 +5316,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
         },
         "outcomes": {
           "success": { "narrativeText": "...", "goalTicks": 3, "threatTicks": 0, "isTerminal": true, "encounterOutcome": "victory" },
-          "complicated": { "narrativeText": "...", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory" },
+          "complicated": { "narrativeText": "...", "goalTicks": 2, "threatTicks": 1, "isTerminal": true, "encounterOutcome": "partialVictory", "cost": { "immediateEffect": "...", "visibleComplication": "..." } },
           "failure": { "narrativeText": "...", "goalTicks": 0, "threatTicks": 2, "isTerminal": true, "encounterOutcome": "defeat" }
         }
       },

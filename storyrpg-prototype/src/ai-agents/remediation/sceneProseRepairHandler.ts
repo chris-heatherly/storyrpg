@@ -95,6 +95,14 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
 function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
   if (issue.validator && SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) return true;
   if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') return true;
+  // Encounter template collapse / malformed prose live in encounter phase/
+  // storylet beats, which this handler already flattens and rewrites
+  // (gatherEncounterProseBeats). Cost/stakes fields are covered by the
+  // dedicated encounterCostRepairHandler in the same repair loop.
+  if (
+    issue.validator === 'EncounterQualityValidator'
+    && (issue.type === 'encounter_template_collapse' || issue.type === 'encounter_malformed_prose')
+  ) return true;
   return issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing';
 }
 

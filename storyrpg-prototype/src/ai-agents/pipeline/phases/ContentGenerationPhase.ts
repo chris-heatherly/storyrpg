@@ -82,7 +82,11 @@ import {
   aggregateValidationResults,
 } from '../../validators';
 import { SceneOwnershipPreflightValidator } from '../../validators/SceneOwnershipPreflightValidator';
-import { scanEncounterFallbackProse, scanEncounterTemplateProse } from '../../validators/EncounterQualityValidator';
+import {
+  scanEncounterFallbackProseDetailed,
+  scanEncounterTemplateProseDetailed,
+  type EncounterProseScanHit,
+} from '../../validators/EncounterQualityValidator';
 import { convertEncounterStructureToEncounter } from '../../converters/encounterConverter';
 
 /**
@@ -95,21 +99,44 @@ import { convertEncounterStructureToEncounter } from '../../converters/encounter
  * blocking `unsafe_fallback_prose` findings at the final contract, once every
  * remaining episode had already been paid for. Catching them here makes it a
  * cheap per-scene regeneration-with-feedback instead.
+ *
+ * Hits carry the ACTUAL offending text plus a source: 'template' = the
+ * architect's own build-collapse filler (regeneration is the fix);
+ * 'fallback' = a registry string DETERMINISTIC code injected because the LLM
+ * omitted a field (the targeted cost-field re-author is the fix — whole-
+ * encounter regen cannot converge on this class; see the 2026-07-06
+ * encounter-cost postmortem).
  */
 function scanEncounterBoilerplate(
   structure: EncounterStructure | undefined,
   sceneBlueprint: SceneBlueprint,
-): string[] {
+): EncounterProseScanHit[] {
   if (!structure) return [];
-  const hits = new Set<string>(scanEncounterTemplateProse(structure));
+  const hits = new Map<string, EncounterProseScanHit>();
+  for (const hit of scanEncounterTemplateProseDetailed(structure)) hits.set(hit.label, hit);
   try {
-    for (const hit of scanEncounterFallbackProse(convertEncounterStructureToEncounter(structure, sceneBlueprint))) {
-      hits.add(hit);
+    for (const hit of scanEncounterFallbackProseDetailed(convertEncounterStructureToEncounter(structure, sceneBlueprint))) {
+      if (!hits.has(hit.label)) hits.set(hit.label, hit);
     }
   } catch {
     // Trial conversion is best-effort; a genuine conversion crash surfaces at assembly.
   }
-  return [...hits];
+  return [...hits.values()];
+}
+
+/**
+ * Feedback lines for regen prompts: the actual offending strings (never bare
+ * registry labels), with deterministic-injection hits explained as MISSING
+ * FIELDS the LLM must author rather than prose it must remove — the LLM never
+ * wrote those strings, so "remove this fragment" was unactionable.
+ */
+function describeBoilerplateHits(hits: EncounterProseScanHit[], max = 6): string {
+  return hits.slice(0, max).map((hit) => {
+    if (hit.source === 'fallback') {
+      return `- MISSING FIELD (the pipeline injected the placeholder "${hit.snippet}" because your output omitted the field — author it: ${hit.label})`;
+    }
+    return `- template filler to replace with bespoke prose: "${hit.snippet}"`;
+  }).join('\n');
 }
 import { CallbackLedger } from '../callbackLedger';
 import {
@@ -194,7 +221,7 @@ export interface ContentGenerationPhaseDeps {
   // --- Agents ---
   sceneWriter: Pick<SceneWriter, 'execute'>;
   choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'setEpisodeSkillTargets'>;
-  encounterArchitect: Pick<EncounterArchitect, 'execute'>;
+  encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields'>;
   getThreadPlanner: () => ThreadPlannerLike;
   getTwistArchitect: () => TwistArchitectLike;
   getCharacterArcTracker: () => CharacterArcTrackerLike;
@@ -1066,7 +1093,7 @@ export class ContentGenerationPhase {
           context.emit({
             type: 'warning',
             phase: 'encounters',
-            message: `Discarding resumed encounter checkpoint for ${sceneBlueprint.id}: carries ${resumedEncounterBoilerplate.length} template/fallback prose signature(s) (${resumedEncounterBoilerplate.slice(0, 3).join(', ')}).`,
+            message: `Discarding resumed encounter checkpoint for ${sceneBlueprint.id}: carries ${resumedEncounterBoilerplate.length} template/fallback prose signature(s) (${resumedEncounterBoilerplate.slice(0, 3).map((hit) => hit.label).join(', ')}).`,
           });
         }
         const hasRequiredChoice = !sceneBlueprint.choicePoint || Boolean(resumedChoice);
@@ -3275,8 +3302,32 @@ export class ContentGenerationPhase {
                 context.emit({
                   type: 'warning',
                   phase: 'encounter',
-                  message: `Encounter ${sceneBlueprint.id} contains ${templateHits.length} template-prose signature(s) — regeneration required (template prose must never ship)`,
+                  message: `Encounter ${sceneBlueprint.id} contains ${templateHits.length} template-prose signature(s) — repair required (template prose must never ship)`,
                 });
+              }
+
+              // TARGETED FIELD RE-AUTHOR (2026-07-06 encounter-cost postmortem):
+              // deterministic-injection hits ('fallback' source — e.g. the cost
+              // complication placeholder written when the LLM omitted
+              // cost.visibleComplication) cannot be cleared by whole-encounter
+              // regeneration: the injection recurs whenever the field is
+              // omitted again, and the old feedback quoted registry labels the
+              // LLM never authored. Author exactly those fields with one small
+              // focused call BEFORE any regen decision, so the regen loop only
+              // ever chases prose the LLM actually wrote.
+              if (templateHits.some((hit) => hit.source === 'fallback')) {
+                const repaired = await this.deps.encounterArchitect.reauthorFallbackCostFields(
+                  encounters.get(sceneBlueprint.id),
+                  { sceneName: sceneBlueprint.name, sceneDescription: sceneBlueprint.description },
+                );
+                if (repaired > 0) {
+                  templateHits = scanEncounterBoilerplate(encounters.get(sceneBlueprint.id), sceneBlueprint);
+                  context.emit({
+                    type: 'debug',
+                    phase: 'encounter',
+                    message: `Encounter ${sceneBlueprint.id}: targeted cost-field re-author replaced ${repaired} deterministic placeholder(s) (${templateHits.length} signature(s) remain).`,
+                  });
+                }
               }
 
               // === KARPATHY LOOP: regenerate on a real failure, a collision, or template prose. ===
@@ -3307,7 +3358,7 @@ export class ContentGenerationPhase {
                     ? `\n\nThese outcomes shipped identical fallback prose and MUST be authored as distinct, outcome-specific scenes: ${phase4Collisions.join(', ')}.`
                     : '';
                   const templateGuidance = templateHits.length > 0
-                    ? `\n\nThe previous attempt contained GENERIC TEMPLATE PROSE that must be replaced with bespoke content grounded in this scene's stakes, setting, and characters. Offending fragments: ${templateHits.slice(0, 5).map(t => `"${t}"`).join(', ')}. Author every player-facing string (setup, choices, outcomes, storylets) specifically for this encounter.`
+                    ? `\n\nThe previous attempt contained GENERIC TEMPLATE PROSE that must be replaced with bespoke content grounded in this scene's stakes, setting, and characters:\n${describeBoilerplateHits(templateHits)}\nAuthor every player-facing string (setup, choices, outcomes, storylets) specifically for this encounter, and author every field marked MISSING FIELD above (e.g. cost.immediateEffect / cost.visibleComplication on terminal partialVictory outcomes) so no placeholder is injected.`
                     : '';
                   const turnGuidance = [
                     sceneBlueprint.turnContract?.centralTurn,
@@ -3422,29 +3473,67 @@ export class ContentGenerationPhase {
                 });
               }
 
-              // NO-BOILERPLATE MANDATE: an encounter with template prose may
-              // never ship. If regeneration exhausted (or never ran — budget
-              // dry / regen disabled) with signatures still present, fail the
-              // EPISODE here at generation time. Shipping it would guarantee a
-              // run-level abort at the final contract's template-collapse gate
-              // after every remaining episode had been paid for. Validation
-              // ISSUES without template prose keep the existing ship-with-
-              // advisory behavior — only boilerplate is a hard no-ship.
-              if (templateHits.length > 0) {
-                throw new PipelineError(
-                  `Encounter ${sceneBlueprint.id} still contains template prose after regeneration (${templateHits.slice(0, 3).map(t => `"${t.slice(0, 40)}…"`).join(', ')}). Template prose must never ship — failing at generation time.`,
-                  'encounters',
-                  {
-                    agent: 'EncounterArchitect',
-                    context: {
-                      sceneId: sceneBlueprint.id,
-                      sceneName: sceneBlueprint.name,
-                      encounterType: sceneBlueprint.encounterType,
-                      failureKind: 'content',
-                      templateSignatures: templateHits,
-                    },
-                  }
+              // NO-BOILERPLATE MANDATE, two-tier policy (2026-07-06):
+              // 'fallback'-source hits (deterministic-injection residue) get a
+              // final targeted re-author pass — a regenerated encounter may
+              // have introduced new omissions — and whatever remains DEFERS to
+              // the final contract, where RouteContinuityValidator blocks it
+              // as unsafe_fallback_prose with a wired repair route (the
+              // encounter-cost handler + same-scene rewrite). Aborting the run
+              // here for a string DETERMINISTIC code wrote was the 2026-07-06
+              // failure: an unwinnable regen loop blaming the LLM for prose it
+              // never authored.
+              if (templateHits.some((hit) => hit.source === 'fallback')) {
+                const repaired = await this.deps.encounterArchitect.reauthorFallbackCostFields(
+                  encounters.get(sceneBlueprint.id),
+                  { sceneName: sceneBlueprint.name, sceneDescription: sceneBlueprint.description },
                 );
+                if (repaired > 0) {
+                  templateHits = scanEncounterBoilerplate(encounters.get(sceneBlueprint.id), sceneBlueprint);
+                }
+                const fallbackResidue = templateHits.filter((hit) => hit.source === 'fallback');
+                if (fallbackResidue.length > 0) {
+                  context.emit({
+                    type: 'warning',
+                    phase: 'encounters',
+                    message: `Encounter ${sceneBlueprint.id}: ${fallbackResidue.length} deterministic fallback string(s) remain after the targeted re-author (${fallbackResidue.slice(0, 3).map((hit) => hit.label).join(', ')}) — deferred to the final contract's unsafe_fallback_prose repair loop.`,
+                  });
+                }
+              }
+
+              // 'template'-source hits (the EncounterArchitect's own
+              // TEMPLATE_SIGNATURES surviving regeneration) mean the build
+              // genuinely collapsed to deterministic filler — regeneration is
+              // the only fix, so failing the episode here is correct and far
+              // cheaper than the guaranteed run-level abort at the final
+              // contract after every remaining episode had been paid for.
+              // Gated (GATE_ENCOUNTER_TEMPLATE_ABORT, default ON); when off,
+              // the collapse defers to encounter_template_collapse at the
+              // final contract. Validation ISSUES without template prose keep
+              // the existing ship-with-advisory behavior.
+              const templateCollapseHits = templateHits.filter((hit) => hit.source === 'template');
+              if (templateCollapseHits.length > 0) {
+                if (isGateEnabled('GATE_ENCOUNTER_TEMPLATE_ABORT')) {
+                  throw new PipelineError(
+                    `Encounter ${sceneBlueprint.id} still contains template prose after regeneration (${templateCollapseHits.slice(0, 3).map(hit => `"${hit.snippet.slice(0, 60)}…"`).join(', ')}). Template prose must never ship — failing at generation time.`,
+                    'encounters',
+                    {
+                      agent: 'EncounterArchitect',
+                      context: {
+                        sceneId: sceneBlueprint.id,
+                        sceneName: sceneBlueprint.name,
+                        encounterType: sceneBlueprint.encounterType,
+                        failureKind: 'content',
+                        templateSignatures: templateCollapseHits.map((hit) => hit.label),
+                      },
+                    }
+                  );
+                }
+                context.emit({
+                  type: 'warning',
+                  phase: 'encounters',
+                  message: `Encounter ${sceneBlueprint.id}: ${templateCollapseHits.length} template signature(s) remain with GATE_ENCOUNTER_TEMPLATE_ABORT off — deferred to the final contract's template-collapse gate.`,
+                });
               }
             }
           }

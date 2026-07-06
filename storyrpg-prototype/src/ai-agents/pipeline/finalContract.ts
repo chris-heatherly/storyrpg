@@ -21,7 +21,7 @@ import { EpisodeBlueprint } from '../agents/StoryArchitect';
 import { CharacterBible } from '../agents/CharacterDesigner';
 import { SceneContent } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
-import { EncounterStructure, EncounterTelemetry } from '../agents/EncounterArchitect';
+import { EncounterArchitect, EncounterStructure, EncounterTelemetry } from '../agents/EncounterArchitect';
 import {
   QAReport,
 } from '../agents/QAAgents';
@@ -40,6 +40,7 @@ import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '..
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
+import { buildEncounterCostRepairHandler } from '../remediation/encounterCostRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
 import { buildObligationPayoffRepairHandler } from '../remediation/obligationPayoffRepairHandler';
@@ -1162,6 +1163,24 @@ export class FinalContract {
                 return new ChoiceAuthor(this.deps.config.agents.choiceAuthor);
               } catch (err) {
                 console.warn(`[Pipeline] Outcome-text contract repair: ChoiceAuthor unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          })),
+        );
+        // Same focused-field family as the outcome-text re-author: encounter
+        // cost/stakes fields carrying registered deterministic fallback prose
+        // (unsafe_fallback_prose findings the scene-prose handler cannot reach
+        // — it rewrites beat prose only). Without this, a cost-field hit never
+        // cleared and the repair loop exhausted into an abort (2026-07-06).
+        handlers.push(
+          guardLlmHandler(buildEncounterCostRepairHandler({
+            author: () => {
+              try {
+                return new EncounterArchitect({ ...this.deps.config.agents.storyArchitect, maxTokens: 16384 });
+              } catch (err) {
+                console.warn(`[Pipeline] Encounter cost-field contract repair: EncounterArchitect unavailable — ${err instanceof Error ? err.message : String(err)}`);
                 return null;
               }
             },

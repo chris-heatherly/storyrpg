@@ -714,6 +714,23 @@ export class GateRepairRouter {
       return directive('diagnostic_stop', issue, 'Route continuity issue has no safe direct prose repair route.');
     }
 
+    if (validator === 'EncounterQualityValidator') {
+      // Template collapse and malformed prose are prose defects INSIDE the
+      // encounter tree: the scene-prose handler rewrites encounter phase/
+      // storylet beat prose and the encounter-cost handler re-authors cost/
+      // stakes fields — both LLM re-authors of the flagged scene. Without this
+      // rule they fell to diagnostic_stop, which both left them unrepaired and
+      // withheld LLM repair from every other finding in the report. Structural
+      // classes (one-click win, clock coverage) keep the default — no prose
+      // rewrite can add a missing middle to a set piece.
+      if (
+        (issue.type === 'encounter_template_collapse' || issue.type === 'encounter_malformed_prose')
+        && issue.sceneId
+      ) {
+        return directive('same_scene_retry', issue, 'Encounter template/malformed prose is localized; LLM re-author of the encounter scene prose (plus targeted cost-field re-author) clears it.');
+      }
+    }
+
     if (validator === 'NarrativeFailureModeValidator') {
       // Prose-style consistency findings (tense drift, repetitive motifs) are
       // beat-local prose defects: the deterministic tense handler plus a

@@ -113,6 +113,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
         execute: async () => {
           throw new Error('SceneWriter should not run for resumed scene content');
         },
+        setContractLoadTemperature: () => undefined,
       },
       choiceAuthor: {
         execute: async () => {
@@ -307,7 +308,10 @@ describe('ContentGenerationPhase treatment density gate', () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];
     const phase = new ContentGenerationPhase({
-      sceneWriter: { execute: async () => { calls.push('sceneWriter'); return { success: true, data: {} }; } },
+      sceneWriter: {
+        execute: async () => { calls.push('sceneWriter'); return { success: true, data: {} }; },
+        setContractLoadTemperature: () => undefined,
+      },
       choiceAuthor: {
         execute: async () => { calls.push('choiceAuthor'); return { success: true, data: {} }; },
         setEpisodeSkillTargets: () => undefined,

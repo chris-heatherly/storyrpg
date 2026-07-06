@@ -137,6 +137,10 @@ const RAW_GATE_REGISTRY = [
   // gets one SceneWriter retry with tense feedback at write time, where the
   // fix costs one scene instead of final-contract repair rounds.
   { id: 'GATE_SCENE_TENSE_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  // Flag-gated SceneCritic rewrite: a targeted critic pass over scenes that
+  // failed incremental voice/POV validation or needed a realization retry
+  // (criticFlags), capped at 3/episode. Not a detector — cost-bounded polish.
+  { id: 'GATE_SCENE_CRITIC_ON_FLAG', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CHOICE_OUTCOME_TIER_REAUTHOR', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },

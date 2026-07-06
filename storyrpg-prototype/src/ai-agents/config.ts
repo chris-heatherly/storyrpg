@@ -201,6 +201,16 @@ export interface GenerationSettingsConfig {
   
   // Resolution limits
   resolutionSummaryMaxWords?: number;
+
+  // Contract-load temperature tuning (SAR wave 2, R8 — authoring economics).
+  // A scene whose blueprint carries at least this many contract-family entries
+  // (requiredBeats, treatment fields, pacing/pressure contracts, …) is authored
+  // at the lower `heavyContractSceneTemperature` — precision over flourish when
+  // the prompt is mostly obligations. Unset threshold = tuning applies only on
+  // treatment-sourced runs (where heavy contract loads actually occur), using
+  // the built-in defaults (12 blocks / 0.65).
+  heavyContractSceneBlockThreshold?: number;
+  heavyContractSceneTemperature?: number;
   
   // Choice constraints
   minChoices?: number;

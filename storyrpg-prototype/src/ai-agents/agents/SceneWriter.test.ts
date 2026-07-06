@@ -14,6 +14,26 @@ function createWriter(): SceneWriter {
   });
 }
 
+describe('SceneWriter contract-load temperature (R8)', () => {
+  it('lowers, restores, and never mutates the shared AgentConfig object', () => {
+    const sharedConfig = {
+      provider: 'anthropic' as const,
+      model: 'test-model',
+      apiKey: 'test-key',
+      maxTokens: 1024,
+      temperature: 0.85,
+    };
+    const writer = new SceneWriter(sharedConfig);
+
+    writer.setContractLoadTemperature(0.65);
+    expect((writer as any).config.temperature).toBe(0.65);
+    expect(sharedConfig.temperature).toBe(0.85);
+
+    writer.setContractLoadTemperature(undefined);
+    expect((writer as any).config.temperature).toBe(0.85);
+  });
+});
+
 describe('SceneWriter duplicate-beat collapse', () => {
   it('collapses beats with identical narrative text and re-links the chain (bite-me 2026-07-02 s1-5)', () => {
     const writer = createWriter();

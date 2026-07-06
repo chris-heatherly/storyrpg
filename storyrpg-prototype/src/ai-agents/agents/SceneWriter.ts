@@ -531,10 +531,14 @@ export class SceneWriter extends BaseAgent {
     maxDialogueLines: number;
   };
 
+  /** Sampling temperature from construction, restored when contract-load tuning ends. */
+  private baseTemperature?: number;
+
   constructor(config: AgentConfig, generationConfig?: GenerationSettingsConfig) {
     super('Scene Writer', config);
     this.includeSystemPrompt = true;
     this.choiceDensityValidator = new ChoiceDensityValidator();
+    this.baseTemperature = config?.temperature;
     // Use generation config text limits or fall back to defaults
     this.textLimits = {
       maxSentences: generationConfig?.maxSentencesPerBeat ?? DEFAULT_LIMITS.maxSentences,
@@ -542,6 +546,21 @@ export class SceneWriter extends BaseAgent {
       maxDialogueWords: generationConfig?.maxDialogueWords ?? DEFAULT_LIMITS.maxDialogueWords,
       maxDialogueLines: generationConfig?.maxDialogueLines ?? DEFAULT_LIMITS.maxDialogueLines,
     };
+  }
+
+  /**
+   * Contract-load temperature tuning (SAR wave 2, R8): heavy-contract scenes
+   * author at a lower temperature — precision over flourish when the prompt is
+   * mostly enforced obligations. `undefined` restores the construction-time
+   * temperature. Clone-on-write: the AgentConfig object passed to the
+   * constructor may be shared with other agents, so it is never mutated.
+   * Scene generation is serial within an episode, so a per-scene switch here
+   * cannot race concurrent execute() calls.
+   */
+  setContractLoadTemperature(heavyTemperature: number | undefined): void {
+    const target = heavyTemperature ?? this.baseTemperature;
+    if (this.config.temperature === target) return;
+    this.config = { ...this.config, temperature: target };
   }
 
   protected getAgentSpecificPrompt(): string {

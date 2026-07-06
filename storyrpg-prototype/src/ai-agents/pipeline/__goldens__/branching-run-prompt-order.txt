@@ -15,20 +15,21 @@
 14: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2477dc6b6d079f04
 15: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2d343e78cd44754f
 16: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=6fea5659ad53640b
-17: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=7b06ac1f10352392
+17: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=f99f1dd29dff0b6d
 18: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=70a111f6b3983f63
 19: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=74866835ccdaf5d8
-20: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=ea39c72fd2c80951
-21: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=ab3b8115955e1977
-22: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=ada7692a93e17a1e
+20: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=a5ceb16274404bc2
+21: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=0e3a2870d3ac4af2
+22: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=547c5f8d877a5d99
 23: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a7ca6bf30be26a0
-24: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=08c3ae1520cab24c
-25: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=8020f58770ac226b
-26: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=49995ca932058f47
-27: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=033b4c5f32731a1d
-28: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=7a751ec9e8710866
-29: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=707071e15269fcc2
+24: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=22deb2d6b12112cd
+25: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=e4b68d997148c80c
+26: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=04eb23a4900476fa
+27: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=f30d04601331718a
+28: Encounter Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=99da321afad99029
+29: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=aa2b09e5dab1b031
 30: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=091fd699a452094a
-31: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=707071e15269fcc2
+31: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=aa2b09e5dab1b031
 32: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=091fd699a452094a
-33: Outcome Variant Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=09de5454964ec25b
+33: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a2fe44df173d303
+34: Outcome Variant Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=09de5454964ec25b

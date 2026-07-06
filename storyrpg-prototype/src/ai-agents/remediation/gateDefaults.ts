@@ -140,6 +140,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rewrite route finish the job.
   GATE_SCENE_TENSE_CHECK: true,
 
+  // Flag-gated SceneCritic (SAR wave 2, R8 — authoring economics). The full
+  // sceneCritic config pass doubles SceneWriter token cost per scene, so it
+  // stays opt-in. This gate instead runs the critic ONLY over scenes that
+  // already showed a quality signal at generation time (failed incremental
+  // voice/POV validation or triggered a realization retry), capped at the
+  // existing 3-scenes-per-episode limit — a targeted second pass where the
+  // evidence says it pays for itself. No-op when config.sceneCritic.enabled
+  // (the broader configured pass supersedes it). Reversible via =0.
+  GATE_SCENE_CRITIC_ON_FLAG: true,
+
   // Two-tier gate policy (2026-07-05 stability audit). An under-realized scene
   // after the bounded retry is a QUALITY finding, not a run-safety blocker: the
   // prose is LLM-authored, the miss is re-detected identically at season-final

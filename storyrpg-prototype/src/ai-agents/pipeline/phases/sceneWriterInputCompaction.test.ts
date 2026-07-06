@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   compactSceneWriterInput,
+  droppedBlockingContracts,
   isSceneWriterCompactRetryReason,
+  totalContractBlocks,
 } from './sceneWriterInputCompaction';
 import type { SceneWriterInput } from '../../agents/SceneWriter';
 
@@ -100,12 +102,16 @@ describe('sceneWriterInputCompaction', () => {
     const compactJson = JSON.stringify(result.input.sceneBlueprint);
 
     expect(result.diagnostics.originalSceneBytes).toBeGreaterThan(100_000);
-    expect(result.diagnostics.compactSceneBytes).toBeLessThan(45_000);
-    expect(compactJson.length).toBeLessThan(originalJson.length / 3);
+    // R3 headroom: blocking contracts (20 treatment mechanicPressure, 16
+    // enforced requiredBeats in this fixture) are kept up to 2x the soft cap
+    // instead of silently dropped, so the compact budget is higher than the
+    // pre-R3 45KB — but still a ~3x shrink of the oversized input.
+    expect(result.diagnostics.compactSceneBytes).toBeLessThan(75_000);
+    expect(compactJson.length).toBeLessThan(originalJson.length / 2.5);
     expect(result.input.sceneBlueprint).not.toBe(input.sceneBlueprint);
     expect(input.sceneBlueprint.mechanicPressure).toHaveLength(120);
-    expect(result.input.sceneBlueprint.mechanicPressure).toHaveLength(12);
-    expect(result.input.sceneBlueprint.requiredBeats).toHaveLength(8);
+    expect(result.input.sceneBlueprint.mechanicPressure).toHaveLength(20);
+    expect(result.input.sceneBlueprint.requiredBeats).toHaveLength(16);
     expect(compactJson).toContain('Kylie tests whether being adored is the same as being safe');
     expect(compactJson).toContain('the key card, blog, roses, and Mika');
     expect(compactJson).not.toContain('linked-0-19');
@@ -115,5 +121,122 @@ describe('sceneWriterInputCompaction', () => {
     expect(isSceneWriterCompactRetryReason('TruncatedLLMResponseError: stop_reason=max_tokens')).toBe(true);
     expect(isSceneWriterCompactRetryReason('SceneWriter response exceeded raw processing budget')).toBe(true);
     expect(isSceneWriterCompactRetryReason('network down')).toBe(false);
+  });
+
+  // R3 (contract-budget honesty): compaction reports WHAT it dropped, and
+  // whether a season-final validator still enforces the dropped obligation.
+  describe('dropped-contract detail', () => {
+    function minimalInput(sceneBlueprint: Record<string, unknown>): SceneWriterInput {
+      return {
+        sceneBlueprint: { id: 's1-1', name: 'Scene', npcsPresent: [], leadsTo: [], ...sceneBlueprint } as any,
+        storyContext: { title: 'T', genre: 'g', tone: 't', worldContext: 'w' },
+        protagonistInfo: { name: 'Kylie', pronouns: 'she/her', description: 'd' },
+        npcs: [],
+        targetBeatCount: 6,
+        dialogueHeavy: false,
+      };
+    }
+
+    it('gives blocking requiredBeats overflow headroom up to 2x the soft cap (no silent drop, no spurious abort)', () => {
+      const input = minimalInput({
+        requiredBeats: Array.from({ length: 12 }, (_, i) => ({
+          id: `rb-${i}`,
+          tier: 'authored',
+          mustDepict: `Stela presses artifact number ${i} into your hand at the courtyard gate.`,
+        })),
+      });
+      const { input: compacted, diagnostics } = compactSceneWriterInput(input);
+
+      expect(compacted.sceneBlueprint.requiredBeats).toHaveLength(12);
+      expect(diagnostics.droppedContracts).toEqual([]);
+      expect(droppedBlockingContracts(diagnostics)).toEqual([]);
+    });
+
+    it('reports genuine blocking overload (past the hard cap) as blocking drops', () => {
+      const input = minimalInput({
+        requiredBeats: Array.from({ length: 20 }, (_, i) => ({
+          id: `rb-${i}`,
+          tier: 'authored',
+          mustDepict: `Stela presses artifact number ${i} into your hand at the courtyard gate.`,
+        })),
+      });
+      const { diagnostics } = compactSceneWriterInput(input);
+
+      expect(diagnostics.compactCounts.requiredBeats).toBe(16);
+      const dropped = diagnostics.droppedContracts.filter((c) => c.family === 'requiredBeats');
+      expect(dropped).toHaveLength(4);
+      expect(dropped.every((c) => c.blocking)).toBe(true);
+      expect(droppedBlockingContracts(diagnostics)).toHaveLength(4);
+    });
+
+    it('reports unenforced dropped beats as advisory (connective tissue never blocks)', () => {
+      const input = minimalInput({
+        requiredBeats: [
+          ...Array.from({ length: 8 }, (_, i) => ({
+            id: `rb-${i}`,
+            tier: 'authored',
+            mustDepict: `Stela presses artifact number ${i} into your hand at the courtyard gate.`,
+          })),
+          { id: 'rb-conn', tier: 'connective', mustDepict: 'They drive for a while.' },
+        ],
+      });
+      const { diagnostics } = compactSceneWriterInput(input);
+
+      const dropped = diagnostics.droppedContracts.filter((c) => c.family === 'requiredBeats');
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0].tier).toBe('connective');
+      expect(dropped[0].blocking).toBe(false);
+      expect(droppedBlockingContracts(diagnostics)).toEqual([]);
+    });
+
+    it('classifies treatment-blocking contract-family overflow as blocking and advisory overflow as not', () => {
+      const contract = (i: number, blockingLevel: string) => ({
+        id: `arc-${blockingLevel}-${i}`,
+        fieldName: `field-${i}`,
+        sourceText: `Arc pressure ${i}: the champagne friendship carries a price.`,
+        blockingLevel,
+      });
+      // arcPressureContracts soft cap is 4 (hard cap 8 for blocking items);
+      // ranking keeps the treatment-blocking ones, so the 2 dropped are
+      // advisory. Then flip: 10 treatment → 2 past the hard cap drop.
+      const advisoryOverflow = compactSceneWriterInput(minimalInput({
+        arcPressureContracts: [
+          ...Array.from({ length: 4 }, (_, i) => contract(i, 'treatment')),
+          ...Array.from({ length: 2 }, (_, i) => contract(10 + i, 'advisory')),
+        ],
+      })).diagnostics;
+      expect(advisoryOverflow.droppedCounts.arcPressureContracts).toBe(2);
+      expect(droppedBlockingContracts(advisoryOverflow)).toEqual([]);
+
+      const blockingOverflow = compactSceneWriterInput(minimalInput({
+        arcPressureContracts: Array.from({ length: 10 }, (_, i) => contract(i, 'treatment')),
+      })).diagnostics;
+      expect(blockingOverflow.compactCounts.arcPressureContracts).toBe(8);
+      expect(droppedBlockingContracts(blockingOverflow)).toHaveLength(2);
+      expect(droppedBlockingContracts(blockingOverflow)[0]).toMatchObject({
+        family: 'arcPressureContracts',
+        blocking: true,
+        blockingLevel: 'treatment',
+      });
+    });
+
+    it('does not report dedupe casualties as drops (the surviving twin carries the contract)', () => {
+      const twin = {
+        id: 'rb-same',
+        tier: 'authored',
+        mustDepict: 'Stela presses the warm quartz into your hand at the courtyard gate.',
+      };
+      const { diagnostics } = compactSceneWriterInput(minimalInput({ requiredBeats: [twin, { ...twin }] }));
+      expect(diagnostics.droppedContracts).toEqual([]);
+      expect(diagnostics.compactCounts.requiredBeats).toBe(1);
+    });
+
+    it('totals contract blocks from the original (pre-compaction) counts', () => {
+      const { diagnostics } = compactSceneWriterInput(minimalInput({
+        requiredBeats: Array.from({ length: 10 }, (_, i) => ({ id: `rb-${i}`, tier: 'authored', mustDepict: `Moment ${i}` })),
+        invariants: ['a', 'b', 'c'],
+      }));
+      expect(totalContractBlocks(diagnostics)).toBe(13);
+    });
   });
 });

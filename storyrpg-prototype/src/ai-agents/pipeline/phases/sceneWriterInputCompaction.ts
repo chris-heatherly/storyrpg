@@ -1,6 +1,24 @@
 import type { SceneWriterInput } from '../../agents/SceneWriter';
+import { requiredMomentsFor } from '../../remediation/sceneRealizationGuard';
 
 type RecordLike = Record<string, unknown>;
+
+/**
+ * A contract compaction removed from the SceneWriter prompt. `blocking` means
+ * a season-final validator still enforces the obligation (RequiredBeat /
+ * TreatmentEvent / treatment-blocking contract families) — dropping it
+ * silently guarantees a late failure, so the caller must surface it as a
+ * plan-overload error BEFORE SceneWriter runs (R3 contract-budget honesty).
+ */
+export interface DroppedContractDetail {
+  family: string;
+  id: string;
+  label: string;
+  blocking: boolean;
+  blockingLevel?: string;
+  tier?: string;
+  source?: string;
+}
 
 export interface SceneWriterCompactionDiagnostics {
   sceneId: string;
@@ -9,6 +27,8 @@ export interface SceneWriterCompactionDiagnostics {
   originalCounts: Record<string, number>;
   compactCounts: Record<string, number>;
   droppedCounts: Record<string, number>;
+  /** Per-contract detail for every dropped contract-family item. */
+  droppedContracts: DroppedContractDetail[];
 }
 
 const FAMILY_LIMITS: Record<string, number> = {
@@ -213,23 +233,90 @@ function compactTurnContract(value: unknown): unknown {
   };
 }
 
+function compactionKey(item: unknown): string {
+  const record = asRecord(item);
+  const id = record?.id;
+  if (typeof id === 'string') return id;
+  return JSON.stringify(item);
+}
+
+function rankedCompactArrayWithDrops(
+  value: unknown,
+  limit: number,
+  compact: (item: unknown) => unknown,
+  isBlocking: (item: unknown) => boolean = () => false,
+): { items: unknown[] | undefined; dropped: unknown[] } {
+  if (!Array.isArray(value)) return { items: undefined, dropped: [] };
+  // R3 (contract-budget honesty): a contract a season-final validator still
+  // enforces must never be SILENTLY dropped by the soft cap — blocking items
+  // get overflow slots up to a hard cap (2× the family limit). Only genuine
+  // overload past the hard cap drops a blocking contract, and that drop is
+  // reported so the caller can fail the scene pre-prose.
+  const hardLimit = limit * 2;
+  const ranked = value
+    .map((item, index) => ({ item, index, rank: contractRank(item) }))
+    .sort((a, b) => b.rank - a.rank || a.index - b.index)
+    .map((entry) => ({ original: entry.item, compacted: compact(entry.item) }));
+  const seen = new Set<string>();
+  const kept: unknown[] = [];
+  const dropped: unknown[] = [];
+  for (const entry of ranked) {
+    const key = compactionKey(entry.compacted);
+    // Dedupe casualties are not "dropped" obligations — the surviving twin
+    // still carries the contract; only limit overflow loses an obligation.
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (kept.length < limit || (isBlocking(entry.original) && kept.length < hardLimit)) {
+      kept.push(entry.compacted);
+    } else {
+      dropped.push(entry.original);
+    }
+  }
+  return { items: kept, dropped };
+}
+
 function rankedCompactArray(
   value: unknown,
   limit: number,
   compact: (item: unknown) => unknown,
 ): unknown[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const ranked = value
-    .map((item, index) => ({ item, index, rank: contractRank(item) }))
-    .sort((a, b) => b.rank - a.rank || a.index - b.index)
-    .map((entry) => compact(entry.item));
-  const deduped = dedupeBy(ranked, (item) => {
-    const record = asRecord(item);
-    const id = record?.id;
-    if (typeof id === 'string') return id;
-    return JSON.stringify(item);
-  });
-  return deduped.slice(0, limit);
+  return rankedCompactArrayWithDrops(value, limit, compact).items;
+}
+
+/**
+ * Would a season-final validator still enforce this contract after the prompt
+ * drops it? requiredBeats / storyCircleBeatContracts reuse the guard's own
+ * enforcement predicate (requiredMomentsFor — detector parity with the
+ * realization validators); the treatment contract families block on their
+ * declared blockingLevel.
+ */
+function isBlockingDroppedContract(family: string, item: unknown): boolean {
+  const record = asRecord(item);
+  if (!record) return false;
+  if (family === 'requiredBeats') {
+    return requiredMomentsFor({ requiredBeats: [record as { tier?: string; mustDepict?: string }] }).length > 0;
+  }
+  if (family === 'storyCircleBeatContracts') {
+    return requiredMomentsFor({
+      storyCircleBeatContracts: [record as { sourceText?: string; requiredRealization?: string[] }],
+    }).length > 0;
+  }
+  return typeof record.blockingLevel === 'string' && BLOCKING_LEVELS.has(record.blockingLevel);
+}
+
+function describeDroppedContract(family: string, item: unknown): DroppedContractDetail {
+  const record = asRecord(item) ?? {};
+  const label = [record.mustDepict, record.sourceText, record.label, record.storyPressure, record.fieldName, record.id]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? '';
+  return {
+    family,
+    id: typeof record.id === 'string' ? record.id : '',
+    label: label.replace(/\s+/g, ' ').slice(0, 160),
+    blocking: isBlockingDroppedContract(family, item),
+    blockingLevel: typeof record.blockingLevel === 'string' ? record.blockingLevel : undefined,
+    tier: typeof record.tier === 'string' ? record.tier : undefined,
+    source: typeof record.source === 'string' ? record.source : undefined,
+  };
 }
 
 export function compactSceneWriterInput(input: SceneWriterInput): {
@@ -240,9 +327,20 @@ export function compactSceneWriterInput(input: SceneWriterInput): {
   const originalCounts: Record<string, number> = {};
   const compactCounts: Record<string, number> = {};
   const droppedCounts: Record<string, number> = {};
+  const droppedContracts: DroppedContractDetail[] = [];
   for (const family of CONTRACT_FAMILIES) {
     originalCounts[family] = Array.isArray(scene[family]) ? (scene[family] as unknown[]).length : 0;
   }
+  const compactFamily = (family: string, compact: (item: unknown) => unknown): unknown[] | undefined => {
+    const { items, dropped } = rankedCompactArrayWithDrops(
+      scene[family],
+      FAMILY_LIMITS[family],
+      compact,
+      (item) => isBlockingDroppedContract(family, item),
+    );
+    for (const item of dropped) droppedContracts.push(describeDroppedContract(family, item));
+    return items;
+  };
 
   const compactScene: RecordLike = {
     ...scene,
@@ -257,19 +355,19 @@ export function compactSceneWriterInput(input: SceneWriterInput): {
     stakesLayers: compactStakesLayers(scene.stakesLayers),
     transitionOut: rankedCompactArray(scene.transitionOut, 2, (item) => compactRecordStrings(item, 260)),
     residue: rankedCompactArray(scene.residue, 3, (item) => compactRecordStrings(item, 220)),
-    requiredBeats: rankedCompactArray(scene.requiredBeats, FAMILY_LIMITS.requiredBeats, compactRequiredBeat),
-    relationshipPacing: rankedCompactArray(scene.relationshipPacing, FAMILY_LIMITS.relationshipPacing, compactContract),
-    mechanicPressure: rankedCompactArray(scene.mechanicPressure, FAMILY_LIMITS.mechanicPressure, compactMechanicPressure),
-    authoredTreatmentFields: rankedCompactArray(scene.authoredTreatmentFields, FAMILY_LIMITS.authoredTreatmentFields, compactContract),
-    seasonPromiseContracts: rankedCompactArray(scene.seasonPromiseContracts, FAMILY_LIMITS.seasonPromiseContracts, compactContract),
-    stakesArchitectureContracts: rankedCompactArray(scene.stakesArchitectureContracts, FAMILY_LIMITS.stakesArchitectureContracts, compactContract),
-    storyCircleBeatContracts: rankedCompactArray(scene.storyCircleBeatContracts, FAMILY_LIMITS.storyCircleBeatContracts, compactContract),
-    arcPressureContracts: rankedCompactArray(scene.arcPressureContracts, FAMILY_LIMITS.arcPressureContracts, compactContract),
-    branchConsequenceContracts: rankedCompactArray(scene.branchConsequenceContracts, FAMILY_LIMITS.branchConsequenceContracts, compactContract),
-    endingRealizationContracts: rankedCompactArray(scene.endingRealizationContracts, FAMILY_LIMITS.endingRealizationContracts, compactContract),
-    failureModeAuditContracts: rankedCompactArray(scene.failureModeAuditContracts, FAMILY_LIMITS.failureModeAuditContracts, compactContract),
-    characterTreatmentContracts: rankedCompactArray(scene.characterTreatmentContracts, FAMILY_LIMITS.characterTreatmentContracts, compactContract),
-    worldTreatmentContracts: rankedCompactArray(scene.worldTreatmentContracts, FAMILY_LIMITS.worldTreatmentContracts, compactContract),
+    requiredBeats: compactFamily('requiredBeats', compactRequiredBeat),
+    relationshipPacing: compactFamily('relationshipPacing', compactContract),
+    mechanicPressure: compactFamily('mechanicPressure', compactMechanicPressure),
+    authoredTreatmentFields: compactFamily('authoredTreatmentFields', compactContract),
+    seasonPromiseContracts: compactFamily('seasonPromiseContracts', compactContract),
+    stakesArchitectureContracts: compactFamily('stakesArchitectureContracts', compactContract),
+    storyCircleBeatContracts: compactFamily('storyCircleBeatContracts', compactContract),
+    arcPressureContracts: compactFamily('arcPressureContracts', compactContract),
+    branchConsequenceContracts: compactFamily('branchConsequenceContracts', compactContract),
+    endingRealizationContracts: compactFamily('endingRealizationContracts', compactContract),
+    failureModeAuditContracts: compactFamily('failureModeAuditContracts', compactContract),
+    characterTreatmentContracts: compactFamily('characterTreatmentContracts', compactContract),
+    worldTreatmentContracts: compactFamily('worldTreatmentContracts', compactContract),
     invariants: compactStringArray(scene.invariants, FAMILY_LIMITS.invariants, 220),
     keyBeats: compactStringArray(scene.keyBeats, FAMILY_LIMITS.keyBeats, 260),
     choicePoint: compactChoicePoint(scene.choicePoint),
@@ -295,8 +393,25 @@ export function compactSceneWriterInput(input: SceneWriterInput): {
       originalCounts,
       compactCounts,
       droppedCounts,
+      droppedContracts,
     },
   };
+}
+
+/** The dropped contracts a season-final validator still enforces (R3). */
+export function droppedBlockingContracts(
+  diagnostics: SceneWriterCompactionDiagnostics,
+): DroppedContractDetail[] {
+  return diagnostics.droppedContracts.filter((contract) => contract.blocking);
+}
+
+/**
+ * Total contract-family entries on the ORIGINAL (pre-compaction) blueprint —
+ * the scene's contract load. Consumed by the R8 heavy-contract temperature
+ * tuning (a scene that is mostly obligations authors at a lower temperature).
+ */
+export function totalContractBlocks(diagnostics: SceneWriterCompactionDiagnostics): number {
+  return Object.values(diagnostics.originalCounts).reduce((sum, value) => sum + value, 0);
 }
 
 export function isSceneWriterCompactRetryReason(reason: string | undefined): boolean {

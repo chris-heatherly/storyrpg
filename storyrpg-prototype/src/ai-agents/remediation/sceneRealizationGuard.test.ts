@@ -128,6 +128,67 @@ describe('requiredMomentsFor', () => {
       'Mika hands her a key card to the side entrance.',
     ]);
   });
+
+  // R4 shift-left: turn contracts + treatment-blocking arc pressure are now
+  // scene-time obligations checked with the same evaluator as season-final.
+  it('enforces a treatment-sourced central turn at scene time', () => {
+    const moments = requiredMomentsFor({
+      turnContract: { centralTurn: 'Mika presses the key card into your hand at the side entrance.', source: 'treatment' },
+    });
+    expect(moments).toEqual([expect.objectContaining({
+      moment: 'Mika presses the key card into your hand at the side entrance.',
+      tier: 'sceneTurn',
+      validator: 'RequiredBeatRealizationValidator',
+    })]);
+  });
+
+  it('does not enforce a GENERIC planner turn (architecture defect, not a prose retry)', () => {
+    const moments = requiredMomentsFor({
+      turnContract: { centralTurn: 'Escalate the episode pressure toward the club door.', source: 'planner' },
+    });
+    expect(moments).toEqual([]);
+  });
+
+  it('enforces a CONCRETE planner turn at scene time', () => {
+    const moments = requiredMomentsFor({
+      turnContract: { turnEvent: 'Stela presses the warm quartz into your hand and will not take it back.', source: 'planner' },
+    });
+    expect(moments).toEqual([expect.objectContaining({ tier: 'sceneTurn' })]);
+  });
+
+  it('enforces treatment-blocking arc pressure with eventAtoms as alternates', () => {
+    const moments = requiredMomentsFor({
+      arcPressureContracts: [
+        {
+          id: 'arc-1',
+          fieldName: 'friendshipPressure',
+          sourceText: 'Ileana warns Kylie that champagne friendships in this club always carry a price.',
+          eventAtoms: ['Ileana warns Kylie about the price of champagne friendships'],
+          blockingLevel: 'treatment',
+        },
+        { id: 'arc-2', sourceText: 'Advisory-only arc pressure never enforced here.', blockingLevel: 'advisory' },
+      ],
+    });
+    expect(moments).toHaveLength(1);
+    expect(moments[0].tier).toBe('arcPressure:friendshipPressure');
+    expect(moments[0].alternates).toEqual(['Ileana warns Kylie about the price of champagne friendships']);
+  });
+
+  it('treats an alternate (event atom) as depicting the moment', () => {
+    const source = {
+      arcPressureContracts: [{
+        id: 'arc-1',
+        fieldName: 'friendshipPressure',
+        sourceText: 'Ileana warns Kylie that champagne friendships in this club always carry a price.',
+        eventAtoms: ['Ileana leans close and names the price of champagne friendships'],
+        blockingLevel: 'treatment' as const,
+      }],
+    };
+    const missing = missingRequiredMoments(source, [
+      { id: 'b1', text: 'Ileana leans close, and names the price of champagne friendships without smiling.' },
+    ]);
+    expect(missing).toEqual([]);
+  });
 });
 
 describe('missingRequiredMoments', () => {
@@ -287,6 +348,37 @@ describe('insertMissingMomentBeats', () => {
       { requiredBeats: [{ tier: 'seed', mustDepict: 'The stray dog in the courtyard, watching.' }] },
       beats,
     )).toEqual([]);
+  });
+
+  it('never inserts sceneTurn / arcPressure contract text as prose (R4: planning register by construction)', () => {
+    const beats = [
+      { id: 'b1', text: 'The club door swallows the queue two at a time.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'Mika watches you from the rope line.' },
+    ];
+    const missing = [
+      {
+        moment: 'Mika presses the key card into your hand at the side entrance.',
+        validator: 'RequiredBeatRealizationValidator' as const,
+        tier: 'sceneTurn',
+        missingTokens: ['key-card'],
+      },
+      {
+        moment: 'Ileana warns Kylie that champagne friendships in this club always carry a price.',
+        validator: 'RequiredBeatRealizationValidator' as const,
+        tier: 'arcPressure:friendshipPressure',
+        missingTokens: ['champagne'],
+      },
+    ];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-2', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.tier}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.id)).toEqual(['b1', 'b2']);
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0]).toContain('needs SceneWriter realization');
+    expect(skipped[1]).toContain('needs SceneWriter realization');
   });
 
   it('skips a time-coded authored fallback by default so routing can escalate it', () => {

@@ -55,6 +55,8 @@ import {
 } from '../../remediation/sceneRealizationGuard';
 import { RemediationLedgerRecord } from '../../remediation/remediationLedger';
 import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/regenChoicesPolicy';
+import { shouldAdoptRegenAttempt } from '../../remediation/regenAdoption';
+import { flagSceneForCritic } from '../../remediation/sceneCriticFlags';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import {
   buildSceneConstructionPromptView,
@@ -68,7 +70,12 @@ import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/de
 import { slugify as idSlugify } from '../../utils/idUtils';
 import { forbiddenNpcNames, introducedNpcIds, isIntroducedNpc, npcIdsNamedInProse } from '../../utils/npcIntroductionLedger';
 import { saveEarlyDiagnostic } from '../../utils/pipelineOutputWriter';
-import { buildSceneTimelineHandoff } from '../../utils/sceneTimeline';
+import {
+  buildRealizedEpisodeSoFarSummary,
+  buildRealizedSceneSummary,
+  buildRealizedTimelineHandoff,
+  resolveGraphPredecessor,
+} from '../realizedContext';
 import { StoryVerb } from '../../utils/storyVerbs';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../../utils/withTimeout';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
@@ -200,7 +207,9 @@ import type { CharacterArcTargets } from '../../agents/CharacterArcTracker';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import {
   compactSceneWriterInput,
+  droppedBlockingContracts,
   isSceneWriterCompactRetryReason,
+  totalContractBlocks,
 } from './sceneWriterInputCompaction';
 import { PipelineContext } from './index';
 
@@ -219,7 +228,7 @@ import { PipelineContext } from './index';
  */
 export interface ContentGenerationPhaseDeps {
   // --- Agents ---
-  sceneWriter: Pick<SceneWriter, 'execute'>;
+  sceneWriter: Pick<SceneWriter, 'execute' | 'setContractLoadTemperature'>;
   choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'setEpisodeSkillTargets'>;
   encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields'>;
   getThreadPlanner: () => ThreadPlannerLike;
@@ -1043,7 +1052,26 @@ export class ContentGenerationPhase {
     for (let i = 0; i < sceneOrder.length; i++) {
       await this.deps.checkCancellation();
       const sceneBlueprint = sceneOrder[i];
-      const previousScene = i > 0 ? sceneContents[i - 1] : undefined;
+      // R2 (realized-context threading): the narrative predecessor comes from
+      // the scene GRAPH, not generation order — `sceneContents[i-1]` is a
+      // branch SIBLING for branch scenes, and its keyMoments are plan labels.
+      // The realized summary hands the writer what was actually written
+      // (closing prose + location/time anchors). Generation-order fallback
+      // only when the graph yields nothing (e.g. opening scene: undefined).
+      const graphPredecessor = resolveGraphPredecessor(
+        blueprint.scenes,
+        sceneBlueprint.id,
+        (sceneId) => sceneContents.find((sc) => sc.sceneId === sceneId),
+      );
+      const previousScene = graphPredecessor?.content
+        ?? (i > 0 ? sceneContents[i - 1] : undefined);
+      const previousSceneSummary = previousScene
+        ? buildRealizedSceneSummary(
+            previousScene,
+            graphPredecessor?.blueprint
+              ?? blueprint.scenes.find((scene) => scene.id === previousScene.sceneId),
+          )
+        : undefined;
       const sceneUnitId = episodeNumber ? `scene_content:episode-${episodeNumber}:${sceneBlueprint.id}` : '';
       const choiceUnitId = episodeNumber ? `choice_set:episode-${episodeNumber}:${sceneBlueprint.id}` : '';
       const encounterUnitId = episodeNumber ? `encounter:episode-${episodeNumber}:${sceneBlueprint.id}` : '';
@@ -1327,9 +1355,13 @@ export class ContentGenerationPhase {
             introduced: introducedBeforeScene,
             sceneCastIds: sceneRealizationBlueprint.npcsPresent,
           }),
-          // Diegetic timeline handoff: previous scene's time/place + whether this
+          // Diegetic timeline handoff: GRAPH predecessor's time/place + whether this
           // scene's planned time/location differ (transition acknowledgment required).
-          sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneRealizationBlueprint),
+          sceneTimeline: buildRealizedTimelineHandoff(
+            blueprint.scenes || [],
+            sceneRealizationBlueprint,
+            graphPredecessor?.blueprint,
+          ),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
           // Step 2 (info-ledger): resolve the INFO ids assigned to this scene to their
@@ -1375,9 +1407,7 @@ export class ContentGenerationPhase {
           unresolvedCallbacks: mergeUnresolvedForScene(this.deps.getUnresolvedCallbacksForPrompt(brief.episode?.number), episodePlants, brief.episode?.number ?? 1),
           targetBeatCount: this.deps.getTargetBeatCountForScene(sceneRealizationBlueprint),
           dialogueHeavy: sceneRealizationBlueprint.npcsPresent.length > 0,
-          previousSceneSummary: previousScene
-            ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
-            : undefined,
+          previousSceneSummary,
           nextSceneContext,
           incomingChoiceContext: sceneRealizationBlueprint.incomingChoiceContext,
           // W4 prevention: if an encounter routes into this scene, hand the writer the
@@ -1429,6 +1459,85 @@ export class ContentGenerationPhase {
             message: `SceneWriter input compacted for ${sceneBlueprint.id}: ${sceneWriterCompaction.originalSceneBytes} -> ${sceneWriterCompaction.compactSceneBytes} bytes`,
             data: sceneWriterCompaction,
           });
+        }
+        // R3 (contract-budget honesty): compaction must not SILENTLY drop a
+        // contract the season-final validators still enforce — the writer
+        // never sees the obligation, so the run is guaranteed to fail 24+
+        // minutes later. Blocking drops surface HERE, pre-prose, as the same
+        // plan-overload class the TreatmentDensityGate throws (blueprint
+        // rebalance), behind the existing plan-preflight gate. Non-blocking
+        // (advisory) drops are logged with the exact contracts dropped.
+        const droppedBlocking = droppedBlockingContracts(sceneWriterCompaction);
+        if (droppedContractCount > 0) {
+          const droppedAdvisory = sceneWriterCompaction.droppedContracts.filter((contract) => !contract.blocking);
+          if (droppedAdvisory.length > 0) {
+            context.emit({
+              type: 'warning',
+              phase: 'scenes',
+              message: `SceneWriter compaction dropped ${droppedAdvisory.length} advisory contract(s) for ${sceneBlueprint.id}: ${
+                droppedAdvisory.map((contract) => `${contract.family}:${contract.id || contract.label}`).join('; ')
+              }`,
+              data: { droppedContracts: droppedAdvisory },
+            });
+          }
+        }
+        if (droppedBlocking.length > 0 && isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
+          const summary = droppedBlocking
+            .map((contract) => `${contract.family}:${contract.id || contract.label}`)
+            .join('; ');
+          context.emit({
+            type: 'warning',
+            phase: 'scenes',
+            message: `Contract budget guard blocked scene ${sceneBlueprint.id}: compaction would drop ${droppedBlocking.length} blocking contract(s) the final contract still enforces (${summary})`,
+            data: { droppedBlocking, compaction: sceneWriterCompaction },
+          });
+          if (outputDirectory) {
+            await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-contract-budget-overflow.json`, {
+              episodeNumber: densityEpisodeNumber,
+              sceneId: sceneBlueprint.id,
+              generatedAt: new Date().toISOString(),
+              droppedBlocking,
+              droppedContracts: sceneWriterCompaction.droppedContracts,
+              originalCounts: sceneWriterCompaction.originalCounts,
+              compactCounts: sceneWriterCompaction.compactCounts,
+            });
+          }
+          throw new PipelineError(
+            `[TreatmentDensityGate] Scene ${sceneBlueprint.id} carries more blocking contracts than the SceneWriter prompt budget: compaction would drop ${droppedBlocking.length} blocking contract(s) (${summary}). Re-run architecture with blueprint rebalance so every enforced obligation fits the scene's budget before SceneWriter runs.`,
+            'episode_architecture',
+            {
+              agent: 'TreatmentDensityGate',
+              context: {
+                episodeNumber: densityEpisodeNumber,
+                sceneId: sceneBlueprint.id,
+                droppedBlocking,
+              },
+            },
+          );
+        }
+
+        // R8 (authoring economics): a scene whose blueprint is mostly enforced
+        // obligations authors at a lower temperature — precision over flourish.
+        // Config-driven; without an explicit threshold the tuning applies only
+        // on treatment-sourced runs (where heavy contract loads occur). The
+        // switch covers every SceneWriter call in this scene's iteration
+        // (first draft, best-of-N, retries, regens) and resets per scene.
+        {
+          const generation = context.config.generation;
+          const thresholdConfigured = generation?.heavyContractSceneBlockThreshold != null;
+          const heavyThreshold = generation?.heavyContractSceneBlockThreshold ?? 12;
+          const heavyTemperature = generation?.heavyContractSceneTemperature ?? 0.65;
+          const contractBlocks = totalContractBlocks(sceneWriterCompaction);
+          const treatmentSourced = Boolean(brief.multiEpisode?.sourceAnalysis);
+          const isHeavy = (thresholdConfigured || treatmentSourced) && contractBlocks >= heavyThreshold;
+          this.deps.sceneWriter.setContractLoadTemperature(isHeavy ? heavyTemperature : undefined);
+          if (isHeavy) {
+            context.emit({
+              type: 'debug',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} carries ${contractBlocks} contract block(s) (>=${heavyThreshold}) — authoring at temperature ${heavyTemperature}`,
+            });
+          }
         }
 
         // === KARPATHY LOOP: Best-of-N for critical scenes ===
@@ -1573,9 +1682,7 @@ export class ContentGenerationPhase {
               ? Math.min(this.deps.getTargetBeatCountForScene(sceneBlueprint), 8)
               : this.deps.getTargetBeatCountForScene(sceneBlueprint),
             dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-            previousSceneSummary: previousScene
-              ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
-              : undefined,
+            previousSceneSummary,
             nextSceneContext,
             incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
             sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
@@ -1764,6 +1871,9 @@ export class ContentGenerationPhase {
         if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
           let missing = missingRequiredMoments(sceneRealizationBlueprint, sceneContent.beats);
           if (missing.length > 0) {
+            // R8: an under-realized first draft is a SceneCritic candidate
+            // for the flag-gated pass.
+            flagSceneForCritic(sceneContent, 'realization-retry');
             try {
               for (let attempt = 1; attempt <= 2 && missing.length > 0; attempt++) {
                 context.emit({
@@ -2057,7 +2167,17 @@ export class ContentGenerationPhase {
             while ((!choiceResult.success || !choiceResult.data) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
               choiceAuthorAttempt++;
               context.emit({ type: 'warning', phase: 'choices', message: `Choice Author failed on ${sceneBlueprint.id} (attempt ${choiceAuthorAttempt - 1}/${maxChoiceAuthorAttempts}): ${choiceResult.error ?? 'no data'} — retrying.` });
-              choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
+              // R6: feed the failure back instead of re-running the identical
+              // prompt — a parse/schema failure repeats deterministically
+              // unless the model is told what went wrong last time.
+              const retryFeedbackInput: ChoiceAuthorInput = {
+                ...choiceAuthorInput,
+                storyContext: {
+                  ...choiceAuthorInput.storyContext,
+                  userPrompt: `${choiceAuthorInput.storyContext.userPrompt || ''}\n\nIMPORTANT - Your previous choice-authoring attempt FAILED with: ${choiceResult.error ?? 'no data returned'}. Fix that specific problem this time. Return one complete, valid choice set exactly matching the requested JSON structure.`,
+                },
+              };
+              choiceResult = await authorChoices(retryFeedbackInput, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
             }
 
             // Per-target branch regeneration (preferred over a templated fallback): if the
@@ -2462,6 +2582,9 @@ export class ContentGenerationPhase {
             sceneValidation.regenerationRequested === 'scene' &&
             (incrementalConfig.povClarityValidation || incrementalConfig.voiceValidation)
           ) {
+            // R8: a scene that failed incremental POV/voice validation is a
+            // SceneCritic candidate for the flag-gated pass.
+            flagSceneForCritic(sceneContent, 'incremental-validation-regen');
             // S3: degrade gracefully when the per-run remediation budget is spent
             // (default 1000 ceiling => never trips in normal operation).
             if (!shouldAttemptRemediation(this.deps.remediationBudget)) {
@@ -2478,26 +2601,32 @@ export class ContentGenerationPhase {
             } else {
             let sceneRegenAttempt = 0;
             const maxSceneRegenAttempts = incrementalConfig.maxRegenerationAttempts;
+            // R6: one extraction for both the triggering issues and the
+            // post-regen re-check, so adoption compares like with like.
+            const collectRegenIssues = (validation: typeof sceneValidation): string[] => {
+              const issues: string[] = [];
+              if (validation.povClarity && validation.povClarity.issues.length > 0) {
+                issues.push(
+                  ...validation.povClarity.issues.map(i => `POV clarity issue: ${i.issue} ${i.suggestion}`)
+                );
+              }
+              if (validation.voice && validation.voice.issues.length > 0) {
+                issues.push(
+                  ...validation.voice.issues.map(i => `Voice issue (${i.characterName}): ${i.issue}`)
+                );
+              }
+              if (validation.continuity && validation.continuity.issues.length > 0) {
+                issues.push(
+                  ...validation.continuity.issues.map(i => `Continuity: ${i.detail}`)
+                );
+              }
+              return issues;
+            };
 
             while (sceneRegenAttempt < maxSceneRegenAttempts) {
               sceneRegenAttempt++;
               this.deps.remediationBudget?.spend(1); // S3: debit one regeneration attempt
-              const issueDescriptions: string[] = [];
-              if (sceneValidation.povClarity && sceneValidation.povClarity.issues.length > 0) {
-                issueDescriptions.push(
-                  ...sceneValidation.povClarity.issues.map(i => `POV clarity issue: ${i.issue} ${i.suggestion}`)
-                );
-              }
-              if (sceneValidation.voice && sceneValidation.voice.issues.length > 0) {
-                issueDescriptions.push(
-                  ...sceneValidation.voice.issues.map(i => `Voice issue (${i.characterName}): ${i.issue}`)
-                );
-              }
-              if (sceneValidation.continuity && sceneValidation.continuity.issues.length > 0) {
-                issueDescriptions.push(
-                  ...sceneValidation.continuity.issues.map(i => `Continuity: ${i.detail}`)
-                );
-              }
+              const issueDescriptions = collectRegenIssues(sceneValidation);
 
               context.emit({
                 type: 'regeneration_triggered',
@@ -2506,42 +2635,18 @@ export class ContentGenerationPhase {
                 data: { reason: issueDescriptions },
               });
 
+              // R6: regenerate from the FULL original SceneWriter input (the
+              // same compacted input the scene was first authored from — all
+              // contracts, timeline handoff, directives, canon), with the
+              // triggering issues + the failing draft appended. The old
+              // hand-rebuilt input dropped most contract context, so regens
+              // routinely traded the POV fix for a new fidelity miss.
               const revisedSceneResult = await withTimeout(this.deps.sceneWriter.execute({
-                sceneBlueprint,
+                ...sceneWriterInputForAuthoring,
                 storyContext: {
-                  title: brief.story.title,
-                  genre: brief.story.genre,
-                  tone: brief.story.tone,
-                  userPrompt: `${brief.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${JSON.stringify(sceneContent).slice(0, 12000)}\n\nFor POV clarity fixes, rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.`,
-                  worldContext: this.deps.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
+                  ...sceneWriterInputForAuthoring.storyContext,
+                  userPrompt: `${sceneWriterInputForAuthoring.storyContext.userPrompt || ''}\n\nIMPORTANT - Fix these issues from validation:\n${issueDescriptions.join('\n')}\n\nEXISTING SCENE CONTENT TO PRESERVE STRUCTURALLY:\n${JSON.stringify(sceneContent).slice(0, 12000)}\n\nFor POV clarity fixes, rewrite only prose/textVariants needed to anchor POV to the player character. Preserve beat IDs, visual contract fields, choice-point flags, thread IDs, callback IDs, and navigation. The first non-empty beat must use you/your, the protagonist name, or a concrete pronoun before focusing on NPCs, setting, or exposition. Do not emit template variables.`,
                 },
-                protagonistInfo: {
-                  name: brief.protagonist.name,
-                  pronouns: brief.protagonist.pronouns,
-                  description: protagonistProfile?.fullBackground || brief.protagonist.description,
-                  physicalDescription: protagonistProfile?.physicalDescription,
-                },
-                npcs: sceneBlueprint.npcsPresent.map(npcId => {
-                  const profile = resolveCharacterProfile(characterBible.characters, npcId);
-                  return {
-                    id: npcId,
-                    name: profile?.name || npcId,
-                    pronouns: profile?.pronouns || 'they/them',
-                    description: profile?.overview || '',
-                    physicalDescription: profile?.physicalDescription,
-                    voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-                    currentMood: profile?.voiceProfile?.whenNervous,
-                  };
-                }),
-                relevantFlags: blueprint.suggestedFlags,
-                relevantScores: blueprint.suggestedScores,
-                targetBeatCount: this.deps.getTargetBeatCountForScene(sceneBlueprint),
-                dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
-                previousSceneSummary: previousScene
-                  ? `Previous: ${previousScene.sceneName} - ${previousScene.keyMoments.join(', ')}`
-                  : undefined,
-                incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
-                sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
                 memoryContext: await this.memoryContextFor('SceneWriter', 'scene-regeneration', brief, sceneBlueprint, ['scene-content']),
               }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneBlueprint.id} regen-${sceneRegenAttempt})`);
 
@@ -2586,10 +2691,11 @@ export class ContentGenerationPhase {
               );
               revisedValidation.episodeNumber = brief.episode.number;
 
+              // R6: adopt only when the triggering issue fingerprints actually
+              // cleared (or validation came back clean) — a bare score bump
+              // that keeps the same defect fingerprints is not an improvement.
               if (revisedValidation.regenerationRequested === 'none' ||
-                  (revisedValidation.voice && sceneValidation.voice &&
-                   revisedValidation.voice.score > sceneValidation.voice.score) ||
-                  (revisedValidation.povClarity?.passed && !sceneValidation.povClarity?.passed)) {
+                  shouldAdoptRegenAttempt(issueDescriptions, collectRegenIssues(revisedValidation))) {
                 // Revised version is better — swap it in
                 const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneBlueprint.id);
                 if (sceneIdx !== -1) {
@@ -2974,12 +3080,16 @@ export class ContentGenerationPhase {
         // G12: episode-so-far summary — without it the architect re-staged the
         // premise from scratch (timeline rewound to arrival night, established
         // relationships erased, protagonist seated as an NPC).
+        // R2: already-written scenes contribute their REALIZED closing prose,
+        // not just the blueprint blurb, so the encounter picks up from what
+        // the reader actually saw.
         const sceneOrder = blueprint.scenes || [];
         const encounterSceneIdx = sceneOrder.findIndex((sc) => sc.id === sceneBlueprint.id);
         const episodeSoFarSummary = encounterSceneIdx > 0
-          ? sceneOrder.slice(0, encounterSceneIdx)
-              .map((sc, i) => `${i + 1}. ${sc.name}${sc.location ? ` [${sc.location}]` : ''}: ${(sc.description || '').replace(/\s+/g, ' ').slice(0, 220)}`)
-              .join('\n')
+          ? buildRealizedEpisodeSoFarSummary(
+              sceneOrder.slice(0, encounterSceneIdx),
+              (sceneId) => sceneContents.find((sc) => sc.sceneId === sceneId),
+            )
           : undefined;
 
         const encounterInput: EncounterArchitectInput = {
@@ -2990,7 +3100,12 @@ export class ContentGenerationPhase {
           sceneLocation: sceneBlueprint.location,
           // Timeline handoff across the encounter seam — the audited hard cuts
           // (e.g. afternoon bookshop → 4am rooftop) happened at encounter scenes.
-          sceneTimeline: buildSceneTimelineHandoff(blueprint.scenes || [], sceneBlueprint),
+          // R2: hand off from the GRAPH predecessor (branch-aware) when realized.
+          sceneTimeline: buildRealizedTimelineHandoff(
+            blueprint.scenes || [],
+            sceneBlueprint,
+            graphPredecessor?.blueprint,
+          ),
           plannedEncounterId: sceneBlueprint.plannedEncounterId || plannedEnc?.id,
           storyContext: {
             title: brief.story.title,
@@ -3100,18 +3215,26 @@ export class ContentGenerationPhase {
   - Target beats: ${targetBeatCount}
   - Beat plan: ${encounterBeatPlan.join(' | ')}`);
 
-        // Build initial relationship snapshot from character profiles for the
-        // relationship dynamics analysis in the phased encounter generator.
+        // Relationship snapshot for the relationship dynamics analysis in the
+        // phased encounter generator. R2: layer the REALIZED path-specific
+        // relationship gains tracked from prior scenes' choice consequences
+        // (incremental validator upper bound) over the bible's initial stats,
+        // so the encounter reads relationships as they stand, not as-cast.
         const playerRelationships: Record<string, import('../../../types').Relationship> = {};
         for (const npc of npcsInvolved) {
           const profile = characterBible.characters.find(c => c.id === npc.id);
           const stats = profile?.initialStats;
+          const realizedDim = (dimension: 'trust' | 'affection' | 'respect' | 'fear'): number => {
+            const initial = stats?.[dimension] ?? 0;
+            const upperBound = this.deps.incrementalValidator?.getRelationshipUpperBound(npc.id, dimension);
+            return typeof upperBound === 'number' ? Math.max(initial, upperBound) : initial;
+          };
           playerRelationships[npc.id] = {
             npcId: npc.id,
-            trust: stats?.trust ?? 0,
-            affection: stats?.affection ?? 0,
-            respect: stats?.respect ?? 0,
-            fear: stats?.fear ?? 0,
+            trust: realizedDim('trust'),
+            affection: realizedDim('affection'),
+            respect: realizedDim('respect'),
+            fear: realizedDim('fear'),
           };
         }
         const allNpcInfos = characterBible.characters
@@ -3620,6 +3743,10 @@ export class ContentGenerationPhase {
       );
     }
     this.deps.assertSceneDependencyInvariants(blueprint, sceneContents);
+
+    // R8: the last scene's contract-load temperature must not leak into
+    // later SceneWriter uses (final-contract regens, repair handlers).
+    this.deps.sceneWriter.setContractLoadTemperature(undefined);
 
     await this.deps.runSceneCriticPass(sceneContents, characterBible);
 

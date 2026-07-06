@@ -230,7 +230,19 @@ export function buildSceneTimelineHandoff(
 ): SceneTimelineHandoff | undefined {
   const idx = scenes.findIndex((s) => s.id === scene.id);
   if (idx <= 0) return undefined;
-  const prev = scenes[idx - 1];
+  return buildSceneTimelineHandoffFrom(scenes[idx - 1], scene);
+}
+
+/**
+ * Build the handoff block for a scene against an EXPLICIT predecessor —
+ * used by the realized-context threading (pipeline/realizedContext.ts) to
+ * hand off from the scene-graph predecessor instead of blueprint array order.
+ * Same output shape and semantics as {@link buildSceneTimelineHandoff}.
+ */
+export function buildSceneTimelineHandoffFrom(
+  prev: TimelineScene,
+  scene: TimelineScene,
+): SceneTimelineHandoff {
   const locationChanged = !sameLocation(prev.location, scene.location)
     && normLoc(prev.location).length > 0
     && normLoc(scene.location).length > 0;

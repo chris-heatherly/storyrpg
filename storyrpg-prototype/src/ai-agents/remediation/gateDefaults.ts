@@ -274,6 +274,26 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // conflicts to a blocking hard-abort (StoryArchitect regenerates; the
   // content-phase re-check aborts). Reversible via =0. Default-ON.
   GATE_SCENE_CONSTRUCTION_PREFLIGHT: true,
+  // Bounded architecture re-run when the SceneConstructionGate blocks
+  // (2026-07-07: the gate's own error message says "Re-run architecture…" but
+  // no code path ever did — a preflight hit hard-aborted the run at ~4% and
+  // discarded a healthy cached analysis + season plan). When ON, the first
+  // SceneConstructionGate abort re-runs StoryArchitect + branch analysis once
+  // and retries content generation; a second hit still aborts (a genuine
+  // chronology defect keeps failing fast, before any prose is written).
+  // Reversible via =0 (restores the immediate hard abort).
+  GATE_SCENE_CONSTRUCTION_ARCH_RETRY: true,
+  // LLM re-author for generic planner central turns (2026-07-07: s1-7 shipped a
+  // role-scaffold turn — "Aftermath pressure shifts visible leverage around…" —
+  // that the final SceneTurnRealizationValidator is guaranteed to block, and the
+  // prose repair loop explicitly skips it because the defect is blueprint
+  // METADATA, not prose. The run died at 100% on an issue knowable at minute 3).
+  // When ON: (a) StoryArchitect re-authors scaffold turns at architecture time
+  // with one focused LLM call per scene; (b) the final-contract repair loop gains
+  // a turn-contract re-author handler that derives the turn from the scene's
+  // ALREADY-WRITTEN prose. A failed re-author keeps the scaffold, so the
+  // final-contract gate remains the net. Reversible via =0.
+  GATE_SCENE_TURN_REAUTHOR: true,
   // Deterministic demote-to-aftermath ownership repair inside
   // attachSceneEventOwnershipProfiles (2026-07-04 audit: SceneConstructionGate
   // duplicate-ownership conflicts were the single largest hard-abort surface,

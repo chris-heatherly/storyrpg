@@ -2912,7 +2912,11 @@ export class FullStoryPipeline {
       // === PHASE 3.5: BRANCH ANALYSIS ===
       this.emit({ type: 'phase_start', phase: 'branch_analysis', message: 'Phase 3.5: Analyzing branch structure' });
       this.requirePhases('branch_analysis', ['episode_architecture']);
-      const branchAnalysis = await this.measurePhase('branch_analysis', () => this.runBranchAnalysis(brief, episodeBlueprint));
+      // Capture a definitely-assigned const for the closure: episodeBlueprint is a
+      // `let` reassigned by the SceneConstructionGate architecture retry below, which
+      // invalidates TS narrowing inside callbacks.
+      const architectureBlueprint = episodeBlueprint;
+      const branchAnalysis = await this.measurePhase('branch_analysis', () => this.runBranchAnalysis(brief, architectureBlueprint));
       this.markPhaseComplete('branch_analysis');
       if (branchAnalysis) {
         this.addCheckpoint('Branch Analysis', branchAnalysis, false);
@@ -2981,26 +2985,32 @@ export class FullStoryPipeline {
         choiceSets?: ChoiceSet[];
         encounters?: Array<[string, EncounterStructure]>;
       }>(resumeCheckpoint, 'scene_content');
-      const contentGenerationResult: {
+      let contentGenerationResult: {
         sceneContents: SceneContent[];
         choiceSets: ChoiceSet[];
         encounters: Map<string, EncounterStructure>;
-      } = resumedSceneContent
-        ? {
-            sceneContents: resumedSceneContent.sceneContents || [],
-            choiceSets: resumedSceneContent.choiceSets || [],
-            encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
-          }
-        : await this.measurePhase(
-            'content_generation',
-            () => this.runContentGeneration(
-              brief,
-              worldBible,
-              characterBible,
-              episodeBlueprint,
-              branchAnalysis || undefined
-            )
-          );
+      };
+      if (resumedSceneContent) {
+        contentGenerationResult = {
+          sceneContents: resumedSceneContent.sceneContents || [],
+          choiceSets: resumedSceneContent.choiceSets || [],
+          encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
+        };
+      } else {
+        const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
+          brief,
+          worldBible,
+          characterBible,
+          blueprint: episodeBlueprint,
+          branchAnalysis: branchAnalysis || undefined,
+          phaseLabel: 'content_generation',
+          onArchitectureRetry: async (retryBlueprint) => {
+            this.addCheckpoint('Episode Blueprint', retryBlueprint, true);
+          },
+        });
+        episodeBlueprint = contentOutcome.blueprint;
+        contentGenerationResult = contentOutcome.content;
+      }
       const { sceneContents } = contentGenerationResult;
       ({ choiceSets, encounters } = contentGenerationResult);
       this.markPhaseComplete('content_generation');
@@ -4101,6 +4111,63 @@ export class FullStoryPipeline {
       });
     }
     return result;
+  }
+
+  /**
+   * Content generation with ONE bounded architecture re-run when the
+   * SceneConstructionGate blocks (bite-me 2026-07-07: the gate's own error says
+   * "Re-run architecture…" but nothing ever did — a preflight hit hard-aborted
+   * the run at ~4% and discarded a healthy analysis + season plan). On a gate
+   * error: re-run StoryArchitect once (the LLM elaboration varies, and the
+   * question-shaped-turn / cue-detection fixes change the derived contracts),
+   * refresh branch analysis for the new blueprint, and retry content generation
+   * once. A second gate hit rethrows — a genuine chronology defect still fails
+   * fast before prose is written. Kill-switch:
+   * GATE_SCENE_CONSTRUCTION_ARCH_RETRY=0 restores the immediate hard abort.
+   */
+  private async runContentGenerationWithArchitectureRetry(params: {
+    brief: FullCreativeBrief;
+    worldBible: WorldBible;
+    characterBible: CharacterBible;
+    blueprint: EpisodeBlueprint;
+    branchAnalysis?: BranchAnalysis;
+    outputDirectory?: string;
+    episodeNumber?: number;
+    phaseLabel: string;
+    onArchitectureRetry?: (blueprint: EpisodeBlueprint, branchAnalysis: BranchAnalysis | undefined) => Promise<void>;
+  }): Promise<{
+    content: { sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> };
+    blueprint: EpisodeBlueprint;
+    branchAnalysis?: BranchAnalysis;
+  }> {
+    const { brief, worldBible, characterBible, outputDirectory, episodeNumber, phaseLabel } = params;
+    try {
+      const content = await this.measurePhase(phaseLabel, () => this.runContentGeneration(
+        brief, worldBible, characterBible, params.blueprint, params.branchAnalysis, outputDirectory, episodeNumber,
+      ));
+      return { content, blueprint: params.blueprint, branchAnalysis: params.branchAnalysis };
+    } catch (error) {
+      const isGateAbort = error instanceof PipelineError && error.agent === 'SceneConstructionGate';
+      if (!isGateAbort || !isGateEnabled('GATE_SCENE_CONSTRUCTION_ARCH_RETRY')) throw error;
+      this.emit({
+        type: 'regeneration_triggered',
+        phase: 'architecture',
+        message: `SceneConstructionGate blocked content generation; re-running episode architecture once before aborting: ${(error as Error).message.slice(0, 400)}`,
+      });
+      const blueprint = await this.measurePhase(
+        `${phaseLabel}_architecture_retry`,
+        () => this.runEpisodeArchitecture(brief, worldBible, characterBible),
+      );
+      const branchAnalysis = (await this.measurePhase(
+        `${phaseLabel}_branch_analysis_retry`,
+        () => this.runBranchAnalysis(brief, blueprint),
+      )) || undefined;
+      await params.onArchitectureRetry?.(blueprint, branchAnalysis);
+      const content = await this.measurePhase(`${phaseLabel}_retry`, () => this.runContentGeneration(
+        brief, worldBible, characterBible, blueprint, branchAnalysis, outputDirectory, episodeNumber,
+      ));
+      return { content, blueprint, branchAnalysis };
+    }
   }
 
   // Extracted to phases/ContentGenerationPhase.ts (pure move). Thin delegating
@@ -6634,6 +6701,10 @@ export class FullStoryPipeline {
       await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, blueprint);
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, blueprint);
       const branchPath = this.episodeCheckpointFile(i, 'branch-analysis');
+      // Capture a definitely-assigned const for the closure: `blueprint` is a `let`
+      // reassigned by the SceneConstructionGate architecture retry below, which
+      // invalidates TS narrowing inside callbacks.
+      const architectureBlueprint = blueprint;
       const branchAnalysis = (canHydrateEpisodeResume
         ? this.loadResumeUnit<BranchAnalysis | null>(
           outputDirectory,
@@ -6641,20 +6712,25 @@ export class FullStoryPipeline {
           branchPath,
         )
         : undefined)
-        ?? await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, blueprint));
+        ?? await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, architectureBlueprint));
       await this.saveResumeUnit(outputDirectory, `branch_analysis:episode-${i}`, branchPath, branchAnalysis);
-      const { sceneContents, choiceSets, encounters } = await this.measurePhase(
-        `episode_${i}_content`,
-        () => this.runContentGeneration(
-          episodeBrief,
-          worldBible,
-          characterBible,
-          blueprint,
-          branchAnalysis || undefined,
-          outputDirectory,
-          i
-        )
-      );
+      const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
+        brief: episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        branchAnalysis: branchAnalysis || undefined,
+        outputDirectory,
+        episodeNumber: i,
+        phaseLabel: `episode_${i}_content`,
+        onArchitectureRetry: async (retryBlueprint, retryBranchAnalysis) => {
+          await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, retryBlueprint);
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, retryBlueprint);
+          await this.saveResumeUnit(outputDirectory, `branch_analysis:episode-${i}`, branchPath, retryBranchAnalysis ?? null);
+        },
+      });
+      blueprint = contentOutcome.blueprint;
+      const { sceneContents, choiceSets, encounters } = contentOutcome.content;
       await this.qualityCouncil?.runChoice({
         brief: episodeBrief,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,

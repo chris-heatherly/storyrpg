@@ -17,7 +17,7 @@
 
 import { PipelineConfig } from '../config';
 import { Story, NPCTier, RelationshipDimension, Consequence } from '../../types';
-import { EpisodeBlueprint } from '../agents/StoryArchitect';
+import { EpisodeBlueprint, StoryArchitect } from '../agents/StoryArchitect';
 import { CharacterBible } from '../agents/CharacterDesigner';
 import { SceneContent } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
@@ -41,6 +41,7 @@ import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { buildEncounterCostRepairHandler } from '../remediation/encounterCostRepairHandler';
+import { buildSceneTurnContractRepairHandler } from '../remediation/sceneTurnContractRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
 import { buildObligationPayoffRepairHandler } from '../remediation/obligationPayoffRepairHandler';
@@ -1181,6 +1182,27 @@ export class FinalContract {
                 return new EncounterArchitect({ ...this.deps.config.agents.storyArchitect, maxTokens: 16384 });
               } catch (err) {
                 console.warn(`[Pipeline] Encounter cost-field contract repair: EncounterArchitect unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          })),
+        );
+      }
+      // Generic planner central turns are blueprint METADATA the scene-prose
+      // handler explicitly skips (no prose rewrite can change the contract the
+      // validator reads) — historically an unrepairable class that exhausted
+      // the loop and aborted the run at 100% (bite-me 2026-07-07 s1-7). This
+      // handler repairs the correct surface: it re-authors the turn contract
+      // itself from the scene's already-written prose.
+      if (isGateEnabled('GATE_SCENE_TURN_REAUTHOR')) {
+        handlers.push(
+          guardLlmHandler(buildSceneTurnContractRepairHandler({
+            architect: () => {
+              try {
+                return new StoryArchitect(this.deps.config.agents.storyArchitect);
+              } catch (err) {
+                console.warn(`[Pipeline] Turn-contract repair: StoryArchitect unavailable — ${err instanceof Error ? err.message : String(err)}`);
                 return null;
               }
             },

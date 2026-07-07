@@ -170,6 +170,19 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  // Bounded architecture re-run when the SceneConstructionGate blocks content
+  // generation (2026-07-07: the gate's error said "Re-run architecture…" but no
+  // code path did — one preflight hit hard-aborted the run and discarded the
+  // cached analysis + season plan). One StoryArchitect + branch-analysis re-run,
+  // then one content retry; a second gate hit still aborts.
+  { id: 'GATE_SCENE_CONSTRUCTION_ARCH_RETRY', placement: 'plan', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  // Generic-planner-turn re-author (2026-07-07: s1-7's role-scaffold turn was
+  // guaranteed to block the final contract, but the defect is blueprint metadata
+  // the scene-prose repair loop explicitly skips). Two surfaces, one gate:
+  // architecture-time re-author in StoryArchitect (fail-fast, before any prose)
+  // and a final-contract turn-contract repair handler (derives the turn from the
+  // scene's already-written prose).
+  { id: 'GATE_SCENE_TURN_REAUTHOR', placement: 'plan', auditPlacements: ['season-final'], kind: 'remediation', defaultOn: true, repair: 'regen' },
   // Deterministic demote-to-aftermath repair for duplicate-sensitive event
   // ownership on non-encounter-capable scenes (2026-07-04: SceneConstructionGate
   // duplicate-ownership conflicts were the largest hard-abort surface with no

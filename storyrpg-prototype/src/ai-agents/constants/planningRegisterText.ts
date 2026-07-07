@@ -1,3 +1,28 @@
+// --- Title Case taxonomy fragment chains -----------------------------------
+// SceneWriter occasionally "dramatizes" abstract planning contracts (theme,
+// identity, stakes) by rendering them inside the fiction as a chain of Title
+// Case label fragments — e.g. a fake overlay reading
+// "*Betrayal. Public Trust. Marinescu's...*" (shipped in s1-1-b3, 2026-07-07).
+// Real prose sentences almost always contain lowercase words, so two-plus
+// consecutive all-Title-Case fragments where one carries a planning/theme noun
+// is a high-confidence leak. Case-sensitive on purpose: the capitalization IS
+// the signal. Mirrored in src/engine/readerProseSanitizer.ts (the reader
+// cannot import generator code) — keep the two in sync.
+const TITLE_WORD = "[A-Z][A-Za-z\\u00C0-\\u024F'’-]*";
+const TITLE_FRAGMENT = `${TITLE_WORD}(?:\\s+${TITLE_WORD}){0,3}`;
+const TAXONOMY_NOUN =
+  '(?:Betrayal|Trust|Loyalty|Identity|Reputation|Belonging|Humiliation|Shame|Redemption|Sacrifice|Secrecy|Secrets?|Stakes|Leverage|Obsession|Desire|Truth|Lies?|Fear|Wounds?|Wants?|Needs?|Friendship)';
+const TAXONOMY_FRAGMENT = `(?:${TITLE_WORD}\\s+){0,3}${TAXONOMY_NOUN}(?:['’]s)?(?:\\s+${TITLE_WORD}){0,3}`;
+const FRAGMENT_END = `(?:['’]s)?\\s*(?:\\.{3}|…|\\.)`;
+// A chain may only start at text start, after sentence punctuation, or after
+// opening markup/quotes — never mid-sentence, so a real sentence ending in a
+// proper noun ("She trusted Victor.") cannot seed a false chain.
+const CHAIN_START = `(?:^|[.!?…:]\\s+|—\\s*|\\n)[*_"“'‘(\\[]*\\s*`;
+const TAXONOMY_FRAGMENT_CHAIN = new RegExp(
+  `${CHAIN_START}(?:${TAXONOMY_FRAGMENT}\\.\\s+${TITLE_FRAGMENT}${FRAGMENT_END}` +
+  `|${TITLE_FRAGMENT}\\.\\s+(?:${TITLE_FRAGMENT}\\.\\s+){0,2}${TAXONOMY_FRAGMENT}${FRAGMENT_END})`,
+);
+
 export const PLANNING_REGISTER_LEAK_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'Open the episode', pattern: /\bOpen\s+the\s+episode\b/i },
   { label: 'Introduce X on-page', pattern: /\bIntroduce\s+[^.!?\n]{1,100}?\s+on-page\b/i },

@@ -448,7 +448,14 @@ const baselines = {
   // scene reader-prose exemption, the treatment-without-seasonPlan warning,
   // and the two-tier scene-lock deferred-findings warning. Bulk logic lives
   // in the extracted modules.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9374,
+  // +92 (9374 -> 9466): SceneConstructionGate bounded architecture retry seam
+  // (2026-07-07) — runContentGenerationWithArchitectureRetry, a thin wrapper
+  // that re-runs the EXISTING runEpisodeArchitecture/runBranchAnalysis/
+  // runContentGeneration phases once when the gate blocks (previously a hard
+  // abort at ~4% that discarded a healthy cached analysis + season plan), plus
+  // the two call-site rewires and TS-narrowing consts. No new logic beyond the
+  // retry orchestration; kill-switch GATE_SCENE_CONSTRUCTION_ARCH_RETRY.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9466,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6566,

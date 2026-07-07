@@ -44,7 +44,7 @@ import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, prettifyEmbeddedLocationIds, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
-import { applySceneContract } from '../utils/sceneContractBuilders';
+import { applySceneContract, isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
 import { collectColdOpenProfileIssues } from '../utils/coldOpenProfile';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type { TreatmentEventAtom } from '../../types/treatmentEvent';
@@ -124,6 +124,7 @@ import { getFlagRegistry } from '../pipeline/flagRegistry';
 import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
 import {
   detectPrimaryStoryEventCues,
+  STORY_EVENT_CUE_DESCRIPTIONS,
   STORY_EVENT_CUE_ORDER,
   type StoryEventCue,
 } from '../remediation/storyEventCues';
@@ -3935,6 +3936,192 @@ Remember: The encounter is the heart. Design outward from it.
     }
   }
 
+  /**
+   * Focused LLM call: author ONE scene's central turn as a concrete, stageable
+   * event. Used at two surfaces with the same contract:
+   *   - architecture time (`reauthorGenericPlannerTurns`): the planner produced
+   *     scaffold ("Aftermath pressure shifts visible leverage around …") — author
+   *     the turn from the scene's role, neighbors, and episode context so
+   *     SceneWriter has a real event to dramatize;
+   *   - final-contract repair (`buildSceneTurnContractRepairHandler`): the scene's
+   *     prose already exists — state the turn the prose ALREADY dramatizes,
+   *     reusing its concrete nouns and verbs so the realization check clears.
+   * Returns null when the model's answer is itself scaffold/question-shaped —
+   * callers keep the existing turn and downstream gates stay the net.
+   */
+  async reauthorSceneTurn(ctx: {
+    sceneId: string;
+    sceneName?: string;
+    role?: string;
+    location?: string;
+    description?: string;
+    choicePoint?: string;
+    requiredBeat?: string;
+    episodeSynopsis?: string;
+    previousTurn?: string;
+    nextTurn?: string;
+    /** Existing reader-facing prose (final-contract surface). When present, the turn MUST be grounded in it. */
+    prose?: string;
+    /** Staged plot-event types the turn must NOT introduce (they belong to other scenes in the route). */
+    avoidEvents?: string[];
+  }): Promise<string | null> {
+    const contextLines = [
+      ctx.sceneName ? `SCENE: "${ctx.sceneName}" (id ${ctx.sceneId})` : `SCENE id: ${ctx.sceneId}`,
+      ctx.role ? `NARRATIVE ROLE: ${ctx.role}` : '',
+      ctx.location ? `LOCATION: ${ctx.location}` : '',
+      ctx.description ? `SCENE DESCRIPTION: ${ctx.description}` : '',
+      ctx.requiredBeat ? `A BEAT THIS SCENE MUST DEPICT: ${ctx.requiredBeat}` : '',
+      ctx.choicePoint ? `THE SCENE'S CHOICE POINT: ${ctx.choicePoint}` : '',
+      ctx.previousTurn ? `PREVIOUS SCENE'S TURN: ${ctx.previousTurn}` : '',
+      ctx.nextTurn ? `NEXT SCENE'S TURN: ${ctx.nextTurn}` : '',
+      ctx.episodeSynopsis ? `EPISODE SYNOPSIS: ${ctx.episodeSynopsis}` : '',
+      ctx.avoidEvents?.length
+        ? `FORBIDDEN EVENT TYPES (these plot events are staged by OTHER scenes — your turn must not introduce or depict any of them): ${ctx.avoidEvents.join('; ')}`
+        : '',
+    ].filter(Boolean).join('\n');
+    const proseBlock = ctx.prose
+      ? `\nTHE SCENE'S PROSE (already written — your sentence must state the turn this prose ALREADY dramatizes, reusing its concrete nouns, names, and verbs; do not invent events the prose does not show):\n"""\n${ctx.prose.slice(0, 6000)}\n"""\n`
+      : '';
+
+    const prompt = `You are repairing ONE scene's dramatic turn contract in an interactive story episode. The scene's planned "central turn" is placeholder scaffold text (a role summary or a thematic question), not a stageable event.
+
+${contextLines}
+${proseBlock}
+Write the scene's CENTRAL TURN: exactly ONE declarative sentence (under 35 words) describing the concrete, visible event where this scene pivots. It MUST:
+- name WHO does or discovers WHAT (a specific action, reveal, choice, cost, or changed state);
+- be stageable on-page — something a reader watches happen, not a theme, mood, or question;
+- pivot on THIS scene's own material above — do not invent a NEW plot event (a message arriving, an attack, a rescue, an arrival, a publication) that the scene context does not already contain;
+- never use planning language ("the scene establishes/escalates", "pressure", "leverage", "stakes") or restate the episode question;
+- never mention stats, dice, or game mechanics.
+
+Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
+
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 2);
+      const parsed = this.parseJSON<{ centralTurn?: unknown }>(raw);
+      const text = typeof parsed?.centralTurn === 'string' ? parsed.centralTurn.trim() : '';
+      if (
+        text.length >= 20
+        && text.length <= 400
+        && !isGenericScenePlannerText(text)
+        && !isQuestionShapedTurnText(text)
+        && !/\?\s*$/.test(text)
+      ) {
+        return text;
+      }
+      return null;
+    } catch (err) {
+      console.warn(`[StoryArchitect] reauthorSceneTurn(${ctx.sceneId}) failed (existing turn kept): ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Architecture-time counterpart of the final-contract turn re-author: the
+   * final SceneTurnRealizationValidator blocks any planner-source turn that is
+   * still `isGenericScenePlannerText` — a defect fully knowable HERE, before a
+   * single line of prose is written. Historically it was only detected ~30
+   * minutes later at the final contract, where the prose repair loop explicitly
+   * skips it (metadata, not prose) and the run aborted (bite-me 2026-07-07
+   * s1-7). Re-author each scaffold turn with one focused LLM call, then re-apply
+   * scene contracts so names/ladders/before-after states rebuild around the
+   * concrete event. A failed re-author keeps the scaffold — the final-contract
+   * handler and gate remain the net.
+   */
+  private async reauthorGenericPlannerTurns(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Promise<void> {
+    if (!isGateEnabled('GATE_SCENE_TURN_REAUTHOR')) return;
+    const scenes = blueprint.scenes ?? [];
+    const targets = scenes.filter((scene) =>
+      scene.turnContract?.source === 'planner'
+      && isGenericScenePlannerText(scene.turnContract.centralTurn));
+    if (targets.length === 0) return;
+
+    const concreteTurnOf = (scene: SceneBlueprint | undefined): string | undefined => {
+      const turn = scene?.turnContract?.centralTurn;
+      return turn && !isGenericScenePlannerText(turn) ? turn : undefined;
+    };
+    const declarative = (value: string | undefined): string | undefined => {
+      const text = (value ?? '').trim();
+      return text && !isGenericScenePlannerText(text) && !isQuestionShapedTurnText(text) ? text : undefined;
+    };
+
+    // Event-ownership guard: an authored turn must not INTRODUCE a staged
+    // plot-event cue the scene does not already carry — the scene would take
+    // ownership of that event and the SceneConstructionGate route-chronology
+    // check hard-aborts on the conflict (bite-me 2026-07-07 second abort: the
+    // re-authored s1-7 turn invented "an anonymous message arrives", which is
+    // antagonistContact — owned by chronology BEFORE the earlier blog-aftermath
+    // scene's event). One retry with explicit forbidden-event feedback, then
+    // keep the scaffold (the prose-grounded final-contract repair is the net
+    // and cannot create this conflict).
+    const newlyIntroducedCues = (scene: SceneBlueprint, authored: string): StoryEventCue[] => {
+      const staged = detectPrimaryStoryEventCues(this.sceneEventText(scene));
+      return [...detectPrimaryStoryEventCues(authored)].filter((cue) => !staged.has(cue));
+    };
+
+    let repaired = 0;
+    for (const scene of targets.slice(0, 6)) {
+      const index = scenes.indexOf(scene);
+      const nextScene = scene.leadsTo?.[0]
+        ? scenes.find((candidate) => candidate.id === scene.leadsTo?.[0])
+        : scenes[index + 1];
+      console.warn(
+        `[StoryArchitect] Scene "${scene.id}" carries a generic planner central turn — re-authoring at architecture time: "${scene.turnContract?.centralTurn}"`,
+      );
+      const reauthorContext = {
+        sceneId: scene.id,
+        sceneName: scene.name,
+        role: scene.narrativeRole,
+        location: scene.location,
+        description: declarative(scene.description),
+        choicePoint: declarative(scene.choicePoint?.description),
+        requiredBeat: (scene.requiredBeats ?? [])
+          .map((beat) => declarative(beat.mustDepict || beat.sourceTurn))
+          .find(Boolean),
+        episodeSynopsis: input.episodeSynopsis,
+        previousTurn: concreteTurnOf(scenes[index - 1]),
+        nextTurn: concreteTurnOf(nextScene),
+      };
+      let authored = await this.reauthorSceneTurn(reauthorContext);
+      if (authored) {
+        const introduced = newlyIntroducedCues(scene, authored);
+        if (introduced.length > 0) {
+          console.warn(
+            `[StoryArchitect] Re-authored turn for "${scene.id}" introduces staged event(s) the scene must not own (${introduced.join(', ')}) — retrying with forbidden-event feedback: "${authored}"`,
+          );
+          authored = await this.reauthorSceneTurn({
+            ...reauthorContext,
+            avoidEvents: introduced.map((cue) => STORY_EVENT_CUE_DESCRIPTIONS[cue]),
+          });
+          if (authored && newlyIntroducedCues(scene, authored).length > 0) {
+            console.warn(`[StoryArchitect] Retried turn for "${scene.id}" still introduces foreign staged events — scaffold kept: "${authored}"`);
+            authored = null;
+          }
+        }
+      }
+      if (!authored) {
+        console.warn(`[StoryArchitect] Turn re-author for "${scene.id}" produced no usable turn — scaffold kept (final contract remains the net).`);
+        continue;
+      }
+      // Only the turn is authored; before/after/handoff are cleared so the
+      // contract re-application below rebuilds them around the concrete event.
+      scene.turnContract = {
+        turnId: scene.turnContract?.turnId || `${scene.id}-turn`,
+        source: 'planner',
+        centralTurn: authored,
+        turnEvent: authored,
+        beforeState: '',
+        afterState: '',
+        handoff: '',
+      };
+      repaired += 1;
+    }
+    if (repaired > 0) {
+      this.applySceneContractsToPlannedBlueprint(blueprint, input);
+      console.info(`[StoryArchitect] Re-authored ${repaired} generic planner turn(s) at architecture time.`);
+    }
+  }
+
   private safeBlueprintSceneFallback(scene: SceneBlueprint, input: StoryArchitectInput, index: number): string {
     return pickBlueprintSafeText(
       this.firstConcreteRequiredBeat(scene.requiredBeats || []),
@@ -4249,6 +4436,10 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairSceneTurnContracts(blueprint);
       this.applySceneContractsToPlannedBlueprint(blueprint, input);
       this.repairBlueprintHygieneUnsafeText(blueprint, input);
+      // Fail-fast for the final contract's generic-planner-turn block: author a
+      // concrete turn NOW (one focused LLM call per scaffold scene) instead of
+      // shipping scaffold metadata that is guaranteed to fail 30 minutes later.
+      await this.reauthorGenericPlannerTurns(blueprint, input);
       this.repairDramaticStructureCraft(blueprint);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.assignInfoReveals(blueprint, input);

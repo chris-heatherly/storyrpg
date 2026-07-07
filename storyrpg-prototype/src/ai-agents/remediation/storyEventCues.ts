@@ -27,6 +27,28 @@ export const STORY_EVENT_CUE_ORDER: Partial<Record<StoryEventCue, number>> = {
 };
 
 /**
+ * Human-readable event descriptions for LLM feedback prompts — used when a
+ * generated sentence introduces a staged event cue the scene must not own
+ * (e.g. the turn re-author inventing "an anonymous message arrives" gave the
+ * scene antagonistContact ownership and broke route chronology, bite-me
+ * 2026-07-07 s1-7 second abort).
+ */
+export const STORY_EVENT_CUE_DESCRIPTIONS: Record<StoryEventCue, string> = {
+  arrival: 'arriving in a new city or place for the first time',
+  venueDoor: 'entering or being turned away at a venue door',
+  objectHandoff: 'an object being handed over or received',
+  socialMeet: 'a first meeting or social introduction',
+  threatEncounter: 'an attack, ambush, or physical threat',
+  roadBreakdown: 'a vehicle breakdown or being stranded on the road',
+  friendDebrief: 'debriefing or confiding in a friend afterwards',
+  lateNightWriting: 'writing, drafting, or publishing a post/blog',
+  antagonistContact: 'an anonymous or hidden sender making contact (message, note, call)',
+  blogAftermath: 'a published post going viral / readership blowing up',
+  endingAftermath: 'the episode-ending aftermath or cliffhanger fallout',
+  walkHome: 'being walked or escorted home',
+};
+
+/**
  * A staged anchor/signature moment must be a stageable EVENT, not a rhetorical
  * question or abstract pressure. Question-shaped text ("Can Kylie start
  * over…?") gives SceneWriter nothing to depict: as an encounter anchor it
@@ -53,11 +75,19 @@ export function normalizeEventCueText(value: string | undefined): string {
 
 function hasPublicWritingActionCueText(text: string): boolean {
   const writingObject = /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title)\b/;
-  const concreteWritingAction = /\b(?:writes?|wrote|drafts?|drafted|types?|typed|posts|posted|publishes|published|publish|chooses?\s+(?:a\s+)?codename|chooses?\s+(?:a\s+)?title)\b/;
   const explicitWritingMoment = /\b(?:[234]\s*a\s*m|[234]\s*am|late night|unable to sleep|numbers in (?:her|your|their) phone|dictionary|draft|blank page|publish button)\b/;
-  return concreteWritingAction.test(text) && writingObject.test(text)
-    || (explicitWritingMoment.test(text) && (concreteWritingAction.test(text) || writingObject.test(text)))
-    || (/\b(?:publish|published|publishes)\b/.test(text) && writingObject.test(text));
+  // The writing ACTION must act on the writing OBJECT (proximity window, like
+  // every other cue in this file). Independent presence anywhere in the text
+  // conflated "write under her own name … The blog …" — an identity aspiration
+  // plus a season-anchor reference — into a staged first-post event (bite-me
+  // 2026-07-07 s1-7 SceneConstructionGate abort).
+  const writingActionAlt = 'writes?|wrote|drafts?|drafted|types?|typed|posts|posted|publishes|published|publish|chooses?\\s+(?:a\\s+)?codename|chooses?\\s+(?:a\\s+)?title';
+  const writingObjectAlt = 'blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story|anonymous story|anonymous post|codename|title';
+  const actsOnWritingObject = new RegExp(`\\b(?:${writingActionAlt})\\b.{0,100}\\b(?:${writingObjectAlt})\\b`).test(text)
+    || new RegExp(`\\b(?:${writingObjectAlt})\\b.{0,100}\\b(?:${writingActionAlt})\\b`).test(text);
+  const concreteWritingAction = new RegExp(`\\b(?:${writingActionAlt})\\b`);
+  return actsOnWritingObject
+    || (explicitWritingMoment.test(text) && (concreteWritingAction.test(text) || writingObject.test(text)));
 }
 
 export function detectStoryEventCues(value: string | undefined): Set<StoryEventCue> {
@@ -131,8 +161,12 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('friendDebrief');
   }
 
-  const publicWritingLaunch = /\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b.{0,100}\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b/.test(text)
-    || /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b.{0,100}\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b/.test(text);
+  // Phrasal "start(s) over" means "begin anew", not "launch a publication" —
+  // strip it before the launch-verb test so "start over … the blog" (bite-me
+  // 2026-07-07 s1-7) cannot read as founding the blog.
+  const launchText = text.replace(/\b(?:starts?|started|starting) over\b/g, ' ');
+  const publicWritingLaunch = /\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b.{0,100}\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b/.test(launchText)
+    || /\b(?:blog|post|column|newsletter|site|account|feed|journal|diary|publication|dispatch|public account|public story)\b.{0,100}\b(?:starts?|launches?|founds?|opens?|creates?|begins?)\b/.test(launchText);
   if (publicWritingLaunch || hasPublicWritingActionCueText(text)) {
     cues.add('lateNightWriting');
   }

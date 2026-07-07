@@ -456,6 +456,11 @@
       "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
     },
     {
+      "type": "debug",
+      "phase": "incremental_contract_ep_1",
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+    },
+    {
       "type": "checkpoint",
       "phase": "incremental_contract_ep_1",
       "message": "Final contract repair ran 1 round(s); now passing"
@@ -809,6 +814,11 @@
       "type": "debug",
       "phase": "incremental_contract_ep_2",
       "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first."
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_contract_ep_2",
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
     },
     {
       "type": "debug",

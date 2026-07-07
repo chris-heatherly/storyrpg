@@ -254,6 +254,33 @@ describe('deriveRunQualityScore', () => {
     expect(result.basis.caps.map((cap) => cap.id)).toContain('change_equilibrium_missing_or_weak');
   });
 
+  it('does not cap inactive take/change beats on a partial ep1 you-only slice', () => {
+    const story = makeStoryCircleStory({
+      omitBeats: ['need', 'go', 'search', 'find', 'take', 'return', 'change'],
+    });
+    (story as any).generatedOutputScope = {
+      isPartialSeason: true,
+      generatedEpisodeRange: { startEpisode: 1, endEpisode: 1 },
+      sourceEpisodeCount: 8,
+      requestedEpisodeCount: 1,
+    };
+    const result = deriveRunQualityScore({
+      finalStory: story,
+      brief: {
+        seasonPlan: {
+          episodes: [{
+            episodeNumber: 1,
+            storyCircleRole: [{ beat: 'you', roleKind: 'primary' }],
+          }],
+        },
+      },
+      finalStoryContractReport: passingFinalStoryContract(),
+    });
+
+    expect(result.basis.caps.map((cap) => cap.id)).not.toContain('take_price_missing_or_weak');
+    expect(result.basis.caps.map((cap) => cap.id)).not.toContain('change_equilibrium_missing_or_weak');
+  });
+
   it('caps metadata-only Story Circle labels below 70 when not realized in final prose', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory({ metadataOnly: true }),

@@ -13,6 +13,7 @@ import {
   treatmentFieldCloseMatch,
   treatmentFieldTokens,
 } from './treatmentFieldContracts';
+import { chronologyRankForScene } from './treatmentTurnOrdering';
 
 const KIND_PREFIX: Record<CharacterTreatmentFieldKind, string> = {
   canonical_identity: 'canonical-identity',
@@ -439,7 +440,11 @@ export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScen
   }
 
   for (const [episodeNumber, episodeScenes] of byEpisode) {
-    const opening = [...episodeScenes].sort((a, b) => a.order - b.order)[0];
+    const opening = [...episodeScenes].sort((a, b) => {
+      const rankDiff = chronologyRankForScene(a) - chronologyRankForScene(b);
+      if (rankDiff !== 0) return rankDiff;
+      return a.order - b.order;
+    })[0];
     if (!opening) continue;
 
     for (const contract of opening.characterTreatmentContracts ?? []) {

@@ -4,6 +4,7 @@ import type { PlannedScene } from '../../types/scenePlan';
 import {
   attachAuthoredLiteResidueHooks,
   consolidateAuthoredLiteScenes,
+  drainDuplicateAuthoredBeats,
   enforceNpcIntroOrderOnScenes,
   inferAuthoredEncounterPresentation,
   introOrderConstraintPairs,
@@ -76,6 +77,19 @@ describe('authoredLiteScenePlan intro order', () => {
     expect(enforceNpcIntroOrderOnScenes(liteEpisode(), scenes, turns, assignment)).toBeGreaterThan(0);
     expect(scenes[0].npcsInvolved).not.toContain('Mika Novak');
     expect(scenes[3].npcsInvolved).toContain('Mika Novak');
+  });
+  it('drains duplicate authored beats from later scenes', () => {
+    const arrival = 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.';
+    const scenes = [
+      scene('s1-1', 0, {
+        requiredBeats: [{ id: 'rb1', tier: 'authored', mustDepict: arrival, sourceTurn: arrival }],
+      }),
+      scene('s1-3', 1, {
+        requiredBeats: [{ id: 'rb2', tier: 'authored', mustDepict: arrival, sourceTurn: arrival }],
+      }),
+    ];
+    expect(drainDuplicateAuthoredBeats(scenes)).toBe(1);
+    expect(scenes[1].requiredBeats?.some((beat) => beat.tier === 'authored')).toBe(false);
   });
 });
 

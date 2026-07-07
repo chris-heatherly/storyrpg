@@ -1397,6 +1397,9 @@ function applyCaps(
   inputs: StoryCircleQualityScoreInputs,
   collectedFindings: SidecarFinding[],
 ): void {
+  const scope = storyCircleEvidenceScope(inputs.finalStory ?? null);
+  const activeBeats = collectActiveStoryCircleBeats(inputs.brief, scope);
+
   if (storyCircle.missingBeats.length > 0) {
     caps.push({
       id: 'story_circle_primary_beat_missing',
@@ -1416,7 +1419,7 @@ function applyCaps(
   }
 
   const take = storyCircle.beats.take;
-  if (!take || take.status !== 'realized') {
+  if ((!activeBeats.size || activeBeats.has('take')) && (!take || take.status !== 'realized')) {
     caps.push({
       id: 'take_price_missing_or_weak',
       maxScore: 59,
@@ -1426,7 +1429,7 @@ function applyCaps(
   }
 
   const change = storyCircle.beats.change;
-  if (!change || change.status !== 'realized') {
+  if ((!activeBeats.size || activeBeats.has('change')) && (!change || change.status !== 'realized')) {
     caps.push({
       id: 'change_equilibrium_missing_or_weak',
       maxScore: 59,

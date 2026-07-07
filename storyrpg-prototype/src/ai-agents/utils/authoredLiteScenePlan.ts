@@ -11,6 +11,23 @@ import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { storyCircleRoleBeats } from './storyCircleDistribution';
 import { normalizeCharacterSlug, resolveRosterCharacter } from './npcIntroductionLedger';
+import { sortPlannedScenesByChronologyCue } from './treatmentTurnOrdering';
+
+function bindTokens(value: string | undefined): string[] {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9']+/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+}
+
+function tokenOverlapRatio(a: string, b: string): number {
+  const aTokens = bindTokens(a);
+  const bSet = new Set(bindTokens(b));
+  if (aTokens.length === 0 || bSet.size === 0) return 0;
+  const hits = aTokens.filter((token) => bSet.has(token)).length;
+  return hits / aTokens.length;
+}
 
 function authoredTurnCount(ep: SeasonEpisode): number {
   const guidance = ep.treatmentGuidance;
@@ -114,41 +131,128 @@ function rosterFromEpisode(ep: SeasonEpisode): Array<{ id: string; name: string 
   return (ep.mainCharacters ?? []).map((name) => ({ id: name, name }));
 }
 
+function npcSlugSet(ids: Iterable<string>): Set<string> {
+  return new Set([...ids].map((id) => normalizeCharacterSlug(id)));
+}
+
+function stripNpcFromScene(scene: PlannedScene, blocked: Set<string>): number {
+  if (!scene.npcsInvolved?.length || blocked.size === 0) return 0;
+  const before = scene.npcsInvolved.length;
+  scene.npcsInvolved = scene.npcsInvolved.filter((npc) => {
+    const slug = normalizeCharacterSlug(npc);
+    for (const blockedSlug of blocked) {
+      if (slug === blockedSlug || slug.includes(blockedSlug) || blockedSlug.includes(slug)) return false;
+    }
+    return true;
+  });
+  return before - scene.npcsInvolved.length;
+}
+
+/** First turn index where an NPC is named on-page or explicitly introduced. */
+export function buildNpcFirstAppearanceTurnIndex(
+  turns: string[],
+  roster: Array<{ id: string; name: string }>,
+): Map<string, number> {
+  const first = new Map<string, number>();
+  for (const member of roster) {
+    const nameParts = member.name.split(/\s+/).filter((part) => part.length >= 3);
+    const searchTerms = [...new Set([member.name, ...nameParts])];
+    for (let t = 0; t < turns.length; t += 1) {
+      const turn = turns[t];
+      if (searchTerms.some((term) => new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(turn))) {
+        first.set(normalizeCharacterSlug(member.id), t);
+        break;
+      }
+    }
+  }
+  for (let t = 0; t < turns.length; t += 1) {
+    for (const token of introducedEntityTokens(turns[t])) {
+      const match = resolveRosterCharacter(token, roster);
+      if (!match) continue;
+      const slug = normalizeCharacterSlug(match.id);
+      if (!first.has(slug) || t < first.get(slug)!) first.set(slug, t);
+    }
+  }
+  return first;
+}
+
+function scenePlayOrder(scene: PlannedScene): number {
+  return scene.order ?? 0;
+}
+
 /** Remove not-yet-introduced NPCs from scenes that precede their intro turn. */
 export function enforceNpcIntroOrderOnScenes(
   ep: SeasonEpisode,
   scenes: PlannedScene[],
   turns: string[],
   assignment: number[],
+  turnTargets?: PlannedScene[],
 ): number {
   const roster = rosterFromEpisode(ep);
   if (roster.length === 0 || assignment.length !== turns.length) return 0;
+  const targets = turnTargets ?? scenes;
   let removals = 0;
+
+  const firstTurnByNpc = buildNpcFirstAppearanceTurnIndex(turns, roster);
+  for (const [npcSlug, turnIndex] of firstTurnByNpc) {
+    const targetScene = targets[assignment[turnIndex]];
+    if (!targetScene) continue;
+    const introOrder = scenePlayOrder(targetScene);
+    for (const scene of scenes) {
+      if (scenePlayOrder(scene) >= introOrder) continue;
+      removals += stripNpcFromScene(scene, new Set([npcSlug]));
+    }
+  }
+
   for (let t = 0; t < turns.length; t += 1) {
     const tokens = introducedEntityTokens(turns[t]);
     if (tokens.length === 0) continue;
-    const introSceneIndex = assignment[t];
-    const introducedIds = new Set<string>();
-    for (const token of tokens) {
-      const match = resolveRosterCharacter(token, roster);
-      if (match) introducedIds.add(normalizeCharacterSlug(match.id));
-      introducedIds.add(normalizeCharacterSlug(token));
-    }
-    for (let s = 0; s < introSceneIndex; s += 1) {
-      const scene = scenes[s];
-      if (!scene?.npcsInvolved?.length) continue;
-      const before = scene.npcsInvolved.length;
-      scene.npcsInvolved = scene.npcsInvolved.filter((npc) => {
-        const slug = normalizeCharacterSlug(npc);
-        for (const introduced of introducedIds) {
-          if (slug === introduced || slug.includes(introduced) || introduced.includes(slug)) return false;
-        }
-        return true;
-      });
-      if (scene.npcsInvolved.length < before) removals += before - scene.npcsInvolved.length;
+    const introScene = targets[assignment[t]];
+    if (!introScene) continue;
+    const introOrder = scenePlayOrder(introScene);
+    const introducedIds = npcSlugSet(
+      tokens.flatMap((token) => {
+        const match = resolveRosterCharacter(token, roster);
+        return match ? [normalizeCharacterSlug(match.id), normalizeCharacterSlug(token)] : [normalizeCharacterSlug(token)];
+      }),
+    );
+    for (const scene of scenes) {
+      if (scenePlayOrder(scene) >= introOrder) continue;
+      removals += stripNpcFromScene(scene, introducedIds);
     }
   }
   return removals;
+}
+
+/** Drain later scenes whose authored beat duplicates an earlier scene (≥70% token overlap). */
+export function drainDuplicateAuthoredBeats(scenes: PlannedScene[]): number {
+  let drained = 0;
+  const coveredTexts: string[] = [];
+  for (const scene of [...scenes].sort((a, b) => scenePlayOrder(a) - scenePlayOrder(b))) {
+    const authored = (scene.requiredBeats ?? []).filter((beat) =>
+      beat.tier === 'authored' || beat.tier === 'signature');
+    const kept: RequiredBeat[] = [];
+    for (const beat of scene.requiredBeats ?? []) {
+      if (beat.tier !== 'authored' && beat.tier !== 'signature') {
+        kept.push(beat);
+        continue;
+      }
+      const text = [beat.mustDepict, beat.sourceTurn].filter(Boolean).join(' ');
+      const duplicate = coveredTexts.some((prior) => tokenOverlapRatio(text, prior) >= 0.7
+        || tokenOverlapRatio(prior, text) >= 0.7);
+      if (duplicate) {
+        drained += 1;
+        continue;
+      }
+      kept.push(beat);
+      if (text.trim()) coveredTexts.push(text);
+    }
+    if (authored.length > 0 && kept.filter((beat) => beat.tier === 'authored' || beat.tier === 'signature').length === 0) {
+      scene.narrativeRole = scene.narrativeRole === 'setup' ? scene.narrativeRole : 'development';
+    }
+    scene.requiredBeats = kept;
+  }
+  return drained;
 }
 
 function appendUniqueRequiredBeats(scene: PlannedScene, beats: RequiredBeat[]): void {
@@ -231,13 +335,32 @@ export function inferAuthoredEncounterPresentation(text: string): {
   style?: EncounterNarrativeStyle;
 } {
   const normalized = text.toLowerCase();
-  if (THREAT_ENCOUNTER_RE.test(normalized)) {
+  const hasThreat = THREAT_ENCOUNTER_RE.test(normalized);
+  const hasRescue = /\b(?:rescues?|rescued|rescue|saved?|saves)\b/i.test(normalized);
+  if (hasThreat || hasRescue) {
     return { type: 'survival', style: 'dramatic' };
   }
-  if (ROMANTIC_ENCOUNTER_RE.test(normalized) && !THREAT_ENCOUNTER_RE.test(normalized)) {
+  if (ROMANTIC_ENCOUNTER_RE.test(normalized)) {
     return { type: 'romantic', style: 'romantic' };
   }
   return {};
+}
+
+/** Require the rescuer to be named on-page in threat/rescue encounters. */
+export function appendEncounterRescuerNamingBeat(scene: PlannedScene): boolean {
+  if (scene.kind !== 'encounter' || !scene.encounter) return false;
+  const anchor = authoredRequiredBeatText(scene);
+  if (!THREAT_ENCOUNTER_RE.test(anchor) && !/\b(?:cismigiu|walk(?:s|ed|ing)?\s+home)\b/i.test(anchor)) return false;
+  const beatId = `${scene.id}-rescuer-named`;
+  if ((scene.requiredBeats ?? []).some((beat) => beat.id === beatId)) return false;
+  const beat: RequiredBeat = {
+    id: beatId,
+    sourceTurn: anchor,
+    mustDepict: 'Name the rescuer on-page (full name or codename such as Mr. Midnight) and let the protagonist register who saved them before the threshold handoff.',
+    tier: 'authored',
+  };
+  scene.requiredBeats = [...(scene.requiredBeats ?? []), beat];
+  return true;
 }
 
 export function applyAuthoredEncounterPresentation(scene: PlannedScene, anchorText: string): boolean {
@@ -257,12 +380,24 @@ export function attachAuthoredLiteResidueHooks(
 ): number {
   if (!isAuthoredLiteEpisode(ep) || !outgoingResidue?.length) return 0;
   let attached = 0;
+  const flagKeywords = (flag: string): string[] =>
+    flag.replace(/^flag:/, '').split(/[_-]+/).filter((part) => part.length >= 4);
+
   for (const obligation of outgoingResidue) {
     if (obligation.sourceEpisodeNumber !== ep.episodeNumber || !obligation.flag) continue;
     const anchor = obligation.choiceAnchor?.toLowerCase() ?? '';
+    const keywords = flagKeywords(obligation.flag);
     const target = scenes.find((scene) =>
       scene.hasChoice
-      && (scene.requiredBeats ?? []).some((beat) => beat.mustDepict?.toLowerCase().includes(anchor.slice(0, 20))))
+      && keywords.some((keyword) =>
+        sceneBindingText(scene).toLowerCase().includes(keyword)
+        || (scene.requiredBeats ?? []).some((beat) => beat.mustDepict?.toLowerCase().includes(keyword)),
+      ))
+      || scenes.find((scene) =>
+        scene.hasChoice
+        && (scene.requiredBeats ?? []).some((beat) => beat.mustDepict?.toLowerCase().includes(anchor.slice(0, 20))))
+      || scenes.find((scene) => scene.hasChoice && scene.npcsInvolved?.some((npc) =>
+        /stela/i.test(npc)) && /trust|open|ward/i.test(sceneBindingText(scene)))
       || scenes.find((scene) => scene.hasChoice && scene.kind !== 'encounter')
       || scenes.find((scene) => scene.hasChoice);
     if (!target) continue;
@@ -293,7 +428,9 @@ export function finalizeAuthoredLiteScenePlan(
   outgoingResidue?: SeasonResidueObligation[],
 ): number {
   if (!isAuthoredLiteEpisode(ep)) return 0;
-  let changes = consolidateAuthoredLiteScenes(ep, scenes);
+  let changes = sortPlannedScenesByChronologyCue(scenes);
+  changes += drainDuplicateAuthoredBeats(scenes);
+  changes += consolidateAuthoredLiteScenes(ep, scenes);
   for (const scene of scenes) {
     if (scene.kind !== 'encounter' || !scene.encounter) continue;
     const anchor = [
@@ -303,6 +440,7 @@ export function finalizeAuthoredLiteScenePlan(
       authoredRequiredBeatText(scene),
     ].filter(Boolean).join(' ');
     if (applyAuthoredEncounterPresentation(scene, anchor)) changes += 1;
+    if (appendEncounterRescuerNamingBeat(scene)) changes += 1;
   }
   changes += attachAuthoredLiteResidueHooks(ep, scenes, outgoingResidue);
   return changes;

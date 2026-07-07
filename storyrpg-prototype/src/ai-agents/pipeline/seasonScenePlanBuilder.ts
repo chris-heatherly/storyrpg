@@ -50,6 +50,12 @@ import {
   isAuthoredLiteEpisode,
   repairIntroOrderTurnAssignment,
 } from '../utils/authoredLiteScenePlan';
+import { filterAuthoredLiteEpisodeTurns } from '../utils/authoredLiteTurnFilter';
+import {
+  orderAuthoredEpisodeTurns,
+  positionalTurnAssignment,
+  sortPlannedScenesByChronologyCue,
+} from '../utils/treatmentTurnOrdering';
 import { assignStoryCircleBeatContractsToScenes } from '../utils/storyCircleBeatContracts';
 import {
   buildEncounterEventSignature,
@@ -1071,10 +1077,15 @@ function plannedEncounterCoverageText(enc: EpisodePlannedEncounter): string {
 
 export function getAuthoredEpisodeEventTexts(ep: SeasonEpisode): string[] {
   const guidance = ep.treatmentGuidance;
-  if (guidance?.episodeTurns?.length) return guidance.episodeTurns.filter((turn) => turn?.trim());
-  if (guidance?.majorChoicePressures?.length) return guidance.majorChoicePressures.filter((turn) => turn?.trim());
-  if (guidance?.encounterAnchors?.length) return guidance.encounterAnchors.filter((turn) => turn?.trim());
-  return [];
+  let turns: string[] = [];
+  if (guidance?.episodeTurns?.length) turns = guidance.episodeTurns.filter((turn) => turn?.trim());
+  else if (guidance?.majorChoicePressures?.length) turns = guidance.majorChoicePressures.filter((turn) => turn?.trim());
+  else if (guidance?.encounterAnchors?.length) turns = guidance.encounterAnchors.filter((turn) => turn?.trim());
+  if (isAuthoredLiteEpisode(ep)) {
+    turns = filterAuthoredLiteEpisodeTurns(turns, ep.episodeNumber);
+    turns = orderAuthoredEpisodeTurns(turns);
+  }
+  return turns;
 }
 
 /**
@@ -1483,6 +1494,10 @@ export function bindAuthoredTurnsToScenes(
   );
   const visualAnchor = explicitVisualAnchor || (fallbackAnchorAlreadyCovered ? undefined : fallbackEncounterAnchor);
 
+  if (isAuthoredLiteEpisode(ep)) {
+    sortPlannedScenesByChronologyCue(scenes);
+  }
+
   // Content scenes are everything except a trailing release breather (release is
   // aftermath, not authored content). Fall back to ALL scenes if every scene is a
   // release (degenerate) so turns are never dropped.
@@ -1490,7 +1505,6 @@ export function bindAuthoredTurnsToScenes(
   const targets = contentScenes.length > 0 ? contentScenes : scenes;
 
   // 1. Content-matched turn → scene binding. Each authored turn binds to the
-  //    content scene that actually dramatizes it (order-preserving best overlap),
   //    not its positional slot — see {@link alignTurnsToScenes}. Falls back to
   //    exact positional binding when the scenes carry no per-turn signal
   //    (deterministic path) so that path is unchanged.
@@ -1531,9 +1545,13 @@ export function bindAuthoredTurnsToScenes(
   const spineTurns = turns.filter((turn) => !duplicatesColdOpenHook(turn));
   const dedupedTurns = spineTurns.length > 0 ? spineTurns : turns;
   if (dedupedTurns.length > 0) {
-    const assignment = alignTurnsToScenes(dedupedTurns, turnTargets);
+    const litePositional = isAuthoredLiteEpisode(ep)
+      && dedupedTurns.length <= turnTargets.length;
+    const assignment = litePositional
+      ? positionalTurnAssignment(dedupedTurns.length, turnTargets.length)
+      : alignTurnsToScenes(dedupedTurns, turnTargets);
     repairIntroOrderTurnAssignment(dedupedTurns, assignment, turnTargets.length - 1);
-    enforceNpcIntroOrderOnScenes(ep, scenes, dedupedTurns, assignment);
+    enforceNpcIntroOrderOnScenes(ep, scenes, dedupedTurns, assignment, turnTargets);
     const perScene: RequiredBeat[][] = turnTargets.map(() => []);
     for (let t = 0; t < dedupedTurns.length; t += 1) {
       const slot = assignment[t];

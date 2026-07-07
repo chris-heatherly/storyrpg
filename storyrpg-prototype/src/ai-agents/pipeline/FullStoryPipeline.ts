@@ -225,6 +225,7 @@ import {
   ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
+  saveLlmLedgerSidecar,
   saveFinalStoryContractFailure,
   savePartialStory,
   appendFailedRunLedger,
@@ -692,6 +693,11 @@ export class FullStoryPipeline {
   // try scope that declares outputDirectory) can still write the error log +
   // a 'failed' quality-ledger row on abort.
   private _currentOutputDirectory?: string;
+
+  /** Output directory for the in-flight run (worker log finalization, resume). */
+  getCurrentOutputDirectory(): string | undefined {
+    return this._currentOutputDirectory;
+  }
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
@@ -5597,6 +5603,8 @@ export class FullStoryPipeline {
           // F4: this episode-failure path returns early (never reaches the
           // terminal catch), so record the failed run in the quality ledger here.
           await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length);
+          // P3: persist per-call usage telemetry on this early-return failure path.
+          await saveLlmLedgerSidecar(outputDirectory, this.telemetry.getLlmLedger());
         } catch (_logErr) { /* non-fatal */ }
 
         return {
@@ -5942,6 +5950,10 @@ export class FullStoryPipeline {
             stack: error instanceof Error ? error.stack : undefined,
             ...(details ? { details } : {}),
           }]);
+          // P3: a FAILED run must persist its per-call usage telemetry too —
+          // the truncation-abort class is diagnosed from token evidence, and
+          // the ledger previously only shipped with successful runs.
+          await saveLlmLedgerSidecar(this._currentOutputDirectory, this.telemetry.getLlmLedger());
           // B3a: record the failure kind for cross-run triage. PipelineError carries
           // the phase (failureKind) + agent/validator (validatorId).
           await appendFailedRunLedger(this._currentOutputDirectory, 1, {
@@ -7266,6 +7278,10 @@ export class FullStoryPipeline {
           message: msg,
           stack,
           episodeNumber: i,
+          // P3: persist the structured failure context (quarantined units,
+          // encounter attempt summaries, phase errors) — the top-line message
+          // alone was not enough to diagnose the 2026-07-06 truncation abort.
+          ...(epError instanceof PipelineError && epError.context ? { details: epError.context } : {}),
         }]);
       } catch {
         // Keep the episode failure as the primary signal.

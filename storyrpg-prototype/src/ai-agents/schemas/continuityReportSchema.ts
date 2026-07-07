@@ -45,6 +45,9 @@ export function buildContinuityReportJsonSchema(): StructuredJsonSchema {
   return {
     name: 'continuity_report',
     description: 'Cross-scene continuity QA report.',
+    // QA report with an unbounded issues array — the default cap is adequate
+    // for realistic reports; declared so the budget is explicit, not inherited.
+    maxOutputTokens: 8192,
     schema: {
       type: 'object',
       additionalProperties: false,

@@ -25,6 +25,7 @@ import {
   buildEncounterPhase1JsonSchema,
   buildEncounterPhase2JsonSchema,
   buildEncounterPhase3JsonSchema,
+  buildEncounterCoreJsonSchema,
   buildEncounterStoryletDraftJsonSchema,
   buildEncounterStructureJsonSchema,
 } from '../schemas/encounterSchemas';
@@ -182,6 +183,15 @@ export interface EncounterArchitectInput {
   encounterBeatPlan?: string[];
   difficulty: 'easy' | 'moderate' | 'hard' | 'extreme';
   partialVictoryCost?: Partial<EncounterCost>;
+
+  /**
+   * Set by the pipeline's failure-class-aware outer retry after a truncation
+   * (output-budget) failure. A budget failure cannot be fixed by prompt
+   * feedback or by repeating the same-size ask, so execute() skips the phased
+   * and full-size lean flows and goes straight to the decomposed lean ladder
+   * (core structure + per-slot storylet drafts — strictly smaller calls).
+   */
+  budgetRecovery?: boolean;
 
   // --- Authored-treatment anchor ("expand, do not rewrite") ---
   /**
@@ -427,10 +437,13 @@ export interface EncounterTelemetry {
    * phased_success   — phased path, every phase returned data
    * phased_with_gaps — phased path, at least one phase null/failed
    * lean             — phased path threw; legacy lean prompt succeeded
+   * lean_decomposed  — a lean full-structure ask truncated; the decomposed
+   *                    ladder (core structure + per-slot storylet drafts)
+   *                    recovered with strictly smaller calls
    * deterministic    — both lean attempts failed; deterministic fallback
    *                    used instead
    */
-  mode: 'phased_success' | 'phased_with_gaps' | 'lean' | 'deterministic';
+  mode: 'phased_success' | 'phased_with_gaps' | 'lean' | 'lean_decomposed' | 'deterministic';
   phase1Ok: boolean;
   /** success per opening-beat choice, in choice order */
   phase2: boolean[];
@@ -498,6 +511,29 @@ export function classifyPhaseError(err: unknown): EncounterPhaseError['reason'] 
   if (msg.includes('empty') || msg.includes('no response')) return 'empty';
   return 'other';
 }
+
+/**
+ * Monotone truncation-recovery contract (P1, 2026-07-06): when a generation
+ * unit hits max_tokens, the NEXT attempt must strictly reduce the requested
+ * output (compact schema, compact prompt, decomposition, or degrade) — never
+ * repeat the same-size ask, never escalate to a larger one. The bite-me
+ * 2026-07-06 abort made the same impossible full-structure ask four times.
+ *
+ * This map documents the strategy each generation unit applies on truncation;
+ * generationFailureLadder.test.ts pins it against the implementation.
+ */
+export const ENCOUNTER_TRUNCATION_RECOVERY = Object.freeze({
+  /** Retries with buildEncounterPhase1CompactJsonSchema (4096 cap) + compact prompt. */
+  phase1: 'compact_schema_retry',
+  /** Retries with a compact-output prompt directive (same schema, smaller strings). */
+  phase2: 'compact_prompt_retry',
+  /** Optional enrichment — a truncation degrades to null (the ask is dropped). */
+  phase3: 'degrade',
+  /** Per-slot drafts (4096 cap) are already the compact floor — fail closed. */
+  phase4: 'fail_closed_at_compact_floor',
+  /** Decomposes into encounter_core + four per-slot storylet drafts. */
+  lean: 'decompose',
+} as const);
 
 export class EncounterPhasedGenerationError extends Error {
   constructor(
@@ -1792,7 +1828,14 @@ Outcomes should include consequences that match the skill being tested:
     // through it ALWAYS collapses (endsong ep3). Route sustained set pieces
     // straight to the flat multi-beat flow, which enforces the 3-beat floor.
     const isSustained = this.isSustainedSetPieceInput(input);
-    if (isSustained) {
+    // Failure-class-aware outer retry (P1): after a truncation failure the
+    // pipeline sets budgetRecovery — repeating or growing the ask cannot
+    // succeed, so skip the phased and full-size lean flows entirely and go
+    // straight to the decomposed ladder (strictly smaller calls).
+    const budgetRecovery = input.budgetRecovery === true;
+    if (budgetRecovery) {
+      console.info(`[EncounterArchitect] ${input.sceneId} entering budget-recovery mode — decomposed lean ladder only (prior attempt hit an output-token ceiling).`);
+    } else if (isSustained) {
       console.info(`[EncounterArchitect] ${input.sceneId} is staged as a sustained set piece — using the flat multi-beat flow (the phased tree ships one top-level beat, which the set-piece depth gate rejects).`);
     } else {
       try {
@@ -1801,7 +1844,8 @@ Outcomes should include consequences that match the skill being tested:
         const msg = phasedError instanceof Error ? phasedError.message : String(phasedError);
         if (phasedError instanceof EncounterPhasedGenerationError && this.hasUnsafePhasedFallbackFailure(phasedError.phaseErrors)) {
           console.error(`[EncounterArchitect] Phased generation failed for ${input.sceneId} because a structural phase hit a non-fallback Gemini failure; refusing larger legacy fallback: ${msg}`);
-          return { success: false, error: msg };
+          // P3: phase errors must survive the failure — they are the diagnosis.
+          return { success: false, error: msg, metadata: { phaseErrors: phasedError.phaseErrors } };
         }
         console.warn(`[EncounterArchitect] Phased generation failed for ${input.sceneId}, falling back to legacy flow: ${msg}`);
       }
@@ -1824,14 +1868,15 @@ Outcomes should include consequences that match the skill being tested:
     const buildLeanTelemetry = (
       llmCalls: number,
       structure: EncounterStructure,
+      mode: 'lean' | 'lean_decomposed' = 'lean',
     ): EncounterTelemetry => ({
       sceneId: input.sceneId,
-      mode: 'lean',
+      mode,
       phase1Ok: false,
       phase2: [],
       phase3Ran: false,
       phase3Ok: false,
-      phase4Ok: false,
+      phase4Ok: mode === 'lean_decomposed',
       llmCallCount: llmCalls,
       msElapsed: Date.now() - execStart,
       phase4DefaultCollisions: this.detectDefaultStoryletCollisions(structure, input),
@@ -1840,14 +1885,55 @@ Outcomes should include consequences that match the skill being tested:
       degraded: this.detectDefaultStoryletCollisions(structure, input).length > 0,
     });
 
+    // Decomposed recovery (P1 monotone ladder): replaces one oversized
+    // full-structure ask with five bounded calls — encounter_core (no
+    // storylets) plus the four per-slot compact storylet drafts.
+    const decomposedPhaseErrors: EncounterPhaseError[] = [];
+    let decomposedError: string | undefined;
+    const runDecomposed = async (attempt: number): Promise<AgentResponse<EncounterStructure> | null> => {
+      try {
+        const structure = await this.tryDecomposedLeanAttempt(
+          input, attempt, minimumBeatCount, attemptSummaries, decomposedPhaseErrors, playerRelationships, allNpcs,
+        );
+        const llmCalls = 1 + PHASE4_STORYLET_SLOTS.length + decomposedPhaseErrors.length;
+        return { success: true, data: structure, metadata: { encounterTelemetry: buildLeanTelemetry(llmCalls, structure, 'lean_decomposed') } };
+      } catch (err) {
+        decomposedError = err instanceof Error ? err.message : String(err);
+        console.error(`[EncounterArchitect] Decomposed lean recovery failed for ${input.sceneId}: ${decomposedError}`);
+        return null;
+      }
+    };
+
+    if (budgetRecovery) {
+      const decomposed = await runDecomposed(1);
+      if (decomposed) return decomposed;
+      return {
+        success: false,
+        error: `All LLM attempts failed: budget-recovery decomposed ladder failed — ${decomposedError || 'unknown error'}`,
+        metadata: { attemptSummaries, phaseErrors: decomposedPhaseErrors },
+      };
+    }
+
     const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, undefined, undefined);
     if (leanResult.success && leanResult.data) {
       return { ...leanResult, metadata: { ...(leanResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(1, leanResult.data) } };
     }
 
-    const retryResult = await this.tryLLMAttempt(input, 2, 'lean_retry', minimumBeatCount, attemptSummaries, leanResult.error, leanResult.rawResponse);
-    if (retryResult.success && retryResult.data) {
-      return { ...retryResult, metadata: { ...(retryResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(2, retryResult.data) } };
+    // MONOTONE LADDER: a truncation means the full-structure ask does not fit
+    // the output budget — re-sending the same-size ask (lean_retry) cannot
+    // succeed and appending feedback only grows the input. Decompose instead.
+    const leanTruncated = classifyPhaseError(new Error(leanResult.error || '')) === 'max_tokens';
+    let retryResult: (AgentResponse<EncounterStructure> & { rawResponse?: string }) | null = null;
+    if (!leanTruncated) {
+      retryResult = await this.tryLLMAttempt(input, 2, 'lean_retry', minimumBeatCount, attemptSummaries, leanResult.error, leanResult.rawResponse);
+      if (retryResult.success && retryResult.data) {
+        return { ...retryResult, metadata: { ...(retryResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(2, retryResult.data) } };
+      }
+    }
+    const retryTruncated = retryResult ? classifyPhaseError(new Error(retryResult.error || '')) === 'max_tokens' : false;
+    if (leanTruncated || retryTruncated) {
+      const decomposed = await runDecomposed(leanTruncated ? 2 : 3);
+      if (decomposed) return decomposed;
     }
 
     // NO deterministic fallback (no-boilerplate mandate): template prose must
@@ -1855,9 +1941,76 @@ Outcomes should include consequences that match the skill being tested:
     // build with this error fed back as guidance, and fails the episode at
     // generation time if regeneration exhausts — instead of shipping boilerplate
     // the final contract's template-collapse gate would abort the run for later.
-    const finalError = retryResult.error || leanResult.error || 'unknown error';
+    const finalError = decomposedError || retryResult?.error || leanResult.error || 'unknown error';
     console.error(`[EncounterArchitect] All LLM attempts failed for ${input.sceneId}; refusing template fallback. Last error: ${finalError}`);
-    return { success: false, error: `All LLM attempts failed: ${finalError}` };
+    // P3: the attempt ladder (modes, sizes, per-attempt errors) must survive
+    // the failure — it is the difference between "encounter failed" and the
+    // 2026-07-06 diagnosis "the same oversized ask was repeated four times".
+    return {
+      success: false,
+      error: `All LLM attempts failed: ${finalError}`,
+      metadata: { attemptSummaries, phaseErrors: decomposedPhaseErrors },
+    };
+  }
+
+  /**
+   * Decomposed lean recovery (P1): author the encounter core (beats, clocks,
+   * stakes — everything but storylets) in one bounded call, then author the
+   * four aftermath storylets with the existing per-slot compact drafts, and
+   * assemble deterministically. Every call in this ladder requests strictly
+   * LESS output than the full-structure lean ask that truncated.
+   */
+  private async tryDecomposedLeanAttempt(
+    input: EncounterArchitectInput,
+    attempt: number,
+    minimumBeatCount: number,
+    attemptSummaries: Array<any>,
+    errorSink: EncounterPhaseError[],
+    playerRelationships?: Record<string, Relationship>,
+    allNpcs?: NPCInfo[],
+  ): Promise<EncounterStructure> {
+    const attemptStartedAt = Date.now();
+    console.log(`[EncounterArchitect] Decomposed lean recovery for ${input.sceneId}: encounter_core + ${PHASE4_STORYLET_SLOTS.length} storylet drafts (monotone truncation ladder)`);
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), EncounterArchitect.PER_CALL_TIMEOUT_MS);
+    let core: EncounterStructure;
+    let corePromptChars = 0;
+    try {
+      const corePrompt = this.buildReliablePrompt(input, { omitStorylets: true });
+      corePromptChars = corePrompt.length;
+      const response = await this.callLLM(
+        [{ role: 'user', content: corePrompt }],
+        1,
+        { signal: ac.signal, jsonSchema: buildEncounterCoreJsonSchema() },
+      );
+      core = this.parseJSON<EncounterStructure>(response);
+    } catch (err) {
+      attemptSummaries.push({ attempt, mode: 'lean_decomposed', promptChars: corePromptChars, elapsedMs: Date.now() - attemptStartedAt, status: 'failed', error: err instanceof Error ? err.message : String(err) });
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const beatCount = Array.isArray(core.beats) ? core.beats.length : 0;
+    if (beatCount < minimumBeatCount) {
+      const err = `Decomposed core returned only ${beatCount} beat(s); need at least ${minimumBeatCount}`;
+      attemptSummaries.push({ attempt, mode: 'lean_decomposed', promptChars: corePromptChars, elapsedMs: Date.now() - attemptStartedAt, status: 'failed', error: err });
+      throw new Error(err);
+    }
+
+    // Storylets via the per-slot compact drafts — already the compact floor.
+    const npcInfos: NPCInfo[] = input.npcsInvolved.map(n => ({ id: n.id, name: n.name, role: n.role }));
+    const brief = analyzeRelationshipDynamics(npcInfos, { current: playerRelationships || {} }, allNpcs);
+    const phase4 = await this.runPhase4(input, brief, errorSink);
+    (core as any).storylets = phase4;
+
+    this.requireAuthoredStorylets(core.storylets, input, 'lean_decomposed');
+    let structure = this.normalizeStructure(core, input);
+    this.validateStructure(structure, input);
+    attemptSummaries.push({ attempt, mode: 'lean_decomposed', promptChars: corePromptChars, elapsedMs: Date.now() - attemptStartedAt, status: 'success' });
+    console.log(`[EncounterArchitect] Decomposed lean recovery succeeded for ${input.sceneId}: ${structure.beats.length} beats + 4 authored storylets`);
+    return structure;
   }
 
   private async tryLLMAttempt(
@@ -1975,8 +2128,9 @@ Please try again. Key rules:
    * Uses flat nextBeatId linking (converted to tree by normalizeStructure).
    * Expected output: ~2-3K tokens vs ~10-15K for the full prompt.
    */
-  private buildReliablePrompt(input: EncounterArchitectInput): string {
+  private buildReliablePrompt(input: EncounterArchitectInput, options: { omitStorylets?: boolean } = {}): string {
     const protagonist = input.protagonistInfo.name || 'the protagonist';
+    const omitStorylets = options.omitStorylets === true;
     const npcsList = input.npcsInvolved
       .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}${npc.voiceNotes ? `\n  Voice: ${npc.voiceNotes}` : ''}`)
       .join('\n');
@@ -2217,7 +2371,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
       ]
     }
   ],
-  "startingBeatId": "beat-1",
+  "startingBeatId": "beat-1"${omitStorylets ? '' : `,
   "storylets": {
     "victory": {
       "id": "${input.sceneId}-sv",
@@ -2267,7 +2421,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
       "consequences": [],
       "nextSceneId": "${input.victoryNextSceneId || 'next-scene'}"
     }
-  }
+  }`}
 }
 
 RULES:
@@ -2278,7 +2432,8 @@ RULES:
 5. "beats" array MUST have at least ${this.getMinimumRequiredBeatCount(input)} beats
 6. Each outcome on beat-2 MUST have "isTerminal": true and an "encounterOutcome"
 7. Storyboard spine should have 7-9 frames; if you only provide 2 sample frames above, still output the full spine
-8. Prior story context must be spent as payoffContext plus at least one setupTextVariant, condition, statBonus, disposition shift, cost, or storylet echo when available`;
+8. Prior story context must be spent as payoffContext plus at least one setupTextVariant, condition, statBonus, disposition shift, cost, or storylet echo when available${omitStorylets ? `
+9. Do NOT include a "storylets" field — the aftermath storylets are authored in separate calls. Keep every string tight; this call must stay within a strict output budget` : ''}`;
   }
 
   /**
@@ -4898,10 +5053,16 @@ CRITICAL RULES:
   }
 
   private hasUnsafePhasedFallbackFailure(phaseErrors: EncounterPhaseError[] | undefined): boolean {
-    return (phaseErrors ?? []).some((error) =>
-      (error.phase === 'phase1' || error.phase.startsWith('phase4'))
-        && (error.reason === 'max_tokens' || error.reason === 'safety' || error.reason === 'recitation')
-    );
+    return (phaseErrors ?? []).some((error) => {
+      const unsafeReason = error.reason === 'max_tokens' || error.reason === 'safety' || error.reason === 'recitation';
+      if (!unsafeReason) return false;
+      // Phase 1/4: fail closed — no lean escalation (already compact or at floor).
+      if (error.phase === 'phase1' || error.phase.startsWith('phase4')) return true;
+      // Phase 2/3 max_tokens: compact retry exhausted — the lean flow asks for
+      // MORE output in one call; refuse that escalation hole (P1).
+      if (error.reason === 'max_tokens' && (error.phase.startsWith('phase2') || error.phase === 'phase3')) return true;
+      return false;
+    });
   }
 
   private validatePlayableOutcomeRouting(structure: EncounterStructure): void {
@@ -5221,8 +5382,12 @@ Replace ALL placeholders with actual narrative. Return ONLY the JSON object.`;
     choice: Phase1Result['openingBeat']['choices'][0],
     errorSink: EncounterPhaseError[],
   ): Promise<Phase2Result> {
-    return this.runPhaseWithRetry(`phase2:${choice.id}`, EncounterArchitect.PHASE2_TIMEOUT_MS, errorSink, async (signal) => {
-      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase2Prompt(input, brief, choice) }];
+    return this.runPhaseWithRetry(`phase2:${choice.id}`, EncounterArchitect.PHASE2_TIMEOUT_MS, errorSink, async (signal, _attempt, previousReason) => {
+      // Monotone truncation recovery: a max_tokens retry must shrink the ask —
+      // same schema, but with compact-output directives that cut every string
+      // budget (ENCOUNTER_TRUNCATION_RECOVERY.phase2 = 'compact_prompt_retry').
+      const compactRetry = previousReason === 'max_tokens';
+      const messages: AgentMessage[] = [{ role: 'user', content: this.buildPhase2Prompt(input, brief, choice, { compactRetry }) }];
       const response = await this.callLLM(messages, 1, { signal, jsonSchema: buildEncounterPhase2JsonSchema() });
       return this.normalizePhase2Result(this.parseJSON<Phase2Result>(response), choice.id);
     });
@@ -5250,6 +5415,7 @@ Replace ALL placeholders with actual narrative. Return ONLY the JSON object.`;
     input: EncounterArchitectInput,
     brief: RelationshipDynamicsBrief,
     choice: Phase1Result['openingBeat']['choices'][0],
+    options: { compactRetry?: boolean } = {},
   ): string {
     const npcsList = input.npcsInvolved
       .map(npc => `- ${npc.name} (${npc.id}): ${npc.role}${npc.voiceNotes ? ` — Voice: ${npc.voiceNotes}` : ''}`)
@@ -5259,8 +5425,19 @@ Replace ALL placeholders with actual narrative. Return ONLY the JSON object.`;
       ? `\n## Relationship Dynamics\n${brief.briefText}\n`
       : '';
 
+    const compactDirective = options.compactRetry
+      ? `
+
+## COMPACT RETRY (output budget)
+Your previous response exceeded the output-token budget. Shrink the output, not the structure:
+- setupText: 25-35 words. narrativeText: 15-25 words.
+- Exactly 3 choices per situation — never 4.
+- Omit relationshipConsequences unless a choice directly changes a relationship.
+- Keep feedbackCue and reminderPlan strings to one short sentence each.`
+      : '';
+
     return `Generate the NEXT MOMENT after the player chose: "${choice.text}" (${choice.approach}).
-Return ONLY valid JSON.
+Return ONLY valid JSON.${compactDirective}
 
 ## Context
 - Scene: ${input.sceneName} — ${input.sceneDescription}

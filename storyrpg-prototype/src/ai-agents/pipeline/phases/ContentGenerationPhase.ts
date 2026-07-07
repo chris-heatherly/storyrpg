@@ -31,7 +31,13 @@ import {
   EncounterArchitectInput,
   EncounterStructure,
   EncounterTelemetry,
+  classifyPhaseError,
 } from '../../agents/EncounterArchitect';
+import {
+  QuarantinedEncounterUnit,
+  buildQuarantineRetryInput,
+  runQuarantineRetryPass,
+} from './encounterQuarantine';
 import { GeneratedBeat, SceneContent, SceneWriter } from '../../agents/SceneWriter';
 import { EpisodeBlueprint, SceneBlueprint } from '../../agents/StoryArchitect';
 import { TwistPlan } from '../../agents/TwistArchitect';
@@ -494,6 +500,16 @@ export class ContentGenerationPhase {
     // to LATER scenes so SceneWriter can author within-episode callback payoffs.
     const episodePlants: EpisodePlant[] = [];
     const encounters: Map<string, EncounterStructure> = new Map();
+
+    // UNIT QUARANTINE (P2, 2026-07-06): an encounter unit that exhausts its
+    // in-place ladder no longer aborts the run mid-phase (the bite-me abort
+    // discarded 62 minutes of checkpointed work over one encounter). The unit
+    // is quarantined, every other scene finishes and checkpoints, and an
+    // escalated retry pass runs at the end of the phase. Only if THAT fails
+    // does the phase throw — with all sibling units checkpointed, so resume
+    // retries just the failed unit. The missing-encounter guard below and the
+    // final story contract still refuse to ship a story with a missing unit.
+    const quarantinedEncounters: QuarantinedEncounterUnit[] = [];
 
     // Fix 3: re-assert the choice-type plan on the blueprint THIS loop iterates.
     // assignChoiceTypes also runs right after StoryArchitect, but choicePoint.type
@@ -3260,17 +3276,29 @@ export class ContentGenerationPhase {
         // at the final contract.
         let encounterResult: AgentResponse<EncounterStructure> | null = null;
         let lastEncounterFailure: string | undefined;
+        // P3: attempt summaries / phase errors from failed attempts, persisted
+        // into the quarantine record and the pipeline error log on abort.
+        let lastEncounterFailureDiagnostics: Record<string, unknown> | undefined;
         const maxEncounterAttempts = 2;
         for (let encAttempt = 1; encAttempt <= maxEncounterAttempts; encAttempt++) {
-          const attemptInput: EncounterArchitectInput = lastEncounterFailure
-            ? {
-                ...encounterInput,
-                storyContext: {
-                  ...encounterInput.storyContext,
-                  userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nPREVIOUS ATTEMPT FAILED: ${lastEncounterFailure}\nAddress the failure and return the complete, valid encounter JSON.`,
-                },
-              }
-            : encounterInput;
+          // Failure-class-aware retry (P1): prompt feedback only helps content
+          // defects. A truncation (output-budget) failure cannot be fixed by
+          // growing the input — route the retry into the architect's decomposed
+          // budget-recovery ladder (strictly smaller calls) instead.
+          const budgetFailure = lastEncounterFailure
+            ? classifyPhaseError(new Error(lastEncounterFailure)) === 'max_tokens'
+            : false;
+          const attemptInput: EncounterArchitectInput = !lastEncounterFailure
+            ? encounterInput
+            : budgetFailure
+              ? { ...encounterInput, budgetRecovery: true }
+              : {
+                  ...encounterInput,
+                  storyContext: {
+                    ...encounterInput.storyContext,
+                    userPrompt: `${encounterInput.storyContext.userPrompt || ''}\n\nPREVIOUS ATTEMPT FAILED: ${lastEncounterFailure}\nAddress the failure and return the complete, valid encounter JSON.`,
+                  },
+                };
           try {
             const attemptResult = await withTimeout(
               this.deps.encounterArchitect.execute(attemptInput, playerRelationships, allNpcInfos),
@@ -3296,6 +3324,7 @@ export class ContentGenerationPhase {
               }
             } else {
               lastEncounterFailure = attemptResult.error || 'EncounterArchitect returned no data';
+              if (attemptResult.metadata) lastEncounterFailureDiagnostics = attemptResult.metadata;
             }
           } catch (encErr) {
             lastEncounterFailure = encErr instanceof Error ? encErr.message : String(encErr);
@@ -3308,22 +3337,6 @@ export class ContentGenerationPhase {
           });
         }
 
-        if (!encounterResult) {
-          throw new PipelineError(
-            `Encounter generation failed for ${sceneBlueprint.id} after ${maxEncounterAttempts} full attempt(s): ${lastEncounterFailure}`,
-            'encounters',
-            {
-              agent: 'EncounterArchitect',
-              context: {
-                sceneId: sceneBlueprint.id,
-                sceneName: sceneBlueprint.name,
-                encounterType: sceneBlueprint.encounterType,
-                failureKind: 'content',
-              },
-            }
-          );
-        }
-
         const plantEncounterInfoMarkers = (encounter: EncounterStructure): void => {
           const added = emitSceneInfoMarkersOnBeats(sceneBlueprint, encounterInfoMarkerTargets(encounter as any));
           if (added > 0) {
@@ -3334,6 +3347,77 @@ export class ContentGenerationPhase {
             });
           }
         };
+
+        if (!encounterResult) {
+          // UNIT QUARANTINE (P2): do NOT abort the run here. Quarantine this
+          // unit, keep generating (and checkpointing) every other scene, and
+          // give it one escalated retry at the end of the phase. A budget-class
+          // failure escalates into the architect's decomposed recovery ladder.
+          const lastFailure = lastEncounterFailure || 'unknown failure';
+          const { input: quarantineRetryInput, budgetClass } = buildQuarantineRetryInput(encounterInput, lastFailure);
+          console.error(`[Pipeline] QUARANTINE: encounter ${sceneBlueprint.id} exhausted its ladder (${budgetClass ? 'budget-class' : 'content-class'} failure) — continuing the phase; escalated retry pass runs at phase end. Last error: ${lastFailure}`);
+          context.emit({
+            type: 'warning',
+            phase: 'encounters',
+            message: `Encounter ${sceneBlueprint.id} quarantined after ${maxEncounterAttempts} attempt(s) (${budgetClass ? 'budget' : 'content'} failure) — remaining scenes continue; escalated retry at phase end.`,
+          });
+          quarantinedEncounters.push({
+            sceneId: sceneBlueprint.id,
+            sceneName: sceneBlueprint.name,
+            encounterType: sceneBlueprint.encounterType,
+            lastFailure,
+            budgetClass,
+            diagnostics: lastEncounterFailureDiagnostics,
+            retry: () => withTimeout(
+              this.deps.encounterArchitect.execute(quarantineRetryInput, playerRelationships, allNpcInfos),
+              PIPELINE_TIMEOUTS.encounterAgent,
+              `EncounterArchitect.execute(${sceneBlueprint.id} quarantine-retry)`,
+            ),
+            register: async (result) => {
+              const structure = result.data!;
+              if (isEncounterNarrativelyHollow(structure)) {
+                return 'quarantine retry returned a hollow encounter (no player-facing prose)';
+              }
+              const turnRealization = assessEncounterTurnRealization(sceneBlueprint, structure);
+              if (!turnRealization.passed) {
+                return `quarantine retry under-realized authored encounter turn(s): ${formatEncounterTurnRealizationFeedback(turnRealization)}`;
+              }
+              // Same no-boilerplate acceptance as the in-loop path: targeted
+              // cost-field re-author for deterministic-injection hits, then a
+              // hard refusal on any remaining template signature.
+              let templateHits = scanEncounterBoilerplate(structure, sceneBlueprint);
+              if (templateHits.some((hit) => hit.source === 'fallback')) {
+                const repaired = await this.deps.encounterArchitect.reauthorFallbackCostFields(
+                  structure,
+                  { sceneName: sceneBlueprint.name, sceneDescription: sceneBlueprint.description },
+                );
+                if (repaired > 0) templateHits = scanEncounterBoilerplate(structure, sceneBlueprint);
+              }
+              if (templateHits.length > 0) {
+                return `quarantine retry still contains ${templateHits.length} template-prose signature(s)`;
+              }
+              plantEncounterInfoMarkers(structure);
+              encounters.set(sceneBlueprint.id, structure);
+              this.deps.captureEncounterTelemetry(result.metadata, sceneBlueprint.id);
+              if (this.deps.incrementalValidator) {
+                this.deps.trackEncounterFlagConsequences(structure);
+              }
+              if (this.deps.generationPlan) {
+                setSceneBeats(
+                  this.deps.generationPlan,
+                  episodeNumber ?? brief.episode.number,
+                  sceneBlueprint.id,
+                  structure.beats.length,
+                );
+                this.deps.emitPlanUpdate(`Encounter ${sceneBlueprint.id} recovered from quarantine`);
+              }
+              if (outputDirectory && episodeNumber) {
+                await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, structure);
+              }
+              return null;
+            },
+          });
+        }
 
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
@@ -3698,6 +3782,45 @@ export class ContentGenerationPhase {
         }
       }
       finalizedScenes.add(sceneBlueprint.id);
+    }
+
+    // === QUARANTINE RETRY PASS (P2) ===
+    // Every non-quarantined scene is now generated and checkpointed. Give each
+    // quarantined encounter one escalated retry (budget-class failures run the
+    // architect's decomposed recovery ladder). Only unrecovered units fail the
+    // phase — and resume then re-runs ONLY those units, not the whole episode.
+    if (quarantinedEncounters.length > 0) {
+      context.emit({
+        type: 'warning',
+        phase: 'encounters',
+        message: `Quarantine retry pass: ${quarantinedEncounters.length} encounter unit(s) get an escalated retry (${quarantinedEncounters.map(u => `${u.sceneId}:${u.budgetClass ? 'budget' : 'content'}`).join(', ')})`,
+      });
+      const unrecovered = await runQuarantineRetryPass(quarantinedEncounters, (unit) => {
+        context.emit({
+          type: 'agent_complete',
+          agent: 'EncounterArchitect',
+          message: `Quarantined encounter ${unit.sceneId} recovered on the escalated retry (${unit.budgetClass ? 'decomposed budget-recovery ladder' : 'feedback retry'})`,
+        });
+      });
+      if (unrecovered.length > 0) {
+        throw new PipelineError(
+          `Encounter generation failed for ${unrecovered.length} quarantined unit(s) after the escalated retry pass: ` +
+          unrecovered.map(u => `${u.sceneId} (${u.error})`).join('; ') +
+          `. All sibling content units are checkpointed — resume retries only the failed unit(s).`,
+          'encounters',
+          {
+            agent: 'EncounterArchitect',
+            context: {
+              quarantinedUnits: unrecovered.map((u) => {
+                const source = quarantinedEncounters.find((q) => q.sceneId === u.sceneId);
+                return source?.diagnostics ? { ...u, diagnostics: source.diagnostics } : u;
+              }),
+              recoveredUnits: quarantinedEncounters.length - unrecovered.length,
+              failureKind: 'content',
+            },
+          }
+        );
+      }
     }
 
     // Emit aggregated validation summary

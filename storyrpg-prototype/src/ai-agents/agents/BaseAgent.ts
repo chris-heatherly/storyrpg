@@ -94,16 +94,27 @@ export class LLMQuotaError extends Error {
 export class TruncatedLLMResponseError extends Error {
   public readonly provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown';
   public readonly finishReason?: string;
+  /**
+   * The output-token cap the provider was ACTUALLY given for this request
+   * (post `structuredMaxTokens` clamp) — not `config.maxTokens`. Recovery
+   * ladders use this to decide whether a retry can raise the budget or must
+   * shrink the requested output. The bite-me 2026-07-06 abort was diagnosed
+   * 2× wrong because the message reported the config value while the schema
+   * clamp had silently halved the real request cap.
+   */
+  public readonly requestedMaxTokens?: number;
 
   constructor(
     message: string,
     provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown' = 'unknown',
     finishReason?: string,
+    requestedMaxTokens?: number,
   ) {
     super(message);
     this.name = 'TruncatedLLMResponseError';
     this.provider = provider;
     this.finishReason = finishReason;
+    this.requestedMaxTokens = requestedMaxTokens;
   }
 }
 
@@ -256,6 +267,14 @@ export interface LlmCallObservation {
     inputTokens: number;
     outputTokens: number;
   };
+  /**
+   * The output-token cap the request was ACTUALLY sent with (post
+   * structuredMaxTokens clamp). Lets the ledger flag near-cap calls (≥85% of
+   * budget) as leading indicators BEFORE they become truncation aborts —
+   * the bite-me 2026-07-06 encounter failure would have shown up here as a
+   * string of near-cap calls in earlier runs.
+   */
+  requestedMaxTokens?: number;
 }
 
 export abstract class BaseAgent {
@@ -533,6 +552,14 @@ Do not use markdown code blocks around the JSON.
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
 
+    // The output cap this request is ACTUALLY sent with (post structuredMaxTokens
+    // clamp) — forwarded to the observer so the ledger can flag near-cap calls.
+    // (The OpenAI reasoning path applies an effort-based floor instead of 8192;
+    // for telemetry purposes the standard clamp is close enough.)
+    const requestedMaxTokens = options?.jsonSchema
+      ? structuredMaxTokens(this.config.maxTokens, options.jsonSchema, 8192)
+      : this.config.maxTokens;
+
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
       const { release, queueWaitMs } = await this.acquireGuardrailPermits();
@@ -562,6 +589,18 @@ Do not use markdown code blocks around the JSON.
           log.debug(`[${this.name}] LLM call succeeded — circuit breaker reset (was at ${BaseAgent._cbConsecutiveFailures} failures)`);
         }
         BaseAgent._cbConsecutiveFailures = 0;
+        // Leading indicator (P3): a call that lands ≥85% of its output budget
+        // is one prompt tweak away from a truncation abort. Warn now, while
+        // it's still cheap to re-budget, instead of diagnosing a failed run.
+        if (
+          typeof usageCapture.outputTokens === 'number' &&
+          requestedMaxTokens > 0 &&
+          usageCapture.outputTokens >= requestedMaxTokens * 0.85
+        ) {
+          console.warn(
+            `[${this.name}] NEAR-CAP output: ${usageCapture.outputTokens}/${requestedMaxTokens} tokens (${Math.round((usageCapture.outputTokens / requestedMaxTokens) * 100)}%)${options?.jsonSchema ? ` on schema ${options.jsonSchema.name}` : ''} — raise the schema maxOutputTokens or shrink the ask before this becomes a truncation abort.`,
+          );
+        }
         BaseAgent._observer?.({
           agentName: this.name,
           provider: this.config.provider,
@@ -573,6 +612,7 @@ Do not use markdown code blocks around the JSON.
             typeof usageCapture.inputTokens === 'number' && typeof usageCapture.outputTokens === 'number'
               ? { inputTokens: usageCapture.inputTokens, outputTokens: usageCapture.outputTokens }
               : undefined,
+          requestedMaxTokens,
         });
         return result;
       } catch (error) {
@@ -601,6 +641,7 @@ Do not use markdown code blocks around the JSON.
           queueWaitMs,
           attempt,
           error: lastError.message,
+          requestedMaxTokens,
         });
 
         // Truncation is not a transient provider failure. Retrying the same
@@ -823,10 +864,14 @@ Do not use markdown code blocks around the JSON.
         if (typeof data.usage?.output_tokens === 'number') usageOut.outputTokens = data.usage.output_tokens;
       }
       if (stopReason === 'max_tokens') {
+        // Report the ACTUAL request cap (body.max_tokens, post structuredMaxTokens
+        // clamp), not config.maxTokens — schema-clamped calls can run at half the
+        // config budget, and a misreported limit misdirects the recovery ladder.
         throw new TruncatedLLMResponseError(
-          `Truncated LLM response from Anthropic: stop_reason=max_tokens (limit: ${this.config.maxTokens})`,
+          `Truncated LLM response from Anthropic: stop_reason=max_tokens (request cap: ${body.max_tokens})`,
           'anthropic',
           'max_tokens',
+          typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
         );
       }
       // Schema-strict path: return the forced tool's `input` (already valid JSON)
@@ -934,9 +979,10 @@ Do not use markdown code blocks around the JSON.
       // to a downstream parse failure.
       if (isTruncationFinishReason(result.finishReason)) {
         throw new TruncatedLLMResponseError(
-          `Truncated LLM response from Anthropic stream: stop_reason=${result.finishReason} (limit: ${this.config.maxTokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
+          `Truncated LLM response from Anthropic stream: stop_reason=${result.finishReason} (request cap: ${body.max_tokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
           'anthropic',
           result.finishReason,
+          typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
         );
       }
       if (!result.text) {
@@ -1058,10 +1104,12 @@ Do not use markdown code blocks around the JSON.
       const content: string = choice?.message?.content ?? '';
       const finishReason: string | undefined = choice?.finish_reason;
       if (isTruncationFinishReason(finishReason)) {
+        const requestCap = (body.max_completion_tokens ?? body.max_tokens) as number | undefined;
         throw new TruncatedLLMResponseError(
-          `Truncated LLM response from OpenAI: finish_reason=${finishReason} (limit: ${this.config.maxTokens})`,
+          `Truncated LLM response from OpenAI: finish_reason=${finishReason} (request cap: ${requestCap})`,
           'openai',
           finishReason,
+          typeof requestCap === 'number' ? requestCap : undefined,
         );
       }
 
@@ -1155,10 +1203,12 @@ Do not use markdown code blocks around the JSON.
 
     // Parity with the buffered path: finish_reason "length" = max_tokens cut.
     if (isTruncationFinishReason(result.finishReason)) {
+      const requestCap = ((body as any).max_completion_tokens ?? (body as any).max_tokens) as number | undefined;
       throw new TruncatedLLMResponseError(
-        `Truncated LLM response from OpenAI stream: finish_reason=${result.finishReason} (limit: ${this.config.maxTokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
+        `Truncated LLM response from OpenAI stream: finish_reason=${result.finishReason} (request cap: ${requestCap}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
         'openai',
         result.finishReason,
+        typeof requestCap === 'number' ? requestCap : undefined,
       );
     }
 
@@ -1280,9 +1330,10 @@ Do not use markdown code blocks around the JSON.
       const finishReason: string | undefined = choice?.finish_reason;
       if (isTruncationFinishReason(finishReason)) {
         throw new TruncatedLLMResponseError(
-          `Truncated LLM response from OpenRouter: finish_reason=${finishReason} (limit: ${this.config.maxTokens})`,
+          `Truncated LLM response from OpenRouter: finish_reason=${finishReason} (request cap: ${body.max_tokens})`,
           'openrouter',
           finishReason,
+          typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
         );
       }
       if (!content || content.trim().length === 0) {
@@ -1364,10 +1415,12 @@ Do not use markdown code blocks around the JSON.
 
     // Parity with the buffered path: finish_reason "length" = max_tokens cut.
     if (isTruncationFinishReason(result.finishReason)) {
+      const requestCap = (body as any).max_tokens as number | undefined;
       throw new TruncatedLLMResponseError(
-        `Truncated LLM response from OpenRouter stream: finish_reason=${result.finishReason} (limit: ${this.config.maxTokens}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
+        `Truncated LLM response from OpenRouter stream: finish_reason=${result.finishReason} (request cap: ${requestCap}, outputTokens: ${result.usage?.outputTokens ?? 'unknown'})`,
         'openrouter',
         result.finishReason,
+        typeof requestCap === 'number' ? requestCap : undefined,
       );
     }
 
@@ -1535,9 +1588,10 @@ Do not use markdown code blocks around the JSON.
         const candidatesTokens = data?.usageMetadata?.candidatesTokenCount;
         const thoughtsTokens = data?.usageMetadata?.thoughtsTokenCount;
         throw new TruncatedLLMResponseError(
-          `Truncated LLM response from Gemini: finishReason=${finishReason} (limit: ${maxOutputTokens}, outputTokens: ${typeof candidatesTokens === 'number' ? candidatesTokens : 'unknown'}, thoughtsTokens: ${typeof thoughtsTokens === 'number' ? thoughtsTokens : 'unknown'})`,
+          `Truncated LLM response from Gemini: finishReason=${finishReason} (request cap: ${maxOutputTokens}, outputTokens: ${typeof candidatesTokens === 'number' ? candidatesTokens : 'unknown'}, thoughtsTokens: ${typeof thoughtsTokens === 'number' ? thoughtsTokens : 'unknown'})`,
           'gemini',
           finishReason,
+          maxOutputTokens,
         );
       }
       if (!output) {
@@ -1645,10 +1699,12 @@ Do not use markdown code blocks around the JSON.
       );
     }
     if (isTruncationFinishReason(result.finishReason)) {
+      const requestCap = body?.generationConfig?.maxOutputTokens as number | undefined;
       throw new TruncatedLLMResponseError(
-        `Truncated LLM response from Gemini stream: finishReason=${result.finishReason} (limit: ${this.config.maxTokens})`,
+        `Truncated LLM response from Gemini stream: finishReason=${result.finishReason} (request cap: ${requestCap})`,
         'gemini',
         result.finishReason,
+        typeof requestCap === 'number' ? requestCap : undefined,
       );
     }
     return result.text;

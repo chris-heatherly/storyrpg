@@ -817,6 +817,30 @@ export async function savePipelineErrorLog(
   // called for non-fatal diagnostics and must not mark a run failed.
 }
 
+/**
+ * Write the run-level LLM ledger sidecar (`09-llm-ledger.json`) on its own.
+ * The success path writes it inside savePipelineOutputs; this standalone
+ * writer exists so a FAILED run persists its token/usage telemetry too (P3):
+ * the bite-me 2026-07-06 truncation abort left no per-call usage evidence on
+ * disk precisely because the ledger only shipped with successful runs.
+ */
+export async function saveLlmLedgerSidecar(
+  outputDir: string,
+  ledger: LlmLedger | null | undefined,
+): Promise<void> {
+  if (!outputDir || !ledger) return;
+  try {
+    const ledgerPath = outputDir + '09-llm-ledger.json';
+    await writeJsonFile(ledgerPath, {
+      generatedAt: new Date().toISOString(),
+      ...ledger,
+    });
+    console.log(`[OutputWriter] Saved LLM ledger to ${ledgerPath}`);
+  } catch (e) {
+    console.warn('[OutputWriter] Failed to save LLM ledger sidecar:', e);
+  }
+}
+
 // The cross-run quality ledger lives in the PARENT of a run's output dir
 // (e.g. generated-stories/quality-ledger.jsonl). Deriving the base dir from the
 // run dir (rather than a global) keeps test runs writing to their own temp

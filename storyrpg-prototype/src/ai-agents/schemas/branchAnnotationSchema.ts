@@ -16,6 +16,9 @@ export function buildBranchAnnotationJsonSchema(input: {
   return {
     name: 'branch_annotations',
     description: 'Bounded annotations for a deterministic branch skeleton.',
+    // Bounded arrays (pathCount/reconvergenceCount items) — the default cap is
+    // adequate; declared so the budget is explicit, not inherited.
+    maxOutputTokens: 8192,
     schema: {
       type: 'object',
       additionalProperties: false,

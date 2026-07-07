@@ -29,6 +29,10 @@ import type { Story } from '../../types';
 installResilientHttp();
 
 let activeResultPath: string | undefined;
+/** Set during runGeneration so failure paths can copy the worker log into the run dir. */
+let activeGenerationPipeline: { getCurrentOutputDirectory?: () => string | undefined } | undefined;
+let workerLogPath: string | undefined;
+let workerLogStream: fsSync.WriteStream | undefined;
 const WORKER_HEARTBEAT_INTERVAL_MS = Math.max(5_000, Number(process.env.STORYRPG_WORKER_HEARTBEAT_INTERVAL_MS) || 30_000);
 let latestWorkerStatus: Record<string, unknown> = {
   mode: 'booting',
@@ -42,6 +46,66 @@ function emit(type: string, payload: Record<string, unknown> = {}) {
     console.log(JSON.stringify({ workerEvent: true, type, timestamp: new Date().toISOString(), ...payload }));
   } catch {
     // stdout may be closed if parent already killed us — nothing to do
+  }
+}
+
+/**
+ * Tee worker stdout/stderr to a durable log file (P3). Post-mortems no longer
+ * depend on terminal scrollback or the proxy's truncated timeline entries.
+ */
+function installWorkerStdoutTee(logPath: string) {
+  workerLogPath = logPath;
+  try {
+    workerLogStream = fsSync.createWriteStream(logPath, { flags: 'a' });
+    workerLogStream.write(`--- worker log started ${new Date().toISOString()} ---\n`);
+  } catch {
+    workerLogStream = undefined;
+    return;
+  }
+  const append = (level: string, args: unknown[]) => {
+    if (!workerLogStream) return;
+    try {
+      const line = args
+        .map((a) => (typeof a === 'string' ? a : a instanceof Error ? a.stack || a.message : JSON.stringify(a)))
+        .join(' ');
+      workerLogStream.write(`${new Date().toISOString()} [${level}] ${line}\n`);
+    } catch {
+      // ignore log write failures
+    }
+  };
+  const origLog = console.log.bind(console);
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  console.log = (...args: unknown[]) => {
+    origLog(...args);
+    append('log', args);
+  };
+  console.error = (...args: unknown[]) => {
+    origError(...args);
+    append('error', args);
+  };
+  console.warn = (...args: unknown[]) => {
+    origWarn(...args);
+    append('warn', args);
+  };
+}
+
+async function finalizeWorkerLog(outputDirectory?: string) {
+  if (workerLogStream) {
+    await new Promise<void>((resolve) => {
+      workerLogStream!.end(() => resolve());
+    });
+    workerLogStream = undefined;
+  }
+  if (!workerLogPath) return;
+  const destDir = outputDirectory ? path.resolve(outputDirectory) : undefined;
+  if (!destDir) return;
+  try {
+    await fs.mkdir(destDir, { recursive: true });
+    const dest = path.join(destDir, '00-worker.log');
+    await fs.copyFile(workerLogPath, dest);
+  } catch {
+    // non-fatal — tmp log still exists beside the result file
   }
 }
 
@@ -203,7 +267,7 @@ async function runGeneration(payload: WorkerPayload) {
   if (!payload.generationInput) throw new Error('generationInput is required for generation mode');
   const { brief, sourceAnalysis, episodeRange } = payload.generationInput;
   emit('step_start', { step: 'generation' });
-  const { result } = await runStoryGeneration({
+  const { pipeline, result } = await runStoryGeneration({
     config: payload.config,
     externalJobId: payload.externalJobId,
     brief: brief as unknown as FullCreativeBrief,
@@ -245,6 +309,7 @@ async function runGeneration(payload: WorkerPayload) {
       });
     },
   });
+  activeGenerationPipeline = pipeline;
   emit('step_complete', { step: 'generation', success: result.success });
 
   // Build the authoritative transfer payload via the codec's declarative
@@ -324,6 +389,13 @@ async function runGeneration(payload: WorkerPayload) {
       throw writeErr;
     }
   }
+
+  const outputDir =
+    typeof resultObj.outputDirectory === 'string'
+      ? (resultObj.outputDirectory as string)
+      : pipeline.getCurrentOutputDirectory?.();
+  await finalizeWorkerLog(outputDir);
+  activeGenerationPipeline = undefined;
 }
 
 async function runImageGeneration(payload: WorkerPayload) {
@@ -440,6 +512,8 @@ async function main() {
   }
 
   activeResultPath = payload.resultPath;
+  const workerLogBasename = payload.externalJobId || path.basename(String(payload.resultPath || 'worker'), '.json');
+  installWorkerStdoutTee(path.join(path.dirname(String(payload.resultPath)), `${workerLogBasename}.stdout.log`));
   markWorkerStatus({
     mode: payload.mode,
     externalJobId: payload.externalJobId,
@@ -504,5 +578,7 @@ main()
     clearInterval(heartbeatInterval);
     emit('worker_error', buildFailurePayload(error));
     await persistFailureResult(error);
+    await finalizeWorkerLog(activeGenerationPipeline?.getCurrentOutputDirectory?.());
+    activeGenerationPipeline = undefined;
     process.exit(1);
   });

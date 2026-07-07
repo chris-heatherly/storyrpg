@@ -938,6 +938,9 @@ export class FinalContract {
             .map((episode) => episode.number)
             .filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
         ),
+        authoredLiteContract: input.brief.seasonPlan?.episodes?.some(
+          (episode) => episode.treatmentGuidance?.sourceKind === 'authored_lite',
+        ) === true,
       });
       try {
         // Season-final gate: read the cross-episode accumulator (superset of the

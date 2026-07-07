@@ -16,7 +16,7 @@
  * replace or enrich this builder behind the same flag.
  */
 
-import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
+import type { SeasonPlan, SeasonEpisode, SeasonResidueObligation } from '../../types/seasonPlan';
 import type {
   PlannedScene,
   PlannedSceneEncounter,
@@ -36,13 +36,20 @@ import { assignTreatmentFieldContractsToScenes } from '../utils/treatmentFieldCo
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import { isQuestionShapedAnchor } from '../remediation/storyEventCues';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
-import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
+import { assignCharacterTreatmentContractsToScenes, appendOpeningCharacterTreatmentRequiredBeats } from '../utils/characterTreatmentContracts';
 import { assignStakesArchitectureContractsToScenes } from '../utils/stakesArchitectureContracts';
 import { assignArcPressureContractsToScenes } from '../utils/arcPressureContracts';
 import { assignWorldTreatmentContractsToScenes } from '../utils/worldTreatmentContracts';
 import { assignBranchConsequenceContractsToScenes } from '../utils/branchConsequenceContracts';
 import { assignEndingRealizationContractsToScenes } from '../utils/endingRealizationContracts';
 import { assignFailureModeAuditContractsToScenes } from '../utils/failureModeAuditContracts';
+import {
+  applyAuthoredEncounterPresentation,
+  enforceNpcIntroOrderOnScenes,
+  finalizeAuthoredLiteScenePlan,
+  isAuthoredLiteEpisode,
+  repairIntroOrderTurnAssignment,
+} from '../utils/authoredLiteScenePlan';
 import { assignStoryCircleBeatContractsToScenes } from '../utils/storyCircleBeatContracts';
 import {
   buildEncounterEventSignature,
@@ -1165,6 +1172,7 @@ function promoteAuthoredSceneToEncounter(scene: PlannedScene, enc: EpisodePlanne
   };
   scene.hasChoice = true;
   scene.budgetWeight = ENCOUNTER_BUDGET_WEIGHT;
+  applyAuthoredEncounterPresentation(scene, narrowedDescription || enc.description || enc.centralConflict || enc.stakes || '');
 }
 
 export function promoteCoveredAuthoredEncounters(
@@ -1524,6 +1532,8 @@ export function bindAuthoredTurnsToScenes(
   const dedupedTurns = spineTurns.length > 0 ? spineTurns : turns;
   if (dedupedTurns.length > 0) {
     const assignment = alignTurnsToScenes(dedupedTurns, turnTargets);
+    repairIntroOrderTurnAssignment(dedupedTurns, assignment, turnTargets.length - 1);
+    enforceNpcIntroOrderOnScenes(ep, scenes, dedupedTurns, assignment);
     const perScene: RequiredBeat[][] = turnTargets.map(() => []);
     for (let t = 0; t < dedupedTurns.length; t += 1) {
       const slot = assignment[t];
@@ -1645,6 +1655,7 @@ export function buildEpisodeScenes(
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
   protagonist?: SeasonPlan['protagonist'],
   priorBondNpcKeys?: Set<string>,
+  seasonResiduePlan?: SeasonResidueObligation[],
 ): PlannedScene[] {
   const encounters = ep.plannedEncounters ?? [];
   const turns = getAuthoredEpisodeEventTexts(ep);
@@ -1660,8 +1671,10 @@ export function buildEpisodeScenes(
   // episode that authored more turns than its estimate gets enough scenes to land
   // every turn as a required beat instead of starving turns (§3.2, §6).
   const turnCount = turns.length;
-  const desired = clampSceneCount(ep.estimatedSceneCount || 5, turnCount);
   const standaloneEncounterCount = encounters.filter((enc) => !coveredEncounterIds.has(enc.id)).length;
+  const desired = isAuthoredLiteEpisode(ep)
+    ? Math.max(MIN_SCENES_PER_EPISODE, turnCount + standaloneEncounterCount)
+    : clampSceneCount(ep.estimatedSceneCount || 5, turnCount);
 
   const scenes: PlannedScene[] = [];
   let order = 0;
@@ -1731,7 +1744,7 @@ export function buildEpisodeScenes(
   // Standard-mode spine: setup -> development(s) -> encounter(s) -> release.
   let standardSlots = Math.max(2, desired - standaloneEncounterCount);
   if (turnCount > 0) standardSlots = Math.max(standardSlots, turnCount + 1);
-  const hasRelease = standardSlots >= 2 && desired > standaloneEncounterCount + 1;
+  const hasRelease = !isAuthoredLiteEpisode(ep) && standardSlots >= 2 && desired > standaloneEncounterCount + 1;
   const openingCount = 1;
   const closingCount = hasRelease ? 1 : 0;
   const developmentCount = Math.max(0, standardSlots - openingCount - closingCount);
@@ -1814,6 +1827,10 @@ export function buildEpisodeScenes(
   promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
   repairUnsupportedPlanningEventPurposes(ep, scenes);
   repairRouteCueSceneOrder(scenes, ep.episodeNumber);
+  const outgoingResidue = (seasonResiduePlan ?? []).filter(
+    (obligation) => obligation.sourceEpisodeNumber === ep.episodeNumber,
+  );
+  finalizeAuthoredLiteScenePlan(ep, scenes, outgoingResidue);
 
   return scenes;
 }
@@ -1918,7 +1935,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
 
   const scenesByEpisode = new Map<number, PlannedScene[]>();
   for (const ep of episodes) {
-    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, priorBondNpcKeys));
+    scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, priorBondNpcKeys, plan.residuePlan));
   }
 
   // Resolve setup/payoff edges from the season's cross-episode structures.
@@ -1989,6 +2006,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   const storyCircleBeatContracts = assignStoryCircleBeatContractsToScenes(plan, scenes);
   const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
   const characterTreatmentContracts = assignCharacterTreatmentContractsToScenes(plan, scenes);
+  appendOpeningCharacterTreatmentRequiredBeats(scenes);
   const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
   const stakesArchitectureContracts = assignStakesArchitectureContractsToScenes(plan, scenes);
   const branchConsequenceContracts = assignBranchConsequenceContractsToScenes(plan, scenes);

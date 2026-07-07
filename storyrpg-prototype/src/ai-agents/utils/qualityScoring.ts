@@ -8,6 +8,7 @@ import type {
 } from '../validators/FinalStoryContractValidator';
 import type { QualityCouncilCheckpointReport, QualityCouncilReport } from '../quality-council/types';
 import { lookupQualityDomainTag } from './qualityDomainTags';
+import { storyCircleRoleBeats } from './storyCircleDistribution';
 
 export type QualityDomainId =
   | 'story_circle_spine'
@@ -1813,16 +1814,43 @@ function buildStoryCircleEvidence(story?: Story | null, brief?: Record<string, a
 
   const missingBeats = STORY_CIRCLE_BEATS.filter((beat) => beats[beat].status === 'missing');
   const metadataOnlyBeats = STORY_CIRCLE_BEATS.filter((beat) => beats[beat].status === 'metadata-only');
+  const activeBeats = collectActiveStoryCircleBeats(brief, scope);
+  const scopedMissingBeats = activeBeats.size > 0
+    ? missingBeats.filter((beat) => activeBeats.has(beat))
+    : missingBeats;
+  const scopedMetadataOnlyBeats = activeBeats.size > 0
+    ? metadataOnlyBeats.filter((beat) => {
+      if (!activeBeats.has(beat)) return false;
+      const expected = beats[beat].expected;
+      return expected.length > 0 || beats[beat].status === 'metadata-only';
+    })
+    : metadataOnlyBeats;
   const order = checkStoryCircleOrder(beats);
 
   return {
     beats,
-    missingBeats,
-    metadataOnlyBeats,
+    missingBeats: scopedMissingBeats,
+    metadataOnlyBeats: scopedMetadataOnlyBeats,
     ordered: order.ordered,
     orderedViolation: order.violation,
     hasStoryCircleEvidence: STORY_CIRCLE_BEATS.some((beat) => beats[beat].status !== 'missing'),
   };
+}
+
+function collectActiveStoryCircleBeats(
+  brief?: Record<string, any>,
+  scope: StoryCircleEvidenceScope = { partialSeason: false },
+): Set<StoryCircleBeat> {
+  const active = new Set<StoryCircleBeat>();
+  const episodes = brief?.seasonPlan?.episodes;
+  if (!Array.isArray(episodes)) return active;
+  for (const episode of episodes) {
+    if (!scopeIncludesEpisode(scope, episode?.episodeNumber ?? episode?.number)) continue;
+    for (const beat of storyCircleRoleBeats(episode?.storyCircleRole)) {
+      active.add(beat);
+    }
+  }
+  return active;
 }
 
 function storyCircleEvidenceScope(story?: Story | null): StoryCircleEvidenceScope {

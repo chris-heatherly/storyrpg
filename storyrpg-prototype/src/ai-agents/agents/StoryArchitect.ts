@@ -89,6 +89,7 @@ import { isGateEnabled } from '../remediation/gateDefaults';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import { treatmentFieldTokens } from '../utils/treatmentFieldContracts';
 import { storyCircleRoleBeats } from '../utils/storyCircleDistribution';
+import { buildScopedEpisodeCircle } from '../utils/episodeCircleBuilder';
 import {
   buildEncounterStoryCircleTargetRationale,
   isEncounterStoryCircleTarget,
@@ -5814,25 +5815,17 @@ If you don't include enough choice points, the story will be rejected as non-int
     input: StoryArchitectInput,
     arc?: EpisodeBlueprint['arc'],
   ): StoryCircleStructure {
-    const title = input.episodeTitle || `Episode ${input.episodeNumber}`;
-    const synopsis = input.episodeSynopsis || input.synopsis || 'the episode pressure';
-    const localArcText = (value: unknown): string | undefined => {
-      if (typeof value !== 'string' || value.trim().length === 0) return undefined;
-      const text = value.trim();
-      return this.isLikelyFutureSeasonEpisodeCircleText(text, input) ? undefined : text;
-    };
-    const localBeat = (beat: StoryCircleBeat): string =>
-      localArcText(arc?.[beat]) || synopsis || 'the episode pressure';
-    return {
-      you: `In "${title}", establish the episode's known world or current normal before disruption: ${localBeat('you')}`,
-      need: `Name the episode want/lack that starts motion and makes the pressure active: ${localBeat('need')}`,
-      go: `Cross the episode threshold so old tactics stop working: ${localBeat('go')}`,
-      search: `Test adaptation under pressure through failed plans, new rules, allies, tools, and identity-revealing choices: ${localBeat('search')}`,
-      find: `Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: ${localBeat('find')}`,
-      take: `Make the episode's find cost something visible: ${localBeat('take')}`,
-      return: `Carry the prize and wound back toward the episode's consequence field, relationship, home, arena, or public identity: ${localBeat('return')}`,
-      change: `Prove the episode's new equilibrium through changed behavior, relationship, self-concept, world-state, or tragic refusal: ${localBeat('change')}`,
-    };
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    return buildScopedEpisodeCircle({
+      episodeNumber: input.episodeNumber,
+      episodeTitle: input.episodeTitle || `Episode ${input.episodeNumber}`,
+      synopsis: input.episodeSynopsis || input.synopsis || 'the episode pressure',
+      majorPressure: guidance?.dramaticQuestion || guidance?.episodePromise,
+      episodeTurns: guidance?.episodeTurns,
+      storyCircleRole: input.episodeStoryCircleRole,
+      arc,
+      isFutureSeasonScopedText: (text) => this.isLikelyFutureSeasonEpisodeCircleText(text, input),
+    });
   }
 
   private isLikelyFutureSeasonEpisodeCircleText(text: string, input: StoryArchitectInput): boolean {
@@ -5857,9 +5850,11 @@ If you don't include enough choice points, the story will be rejected as non-int
     ];
     if (!futureSeasonMarkers.some((pattern) => pattern.test(normalizedText))) return false;
 
+    if (input.episodeNumber <= 2) return true;
+
     const importantTokens = normalizedText
       .split(/[^a-z0-9']+/)
-      .filter((token) => token.length >= 5 && !['kylie', 'victor', 'episode', 'season', 'story'].includes(token));
+      .filter((token) => token.length >= 5 && !['episode', 'season', 'story'].includes(token));
     const overlap = importantTokens.filter((token) => localContext.includes(token)).length;
     return overlap === 0;
   }

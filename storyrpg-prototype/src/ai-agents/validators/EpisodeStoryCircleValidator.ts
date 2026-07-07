@@ -6,6 +6,7 @@ import type {
 import { STORY_CIRCLE_BEATS } from '../../types/sourceAnalysis';
 import type { StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
+import { storyCircleRoleBeats } from '../utils/storyCircleDistribution';
 
 export interface EpisodeStoryCircleScene {
   id: string;
@@ -97,8 +98,19 @@ export class EpisodeStoryCircleValidator extends BaseValidator {
     };
   }
 
+  private activeBeats(input: EpisodeStoryCircleInput): StoryCircleBeat[] {
+    const roleBeats = new Set(storyCircleRoleBeats(input.storyCircleRole));
+    if (roleBeats.size === 0) return [...STORY_CIRCLE_BEATS];
+    return STORY_CIRCLE_BEATS.filter((beat) => {
+      if (roleBeats.has(beat)) return true;
+      const value = input.episodeCircle?.[beat];
+      if (typeof value === 'string' && value.trim().length > 0) return true;
+      return hasConcreteText(value);
+    });
+  }
+
   private checkBeatText(input: EpisodeStoryCircleInput, issues: ValidationIssue[]): void {
-    for (const beat of STORY_CIRCLE_BEATS) {
+    for (const beat of this.activeBeats(input)) {
       const value = input.episodeCircle?.[beat];
       if (!hasConcreteText(value)) {
         issues.push(this.error(
@@ -111,8 +123,10 @@ export class EpisodeStoryCircleValidator extends BaseValidator {
   }
 
   private checkDuplicateBeatText(input: EpisodeStoryCircleInput, issues: ValidationIssue[]): void {
+    const active = new Set(this.activeBeats(input));
     const seen = new Map<string, StoryCircleBeat>();
     for (const beat of STORY_CIRCLE_BEATS) {
+      if (!active.has(beat)) continue;
       const text = input.episodeCircle?.[beat];
       if (!hasConcreteText(text)) continue;
       const normalized = normalizedText(text);
@@ -131,7 +145,9 @@ export class EpisodeStoryCircleValidator extends BaseValidator {
   }
 
   private checkPolarity(input: EpisodeStoryCircleInput, issues: ValidationIssue[]): void {
+    const active = new Set(this.activeBeats(input));
     for (const [left, right, suggestion] of PAIRS) {
+      if (!active.has(left) || !active.has(right)) continue;
       const leftText = input.episodeCircle?.[left];
       const rightText = input.episodeCircle?.[right];
       if (!hasConcreteText(leftText) || !hasConcreteText(rightText)) continue;
@@ -151,7 +167,9 @@ export class EpisodeStoryCircleValidator extends BaseValidator {
     issues: ValidationIssue[],
   ): void {
     const sceneIds = new Set((input.scenes ?? []).map((scene) => scene.id));
+    const active = new Set(this.activeBeats(input));
     for (const beat of STORY_CIRCLE_BEATS) {
+      if (!active.has(beat)) continue;
       if (!hasConcreteText(input.episodeCircle?.[beat])) continue;
       const beatContracts = contracts.filter((contract) =>
         contract.beat === beat

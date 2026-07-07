@@ -84,11 +84,22 @@ describe('EpisodeStoryCircleValidator', () => {
     }
   });
 
-  it('fails missing episodeCircle.take', () => {
+  it('does not require inactive episodeCircle beats outside the macro role', () => {
+    const result = validator.validate({
+      episodeNumber: 1,
+      episodeCircle: { you: 'Opening normal.', need: 'Active pressure.' },
+      storyCircleRole: [{ beat: 'you', roleKind: 'primary' }],
+      scenes: [{ id: 's1-1', narrativeRole: 'setup' }],
+    });
+
+    expect(result.issues.some((issue) => issue.location === 'episodeCircle.take')).toBe(false);
+  });
+
+  it('fails missing episodeCircle.take when take is an active macro beat', () => {
     const result = validator.validate({
       episodeNumber: 3,
       episodeCircle: { ...circle, take: '' },
-      storyCircleRole: [{ beat: 'find', roleKind: 'primary' }],
+      storyCircleRole: [{ beat: 'take', roleKind: 'primary' }],
       scenes: scenes(contracts()),
     });
 

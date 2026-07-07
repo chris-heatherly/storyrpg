@@ -847,6 +847,36 @@ describe('sceneConstructionProfile compiler', () => {
     expect(scene.nonCopyableContext?.map((item) => item.id)).toContain('demoted-required-beat:project-logline');
   });
 
+  it('keeps playable authored episode turns required instead of demoting them to context', () => {
+    const scene: SceneConstructionSceneLike = {
+      id: 's1-2',
+      episodeNumber: 1,
+      order: 2,
+      turnContract: {
+        turnId: 'explore-turn',
+        source: 'planner',
+        centralTurn: 'She explores the streets of Bucharest.',
+        beforeState: 'She has unpacked and is restless in the apartment.',
+        turnEvent: 'She explores the streets of Bucharest.',
+        afterState: 'The city feels alive and unfamiliar.',
+        handoff: 'She reaches the bookshop.',
+      },
+      requiredBeats: [
+        {
+          id: 's1-2-rb1',
+          tier: 'authored',
+          sourceTurn: 'She explores the streets of Bucharest.',
+          mustDepict: 'She explores the streets of Bucharest.',
+        },
+      ],
+    };
+
+    const result = applySceneConstructionProfilesToScenes([scene], { episodeNumber: 1 });
+
+    expect(result.applications[0].drainedRequiredBeatIds).not.toContain('s1-2-rb1');
+    expect(scene.requiredBeats?.map((beat) => beat.id)).toContain('s1-2-rb1');
+  });
+
   it('drains non-opening cold-open required beats from resumed blueprints', () => {
     const scenes: SceneConstructionSceneLike[] = [
       {

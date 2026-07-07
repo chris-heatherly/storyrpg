@@ -11,6 +11,7 @@ import type {
 } from '../../types/sourceAnalysis';
 import { extractStoryCircleBeatEpisodeAnchors } from './treatmentFingerprint';
 import { parseInformationLedgerGuidance } from './informationLedgerContracts';
+import { flattenAuthoredEpisodeTurns } from './episodeCircleBuilder';
 
 export interface ExtractedTreatment {
   isTreatment: boolean;
@@ -435,7 +436,7 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
           ],
     );
     const liteDerivedEpisodeTurns = highLevelDescription
-      ? splitSentences(highLevelDescription).slice(0, 6)
+      ? flattenAuthoredEpisodeTurns([highLevelDescription])
       : [];
     const resolvedEncounterAnchors = encounterAnchors.length > 0
       ? encounterAnchors

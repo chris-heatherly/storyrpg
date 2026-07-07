@@ -218,6 +218,8 @@ describe('extractTreatmentFromMarkdown lite treatment format', () => {
     expect(treatment.episodes[1]?.consequenceSeeds).toEqual(
       expect.arrayContaining([expect.stringContaining('archive is no longer safe')]),
     );
+    expect(treatment.episodes[1]?.episodeTurns?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(treatment.episodes[1]?.episodeTurns?.some((turn) => /explores|finds Jonas|bell chain/i.test(turn))).toBe(true);
 
     expect(treatment.endings).toHaveLength(3);
     expect(treatment.endings.map((ending) => ending.name)).toEqual([

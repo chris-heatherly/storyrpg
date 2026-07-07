@@ -7,6 +7,7 @@ import type {
   MechanicPressureContract,
   MechanicPressureDomain,
   PlannedScene,
+  RequiredBeat,
 } from '../../types/scenePlan';
 import {
   treatmentFieldCloseMatch,
@@ -415,4 +416,46 @@ export function characterTreatmentMatchThreshold(contract: CharacterTreatmentRea
     || contract.contractKind === 'truth_target'
   ) return 0.2;
   return 0.25;
+}
+
+/** Protagonist-brief fields that must appear in each episode's opening scene when authored. */
+export const OPENING_EPISODE_CHARACTER_KINDS = new Set<CharacterTreatmentFieldKind>([
+  'role_fact',
+  'origin_pressure',
+  'wound_pressure',
+  'starting_identity',
+  'visual_identity',
+]);
+
+/**
+ * Promote early protagonist-brief contracts on the first scene of each episode
+ * to cold-open required beats so SceneWriter must stage role/wound/identity.
+ */
+export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScene[]): void {
+  const byEpisode = new Map<number, PlannedScene[]>();
+  for (const scene of scenes) {
+    const episodeNumber = scene.episodeNumber ?? 1;
+    byEpisode.set(episodeNumber, [...(byEpisode.get(episodeNumber) ?? []), scene]);
+  }
+
+  for (const [episodeNumber, episodeScenes] of byEpisode) {
+    const opening = [...episodeScenes].sort((a, b) => a.order - b.order)[0];
+    if (!opening) continue;
+
+    for (const contract of opening.characterTreatmentContracts ?? []) {
+      if (!OPENING_EPISODE_CHARACTER_KINDS.has(contract.contractKind)) continue;
+      if (!(contract.targetEpisodeNumbers ?? [episodeNumber]).includes(episodeNumber)) continue;
+
+      const beatId = `${opening.id}-char-${contract.id}`;
+      if ((opening.requiredBeats ?? []).some((beat) => beat.id === beatId)) continue;
+
+      const beat: RequiredBeat = {
+        id: beatId,
+        sourceTurn: contract.sourceText,
+        mustDepict: `Establish the protagonist's ${contract.fieldName.toLowerCase()} through concrete behavior or detail (fiction-first): ${contract.sourceText}`,
+        tier: 'coldopen',
+      };
+      opening.requiredBeats = [...(opening.requiredBeats ?? []), beat];
+    }
+  }
 }

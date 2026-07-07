@@ -25,6 +25,7 @@ import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { anchoredSceneLocationCues } from './sceneLocationCues';
 import { atomizeTreatmentText } from './treatmentEventAtomizer';
+import { OPENING_EPISODE_CHARACTER_KINDS } from './characterTreatmentContracts';
 
 export interface SceneConstructionChoicePoint {
   type?: string;
@@ -261,7 +262,11 @@ function isBroadLedgerOnlyRequiredBeat(scene: SceneConstructionSceneLike, beat: 
     sourceSection: `requiredBeat:${beat.id}`,
     idPrefix: `${scene.id ?? 'scene'}-${beat.id}`,
   });
-  return atoms.length > 0 && atoms.every((atom) => atom.ownershipIntent === 'ledger_only');
+  if (atoms.length === 0) return false;
+  if (beat.tier === 'authored' && atoms.some((atom) => atom.isPlayableEvent && atom.ownershipIntent === 'must_stage')) {
+    return false;
+  }
+  return atoms.every((atom) => atom.ownershipIntent === 'ledger_only');
 }
 
 function addDemotedRequiredBeatContext(scene: SceneConstructionSceneLike, beat: RequiredBeat, reason: string): string | undefined {
@@ -595,7 +600,20 @@ function initialObligations(scene: SceneConstructionSceneLike, primary: SceneCon
     pushObligation(obligations, 'failureModeAudit', contract.id, contract.sourceText, 'texture', 'Failure-mode mitigation should protect the turn without becoming a second event.', 0, 0.25);
   }
   for (const contract of scene.characterTreatmentContracts ?? []) {
-    pushObligation(obligations, 'characterTreatment', contract.id, contract.sourceText, 'texture', 'Character treatment should appear as behavior inside the turn.', 0, 0.25);
+    const openingProtagonistField = Boolean(scene.coldOpenProfile)
+      && OPENING_EPISODE_CHARACTER_KINDS.has(contract.contractKind);
+    pushObligation(
+      obligations,
+      'characterTreatment',
+      contract.id,
+      contract.sourceText,
+      openingProtagonistField ? 'must_support' : 'texture',
+      openingProtagonistField
+        ? 'Protagonist brief field must be visible in the opening scene turn.'
+        : 'Character treatment should appear as behavior inside the turn.',
+      openingProtagonistField ? 0.75 : 0,
+      openingProtagonistField ? 0 : 0.25,
+    );
   }
   for (const contract of scene.worldTreatmentContracts ?? []) {
     pushObligation(obligations, 'worldTreatment', contract.id, contract.sourceText, 'texture', 'World/location treatment should shape what the turn permits or costs.', 0, 0.25);

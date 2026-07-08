@@ -140,6 +140,8 @@ import {
   refreshAnalysisFromTreatmentDocument,
   refreshBriefSeasonPlanFromAnalysis,
 } from './treatmentRefresh';
+import { rebuildTreatmentSeasonScenePlan } from './seasonScenePlanBuilder';
+import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
 import { SeasonCanon } from './seasonCanon';
 import { renderSourceCanonPrompt } from '../utils/sourceCanonPrompt';
 import { createRunState, type PipelineRunState } from './runState';
@@ -4843,6 +4845,12 @@ export class FullStoryPipeline {
     BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
+    if (baseBrief.seasonPlan && isSceneFirstPlanningEnabled()) {
+      baseBrief = {
+        ...baseBrief,
+        seasonPlan: rebuildTreatmentSeasonScenePlan(baseBrief.seasonPlan),
+      };
+    }
     baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
     // Arm treatmentSourced: the final-contract fidelity path reads the treatment
     // analysis from `brief.multiEpisode.sourceAnalysis`, but nothing ever populated it

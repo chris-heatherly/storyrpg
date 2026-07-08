@@ -1,6 +1,15 @@
+/**
+ * Bite Me EP1 worker launcher (text-only).
+ *
+ * LLM policy:
+ * - Primary (from .env): runs BOTH structural analysis and generation (Gemini by default).
+ * - Fable is NEVER used for generation. If primary analysis fails, retry analysis once
+ *   with ANALYSIS_FALLBACK_* (default anthropic/claude-fable-5), cache the result, then
+ *   run generation on the primary model only.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig } from '../src/ai-agents/config';
+import { loadConfig, type AgentConfig, type PipelineConfig } from '../src/ai-agents/config';
 import { parseDocument } from '../src/ai-agents/utils/documentParser';
 
 const PROXY = process.env.EXPO_PUBLIC_PROXY_URL || 'http://localhost:3001';
@@ -63,6 +72,27 @@ async function waitForJob(jobId: string, label: string): Promise<Record<string, 
   }
 }
 
+function resolveProviderApiKey(provider: AgentConfig['provider']): string {
+  if (provider === 'gemini') return process.env.GEMINI_API_KEY || '';
+  if (provider === 'openai') return process.env.OPENAI_API_KEY || '';
+  if (provider === 'openrouter') return process.env.OPENROUTER_API_KEY || '';
+  return process.env.ANTHROPIC_API_KEY || '';
+}
+
+/** Patch every narrative agent slot to a single provider/model (analysis fallback only). */
+function applyLlmProfile(config: PipelineConfig, provider: AgentConfig['provider'], model: string): PipelineConfig {
+  const apiKey = resolveProviderApiKey(provider);
+  const patched: PipelineConfig = JSON.parse(JSON.stringify(config));
+  for (const agent of Object.values(patched.agents)) {
+    if (agent && typeof agent === 'object' && 'provider' in agent) {
+      agent.provider = provider;
+      agent.model = model;
+      agent.apiKey = apiKey;
+    }
+  }
+  return patched;
+}
+
 function buildConfig() {
   const config = loadConfig();
   config.generation = { ...(config.generation ?? {}), assetGenerationMode: 'story-only' };
@@ -70,7 +100,41 @@ function buildConfig() {
   if (config.videoGen) config.videoGen.enabled = false;
   if (config.qualityCouncil) config.qualityCouncil.enabled = false;
   if (config.narration) config.narration.enabled = false;
-  return config;
+  // Story runs are Gemini text-only. .env may point agents at Anthropic for
+  // interactive use; override here so Ep1 jobs stay on the intended provider.
+  const provider = (process.env.STORY_LLM_PROVIDER || 'gemini') as AgentConfig['provider'];
+  const model = process.env.STORY_LLM_MODEL || 'gemini-2.5-pro';
+  return applyLlmProfile(config, provider, model);
+}
+
+async function runAnalysisJob(
+  config: PipelineConfig,
+  treatment: string,
+  briefTitle: string,
+  analysisCachePath: string,
+): Promise<Record<string, unknown>> {
+  const analysisJobId = await startJob({
+    mode: 'analysis',
+    storyTitle: 'Bite Me',
+    idempotencyKey: `analysis:bite-me:${Date.now()}`,
+    payload: {
+      config,
+      analysisInput: {
+        sourceText: treatment,
+        title: briefTitle,
+        preferences: { targetScenesPerEpisode: 6, pacing: 'moderate' as const },
+      },
+    },
+  });
+  const architect = config.agents?.storyArchitect;
+  log(`analysis job started: ${analysisJobId} (provider=${architect?.provider} model=${architect?.model})`);
+  const analysisResult = await waitForJob(analysisJobId, 'analysis');
+  if (analysisResult.success) {
+    fs.mkdirSync(path.dirname(analysisCachePath), { recursive: true });
+    fs.writeFileSync(analysisCachePath, JSON.stringify(analysisResult));
+    log(`analysis result cached to disk: ${analysisCachePath} (retry with REUSE_ANALYSIS=1)`);
+  }
+  return analysisResult;
 }
 
 async function main(): Promise<void> {
@@ -79,9 +143,9 @@ async function main(): Promise<void> {
   if (!parsed.success || !parsed.brief) {
     throw new Error(parsed.error || 'parseDocument failed');
   }
-  const config = buildConfig();
-  const architect = config.agents?.storyArchitect;
-  log(`config provider=${architect?.provider} model=${architect?.model} assets=story-only council=off`);
+  const primaryConfig = buildConfig();
+  const architect = primaryConfig.agents?.storyArchitect;
+  log(`generation LLM (primary): provider=${architect?.provider} model=${architect?.model} assets=story-only council=off`);
 
   // Analysis results are expensive (~10 min of LLM calls) and deterministic
   // inputs to generation — persist them on disk so a failed generation attempt
@@ -89,6 +153,7 @@ async function main(): Promise<void> {
   // result cache is purged too aggressively to rely on).
   const analysisCachePath = path.resolve(__dirname, '../generated-stories/.analysis-cache/bite-me-ep1.json');
   const resumeAnalysisJobId = process.env.SKIP_ANALYSIS_JOB_ID?.trim();
+  const briefTitle = parsed.brief.story?.title || 'Bite Me';
   let analysisResult: Record<string, unknown>;
   if (resumeAnalysisJobId) {
     log(`reusing completed analysis job: ${resumeAnalysisJobId}`);
@@ -101,25 +166,17 @@ async function main(): Promise<void> {
     log(`reusing analysis result from disk: ${analysisCachePath}`);
     analysisResult = JSON.parse(fs.readFileSync(analysisCachePath, 'utf8')) as Record<string, unknown>;
   } else {
-    const analysisJobId = await startJob({
-      mode: 'analysis',
-      storyTitle: 'Bite Me',
-      idempotencyKey: `analysis:bite-me:${Date.now()}`,
-      payload: {
-        config,
-        analysisInput: {
-          sourceText: treatment,
-          title: parsed.brief.story?.title || 'Bite Me',
-          preferences: { targetScenesPerEpisode: 6, pacing: 'moderate' as const },
-        },
-      },
-    });
-    log(`analysis job started: ${analysisJobId}`);
-    analysisResult = await waitForJob(analysisJobId, 'analysis');
-    if (analysisResult.success) {
-      fs.mkdirSync(path.dirname(analysisCachePath), { recursive: true });
-      fs.writeFileSync(analysisCachePath, JSON.stringify(analysisResult));
-      log(`analysis result cached to disk: ${analysisCachePath} (retry with REUSE_ANALYSIS=1)`);
+    try {
+      analysisResult = await runAnalysisJob(primaryConfig, treatment, briefTitle, analysisCachePath);
+    } catch (primaryErr) {
+      const fallbackProvider = (process.env.ANALYSIS_FALLBACK_PROVIDER || 'anthropic') as AgentConfig['provider'];
+      const fallbackModel = process.env.ANALYSIS_FALLBACK_MODEL || 'claude-fable-5';
+      log(
+        `primary analysis failed: ${primaryErr instanceof Error ? primaryErr.message : primaryErr}; `
+        + `retrying structural analysis only with ${fallbackProvider}/${fallbackModel} (generation stays on primary)`,
+      );
+      const fallbackConfig = applyLlmProfile(primaryConfig, fallbackProvider, fallbackModel);
+      analysisResult = await runAnalysisJob(fallbackConfig, treatment, briefTitle, analysisCachePath);
     }
   }
 
@@ -132,13 +189,14 @@ async function main(): Promise<void> {
   }
 
   const brief = { ...parsed.brief, seasonPlan };
+  // Generation always uses the primary LLM profile — never the Fable analysis fallback.
   const generationJobId = await startJob({
     mode: 'generation',
     storyTitle: 'Bite Me',
     episodeCount: 1,
     idempotencyKey: `generation:bite-me:ep1:${Date.now()}`,
     payload: {
-      config,
+      config: primaryConfig,
       generationInput: {
         brief,
         sourceAnalysis: analysisResult.sourceAnalysis,

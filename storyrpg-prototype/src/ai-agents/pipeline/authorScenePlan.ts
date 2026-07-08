@@ -44,8 +44,9 @@ import {
   MIN_SCENES_PER_EPISODE,
   promoteCoveredAuthoredEncounters,
   repairRouteCueSceneOrder,
+  inferAuthoredLocationFromText,
 } from './seasonScenePlanBuilder';
-import { finalizeAuthoredLiteScenePlan } from '../utils/authoredLiteScenePlan';
+import { finalizeAuthoredLiteScenePlan, isAuthoredLiteEpisode, splitStackedSpatialScenes } from '../utils/authoredLiteScenePlan';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
 import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
@@ -743,6 +744,9 @@ function normalizeEpisodeScenes(
   // deterministic path via the same helper.
   bindAuthoredTurnsToScenes(ep, built, infoLedger, protagonist, priorBondNpcKeys);
   promoteCoveredAuthoredEncounters(ep, built, coveredEncounterIds);
+  if (isAuthoredLiteEpisode(ep)) {
+    splitStackedSpatialScenes(ep, built, inferAuthoredLocationFromText);
+  }
   // Route-cue chronology repair, same rung as the deterministic skeleton path
   // (4357093a). The LLM-authored path missed it, so an inverted plan
   // (socialMeet scene before the arrival scene) still hard-aborted at the

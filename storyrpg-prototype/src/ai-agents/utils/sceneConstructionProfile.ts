@@ -218,6 +218,15 @@ function isPremisePressureSupportText(text: unknown): boolean {
   return /\b(?:is|are|was|were|be|being|letting|defined|feels?|wants?|needs?|believes?|fears?|hopes?)\b/i.test(value);
 }
 
+/** Opening character-brief atoms that are backstory, not stageable arrivals. */
+function isOpeningCharacterBackstoryAtom(obligation: SceneConstructionObligation): boolean {
+  if (obligation.source !== 'treatmentAtom' && obligation.source !== 'requiredBeat') return false;
+  if (!/-char-|wound-pressure|visual-identity|family-story/i.test(obligation.id || '')) return false;
+  // Keep concrete arrival/explore stageability even when sourced from a brief field.
+  if (/\b(?:arrives?|explores?|wanders?|suitcases?)\b/i.test(obligation.text)) return false;
+  return true;
+}
+
 function timeCues(value: unknown): string[] {
   const text = cleanText(value);
   const matches = Array.from(text.matchAll(TIME_CUE_RE));
@@ -659,9 +668,12 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
     const storyCircleRequiredBeat = obligation.source === 'requiredBeat' && isStoryCircleDerivedId(obligation.id);
     const storyCircleSupport = obligation.source === 'storyCircle' || storyCircleRequiredBeat;
     const coldOpenPremisePressure = Boolean(scene.coldOpenProfile)
-      && obligation.source === 'requiredBeat'
+      && (obligation.source === 'requiredBeat' || obligation.source === 'treatmentAtom')
       && obligation.hardUnits >= 1
-      && isPremisePressureSupportText(obligation.text);
+      && (
+        isPremisePressureSupportText(obligation.text)
+        || isOpeningCharacterBackstoryAtom(obligation)
+      );
     let next = { ...obligation };
 
     if (coldOpenExtraneousEventCue) {
@@ -777,7 +789,18 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
     const existing = seen.get(key);
     const activeSlot = (slot: SceneConstructionSlot): boolean =>
       slot === 'primary_turn' || slot === 'must_stage' || slot === 'must_support';
-    if (existing && activeSlot(existing.slot) && !next.mergedInto && next.source === 'treatmentAtom') {
+    // Near-duplicate arrival/suitcase atoms often differ by a proper name or
+    // clause ending, so exact normalize keys miss them and each still costs a
+    // hard unit (bite-me 2026-07-08 s1-1: 7 hard from stacked suitcase clones).
+    const fuzzyMatch = !next.mergedInto && next.source === 'treatmentAtom'
+      ? deduped.find((candidate) =>
+        activeSlot(candidate.slot)
+        && candidate.hardUnits > 0
+        && candidate.id !== next.id
+        && substantiallyDuplicates(next.text, candidate.text))
+      : undefined;
+    const mergeTarget = (existing && activeSlot(existing.slot) ? existing : undefined) || fuzzyMatch;
+    if (mergeTarget && !next.mergedInto && next.source === 'treatmentAtom') {
       // The text already has an ACTIVE representative — demote this duplicate
       // out of the active slots entirely. A merged duplicate that kept its
       // must_stage slot still occupied one of the prompt's 8 active lines, so
@@ -787,11 +810,11 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
       // two dusk-club texts).
       next = {
         ...next,
-        mergedInto: existing.id,
+        mergedInto: mergeTarget.id,
         slot: 'metadata_only',
         hardUnits: 0,
         softUnits: 0,
-        reason: `${next.reason} Merged with ${existing.source}:${existing.id} so provenance is preserved without extra load.`,
+        reason: `${next.reason} Merged with ${mergeTarget.source}:${mergeTarget.id} so provenance is preserved without extra load.`,
       };
     } else if (existing) {
       // The existing copy was routed away/inactive: this instance becomes the

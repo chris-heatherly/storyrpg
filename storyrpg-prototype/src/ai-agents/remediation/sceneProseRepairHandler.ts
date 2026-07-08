@@ -33,6 +33,7 @@ import type { Story } from '../../types/story';
 import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
+import { SYNTHETIC_FALLBACK_PROSE_PATTERNS } from '../constants/syntheticFallbackProse';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
@@ -686,6 +687,9 @@ function allMomentsDepicted(
     if (issue.validator === 'CharacterIntroductionValidator') {
       return characterIntroductionIssuesCleared(scene, [issue]);
     }
+    if (isProseHygieneIssue(issue)) {
+      return proseHygieneIssueCleared(scene, issue);
+    }
     const moment = requiredMomentFromMessage(issue.message);
     if (!moment) return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
     if (issue.validator === 'TreatmentEventLedgerValidator') {
@@ -696,6 +700,37 @@ function allMomentsDepicted(
     }
     return evaluateMomentRealization(issue.validator, moment, prose).depicted;
   });
+}
+
+/** Localized prose defects that should not cause whole-scene restore rollback. */
+function isProseHygieneIssue(issue: RepairableIssue): boolean {
+  return issue.type === 'unsafe_fallback_prose'
+    || issue.validator === 'RelationshipArcLedgerValidator'
+    || (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose');
+}
+
+function sceneContainsRegisteredPlaceholder(scene: RepairableStoryScene): boolean {
+  const prose = sceneProseForScoring(scene);
+  return /The moment still needs authored prose before it can continue/i.test(prose)
+    || SYNTHETIC_FALLBACK_PROSE_PATTERNS.some((entry) => entry.pattern.test(prose));
+}
+
+function proseHygieneIssueCleared(scene: RepairableStoryScene, issue: RepairableIssue): boolean {
+  if (issue.type === 'unsafe_fallback_prose') {
+    return !sceneContainsRegisteredPlaceholder(scene);
+  }
+  if (issue.validator === 'RelationshipArcLedgerValidator') {
+    // Critic rewrites are accepted for predicted-clear; final revalidation is the net.
+    // Restoring over a successful label soften resurrected the prior failure mode.
+    return true;
+  }
+  return true;
+}
+
+function proseHygieneIssuesCleared(scene: RepairableStoryScene, issues: RepairableIssue[]): boolean {
+  const hygiene = issues.filter(isProseHygieneIssue);
+  if (hygiene.length === 0) return false;
+  return hygiene.every((issue) => proseHygieneIssueCleared(scene, issue));
 }
 
 function requiredBeatFullyLandedForRepair(moment: string, prose: string): boolean {
@@ -1123,6 +1158,17 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         }
         if (sceneMerged > 0) {
           if (opts.requirePredictedClear && !predictedClear) {
+            // Don't whole-scene restore when hygiene-only issues (placeholder /
+            // membership labels) cleared — that resurrected registered
+            // fallback prose forever (bite-me 2026-07-08T00-01-23).
+            if (proseHygieneIssuesCleared(scene, issues)) {
+              totalMerged += sceneMerged;
+              repairedScenes.push(sceneId);
+              opts.emit?.(
+                `Scene-prose contract repair: kept ${sceneId} rewrite because prose-hygiene findings cleared even though the authored checklist is still incomplete.`,
+              );
+              continue;
+            }
             restoreRepairableScene(scene, sceneBeforeRepair);
             opts.emit?.(
               `Scene-prose contract repair: restored ${sceneId} because the rewrite still did not satisfy the authored checklist after bounded retry.`,

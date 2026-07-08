@@ -45,16 +45,23 @@ import { assignEndingRealizationContractsToScenes } from '../utils/endingRealiza
 import { assignFailureModeAuditContractsToScenes } from '../utils/failureModeAuditContracts';
 import {
   applyAuthoredEncounterPresentation,
+  drainDuplicateAuthoredBeats,
   enforceNpcIntroOrderOnScenes,
   finalizeAuthoredLiteScenePlan,
   isAuthoredLiteEpisode,
+  pinAuthoredSceneLocations,
   repairIntroOrderTurnAssignment,
+  splitStackedSpatialScenes,
 } from '../utils/authoredLiteScenePlan';
 import { filterAuthoredLiteEpisodeTurns } from '../utils/authoredLiteTurnFilter';
 import {
+  assignAuthoredLiteTurnsToStandardScenes,
+  coalesceFragmentedEpisodeTurns,
+  countAuthoredLiteSceneBudget,
+  isThreatEncounterTurn,
   orderAuthoredEpisodeTurns,
-  positionalTurnAssignment,
   sortPlannedScenesByChronologyCue,
+  splitCompoundSpatialEpisodeTurns,
 } from '../utils/treatmentTurnOrdering';
 import { assignStoryCircleBeatContractsToScenes } from '../utils/storyCircleBeatContracts';
 import {
@@ -62,7 +69,7 @@ import {
   compareEncounterEventSignatures,
 } from '../utils/encounterEventSignature';
 import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfile';
-import { attachSceneEventOwnershipProfiles, eventOrder } from '../utils/sceneEventOwnership';
+import { attachSceneEventOwnershipProfiles, eventOrder, stripRegressiveAuthoredBeats } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
@@ -449,10 +456,30 @@ function groupRe(): RegExp {
   return new RegExp(`\\b(${lexiconAlternation([...getStoryLexicon().socialGroupNames, 'club', 'crew', 'circle', 'group'])})\\b`, 'i');
 }
 
-/** Stable id for a named story group when the text names one; scene-derived otherwise. */
-function groupIdForText(scene: PlannedScene, text: string): string {
-  const named = getStoryLexicon().socialGroupNames.find((name) => new RegExp(`\\b${name}\\b`, 'i').test(text));
-  return named ? slugId(named) : `${slugId(scene.title)}-group`;
+/** Stable id for a named story group when the text names one; undefined otherwise. */
+function groupIdForText(_scene: PlannedScene, text: string): string | undefined {
+  const lexicon = getStoryLexicon();
+  const named = lexicon.socialGroupNames.find((name) => new RegExp(`\\b${name}\\b`, 'i').test(text));
+  if (named) return slugId(named);
+
+  // Title-case social groups ("Night Circle", "Dusk Club") — exclude named venues
+  // so "Valescu Club" never becomes a relationship-group id.
+  const titled = text.match(/\b((?:[A-Z][A-Za-z0-9'’-]+\s+){0,3}(?:Club|Circle|Crew))\b/);
+  if (titled) {
+    const candidate = titled[1];
+    const lower = candidate.toLowerCase();
+    if (lexicon.namedVenues.some((venue) => lower.includes(venue.toLowerCase()))) {
+      return undefined;
+    }
+    return slugId(candidate);
+  }
+
+  // Generic formation language ("circle name", "the circle") without a venue club.
+  if (/\b(?:circle|crew)\s+names?\b/i.test(text) || /\bthe\s+circle\b/i.test(text)) {
+    if (/\bcircle\b/i.test(text)) return 'circle';
+    if (/\bcrew\b/i.test(text)) return 'crew';
+  }
+  return undefined;
 }
 
 function slugId(value: string): string {
@@ -613,8 +640,7 @@ function buildNpcPacingContract(
   };
 }
 
-function buildGroupPacingContract(scene: PlannedScene, priorScenes: number, text: string): RelationshipPacingContract {
-  const groupId = groupIdForText(scene, text);
+function buildGroupPacingContract(scene: PlannedScene, priorScenes: number, text: string, groupId: string): RelationshipPacingContract {
   const maxStage = sceneCanEarnRelationshipAdvancement(scene)
     ? 'intimate'
     : maxRelationshipStageWithoutChoice(priorScenes);
@@ -686,8 +712,13 @@ function applyRelationshipPacingContracts(
 
     if (groupRe().test(text) && !contracts.some((c) => c.groupId)) {
       const groupKey = groupIdForText(scene, text);
-      contracts.push(buildGroupPacingContract(scene, groupSeen.get(groupKey) ?? 0, text));
-      groupSeen.set(groupKey, (groupSeen.get(groupKey) ?? 0) + 1);
+      // Only mint group contracts for lexicon-named social groups (e.g. "Dusk Club").
+      // Scene-title fallbacks like "development-scene-2-group" from venue "club"
+      // mentions caused dual false positives at the ledger (bite-me 2026-07-08).
+      if (groupKey) {
+        contracts.push(buildGroupPacingContract(scene, groupSeen.get(groupKey) ?? 0, text, groupKey));
+        groupSeen.set(groupKey, (groupSeen.get(groupKey) ?? 0) + 1);
+      }
     }
 
     if (contracts.length > 0) scene.relationshipPacing = contracts;
@@ -1083,6 +1114,8 @@ export function getAuthoredEpisodeEventTexts(ep: SeasonEpisode): string[] {
   else if (guidance?.encounterAnchors?.length) turns = guidance.encounterAnchors.filter((turn) => turn?.trim());
   if (isAuthoredLiteEpisode(ep)) {
     turns = filterAuthoredLiteEpisodeTurns(turns, ep.episodeNumber);
+    turns = coalesceFragmentedEpisodeTurns(turns);
+    turns = splitCompoundSpatialEpisodeTurns(turns);
     turns = orderAuthoredEpisodeTurns(turns);
   }
   return turns;
@@ -1146,7 +1179,7 @@ function findAuthoredEncounterOwnerScene(scenes: PlannedScene[], enc: EpisodePla
   scenes.forEach((scene, index) => {
     if (scene.kind === 'encounter' || scene.narrativeRole === 'release') return;
     const authoredText = authoredRequiredBeatText(scene);
-    if (!authoredText) return;
+    if (!authoredText || !isThreatEncounterTurn(authoredText)) return;
     const tokenScore = tokenHitCount(bindTokens(authoredText), encounterTokenSet);
     const signature = compareEncounterEventSignatures(encounterSignature, buildEncounterEventSignature([authoredText]));
     if (tokenScore < 2 && !signature.matched) return;
@@ -1299,7 +1332,7 @@ function matchBeatLocation(text: string | undefined, locations: string[]): strin
   return bestScore > 0 ? best : undefined;
 }
 
-function inferAuthoredLocationFromText(text: string | undefined, locations: string[]): string | undefined {
+export function inferAuthoredLocationFromText(text: string | undefined, locations: string[]): string | undefined {
   const declared = matchBeatLocation(text, locations);
   if (declared) return declared;
 
@@ -1462,6 +1495,28 @@ function alignTurnsToScenes(turns: string[], targets: PlannedScene[]): number[] 
  * passes freshly-built scenes) and additive for the LLM path (which may carry
  * model-authored beats already). No-op when the episode is not treatment-sourced.
  */
+function stripThreatTurnBeatsFromStandardScenes(
+  turnTargets: PlannedScene[],
+  allScenes: PlannedScene[],
+): number {
+  const encounterOrder = allScenes.find((scene) => scene.kind === 'encounter')?.order
+    ?? Number.POSITIVE_INFINITY;
+  let stripped = 0;
+  for (const scene of turnTargets) {
+    if (scene.kind === 'encounter' || (scene.order ?? 0) <= encounterOrder) continue;
+    const beats = scene.requiredBeats ?? [];
+    const kept = beats.filter((beat) => {
+      if (beat.tier !== 'authored' && beat.tier !== 'signature') return true;
+      const text = `${beat.mustDepict ?? ''} ${beat.sourceTurn ?? ''}`.trim();
+      if (!isThreatEncounterTurn(text)) return true;
+      stripped += 1;
+      return false;
+    });
+    if (kept.length !== beats.length) scene.requiredBeats = kept;
+  }
+  return stripped;
+}
+
 export function bindAuthoredTurnsToScenes(
   ep: SeasonEpisode,
   scenes: PlannedScene[],
@@ -1545,26 +1600,42 @@ export function bindAuthoredTurnsToScenes(
   const spineTurns = turns.filter((turn) => !duplicatesColdOpenHook(turn));
   const dedupedTurns = spineTurns.length > 0 ? spineTurns : turns;
   if (dedupedTurns.length > 0) {
-    const litePositional = isAuthoredLiteEpisode(ep)
-      && dedupedTurns.length <= turnTargets.length;
-    const assignment = litePositional
-      ? positionalTurnAssignment(dedupedTurns.length, turnTargets.length)
+    const assignment = isAuthoredLiteEpisode(ep)
+      ? assignAuthoredLiteTurnsToStandardScenes(dedupedTurns, turnTargets, scenes)
       : alignTurnsToScenes(dedupedTurns, turnTargets);
     repairIntroOrderTurnAssignment(dedupedTurns, assignment, turnTargets.length - 1);
     enforceNpcIntroOrderOnScenes(ep, scenes, dedupedTurns, assignment, turnTargets);
+    if (isAuthoredLiteEpisode(ep)) {
+      stripThreatTurnBeatsFromStandardScenes(turnTargets, scenes);
+    }
     const perScene: RequiredBeat[][] = turnTargets.map(() => []);
     for (let t = 0; t < dedupedTurns.length; t += 1) {
+      if (isAuthoredLiteEpisode(ep) && isThreatEncounterTurn(dedupedTurns[t])) continue;
       const slot = assignment[t];
+      if (slot < 0) continue;
       const scene = turnTargets[slot];
       const beatIndex = (scene.requiredBeats?.length ?? 0) + perScene[slot].length;
       perScene[slot].push(requiredBeatFromTurn(scene.id, beatIndex, dedupedTurns[t]));
-      // Pin the scene's setting to the place its authored turn names (when it names a
-      // declared episode location), overriding the deterministic collapse-to-first.
-      // Only the LAST naming turn per scene wins (rare; a scene maps to ~1 turn).
-      const namedLocation = inferAuthoredLocationFromText(dedupedTurns[t], ep.locations ?? []);
-      if (namedLocation) scene.locations = [namedLocation];
+      if (!isAuthoredLiteEpisode(ep)) {
+        const namedLocation = inferAuthoredLocationFromText(dedupedTurns[t], ep.locations ?? []);
+        if (namedLocation) scene.locations = [namedLocation];
+      }
     }
     turnTargets.forEach((scene, i) => appendRequiredBeats(scene, perScene[i]));
+    if (isAuthoredLiteEpisode(ep)) {
+      pinAuthoredSceneLocations(turnTargets, inferAuthoredLocationFromText, ep.locations ?? []);
+      const encounterScene = scenes.find((scene) => scene.kind === 'encounter');
+      const encounterOrder = encounterScene?.order ?? Number.POSITIVE_INFINITY;
+      for (let t = 0; t < dedupedTurns.length; t += 1) {
+        if (!isThreatEncounterTurn(dedupedTurns[t])) continue;
+        const target = encounterScene
+          ?? turnTargets.filter((scene) => (scene.order ?? 0) < encounterOrder).at(-1)
+          ?? turnTargets[turnTargets.length - 1];
+        if (!target) continue;
+        const beatIndex = target.requiredBeats?.length ?? 0;
+        appendRequiredBeats(target, [requiredBeatFromTurn(target.id, beatIndex, dedupedTurns[t])]);
+      }
+    }
   }
 
   // 2. Signature device → the episode's anchor scene.
@@ -1690,9 +1761,14 @@ export function buildEpisodeScenes(
   // every turn as a required beat instead of starving turns (§3.2, §6).
   const turnCount = turns.length;
   const standaloneEncounterCount = encounters.filter((enc) => !coveredEncounterIds.has(enc.id)).length;
-  const desired = isAuthoredLiteEpisode(ep)
-    ? Math.max(MIN_SCENES_PER_EPISODE, turnCount + standaloneEncounterCount)
-    : clampSceneCount(ep.estimatedSceneCount || 5, turnCount);
+  const liteBudget = isAuthoredLiteEpisode(ep)
+    ? countAuthoredLiteSceneBudget(turns, standaloneEncounterCount)
+    : undefined;
+  const desired = liteBudget
+    ? Math.max(MIN_SCENES_PER_EPISODE, liteBudget.totalScenes)
+    : isAuthoredLiteEpisode(ep)
+      ? Math.max(MIN_SCENES_PER_EPISODE, turnCount + standaloneEncounterCount)
+      : clampSceneCount(ep.estimatedSceneCount || 5, turnCount);
 
   const scenes: PlannedScene[] = [];
   let order = 0;
@@ -1760,6 +1836,21 @@ export function buildEpisodeScenes(
   };
 
   // Standard-mode spine: setup -> development(s) -> encounter(s) -> release.
+  // Authored_lite: pre-threat turns each get a pre-encounter scene; post-threat
+  // turns get post-encounter scenes so blog/aftermath never bind back to s1-1.
+  if (liteBudget) {
+    pushStandard('setup');
+    for (let i = 1; i < liteBudget.preThreatScenes; i += 1) {
+      pushStandard('development');
+    }
+    for (const enc of encounters) {
+      if (coveredEncounterIds.has(enc.id)) continue;
+      pushEncounter(enc);
+    }
+    for (let i = 0; i < liteBudget.postThreatScenes; i += 1) {
+      pushStandard('development');
+    }
+  } else {
   let standardSlots = Math.max(2, desired - standaloneEncounterCount);
   if (turnCount > 0) standardSlots = Math.max(standardSlots, turnCount + 1);
   const hasRelease = !isAuthoredLiteEpisode(ep) && standardSlots >= 2 && desired > standaloneEncounterCount + 1;
@@ -1781,6 +1872,7 @@ export function buildEpisodeScenes(
   // Closing release (kept free of authored turns when possible — see binder).
   if (hasRelease) {
     pushStandard('release');
+  }
   }
 
   const openingScene = scenes.find((scene) => scene.narrativeRole === 'setup') ?? scenes[0];
@@ -1844,6 +1936,10 @@ export function buildEpisodeScenes(
   bindAuthoredTurnsToScenes(ep, scenes, infoLedger, protagonist, priorBondNpcKeys);
   promoteCoveredAuthoredEncounters(ep, scenes, coveredEncounterIds);
   repairUnsupportedPlanningEventPurposes(ep, scenes);
+  if (isAuthoredLiteEpisode(ep)) {
+    stripRegressiveAuthoredBeats(scenes);
+    splitStackedSpatialScenes(ep, scenes, inferAuthoredLocationFromText);
+  }
   repairRouteCueSceneOrder(scenes, ep.episodeNumber);
   const outgoingResidue = (seasonResiduePlan ?? []).filter(
     (obligation) => obligation.sourceEpisodeNumber === ep.episodeNumber,
@@ -2025,6 +2121,9 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   const arcPressureContracts = assignArcPressureContractsToScenes(plan, scenes);
   const characterTreatmentContracts = assignCharacterTreatmentContractsToScenes(plan, scenes);
   appendOpeningCharacterTreatmentRequiredBeats(scenes);
+  // Story Circle / cold-open arrival can land as two hard beats on the opening
+  // scene after season contract attach; drain before construction profiles fire.
+  drainDuplicateAuthoredBeats(scenes);
   const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
   const stakesArchitectureContracts = assignStakesArchitectureContractsToScenes(plan, scenes);
   const branchConsequenceContracts = assignBranchConsequenceContractsToScenes(plan, scenes);
@@ -2057,6 +2156,27 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     failureModeAuditContracts,
     characterTreatmentContracts,
     worldTreatmentContracts,
+  };
+}
+
+/**
+ * Rebuild the deterministic treatment-bound scene spine from current episode
+ * guidance. Cached season plans can carry a stale `scenePlan` from an earlier
+ * builder version — episode architecture elaborates those planned scenes verbatim,
+ * so the spine must be refreshed at run start when scene-first planning is on.
+ */
+export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
+  const treatmentSourced = (plan.episodes ?? []).some((episode) => Boolean(episode.treatmentGuidance));
+  if (!treatmentSourced) return plan;
+  const scenePlan = buildSeasonScenePlan(plan);
+  const episodes = (plan.episodes ?? []).map((episode) => ({
+    ...episode,
+    plannedScenes: scenesForEpisode(scenePlan, episode.episodeNumber),
+  }));
+  return {
+    ...plan,
+    episodes,
+    scenePlan,
   };
 }
 

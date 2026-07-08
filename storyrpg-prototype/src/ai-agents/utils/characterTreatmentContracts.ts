@@ -13,7 +13,6 @@ import {
   treatmentFieldCloseMatch,
   treatmentFieldTokens,
 } from './treatmentFieldContracts';
-import { chronologyRankForScene } from './treatmentTurnOrdering';
 
 const KIND_PREFIX: Record<CharacterTreatmentFieldKind, string> = {
   canonical_identity: 'canonical-identity',
@@ -429,8 +428,11 @@ export const OPENING_EPISODE_CHARACTER_KINDS = new Set<CharacterTreatmentFieldKi
 ]);
 
 /**
- * Promote early protagonist-brief contracts on the first scene of each episode
- * to cold-open required beats so SceneWriter must stage role/wound/identity.
+ * Seed early protagonist-brief contracts onto the first scene of each episode.
+ * Use advisory `seed` (not hard `coldopen`): hard cold-open stacking with the
+ * arrival turn blew SceneConstructionGate past max hard units
+ * (bite-me 2026-07-08: 6.25/5 on s1-1). CharacterTreatmentRealizationValidator
+ * still owns final-contract evidence for these contracts.
  */
 export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScene[]): void {
   const byEpisode = new Map<number, PlannedScene[]>();
@@ -440,11 +442,7 @@ export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScen
   }
 
   for (const [episodeNumber, episodeScenes] of byEpisode) {
-    const opening = [...episodeScenes].sort((a, b) => {
-      const rankDiff = chronologyRankForScene(a) - chronologyRankForScene(b);
-      if (rankDiff !== 0) return rankDiff;
-      return a.order - b.order;
-    })[0];
+    const opening = [...episodeScenes].sort((a, b) => a.order - b.order)[0];
     if (!opening) continue;
 
     for (const contract of opening.characterTreatmentContracts ?? []) {
@@ -458,7 +456,7 @@ export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScen
         id: beatId,
         sourceTurn: contract.sourceText,
         mustDepict: `Establish the protagonist's ${contract.fieldName.toLowerCase()} through concrete behavior or detail (fiction-first): ${contract.sourceText}`,
-        tier: 'coldopen',
+        tier: 'seed',
       };
       opening.requiredBeats = [...(opening.requiredBeats ?? []), beat];
     }

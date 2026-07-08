@@ -6,6 +6,148 @@ const BOOKSHOP_SOCIAL_RE = /\b(?:bookshop|bookstore|lumina|befriend(?:s|ed|ing)?
 const CLUB_VENUE_RE = /\b(?:valescu|nightlife|club|velvet rope)\b/i;
 const GROUP_FORMATION_RE = /\b(?:dusk club|become\s+friends|forms?\s+(?:the\s+)?\w+\s+club|testing)\b/i;
 const ROOFTOP_RE = /\b(?:rooftop|terrace|charcoal suit|kitchen)\b/i;
+const THREAT_TURN_RE = /\b(?:attack(?:s|ed|ing)?|attacked|ambush(?:ed|es)?|rescued|rescue(?:s|d)?|cismigiu|cișmigiu|walk(?:s|ed|ing)?\s+home)\b/i;
+const POST_THREAT_RANK = 60;
+
+export function isThreatEncounterTurn(text: string): boolean {
+  const cues = detectStoryEventCues(text);
+  return cues.has('threatEncounter') || cues.has('walkHome') || THREAT_TURN_RE.test(text);
+}
+
+export function isPostThreatEpisodeTurn(text: string): boolean {
+  if (isThreatEncounterTurn(text)) return false;
+  const cues = detectStoryEventCues(text);
+  if (cues.has('lateNightWriting') || cues.has('blogAftermath')) return true;
+  const rank = chronologyRankForText(text);
+  if (rank >= 999) return false;
+  return rank >= POST_THREAT_RANK;
+}
+
+/** Merge analysis splits like "…codename Mr." + "Midnight, and by evening…". */
+/** Split one compound turn when it spans container exploration + specific venue. */
+export function splitCompoundSpatialTurnText(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  const exploreVenue = trimmed.match(
+    /^(.+?\bexplores?\s+[^.]+?)\s+and\s+((?:wanders?|walks?)\s+into\s+(?:a\s+)?(?:bookshop|bookstore|lumina).*)$/i,
+  );
+  if (exploreVenue) {
+    const first = exploreVenue[1].trim();
+    let second = exploreVenue[2].trim();
+    if (!/^[A-Z]/.test(second)) {
+      const subject = first.match(/^(\w+)/)?.[1] || 'She';
+      second = `${subject} ${second}`;
+    }
+    return [first, second];
+  }
+  return [trimmed];
+}
+
+export function splitCompoundSpatialEpisodeTurns(turns: string[]): string[] {
+  return turns.flatMap((turn) => splitCompoundSpatialTurnText(turn));
+}
+
+export function coalesceFragmentedEpisodeTurns(turns: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    let turn = turns[i].trim();
+    while (i + 1 < turns.length && shouldMergeWithNextTurn(turn, turns[i + 1])) {
+      turn = `${turn} ${turns[i + 1].trim()}`.replace(/\s+/g, ' ').trim();
+      i += 1;
+    }
+    if (turn) out.push(turn);
+  }
+  return out;
+}
+
+function shouldMergeWithNextTurn(current: string, next: string): boolean {
+  const n = next.trim();
+  if (!n) return false;
+  if (/\b(?:Mr|Dr|Mrs|Ms|St)\.\s*$/i.test(current)) return true;
+  if (/\bcodename\s+$/i.test(current)) return true;
+  if (!/[.!?]$/.test(current) && n.length > 0 && /^[a-z]/i.test(n)) return true;
+  return false;
+}
+
+function scenePlayOrder(scene: PlannedScene): number {
+  return scene.order ?? 0;
+}
+
+export function partitionAuthoredLiteTurnIndices(turns: string[]): {
+  preThreat: number[];
+  postThreat: number[];
+} {
+  const preThreat: number[] = [];
+  const postThreat: number[] = [];
+  turns.forEach((turn, index) => {
+    if (isThreatEncounterTurn(turn)) return;
+    if (isPostThreatEpisodeTurn(turn)) postThreat.push(index);
+    else preThreat.push(index);
+  });
+  return { preThreat, postThreat };
+}
+
+/** Minimum standard + encounter slots for authored_lite spine turns. */
+export function countAuthoredLiteSceneBudget(turns: string[], standaloneEncounterCount: number): {
+  preThreatScenes: number;
+  postThreatScenes: number;
+  totalScenes: number;
+} {
+  const { preThreat, postThreat } = partitionAuthoredLiteTurnIndices(turns);
+  const preThreatScenes = Math.max(1, preThreat.length);
+  const postThreatScenes = postThreat.length;
+  return {
+    preThreatScenes,
+    postThreatScenes,
+    totalScenes: preThreatScenes + postThreatScenes + standaloneEncounterCount,
+  };
+}
+
+/**
+ * Bind authored turns to standard scenes while respecting encounter placement in
+ * the full playback timeline. Uses one turn per scene slot (no positional stacking)
+ * when enough targets exist in each act.
+ */
+export function assignAuthoredLiteTurnsToStandardScenes(
+  turns: string[],
+  turnTargets: PlannedScene[],
+  allScenes: PlannedScene[],
+): number[] {
+  const assignment = turns.map(() => -1);
+  if (turns.length === 0 || turnTargets.length === 0) return assignment;
+
+  const encounter = allScenes.find((scene) => scene.kind === 'encounter');
+  const encounterOrder = encounter ? scenePlayOrder(encounter) : Number.POSITIVE_INFINITY;
+  const beforeTargets = turnTargets.filter((scene) => scenePlayOrder(scene) < encounterOrder);
+  const afterTargets = turnTargets.filter((scene) => scenePlayOrder(scene) > encounterOrder);
+  const { preThreat, postThreat } = partitionAuthoredLiteTurnIndices(turns);
+
+  const bindOneToOne = (turnIndices: number[], targets: PlannedScene[]) => {
+    if (turnIndices.length === 0 || targets.length === 0) return;
+    turnIndices.forEach((turnIndex, i) => {
+      const targetScene = targets[Math.min(i, targets.length - 1)];
+      const slot = turnTargets.indexOf(targetScene);
+      if (slot >= 0) assignment[turnIndex] = slot;
+    });
+  };
+
+  bindOneToOne(preThreat, beforeTargets.length > 0 ? beforeTargets : turnTargets);
+  bindOneToOne(postThreat, afterTargets.length > 0 ? afterTargets : turnTargets);
+
+  for (let t = 0; t < turns.length; t += 1) {
+    if (assignment[t] >= 0 || isThreatEncounterTurn(turns[t])) continue;
+    const pool = isPostThreatEpisodeTurn(turns[t])
+      ? (afterTargets.length > 0 ? afterTargets : turnTargets)
+      : (beforeTargets.length > 0 ? beforeTargets : turnTargets);
+    const slot = turnTargets.indexOf(pool[Math.min(t, pool.length - 1)]);
+    assignment[t] = slot >= 0 ? slot : 0;
+  }
+
+  for (let t = 1; t < assignment.length; t += 1) {
+    if (assignment[t] < assignment[t - 1]) assignment[t] = assignment[t - 1];
+  }
+  return assignment;
+}
 
 export interface ChronologyViolation {
   turnIndex: number;

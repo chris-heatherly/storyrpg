@@ -10,6 +10,7 @@ import {
   introOrderConstraintPairs,
   isIntroducesEpisodeTurn,
   repairIntroOrderTurnAssignment,
+  splitStackedSpatialScenes,
 } from './authoredLiteScenePlan';
 
 function liteEpisode(overrides: Partial<SeasonEpisode> = {}): SeasonEpisode {
@@ -108,6 +109,25 @@ describe('authoredLiteScenePlan scene budget', () => {
     expect(consolidateAuthoredLiteScenes(liteEpisode(), scenes)).toBeGreaterThan(0);
     expect(scenes).toHaveLength(1);
     expect(scenes[0].requiredBeats?.length).toBe(2);
+  });
+
+  it('splits stacked spatial beats into separate scenes', () => {
+    const infer = (text: string) => (
+      /bookshop|bookstore/i.test(text) ? 'Lumina Books' : /bucharest/i.test(text) ? 'Bucharest' : undefined
+    );
+    const scenes = [
+      scene('s1-1', 0, {
+        locations: ['Lumina Books'],
+        requiredBeats: [
+          { id: 'rb1', tier: 'authored', mustDepict: 'She explores the streets of Bucharest.', sourceTurn: 'explore' },
+          { id: 'rb2', tier: 'authored', mustDepict: 'She wanders into a bookshop owned by Stela.', sourceTurn: 'shop' },
+        ],
+      }),
+    ];
+    expect(splitStackedSpatialScenes(liteEpisode({ locations: ['Bucharest', 'Lumina Books'] }), scenes, infer)).toBe(1);
+    expect(scenes).toHaveLength(2);
+    expect(scenes[0].requiredBeats?.filter((beat) => beat.tier === 'authored')).toHaveLength(1);
+    expect(scenes[1].requiredBeats?.filter((beat) => beat.tier === 'authored')).toHaveLength(1);
   });
 
   it('trims surplus standard scenes without authored beats', () => {

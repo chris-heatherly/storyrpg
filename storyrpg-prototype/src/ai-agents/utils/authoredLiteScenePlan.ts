@@ -11,7 +11,17 @@ import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { storyCircleRoleBeats } from './storyCircleDistribution';
 import { normalizeCharacterSlug, resolveRosterCharacter } from './npcIntroductionLedger';
-import { sortPlannedScenesByChronologyCue } from './treatmentTurnOrdering';
+import {
+  coalesceFragmentedEpisodeTurns,
+  countAuthoredLiteSceneBudget,
+  orderAuthoredEpisodeTurns,
+  sortPlannedScenesByChronologyCue,
+  splitCompoundSpatialTurnText,
+} from './treatmentTurnOrdering';
+import { filterAuthoredLiteEpisodeTurns } from './authoredLiteTurnFilter';
+import { detectSpatialUnitViolations, hardBeatTexts } from './sceneSpatialUnitPolicy';
+import { isContainerLocationCue, uniqueMajorLocationCues } from './sceneLocationCues';
+import { stripRegressiveAuthoredBeats } from './sceneEventOwnership';
 
 function bindTokens(value: string | undefined): string[] {
   return (value ?? '')
@@ -29,11 +39,19 @@ function tokenOverlapRatio(a: string, b: string): number {
   return hits / aTokens.length;
 }
 
-function authoredTurnCount(ep: SeasonEpisode): number {
+function authoredLiteSpineTurns(ep: SeasonEpisode): string[] {
   const guidance = ep.treatmentGuidance;
-  if (guidance?.episodeTurns?.length) return guidance.episodeTurns.filter((turn) => turn?.trim()).length;
-  if (guidance?.majorChoicePressures?.length) return guidance.majorChoicePressures.filter((turn) => turn?.trim()).length;
-  return 0;
+  let turns: string[] = [];
+  if (guidance?.episodeTurns?.length) turns = guidance.episodeTurns.filter((turn) => turn?.trim());
+  else if (guidance?.majorChoicePressures?.length) turns = guidance.majorChoicePressures.filter((turn) => turn?.trim());
+  else if (guidance?.encounterAnchors?.length) turns = guidance.encounterAnchors.filter((turn) => turn?.trim());
+  turns = filterAuthoredLiteEpisodeTurns(turns, ep.episodeNumber);
+  turns = coalesceFragmentedEpisodeTurns(turns);
+  return orderAuthoredEpisodeTurns(turns);
+}
+
+function authoredTurnCount(ep: SeasonEpisode): number {
+  return authoredLiteSpineTurns(ep).length;
 }
 
 const INTRODUCES_TURN_RE = /\bintroduces?\b/i;
@@ -224,7 +242,9 @@ export function enforceNpcIntroOrderOnScenes(
   return removals;
 }
 
-/** Drain later scenes whose authored beat duplicates an earlier scene (≥70% token overlap). */
+const HARD_DRAIN_TIERS = new Set<RequiredBeat['tier']>(['authored', 'signature', 'coldopen']);
+
+/** Drain later hard beats that duplicate earlier hard beats (≥70% token overlap). */
 export function drainDuplicateAuthoredBeats(scenes: PlannedScene[]): number {
   let drained = 0;
   const coveredTexts: string[] = [];
@@ -233,7 +253,7 @@ export function drainDuplicateAuthoredBeats(scenes: PlannedScene[]): number {
       beat.tier === 'authored' || beat.tier === 'signature');
     const kept: RequiredBeat[] = [];
     for (const beat of scene.requiredBeats ?? []) {
-      if (beat.tier !== 'authored' && beat.tier !== 'signature') {
+      if (!HARD_DRAIN_TIERS.has(beat.tier)) {
         kept.push(beat);
         continue;
       }
@@ -300,7 +320,10 @@ function mergeAdjacentAftermathScenes(scenes: PlannedScene[]): number {
 }
 
 function trimSurplusStandardScenes(ep: SeasonEpisode, scenes: PlannedScene[]): number {
-  const turnBudget = authoredTurnCount(ep);
+  const spineTurns = authoredLiteSpineTurns(ep);
+  const encounterCount = scenes.filter((scene) => scene.kind === 'encounter').length;
+  const budget = countAuthoredLiteSceneBudget(spineTurns, encounterCount);
+  const turnBudget = budget.preThreatScenes + budget.postThreatScenes;
   if (turnBudget === 0) return 0;
   let removed = 0;
   const countStandard = () => scenes.filter((scene) => scene.kind === 'standard' && scene.narrativeRole !== 'release').length;
@@ -328,6 +351,170 @@ function trimSurplusStandardScenes(ep: SeasonEpisode, scenes: PlannedScene[]): n
 export function consolidateAuthoredLiteScenes(ep: SeasonEpisode, scenes: PlannedScene[]): number {
   if (!isAuthoredLiteEpisode(ep)) return 0;
   return mergeAdjacentAftermathScenes(scenes) + trimSurplusStandardScenes(ep, scenes);
+}
+
+type LocationInferer = (text: string, locations: string[]) => string | undefined;
+
+const HARD_SPLIT_TIERS = new Set<RequiredBeat['tier']>(['authored', 'signature', 'coldopen']);
+
+function requiredBeatFromSplit(sceneId: string, beatIndex: number, text: string, tier: RequiredBeat['tier']): RequiredBeat {
+  return {
+    id: `${sceneId}-spatial${beatIndex + 1}`,
+    sourceTurn: text,
+    mustDepict: text,
+    tier,
+  };
+}
+
+function insertSplitScenes(
+  scene: PlannedScene,
+  splitTexts: string[],
+  tiers: RequiredBeat['tier'][],
+  staticBeats: RequiredBeat[],
+  scenes: PlannedScene[],
+  insertAt: number,
+  inferLocation: LocationInferer,
+  locations: string[],
+): number {
+  let splits = 0;
+  const [keepText, ...overflowTexts] = splitTexts;
+  const keepTier = tiers[0] ?? 'authored';
+  scene.requiredBeats = [...staticBeats, requiredBeatFromSplit(scene.id, 0, keepText, keepTier)];
+  const keepLocation = inferLocation(keepText, locations);
+  if (keepLocation) scene.locations = [keepLocation];
+
+  let nextInsert = insertAt;
+  for (let beatIndex = 0; beatIndex < overflowTexts.length; beatIndex += 1) {
+    const text = overflowTexts[beatIndex];
+    const tier = tiers[beatIndex + 1] ?? 'authored';
+    const beatLocation = inferLocation(text, locations);
+    const splitScene: PlannedScene = {
+      id: `${scene.id}-spatial-${beatIndex + 1}`,
+      episodeNumber: scene.episodeNumber,
+      order: nextInsert,
+      kind: 'standard',
+      title: text.slice(0, 60) || `${scene.title} (continued)`,
+      dramaticPurpose: text || scene.dramaticPurpose,
+      narrativeRole: 'development',
+      locations: [beatLocation || scene.locations?.[0] || locations[0]].filter(Boolean) as string[],
+      npcsInvolved: [...(scene.npcsInvolved ?? [])],
+      setsUp: [...(scene.setsUp ?? [])],
+      paysOff: [...(scene.paysOff ?? [])],
+      hasChoice: scene.hasChoice,
+      budgetWeight: scene.budgetWeight,
+      requiredBeats: [requiredBeatFromSplit(`${scene.id}-spatial-${beatIndex + 1}`, 0, text, tier)],
+    };
+    scenes.splice(nextInsert, 0, splitScene);
+    nextInsert += 1;
+    splits += 1;
+  }
+  if (splits > 0) {
+    scenes.forEach((entry, order) => { entry.order = order; });
+  }
+  return splits;
+}
+
+/** Split scenes whose hard beats span multiple major locations (safety net after bind). */
+export function splitStackedSpatialScenes(
+  ep: SeasonEpisode,
+  scenes: PlannedScene[],
+  inferLocation: LocationInferer,
+): number {
+  if (!isAuthoredLiteEpisode(ep)) return 0;
+  const locations = ep.locations ?? [];
+  let splits = 0;
+  for (let index = 0; index < scenes.length; index += 1) {
+    const scene = scenes[index];
+    if (scene.kind !== 'standard') continue;
+    const violation = detectSpatialUnitViolations(scene);
+    if (!violation) continue;
+
+    const staticBeats = (scene.requiredBeats ?? []).filter((beat) => !HARD_SPLIT_TIERS.has(beat.tier));
+    const hardBeats = (scene.requiredBeats ?? []).filter((beat) => HARD_SPLIT_TIERS.has(beat.tier));
+    if (hardBeats.length === 0) continue;
+
+    if (hardBeats.length === 1) {
+      const beat = hardBeats[0];
+      const text = beat.mustDepict || beat.sourceTurn || '';
+      const parts = splitCompoundSpatialTurnText(text);
+      if (parts.length >= 2) {
+        splits += insertSplitScenes(
+          scene,
+          parts,
+          [beat.tier, beat.tier],
+          staticBeats,
+          scenes,
+          index + 1,
+          inferLocation,
+          locations,
+        );
+      }
+      continue;
+    }
+
+    const [keep, ...overflow] = hardBeats;
+    scene.requiredBeats = [...staticBeats, keep];
+    const keepLocation = inferLocation(keep.mustDepict || keep.sourceTurn || '', locations);
+    if (keepLocation) scene.locations = [keepLocation];
+
+    let insertAt = index + 1;
+    for (let beatIndex = 0; beatIndex < overflow.length; beatIndex += 1) {
+      const beat = overflow[beatIndex];
+      const beatLocation = inferLocation(beat.mustDepict || beat.sourceTurn || '', locations);
+      const splitScene: PlannedScene = {
+        id: `${scene.id}-spatial-${beatIndex + 1}`,
+        episodeNumber: scene.episodeNumber,
+        order: insertAt,
+        kind: 'standard',
+        title: beat.mustDepict?.slice(0, 60) || `${scene.title} (continued)`,
+        dramaticPurpose: beat.mustDepict || beat.sourceTurn || scene.dramaticPurpose,
+        narrativeRole: 'development',
+        locations: [beatLocation || scene.locations?.[0] || locations[0]].filter(Boolean) as string[],
+        npcsInvolved: [...(scene.npcsInvolved ?? [])],
+        setsUp: [...(scene.setsUp ?? [])],
+        paysOff: [...(scene.paysOff ?? [])],
+        hasChoice: scene.hasChoice,
+        budgetWeight: scene.budgetWeight,
+        requiredBeats: [beat],
+      };
+      scenes.splice(insertAt, 0, splitScene);
+      insertAt += 1;
+      splits += 1;
+    }
+    if (overflow.length > 0) {
+      scenes.forEach((entry, order) => { entry.order = order; });
+    }
+  }
+  return splits;
+}
+
+export function pinAuthoredSceneLocations(
+  scenes: PlannedScene[],
+  inferLocation: LocationInferer,
+  episodeLocations: string[],
+): number {
+  let pinned = 0;
+  for (const scene of scenes) {
+    if (scene.kind !== 'standard') continue;
+    const authoredTexts = hardBeatTexts((scene.requiredBeats ?? []).filter((beat) =>
+      beat.tier === 'authored' || beat.tier === 'signature'));
+    if (authoredTexts.length === 0) continue;
+    const primaryText = authoredTexts[0];
+    const named = inferLocation(primaryText, episodeLocations);
+    if (named) {
+      scene.locations = [named];
+      pinned += 1;
+      continue;
+    }
+    const containerCue = uniqueMajorLocationCues([primaryText]).find((cue) => isContainerLocationCue(cue));
+    if (containerCue) {
+      const declared = episodeLocations.find((loc) =>
+        loc.toLowerCase().includes(containerCue) || containerCue.includes(loc.toLowerCase().split(' ')[0]));
+      scene.locations = [declared || containerCue];
+      pinned += 1;
+    }
+  }
+  return pinned;
 }
 
 export function inferAuthoredEncounterPresentation(text: string): {
@@ -429,6 +616,7 @@ export function finalizeAuthoredLiteScenePlan(
 ): number {
   if (!isAuthoredLiteEpisode(ep)) return 0;
   let changes = sortPlannedScenesByChronologyCue(scenes);
+  changes += stripRegressiveAuthoredBeats(scenes);
   changes += drainDuplicateAuthoredBeats(scenes);
   changes += consolidateAuthoredLiteScenes(ep, scenes);
   for (const scene of scenes) {

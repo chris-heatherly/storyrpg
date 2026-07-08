@@ -4,6 +4,7 @@ import { detectRealizedStoryEventCues, type StoryEventCue } from '../remediation
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { buildEncounterEventSignature } from '../utils/encounterEventSignature';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
+import { toStageableTreatmentMoment } from '../utils/stageableTreatmentMoment';
 import { BaseValidator } from './BaseValidator';
 
 export type TreatmentEventLedgerStatus =
@@ -121,7 +122,8 @@ function isAbstractTrajectoryClause(clause: string): boolean {
 }
 
 function ledgerMomentDepicted(moment: string, prose: string): boolean {
-  const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', moment, prose);
+  const stageable = toStageableTreatmentMoment(moment);
+  const assessment = evaluateMomentRealization('RequiredBeatRealizationValidator', stageable || moment, prose);
   if (assessment.depicted) return true;
   if (
     assessment.mode === 'compound-clauses'

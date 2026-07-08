@@ -178,6 +178,44 @@ describe('RelationshipArcLedgerValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('settled membership'))).toBe(true);
   });
 
+  it('does not treat named venue "Club is real" prose as settled membership', () => {
+    const contract = pacing();
+    const scene = {
+      id: 's1-blog-aftermath',
+      name: 'The post becomes public pressure',
+      startingBeatId: 'b1',
+      relationshipPacing: [contract],
+      beats: [{
+        id: 'b1',
+        text: "A day later, the velvet rope of Valescu Club separates two worlds, and you're no longer sure which one is real.",
+        choices: [],
+      }],
+    } as Scene;
+
+    const result = new RelationshipArcLedgerValidator().validate({ story: story(scene), treatmentSourced: true });
+
+    expect(result.issues.some((issue) => issue.message.includes('settled membership'))).toBe(false);
+  });
+
+  it('still blocks "We are the Dusk Club" identity claims before membership is earned', () => {
+    const contract = pacing();
+    const scene = {
+      id: 's1-2',
+      name: 'Formation',
+      startingBeatId: 'b1',
+      relationshipPacing: [contract],
+      beats: [{
+        id: 'b1',
+        text: 'Stela grins across the table. "We are the Dusk Club."',
+        choices: [],
+      }],
+    } as Scene;
+
+    const result = new RelationshipArcLedgerValidator().validate({ story: story(scene), treatmentSourced: true });
+
+    expect(result.issues.some((issue) => issue.message.includes('settled membership'))).toBe(true);
+  });
+
   it('does not treat family-history or lore references as high-stage relationship labels', () => {
     const contract = pacing({
       groupId: 'archive-circle',

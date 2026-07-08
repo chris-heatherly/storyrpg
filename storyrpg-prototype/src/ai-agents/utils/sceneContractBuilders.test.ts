@@ -67,6 +67,35 @@ describe('sceneContractBuilders', () => {
     expect(contract.sequenceIntent.turningPoint).toContain('key card');
   });
 
+  it('never accepts a question-shaped turn as the concrete scene turn (bite-me 2026-07-07 s1-7)', () => {
+    const episodeQuestion = 'Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her?';
+    const input = scene({
+      id: 's1-7',
+      name: 'release scene 7',
+      description: episodeQuestion,
+      dramaticQuestion: episodeQuestion,
+      dramaticPurpose: episodeQuestion,
+      narrativeFunction: episodeQuestion,
+      narrativeRole: 'release',
+      turnContract: {
+        turnId: 's1-7-turn',
+        source: 'planner',
+        centralTurn: episodeQuestion,
+        beforeState: '',
+        turnEvent: episodeQuestion,
+        afterState: '',
+        handoff: '',
+      },
+    });
+
+    const contract = deriveSceneContract(input, { sceneIndex: 6 });
+
+    expect(contract.source).toBe('role');
+    expect(contract.turnContract.centralTurn.endsWith('?')).toBe(false);
+    // The role fallback is scaffold text and must never confer event-cue ownership.
+    expect(isGenericScenePlannerText(contract.turnContract.centralTurn)).toBe(true);
+  });
+
   it('strips you promise stakes treatment labels from derived sequence intent', () => {
     const treatmentCard = `Hook — Kylie unpacks in a Belle Époque walk-up as the sun sets through the Lipscani window, her grandmother's gold chain catching the light; promise — reinvention, glamour, a city that owes her a better story; stakes — a FaceTime to her niece Sadie ("are there vampires in Romania?" / "only the boys I'm going to date, baby") that lands as a joke and quietly seeds everything.`;
     const input = scene({

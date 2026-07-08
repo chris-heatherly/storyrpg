@@ -148,7 +148,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 16848 -> 15404 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16848 -> 15944 bytes"
     },
     {
       "type": "debug",
@@ -159,56 +159,6 @@
       "type": "debug",
       "phase": "scenes",
       "message": "Best-of-2 winner for scene-1: score 100 vs 100"
-    },
-    {
-      "type": "regeneration_triggered",
-      "phase": "scenes",
-      "message": "Scene scene-1 under-realizes 4 authored moment(s) — retrying with realization feedback (1/2)"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Realization retry 1/2 for scene-1: 4 under-realized moment(s) remain"
-    },
-    {
-      "type": "regeneration_triggered",
-      "phase": "scenes",
-      "message": "Scene scene-1 under-realizes 4 authored moment(s) — retrying with realization feedback (2/2)"
-    },
-    {
-      "type": "debug",
-      "phase": "scenes",
-      "message": "Realization retry 2/2 for scene-1: 4 under-realized moment(s) remain"
-    },
-    {
-      "type": "warning",
-      "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
-    },
-    {
-      "type": "warning",
-      "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:need] \"Name the episode want/lack that starts motion and makes the pressure active: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
-    },
-    {
-      "type": "warning",
-      "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:go] \"Cross the episode threshold so old tactics stop working: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
-    },
-    {
-      "type": "warning",
-      "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:find] \"Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: Mara finds the passage behind the library portrait and must choose how to face Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
-    },
-    {
-      "type": "warning",
-      "phase": "scenes",
-      "message": "Scene scene-1 deterministic authored-moment recovery inserted 0/4 beat(s); 4 under-realized moment(s) remain"
-    },
-    {
-      "type": "warning",
-      "phase": "scenes",
-      "message": "Scene scene-1 defers 4 summary-shaped authored moment(s) to the season-final realization gate (never inserted as prose)."
     },
     {
       "type": "agent_complete",

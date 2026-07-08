@@ -1,9 +1,11 @@
 import type { EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
 import {
   detectStoryEventCues,
+  isQuestionShapedAnchor,
   STORY_EVENT_CUE_ORDER,
   type StoryEventCue,
 } from '../remediation/storyEventCues';
+import { isGenericPlannerTurnScaffold } from '../utils/sceneContractBuilders';
 
 type RouteCue = Extract<
   StoryEventCue,
@@ -65,7 +67,29 @@ function visibleKeyBeats(scene: SceneBlueprint): string[] {
   return (scene.keyBeats ?? []).filter((_, index) => activeIds.has(`keyBeat:${index}`));
 }
 
-function sceneCueText(scene: SceneBlueprint): string {
+/**
+ * Reduce a planning field to its staging-relevant text before cue detection.
+ * Question-shaped text asks — it never stages an event (a release scene whose
+ * every field was the episode question "Can Kylie start over … and write under
+ * her own name…?" plus a "The blog, …" anchor summary read as a staged
+ * lateNightWriting and hard-aborted the run, bite-me 2026-07-07 s1-7). Planner
+ * scaffold turns are whole-episode summaries and must not confer cues either
+ * (same rule sceneEventOwnership already applies).
+ */
+function cueDetectionText(value: string | undefined): string {
+  const text = (value ?? '').trim();
+  if (!text) return '';
+  if (isQuestionShapedAnchor(text)) return '';
+  if (isGenericPlannerTurnScaffold(text)) return '';
+  // Strip interrogative sentences; keep declarative remainder.
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !/\?\s*$/.test(sentence.trim()))
+    .join(' ')
+    .trim();
+}
+
+function sceneCueFields(scene: SceneBlueprint): string[] {
   return [
     scene.id,
     scene.name,
@@ -80,14 +104,25 @@ function sceneCueText(scene: SceneBlueprint): string {
     ...(scene.choicePoint?.optionHints ?? []),
     ...visibleKeyBeats(scene),
     ...visibleRequiredBeats(scene).map((beat) => beat.mustDepict),
-  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n');
+  ]
+    .map((value) => cueDetectionText(typeof value === 'string' ? value : undefined))
+    .filter((value) => value.length > 0);
 }
 
 function cueHits(scene: SceneBlueprint): CueHit[] {
-  const text = sceneCueText(scene);
-  const isPublicRecap = RECAP_MARKERS.test(text) && PUBLIC_AFTERMARKERS.test(text);
+  // Detect per field, then union: an action verb in one field must not pair
+  // with an object noun in a different field (cross-field conflation is how
+  // "write" in a scene name + "blog" in narrativeFunction became a staged
+  // writing event).
+  const fields = sceneCueFields(scene);
+  const joined = fields.join('\n');
+  const isPublicRecap = RECAP_MARKERS.test(joined) && PUBLIC_AFTERMARKERS.test(joined);
+  const cues = new Set<StoryEventCue>();
+  for (const field of fields) {
+    for (const cue of detectStoryEventCues(field)) cues.add(cue);
+  }
   const hits: CueHit[] = [];
-  for (const cue of detectStoryEventCues(text)) {
+  for (const cue of cues) {
     const order = STORY_EVENT_CUE_ORDER[cue];
     if (typeof order !== 'number') continue;
     if (cue !== 'blogAftermath' && isPublicRecap) continue;
@@ -248,13 +283,33 @@ export function mergeDuplicatePublicAftermathScenes(blueprint: EpisodeBlueprint)
   return toRemove.size;
 }
 
+/**
+ * Route-order hits for a scene, cross-checked against the scene's event
+ * OWNERSHIP profile when one is attached. The field-level detector here is
+ * intentionally loose; ownership (sceneEventOwnership) is the conservative,
+ * contract-level source of truth for what a scene actually stages. A cue the
+ * scene does not own is a reference — SceneWriter is prompted NOT to stage it
+ * and the final-contract RouteContinuityValidator checks the real prose — so
+ * blocking generation on it is a false positive (bite-me 2026-07-07 s1-7:
+ * a release scene that owned nothing was aborted for "staging" the blog
+ * writing it merely referenced). Scenes without a profile keep the old
+ * field-level behavior.
+ */
+function ownershipAwareCueHits(scene: SceneBlueprint): CueHit[] {
+  const hits = cueHits(scene);
+  const owned = (scene as { sceneEventOwnership?: { ownedEvents?: Array<{ cue?: string }> } }).sceneEventOwnership?.ownedEvents;
+  if (!owned) return hits;
+  const ownedCues = new Set(owned.map((event) => event.cue).filter(Boolean));
+  return hits.filter((hit) => ownedCues.has(hit.cue));
+}
+
 export function validateBlueprintRouteCueOrder(blueprint: EpisodeBlueprint): BlueprintRouteCueIssue[] {
   const sceneMap = new Map((blueprint.scenes ?? []).map((scene) => [scene.id, scene]));
   const issues: BlueprintRouteCueIssue[] = validatePublicAftermathOwnership(blueprint);
   for (const route of enumerateRoutes(blueprint)) {
     const routeHits = route.flatMap((sceneId) => {
       const scene = sceneMap.get(sceneId);
-      return scene ? cueHits(scene) : [];
+      return scene ? ownershipAwareCueHits(scene) : [];
     });
 
     for (let index = 1; index < routeHits.length; index += 1) {

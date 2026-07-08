@@ -25,6 +25,7 @@ import type { TreatmentEventAtom } from '../../types/treatmentEvent';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { anchoredSceneLocationCues } from './sceneLocationCues';
 import { atomizeTreatmentText } from './treatmentEventAtomizer';
+import { OPENING_EPISODE_CHARACTER_KINDS } from './characterTreatmentContracts';
 
 export interface SceneConstructionChoicePoint {
   type?: string;
@@ -217,6 +218,15 @@ function isPremisePressureSupportText(text: unknown): boolean {
   return /\b(?:is|are|was|were|be|being|letting|defined|feels?|wants?|needs?|believes?|fears?|hopes?)\b/i.test(value);
 }
 
+/** Opening character-brief atoms that are backstory, not stageable arrivals. */
+function isOpeningCharacterBackstoryAtom(obligation: SceneConstructionObligation): boolean {
+  if (obligation.source !== 'treatmentAtom' && obligation.source !== 'requiredBeat') return false;
+  if (!/-char-|wound-pressure|visual-identity|family-story/i.test(obligation.id || '')) return false;
+  // Keep concrete arrival/explore stageability even when sourced from a brief field.
+  if (/\b(?:arrives?|explores?|wanders?|suitcases?)\b/i.test(obligation.text)) return false;
+  return true;
+}
+
 function timeCues(value: unknown): string[] {
   const text = cleanText(value);
   const matches = Array.from(text.matchAll(TIME_CUE_RE));
@@ -261,7 +271,11 @@ function isBroadLedgerOnlyRequiredBeat(scene: SceneConstructionSceneLike, beat: 
     sourceSection: `requiredBeat:${beat.id}`,
     idPrefix: `${scene.id ?? 'scene'}-${beat.id}`,
   });
-  return atoms.length > 0 && atoms.every((atom) => atom.ownershipIntent === 'ledger_only');
+  if (atoms.length === 0) return false;
+  if (beat.tier === 'authored' && atoms.some((atom) => atom.isPlayableEvent && atom.ownershipIntent === 'must_stage')) {
+    return false;
+  }
+  return atoms.every((atom) => atom.ownershipIntent === 'ledger_only');
 }
 
 function addDemotedRequiredBeatContext(scene: SceneConstructionSceneLike, beat: RequiredBeat, reason: string): string | undefined {
@@ -595,7 +609,20 @@ function initialObligations(scene: SceneConstructionSceneLike, primary: SceneCon
     pushObligation(obligations, 'failureModeAudit', contract.id, contract.sourceText, 'texture', 'Failure-mode mitigation should protect the turn without becoming a second event.', 0, 0.25);
   }
   for (const contract of scene.characterTreatmentContracts ?? []) {
-    pushObligation(obligations, 'characterTreatment', contract.id, contract.sourceText, 'texture', 'Character treatment should appear as behavior inside the turn.', 0, 0.25);
+    const openingProtagonistField = Boolean(scene.coldOpenProfile)
+      && OPENING_EPISODE_CHARACTER_KINDS.has(contract.contractKind);
+    pushObligation(
+      obligations,
+      'characterTreatment',
+      contract.id,
+      contract.sourceText,
+      openingProtagonistField ? 'must_support' : 'texture',
+      openingProtagonistField
+        ? 'Protagonist brief field must be visible in the opening scene turn.'
+        : 'Character treatment should appear as behavior inside the turn.',
+      openingProtagonistField ? 0.75 : 0,
+      openingProtagonistField ? 0 : 0.25,
+    );
   }
   for (const contract of scene.worldTreatmentContracts ?? []) {
     pushObligation(obligations, 'worldTreatment', contract.id, contract.sourceText, 'texture', 'World/location treatment should shape what the turn permits or costs.', 0, 0.25);
@@ -641,9 +668,12 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
     const storyCircleRequiredBeat = obligation.source === 'requiredBeat' && isStoryCircleDerivedId(obligation.id);
     const storyCircleSupport = obligation.source === 'storyCircle' || storyCircleRequiredBeat;
     const coldOpenPremisePressure = Boolean(scene.coldOpenProfile)
-      && obligation.source === 'requiredBeat'
+      && (obligation.source === 'requiredBeat' || obligation.source === 'treatmentAtom')
       && obligation.hardUnits >= 1
-      && isPremisePressureSupportText(obligation.text);
+      && (
+        isPremisePressureSupportText(obligation.text)
+        || isOpeningCharacterBackstoryAtom(obligation)
+      );
     let next = { ...obligation };
 
     if (coldOpenExtraneousEventCue) {
@@ -759,7 +789,18 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
     const existing = seen.get(key);
     const activeSlot = (slot: SceneConstructionSlot): boolean =>
       slot === 'primary_turn' || slot === 'must_stage' || slot === 'must_support';
-    if (existing && activeSlot(existing.slot) && !next.mergedInto && next.source === 'treatmentAtom') {
+    // Near-duplicate arrival/suitcase atoms often differ by a proper name or
+    // clause ending, so exact normalize keys miss them and each still costs a
+    // hard unit (bite-me 2026-07-08 s1-1: 7 hard from stacked suitcase clones).
+    const fuzzyMatch = !next.mergedInto && next.source === 'treatmentAtom'
+      ? deduped.find((candidate) =>
+        activeSlot(candidate.slot)
+        && candidate.hardUnits > 0
+        && candidate.id !== next.id
+        && substantiallyDuplicates(next.text, candidate.text))
+      : undefined;
+    const mergeTarget = (existing && activeSlot(existing.slot) ? existing : undefined) || fuzzyMatch;
+    if (mergeTarget && !next.mergedInto && next.source === 'treatmentAtom') {
       // The text already has an ACTIVE representative — demote this duplicate
       // out of the active slots entirely. A merged duplicate that kept its
       // must_stage slot still occupied one of the prompt's 8 active lines, so
@@ -769,11 +810,11 @@ function mergeAndRouteObligations(scene: SceneConstructionSceneLike, primary: Sc
       // two dusk-club texts).
       next = {
         ...next,
-        mergedInto: existing.id,
+        mergedInto: mergeTarget.id,
         slot: 'metadata_only',
         hardUnits: 0,
         softUnits: 0,
-        reason: `${next.reason} Merged with ${existing.source}:${existing.id} so provenance is preserved without extra load.`,
+        reason: `${next.reason} Merged with ${mergeTarget.source}:${mergeTarget.id} so provenance is preserved without extra load.`,
       };
     } else if (existing) {
       // The existing copy was routed away/inactive: this instance becomes the
@@ -1108,7 +1149,15 @@ export function buildSceneConstructionPromptView<T extends SceneConstructionScen
   if (!profile) return scene;
   const keyBeatIds = activeIdsFor(profile, 'keyBeat');
   const requiredBeatIds = activeIdsFor(profile, 'requiredBeat');
-  const choiceActive = Boolean(activeIdsFor(profile, 'choicePressure')?.size)
+  // ESC lockdown: never strip choicePoint when the plan marked hasChoice / plant residue.
+  const plannedChoiceLocked = Boolean(
+    (scene as { plannedHasChoice?: boolean; hasChoice?: boolean }).plannedHasChoice
+    || (scene as { plannedHasChoice?: boolean; hasChoice?: boolean }).hasChoice
+    || (scene.choicePoint as ChoicePointLike | undefined)?.setsTreatmentSeeds?.length
+    || (scene.choicePoint as ChoicePointLike | undefined)?.setsBranchAxes?.length,
+  );
+  const choiceActive = plannedChoiceLocked
+    || Boolean(activeIdsFor(profile, 'choicePressure')?.size)
     || hasGenerationCriticalChoicePoint(scene.choicePoint as ChoicePointLike | undefined);
   const signatureActive = Boolean(activeIdsFor(profile, 'signatureMoment')?.size)
     || Boolean(requiredBeatIds && (scene.requiredBeats ?? []).some((beat) => requiredBeatIds.has(beat.id) && beat.tier === 'signature'));

@@ -92,6 +92,49 @@ export function collectEncounterProseStrings(encounter: unknown): string[] {
 }
 
 /**
+ * A single boilerplate finding with the ACTUAL offending text attached.
+ *
+ * `source` distinguishes who wrote the string (drives both feedback wording
+ * and abort policy at generation time):
+ *  - 'template': an EncounterArchitect TEMPLATE_SIGNATURES fragment — the
+ *    encounter build degraded to deterministic filler; regeneration is the fix.
+ *  - 'fallback': a syntheticFallbackProse registry string — DETERMINISTIC
+ *    code injected it because the LLM output omitted a field (e.g. cost
+ *    fields on a partialVictory outcome). Regenerating the whole encounter
+ *    cannot reliably clear this class (the injection recurs whenever the
+ *    field is omitted again); the fix is authoring the missing field.
+ */
+export interface EncounterProseScanHit {
+  label: string;
+  /** The actual offending prose (trimmed for prompt/feedback use). */
+  snippet: string;
+  source: 'template' | 'fallback';
+}
+
+const SNIPPET_MAX = 160;
+
+function toSnippet(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed.length > SNIPPET_MAX ? `${collapsed.slice(0, SNIPPET_MAX - 1)}…` : collapsed;
+}
+
+/**
+ * Template signatures present anywhere in an encounter's player-facing prose,
+ * with the actual offending text attached (one hit per distinct signature).
+ */
+export function scanEncounterTemplateProseDetailed(encounter: unknown): EncounterProseScanHit[] {
+  const prose: string[] = [];
+  collectEncounterProse(encounter, prose);
+  const found = new Map<string, EncounterProseScanHit>();
+  for (const text of prose) {
+    for (const sig of findTemplateSignatures(text)) {
+      if (!found.has(sig)) found.set(sig, { label: sig, snippet: toSnippet(text), source: 'template' });
+    }
+  }
+  return [...found.values()];
+}
+
+/**
  * Template signatures present anywhere in an encounter's player-facing prose.
  * Shared by this validator (final contract, defense-in-depth) and by
  * ContentGenerationPhase's generation-time acceptance check (no-boilerplate
@@ -99,13 +142,7 @@ export function collectEncounterProseStrings(encounter: unknown): string[] {
  * template prose can't survive to the final contract in the first place).
  */
 export function scanEncounterTemplateProse(encounter: unknown): string[] {
-  const prose: string[] = [];
-  collectEncounterProse(encounter, prose);
-  const found = new Set<string>();
-  for (const text of prose) {
-    for (const sig of findTemplateSignatures(text)) found.add(sig);
-  }
-  return [...found];
+  return scanEncounterTemplateProseDetailed(encounter).map((hit) => hit.label);
 }
 
 /** Prose + cost/stakes keys the CONVERTED runtime encounter carries. */
@@ -130,15 +167,28 @@ const FALLBACK_SCAN_KEYS = new Set([
  * time) instead of aborting the whole season at the final contract.
  */
 export function scanEncounterFallbackProse(convertedEncounter: unknown): string[] {
+  return scanEncounterFallbackProseDetailed(convertedEncounter).map((hit) => hit.label);
+}
+
+/**
+ * Registered deterministic fallback prose in a CONVERTED runtime encounter,
+ * with the actual offending text attached (one hit per distinct registry
+ * label). Regen feedback must show the LLM the real string — the registry
+ * label alone ("encounter fallback: cost complication template") names prose
+ * the LLM never authored and cannot act on.
+ */
+export function scanEncounterFallbackProseDetailed(convertedEncounter: unknown): EncounterProseScanHit[] {
   const prose: string[] = [];
   collectEncounterProse(convertedEncounter, prose, 0, FALLBACK_SCAN_KEYS);
-  const found = new Set<string>();
+  const found = new Map<string, EncounterProseScanHit>();
   for (const text of prose) {
     for (const entry of SYNTHETIC_FALLBACK_PROSE_PATTERNS) {
-      if (entry.pattern.test(text)) found.add(entry.label);
+      if (entry.pattern.test(text) && !found.has(entry.label)) {
+        found.set(entry.label, { label: entry.label, snippet: toSnippet(text), source: 'fallback' });
+      }
     }
   }
-  return [...found];
+  return [...found.values()];
 }
 
 const MALFORMED_SECOND_PERSON_PATTERNS: Array<{ id: string; pattern: RegExp }> = [

@@ -1,4 +1,5 @@
 import { concreteSeedDepicted, concreteSeedRuleFor, normalizeSeedText } from '../utils/concreteSeedRealization';
+import { toStageableTreatmentMoment } from '../utils/stageableTreatmentMoment';
 
 /** Shared base both validators use, before their per-validator extras. */
 const BASE_STOPWORDS = [
@@ -317,7 +318,12 @@ export function evaluateMomentRealization(
   moment: string,
   prose: string,
 ): RealizationAssessment {
-  const normalizedMoment = normalizeRealizationText(moment);
+  const validatorName = validator ?? 'RequiredBeatRealizationValidator';
+  // Strip character-dossier register before depiction scoring so arrival /
+  // Story Circle "you" moments gate on stageable event atoms (arrive, city,
+  // suitcases, address), not logline adjectives fiction never copies.
+  const stageableMoment = toStageableTreatmentMoment(moment);
+  const normalizedMoment = normalizeRealizationText(stageableMoment);
   if (normalizedMoment.length === 0) {
     return {
       depicted: true,
@@ -329,7 +335,6 @@ export function evaluateMomentRealization(
     };
   }
 
-  const validatorName = validator ?? 'RequiredBeatRealizationValidator';
   const stopwords = stopwordsForRealization(validatorName);
 
   if (validatorName === 'RequiredBeatRealizationValidator') {
@@ -348,18 +353,18 @@ export function evaluateMomentRealization(
 
     const concreteDepicted = concreteSeedDepicted(normalizedMoment, prose);
     if (typeof concreteDepicted === 'boolean') {
-      const rule = concreteSeedRuleFor(normalizeSeedText(moment));
+      const rule = concreteSeedRuleFor(normalizeSeedText(stageableMoment));
       return {
         depicted: concreteDepicted,
         mode: 'concrete-seed',
         score: concreteDepicted ? 1 : 0,
-        missingTokens: concreteDepicted ? [] : rule?.missingTokens ?? missingOverlapTokens(moment, prose, stopwords),
+        missingTokens: concreteDepicted ? [] : rule?.missingTokens ?? missingOverlapTokens(stageableMoment, prose, stopwords),
         missingClauses: [],
         matchedClauses: [],
       };
     }
 
-    const clauses = extractCompoundClauses(moment, stopwords);
+    const clauses = extractCompoundClauses(stageableMoment, stopwords);
     if (clauses.length > 0) {
       const matchedClauses = clauses.filter((clause) => simpleMomentDepicted(clause, prose, stopwords));
       const missingClauses = clauses.filter((clause) => !matchedClauses.includes(clause));
@@ -367,13 +372,13 @@ export function evaluateMomentRealization(
         depicted: missingClauses.length === 0,
         mode: 'compound-clauses',
         score: matchedClauses.length / clauses.length,
-        missingTokens: missingTokensForCompoundClauses(moment, prose, missingClauses, stopwords),
+        missingTokens: missingTokensForCompoundClauses(stageableMoment, prose, missingClauses, stopwords),
         missingClauses,
         matchedClauses,
       };
     }
 
-    const quoted = shortQuotedRequirement(moment);
+    const quoted = shortQuotedRequirement(stageableMoment);
     if (quoted) {
       const depicted = normalizeRealizationText(prose).includes(normalizeRealizationText(quoted))
         || overlapScore(quoted, prose, stopwords) >= 1;
@@ -387,7 +392,7 @@ export function evaluateMomentRealization(
       };
     }
 
-    const actionRequirements = actionRequirementsFor(moment, prose);
+    const actionRequirements = actionRequirementsFor(stageableMoment, prose);
     if (actionRequirements.length > 0) {
       const missing = actionRequirements.filter((requirement) => !requirement.present).map((requirement) => requirement.token);
       return {
@@ -412,7 +417,7 @@ export function evaluateMomentRealization(
     };
   }
 
-  const spans = emphasizedSpans(moment);
+  const spans = emphasizedSpans(stageableMoment);
   if (spans.length >= 2 && spans.every((span) => spanPresent(span, prose, stopwords))) {
     return {
       depicted: true,
@@ -424,12 +429,12 @@ export function evaluateMomentRealization(
     };
   }
 
-  const score = overlapScore(moment, prose, stopwords);
+  const score = overlapScore(stageableMoment, prose, stopwords);
   return {
     depicted: score >= PRESENCE_MIN_SCORE,
     mode: 'token-overlap',
     score,
-    missingTokens: missingOverlapTokens(moment, prose, stopwords),
+    missingTokens: missingOverlapTokens(stageableMoment, prose, stopwords),
     missingClauses: [],
     matchedClauses: [],
   };

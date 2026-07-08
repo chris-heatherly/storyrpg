@@ -44,7 +44,7 @@ import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, prettifyEmbeddedLocationIds, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
-import { applySceneContract } from '../utils/sceneContractBuilders';
+import { applySceneContract, isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
 import { collectColdOpenProfileIssues } from '../utils/coldOpenProfile';
 import type { ResidueRequirement } from '../pipeline/reconvergenceResidue';
 import type { TreatmentEventAtom } from '../../types/treatmentEvent';
@@ -70,6 +70,7 @@ import type {
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
+import type { EpisodeSpineContract, EncounterSpineProfile } from '../../types/episodeSpine';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 import { DramaticStructureValidator } from '../validators/DramaticStructureValidator';
@@ -79,6 +80,7 @@ import { EpisodePressureArchitectureValidator } from '../validators/EpisodePress
 import { EpisodeStoryCircleValidator, hasConcreteStoryCircleBeatText } from '../validators/EpisodeStoryCircleValidator';
 import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
 import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
+import { EpisodeSpineContractValidator } from '../validators/EpisodeSpineContractValidator';
 import {
   analyzeEpisodeTreatmentDensity,
   describeTreatmentDensityReport,
@@ -89,6 +91,7 @@ import { isGateEnabled } from '../remediation/gateDefaults';
 import { classifyTreatmentObligation } from '../validators/treatmentObligationClassifier';
 import { treatmentFieldTokens } from '../utils/treatmentFieldContracts';
 import { storyCircleRoleBeats } from '../utils/storyCircleDistribution';
+import { buildScopedEpisodeCircle } from '../utils/episodeCircleBuilder';
 import {
   buildEncounterStoryCircleTargetRationale,
   isEncounterStoryCircleTarget,
@@ -124,6 +127,7 @@ import { getFlagRegistry } from '../pipeline/flagRegistry';
 import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
 import {
   detectPrimaryStoryEventCues,
+  STORY_EVENT_CUE_DESCRIPTIONS,
   STORY_EVENT_CUE_ORDER,
   type StoryEventCue,
 } from '../remediation/storyEventCues';
@@ -233,6 +237,7 @@ export interface StoryArchitectInput {
         defeat: string;
         escape?: string;
       };
+      encounterProfile?: EncounterSpineProfile;
     }>;
     // Difficulty tier for this episode
     difficultyTier?: string;
@@ -316,6 +321,8 @@ export interface StoryArchitectInput {
      */
     plannedScenes?: PlannedScene[];
     setupPayoffEdges?: SetupPayoffEdge[];
+    /** Episode Spine Contract for this episode when treatment-sourced. */
+    episodeSpine?: EpisodeSpineContract;
   };
 
   /**
@@ -662,6 +669,10 @@ export interface SceneBlueprint {
   encounterBeatPlan?: string[];
   encounterDifficulty?: 'easy' | 'moderate' | 'hard' | 'extreme';
   encounterPartialVictoryCost?: Partial<EncounterCost>;
+  /** ESC encounter profile — stages EncounterArchitect play (e.g. staged_rescue). */
+  encounterProfile?: EncounterSpineProfile;
+  /** ESC unit id this scene projects, when treatment-sourced. */
+  spineUnitId?: string;
 
   // For the encounter scene: describes the stakes and what prior scenes must establish.
   // For non-encounter scenes: describes how THIS scene specifically builds toward the episode encounter
@@ -1486,6 +1497,9 @@ export class StoryArchitect extends BaseAgent {
       ...(scene.encounterSetupContext || []),
       ...(effectivePlannedEncounter.encounterSetupContext || []),
     ]));
+    if (effectivePlannedEncounter.encounterProfile) {
+      scene.encounterProfile = effectivePlannedEncounter.encounterProfile;
+    }
     scene.purpose = scene.purpose || 'bottleneck';
   }
 
@@ -2167,10 +2181,35 @@ export class StoryArchitect extends BaseAgent {
     return 'identity';
   }
 
+  /** ESC lockdown: every non-encounter plannedHasChoice scene must keep a choicePoint. */
+  private materializePlannedHasChoicePoints(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    for (const scene of blueprint.scenes || []) {
+      if (scene.isEncounter || scene.plannedHasChoice !== true || scene.choicePoint) continue;
+      const pressure = this.localChoicePressures(scene)[0]
+        || guidance?.majorChoicePressures?.find((candidate) => this.hasBlueprintText(candidate))
+        || scene.dramaticPurpose
+        || scene.description
+        || `Choose how to handle ${scene.name}`;
+      this.applyTreatmentChoicePressureToScene(scene, pressure, guidance, this.localChoiceResidue(scene));
+    }
+  }
+
+  private collectMissingPlannedChoicePoints(blueprint: EpisodeBlueprint): string[] {
+    return (blueprint.scenes || [])
+      .filter((scene) => !scene.isEncounter && scene.plannedHasChoice === true && !scene.choicePoint)
+      .map((scene) => scene.id);
+  }
+
   private repairTreatmentMajorChoicePressure(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
-    const localChoiceScenes = (blueprint.scenes || [])
-      .filter((scene) => scene.choicePoint && this.localChoicePressures(scene).length > 0);
+    // Prefer per-scene major_choice_pressure contracts. Create a real choicePoint
+    // from that pressure — do not require a prior "The decision turns on…" stub.
+    const localChoiceScenes = (blueprint.scenes || []).filter((scene) =>
+      !scene.isEncounter
+      && scene.plannedHasChoice !== false
+      && this.localChoicePressures(scene).length > 0
+    );
     if (localChoiceScenes.length > 0) {
       for (const scene of localChoiceScenes) {
         const pressure = this.localChoicePressures(scene).find((candidate) => this.splitAuthoredChoiceOptions(candidate).length >= 2)
@@ -2185,7 +2224,7 @@ export class StoryArchitect extends BaseAgent {
     if (!pressure) return;
 
     const scene = this.findSceneForAuthoredChoice(blueprint);
-    if (!scene) return;
+    if (!scene || scene.isEncounter || scene.plannedHasChoice === false) return;
 
     const personalStake = this.pickPersonalStake(
       scene.personalStake,
@@ -2213,12 +2252,20 @@ export class StoryArchitect extends BaseAgent {
    */
   private seedChoiceMenusFromTreatment(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
-    const localChoiceScenes = (blueprint.scenes || [])
-      .filter((scene) => scene.choicePoint && this.localChoicePressures(scene).length > 0);
+    const localChoiceScenes = (blueprint.scenes || []).filter((scene) =>
+      !scene.isEncounter
+      && scene.plannedHasChoice !== false
+      && this.localChoicePressures(scene).length > 0
+    );
     if (localChoiceScenes.length > 0) {
       for (const scene of localChoiceScenes) {
         const pressure = this.localChoicePressures(scene).find((candidate) => this.splitAuthoredChoiceOptions(candidate).length >= 2);
-        if (!pressure || !scene.choicePoint || (scene.choicePoint.optionHints?.length ?? 0) >= 2) continue;
+        if (!pressure) continue;
+        if (!scene.choicePoint) {
+          this.applyTreatmentChoicePressureToScene(scene, pressure, guidance, this.localChoiceResidue(scene));
+          continue;
+        }
+        if ((scene.choicePoint.optionHints?.length ?? 0) >= 2) continue;
         scene.choicePoint.optionHints = this.splitAuthoredChoiceOptions(pressure);
         scene.choicePoint.description = scene.choicePoint.description || `Treatment-defined pressure: ${pressure}`;
         scene.choicePoint.expectedResidue = Array.from(new Set([
@@ -2234,9 +2281,18 @@ export class StoryArchitect extends BaseAgent {
     );
     if (pressures.length === 0) return;
     const altResidue = guidance?.alternativePaths || [];
-    const choiceScenes = (blueprint.scenes || []).filter((s) => s.choicePoint && !s.isEncounter);
+    const choiceScenes = (blueprint.scenes || []).filter((s) =>
+      !s.isEncounter
+      && s.plannedHasChoice !== false
+      && (s.choicePoint || s.plannedHasChoice === true)
+    );
     for (let i = 0; i < choiceScenes.length && i < pressures.length; i += 1) {
-      const cp = choiceScenes[i].choicePoint!;
+      const scene = choiceScenes[i];
+      if (!scene.choicePoint) {
+        this.applyTreatmentChoicePressureToScene(scene, pressures[i], guidance, altResidue);
+        continue;
+      }
+      const cp = scene.choicePoint;
       if ((cp.optionHints?.length ?? 0) >= 2) continue; // already carries an authored menu
       cp.optionHints = this.splitAuthoredChoiceOptions(pressures[i]);
       if (!cp.description?.trim()) cp.description = `Treatment-defined pressure: ${pressures[i]}`;
@@ -3482,6 +3538,7 @@ Remember: The encounter is the heart. Design outward from it.
       branchOutcomes: enc.branchOutcomes
         ? { victory: enc.branchOutcomes.victory, defeat: enc.branchOutcomes.defeat, escape: enc.branchOutcomes.escape }
         : undefined,
+      encounterProfile: enc.encounterProfile || scene.encounterProfile,
     };
   }
 
@@ -3652,28 +3709,28 @@ Remember: The encounter is the heart. Design outward from it.
         )?.sourceText,
         keyBeats: localKeyBeats,
         leadsTo: nextId ? [nextId] : [],
+        spineUnitId: p.spineUnitId,
+        encounterProfile: p.encounterProfile || p.encounter?.encounterProfile,
       };
       const recommendedBeatCount = beatBudgetByScene.get(p.id);
       if (recommendedBeatCount) {
         scene.recommendedBeatCount = recommendedBeatCount;
       }
-      // Standard scenes get a placeholder choice point unless the planned scene
-      // explicitly opts out. Supplemental rebound scenes (threshold, aftermath)
-      // use hasChoice=false to stay prose-only after the binder splits them.
-      // choiceTypePlanner reassigns the type downstream. Encounters carry their
-      // choices internally.
-      if (!isEncounter && p.hasChoice !== false) {
-        const choicePressure = this.plannedSceneChoicePressure(p, localPurpose, requiredBeats);
-        scene.choicePoint = {
-          type: 'strategic',
-          stakes: {
-            want: PLACEHOLDER_STAKES.want(choicePressure),
-            cost: PLACEHOLDER_STAKES.cost,
-            identity: PLACEHOLDER_STAKES.identity,
-          },
-          description: `The decision turns on ${choicePressure}.`,
-          optionHints: [],
-        };
+      // ESC lockdown: plannedHasChoice must materialize a real choicePoint here —
+      // never leave a flag without a point for ChoiceAuthor / playback.
+      if (p.hasChoice && !isEncounter) {
+        const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+        const pressure = this.localChoicePressures(scene)[0]
+          || guidance?.majorChoicePressures?.find((candidate) => this.hasBlueprintText(candidate))
+          || p.dramaticPurpose
+          || localPurpose
+          || `Choose how to handle ${scene.name}`;
+        this.applyTreatmentChoicePressureToScene(
+          scene,
+          pressure,
+          guidance,
+          this.localChoiceResidue(scene),
+        );
       }
       return scene;
     });
@@ -3935,6 +3992,200 @@ Remember: The encounter is the heart. Design outward from it.
     }
   }
 
+  /**
+   * Focused LLM call: author ONE scene's central turn as a concrete, stageable
+   * event. Used at two surfaces with the same contract:
+   *   - architecture time (`reauthorGenericPlannerTurns`): the planner produced
+   *     scaffold ("Aftermath pressure shifts visible leverage around …") — author
+   *     the turn from the scene's role, neighbors, and episode context so
+   *     SceneWriter has a real event to dramatize;
+   *   - final-contract repair (`buildSceneTurnContractRepairHandler`): the scene's
+   *     prose already exists — state the turn the prose ALREADY dramatizes,
+   *     reusing its concrete nouns and verbs so the realization check clears.
+   * Returns null when the model's answer is itself scaffold/question-shaped —
+   * callers keep the existing turn and downstream gates stay the net.
+   */
+  async reauthorSceneTurn(ctx: {
+    sceneId: string;
+    sceneName?: string;
+    role?: string;
+    location?: string;
+    description?: string;
+    choicePoint?: string;
+    requiredBeat?: string;
+    episodeSynopsis?: string;
+    previousTurn?: string;
+    nextTurn?: string;
+    /** Existing reader-facing prose (final-contract surface). When present, the turn MUST be grounded in it. */
+    prose?: string;
+    /** Staged plot-event types the turn must NOT introduce (they belong to other scenes in the route). */
+    avoidEvents?: string[];
+  }): Promise<string | null> {
+    const contextLines = [
+      ctx.sceneName ? `SCENE: "${ctx.sceneName}" (id ${ctx.sceneId})` : `SCENE id: ${ctx.sceneId}`,
+      ctx.role ? `NARRATIVE ROLE: ${ctx.role}` : '',
+      ctx.location ? `LOCATION: ${ctx.location}` : '',
+      ctx.description ? `SCENE DESCRIPTION: ${ctx.description}` : '',
+      ctx.requiredBeat ? `A BEAT THIS SCENE MUST DEPICT: ${ctx.requiredBeat}` : '',
+      ctx.choicePoint ? `THE SCENE'S CHOICE POINT: ${ctx.choicePoint}` : '',
+      ctx.previousTurn ? `PREVIOUS SCENE'S TURN: ${ctx.previousTurn}` : '',
+      ctx.nextTurn ? `NEXT SCENE'S TURN: ${ctx.nextTurn}` : '',
+      ctx.episodeSynopsis ? `EPISODE SYNOPSIS: ${ctx.episodeSynopsis}` : '',
+      ctx.avoidEvents?.length
+        ? `FORBIDDEN EVENT TYPES (these plot events are staged by OTHER scenes — your turn must not introduce or depict any of them): ${ctx.avoidEvents.join('; ')}`
+        : '',
+    ].filter(Boolean).join('\n');
+    const proseBlock = ctx.prose
+      ? `\nTHE SCENE'S PROSE (already written — your sentence must state the turn this prose ALREADY dramatizes, reusing its concrete nouns, names, and verbs; do not invent events the prose does not show):\n"""\n${ctx.prose.slice(0, 6000)}\n"""\n`
+      : '';
+
+    const prompt = `You are repairing ONE scene's dramatic turn contract in an interactive story episode. The scene's planned "central turn" is placeholder scaffold text (a role summary or a thematic question), not a stageable event.
+
+${contextLines}
+${proseBlock}
+Write the scene's CENTRAL TURN: exactly ONE declarative sentence (under 35 words) describing the concrete, visible event where this scene pivots. It MUST:
+- name WHO does or discovers WHAT (a specific action, reveal, choice, cost, or changed state);
+- be stageable on-page — something a reader watches happen, not a theme, mood, or question;
+- pivot on THIS scene's own material above — do not invent a NEW plot event (a message arriving, an attack, a rescue, an arrival, a publication) that the scene context does not already contain;
+- never use planning language ("the scene establishes/escalates", "pressure", "leverage", "stakes") or restate the episode question;
+- never mention stats, dice, or game mechanics.
+
+Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
+
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 2);
+      const parsed = this.parseJSON<{ centralTurn?: unknown }>(raw);
+      const text = typeof parsed?.centralTurn === 'string' ? parsed.centralTurn.trim() : '';
+      if (
+        text.length >= 20
+        && text.length <= 400
+        && !isGenericScenePlannerText(text)
+        && !isQuestionShapedTurnText(text)
+        && !/\?\s*$/.test(text)
+      ) {
+        return text;
+      }
+      return null;
+    } catch (err) {
+      console.warn(`[StoryArchitect] reauthorSceneTurn(${ctx.sceneId}) failed (existing turn kept): ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Architecture-time counterpart of the final-contract turn re-author: the
+   * final SceneTurnRealizationValidator blocks any planner-source turn that is
+   * still `isGenericScenePlannerText` — a defect fully knowable HERE, before a
+   * single line of prose is written. Historically it was only detected ~30
+   * minutes later at the final contract, where the prose repair loop explicitly
+   * skips it (metadata, not prose) and the run aborted (bite-me 2026-07-07
+   * s1-7). Re-author each scaffold turn with one focused LLM call, then re-apply
+   * scene contracts so names/ladders/before-after states rebuild around the
+   * concrete event. A failed re-author keeps the scaffold — the final-contract
+   * handler and gate remain the net.
+   */
+  private async reauthorGenericPlannerTurns(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Promise<void> {
+    if (!isGateEnabled('GATE_SCENE_TURN_REAUTHOR')) return;
+    // ESC-backed treatment spines already own concrete turns — LLM re-author
+    // is a structural drift vector and must not rewrite them.
+    if (input.seasonPlanDirectives?.episodeSpine?.units?.length) {
+      console.info(
+        `[StoryArchitect] Skipping planner-turn re-author for episode ${input.episodeNumber}: Episode Spine Contract is present.`,
+      );
+      return;
+    }
+    const scenes = blueprint.scenes ?? [];
+    const targets = scenes.filter((scene) =>
+      scene.turnContract?.source === 'planner'
+      && isGenericScenePlannerText(scene.turnContract.centralTurn));
+    if (targets.length === 0) return;
+
+    const concreteTurnOf = (scene: SceneBlueprint | undefined): string | undefined => {
+      const turn = scene?.turnContract?.centralTurn;
+      return turn && !isGenericScenePlannerText(turn) ? turn : undefined;
+    };
+    const declarative = (value: string | undefined): string | undefined => {
+      const text = (value ?? '').trim();
+      return text && !isGenericScenePlannerText(text) && !isQuestionShapedTurnText(text) ? text : undefined;
+    };
+
+    // Event-ownership guard: an authored turn must not INTRODUCE a staged
+    // plot-event cue the scene does not already carry — the scene would take
+    // ownership of that event and the SceneConstructionGate route-chronology
+    // check hard-aborts on the conflict (bite-me 2026-07-07 second abort: the
+    // re-authored s1-7 turn invented "an anonymous message arrives", which is
+    // antagonistContact — owned by chronology BEFORE the earlier blog-aftermath
+    // scene's event). One retry with explicit forbidden-event feedback, then
+    // keep the scaffold (the prose-grounded final-contract repair is the net
+    // and cannot create this conflict).
+    const newlyIntroducedCues = (scene: SceneBlueprint, authored: string): StoryEventCue[] => {
+      const staged = detectPrimaryStoryEventCues(this.sceneEventText(scene));
+      return [...detectPrimaryStoryEventCues(authored)].filter((cue) => !staged.has(cue));
+    };
+
+    let repaired = 0;
+    for (const scene of targets.slice(0, 6)) {
+      const index = scenes.indexOf(scene);
+      const nextScene = scene.leadsTo?.[0]
+        ? scenes.find((candidate) => candidate.id === scene.leadsTo?.[0])
+        : scenes[index + 1];
+      console.warn(
+        `[StoryArchitect] Scene "${scene.id}" carries a generic planner central turn — re-authoring at architecture time: "${scene.turnContract?.centralTurn}"`,
+      );
+      const reauthorContext = {
+        sceneId: scene.id,
+        sceneName: scene.name,
+        role: scene.narrativeRole,
+        location: scene.location,
+        description: declarative(scene.description),
+        choicePoint: declarative(scene.choicePoint?.description),
+        requiredBeat: (scene.requiredBeats ?? [])
+          .map((beat) => declarative(beat.mustDepict || beat.sourceTurn))
+          .find(Boolean),
+        episodeSynopsis: input.episodeSynopsis,
+        previousTurn: concreteTurnOf(scenes[index - 1]),
+        nextTurn: concreteTurnOf(nextScene),
+      };
+      let authored = await this.reauthorSceneTurn(reauthorContext);
+      if (authored) {
+        const introduced = newlyIntroducedCues(scene, authored);
+        if (introduced.length > 0) {
+          console.warn(
+            `[StoryArchitect] Re-authored turn for "${scene.id}" introduces staged event(s) the scene must not own (${introduced.join(', ')}) — retrying with forbidden-event feedback: "${authored}"`,
+          );
+          authored = await this.reauthorSceneTurn({
+            ...reauthorContext,
+            avoidEvents: introduced.map((cue) => STORY_EVENT_CUE_DESCRIPTIONS[cue]),
+          });
+          if (authored && newlyIntroducedCues(scene, authored).length > 0) {
+            console.warn(`[StoryArchitect] Retried turn for "${scene.id}" still introduces foreign staged events — scaffold kept: "${authored}"`);
+            authored = null;
+          }
+        }
+      }
+      if (!authored) {
+        console.warn(`[StoryArchitect] Turn re-author for "${scene.id}" produced no usable turn — scaffold kept (final contract remains the net).`);
+        continue;
+      }
+      // Only the turn is authored; before/after/handoff are cleared so the
+      // contract re-application below rebuilds them around the concrete event.
+      scene.turnContract = {
+        turnId: scene.turnContract?.turnId || `${scene.id}-turn`,
+        source: 'planner',
+        centralTurn: authored,
+        turnEvent: authored,
+        beforeState: '',
+        afterState: '',
+        handoff: '',
+      };
+      repaired += 1;
+    }
+    if (repaired > 0) {
+      this.applySceneContractsToPlannedBlueprint(blueprint, input);
+      console.info(`[StoryArchitect] Re-authored ${repaired} generic planner turn(s) at architecture time.`);
+    }
+  }
+
   private safeBlueprintSceneFallback(scene: SceneBlueprint, input: StoryArchitectInput, index: number): string {
     return pickBlueprintSafeText(
       this.firstConcreteRequiredBeat(scene.requiredBeats || []),
@@ -3979,8 +4230,8 @@ Remember: The encounter is the heart. Design outward from it.
         ) || sceneFallback;
         const choiceDescription = sanitizeBlueprintText(
           scene.choicePoint.description,
-          `The decision turns on ${decisionFallback}.`,
-        ) || `The decision turns on ${decisionFallback}.`;
+          decisionFallback,
+        ) || decisionFallback;
         scene.choicePoint.description = choiceDescription;
         scene.choicePoint.stakes = {
           ...scene.choicePoint.stakes,
@@ -4003,6 +4254,12 @@ Remember: The encounter is the heart. Design outward from it.
     }
   }
 
+  private isAuthoredLiteEscEpisode(input: StoryArchitectInput): boolean {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    return guidance?.sourceKind === 'authored_lite'
+      && Boolean(input.seasonPlanDirectives?.episodeSpine?.units?.length);
+  }
+
   private validatePreparedBlueprintForPlannedScenes(
     blueprint: EpisodeBlueprint,
     input: StoryArchitectInput,
@@ -4014,13 +4271,20 @@ Remember: The encounter is the heart. Design outward from it.
         if (text && !warnings.includes(text)) warnings.push(text);
       }
     };
+    const authoredLiteEsc = this.isAuthoredLiteEscEpisode(input);
 
     try {
       this.validateBlueprint(blueprint, input);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
-      if (!cls.advisoryOnly) {
+      // ESC lockdown: TreatmentFidelity / choice gaps are blocking for authored_lite + ESC.
+      const forceHard = authoredLiteEsc && (
+        errorMsg.includes('[TreatmentFidelity]')
+        || errorMsg.includes('[PlannedChoiceGate]')
+        || errorMsg.includes('choicePoint')
+      );
+      if (!cls.advisoryOnly || forceHard) {
         return { success: false, error: errorMsg };
       }
       addWarnings(errorMsg.split('\n'));
@@ -4034,6 +4298,38 @@ Remember: The encounter is the heart. Design outward from it.
         return { success: false, error: message };
       }
       addWarnings(structuralIssues);
+    }
+
+    if (authoredLiteEsc && input.seasonPlanDirectives?.episodeSpine) {
+      const projectedScenes = blueprint.scenes.map((bp, index) => {
+        const planned = (input.seasonPlanDirectives?.plannedScenes ?? []).find((scene) => scene.id === bp.id);
+        return {
+          id: bp.id,
+          episodeNumber: input.episodeNumber,
+          order: index,
+          kind: (bp.isEncounter ? 'encounter' : 'standard') as 'standard' | 'encounter',
+          title: bp.name,
+          dramaticPurpose: bp.dramaticPurpose || bp.description,
+          narrativeRole: bp.narrativeRole || 'development',
+          locations: bp.location ? [bp.location] : [],
+          npcsInvolved: bp.npcsPresent ?? [],
+          setsUp: bp.setsUp ?? [],
+          paysOff: bp.paysOff ?? [],
+          requiredBeats: bp.requiredBeats ?? [],
+          spineUnitId: bp.spineUnitId ?? planned?.spineUnitId,
+          relationshipPacing: planned?.relationshipPacing,
+        };
+      });
+      const spineResult = new EpisodeSpineContractValidator().validate({
+        spine: input.seasonPlanDirectives.episodeSpine,
+        scenes: projectedScenes,
+      });
+      if (!spineResult.valid) {
+        return {
+          success: false,
+          error: spineResult.issues.map((issue) => `[EpisodeSpineContract] ${issue.message}`).join('\n'),
+        };
+      }
     }
 
     return {
@@ -4242,6 +4538,7 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
       this.seedChoiceMenusFromTreatment(blueprint, input);
+      this.materializePlannedHasChoicePoints(blueprint, input);
       this.repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
       this.repairTreatmentResidue(blueprint, input);
       this.ensureDramaticAuditMinimums(blueprint, input);
@@ -4249,6 +4546,10 @@ Remember: The encounter is the heart. Design outward from it.
       this.repairSceneTurnContracts(blueprint);
       this.applySceneContractsToPlannedBlueprint(blueprint, input);
       this.repairBlueprintHygieneUnsafeText(blueprint, input);
+      // Fail-fast for the final contract's generic-planner-turn block: author a
+      // concrete turn NOW (one focused LLM call per scaffold scene) instead of
+      // shipping scaffold metadata that is guaranteed to fail 30 minutes later.
+      await this.reauthorGenericPlannerTurns(blueprint, input);
       this.repairDramaticStructureCraft(blueprint);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.assignInfoReveals(blueprint, input);
@@ -4256,6 +4557,16 @@ Remember: The encounter is the heart. Design outward from it.
       this.ensureCharacterIntroductionBeats(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
+
+      const missingChoicePoints = this.collectMissingPlannedChoicePoints(blueprint);
+      if (missingChoicePoints.length > 0) {
+        return {
+          success: false,
+          error:
+            `[PlannedChoiceGate] Episode ${input.episodeNumber} has plannedHasChoice scene(s) without choicePoint: ` +
+            `${missingChoicePoints.join(', ')}. Materialize a real choicePoint before content generation.`,
+        };
+      }
 
       const sceneConstructionIssues = this.applySceneConstructionProfiles(blueprint, input);
       if (sceneConstructionIssues.length > 0 && isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
@@ -4335,6 +4646,17 @@ Remember: The encounter is the heart. Design outward from it.
         data: blueprint,
         rawResponse: '',
         warnings: plannedValidation.warnings,
+      };
+    }
+
+    // Treatment-sourced episodes must elaborate from planned scenes / ESC —
+    // inventing a parallel scene graph is the primary structural drift vector.
+    if (input.seasonPlanDirectives?.treatmentGuidance || input.seasonPlanDirectives?.episodeSpine) {
+      return {
+        success: false,
+        error:
+          `Episode ${input.episodeNumber} is treatment-sourced but has no plannedScenes to elaborate. ` +
+          'Refuse invent-mode StoryArchitect for treatment runs; rebuild the season scene plan / ESC first.',
       };
     }
 
@@ -4845,6 +5167,10 @@ REQUIREMENTS:
     isParseError: boolean;
   } {
     const advisoryTags = ['[TreatmentFidelity]', '[DramaticStructure]', '[ThemePressure]', '[SceneTurnContract]', '[EpisodePressure]'];
+    // ESC lockdown: for authored_lite + ESC, TreatmentFidelity choice/turn gaps are hard.
+    // Callers pass the authoredLiteEscBlocking hint via a sentinel in the message when needed.
+    // Default classify still treats TreatmentFidelity as advisory unless the message
+    // includes the hard gate tag from collectMissingPlannedChoicePoints / PlannedChoiceGate.
 
     // Classify per line. Advisory validator messages carry a `[Tag]` prefix and
     // can incidentally mention hard-error keywords (e.g. TreatmentFidelity's
@@ -5623,25 +5949,47 @@ If you don't include enough choice points, the story will be rejected as non-int
     input: StoryArchitectInput,
     arc?: EpisodeBlueprint['arc'],
   ): StoryCircleStructure {
-    const title = input.episodeTitle || `Episode ${input.episodeNumber}`;
-    const synopsis = input.episodeSynopsis || input.synopsis || 'the episode pressure';
-    const localArcText = (value: unknown): string | undefined => {
-      if (typeof value !== 'string' || value.trim().length === 0) return undefined;
-      const text = value.trim();
-      return this.isLikelyFutureSeasonEpisodeCircleText(text, input) ? undefined : text;
-    };
-    const localBeat = (beat: StoryCircleBeat): string =>
-      localArcText(arc?.[beat]) || synopsis || 'the episode pressure';
-    return {
-      you: `In "${title}", establish the episode's known world or current normal before disruption: ${localBeat('you')}`,
-      need: `Name the episode want/lack that starts motion and makes the pressure active: ${localBeat('need')}`,
-      go: `Cross the episode threshold so old tactics stop working: ${localBeat('go')}`,
-      search: `Test adaptation under pressure through failed plans, new rules, allies, tools, and identity-revealing choices: ${localBeat('search')}`,
-      find: `Deliver the episode's wanted answer, access, proof, intimacy, power, rescue, status, or apparent victory: ${localBeat('find')}`,
-      take: `Make the episode's find cost something visible: ${localBeat('take')}`,
-      return: `Carry the prize and wound back toward the episode's consequence field, relationship, home, arena, or public identity: ${localBeat('return')}`,
-      change: `Prove the episode's new equilibrium through changed behavior, relationship, self-concept, world-state, or tragic refusal: ${localBeat('change')}`,
-    };
+    const spineCircle = input.seasonPlanDirectives?.episodeSpine?.episodeCircle;
+    if (spineCircle) {
+      const empty: StoryCircleStructure = {
+        you: '', need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      };
+      const fromSpine: StoryCircleStructure = { ...empty };
+      for (const beat of STORY_CIRCLE_BEATS) {
+        const text = spineCircle[beat];
+        if (typeof text === 'string' && text.trim()) fromSpine[beat] = text.trim();
+      }
+      const hasAny = STORY_CIRCLE_BEATS.some((beat) => fromSpine[beat].trim().length > 0);
+      if (hasAny) {
+        // Fill any empty active beats via scoped builder, then prefer spine text.
+        const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+        const scoped = buildScopedEpisodeCircle({
+          episodeNumber: input.episodeNumber,
+          episodeTitle: input.episodeTitle || `Episode ${input.episodeNumber}`,
+          synopsis: input.episodeSynopsis || input.synopsis || 'the episode pressure',
+          majorPressure: guidance?.dramaticQuestion || guidance?.episodePromise,
+          episodeTurns: guidance?.episodeTurns,
+          storyCircleRole: input.episodeStoryCircleRole,
+          arc,
+          isFutureSeasonScopedText: (text) => this.isLikelyFutureSeasonEpisodeCircleText(text, input),
+        });
+        for (const beat of STORY_CIRCLE_BEATS) {
+          if (!fromSpine[beat].trim() && scoped[beat]?.trim()) fromSpine[beat] = scoped[beat];
+        }
+        return fromSpine;
+      }
+    }
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    return buildScopedEpisodeCircle({
+      episodeNumber: input.episodeNumber,
+      episodeTitle: input.episodeTitle || `Episode ${input.episodeNumber}`,
+      synopsis: input.episodeSynopsis || input.synopsis || 'the episode pressure',
+      majorPressure: guidance?.dramaticQuestion || guidance?.episodePromise,
+      episodeTurns: guidance?.episodeTurns,
+      storyCircleRole: input.episodeStoryCircleRole,
+      arc,
+      isFutureSeasonScopedText: (text) => this.isLikelyFutureSeasonEpisodeCircleText(text, input),
+    });
   }
 
   private isLikelyFutureSeasonEpisodeCircleText(text: string, input: StoryArchitectInput): boolean {
@@ -5666,9 +6014,11 @@ If you don't include enough choice points, the story will be rejected as non-int
     ];
     if (!futureSeasonMarkers.some((pattern) => pattern.test(normalizedText))) return false;
 
+    if (input.episodeNumber <= 2) return true;
+
     const importantTokens = normalizedText
       .split(/[^a-z0-9']+/)
-      .filter((token) => token.length >= 5 && !['kylie', 'victor', 'episode', 'season', 'story'].includes(token));
+      .filter((token) => token.length >= 5 && !['episode', 'season', 'story'].includes(token));
     const overlap = importantTokens.filter((token) => localContext.includes(token)).length;
     return overlap === 0;
   }

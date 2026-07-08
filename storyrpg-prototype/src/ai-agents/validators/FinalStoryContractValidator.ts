@@ -301,6 +301,8 @@ export interface FinalStoryContractInput {
    * hard-fail. Populated by the stage that dispatches the §4 fidelity validators.
    */
   treatmentSourced?: boolean;
+  /** True when any generated episode uses the authored_lite treatment profile. */
+  authoredLiteContract?: boolean;
   /**
    * Findings emitted by the five §4 treatment-fidelity validators
    * (AuthoredEpisodeConformance / EncounterAnchorContent /
@@ -779,7 +781,8 @@ export class FinalStoryContractValidator {
     // episode-time quick-validation pass; retiring that half needs its own
     // non-vacuous comparison.)
     if (input.callbackLedger) {
-      const blockResidue = isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final');
+      const blockResidue = isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final')
+        || input.authoredLiteContract === true;
       // NON-RESIDUE PROMOTION (2026-07-03): thread/seed/callback kinds now
       // escalate under their own gates — repair-first is satisfied by the
       // deterministic obligation-payoff handler (router: deterministic_cleanup),

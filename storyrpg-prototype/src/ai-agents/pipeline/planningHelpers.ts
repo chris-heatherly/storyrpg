@@ -185,6 +185,7 @@ export function buildSeasonPlanDirectives(
     setupPayoffEdges: plan.scenePlan
       ? edgesForEpisode(plan.scenePlan, epNum)
       : undefined,
+    episodeSpine: plan.scenePlan?.episodeSpines?.[epNum],
   };
 }
 

@@ -35,6 +35,36 @@ story and image-quality rules, not the old orchestration model.
   setup/payoff, causality, character change under pressure, and emotional
   payoff. This is a rubric, not a separate agent or rigid formula.
 
+### Episode Spine Contract (ESC)
+
+Treatment-sourced seasons compile a canonical **Episode Spine Contract** before
+scene planning. The ESC is the single structural source of truth:
+
+- **One location per scene** — movement between places is always a scene
+  boundary; `spatialMovementAllowance` is hard-capped at 1.
+- **One primary turn per scene** — synopsis sentences that compress
+  prerequisite + outcome (e.g. "After testing…, they become friends") decompose
+  into ordered spine units with explicit prerequisites.
+- **Story Circle facets** — every spine unit declares which beat it advances;
+  season and episode polarity pairs are **blocking** (not advisory).
+- **Encounter profiles** — set-piece encounters declare `staged_rescue`,
+  `social_test`, or `tactical` so EncounterArchitect cannot drift into generic
+  escape-first trees on scripted rescues. Profiles project onto
+  `PlannedScene.encounterProfile` → `SceneBlueprint.encounterProfile` →
+  `EncounterArchitectInput.encounterSpineProfile`.
+- **LLM prose only** — SeasonPlan and Blueprint are projections of the ESC;
+  structural LLM re-author passes must not override spine order or obligations.
+  StoryArchitect skips `reauthorGenericPlannerTurns` when an ESC is present and
+  does not inject `"The decision turns on…"` placeholder choice points.
+- **episodeCircle** — derived from ESC / season `storyCircle` slice when present,
+  not free-invented on the elaborate path.
+- **Rebuild skip** — `rebuildTreatmentSeasonScenePlan` no-ops when
+  `scenePlan.sourceHash` still matches the compiled ESC hashes.
+
+Compiled in `compileEpisodeSpine()`; projected by `projectSpineOntoScenes()`;
+validated by `EpisodeSpineContractValidator` at scene-plan build time. See
+`src/types/episodeSpine.ts`.
+
 ### Skill Surface Contract
 
 - **Passive insight:** beat-level `skillInsights` reveal danger, opportunity,
@@ -89,6 +119,7 @@ story and image-quality rules, not the old orchestration model.
 | Visual defects | storyboard-v2 QA, `imageDefectGate`, visual validators |
 | Provider refs | `referencePackBuilder`, `referenceStrategy`, `providerCapabilities` |
 | Treatment/source fidelity | `TreatmentFidelityValidator`, quote recall diagnostics |
+| Episode spine contract | `EpisodeSpineContractValidator`, `compileEpisodeSpine` |
 | Sequence specificity/continuity | `sequencePlanSpecificityAudit`, `sequenceContinuityAudit`, `turnAudit` |
 
 ## Blocking vs Advisory (validator tiering)

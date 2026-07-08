@@ -1,6 +1,7 @@
 export type TreatmentEventType =
   | 'arrival'
   | 'departure'
+  | 'exploration'
   | 'meeting'
   | 'conversation'
   | 'discovery'

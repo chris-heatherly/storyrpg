@@ -1,0 +1,71 @@
+/**
+ * Episode Spine Contract (ESC)
+ *
+ * Canonical structural artifact for treatment-sourced episodes. Season plan and
+ * blueprint are projections of this spine — LLMs fill prose only; they must not
+ * rewrite unit order, prerequisites, locations, or encounter profiles.
+ */
+
+import type { StoryCircleBeat, StoryCircleStructure } from './sourceAnalysis';
+import type { SeasonArc } from './seasonPlan';
+
+/** Atomic story unit — one location, one primary turn, one dramatic function. */
+export type SpineUnitKind =
+  | 'arrival'
+  | 'explore'
+  | 'meet'
+  | 'test'
+  | 'bond'
+  | 'transition'
+  | 'set_piece'
+  | 'threshold'
+  | 'late_night_writing'
+  | 'aftermath'
+  | 'development';
+
+export type EncounterSpineProfile = 'tactical' | 'staged_rescue' | 'social_test';
+
+export interface EpisodeSpineUnit {
+  /** Stable id within the episode (e.g. `ep1-u3`). */
+  id: string;
+  /** Ordered position in the episode spine (0-based). */
+  order: number;
+  /** Reader-facing turn text this unit must realize. */
+  text: string;
+  kind: SpineUnitKind;
+  /** Exactly one canonical location label from the episode location list. */
+  locationId?: string;
+  /** Story Circle beat(s) this unit advances within the episode. */
+  storyCircleFacets: StoryCircleBeat[];
+  /** Arc polarity pressure this unit should manifest (from treatment arcs). */
+  polarityFacet?: string;
+  /** Unit ids that must precede this unit in playback order. */
+  prerequisites: string[];
+  /** When kind is set_piece, how EncounterArchitect should stage play. */
+  encounterProfile?: EncounterSpineProfile;
+  /** Maps to PlannedScene.kind when projected. */
+  sceneKind: 'standard' | 'encounter';
+}
+
+export interface EpisodeSpineContract {
+  episodeNumber: number;
+  /** Treatment source fingerprint for cache invalidation. */
+  sourceHash: string;
+  /** Episode Story Circle role beats (from season plan). */
+  episodeStoryCircleBeats: StoryCircleBeat[];
+  /** Slice of season storyCircle text for active beats. */
+  episodeCircle?: Partial<StoryCircleStructure>;
+  /** Arc polarity strings carried from treatment (protagonist + key NPC pressure). */
+  polarityFacets: string[];
+  /** Ordered atomic units — the canonical spine. */
+  units: EpisodeSpineUnit[];
+}
+
+export interface SeasonSpineContract {
+  episodeSpines: Record<number, EpisodeSpineContract>;
+}
+
+export interface CompileEpisodeSpineContext {
+  seasonStoryCircle?: StoryCircleStructure;
+  seasonArcs?: SeasonArc[];
+}

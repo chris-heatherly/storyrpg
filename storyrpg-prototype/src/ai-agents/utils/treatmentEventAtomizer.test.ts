@@ -78,4 +78,31 @@ describe('treatmentEventAtomizer', () => {
     expect(atoms.map((atom) => atom.isPlayableEvent)).toEqual([false, false, false]);
     expect(atoms.map((atom) => atom.ownershipIntent)).toEqual(['may_support', 'may_support', 'ledger_only']);
   });
+
+  it('treats street exploration as a playable episode-turn event', () => {
+    const atoms = atomizeTreatmentText({
+      episodeNumber: 1,
+      text: 'She explores the streets of Bucharest and wanders into a bookshop owned by Stela.',
+      sourceSection: 'episodeTurn:3',
+      forceStage: true,
+    });
+
+    expect(atoms.some((atom) => atom.isPlayableEvent && /explores the streets/i.test(atom.eventText))).toBe(true);
+    expect(atoms.some((atom) => atom.ownershipIntent === 'must_stage')).toBe(true);
+  });
+
+  it('forceStage keeps authored episode turns stageable even when cue heuristics disagree', () => {
+    const atoms = atomizeTreatmentText({
+      episodeNumber: 1,
+      text: 'She explores the streets of Bucharest.',
+      sourceSection: 'episodeTurn:2',
+      forceStage: true,
+    });
+
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0]).toMatchObject({
+      isPlayableEvent: true,
+      ownershipIntent: 'must_stage',
+    });
+  });
 });

@@ -27,6 +27,11 @@ export interface ChoiceCoverageInput {
   plannedChoiceSceneIds: string[];
   /** Scene ids that actually authored at least one choice in the final story. */
   authoredChoiceSceneIds: string[];
+  /**
+   * When true (authored_lite + ESC), missing planned choices are errors that
+   * block rather than advisory warnings.
+   */
+  blocking?: boolean;
 }
 
 export interface ChoiceCoverageMetrics {
@@ -54,11 +59,17 @@ export class ChoiceCoverageValidator extends BaseValidator {
 
     for (const id of missing) {
       issues.push(
-        this.warning(
-          `Scene "${id}" was planned as a choice point but authored no choice.`,
-          `scene:${id}`,
-          'Re-author the scene with its planned choice, or remove the choicePoint from the blueprint.',
-        ),
+        input.blocking
+          ? this.error(
+              `Scene "${id}" was planned as a choice point but authored no choice.`,
+              `scene:${id}`,
+              'Re-author the scene with its planned choice, or remove the choicePoint from the blueprint.',
+            )
+          : this.warning(
+              `Scene "${id}" was planned as a choice point but authored no choice.`,
+              `scene:${id}`,
+              'Re-author the scene with its planned choice, or remove the choicePoint from the blueprint.',
+            ),
       );
     }
     for (const id of unplanned) {

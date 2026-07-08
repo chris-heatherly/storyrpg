@@ -156,7 +156,7 @@ export class StoryCircleCoverageValidator extends BaseValidator {
       if (!leftText || !rightText) continue;
       const overlap = wordOverlap(leftText, rightText);
       if (overlap > 0.85 && leftText.trim().length > 0 && rightText.trim().length > 0) {
-        issues.push(this.warning(
+        issues.push(this.error(
           `Story Circle beats "${left}" and "${right}" appear to repeat the same text instead of forming a polarity pair.`,
           `season.storyCircle.${left} vs season.storyCircle.${right}`,
           suggestion,

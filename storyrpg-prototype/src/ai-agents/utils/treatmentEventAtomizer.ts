@@ -10,6 +10,12 @@ export interface TreatmentAtomizerInput {
   text: string;
   sourceSection?: string;
   idPrefix?: string;
+  /** When true, the atom must be staged even if cue heuristics classify it as context-only. */
+  forceStage?: boolean;
+}
+
+export function isAuthoredEpisodeTurnSource(sourceSection: string | undefined): boolean {
+  return Boolean(sourceSection?.trim() && /^episodeTurn:/i.test(sourceSection.trim()));
 }
 
 const NON_PLAYABLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
@@ -32,6 +38,7 @@ const SUPPORT_CONTEXT_RE = /\b(?:theme|premise|thesis|audience promise|tonal pro
 const ACTION_PATTERNS: Array<{ type: TreatmentEventType; pattern: RegExp }> = [
   { type: 'arrival', pattern: /\b(?:arrives?|enters?|returns?|comes to|reaches|lands at)\b/i },
   { type: 'departure', pattern: /\b(?:leaves?|flees?|escapes?|walks out|drives away|departs)\b/i },
+  { type: 'exploration', pattern: /\b(?:explores?|wanders?|roams?|walks?\s+(?:through|around|the)|tours?|strolls?)\b/i },
   { type: 'meeting', pattern: /\b(?:meets?|joins?|forms?|gathers?|assembles?|encounters?|runs into|is introduced to)\b/i },
   { type: 'conversation', pattern: /\b(?:asks?|tells?|confesses?|argues?|admits?|calls?|texts?|answers?)\b/i },
   { type: 'discovery', pattern: /\b(?:finds?|discovers?|notices?|learns?|uncovers?|realizes?)\b/i },
@@ -39,7 +46,7 @@ const ACTION_PATTERNS: Array<{ type: TreatmentEventType; pattern: RegExp }> = [
   { type: 'choice', pattern: /\b(?:chooses?|decides?|must choose|has to decide)\b/i },
   { type: 'aftermath', pattern: /\b(?:afterward|aftermath|fallout|consequence|goes public|goes viral|spreads|writes?|drafts?|posts?|publishes?|starts?\s+(?:a\s+)?blog)\b/i },
   { type: 'reveal', pattern: /\b(?:reveals?|exposes?|confirms?|shows?)\b/i },
-  { type: 'relationship_shift', pattern: /\b(?:trusts?|betrays?|befriends?|rejects?|forgives?|protects?)\b/i },
+  { type: 'relationship_shift', pattern: /\b(?:trusts?|betrays?|befriends?|become\s+friends|rejects?|forgives?|protects?|forms?\s+(?:the\s+)?\w+\s+club)\b/i },
   { type: 'state_change', pattern: /\b(?:becomes?|changes?|loses?|gains?|is wounded|is trapped|is freed)\b/i },
 ];
 
@@ -61,9 +68,9 @@ export function atomizeTreatmentText(input: TreatmentAtomizerInput): TreatmentEv
     for (const fragment of fragments) {
       const trimmed = normalizeWhitespace(fragment);
       if (!trimmed) continue;
-      const playable = isPlayableTreatmentEvent(trimmed);
+      const playable = input.forceStage || isPlayableTreatmentEvent(trimmed);
       const eventText = playable ? concreteEventText(trimmed) : trimmed;
-      const metadata = eventCueMetadata(eventText, playable);
+      const metadata = eventCueMetadata(eventText, playable, input.forceStage);
       order += 1;
       atoms.push({
         id: `${input.idPrefix || `ep${input.episodeNumber}`}-atom-${order}`,
@@ -119,11 +126,13 @@ function stripPlayableFieldLabel(text: string): string {
 function eventCueMetadata(
   eventText: string,
   playable: boolean,
+  forceStage = false,
 ): Pick<TreatmentEventAtom, 'eventCues' | 'dramaticPriority' | 'sceneKindHint' | 'ownershipIntent'> {
   if (!playable) {
     return {
-      ownershipIntent: supportIntentForContext(eventText),
-      dramaticPriority: 0,
+      ownershipIntent: forceStage ? 'must_stage' : supportIntentForContext(eventText),
+      dramaticPriority: forceStage ? 20 : 0,
+      sceneKindHint: forceStage ? 'standard' : undefined,
     };
   }
   const cueSet = detectPrimaryStoryEventCues(eventText);

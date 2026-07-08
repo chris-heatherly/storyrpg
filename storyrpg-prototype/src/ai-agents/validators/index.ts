@@ -226,6 +226,9 @@ export { IntensityDistributionValidator } from './IntensityDistributionValidator
 export type { IntensityDistributionInput, IntensityDistributionMetrics } from './IntensityDistributionValidator';
 export { ChoiceCoverageValidator } from './ChoiceCoverageValidator';
 export type { ChoiceCoverageInput, ChoiceCoverageMetrics } from './ChoiceCoverageValidator';
+export { EpisodeSpineContractValidator } from './EpisodeSpineContractValidator';
+export { NpcVisualIdentityValidator } from './NpcVisualIdentityValidator';
+export type { NpcVisualIdentityInput } from './NpcVisualIdentityValidator';
 export { PropIntroductionValidator } from './PropIntroductionValidator';
 export type { PropIntroductionInput, PropIntroductionMetrics } from './PropIntroductionValidator';
 export { TwistQualityValidator } from './TwistQualityValidator';

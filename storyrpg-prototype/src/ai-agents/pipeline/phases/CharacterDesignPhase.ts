@@ -58,16 +58,38 @@ export class CharacterDesignPhase {
     // Deduplicate: filter any NPC that shares an ID or name with the protagonist
     const protId = brief.protagonist.id;
     const protName = brief.protagonist.name?.toLowerCase();
+    const npcVisualByName = new Map(
+      (brief.seasonPlan?.treatmentSeasonGuidance?.npcGuidance ?? [])
+        .filter((npc) => npc.visualIdentity?.trim())
+        .map((npc) => [npc.name.toLowerCase().trim(), npc.visualIdentity!.trim()] as const),
+    );
     const npcEntries = brief.npcs
       .filter(npc => npc.id !== protId && npc.name?.toLowerCase() !== protName)
-      .map(npc => ({
-        id: npc.id,
-        name: npc.name,
-        role: npc.role,
-        briefDescription: npc.description,
-        importance: npc.importance,
-        fashionStyle: npc.fashionStyle,
-      }));
+      .map(npc => {
+        const treatmentVisual = npcVisualByName.get(npc.name.toLowerCase().trim());
+        const fashionStyle = npc.fashionStyle
+          || (treatmentVisual
+            ? {
+                styleSummary: treatmentVisual,
+                styleTags: [],
+                signatureGarments: [],
+                materials: [],
+                colorPalette: [],
+                accessories: [],
+                sourceEvidence: [treatmentVisual],
+              }
+            : undefined);
+        return {
+          id: npc.id,
+          name: npc.name,
+          role: npc.role,
+          briefDescription: treatmentVisual
+            ? `${npc.description || ''}\nVisual identity (immutable): ${treatmentVisual}`.trim()
+            : npc.description,
+          importance: npc.importance,
+          fashionStyle,
+        };
+      });
 
     const charactersToCreate = [protagonistEntry, ...npcEntries];
 

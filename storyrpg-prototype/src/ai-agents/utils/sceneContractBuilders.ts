@@ -10,6 +10,7 @@ import type {
   SceneResidue,
   SceneTransitionOut,
 } from '../agents/StoryArchitect';
+import { isQuestionShapedAnchor } from '../remediation/storyEventCues';
 import {
   cleanBlueprintText as cleanText,
   isBlueprintHygieneUnsafeText,
@@ -47,8 +48,20 @@ export interface SceneContractDerivation {
 const GENERIC_PLANNER_TEXT_RE =
   /^(?:setup|development|release|turn|payoff)\s+scene\s+\d+$/i;
 
+// "shifts visible leverage around" is the deriveConcreteTurn role-fallback
+// template's own signature: those turns embed episode-summary text (which can
+// mention arrival/blog/etc. events) and must never confer event-cue ownership.
 const GENERIC_TURN_RE =
-  /\b(?:open the episode through its immediate question|escalate the episode pressure|let the fallout settle into the next pressure|reverse or reveal something the scene can no longer hide|pay off an earlier setup|rising pressure|falling pressure)\b/i;
+  /\b(?:open the episode through its immediate question|escalate the episode pressure|let the fallout settle into the next pressure|reverse or reveal something the scene can no longer hide|pay off an earlier setup|rising pressure|falling pressure|shifts visible leverage around)\b/i;
+
+// A question-shaped turn ("Can Kylie start over…?") gives SceneWriter nothing
+// to depict and, worse, leaks interrogative text into cue detection where verb
+// fragments read as staged events (bite-me 2026-07-07 s1-7: the episode
+// question filled every field of the release scene and its "write … blog"
+// wording aborted SceneConstructionGate).
+export function isQuestionShapedTurnText(value: unknown): boolean {
+  return isQuestionShapedAnchor(cleanText(value) || undefined);
+}
 
 const REQUIRED_BEAT_TIERS = new Set(['signature', 'authored', 'coldopen']);
 
@@ -56,6 +69,17 @@ function firstMeaningful(values: Array<unknown>): string {
   for (const value of values) {
     const text = stripStructuralTreatmentLabels(value);
     if (text && !isBlueprintHygieneUnsafeText(text)) return text;
+  }
+  return '';
+}
+
+/** First candidate that is meaningful AND a declarative statement (turn-safe). */
+function firstConcreteStatement(values: Array<unknown>): string {
+  for (const value of values) {
+    const text = stripStructuralTreatmentLabels(value);
+    if (text && !isBlueprintHygieneUnsafeText(text) && !isGenericPlannerTurnScaffold(text) && !isQuestionShapedTurnText(text)) {
+      return text;
+    }
   }
   return '';
 }
@@ -138,6 +162,7 @@ function deriveConcreteTurn(scene: SceneBlueprint, context: SceneContractContext
     turn
     && !isGenericScenePlannerText(turn.centralTurn)
     && !isGenericScenePlannerText(turn.turnEvent)
+    && !isQuestionShapedTurnText(turn.centralTurn || turn.turnEvent)
   ) {
     return { source: 'turnContract', text: stripStructuralTreatmentLabels(turn.centralTurn || turn.turnEvent) };
   }
@@ -145,31 +170,31 @@ function deriveConcreteTurn(scene: SceneBlueprint, context: SceneContractContext
   const requiredBeat = concreteRequiredBeatText(scene.requiredBeats);
   if (requiredBeat) return { source: 'requiredBeat', text: requiredBeat };
 
-  const encounterText = firstMeaningful([
+  const encounterText = firstConcreteStatement([
     scene.encounterCentralConflict,
     scene.encounterDescription,
     scene.encounterStakes,
   ]);
-  if (encounterText && !isGenericScenePlannerText(encounterText)) {
+  if (encounterText) {
     return { source: 'encounter', text: encounterText };
   }
 
-  const choiceText = firstMeaningful([
+  const choiceText = firstConcreteStatement([
     scene.choicePoint?.description,
     scene.choicePoint?.stakes?.identity,
     scene.choicePoint?.stakes?.cost,
     scene.choicePoint?.stakes?.want,
   ]);
-  if (choiceText && !isGenericScenePlannerText(choiceText)) {
+  if (choiceText) {
     return { source: 'choice', text: choiceText };
   }
 
-  const purpose = firstMeaningful([
+  const purpose = firstConcreteStatement([
     scene.dramaticPurpose,
     scene.narrativeFunction,
     scene.description,
   ]);
-  if (purpose && !isGenericScenePlannerText(purpose)) {
+  if (purpose) {
     return { source: 'purpose', text: purpose };
   }
 

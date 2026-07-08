@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attachSceneEventOwnershipProfiles,
   buildSceneEventOwnershipPromptSection,
+  stripRegressiveAuthoredBeats,
   type SceneEventOwnershipSceneLike,
 } from './sceneEventOwnership';
 import type { SceneConstructionObligation, SceneConstructionProfile } from '../../types/scenePlan';
@@ -176,7 +177,98 @@ describe('sceneEventOwnership', () => {
     expect(issues.some((issue) => issue.severity === 'error' && issue.message.includes('threatEncounter'))).toBe(true);
   });
 
-  it('blocks out-of-order route event ownership before prose generation', () => {
+  it('strips regressive arrival beats from post-encounter standard scenes', () => {
+    const scenes = [
+      {
+        id: 'enc',
+        order: 2,
+        kind: 'encounter',
+        requiredBeats: [{ id: 'sig', tier: 'signature', mustDepict: 'Attacked in Cismigiu and rescued.' }],
+      },
+      {
+        id: 's1-5',
+        order: 3,
+        kind: 'standard',
+        requiredBeats: [{ id: 'bad', tier: 'authored', mustDepict: 'Kylie arrives in Bucharest with two suitcases.' }],
+      },
+    ] as never;
+    expect(stripRegressiveAuthoredBeats(scenes)).toBe(1);
+    expect(scenes[1].requiredBeats).toHaveLength(0);
+  });
+
+  it('demotes regressive arrival ownership after threat encounter (bite-me s1-5 regression)', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 'treatment-enc-1-1',
+        kind: 'encounter',
+        turnContract: {
+          turnId: 'enc-turn',
+          source: 'treatment' as const,
+          centralTurn: 'Walking home through Cismigiu, she is attacked and rescued by a stranger.',
+          turnEvent: 'Walking home through Cismigiu, she is attacked and rescued by a stranger.',
+          beforeState: 'Walking home.',
+          afterState: 'Saved.',
+          handoff: 'Carry rescue forward.',
+        },
+      },
+      {
+        id: 's1-5',
+        kind: 'standard',
+        turnContract: {
+          turnId: 's1-5-turn',
+          source: 'treatment' as const,
+          centralTurn: 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.',
+          turnEvent: 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.',
+          beforeState: 'Before arrival.',
+          afterState: 'In the city.',
+          handoff: 'Carry arrival forward.',
+        },
+      },
+    ];
+
+    const issues = attachSceneEventOwnershipProfiles(scenes);
+
+    expect(issues.some((issue) => issue.message.includes('out of order'))).toBe(false);
+    expect(scenes[1].sceneEventOwnership?.ownedEvents.some((event) => event.cue === 'arrival')).toBe(false);
+  });
+
+  it('demotes regressive ownership only after the encounter act', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 'treatment-enc-1-1',
+        kind: 'encounter',
+        turnContract: {
+          turnId: 'enc-turn',
+          source: 'treatment' as const,
+          centralTurn: 'Walking home through Cismigiu, she is attacked and rescued by a stranger.',
+          turnEvent: 'Walking home through Cismigiu, she is attacked and rescued by a stranger.',
+          beforeState: 'Walking home.',
+          afterState: 'Saved.',
+          handoff: 'Carry rescue forward.',
+        },
+      },
+      {
+        id: 's1-5',
+        kind: 'standard',
+        turnContract: {
+          turnId: 's1-5-turn',
+          source: 'treatment' as const,
+          centralTurn: 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.',
+          turnEvent: 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.',
+          beforeState: 'Before arrival.',
+          afterState: 'In the city.',
+          handoff: 'Carry arrival forward.',
+        },
+      },
+    ];
+
+    const issues = attachSceneEventOwnershipProfiles(scenes);
+
+    expect(issues.some((issue) => issue.message.includes('out of order'))).toBe(false);
+    expect(scenes[1].sceneEventOwnership?.ownedEvents.some((event) => event.cue === 'arrival')).toBe(false);
+  });
+
+  it('still blocks pre-encounter out-of-order ownership before prose generation', () => {
     const scenes: SceneEventOwnershipSceneLike[] = [
       {
         id: 's1',

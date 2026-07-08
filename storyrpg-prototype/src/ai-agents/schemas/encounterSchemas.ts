@@ -48,6 +48,24 @@ const feedbackCue = {
   },
 } as const;
 
+// `immediateEffect` + `visibleComplication` are REQUIRED whenever a cost is
+// authored: these are the two reader-facing strings the converter otherwise
+// backfills with registered template prose ("Relief arrives with a
+// complication still attached."), which the no-boilerplate mandate then
+// blocks. Requiring them makes the LLM author the cost at the source.
+const encounterCost = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['immediateEffect', 'visibleComplication'],
+  properties: {
+    domain: shortString(80),
+    severity: shortString(80),
+    whoPays: shortString(120),
+    immediateEffect: shortString(260),
+    visibleComplication: shortString(260),
+  },
+} as const;
+
 const outcome = {
   type: 'object',
   additionalProperties: false,
@@ -58,6 +76,11 @@ const outcome = {
     threatTicks: { type: 'number' },
     isTerminal: { type: 'boolean' },
     encounterOutcome: { type: 'string' },
+    // A terminal partialVictory outcome MUST author its cost (prompt-enforced;
+    // the schema makes the field REACHABLE — with additionalProperties:false
+    // and no cost property, the LLM previously could not emit one at all, so
+    // the deterministic default cost was injected on every partial victory).
+    cost: encounterCost,
     relationshipConsequences: {
       type: 'array',
       maxItems: 2,
@@ -113,6 +136,11 @@ const phase2Outcome = {
     threatTicks: { type: 'number' },
     isTerminal: { type: 'boolean' },
     encounterOutcome: { type: 'string' },
+    // A terminal partialVictory outcome MUST author its cost (prompt-enforced;
+    // the schema makes the field REACHABLE — with additionalProperties:false
+    // and no cost property, the LLM previously could not emit one at all, so
+    // the deterministic default cost was injected on every partial victory).
+    cost: encounterCost,
   },
 } as const;
 
@@ -148,6 +176,9 @@ const compactOutcome = {
     threatTicks: { type: 'number' },
     isTerminal: { type: 'boolean' },
     encounterOutcome: { type: 'string' },
+    // See phase2Outcome.cost — reachable so partial victories carry an
+    // authored cost instead of the deterministic template.
+    cost: encounterCost,
   },
 } as const;
 
@@ -236,18 +267,6 @@ const leanStoryletBeat = {
   required: ['text'],
   properties: {
     text: shortString(420),
-  },
-} as const;
-
-const encounterCost = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    domain: shortString(80),
-    severity: shortString(80),
-    whoPays: shortString(120),
-    immediateEffect: shortString(260),
-    visibleComplication: shortString(260),
   },
 } as const;
 
@@ -354,6 +373,12 @@ export function buildEncounterStructureJsonSchema(): StructuredJsonSchema {
   return {
     name: 'encounter_structure',
     description: 'Complete playable encounter structure.',
+    // The lean-flow full-structure call is the LARGEST structured output in the
+    // pipeline (beats + nested choice trees + four authored storylets). Without
+    // this cap, structuredMaxTokens() silently clamped it to the 8192 default —
+    // half the EncounterArchitect budget — which killed the bite-me 2026-07-06
+    // run with an unrecoverable max_tokens ladder. Match the agent budget.
+    maxOutputTokens: 16384,
     schema: {
       type: 'object',
       additionalProperties: true,
@@ -395,10 +420,37 @@ export function buildEncounterStructureJsonSchema(): StructuredJsonSchema {
   };
 }
 
+/**
+ * Decomposed truncation-recovery call (P1, 2026-07-06): the full encounter
+ * structure MINUS the four aftermath storylets. When the lean full-structure
+ * call truncates, the recovery ladder must strictly shrink the ask — this
+ * core call plus four per-slot compact storylet drafts replaces one oversized
+ * request with five bounded ones.
+ */
+export function buildEncounterCoreJsonSchema(): StructuredJsonSchema {
+  const full = buildEncounterStructureJsonSchema();
+  const schema = JSON.parse(JSON.stringify(full.schema)) as {
+    required: string[];
+    properties: Record<string, unknown>;
+  } & Record<string, unknown>;
+  schema.required = schema.required.filter((key) => key !== 'storylets');
+  delete schema.properties.storylets;
+  return {
+    name: 'encounter_core',
+    description: 'Encounter structure without aftermath storylets (decomposed truncation-recovery call).',
+    maxOutputTokens: 16384,
+    schema,
+  };
+}
+
 export function buildEncounterPhase1JsonSchema(): StructuredJsonSchema {
   return {
     name: 'encounter_phase_1',
     description: 'Encounter opening beat with choice-specific outcomes.',
+    // Was silently clamped to the 8192 default; a 2026-06 Gemini run truncated
+    // at 6828 output + 1348 thinking tokens against that ceiling. The opening
+    // beat carries 3-4 choices × 3 authored outcomes — give it the agent budget.
+    maxOutputTokens: 16384,
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -500,6 +552,9 @@ export function buildEncounterPhase2JsonSchema(): StructuredJsonSchema {
   return {
     name: 'encounter_phase_2',
     description: 'Encounter follow-up situations for one opening choice.',
+    // Three authored situations (success/complicated/failure), each with its own
+    // choice set and nested outcomes. Was silently clamped to 8192.
+    maxOutputTokens: 16384,
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -518,6 +573,9 @@ export function buildEncounterPhase3JsonSchema(): StructuredJsonSchema {
   return {
     name: 'encounter_phase_3',
     description: 'Prior-state enrichment for an encounter opening beat.',
+    // Bounded output (≤3 variants, ≤2 bonuses, ≤1 conditional choice) — the
+    // default cap is adequate; declared so the budget is explicit, not inherited.
+    maxOutputTokens: 8192,
     schema: {
       type: 'object',
       additionalProperties: false,

@@ -916,6 +916,11 @@ export interface PlannedSceneEncounter {
    * inferred encounters.
    */
   requiredBeats?: RequiredBeat[];
+  /**
+   * Episode Spine Contract encounter profile. When set, EncounterArchitect
+   * stages play accordingly (`staged_rescue` forbids escape-first success trees).
+   */
+  encounterProfile?: import('./episodeSpine').EncounterSpineProfile;
 }
 
 /**
@@ -950,6 +955,14 @@ export interface PlannedScene {
     parentSceneId: string;
     reason: string;
   };
+
+  /** Maps to {@link EpisodeSpineUnit.id} when this scene projects a spine unit. */
+  spineUnitId?: string;
+  /**
+   * Encounter spine profile when this scene is (or will be promoted to) an
+   * encounter. Mirrors {@link PlannedSceneEncounter.encounterProfile}.
+   */
+  encounterProfile?: import('./episodeSpine').EncounterSpineProfile;
 
   /** Short scene title / slug-like label. */
   title: string;
@@ -1222,6 +1235,13 @@ export interface SeasonScenePlan {
   characterTreatmentContracts?: CharacterTreatmentRealizationContract[];
   /** World/location obligations assigned across the scene plan. */
   worldTreatmentContracts?: WorldTreatmentRealizationContract[];
+  /** Canonical episode spines compiled from treatment (ESC projection source). */
+  episodeSpines?: Record<number, import('./episodeSpine').EpisodeSpineContract>;
+  /**
+   * Aggregate of episode spine `sourceHash` values. Used to skip redundant
+   * `rebuildTreatmentSeasonScenePlan` when the treatment spine is unchanged.
+   */
+  sourceHash?: string;
 }
 
 // ========================================

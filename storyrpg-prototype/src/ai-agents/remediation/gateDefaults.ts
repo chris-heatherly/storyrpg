@@ -140,6 +140,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rewrite route finish the job.
   GATE_SCENE_TENSE_CHECK: true,
 
+  // Flag-gated SceneCritic (SAR wave 2, R8 — authoring economics). The full
+  // sceneCritic config pass doubles SceneWriter token cost per scene, so it
+  // stays opt-in. This gate instead runs the critic ONLY over scenes that
+  // already showed a quality signal at generation time (failed incremental
+  // voice/POV validation or triggered a realization retry), capped at the
+  // existing 3-scenes-per-episode limit — a targeted second pass where the
+  // evidence says it pays for itself. No-op when config.sceneCritic.enabled
+  // (the broader configured pass supersedes it). Reversible via =0.
+  GATE_SCENE_CRITIC_ON_FLAG: true,
+
   // Two-tier gate policy (2026-07-05 stability audit). An under-realized scene
   // after the bounded retry is a QUALITY finding, not a run-safety blocker: the
   // prose is LLM-authored, the miss is re-detected identically at season-final
@@ -149,6 +159,20 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // blockers. OFF: warn + defer to the season-final realization gate (default).
   // ON: restore the old hard abort at scene time.
   GATE_SCENE_REALIZATION_ABORT: false,
+
+  // No-boilerplate abort policy split (2026-07-06 encounter-cost postmortem).
+  // Generation-time template hits now carry a SOURCE: 'template' = the
+  // EncounterArchitect's own TEMPLATE_SIGNATURES survived regen (the build
+  // genuinely collapsed to deterministic filler — regeneration is the only
+  // fix, so failing the episode at generation time is correct and cheap);
+  // 'fallback' = a syntheticFallbackProse registry string DETERMINISTIC code
+  // injected because the LLM omitted a field. The fallback class NEVER aborts
+  // at generation time: the targeted cost-field re-author repairs it at the
+  // source, and any residue defers to the final contract where
+  // unsafe_fallback_prose blocks with a wired repair route. This gate only
+  // controls the 'template' (build-collapse) abort. OFF: defer template
+  // collapse to the final contract too (encounter_template_collapse).
+  GATE_ENCOUNTER_TEMPLATE_ABORT: true,
 
   // Authoring-time outcome-tier re-author (2026-07-04, late-detection audit).
   // When ChoiceAuthor only partially authors a choice, normalizeChoiceSet fills
@@ -250,6 +274,26 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // conflicts to a blocking hard-abort (StoryArchitect regenerates; the
   // content-phase re-check aborts). Reversible via =0. Default-ON.
   GATE_SCENE_CONSTRUCTION_PREFLIGHT: true,
+  // Bounded architecture re-run when the SceneConstructionGate blocks
+  // (2026-07-07: the gate's own error message says "Re-run architecture…" but
+  // no code path ever did — a preflight hit hard-aborted the run at ~4% and
+  // discarded a healthy cached analysis + season plan). When ON, the first
+  // SceneConstructionGate abort re-runs StoryArchitect + branch analysis once
+  // and retries content generation; a second hit still aborts (a genuine
+  // chronology defect keeps failing fast, before any prose is written).
+  // Reversible via =0 (restores the immediate hard abort).
+  GATE_SCENE_CONSTRUCTION_ARCH_RETRY: true,
+  // LLM re-author for generic planner central turns (2026-07-07: s1-7 shipped a
+  // role-scaffold turn — "Aftermath pressure shifts visible leverage around…" —
+  // that the final SceneTurnRealizationValidator is guaranteed to block, and the
+  // prose repair loop explicitly skips it because the defect is blueprint
+  // METADATA, not prose. The run died at 100% on an issue knowable at minute 3).
+  // When ON: (a) StoryArchitect re-authors scaffold turns at architecture time
+  // with one focused LLM call per scene; (b) the final-contract repair loop gains
+  // a turn-contract re-author handler that derives the turn from the scene's
+  // ALREADY-WRITTEN prose. A failed re-author keeps the scaffold, so the
+  // final-contract gate remains the net. Reversible via =0.
+  GATE_SCENE_TURN_REAUTHOR: true,
   // Deterministic demote-to-aftermath ownership repair inside
   // attachSceneEventOwnershipProfiles (2026-07-04 audit: SceneConstructionGate
   // duplicate-ownership conflicts were the single largest hard-abort surface,

@@ -1286,6 +1286,43 @@ Requirements:
         ].filter(Boolean).join('; ');
       }
     }
+
+    this.preserveTreatmentVisualIdentityTokens(bible, input);
+  }
+
+  /**
+   * Treatment visual_identity contracts are immutable prefixes of physical
+   * description / distinctive features — CharacterDesigner must not invent
+   * contradicting hair/skin/jewelry tokens.
+   */
+  private preserveTreatmentVisualIdentityTokens(bible: CharacterBible, input: CharacterDesignerInput): void {
+    const visualByName = new Map<string, string>();
+    for (const contract of input.characterTreatmentContracts ?? []) {
+      if (contract.contractKind !== 'visual_identity' || !contract.sourceText?.trim()) continue;
+      const key = (contract.characterName || contract.characterId || '').toLowerCase().trim();
+      if (key) visualByName.set(key, contract.sourceText.trim());
+    }
+    for (const character of input.charactersToCreate) {
+      const summary = character.fashionStyle?.styleSummary?.trim();
+      if (!summary) continue;
+      visualByName.set(character.name.toLowerCase().trim(), summary);
+      visualByName.set(character.id.toLowerCase().trim(), summary);
+    }
+
+    for (const character of bible.characters || []) {
+      const visual = visualByName.get(character.name.toLowerCase().trim())
+        || visualByName.get(character.id.toLowerCase().trim());
+      if (!visual) continue;
+      const prefix = visual.replace(/\s+/g, ' ').trim();
+      if (!character.physicalDescription?.toLowerCase().includes(prefix.slice(0, Math.min(24, prefix.length)).toLowerCase())) {
+        character.physicalDescription = `${prefix}. ${character.physicalDescription || ''}`.trim();
+      }
+      const features = character.distinctiveFeatures ?? [];
+      const already = features.some((feature) => feature.toLowerCase().includes(prefix.slice(0, 16).toLowerCase()));
+      if (!already) {
+        character.distinctiveFeatures = [prefix, ...features];
+      }
+    }
   }
 
   /**

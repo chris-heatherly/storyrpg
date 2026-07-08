@@ -126,10 +126,21 @@ const RAW_GATE_REGISTRY = [
   // realization retry still misses (two-tier policy: default is warn + defer
   // to the season-final realization gate's bounded repair).
   { id: 'GATE_SCENE_REALIZATION_ABORT', placement: 'scene', kind: 'blocking', defaultOn: false },
+  // No-boilerplate abort split (2026-07-06): controls ONLY the 'template'
+  // (EncounterArchitect build-collapse) abort at encounter generation time.
+  // Registry-fallback (deterministic-injection) hits never abort — they get
+  // the targeted cost-field re-author and defer to the final contract's
+  // unsafe_fallback_prose net (repair: encounterCostRepairHandler +
+  // scene-prose rewrite).
+  { id: 'GATE_ENCOUNTER_TEMPLATE_ABORT', placement: 'scene', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // Scene-time narration-tense check: a scene written wholesale in past tense
   // gets one SceneWriter retry with tense feedback at write time, where the
   // fix costs one scene instead of final-contract repair rounds.
   { id: 'GATE_SCENE_TENSE_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  // Flag-gated SceneCritic rewrite: a targeted critic pass over scenes that
+  // failed incremental voice/POV validation or needed a realization retry
+  // (criticFlags), capped at 3/episode. Not a detector — cost-bounded polish.
+  { id: 'GATE_SCENE_CRITIC_ON_FLAG', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CHOICE_OUTCOME_TIER_REAUTHOR', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
@@ -159,6 +170,19 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
   { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  // Bounded architecture re-run when the SceneConstructionGate blocks content
+  // generation (2026-07-07: the gate's error said "Re-run architecture…" but no
+  // code path did — one preflight hit hard-aborted the run and discarded the
+  // cached analysis + season plan). One StoryArchitect + branch-analysis re-run,
+  // then one content retry; a second gate hit still aborts.
+  { id: 'GATE_SCENE_CONSTRUCTION_ARCH_RETRY', placement: 'plan', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  // Generic-planner-turn re-author (2026-07-07: s1-7's role-scaffold turn was
+  // guaranteed to block the final contract, but the defect is blueprint metadata
+  // the scene-prose repair loop explicitly skips). Two surfaces, one gate:
+  // architecture-time re-author in StoryArchitect (fail-fast, before any prose)
+  // and a final-contract turn-contract repair handler (derives the turn from the
+  // scene's already-written prose).
+  { id: 'GATE_SCENE_TURN_REAUTHOR', placement: 'plan', auditPlacements: ['season-final'], kind: 'remediation', defaultOn: true, repair: 'regen' },
   // Deterministic demote-to-aftermath repair for duplicate-sensitive event
   // ownership on non-encounter-capable scenes (2026-07-04: SceneConstructionGate
   // duplicate-ownership conflicts were the largest hard-abort surface with no
@@ -193,7 +217,13 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_COLD_OPEN_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
   { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  // R5 honesty fix (2026-07-06): this entry previously claimed `repair: 'autofix'`
+  // but no autofix exists — a collapsed sustained set piece is missing encounter
+  // STRUCTURE (phases / tension-curve points), which no prose rewrite or
+  // deterministic fix can add at the final contract. The gateRepairRouter now
+  // classifies its findings as architectural (blueprint_rebalance) instead of the
+  // unclassified diagnostic_stop fall-through.
+  { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, policyException: 'No final-contract repair can add encounter phases/tension-curve structure; findings are honestly classified architectural (blueprint_rebalance). The generative half is EncounterArchitect\'s sustained-set-piece beat floor at encounter build time. Planned fix: an encounter-structure repair handler that scaffolds the missing phases deterministically and has the LLM author their prose (shift-left candidate, R5 audit 2026-07-06).' },
   { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
@@ -223,11 +253,23 @@ const RAW_GATE_REGISTRY = [
   // validator's inputs are plan-vs-treatment only, so a mismatch now fails
   // before any generation is spent (runPlanTimeFidelityChecks). The
   // season-final dispatch remains as a regression net for mid-run plan drift.
-  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, policyException: 'The season-final regression-net dispatch for this plan-contract gate has no dedicated repair handler yet: a mid-run plan drift lands as a blocking authored_contract finding at the final contract. Planned fix: route these findings through the final-contract scene-prose/cluster repair before abort (audit 2026-07-01 item 4.4). Primary enforcement is plan placement (cheap fail-fast before prose).' },
+  // Audit 2026-07-01 item 4.4 planned fix implemented (R5, 2026-07-06): the
+  // gateRepairRouter now routes scene-localized drift findings from this gate to
+  // the final-contract scene-prose/cluster repair; genuinely architectural
+  // findings (episode-list mismatch) are classified blueprint_rebalance instead
+  // of the unclassified diagnostic_stop dead end. Primary enforcement remains
+  // plan placement (cheap fail-fast before prose).
+  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // Repair-first: the fidelity judge refutes FPs (it is a treatment-fidelity finding) and the
   // scene-prose repair handler now re-authors the encounter's phase/storylet prose to depict a
   // confirmed-missing central conflict / required beat (bite-me-g18), so this no longer hard-aborts.
   { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  // Audit 2026-07-01 item 4.4 planned fix implemented (R5, 2026-07-06): the
+  // gateRepairRouter routes scene-localized drift findings to scene-prose/cluster
+  // repair; schedule findings with no scene target (reveal-before-setup ordering,
+  // dropped reveals) are classified episode_replan — honest architecture, not the
+  // unclassified diagnostic_stop dead end. Primary enforcement remains plan
+  // placement (cheap fail-fast before prose).
   {
     id: 'GATE_INFORMATION_LEDGER_SCHEDULE',
     placement: 'plan',
@@ -236,7 +278,7 @@ const RAW_GATE_REGISTRY = [
     finalRole: 'regression-net',
     kind: 'blocking',
     defaultOn: true,
-    policyException: 'The season-final regression-net dispatch for this plan-contract gate has no dedicated repair handler yet: a mid-run plan drift lands as a blocking authored_contract finding at the final contract. Planned fix: route these findings through the final-contract scene-prose/cluster repair before abort (audit 2026-07-01 item 4.4). Primary enforcement is plan placement (cheap fail-fast before prose).',
+    repair: 'regen',
   },
   { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
   { id: 'GATE_SCENE_SPATIAL_UNIT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
@@ -244,7 +286,11 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_THEMATIC_SQUARE_TURN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // WS1 (2026-06-12): relocated from season-final to plan placement — anchors
   // are fully known before generation (see GATE_AUTHORED_EPISODE_CONFORMANCE).
-  { id: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, policyException: 'The season-final regression-net dispatch for this plan-contract gate has no dedicated repair handler yet: a mid-run plan drift lands as a blocking authored_contract finding at the final contract. Planned fix: route these findings through the final-contract scene-prose/cluster repair before abort (audit 2026-07-01 item 4.4). Primary enforcement is plan placement (cheap fail-fast before prose).' },
+  // Audit 2026-07-01 item 4.4 planned fix implemented (R5, 2026-07-06): the
+  // gateRepairRouter routes scene-localized drift findings to scene-prose/cluster
+  // repair; season-spine beat-placement findings (no scene target) are classified
+  // blueprint_rebalance. Primary enforcement remains plan placement.
+  { id: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
 ] satisfies GateSpec[];
 

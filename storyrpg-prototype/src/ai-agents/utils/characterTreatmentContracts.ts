@@ -1,5 +1,10 @@
 import type { SeasonPlan } from '../../types/seasonPlan';
-import type { CharacterArchitecture, ProtagonistTreatmentGuidance, StoryEndingTarget } from '../../types/sourceAnalysis';
+import type {
+  CharacterArchitecture,
+  NpcTreatmentGuidance,
+  ProtagonistTreatmentGuidance,
+  StoryEndingTarget,
+} from '../../types/sourceAnalysis';
 import type {
   CharacterTreatmentFieldKind,
   CharacterTreatmentRealizationContract,
@@ -7,6 +12,7 @@ import type {
   MechanicPressureContract,
   MechanicPressureDomain,
   PlannedScene,
+  RequiredBeat,
 } from '../../types/scenePlan';
 import {
   treatmentFieldCloseMatch,
@@ -228,8 +234,30 @@ function fallbackContracts(input: {
   return out;
 }
 
+export function buildNpcVisualIdentityContracts(input: {
+  npcGuidance?: NpcTreatmentGuidance[];
+  totalEpisodes: number;
+}): CharacterTreatmentRealizationContract[] {
+  const out: CharacterTreatmentRealizationContract[] = [];
+  for (const npc of input.npcGuidance ?? []) {
+    if (!npc.visualIdentity?.trim()) continue;
+    push(out, {
+      source: 'treatment',
+      characterId: npc.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      characterName: npc.name,
+      totalEpisodes: input.totalEpisodes,
+      fieldName: `${npc.name} visual identity`,
+      sourceText: npc.visualIdentity,
+      contractKind: 'visual_identity',
+      blockingLevel: 'structural',
+    });
+  }
+  return out;
+}
+
 export function buildCharacterTreatmentContracts(input: {
   guidance?: ProtagonistTreatmentGuidance;
+  npcGuidance?: NpcTreatmentGuidance[];
   characterArchitecture?: Parameters<typeof fallbackContracts>[0]['characterArchitecture'];
   protagonist?: { id?: string; name?: string; description?: string; fashionStyle?: unknown };
   endings?: StoryEndingTarget[];
@@ -237,18 +265,26 @@ export function buildCharacterTreatmentContracts(input: {
   treatmentSourced?: boolean;
 }): CharacterTreatmentRealizationContract[] {
   const explicit = explicitContracts(input);
-  if (explicit.length > 0) return explicit;
-  return fallbackContracts(input);
+  const npcVisual = buildNpcVisualIdentityContracts({
+    npcGuidance: input.npcGuidance,
+    totalEpisodes: input.totalEpisodes,
+  });
+  if (explicit.length > 0) return [...explicit, ...npcVisual];
+  return [...fallbackContracts(input), ...npcVisual];
 }
 
 export function buildCharacterTreatmentContractsForPlan(
   plan: Pick<SeasonPlan, 'characterTreatmentContracts' | 'characterArchitecture' | 'protagonist' | 'resolvedEndings' | 'totalEpisodes'> & {
-    treatmentSeasonGuidance?: { protagonistGuidance?: ProtagonistTreatmentGuidance };
+    treatmentSeasonGuidance?: {
+      protagonistGuidance?: ProtagonistTreatmentGuidance;
+      npcGuidance?: NpcTreatmentGuidance[];
+    };
   },
 ): CharacterTreatmentRealizationContract[] {
   if ((plan.characterTreatmentContracts ?? []).length > 0) return plan.characterTreatmentContracts ?? [];
   return buildCharacterTreatmentContracts({
     guidance: plan.treatmentSeasonGuidance?.protagonistGuidance,
+    npcGuidance: plan.treatmentSeasonGuidance?.npcGuidance,
     characterArchitecture: plan.characterArchitecture,
     protagonist: plan.protagonist,
     endings: plan.resolvedEndings,
@@ -415,4 +451,49 @@ export function characterTreatmentMatchThreshold(contract: CharacterTreatmentRea
     || contract.contractKind === 'truth_target'
   ) return 0.2;
   return 0.25;
+}
+
+/** Protagonist-brief fields that must appear in each episode's opening scene when authored. */
+export const OPENING_EPISODE_CHARACTER_KINDS = new Set<CharacterTreatmentFieldKind>([
+  'role_fact',
+  'origin_pressure',
+  'wound_pressure',
+  'starting_identity',
+  'visual_identity',
+]);
+
+/**
+ * Seed early protagonist-brief contracts onto the first scene of each episode.
+ * Use advisory `seed` (not hard `coldopen`): hard cold-open stacking with the
+ * arrival turn blew SceneConstructionGate past max hard units
+ * (bite-me 2026-07-08: 6.25/5 on s1-1). CharacterTreatmentRealizationValidator
+ * still owns final-contract evidence for these contracts.
+ */
+export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScene[]): void {
+  const byEpisode = new Map<number, PlannedScene[]>();
+  for (const scene of scenes) {
+    const episodeNumber = scene.episodeNumber ?? 1;
+    byEpisode.set(episodeNumber, [...(byEpisode.get(episodeNumber) ?? []), scene]);
+  }
+
+  for (const [episodeNumber, episodeScenes] of byEpisode) {
+    const opening = [...episodeScenes].sort((a, b) => a.order - b.order)[0];
+    if (!opening) continue;
+
+    for (const contract of opening.characterTreatmentContracts ?? []) {
+      if (!OPENING_EPISODE_CHARACTER_KINDS.has(contract.contractKind)) continue;
+      if (!(contract.targetEpisodeNumbers ?? [episodeNumber]).includes(episodeNumber)) continue;
+
+      const beatId = `${opening.id}-char-${contract.id}`;
+      if ((opening.requiredBeats ?? []).some((beat) => beat.id === beatId)) continue;
+
+      const beat: RequiredBeat = {
+        id: beatId,
+        sourceTurn: contract.sourceText,
+        mustDepict: `Establish the protagonist's ${contract.fieldName.toLowerCase()} through concrete behavior or detail (fiction-first): ${contract.sourceText}`,
+        tier: 'seed',
+      };
+      opening.requiredBeats = [...(opening.requiredBeats ?? []), beat];
+    }
+  }
 }

@@ -25,6 +25,7 @@
 
 import { missingMomentTokens, momentDepicted } from './realizationScoring';
 import { characterIntroductionMomentName, getRealizationPovContext, hasSecondPersonAddress } from './realizationEvaluator';
+import { isGenericScenePlannerText } from '../utils/sceneContractBuilders';
 
 /** The contract surface both SceneBlueprint and (tagged) SceneContent carry. */
 export interface SceneContractSource {
@@ -33,10 +34,25 @@ export interface SceneContractSource {
     beat?: string;
     sourceText?: string;
     requiredRealization?: string[];
+    eventAtoms?: string[];
   }>;
   signatureMoment?: string;
   choicePoint?: { setsTreatmentSeeds?: string[] };
   encounterSetupContext?: string[];
+  /** R4 shift-left: the SceneTurnRealizationValidator's central-turn contract. */
+  turnContract?: {
+    centralTurn?: string;
+    turnEvent?: string;
+    source?: string;
+  };
+  /** R4 shift-left: treatment-blocking arc pressure bound to THIS scene. */
+  arcPressureContracts?: Array<{
+    id?: string;
+    fieldName?: string;
+    sourceText?: string;
+    eventAtoms?: string[];
+    blockingLevel?: string;
+  }>;
 }
 
 /** A prose-bearing beat as the realization validators scan it. */
@@ -58,6 +74,18 @@ export interface RequiredMoment {
   /** Which season-final validator will enforce this moment (drives stopwords). */
   validator: 'RequiredBeatRealizationValidator' | 'SignatureDevicePresenceValidator';
   tier: string;
+  /**
+   * Alternate phrasings that also satisfy the moment (e.g. a contract's
+   * eventAtoms) — mirrors the season-final validators, which accept sourceText
+   * OR any event atom as depicted.
+   */
+  alternates?: string[];
+}
+
+/** Depicted when the moment itself OR any registered alternate is on-page. */
+function momentOrAlternateDepicted(m: RequiredMoment, prose: string): boolean {
+  if (momentDepicted(m.validator, m.moment, prose)) return true;
+  return (m.alternates ?? []).some((alt) => alt && momentDepicted(m.validator, alt, prose));
 }
 
 export interface MissingMoment extends RequiredMoment {
@@ -156,11 +184,42 @@ export function requiredMomentsFor(source: SceneContractSource | undefined): Req
       moment,
       tier: `storyCircle:${contract.beat ?? 'beat'}`,
       validator: 'RequiredBeatRealizationValidator',
+      alternates: (contract.eventAtoms ?? []).map((atom) => atom.trim()).filter(Boolean),
     });
   }
   const signature = source.signatureMoment?.trim();
   if (signature && !moments.some((m) => m.moment === signature)) {
     moments.push({ moment: signature, tier: 'signature', validator: 'SignatureDevicePresenceValidator' });
+  }
+  // R4 shift-left: the SceneTurnRealizationValidator's central turn, checked
+  // at scene time with the SAME evaluator it uses at season-final
+  // (momentDepicted via evaluateMomentRealization). Blocking sources only
+  // (treatment/encounter/planner) — and a GENERIC planner turn is an
+  // architecture defect ("replace the turn"), not a prose-realization retry,
+  // so it is left to the plan-time turn-contract gates.
+  const centralTurn = (source.turnContract?.centralTurn ?? source.turnContract?.turnEvent)?.trim();
+  const turnSource = source.turnContract?.source;
+  if (
+    centralTurn
+    && (turnSource === 'treatment' || turnSource === 'encounter'
+      || (turnSource === 'planner' && !isGenericScenePlannerText(centralTurn)))
+    && !moments.some((m) => m.moment === centralTurn)
+  ) {
+    moments.push({ moment: centralTurn, tier: 'sceneTurn', validator: 'RequiredBeatRealizationValidator' });
+  }
+  // R4 shift-left: treatment-blocking arc pressure bound to this scene — the
+  // SceneTurnRealizationValidator blocks at season-final when neither the
+  // sourceText nor any event atom is dramatized (same OR semantics here).
+  for (const contract of source.arcPressureContracts ?? []) {
+    if (contract.blockingLevel !== 'treatment') continue;
+    const moment = contract.sourceText?.trim();
+    if (!moment || moments.some((m) => m.moment === moment)) continue;
+    moments.push({
+      moment,
+      tier: `arcPressure:${contract.fieldName ?? contract.id ?? 'contract'}`,
+      validator: 'RequiredBeatRealizationValidator',
+      alternates: (contract.eventAtoms ?? []).map((atom) => atom.trim()).filter(Boolean),
+    });
   }
   return moments;
 }
@@ -184,7 +243,7 @@ export function missingRequiredMoments(
   if (moments.length === 0) return [];
   const prose = proseOfBeats(beats);
   return moments
-    .filter((m) => !momentDepicted(m.validator, m.moment, prose))
+    .filter((m) => !momentOrAlternateDepicted(m, prose))
     .map((m) => ({ ...m, missingTokens: missingMomentTokens(m.validator, m.moment, prose) }));
 }
 
@@ -374,6 +433,13 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
       options.onSkip?.(m, 'story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization');
       return false;
     }
+    // R4: turn-contract and arc-pressure text is planning register by
+    // construction — it must be DRAMATIZED by the writer (retry feedback) or
+    // judged at season-final, never pasted verbatim as reader prose.
+    if (m.tier === 'sceneTurn' || m.tier.startsWith('arcPressure')) {
+      options.onSkip?.(m, `${m.tier} contract text is a planning artifact, not stageable prose — needs SceneWriter realization`);
+      return false;
+    }
     if (characterIntroductionMomentName(m.moment)) {
       options.onSkip?.(m, 'character-introduction directive is writer guidance, not stageable prose — needs SceneWriter realization');
       return false;
@@ -489,6 +555,6 @@ export function rewriteLosesRequiredMoment(
   const before = proseOfBeats(beforeBeats);
   const after = proseOfBeats(afterBeats);
   return moments.find(
-    (m) => momentDepicted(m.validator, m.moment, before) && !momentDepicted(m.validator, m.moment, after),
+    (m) => momentOrAlternateDepicted(m, before) && !momentOrAlternateDepicted(m, after),
   );
 }

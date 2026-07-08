@@ -5,7 +5,7 @@ import type { FailureModeAuditContract } from '../../types/scenePlan';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import { treatmentFieldCloseMatch } from '../utils/treatmentFieldContracts';
 import { failureModeAuditMatchThreshold } from '../utils/failureModeAuditContracts';
-import { PAST_TENSE_LIVE_ACTION, hasPastEventMarker, stripQuotedDialogue } from '../utils/proseTense';
+import { detectBeatTenseDrift } from '../utils/proseTense';
 
 export type NarrativeFailureModeCode =
   | 'escalation_trap'
@@ -285,19 +285,16 @@ export class NarrativeFailureModeValidator extends BaseValidator {
   }
 
   private detectTenseDrift(sceneContents: SceneContent[]): NarrativeFailureModeIssue[] {
+    // Detection lives in the shared detectBeatTenseDrift (utils/proseTense) so
+    // the scene-time gate and this final-contract check can never disagree (R7).
     const issues: NarrativeFailureModeIssue[] = [];
     for (const scene of sceneContents) {
-      for (const beat of scene.beats ?? []) {
-        const text = typeof beat.text === 'string' ? beat.text : '';
-        if (!text || hasPastEventMarker(text)) continue;
-        const narrationOnly = stripQuotedDialogue(text);
-        const matches = narrationOnly.match(PAST_TENSE_LIVE_ACTION) ?? [];
-        if (matches.length < 3) continue;
+      for (const drift of detectBeatTenseDrift(scene.beats)) {
         issues.push({
           code: 'tense_drift',
           severity: 'error',
-          message: `[Tense drift] Beat "${beat.id}" appears to narrate live action in past tense: "${excerpt(text)}"`,
-          location: `${scene.sceneId}.${beat.id}`,
+          message: `[Tense drift] Beat "${drift.beatId}" appears to narrate live action in past tense: "${excerpt(drift.text)}"`,
+          location: `${scene.sceneId}.${drift.beatId}`,
           suggestion: 'Rewrite live reader-facing action in present tense. Use past tense only for explicit memories, backstory, recaps, or earlier events.',
           source: 'prose_style_consistency',
         });

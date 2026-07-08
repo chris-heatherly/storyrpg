@@ -117,7 +117,7 @@ function groupSlug(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function plannedGroupFormation(scene: RelationshipPacingSceneLike): string | undefined {
+export function plannedGroupFormation(scene: RelationshipPacingSceneLike): string | undefined {
   const surfaces = [
     scene.title,
     scene.name,

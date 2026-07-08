@@ -200,6 +200,74 @@ describe('validateBlueprintRouteCueOrder', () => {
     }]);
   });
 
+  it('does not treat a question-shaped release scene as staging late-night writing (bite-me 2026-07-07 s1-7)', () => {
+    const episodeQuestion = 'Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her?';
+    const bp = blueprint([
+      scene('s1-6', 'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight.', ['s1-blog-aftermath']),
+      scene('s1-blog-aftermath', 'The readership number climbs until the post becomes a public signal.', ['s1-7']),
+      {
+        ...scene('s1-7', episodeQuestion),
+        name: 'Can Kylie start over, feel wanted, and write under.. at Kylie\'s...',
+        narrativeFunction: `${episodeQuestion} The blog, Dusk Club, Victor's staged courtship, Stela's protection, Mika's placement, Radu's first sighting, and Kylie's first authored act all become live season anchors.`,
+        dramaticPurpose: episodeQuestion,
+        keyBeats: [
+          episodeQuestion,
+          `REST: ${episodeQuestion} establishes what feels stable, desired, or controlled before pressure changes it.`,
+        ],
+        turnContract: {
+          turnId: 's1-7-turn',
+          source: 'planner',
+          centralTurn: episodeQuestion,
+          beforeState: `Before the turn, ${episodeQuestion}`,
+          turnEvent: episodeQuestion,
+          afterState: 'The fallout has settled into a changed emotional, social, or logistical state.',
+          handoff: 'Bridge cleanly into the next episode or scene pressure.',
+        },
+      },
+    ]);
+
+    expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
+  it('does not pair an action verb in one field with an object noun in another field', () => {
+    const bp = blueprint([
+      scene('scene-aftermath', 'By morning, the post has viral views and comments.', ['scene-recap']),
+      {
+        ...scene('scene-recap', 'She weighs what she is willing to keep secret.'),
+        // "writes" lives in the name; "blog" lives in narrativeFunction — no
+        // single field stages a writing event.
+        name: 'Kylie writes her own future',
+        narrativeFunction: 'The blog remains the season anchor under public watch.',
+      },
+    ]);
+
+    expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
+  it('trusts an attached ownership profile over loose field-level cue hits', () => {
+    const bp = blueprint([
+      scene('scene-aftermath', 'By morning, the post has viral views and comments.', ['scene-late']),
+      {
+        ...scene('scene-late', 'At 4am, the narrator writes the anonymous post.'),
+        // Ownership (the conservative contract-level pass) says this scene
+        // stages nothing — the writing wording is reference, not staging.
+        sceneEventOwnership: {
+          id: 'scene-late-event-ownership',
+          sceneId: 'scene-late',
+          ownedEvents: [],
+          incomingContext: [],
+          outgoingResidue: [],
+          forbiddenRestageEvents: [],
+          sourceContractIds: [],
+          diagnostics: [],
+          promptGuidance: [],
+        } as unknown as SceneBlueprint['sceneEventOwnership'],
+      },
+    ]);
+
+    expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
   it('merges duplicate public aftermath scenes before route validation', () => {
     const bp = blueprint([
       scene('scene-arrival', 'The protagonist arrives at the airport with two bags.', ['scene-public-a']),

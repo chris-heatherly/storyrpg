@@ -422,6 +422,11 @@
     },
     {
       "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic flag-gated pass reviewing 1 quality-flagged scene(s)"
+    },
+    {
+      "type": "debug",
       "phase": "content",
       "message": "Episode content complete"
     },

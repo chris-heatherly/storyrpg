@@ -140,6 +140,8 @@ import {
   refreshAnalysisFromTreatmentDocument,
   refreshBriefSeasonPlanFromAnalysis,
 } from './treatmentRefresh';
+import { rebuildTreatmentSeasonScenePlan } from './seasonScenePlanBuilder';
+import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
 import { SeasonCanon } from './seasonCanon';
 import { renderSourceCanonPrompt } from '../utils/sourceCanonPrompt';
 import { createRunState, type PipelineRunState } from './runState';
@@ -214,6 +216,7 @@ import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
 import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
 import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phases/ContentGenerationPhase';
 import { AssemblyPhase } from './phases/AssemblyPhase';
+import { bindStoryMediaAssets, rethrowAsImagePhaseFailure } from './mediaBinding';
 import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
 import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
 import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
@@ -224,6 +227,7 @@ import {
   ensureDirectory,
   savePipelineOutputs,
   savePipelineErrorLog,
+  saveLlmLedgerSidecar,
   saveFinalStoryContractFailure,
   savePartialStory,
   appendFailedRunLedger,
@@ -691,6 +695,11 @@ export class FullStoryPipeline {
   // try scope that declares outputDirectory) can still write the error log +
   // a 'failed' quality-ledger row on abort.
   private _currentOutputDirectory?: string;
+
+  /** Output directory for the in-flight run (worker log finalization, resume). */
+  getCurrentOutputDirectory(): string | undefined {
+    return this._currentOutputDirectory;
+  }
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
@@ -2905,7 +2914,11 @@ export class FullStoryPipeline {
       // === PHASE 3.5: BRANCH ANALYSIS ===
       this.emit({ type: 'phase_start', phase: 'branch_analysis', message: 'Phase 3.5: Analyzing branch structure' });
       this.requirePhases('branch_analysis', ['episode_architecture']);
-      const branchAnalysis = await this.measurePhase('branch_analysis', () => this.runBranchAnalysis(brief, episodeBlueprint));
+      // Capture a definitely-assigned const for the closure: episodeBlueprint is a
+      // `let` reassigned by the SceneConstructionGate architecture retry below, which
+      // invalidates TS narrowing inside callbacks.
+      const architectureBlueprint = episodeBlueprint;
+      const branchAnalysis = await this.measurePhase('branch_analysis', () => this.runBranchAnalysis(brief, architectureBlueprint));
       this.markPhaseComplete('branch_analysis');
       if (branchAnalysis) {
         this.addCheckpoint('Branch Analysis', branchAnalysis, false);
@@ -2974,26 +2987,32 @@ export class FullStoryPipeline {
         choiceSets?: ChoiceSet[];
         encounters?: Array<[string, EncounterStructure]>;
       }>(resumeCheckpoint, 'scene_content');
-      const contentGenerationResult: {
+      let contentGenerationResult: {
         sceneContents: SceneContent[];
         choiceSets: ChoiceSet[];
         encounters: Map<string, EncounterStructure>;
-      } = resumedSceneContent
-        ? {
-            sceneContents: resumedSceneContent.sceneContents || [],
-            choiceSets: resumedSceneContent.choiceSets || [],
-            encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
-          }
-        : await this.measurePhase(
-            'content_generation',
-            () => this.runContentGeneration(
-              brief,
-              worldBible,
-              characterBible,
-              episodeBlueprint,
-              branchAnalysis || undefined
-            )
-          );
+      };
+      if (resumedSceneContent) {
+        contentGenerationResult = {
+          sceneContents: resumedSceneContent.sceneContents || [],
+          choiceSets: resumedSceneContent.choiceSets || [],
+          encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
+        };
+      } else {
+        const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
+          brief,
+          worldBible,
+          characterBible,
+          blueprint: episodeBlueprint,
+          branchAnalysis: branchAnalysis || undefined,
+          phaseLabel: 'content_generation',
+          onArchitectureRetry: async (retryBlueprint) => {
+            this.addCheckpoint('Episode Blueprint', retryBlueprint, true);
+          },
+        });
+        episodeBlueprint = contentOutcome.blueprint;
+        contentGenerationResult = contentOutcome.content;
+      }
       const { sceneContents } = contentGenerationResult;
       ({ choiceSets, encounters } = contentGenerationResult);
       this.markPhaseComplete('content_generation');
@@ -3261,7 +3280,7 @@ export class FullStoryPipeline {
         encounters,
       );
 
-      // === PHASE 5.5: IMAGE GENERATION (single-episode mode) ===
+      // === PHASE 5.5: RUN SETUP (output directory, asset registry, branch repair) ===
       await this.checkCancellation();
       // Create output directory EARLY so images are saved to the right location
       // (outputDirectory itself is hoisted above the try for the catch block)
@@ -3339,6 +3358,82 @@ export class FullStoryPipeline {
           choiceSets,
           residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
         });
+      } catch (setupError) {
+        await rethrowAsImagePhaseFailure(setupError, {
+          isLlmQuotaFailure: (err) => this.isLlmQuotaFailure(err),
+          emit: this.emit.bind(this),
+          outputDirectory,
+        });
+      }
+
+      // === PHASE 6: TEXT ASSEMBLY (contract-first: runs BEFORE media spend) ===
+      // Extracted to phases/AssemblyPhase.ts: assembly + registry asset merge,
+      // structural/craft auto-fix, template resolution, and the deterministic
+      // flag-chronology/quote-recall scans (which escalate onto qaReport in
+      // place). The media completeness pass (image gate, asset HTTP checks,
+      // imagesStatus stamp) runs after media generation + binding below.
+      story = await this.assemblyPhase().runTextAssembly(
+        {
+          brief, worldBible, characterBible, episodeBlueprint, sceneContents,
+          choiceSets, encounters, outputDirectory, qaReport,
+        },
+        {
+          config: this.config,
+          emit: this.emit.bind(this),
+          addCheckpoint: this.addCheckpoint.bind(this),
+        }
+      );
+      await this.writeArtifactMemory({
+        artifactKind: 'story-json',
+        storyId: brief.story.title,
+        episodeNumber: brief.episode.number,
+        lifecycle: 'assembly',
+        payload: story,
+        projection: {
+          title: `${story.title || brief.story.title} story JSON`,
+          summary: `Assembled story JSON with ${story.episodes?.length || 0} episode(s).`,
+          metrics: {
+            episodeCount: story.episodes?.length || 0,
+            npcCount: story.npcs?.length || 0,
+          },
+        },
+      });
+
+      finalStoryContractReport = await this.enforceFinalStoryContract({
+        story,
+        brief,
+        requestedEpisodeNumbers: [brief.episode.number],
+        qaReport,
+        bestPracticesReport,
+        phase: 'final_story_contract',
+        validationScope: {
+          mode: 'generated-slice',
+          requestedEpisodeNumbers: [brief.episode.number],
+          generatedEpisodeNumbers: story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? [brief.episode.number],
+          generatedThroughEpisode: brief.episode.number,
+        },
+      });
+      await this.qualityCouncil?.runRoutePlaytest({
+        brief,
+        story,
+        episodeBlueprint,
+        choiceSets,
+        finalStoryContractReport,
+        notes: 'Single-episode route playtest after final story contract validation.',
+      });
+      await this.qualityCouncil?.runFinal({
+        brief,
+        story,
+        qaReport,
+        bestPracticesReport,
+        finalStoryContractReport,
+        notes: 'Single-episode final council audit before saving.',
+      });
+      this.enforceQualityCouncilStrictMode('quality_council_final');
+
+      // === PHASE 6.5: IMAGE GENERATION (single-episode mode; after the text contract passed) ===
+      await this.checkCancellation();
+      try {
         // Set image service output directory to story's images folder
         if (this.config.imageGen?.enabled) {
           this.requirePhases('images', ['content_generation']);
@@ -3486,48 +3581,14 @@ export class FullStoryPipeline {
         }
 
         this.seedAssetRegistryFromResults(brief, sceneContents, encounters, imageResults, encounterImageResults);
-        await saveEarlyDiagnostic(outputDirectory, '08-registry-state.json', this.assetRegistry.toSnapshot());
+        await saveEarlyDiagnostic(outputDirectory as string, '08-registry-state.json', this.assetRegistry.toSnapshot());
       } catch (imgError) {
         // Fail fast on provider quota exhaustion to avoid silently degraded outputs.
-        if (this.isLlmQuotaFailure(imgError)) {
-          const quotaMsg = imgError instanceof Error ? imgError.message : String(imgError);
-          this.emit({ type: 'error', phase: 'images', message: `Image generation stopped: ${quotaMsg}` });
-          throw new PipelineError(`Image generation stopped due to LLM quota exhaustion: ${quotaMsg}`, 'images', {
-            agent: 'ImageAgentTeam',
-            context: { mode: 'single-episode' },
-            originalError: imgError instanceof Error ? imgError : undefined,
-          });
-        }
-        if (imgError instanceof PipelineError) {
-          throw imgError;
-        }
-        const imgErrorMsg = imgError instanceof Error ? imgError.message : String(imgError);
-        console.error(`[Pipeline] Image generation failed: ${imgErrorMsg}`);
-        this.emit({
-          type: 'error',
-          phase: 'images',
-          message: `Image generation failed: ${imgErrorMsg}`,
+        await rethrowAsImagePhaseFailure(imgError, {
+          isLlmQuotaFailure: (err) => this.isLlmQuotaFailure(err),
+          emit: this.emit.bind(this),
+          outputDirectory,
         });
-        if (outputDirectory) {
-          try {
-            await savePipelineErrorLog(outputDirectory, [{
-              timestamp: new Date().toISOString(),
-              phase: 'images',
-              message: imgErrorMsg,
-            }]);
-          } catch { /* best-effort save */ }
-        }
-        throw new PipelineError(
-          `Image generation failed: ${imgErrorMsg}`,
-          'images',
-          {
-            context: {
-              outputDirectory,
-              failureKind: 'image_generation',
-            },
-            originalError: imgError instanceof Error ? imgError : undefined,
-          }
-        );
       }
 
       // === PHASE 5.7: VIDEO GENERATION (optional) ===
@@ -3605,71 +3666,27 @@ export class FullStoryPipeline {
         storyCoverUrl = await this.generateStoryCoverArt(brief, characterBible, worldBible, outputDirectory);
       }
 
-      // === PHASE 6: ASSEMBLY ===
-      // Extracted to phases/AssemblyPhase.ts (pure move): assembly + registry
-      // asset merge, structural/craft auto-fix, template resolution, the
-      // completeness gate (registry coverage + missing-image walk), asset
-      // HTTP verification, and the deterministic flag-chronology/quote-recall
-      // scans (which escalate onto qaReport in place).
-      story = await this.assemblyPhase().run(
-        {
-          brief, worldBible, characterBible, episodeBlueprint, sceneContents,
-          choiceSets, encounters, imageResults, encounterImageResults,
-          storyCoverUrl, videoResults, outputDirectory, qaReport,
-        },
+      // === MEDIA BINDING + COMPLETENESS (post-media pass) ===
+      // Bind the just-generated media into the contract-passed story WITHOUT
+      // re-assembling from sceneContents (which would discard the contract's
+      // in-place repairs), then run the media completeness gate, asset HTTP
+      // verification, and imagesStatus stamp (phases/AssemblyPhase.ts).
+      story = bindStoryMediaAssets(story, {
+        assetRegistry: this.assetRegistry,
+        storyCoverUrl,
+        applyCoverToEpisodes: true,
+        videoResults,
+        imageAgentTeam: this.imageAgentTeam,
+      });
+      story = await this.assemblyPhase().runMediaCompleteness(
+        story,
+        { outputDirectory },
         {
           config: this.config,
           emit: this.emit.bind(this),
           addCheckpoint: this.addCheckpoint.bind(this),
         }
       );
-      await this.writeArtifactMemory({
-        artifactKind: 'story-json',
-        storyId: brief.story.title,
-        episodeNumber: brief.episode.number,
-        lifecycle: 'assembly',
-        payload: story,
-        projection: {
-          title: `${story.title || brief.story.title} story JSON`,
-          summary: `Assembled story JSON with ${story.episodes?.length || 0} episode(s).`,
-          metrics: {
-            episodeCount: story.episodes?.length || 0,
-            npcCount: story.npcs?.length || 0,
-          },
-        },
-      });
-
-      finalStoryContractReport = await this.enforceFinalStoryContract({
-        story,
-        brief,
-        requestedEpisodeNumbers: [brief.episode.number],
-        qaReport,
-        bestPracticesReport,
-        phase: 'final_story_contract',
-        validationScope: {
-          mode: 'generated-slice',
-          requestedEpisodeNumbers: [brief.episode.number],
-          generatedEpisodeNumbers: story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? [brief.episode.number],
-          generatedThroughEpisode: brief.episode.number,
-        },
-      });
-      await this.qualityCouncil?.runRoutePlaytest({
-        brief,
-        story,
-        episodeBlueprint,
-        choiceSets,
-        finalStoryContractReport,
-        notes: 'Single-episode route playtest after final story contract validation.',
-      });
-      await this.qualityCouncil?.runFinal({
-        brief,
-        story,
-        qaReport,
-        bestPracticesReport,
-        finalStoryContractReport,
-        notes: 'Single-episode final council audit before saving.',
-      });
-      this.enforceQualityCouncilStrictMode('quality_council_final');
 
       this.addCheckpoint('Final Story', story, false);
 
@@ -4096,6 +4113,63 @@ export class FullStoryPipeline {
       });
     }
     return result;
+  }
+
+  /**
+   * Content generation with ONE bounded architecture re-run when the
+   * SceneConstructionGate blocks (bite-me 2026-07-07: the gate's own error says
+   * "Re-run architecture…" but nothing ever did — a preflight hit hard-aborted
+   * the run at ~4% and discarded a healthy analysis + season plan). On a gate
+   * error: re-run StoryArchitect once (the LLM elaboration varies, and the
+   * question-shaped-turn / cue-detection fixes change the derived contracts),
+   * refresh branch analysis for the new blueprint, and retry content generation
+   * once. A second gate hit rethrows — a genuine chronology defect still fails
+   * fast before prose is written. Kill-switch:
+   * GATE_SCENE_CONSTRUCTION_ARCH_RETRY=0 restores the immediate hard abort.
+   */
+  private async runContentGenerationWithArchitectureRetry(params: {
+    brief: FullCreativeBrief;
+    worldBible: WorldBible;
+    characterBible: CharacterBible;
+    blueprint: EpisodeBlueprint;
+    branchAnalysis?: BranchAnalysis;
+    outputDirectory?: string;
+    episodeNumber?: number;
+    phaseLabel: string;
+    onArchitectureRetry?: (blueprint: EpisodeBlueprint, branchAnalysis: BranchAnalysis | undefined) => Promise<void>;
+  }): Promise<{
+    content: { sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> };
+    blueprint: EpisodeBlueprint;
+    branchAnalysis?: BranchAnalysis;
+  }> {
+    const { brief, worldBible, characterBible, outputDirectory, episodeNumber, phaseLabel } = params;
+    try {
+      const content = await this.measurePhase(phaseLabel, () => this.runContentGeneration(
+        brief, worldBible, characterBible, params.blueprint, params.branchAnalysis, outputDirectory, episodeNumber,
+      ));
+      return { content, blueprint: params.blueprint, branchAnalysis: params.branchAnalysis };
+    } catch (error) {
+      const isGateAbort = error instanceof PipelineError && error.agent === 'SceneConstructionGate';
+      if (!isGateAbort || !isGateEnabled('GATE_SCENE_CONSTRUCTION_ARCH_RETRY')) throw error;
+      this.emit({
+        type: 'regeneration_triggered',
+        phase: 'architecture',
+        message: `SceneConstructionGate blocked content generation; re-running episode architecture once before aborting: ${(error as Error).message.slice(0, 400)}`,
+      });
+      const blueprint = await this.measurePhase(
+        `${phaseLabel}_architecture_retry`,
+        () => this.runEpisodeArchitecture(brief, worldBible, characterBible),
+      );
+      const branchAnalysis = (await this.measurePhase(
+        `${phaseLabel}_branch_analysis_retry`,
+        () => this.runBranchAnalysis(brief, blueprint),
+      )) || undefined;
+      await params.onArchitectureRetry?.(blueprint, branchAnalysis);
+      const content = await this.measurePhase(`${phaseLabel}_retry`, () => this.runContentGeneration(
+        brief, worldBible, characterBible, blueprint, branchAnalysis, outputDirectory, episodeNumber,
+      ));
+      return { content, blueprint, branchAnalysis };
+    }
   }
 
   // Extracted to phases/ContentGenerationPhase.ts (pure move). Thin delegating
@@ -4771,6 +4845,12 @@ export class FullStoryPipeline {
     BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
+    if (baseBrief.seasonPlan && isSceneFirstPlanningEnabled()) {
+      baseBrief = {
+        ...baseBrief,
+        seasonPlan: rebuildTreatmentSeasonScenePlan(baseBrief.seasonPlan),
+      };
+    }
     baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
     // Arm treatmentSourced: the final-contract fidelity path reads the treatment
     // analysis from `brief.multiEpisode.sourceAnalysis`, but nothing ever populated it
@@ -5598,6 +5678,8 @@ export class FullStoryPipeline {
           // F4: this episode-failure path returns early (never reaches the
           // terminal catch), so record the failed run in the quality ledger here.
           await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length);
+          // P3: persist per-call usage telemetry on this early-return failure path.
+          await saveLlmLedgerSidecar(outputDirectory, this.telemetry.getLlmLedger());
         } catch (_logErr) { /* non-fatal */ }
 
         return {
@@ -5616,64 +5698,12 @@ export class FullStoryPipeline {
         message: `Story authoring complete for ${episodes.length} episode(s).`,
       });
 
-      if (this.config.imageGen?.enabled) {
-        await this.checkCancellation();
-        this.emit({
-          type: 'phase_start',
-          phase: 'post_story_media',
-          message: 'Story agents complete; starting image and optional media agents...',
-        });
-        this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
-        await this.imageWorkerQueue.run(() =>
-          this.measurePhase('multi_master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, baseBrief))
-        );
+      // 5. Assemble the season TEXT story (contract-first: the treatment
+      // fidelity + final story contract gates run on it BEFORE any image/
+      // media spend; media is generated and bound afterwards).
+      const storyCoverImage =
+        episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage as unknown as string : '';
 
-        const replaceEpisode = (episode: Episode): void => {
-          const idx = episodes.findIndex((candidate) => candidate.number === episode.number);
-          if (idx >= 0) {
-            episodes[idx] = episode;
-          } else {
-            episodes.push(episode);
-          }
-        };
-
-        const mediaArtifacts = [...authoredEpisodeArtifacts].sort((a, b) => (a.episode.number || 0) - (b.episode.number || 0));
-        for (const authored of mediaArtifacts) {
-          await this.checkCancellation();
-          const mediaResult = await this.generateMediaForAuthoredEpisode({
-            ...authored,
-            worldBible,
-            characterBible,
-            outputDirectory,
-          });
-          replaceEpisode(mediaResult.episode);
-          if (mediaResult.encounterImageDiagnostics?.length) {
-            allEncounterImageDiagnostics.push(...mediaResult.encounterImageDiagnostics);
-          }
-          if (mediaResult.storyletFailures?.length) {
-            allStoryletFailures.push(...mediaResult.storyletFailures);
-            const failMsg = mediaResult.storyletFailures.join('; ');
-            console.warn(`[Pipeline] Episode ${mediaResult.episode.number}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
-            this.emit({ type: 'warning', phase: `images_ep_${mediaResult.episode.number}`, message: `Storylet image gaps (continuing): ${failMsg}` });
-          }
-        }
-        episodes.sort((a, b) => (a.number || 0) - (b.number || 0));
-        this.emit({
-          type: 'phase_complete',
-          phase: 'post_story_media',
-          message: `Image/media pass complete for ${mediaArtifacts.length} newly authored episode(s).`,
-        });
-      }
-
-      // 5. Generate cover art + Assemble final story
-      let multiCoverUrl: string | undefined;
-      if (this.config.imageGen?.enabled) {
-        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible, outputDirectory);
-      }
-
-      const storyCoverImage = multiCoverUrl
-        || (episodes.length > 0 && episodes[0].coverImage ? episodes[0].coverImage as unknown as string : '');
-        
       let story: Story = {
         id: idSlugify(baseBrief.story.title) || 'untitled-story',
         title: baseBrief.story.title,
@@ -5719,13 +5749,6 @@ export class FullStoryPipeline {
           },
         });
       }
-      if (this.config.generation?.assetGenerationMode === 'story-only') {
-        story.imagesStatus = 'pending';
-        await this.saveDraftImageManifest(outputDirectory, story);
-      } else if (this.config.imageGen?.enabled) {
-        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
-      }
-
       // STRUCTURAL AUTO-FIX (parity with the single-episode path, which runs
       // this before its contract): repair navigation/structure issues on the
       // merged season — including dangling choice nextBeatId references — so the
@@ -5796,6 +5819,66 @@ export class FullStoryPipeline {
       });
       this.enforceQualityCouncilStrictMode('quality_council_final');
 
+      // 6. Generate media (after the season text contract passed) and bind it
+      // into the contract-passed story via the asset registry — NOT by
+      // re-assembling episodes, which would discard the contract's in-place
+      // text repairs.
+      if (this.config.imageGen?.enabled) {
+        await this.checkCancellation();
+        this.emit({
+          type: 'phase_start',
+          phase: 'post_story_media',
+          message: 'Story agents complete; starting image and optional media agents...',
+        });
+        this.emit({ type: 'phase_start', phase: 'master_images', message: 'Generating master reference visuals...' });
+        await this.imageWorkerQueue.run(() =>
+          this.measurePhase('multi_master_image_generation', () => this.runMasterImageGeneration(characterBible, worldBible, baseBrief))
+        );
+
+        const mediaArtifacts = [...authoredEpisodeArtifacts].sort((a, b) => (a.episode.number || 0) - (b.episode.number || 0));
+        for (const authored of mediaArtifacts) {
+          await this.checkCancellation();
+          const mediaResult = await this.generateMediaForAuthoredEpisode({
+            ...authored,
+            worldBible,
+            characterBible,
+            outputDirectory,
+          });
+          if (mediaResult.encounterImageDiagnostics?.length) {
+            allEncounterImageDiagnostics.push(...mediaResult.encounterImageDiagnostics);
+          }
+          if (mediaResult.storyletFailures?.length) {
+            allStoryletFailures.push(...mediaResult.storyletFailures);
+            const failMsg = mediaResult.storyletFailures.join('; ');
+            console.warn(`[Pipeline] Episode ${mediaResult.episode.number}: Storylet image gaps (non-fatal, continuing): ${failMsg}`);
+            this.emit({ type: 'warning', phase: `images_ep_${mediaResult.episode.number}`, message: `Storylet image gaps (continuing): ${failMsg}` });
+          }
+        }
+        this.emit({
+          type: 'phase_complete',
+          phase: 'post_story_media',
+          message: `Image/media pass complete for ${mediaArtifacts.length} newly authored episode(s).`,
+        });
+      }
+
+      // Cover art, then overlay every registry-tracked asset + covers +
+      // NPC portraits onto the contract-passed story (late binding).
+      let multiCoverUrl: string | undefined;
+      if (this.config.imageGen?.enabled) {
+        multiCoverUrl = await this.generateStoryCoverArt(baseBrief, characterBible, worldBible, outputDirectory);
+      }
+      story = bindStoryMediaAssets(story, {
+        assetRegistry: this.assetRegistry,
+        storyCoverUrl: multiCoverUrl,
+        imageAgentTeam: this.imageAgentTeam,
+      });
+      if (this.config.generation?.assetGenerationMode === 'story-only') {
+        story.imagesStatus = 'pending';
+        await this.saveDraftImageManifest(outputDirectory, story);
+      } else if (this.config.imageGen?.enabled) {
+        story.imagesStatus = this.buildImageManifestFromStory(story).imagesStatus;
+      }
+
       this.addCheckpoint('Final Story', story, false);
       await this.saveResumeUnit(
         outputDirectory,
@@ -5804,7 +5887,7 @@ export class FullStoryPipeline {
         story,
       );
 
-      // 6. Save results (using outputDirectory created earlier)
+      // 7. Save results (using outputDirectory created earlier)
       // Prepare visual planning outputs for saving
       const visualPlanningOutputs = this.getCollectedVisualPlanningForSave();
       
@@ -5942,6 +6025,10 @@ export class FullStoryPipeline {
             stack: error instanceof Error ? error.stack : undefined,
             ...(details ? { details } : {}),
           }]);
+          // P3: a FAILED run must persist its per-call usage telemetry too —
+          // the truncation-abort class is diagnosed from token evidence, and
+          // the ledger previously only shipped with successful runs.
+          await saveLlmLedgerSidecar(this._currentOutputDirectory, this.telemetry.getLlmLedger());
           // B3a: record the failure kind for cross-run triage. PipelineError carries
           // the phase (failureKind) + agent/validator (validatorId).
           await appendFailedRunLedger(this._currentOutputDirectory, 1, {
@@ -6622,6 +6709,10 @@ export class FullStoryPipeline {
       await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, blueprint);
       await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, blueprint);
       const branchPath = this.episodeCheckpointFile(i, 'branch-analysis');
+      // Capture a definitely-assigned const for the closure: `blueprint` is a `let`
+      // reassigned by the SceneConstructionGate architecture retry below, which
+      // invalidates TS narrowing inside callbacks.
+      const architectureBlueprint = blueprint;
       const branchAnalysis = (canHydrateEpisodeResume
         ? this.loadResumeUnit<BranchAnalysis | null>(
           outputDirectory,
@@ -6629,20 +6720,25 @@ export class FullStoryPipeline {
           branchPath,
         )
         : undefined)
-        ?? await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, blueprint));
+        ?? await this.measurePhase(`episode_${i}_branch_analysis`, () => this.runBranchAnalysis(episodeBrief, architectureBlueprint));
       await this.saveResumeUnit(outputDirectory, `branch_analysis:episode-${i}`, branchPath, branchAnalysis);
-      const { sceneContents, choiceSets, encounters } = await this.measurePhase(
-        `episode_${i}_content`,
-        () => this.runContentGeneration(
-          episodeBrief,
-          worldBible,
-          characterBible,
-          blueprint,
-          branchAnalysis || undefined,
-          outputDirectory,
-          i
-        )
-      );
+      const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
+        brief: episodeBrief,
+        worldBible,
+        characterBible,
+        blueprint,
+        branchAnalysis: branchAnalysis || undefined,
+        outputDirectory,
+        episodeNumber: i,
+        phaseLabel: `episode_${i}_content`,
+        onArchitectureRetry: async (retryBlueprint, retryBranchAnalysis) => {
+          await this.saveResumeUnit(outputDirectory, `episode_blueprint:episode-${i}`, blueprintPath, retryBlueprint);
+          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-blueprint.json`, retryBlueprint);
+          await this.saveResumeUnit(outputDirectory, `branch_analysis:episode-${i}`, branchPath, retryBranchAnalysis ?? null);
+        },
+      });
+      blueprint = contentOutcome.blueprint;
+      const { sceneContents, choiceSets, encounters } = contentOutcome.content;
       await this.qualityCouncil?.runChoice({
         brief: episodeBrief,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
@@ -7266,6 +7362,10 @@ export class FullStoryPipeline {
           message: msg,
           stack,
           episodeNumber: i,
+          // P3: persist the structured failure context (quarantined units,
+          // encounter attempt summaries, phase errors) — the top-line message
+          // alone was not enough to diagnose the 2026-07-06 truncation abort.
+          ...(epError instanceof PipelineError && epError.context ? { details: epError.context } : {}),
         }]);
       } catch {
         // Keep the episode failure as the primary signal.

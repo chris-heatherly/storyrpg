@@ -42,6 +42,7 @@ import {
   type OwnershipPlannedSceneLite,
 } from './continuityRepair';
 import { isGateEnabled } from '../remediation/gateDefaults';
+import { sceneCriticFlags } from '../remediation/sceneCriticFlags';
 import { rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
@@ -78,15 +79,25 @@ export class SceneCriticContinuity {
     characterBible: CharacterBible,
   ): Promise<void> {
     const cfg = this.deps.config.sceneCritic;
-    if (!cfg?.enabled || !this.deps.sceneCritic) return;
     if (!sceneContents.length) return;
 
-    const maxScenes = Math.max(1, cfg.maxScenesPerEpisode ?? 3);
-    const candidates = [...sceneContents];
+    // R8 (authoring economics): with sceneCritic NOT configured, the flag-gated
+    // pass still critiques scenes that showed a generation-time quality signal
+    // (failed incremental POV/voice validation, realization retry) — targeted
+    // spend, same 3-scene cap. The configured pass supersedes it when enabled.
+    const configuredPass = Boolean(cfg?.enabled && this.deps.sceneCritic);
+    const flagGatedPass = !configuredPass && isGateEnabled('GATE_SCENE_CRITIC_ON_FLAG');
+    if (!configuredPass && !flagGatedPass) return;
 
-    // If a voiceScoreThreshold is configured, prefer scenes with a low score.
-    if (typeof cfg.voiceScoreThreshold === 'number') {
-      const scored = candidates
+    const maxScenes = Math.max(1, cfg?.maxScenesPerEpisode ?? 3);
+    let candidates = [...sceneContents];
+
+    if (flagGatedPass) {
+      candidates = candidates.filter(sc => sceneCriticFlags(sc).length > 0);
+      if (candidates.length === 0) return;
+    } else if (typeof cfg?.voiceScoreThreshold === 'number') {
+      // If a voiceScoreThreshold is configured, prefer scenes with a low score.
+      candidates = candidates
         .map(sc => ({
           sc,
           score:
@@ -97,17 +108,29 @@ export class SceneCriticContinuity {
         .filter(entry => entry.score <= cfg.voiceScoreThreshold!)
         .sort((a, b) => a.score - b.score)
         .map(entry => entry.sc);
-      candidates.length = 0;
-      candidates.push(...scored);
     }
 
     const targets = candidates.slice(0, maxScenes);
     if (targets.length === 0) return;
 
+    let critic: SceneCritic;
+    try {
+      critic = this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
+    } catch (err) {
+      this.deps.emit({
+        type: 'warning',
+        phase: 'scene_critic',
+        message: `Flag-gated SceneCritic pass skipped: could not construct SceneCritic — ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+
     this.deps.emit({
       type: 'debug',
       phase: 'scene_critic',
-      message: `SceneCritic pass reviewing ${targets.length} scene(s)`,
+      message: flagGatedPass
+        ? `SceneCritic flag-gated pass reviewing ${targets.length} quality-flagged scene(s)`
+        : `SceneCritic pass reviewing ${targets.length} scene(s)`,
     });
 
     for (const scene of targets) {
@@ -117,7 +140,7 @@ export class SceneCriticContinuity {
         // SceneContent at acceptance) — the season-final validators block on
         // those exact moments. Tell the critic up front…
         const contractSection = buildRequiredBeatsSection(scene);
-        const critique = await this.deps.sceneCritic.execute({
+        const critique = await critic.execute({
           scene,
           characterBible,
           ...(contractSection

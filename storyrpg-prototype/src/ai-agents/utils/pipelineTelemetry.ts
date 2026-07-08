@@ -15,6 +15,11 @@ export interface ProviderCallMetric {
     inputTokens: number;
     outputTokens: number;
   };
+  /**
+   * Output-token cap the request was actually sent with (post
+   * structuredMaxTokens clamp). Enables near-cap leading indicators (P3).
+   */
+  requestedMaxTokens?: number;
 }
 
 export interface PhaseMetric {
@@ -51,6 +56,13 @@ export interface LlmLedgerAgentRow {
    * output that looked like a successful parse.
    */
   truncatedResponses: number;
+  /**
+   * Calls whose reported output landed at ≥85% of the request's actual
+   * output-token cap (P3 leading indicator). A rising count here is the
+   * early warning for the truncation-abort class — re-budget the schema or
+   * shrink the ask before it starts failing runs.
+   */
+  nearCapCalls: number;
 }
 
 /**
@@ -72,9 +84,23 @@ export interface LlmLedger {
     usageReported: number;
     /** Total lossy truncation recoveries across all agents (landmine L4). */
     truncatedResponses: number;
+    /** Total calls at ≥85% of their actual output cap (P3 leading indicator). */
+    nearCapCalls: number;
   };
   byAgent: LlmLedgerAgentRow[];
   phases: PhaseMetric[];
+}
+
+/** A call counts as near-cap when reported output reaches 85% of its actual request cap. */
+export const NEAR_CAP_RATIO = 0.85;
+
+function isNearCap(m: ProviderCallMetric): boolean {
+  return (
+    typeof m.requestedMaxTokens === 'number' &&
+    m.requestedMaxTokens > 0 &&
+    typeof m.usage?.outputTokens === 'number' &&
+    m.usage.outputTokens >= m.requestedMaxTokens * NEAR_CAP_RATIO
+  );
 }
 
 export class PipelineTelemetry {
@@ -186,6 +212,7 @@ export class PipelineTelemetry {
           totalOutputTokens: 0,
           usageReported: 0,
           truncatedResponses: 0,
+          nearCapCalls: 0,
         };
         byAgent.set(key, row);
       }
@@ -199,6 +226,7 @@ export class PipelineTelemetry {
         row.totalOutputTokens += m.usage.outputTokens;
         row.usageReported += 1;
       }
+      if (isNearCap(m)) row.nearCapCalls += 1;
     }
 
     for (const row of byAgent.values()) {
@@ -224,6 +252,7 @@ export class PipelineTelemetry {
       ),
       usageReported: this.providerCallMetrics.filter((m) => m.usage).length,
       truncatedResponses: [...this.truncationCounts.values()].reduce((s, n) => s + n, 0),
+      nearCapCalls: this.providerCallMetrics.filter(isNearCap).length,
     };
     totals.failures = totals.calls - totals.successes;
     totals.avgDurationMs = Math.round(totals.totalDurationMs / totals.calls);
@@ -271,6 +300,8 @@ export function buildLlmCallObserver(
       error: observation.error,
       // Forward provider-reported token usage so the ledger can total tokens.
       usage: observation.usage,
+      // Forward the actual request cap so the ledger can flag near-cap calls.
+      requestedMaxTokens: observation.requestedMaxTokens,
     });
     if (observation.usage && onUsage) {
       onUsage((observation.usage.inputTokens || 0) + (observation.usage.outputTokens || 0));

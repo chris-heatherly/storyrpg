@@ -847,6 +847,36 @@ describe('sceneConstructionProfile compiler', () => {
     expect(scene.nonCopyableContext?.map((item) => item.id)).toContain('demoted-required-beat:project-logline');
   });
 
+  it('keeps playable authored episode turns required instead of demoting them to context', () => {
+    const scene: SceneConstructionSceneLike = {
+      id: 's1-2',
+      episodeNumber: 1,
+      order: 2,
+      turnContract: {
+        turnId: 'explore-turn',
+        source: 'planner',
+        centralTurn: 'She explores the streets of Bucharest.',
+        beforeState: 'She has unpacked and is restless in the apartment.',
+        turnEvent: 'She explores the streets of Bucharest.',
+        afterState: 'The city feels alive and unfamiliar.',
+        handoff: 'She reaches the bookshop.',
+      },
+      requiredBeats: [
+        {
+          id: 's1-2-rb1',
+          tier: 'authored',
+          sourceTurn: 'She explores the streets of Bucharest.',
+          mustDepict: 'She explores the streets of Bucharest.',
+        },
+      ],
+    };
+
+    const result = applySceneConstructionProfilesToScenes([scene], { episodeNumber: 1 });
+
+    expect(result.applications[0].drainedRequiredBeatIds).not.toContain('s1-2-rb1');
+    expect(scene.requiredBeats?.map((beat) => beat.id)).toContain('s1-2-rb1');
+  });
+
   it('drains non-opening cold-open required beats from resumed blueprints', () => {
     const scenes: SceneConstructionSceneLike[] = [
       {
@@ -982,5 +1012,91 @@ describe('duplicate-text obligation flooding (bite-me 2026-07-03T18-26-54 s1-3 r
     const section = buildSceneConstructionProfileSection(scene as never);
     const mentions = (section.match(/Dusk Club/gi) ?? []).length;
     expect(mentions).toBeLessThanOrEqual(1);
+  });
+
+  it('fuzzy-merges near-duplicate arrival suitcase atoms and demotes opening wound atoms (bite-me 2026-07-08 s1-1)', () => {
+    const profile = compileSceneConstructionProfile({
+      id: 's1-1',
+      episodeNumber: 1,
+      kind: 'standard',
+      coldOpenProfile: {
+        id: 'cold-open:1:s1-1',
+        episodeNumber: 1,
+        sceneId: 's1-1',
+        mode: 'sharp_disruption',
+        archetype: 'in_media_res',
+        storyCircleBeats: ['you'],
+        storyCircleFulfillment: {
+          beats: ['you'],
+          combinedBeats: ['you'],
+          baseline: 'Kylie arrives.',
+          disruption: 'Kylie arrives in Bucharest.',
+          collision: 'She explores the streets of Bucharest',
+          sourceContractIds: [],
+        },
+        activeCastLimit: 2,
+        centralTurn: 'She explores the streets of Bucharest',
+        exitHook: 'The city does not stay merely scenic.',
+        sourceContractIds: [],
+      },
+      turnContract: {
+        turnId: 's1-1-turn',
+        source: 'treatment',
+        centralTurn: 'She explores the streets of Bucharest',
+        turnEvent: 'She explores the streets of Bucharest',
+        beforeState: 'Before.',
+        afterState: 'After.',
+        handoff: 'Handoff.',
+      },
+      requiredBeats: [{
+        id: 's1-1-hook1',
+        tier: 'coldopen',
+        sourceTurn: 'Kylie Marinescu arrives in Bucharest',
+        mustDepict: 'Kylie Marinescu arrives in Bucharest',
+      }, {
+        id: 's1-1-rb2',
+        tier: 'authored',
+        sourceTurn: 'She explores the streets of Bucharest',
+        mustDepict: 'She explores the streets of Bucharest',
+      }],
+      treatmentAtomIds: [
+        's1-1-char-character-char-kylie-marinescu-wound-pressure-5-atom-2',
+        's1-1-ep1-information-movement-3-kylie-arrives-atom-1',
+        's1-1-story-circle-you-part-1-atom-1',
+      ],
+      nonCopyableContext: [
+        {
+          id: 's1-1-char-character-char-kylie-marinescu-wound-pressure-5-atom-2',
+          eventText: "Her grandmother Veronica's unexplained escape from Bucharest also left an unfinished family story.",
+        },
+        {
+          id: 's1-1-ep1-information-movement-3-kylie-arrives-atom-1',
+          eventText: "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+        },
+        {
+          id: 's1-1-story-circle-you-part-1-atom-1',
+          eventText: "Kylie Marinescu arrives in Bucharest with two suitcases, her grandmother's address",
+        },
+      ],
+      authoredTreatmentFields: [{
+        id: 'ep1-information-movement-3',
+        sourceText: "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+        requiredRealization: ['scene_turn', 'final_prose'],
+      }],
+      characterTreatmentContracts: [{
+        id: 'character-char-kylie-marinescu-wound-pressure-5',
+        contractKind: 'wound_pressure',
+        sourceText: 'A publicly cancelled engagement. Her grandmother Veronica left an unfinished family story.',
+        targetSceneIds: ['s1-1'],
+        requiredRealization: ['scene_turn'],
+        blockingLevel: 'structural',
+      }],
+    } as never);
+
+    expect(profile.capacity.hardUnits).toBeLessThanOrEqual(profile.capacity.maxHardUnits);
+    const hardAtoms = profile.obligations.filter(
+      (item) => item.source === 'treatmentAtom' && item.hardUnits >= 1 && item.slot === 'must_stage',
+    );
+    expect(hardAtoms).toHaveLength(0);
   });
 });

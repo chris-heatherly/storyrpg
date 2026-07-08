@@ -6,11 +6,13 @@ import type {
   TreatmentEpisodeGuidance,
   TreatmentSeasonGuidance,
   ProtagonistTreatmentGuidance,
+  NpcTreatmentGuidance,
   WorldLocationTreatmentGuidance,
   WorldLocationTreatmentLocationGuidance,
 } from '../../types/sourceAnalysis';
 import { extractStoryCircleBeatEpisodeAnchors } from './treatmentFingerprint';
 import { parseInformationLedgerGuidance } from './informationLedgerContracts';
+import { flattenAuthoredEpisodeTurns } from './episodeCircleBuilder';
 
 export interface ExtractedTreatment {
   isTreatment: boolean;
@@ -435,7 +437,7 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
           ],
     );
     const liteDerivedEpisodeTurns = highLevelDescription
-      ? splitSentences(highLevelDescription).slice(0, 6)
+      ? flattenAuthoredEpisodeTurns([highLevelDescription])
       : [];
     const resolvedEncounterAnchors = encounterAnchors.length > 0
       ? encounterAnchors
@@ -824,7 +826,7 @@ function parseSeasonPromiseEngineFields(section: string): Partial<TreatmentSeaso
 }
 
 function parseProtagonistGuidance(markdown: string): ProtagonistTreatmentGuidance | undefined {
-  const protagonistSection = getFlexibleHeadingSection(markdown, ['protagonist']);
+  const protagonistSection = getFlexibleHeadingSection(markdown, ['protagonist'], '2,5');
   if (!protagonistSection.trim()) return undefined;
   const guidance: ProtagonistTreatmentGuidance = {
     rawSection: protagonistSection,
@@ -846,6 +848,44 @@ function parseProtagonistGuidance(markdown: string): ProtagonistTreatmentGuidanc
     key !== 'rawSection' && (Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value.trim().length > 0)
   );
   return hasField ? guidance : undefined;
+}
+
+function parseNpcGuidanceBlocks(markdown: string): NpcTreatmentGuidance[] {
+  const section = getFlexibleHeadingSection(markdown, [
+    'major npc briefs',
+    'npc briefs',
+    'major npcs',
+    'supporting characters',
+  ], '2,5');
+  const source = section.trim() || markdown;
+  const blocks = source.split(/^###\s+NPC:\s*/im).slice(1);
+  const out: NpcTreatmentGuidance[] = [];
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const name = (lines[0] || '').replace(/\*\*/g, '').trim();
+    if (!name) continue;
+    const body = lines.slice(1).join('\n');
+    const visualIdentity = getFlexibleBulletValue(body, [
+      'Visual identity',
+      'Visual profile',
+      'Voice / visual notes',
+      'Voice/visual notes',
+      'Visual notes',
+    ]);
+    const guidance: NpcTreatmentGuidance = {
+      name,
+      role: getFlexibleBulletValue(body, ['Role', 'Role in the world']),
+      want: getFlexibleBulletValue(body, ['Want']),
+      leverage: getFlexibleBulletValue(body, ['Leverage']),
+      secretOrContradiction: getFlexibleBulletValue(body, ['Secret or contradiction', 'Secret']),
+      relationshipToProtagonist: getFlexibleBulletValue(body, ['Relationship to protagonist', 'Relationship']),
+      howChoicesCanChangeThem: getFlexibleBulletValue(body, ['How choices can change them', 'How choices change them']),
+      visualIdentity,
+      rawSection: block.trim(),
+    };
+    if (guidance.visualIdentity || guidance.role || guidance.want) out.push(guidance);
+  }
+  return out;
 }
 
 function splitListish(value: string | undefined): string[] {
@@ -1206,6 +1246,7 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
   const seasonPromiseAndDramaticEngine = getFlexibleSection(markdown, ['season promise and dramatic engine', 'season promise']);
   const engineFields = parseSeasonPromiseEngineFields(seasonPromiseAndDramaticEngine);
   const protagonistGuidance = parseProtagonistGuidance(markdown);
+  const npcGuidance = parseNpcGuidanceBlocks(markdown);
   const worldLocationGuidance = parseWorldLocationGuidance(markdown);
   const stakesArchitecture = getFlexibleSection(markdown, ['stakes architecture']);
   const stakesArchitectureGuidance = parseStakesArchitectureGuidance(markdown);
@@ -1224,6 +1265,7 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
     ...topLevelPromiseFields,
     ...engineFields,
     protagonistGuidance,
+    npcGuidance: npcGuidance.length > 0 ? npcGuidance : undefined,
     worldLocationGuidance,
     characterArchitecture: getFlexibleSection(markdown, ['character architecture', 'protagonist brief']),
     stakesArchitecture,
@@ -1253,6 +1295,7 @@ function parseSeasonGuidance(markdown: string): TreatmentSeasonGuidance | undefi
     .filter(([key, value]) => key !== 'rawSectionSummary' && typeof value === 'string' && value.trim().length > 0)
     .map(([key]) => key);
   if (protagonistGuidance) sections.rawSectionSummary.push('protagonistGuidance');
+  if (npcGuidance.length > 0) sections.rawSectionSummary.push('npcGuidance');
   if (worldLocationGuidance) sections.rawSectionSummary.push('worldLocationGuidance');
   if (stakesArchitectureGuidance) sections.rawSectionSummary.push('stakesArchitectureGuidance');
   if (informationLedgerGuidance) sections.rawSectionSummary.push('informationLedgerGuidance');

@@ -108,6 +108,60 @@ function isHardBeat(beat: RequiredBeat): boolean {
   return beat.tier === 'authored' || beat.tier === 'signature' || beat.tier === 'coldopen';
 }
 
+/** Remove authored beats on post-encounter scenes that would regress route-cue order. */
+export function stripRegressiveAuthoredBeats(scenes: PlannedScene[]): number {
+  let stripped = 0;
+  const sorted = [...scenes].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const encounterIndex = sorted.findIndex((scene) => scene.kind === 'encounter');
+  const THREAT_ORDER = eventOrder('threatEncounter');
+
+  const stripEarlyBeats = (scene: PlannedScene) => {
+    const beats = scene.requiredBeats ?? [];
+    const kept = beats.filter((beat) => {
+      if (!isHardBeat(beat)) return true;
+      const text = cleanText(beat.mustDepict || beat.sourceTurn);
+      const cues = detectPrimaryStoryEventCues(text);
+      if (cues.size === 0) return true;
+      const minOrder = Math.min(...[...cues].map((cue) => eventOrder(cue)));
+      if (minOrder >= THREAT_ORDER) return true;
+      stripped += 1;
+      return false;
+    });
+    if (kept.length !== beats.length) scene.requiredBeats = kept;
+  };
+
+  if (encounterIndex >= 0) {
+    for (let i = encounterIndex + 1; i < sorted.length; i += 1) {
+      stripEarlyBeats(sorted[i]);
+    }
+    return stripped;
+  }
+
+  let maxCueOrder = -1;
+  for (const scene of sorted) {
+    const beats = scene.requiredBeats ?? [];
+    const kept = beats.filter((beat) => {
+      if (!isHardBeat(beat)) return true;
+      const text = cleanText(beat.mustDepict || beat.sourceTurn);
+      const cues = detectPrimaryStoryEventCues(text);
+      if (cues.size === 0) return true;
+      const minOrder = Math.min(...[...cues].map((cue) => eventOrder(cue)));
+      if (minOrder < maxCueOrder) {
+        stripped += 1;
+        return false;
+      }
+      return true;
+    });
+    if (kept.length !== beats.length) scene.requiredBeats = kept;
+    for (const beat of kept) {
+      if (!isHardBeat(beat)) continue;
+      const cues = detectPrimaryStoryEventCues(cleanText(beat.mustDepict || beat.sourceTurn));
+      for (const cue of cues) maxCueOrder = Math.max(maxCueOrder, eventOrder(cue));
+    }
+  }
+  return stripped;
+}
+
 type OwnershipSourceText = {
   id: string;
   text: string;
@@ -301,8 +355,9 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
 ): SceneEventOwnershipDiagnostic[] {
   const diagnostics: SceneEventOwnershipDiagnostic[] = [];
   const demoteToAftermath = isGateEnabled('GATE_OWNERSHIP_AFTERMATH_DEMOTION');
+  const encounterIndex = scenes.findIndex((entry) => entry.kind === 'encounter' || entry.isEncounter);
   let previousOwnedEvents: SceneOwnedEvent[] = [];
-  scenes.forEach((scene) => {
+  scenes.forEach((scene, sceneIndex) => {
     const profile = compileSceneEventOwnershipProfile(scene, previousOwnedEvents, options);
     // Deterministic demote-to-aftermath repair (bite-me 2026-07-04: five of
     // twelve Ep1 runs hard-aborted at SceneConstructionGate on duplicate
@@ -335,6 +390,30 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
             severity: 'warning',
             message,
           });
+        }
+      }
+      if (encounterIndex >= 0 && sceneIndex > encounterIndex && previousOwnedEvents.length > 0) {
+        const maxPreviousOrder = Math.max(...previousOwnedEvents.map((event) => eventOrder(event.cue)));
+        const regressed = profile.ownedEvents.filter(
+          (event) => eventOrder(event.cue) < maxPreviousOrder,
+        );
+        if (regressed.length > 0) {
+          const regressedKeys = new Set(regressed.map((event) => event.key));
+          profile.ownedEvents = profile.ownedEvents.filter((event) => !regressedKeys.has(event.key));
+          profile.outgoingResidue = profile.outgoingResidue.filter((event) => !regressedKeys.has(event.key));
+          profile.diagnostics = profile.diagnostics.filter(
+            (message) => !regressed.some((event) => message.includes(`also owns ${event.cue}`)),
+          );
+          for (const event of regressed) {
+            const message = `Demoted regressive ownership of ${event.cue} on scene "${profile.sceneId}" to aftermath; route chronology already advanced past order ${maxPreviousOrder}.`;
+            console.info(`[SceneEventOwnership] ${message}`);
+            diagnostics.push({
+              sceneId: scene.id,
+              episodeNumber: profile.episodeNumber,
+              severity: 'warning',
+              message,
+            });
+          }
         }
       }
     }

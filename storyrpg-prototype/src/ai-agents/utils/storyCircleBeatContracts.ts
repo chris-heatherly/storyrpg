@@ -19,6 +19,7 @@ import {
   treatmentFieldCloseMatch,
   treatmentFieldTokens,
 } from './treatmentFieldContracts';
+import { toStageableTreatmentMoment } from './stageableTreatmentMoment';
 
 const BEAT_LABELS: Record<StoryCircleBeat, RegExp[]> = {
   you: [/\byou\b/i],
@@ -207,15 +208,16 @@ export function buildStoryCircleBeatContracts(input: {
       ? authoredText ?? ''
       : input.storyCircle?.[beat] ?? '';
     if (!sourceText.trim()) continue;
-    const atoms = eventAtoms(sourceText);
+    const stageable = toStageableTreatmentMoment(sourceText);
+    const atoms = eventAtoms(stageable);
     out.push({
-      id: `story-circle-${beat}-${slug(sourceText)}`,
+      id: `story-circle-${beat}-${slug(stageable || sourceText)}`,
       beat,
-      sourceText,
+      sourceText: stageable || sourceText,
       targetEpisodeNumber: targetEpisodeFor(input.guidance, beat, input.totalEpisodes),
-      requiredRealization: requiredRealizationFor(beat, sourceText),
-      eventAtoms: atoms.length > 0 ? atoms : [sourceText],
-      stateChange: STATE_CHANGE_RE.test(sourceText) ? sourceText : undefined,
+      requiredRealization: requiredRealizationFor(beat, stageable || sourceText),
+      eventAtoms: atoms.length > 0 ? atoms : [stageable || sourceText],
+      stateChange: STATE_CHANGE_RE.test(stageable || sourceText) ? (stageable || sourceText) : undefined,
       targetSceneIds: [],
       blockingLevel: level,
     });
@@ -326,16 +328,17 @@ export function buildEpisodeCircleBeatContracts(input: {
   for (const beat of STORY_CIRCLE_BEATS) {
     const sourceText = input.episodeCircle?.[beat]?.trim();
     if (!sourceText) continue;
+    const stageable = toStageableTreatmentMoment(sourceText);
     const target = bestEpisodeCircleScene(beat, input.scenes);
-    const atoms = eventAtoms(sourceText);
+    const atoms = eventAtoms(stageable || sourceText);
     contracts.push({
-      id: `episode-circle-ep${input.episodeNumber}-${beat}-${slug(sourceText)}`,
+      id: `episode-circle-ep${input.episodeNumber}-${beat}-${slug(stageable || sourceText)}`,
       beat,
-      sourceText,
+      sourceText: stageable || sourceText,
       targetEpisodeNumber: input.episodeNumber,
-      requiredRealization: requiredEpisodeRealizationFor(beat, sourceText),
-      eventAtoms: atoms.length > 0 ? atoms : [sourceText],
-      stateChange: STATE_CHANGE_RE.test(sourceText) ? sourceText : undefined,
+      requiredRealization: requiredEpisodeRealizationFor(beat, stageable || sourceText),
+      eventAtoms: atoms.length > 0 ? atoms : [stageable || sourceText],
+      stateChange: STATE_CHANGE_RE.test(stageable || sourceText) ? (stageable || sourceText) : undefined,
       targetSceneIds: target ? [target.id] : [],
       blockingLevel: 'structural',
     });
@@ -496,8 +499,12 @@ function requiredBeatFor(contract: StoryCircleBeatRealizationContract, scene: Pl
 export function normalizeStoryCircleContractForSceneProse(contract: StoryCircleBeatRealizationContract): StoryCircleBeatRealizationContract[] {
   if (!(contract.requiredRealization ?? []).includes('final_prose')) return shouldHardBindSceneContract(contract) ? [contract] : [];
 
-  const recomputedAtoms = eventAtoms(contract.sourceText);
-  const atoms = dedupe(recomputedAtoms.length > 0 ? recomputedAtoms : contract.eventAtoms ?? []);
+  const stageableSource = toStageableTreatmentMoment(contract.sourceText) || contract.sourceText;
+  const recomputedAtoms = eventAtoms(stageableSource);
+  const atoms = dedupe(
+    (recomputedAtoms.length > 0 ? recomputedAtoms : contract.eventAtoms ?? [])
+      .map((atom) => toStageableTreatmentMoment(atom) || atom),
+  );
   const hardBindableAtoms = atoms.filter((atom) => shouldHardBindSceneContract({
     ...contract,
     sourceText: atom,
@@ -520,7 +527,14 @@ export function normalizeStoryCircleContractForSceneProse(contract: StoryCircleB
     }));
   }
 
-  return shouldHardBindSceneContract(contract) ? [contract] : [];
+  if (shouldHardBindSceneContract(contract)) {
+    return [{
+      ...contract,
+      sourceText: stageableSource,
+      eventAtoms: atoms.length > 0 ? atoms : [stageableSource],
+    }];
+  }
+  return [];
 }
 
 function pressureFor(contract: StoryCircleBeatRealizationContract, scene: PlannedScene): MechanicPressureContract | undefined {
@@ -585,7 +599,21 @@ export function assignStoryCircleBeatContractsToScenes(
       }
       if (sceneContract.blockingLevel !== 'warning') {
         const beat = requiredBeatFor(sceneContract, target);
-        if (!(target.requiredBeats ?? []).some((candidate) => candidate.id === beat.id)) {
+        // Skip hard binding when a coldopen/authored beat already stages this
+        // moment — otherwise Story Circle arrival doubles the opening turn and
+        // blows SceneConstructionGate hard-unit caps (bite-me 2026-07-08).
+        const alreadyHard = (target.requiredBeats ?? []).some((candidate) => {
+          if (candidate.tier !== 'authored' && candidate.tier !== 'signature' && candidate.tier !== 'coldopen') {
+            return false;
+          }
+          const existing = `${candidate.mustDepict ?? ''} ${candidate.sourceTurn ?? ''}`.trim();
+          return treatmentFieldCloseMatch(
+            sceneContract.sourceText,
+            existing,
+            Math.max(0.45, storyCircleBeatMatchThreshold(sceneContract)),
+          );
+        });
+        if (!alreadyHard && !(target.requiredBeats ?? []).some((candidate) => candidate.id === beat.id)) {
           target.requiredBeats = [...(target.requiredBeats ?? []), beat];
         }
         const pressure = pressureFor(sceneContract, target);

@@ -6,29 +6,12 @@
  * (module-resolver alias). That covers every `import` / `require` of those
  * modules inside the bundle.
  *
- * Nothing in the app reads from `global.fs` / `global.path`, so we only
- * guarantee a minimal `process` shim here for libraries that poke at
- * `process.env` / `process.nextTick` directly.
+ * process.version must exist before any import that pulls readable-stream
+ * (via crypto-browserify). ES import hoisting would otherwise load those
+ * modules before an inline shim — so the shim is a side-effect require first.
  */
 
-if (typeof global !== 'undefined') {
-  const maybeProcess = (global as unknown as { process?: NodeJS.Process }).process;
-  if (!maybeProcess) {
-    (global as unknown as { process: NodeJS.Process }).process =
-      require('process/browser') as NodeJS.Process;
-  }
-
-  const proc = (global as unknown as { process: NodeJS.Process }).process;
-  if (proc) {
-    if (!proc.env) {
-      (proc as unknown as { env: Record<string, string | undefined> }).env = {};
-    }
-    if (typeof proc.nextTick !== 'function') {
-      (proc as unknown as { nextTick: (cb: (...args: unknown[]) => void, ...args: unknown[]) => void }).nextTick =
-        (cb, ...args) => setTimeout(() => cb(...args), 0);
-    }
-  }
-}
+require('./src/process-shim');
 
 import { registerRootComponent } from 'expo';
 

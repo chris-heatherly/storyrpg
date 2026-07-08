@@ -84,11 +84,22 @@ describe('EpisodeStoryCircleValidator', () => {
     }
   });
 
-  it('fails missing episodeCircle.take', () => {
+  it('does not require inactive episodeCircle beats outside the macro role', () => {
+    const result = validator.validate({
+      episodeNumber: 1,
+      episodeCircle: { you: 'Opening normal.', need: 'Active pressure.' },
+      storyCircleRole: [{ beat: 'you', roleKind: 'primary' }],
+      scenes: [{ id: 's1-1', narrativeRole: 'setup' }],
+    });
+
+    expect(result.issues.some((issue) => issue.location === 'episodeCircle.take')).toBe(false);
+  });
+
+  it('fails missing episodeCircle.take when take is an active macro beat', () => {
     const result = validator.validate({
       episodeNumber: 3,
       episodeCircle: { ...circle, take: '' },
-      storyCircleRole: [{ beat: 'find', roleKind: 'primary' }],
+      storyCircleRole: [{ beat: 'take', roleKind: 'primary' }],
       scenes: scenes(contracts()),
     });
 
@@ -125,7 +136,7 @@ describe('EpisodeStoryCircleValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('not bound to any scene'))).toBe(true);
   });
 
-  it('warns weak polarity pairs', () => {
+  it('blocks weak polarity pairs', () => {
     const weakCircle = {
       ...circle,
       you: 'Kylie holds the ledger and returns to the rooftop changed by the truth.',
@@ -138,7 +149,8 @@ describe('EpisodeStoryCircleValidator', () => {
       scenes: scenes(contracts(weakCircle)),
     });
 
-    expect(result.issues.some((issue) => issue.severity === 'warning' && issue.message.includes('polarity pair'))).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((issue) => issue.severity === 'error' && issue.message.includes('polarity pair'))).toBe(true);
   });
 
   it('fails return/change contracts that land before final aftermath pressure', () => {

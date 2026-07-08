@@ -14,6 +14,7 @@ import {
   stageRank,
   type RelationshipArcLedgerEntry,
 } from '../utils/relationshipArcLedger';
+import { getStoryLexicon } from '../config/storyLexicon';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
 
 export interface RelationshipArcLedgerInput {
@@ -37,11 +38,16 @@ const COMPRESSED_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:ho
 // Settled-word class includes the numeral/possessive forms the deleted
 // RelationshipPacingValidator's SETTLED_GROUP_RE covered ("the Dusk Club is
 // now three", "the club is theirs") — ported at its deletion (2026-07-03).
-const GROUP_SETTLED_WORDS = String.raw`(?:now\s+)?(?:complete|official|real|inside|friends?|members?|settled|permanent|unbreakable|three|family|theirs?)`;
+// NOTE: do not treat bare "real" as membership — venue prose
+// ("Valescu Club … is real") false-positive'd as settled membership
+// (bite-me 2026-07-08T00-01-23). Keep "real" only as "real member(s)".
+const GROUP_SETTLED_WORDS = String.raw`(?:now\s+)?(?:complete|official|inside|friends?|members?|settled|permanent|unbreakable|three|family|theirs?|real\s+members?)`;
 const GROUP_IDENTITY_RE = new RegExp([
   String.raw`\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b[^.!?\n]{0,140}\b(?:belong(?:s|ed|ing)?|one\s+of\s+us|membership|(?:is|are|becomes?|became)\s+${GROUP_SETTLED_WORDS})\b`,
   String.raw`\b(?:is|are|becomes?|became)\s+${GROUP_SETTLED_WORDS}\b[^.!?\n]{0,80}\b(?:crew|circle|group|[A-Z][A-Za-z0-9'’ -]{1,60}\s+club)\b`,
   String.raw`\b(?:club|crew|circle|group)\b[^.!?\n]{0,80}\b(?:is|are|becomes?|became)\s+${GROUP_SETTLED_WORDS}\b`,
+  // Explicit identity claims ("We are the Dusk Club.") remain settled regardless of adjective set.
+  String.raw`\b(?:we|they|you)\s+(?:are|become|became)\s+(?:the\s+)?[A-Z][A-Za-z0-9'’ -]{1,60}\s+club\b`,
 ].join('|'), 'i');
 const PROVISIONAL_GROUP_CONTEXT_RE = /\b(?:joke|dare|fragile|provisional|not\s+official|not\s+real\s+yet|invitation|almost|maybe|promise|becoming|could\s+become|whatever\s+(?:this|it)\s+becomes)\b/i;
 const VISIBLE_CALLBACK_RE = /\b(?:remember|remembers|remembered|last\s+time|because\s+you|after\s+what\s+you|the\s+promise|the\s+warning|the\s+favor|what\s+happened|again|still)\b/i;
@@ -91,9 +97,27 @@ function sentenceWindows(text: string): string[] {
 }
 
 function hasSettledGroupLanguage(text: string): boolean {
-  return sentenceWindows(text).some((window) =>
-    GROUP_IDENTITY_RE.test(window) && !PROVISIONAL_GROUP_CONTEXT_RE.test(window)
-  );
+  return sentenceWindows(text).some((window) => {
+    if (isVenueClubSentence(window)) return false;
+    return GROUP_IDENTITY_RE.test(window) && !PROVISIONAL_GROUP_CONTEXT_RE.test(window);
+  });
+}
+
+/** Named nightlife venues ("Valescu Club") are locations, not social groups. */
+function isVenueClubSentence(window: string): boolean {
+  const hay = window.toLowerCase();
+  const venues = getStoryLexicon().namedVenues;
+  if (venues.some((venue) => hay.includes(venue.toLowerCase()) && /\bclub\b/i.test(window))) {
+    // Still treat explicit membership identity against a venue club as settled.
+    if (/\b(?:we|they|you)\s+(?:are|become|became)\s+(?:the\s+)?/i.test(window) && /\bclub\b/i.test(window)) {
+      return false;
+    }
+    if (/\b(?:belong|membership|member|one\s+of\s+us|friends?\s+now|now\s+three)\b/i.test(window)) {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 // A Titlecase-named group inside a settled-language sentence ("The Dusk Club
@@ -103,6 +127,7 @@ const NAMED_GROUP_RE = /\b([A-Z][A-Za-z0-9'’-]+(?:\s+[A-Z][A-Za-z0-9'’-]+){0
 
 function unplannedSettledGroupName(text: string): string | undefined {
   for (const window of sentenceWindows(text)) {
+    if (isVenueClubSentence(window)) continue;
     if (!GROUP_IDENTITY_RE.test(window) || PROVISIONAL_GROUP_CONTEXT_RE.test(window)) continue;
     const named = NAMED_GROUP_RE.exec(window);
     if (named) return named[1];

@@ -46,6 +46,24 @@ describe('detectStoryEventCues', () => {
     expect(cues.has('blogAftermath')).toBe(false);
   });
 
+  it('does not treat phrasal "start over" near a blog reference as a publication launch (bite-me 2026-07-07 s1-7)', () => {
+    const cues = detectStoryEventCues(
+      'Can Kylie start over, feel wanted, and write under her own name in a city that is already watching her',
+    );
+
+    expect(cues.has('lateNightWriting')).toBe(false);
+  });
+
+  it('requires the writing action to act on the writing object, not merely co-occur', () => {
+    const distant = detectStoryEventCues(
+      'She writes to her mother about the weather, the food, and the loneliness. Weeks later, long after the letters stop, a stranger mentions that an old city blog once covered the same streets.',
+    );
+    expect(distant.has('lateNightWriting')).toBe(false);
+
+    const acting = detectStoryEventCues('She drafts the post twice before dawn.');
+    expect(acting.has('lateNightWriting')).toBe(true);
+  });
+
   it('does not treat writing as an identity posture as a late-night writing event', () => {
     const cues = detectStoryEventCues('The protagonist uses their writing to watch others rather than participate.');
 

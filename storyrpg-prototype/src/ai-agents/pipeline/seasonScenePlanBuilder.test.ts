@@ -5,7 +5,9 @@ import {
   edgesForEpisode,
   bindAuthoredTurnsToScenes,
   encounterIsCoveredByAuthoredTurns,
-  repairRouteCueSceneOrder,} from './seasonScenePlanBuilder';
+  repairRouteCueSceneOrder,
+  rebuildTreatmentSeasonScenePlan,
+} from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
@@ -1108,5 +1110,77 @@ describe('repairRouteCueSceneOrder (plan-retry rung, bite-me 2026-07-03T18-19-01
     const rebuilt = build();
     repairRouteCueSceneOrder(rebuilt as never, 1);
     expect(rebuilt.map((scene) => (scene as { id: string }).id)).toEqual(firstPassIds);
+  });
+});
+
+describe('projectSpineOntoScenes', () => {
+  it('assigns spineUnitId and staged_rescue encounterProfile onto matching scenes', () => {
+    const ep = episode(1, ['you'], {
+      locations: ['Bucharest', 'Lumina Books', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Kylie Apartment'],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          'She explores the streets of Bucharest.',
+          'She wanders into a bookshop owned by Stela who befriends her.',
+          'After testing Kylie, the three become friends and form the Dusk Club.',
+          'Walking home through Cismigiu Gardens, Kylie is attacked and Victor rescues her.',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const scenes = scenesForEpisode(sp, 1);
+    expect(scenes.some((scene) => scene.spineUnitId)).toBe(true);
+    const rescue = scenes.find((scene) => scene.encounterProfile === 'staged_rescue' || scene.encounter?.encounterProfile === 'staged_rescue');
+    expect(rescue).toBeDefined();
+    expect(sp.sourceHash).toBeTruthy();
+    expect(sp.episodeSpines?.[1]?.units.some((unit) => unit.kind === 'test')).toBe(true);
+  });
+
+  it('projects ESC unit order onto scene.order (test before bond before rescue)', () => {
+    const ep = episode(1, ['you'], {
+      locations: ['Bucharest', 'Lumina Books', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Kylie Apartment'],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          'She explores the streets of Bucharest.',
+          'She wanders into a bookshop owned by Stela who befriends her.',
+          'After testing Kylie, the three become friends and form the Dusk Club.',
+          'On the rooftop bar at sunset, two suitors compete for her attention.',
+          'Walking home through Cismigiu Gardens, Kylie is attacked and Victor rescues her.',
+          'At 4am she writes the blog post as Mr. Midnight.',
+          'By evening the post goes viral at the club.',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const spine = sp.episodeSpines?.[1];
+    expect(spine).toBeDefined();
+    const projected = scenesForEpisode(sp, 1)
+      .filter((scene) => scene.spineUnitId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const unitOrders = projected.map((scene) => spine!.units.find((unit) => unit.id === scene.spineUnitId)!.order);
+    for (let i = 1; i < unitOrders.length; i += 1) {
+      expect(unitOrders[i]).toBeGreaterThan(unitOrders[i - 1]);
+    }
+    const kindsInSceneOrder = projected.map((scene) => spine!.units.find((unit) => unit.id === scene.spineUnitId)!.kind);
+    const testAt = kindsInSceneOrder.indexOf('test');
+    const bondAt = kindsInSceneOrder.indexOf('bond');
+    const writingAt = kindsInSceneOrder.indexOf('late_night_writing');
+    const aftermathAt = kindsInSceneOrder.indexOf('aftermath');
+    if (testAt >= 0 && bondAt >= 0) expect(testAt).toBeLessThan(bondAt);
+    if (writingAt >= 0 && aftermathAt >= 0) expect(writingAt).toBeLessThan(aftermathAt);
+    expect(projected.some((scene) => scene.hasChoice)).toBe(true);
+  });
+
+  it('skips rebuildTreatmentSeasonScenePlan when sourceHash is unchanged', () => {
+    const ep = episode(1, ['you'], {
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: ['She arrives in Bucharest with two suitcases.'],
+      },
+    });
+    const first = rebuildTreatmentSeasonScenePlan(plan([ep]));
+    const second = rebuildTreatmentSeasonScenePlan(first);
+    expect(second.scenePlan).toBe(first.scenePlan);
   });
 });

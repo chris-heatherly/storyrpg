@@ -439,7 +439,23 @@ const baselines = {
   // buildCompactWorldContext / deriveStoryVerbsForBrief / inferBranchType)
   // pure-moved to pipeline/contextAssembly.ts behind thin delegators
   // (goldens byte-identical).
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9244,
+  // +130 (9244 -> 9374): re-true to committed reality (2026-07-06). Landed
+  // across the bite-me 07-03/07-05 remediation commits (aac079b1, 55f2ced4,
+  // 797834f3) without bumping this baseline: thin seams only — judge-report
+  // aggregation calls (QualityJudges), scene-event-ownership overlay call
+  // (utils/sceneEventOwnership), obligation seeding calls (obligationSeeding),
+  // realization POV arming (remediation/realizationEvaluator), the encounter-
+  // scene reader-prose exemption, the treatment-without-seasonPlan warning,
+  // and the two-tier scene-lock deferred-findings warning. Bulk logic lives
+  // in the extracted modules.
+  // +92 (9374 -> 9466): SceneConstructionGate bounded architecture retry seam
+  // (2026-07-07) — runContentGenerationWithArchitectureRetry, a thin wrapper
+  // that re-runs the EXISTING runEpisodeArchitecture/runBranchAnalysis/
+  // runContentGeneration phases once when the gate blocks (previously a hard
+  // abort at ~4% that discarded a healthy cached analysis + season plan), plus
+  // the two call-site rewires and TS-narrowing consts. No new logic beyond the
+  // retry orchestration; kill-switch GATE_SCENE_CONSTRUCTION_ARCH_RETRY.
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9466,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6566,

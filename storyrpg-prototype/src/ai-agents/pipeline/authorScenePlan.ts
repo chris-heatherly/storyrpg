@@ -15,7 +15,7 @@
  * the caller falls back to the deterministic plan) if anything is unrecoverable.
  */
 
-import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
+import type { SeasonPlan, SeasonEpisode, SeasonResidueObligation } from '../../types/seasonPlan';
 import type {
   ConsequenceTier,
   MechanicPressureContract,
@@ -44,7 +44,9 @@ import {
   MIN_SCENES_PER_EPISODE,
   promoteCoveredAuthoredEncounters,
   repairRouteCueSceneOrder,
+  inferAuthoredLocationFromText,
 } from './seasonScenePlanBuilder';
+import { finalizeAuthoredLiteScenePlan, isAuthoredLiteEpisode, splitStackedSpatialScenes } from '../utils/authoredLiteScenePlan';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
 import { assignSeasonPromiseContractsToScenes } from '../utils/seasonPromiseContracts';
 import { assignCharacterTreatmentContractsToScenes } from '../utils/characterTreatmentContracts';
@@ -545,10 +547,10 @@ export function normalizeAuthoredScenePlan(
     const rawScenes = rawByEpisode.get(ep.episodeNumber);
     if (!rawScenes || rawScenes.length === 0) {
       // Gap fill: deterministic scenes for an episode the model skipped.
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan)));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan), plan.residuePlan));
       continue;
     }
-    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan));
+    const normalized = normalizeEpisodeScenes(ep, rawScenes, plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan), plan.residuePlan);
     // Floor guard: an authored episode below the structural minimum (the model
     // returned e.g. only a setup + an encounter) is too small to carry a
     // scene-graph branch and hard-aborts at branch validation downstream
@@ -557,7 +559,7 @@ export function normalizeAuthoredScenePlan(
     // skipped episode — so adequately-sized authored episodes are untouched and
     // golden parity holds (only fires when the floor is requested AND violated).
     if (normalized.length < minScenesPerEpisode) {
-      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan)));
+      scenesByEpisode.set(ep.episodeNumber, buildEpisodeScenes(ep, storyCircleTextForEpisode(plan, ep), plan.informationLedger, plan.protagonist, collectPriorBondNpcKeys(plan), plan.residuePlan));
       continue;
     }
     scenesByEpisode.set(ep.episodeNumber, normalized);
@@ -629,6 +631,7 @@ function normalizeEpisodeScenes(
   infoLedger?: NonNullable<SeasonPlan['informationLedger']>,
   protagonist?: SeasonPlan['protagonist'],
   priorBondNpcKeys?: Set<string>,
+  seasonResiduePlan?: SeasonResidueObligation[],
 ): PlannedScene[] {
   const encountersById = new Map((ep.plannedEncounters ?? []).map((e) => [e.id, e]));
   const usedEncounterIds = new Set<string>();
@@ -741,6 +744,9 @@ function normalizeEpisodeScenes(
   // deterministic path via the same helper.
   bindAuthoredTurnsToScenes(ep, built, infoLedger, protagonist, priorBondNpcKeys);
   promoteCoveredAuthoredEncounters(ep, built, coveredEncounterIds);
+  if (isAuthoredLiteEpisode(ep)) {
+    splitStackedSpatialScenes(ep, built, inferAuthoredLocationFromText);
+  }
   // Route-cue chronology repair, same rung as the deterministic skeleton path
   // (4357093a). The LLM-authored path missed it, so an inverted plan
   // (socialMeet scene before the arrival scene) still hard-aborted at the
@@ -748,6 +754,10 @@ function normalizeEpisodeScenes(
   // linear order-based plan, so a standard↔standard swap is safe here; the
   // blueprint built from these scenes inherits the repaired order.
   repairRouteCueSceneOrder(built, ep.episodeNumber);
+  const outgoingResidue = (seasonResiduePlan ?? []).filter(
+    (obligation) => obligation.sourceEpisodeNumber === ep.episodeNumber,
+  );
+  finalizeAuthoredLiteScenePlan(ep, built, outgoingResidue);
   return built;
 }
 

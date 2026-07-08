@@ -77,10 +77,17 @@ describe('validatorRegistry (B4 dispatch map)', () => {
     expect(arch.length).toBeGreaterThanOrEqual(5);
     // EpisodeStoryCircleValidator and SceneOwnershipPreflightValidator are the
     // blocking architecture-stage structural gates; the rest are advisory craft.
-    const blockingArch = ['EpisodeStoryCircleValidator', 'SceneOwnershipPreflightValidator'];
+    const blockingArch = [
+      'EpisodeStoryCircleValidator',
+      'EpisodeSpineContractValidator',
+      'NpcVisualIdentityValidator',
+      'SceneOwnershipPreflightValidator',
+    ];
     const craft = arch.filter((e) => !blockingArch.includes(e.validator));
     expect(craft.every((e) => e.tier === 'advisory')).toBe(true);
     expect(arch.find((e) => e.validator === 'EpisodeStoryCircleValidator')?.tier).toBe('blocking');
+    expect(arch.find((e) => e.validator === 'EpisodeSpineContractValidator')?.tier).toBe('blocking');
+    expect(arch.find((e) => e.validator === 'NpcVisualIdentityValidator')?.tier).toBe('blocking');
     expect(arch.find((e) => e.validator === 'SceneOwnershipPreflightValidator')?.tier).toBe('blocking');
   });
 

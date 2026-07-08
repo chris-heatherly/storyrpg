@@ -1149,7 +1149,15 @@ export function buildSceneConstructionPromptView<T extends SceneConstructionScen
   if (!profile) return scene;
   const keyBeatIds = activeIdsFor(profile, 'keyBeat');
   const requiredBeatIds = activeIdsFor(profile, 'requiredBeat');
-  const choiceActive = Boolean(activeIdsFor(profile, 'choicePressure')?.size)
+  // ESC lockdown: never strip choicePoint when the plan marked hasChoice / plant residue.
+  const plannedChoiceLocked = Boolean(
+    (scene as { plannedHasChoice?: boolean; hasChoice?: boolean }).plannedHasChoice
+    || (scene as { plannedHasChoice?: boolean; hasChoice?: boolean }).hasChoice
+    || (scene.choicePoint as ChoicePointLike | undefined)?.setsTreatmentSeeds?.length
+    || (scene.choicePoint as ChoicePointLike | undefined)?.setsBranchAxes?.length,
+  );
+  const choiceActive = plannedChoiceLocked
+    || Boolean(activeIdsFor(profile, 'choicePressure')?.size)
     || hasGenerationCriticalChoicePoint(scene.choicePoint as ChoicePointLike | undefined);
   const signatureActive = Boolean(activeIdsFor(profile, 'signatureMoment')?.size)
     || Boolean(requiredBeatIds && (scene.requiredBeats ?? []).some((beat) => requiredBeatIds.has(beat.id) && beat.tier === 'signature'));

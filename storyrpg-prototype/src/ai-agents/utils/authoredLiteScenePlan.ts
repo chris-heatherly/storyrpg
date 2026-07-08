@@ -8,6 +8,7 @@ import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 import type { EncounterCategory } from '../../types/sourceAnalysis';
 import type { EncounterNarrativeStyle } from '../../types/encounter';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
+import type { EpisodeSpineContract } from '../../types/episodeSpine';
 import { detectPrimaryStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { storyCircleRoleBeats } from './storyCircleDistribution';
 import { normalizeCharacterSlug, resolveRosterCharacter } from './npcIntroductionLedger';
@@ -19,9 +20,11 @@ import {
   splitCompoundSpatialTurnText,
 } from './treatmentTurnOrdering';
 import { filterAuthoredLiteEpisodeTurns } from './authoredLiteTurnFilter';
+import { filterEpisodeScopedTurns } from './episodeTurnFirewall';
 import { detectSpatialUnitViolations, hardBeatTexts } from './sceneSpatialUnitPolicy';
 import { isContainerLocationCue, uniqueMajorLocationCues } from './sceneLocationCues';
 import { stripRegressiveAuthoredBeats } from './sceneEventOwnership';
+import { reconcileSceneOrderToSpine } from './spineSceneProjection';
 
 function bindTokens(value: string | undefined): string[] {
   return (value ?? '')
@@ -39,13 +42,16 @@ function tokenOverlapRatio(a: string, b: string): number {
   return hits / aTokens.length;
 }
 
-function authoredLiteSpineTurns(ep: SeasonEpisode): string[] {
+function authoredLiteSpineTurns(ep: SeasonEpisode, seasonSynopses?: Record<number, string>): string[] {
   const guidance = ep.treatmentGuidance;
   let turns: string[] = [];
   if (guidance?.episodeTurns?.length) turns = guidance.episodeTurns.filter((turn) => turn?.trim());
   else if (guidance?.majorChoicePressures?.length) turns = guidance.majorChoicePressures.filter((turn) => turn?.trim());
   else if (guidance?.encounterAnchors?.length) turns = guidance.encounterAnchors.filter((turn) => turn?.trim());
   turns = filterAuthoredLiteEpisodeTurns(turns, ep.episodeNumber);
+  if (seasonSynopses) {
+    turns = filterEpisodeScopedTurns(turns, ep.episodeNumber, seasonSynopses);
+  }
   turns = coalesceFragmentedEpisodeTurns(turns);
   return orderAuthoredEpisodeTurns(turns);
 }
@@ -166,6 +172,36 @@ function stripNpcFromScene(scene: PlannedScene, blocked: Set<string>): number {
   return before - scene.npcsInvolved.length;
 }
 
+function beatNamesBlockedNpc(text: string, blocked: Set<string>): boolean {
+  const lower = text.toLowerCase();
+  for (const slug of blocked) {
+    if (!slug) continue;
+    const pattern = new RegExp(`\\b${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (pattern.test(lower) || lower.includes(slug)) return true;
+  }
+  return false;
+}
+
+/** Strip or rewrite requiredBeats that name not-yet-introduced NPCs. */
+function stripNpcFromRequiredBeats(scene: PlannedScene, blocked: Set<string>): number {
+  if (blocked.size === 0 || !(scene.requiredBeats?.length)) return 0;
+  const before = scene.requiredBeats.length;
+  scene.requiredBeats = scene.requiredBeats.filter((beat) => {
+    const text = `${beat.mustDepict || ''} ${beat.sourceTurn || ''}`.trim();
+    if (!text) return true;
+    return !beatNamesBlockedNpc(text, blocked);
+  });
+  // Also scrub dramaticPurpose / title when they name blocked NPCs.
+  if (scene.dramaticPurpose && beatNamesBlockedNpc(scene.dramaticPurpose, blocked)) {
+    scene.dramaticPurpose = scene.dramaticPurpose
+      .split(/(?<=[.!?])\s+/)
+      .filter((sentence) => !beatNamesBlockedNpc(sentence, blocked))
+      .join(' ')
+      .trim() || scene.dramaticPurpose;
+  }
+  return before - scene.requiredBeats.length;
+}
+
 /** First turn index where an NPC is named on-page or explicitly introduced. */
 export function buildNpcFirstAppearanceTurnIndex(
   turns: string[],
@@ -219,6 +255,7 @@ export function enforceNpcIntroOrderOnScenes(
     for (const scene of scenes) {
       if (scenePlayOrder(scene) >= introOrder) continue;
       removals += stripNpcFromScene(scene, new Set([npcSlug]));
+      removals += stripNpcFromRequiredBeats(scene, new Set([npcSlug]));
     }
   }
 
@@ -237,6 +274,7 @@ export function enforceNpcIntroOrderOnScenes(
     for (const scene of scenes) {
       if (scenePlayOrder(scene) >= introOrder) continue;
       removals += stripNpcFromScene(scene, introducedIds);
+      removals += stripNpcFromRequiredBeats(scene, introducedIds);
     }
   }
   return removals;
@@ -257,8 +295,9 @@ export function drainDuplicateAuthoredBeats(scenes: PlannedScene[]): number {
         kept.push(beat);
         continue;
       }
-      const text = [beat.mustDepict, beat.sourceTurn].filter(Boolean).join(' ');
-      const duplicate = coveredTexts.some((prior) => tokenOverlapRatio(text, prior) >= 0.7
+      const text = String(beat.mustDepict || beat.sourceTurn || '').trim();
+      const textTokens = bindTokens(text);
+      const duplicate = textTokens.length >= 2 && coveredTexts.some((prior) => tokenOverlapRatio(text, prior) >= 0.7
         || tokenOverlapRatio(prior, text) >= 0.7);
       if (duplicate) {
         drained += 1;
@@ -295,9 +334,11 @@ function mergeAdjacentAftermathScenes(scenes: PlannedScene[]): number {
     if (current.narrativeRole === 'release' || next.narrativeRole === 'release') continue;
     const currentCues = sceneRouteCues(current);
     const nextCues = sceneRouteCues(next);
-    const mergesAftermath =
-      (currentCues.has('lateNightWriting') && nextCues.has('blogAftermath') && !nextCues.has('lateNightWriting'))
-      || (currentCues.has('blogAftermath') && nextCues.has('blogAftermath'));
+    // Never collapse dramatized late-night writing into viral metrics.
+    if (currentCues.has('lateNightWriting') && nextCues.has('blogAftermath') && !nextCues.has('lateNightWriting')) {
+      continue;
+    }
+    const mergesAftermath = currentCues.has('blogAftermath') && nextCues.has('blogAftermath');
     if (!mergesAftermath) continue;
     appendUniqueRequiredBeats(current, next.requiredBeats ?? []);
     if (next.dramaticPurpose?.trim()) {
@@ -348,9 +389,15 @@ function trimSurplusStandardScenes(ep: SeasonEpisode, scenes: PlannedScene[]): n
   return removed;
 }
 
-export function consolidateAuthoredLiteScenes(ep: SeasonEpisode, scenes: PlannedScene[]): number {
+export function consolidateAuthoredLiteScenes(
+  ep: SeasonEpisode,
+  scenes: PlannedScene[],
+  episodeSpine?: EpisodeSpineContract,
+): number {
   if (!isAuthoredLiteEpisode(ep)) return 0;
-  return mergeAdjacentAftermathScenes(scenes) + trimSurplusStandardScenes(ep, scenes);
+  // ESC lockdown: never collapse late_night_writing into viral metrics.
+  const mergeChanges = episodeSpine ? 0 : mergeAdjacentAftermathScenes(scenes);
+  return mergeChanges + trimSurplusStandardScenes(ep, scenes);
 }
 
 type LocationInferer = (text: string, locations: string[]) => string | undefined;
@@ -420,7 +467,7 @@ export function splitStackedSpatialScenes(
   scenes: PlannedScene[],
   inferLocation: LocationInferer,
 ): number {
-  if (!isAuthoredLiteEpisode(ep)) return 0;
+  if (!ep.treatmentGuidance) return 0;
   const locations = ep.locations ?? [];
   let splits = 0;
   for (let index = 0; index < scenes.length; index += 1) {
@@ -613,12 +660,14 @@ export function finalizeAuthoredLiteScenePlan(
   ep: SeasonEpisode,
   scenes: PlannedScene[],
   outgoingResidue?: SeasonResidueObligation[],
+  episodeSpine?: EpisodeSpineContract,
 ): number {
   if (!isAuthoredLiteEpisode(ep)) return 0;
-  let changes = sortPlannedScenesByChronologyCue(scenes);
+  // Skip chronology heuristic sort when ESC owns order.
+  let changes = episodeSpine ? 0 : sortPlannedScenesByChronologyCue(scenes);
   changes += stripRegressiveAuthoredBeats(scenes);
   changes += drainDuplicateAuthoredBeats(scenes);
-  changes += consolidateAuthoredLiteScenes(ep, scenes);
+  changes += consolidateAuthoredLiteScenes(ep, scenes, episodeSpine);
   for (const scene of scenes) {
     if (scene.kind !== 'encounter' || !scene.encounter) continue;
     const anchor = [
@@ -631,6 +680,9 @@ export function finalizeAuthoredLiteScenePlan(
     if (appendEncounterRescuerNamingBeat(scene)) changes += 1;
   }
   changes += attachAuthoredLiteResidueHooks(ep, scenes, outgoingResidue);
+  if (episodeSpine) {
+    changes += reconcileSceneOrderToSpine(episodeSpine, scenes);
+  }
   return changes;
 }
 

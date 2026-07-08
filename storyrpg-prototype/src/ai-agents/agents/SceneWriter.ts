@@ -37,6 +37,7 @@ import { buildSceneWriterCallbackSection } from '../prompts/callbackPromptSectio
 import { canonicalizeHookId, isStructuralFlag } from '../pipeline/callbackLedger';
 import { canonicalizeConditionOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { buildColdOpenProfileSection, buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
+import { scrubNextEpisodePressureProperNouns } from '../utils/episodeTurnFirewall';
 import type {
   ArcPressureTreatmentContract,
   MechanicPressureContract,
@@ -1717,6 +1718,13 @@ Return exactly one complete SceneContent JSON object with:
     );
   }
 
+  private scrubNextEpisodePressureForSceneWriter(input: SceneWriterInput): string {
+    const pressure = input.cliffhangerPlan?.nextEpisodePressure;
+    if (!pressure) return '';
+    const isFinalScene = !input.nextSceneContext;
+    return scrubNextEpisodePressureProperNouns(pressure, { isFinalScene }) || pressure;
+  }
+
   private buildPrompt(input: SceneWriterInput): string {
     input = {
       ...input,
@@ -2053,7 +2061,7 @@ ${input.cliffhangerPlan ? `
 - Immediate episode tension to acknowledge/resolve: ${input.cliffhangerPlan.resolvedEpisodeTension}
 - New open question: ${input.cliffhangerPlan.newOpenQuestion}
 - Emotional charge: ${input.cliffhangerPlan.emotionalCharge}
-- Next-episode pressure: ${input.cliffhangerPlan.nextEpisodePressure}
+- Next-episode pressure: ${this.scrubNextEpisodePressureForSceneWriter(input)}
 
 If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 1. Acknowledge the episode's immediate conflict or consequence.

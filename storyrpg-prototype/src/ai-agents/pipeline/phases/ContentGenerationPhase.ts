@@ -3160,6 +3160,8 @@ export class ContentGenerationPhase {
           })),
           signatureMoment: sceneBlueprint.signatureMoment,
           centralConflict: sceneBlueprint.encounterCentralConflict || plannedEnc?.centralConflict,
+          encounterSpineProfile: sceneBlueprint.encounterProfile
+            || (plannedEnc as { encounterProfile?: string } | undefined)?.encounterProfile as EncounterArchitectInput['encounterSpineProfile'],
           encounterRequiredNpcIds,
           encounterRelevantSkills,
           encounterBeatPlan,

@@ -152,7 +152,7 @@ export class EpisodeStoryCircleValidator extends BaseValidator {
       const rightText = input.episodeCircle?.[right];
       if (!hasConcreteText(leftText) || !hasConcreteText(rightText)) continue;
       if (wordOverlap(leftText, rightText) > 0.85) {
-        issues.push(this.warning(
+        issues.push(this.error(
           `Episode ${input.episodeNumber} episodeCircle beats "${left}" and "${right}" read as the same beat instead of a polarity pair.`,
           `episodeCircle.${left} vs episodeCircle.${right}`,
           suggestion,

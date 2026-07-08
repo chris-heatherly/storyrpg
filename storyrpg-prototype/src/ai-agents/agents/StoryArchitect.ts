@@ -70,6 +70,7 @@ import type {
   StakesArchitectureContract,
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
+import type { EpisodeSpineContract, EncounterSpineProfile } from '../../types/episodeSpine';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 import { DramaticStructureValidator } from '../validators/DramaticStructureValidator';
@@ -79,6 +80,7 @@ import { EpisodePressureArchitectureValidator } from '../validators/EpisodePress
 import { EpisodeStoryCircleValidator, hasConcreteStoryCircleBeatText } from '../validators/EpisodeStoryCircleValidator';
 import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
 import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
+import { EpisodeSpineContractValidator } from '../validators/EpisodeSpineContractValidator';
 import {
   analyzeEpisodeTreatmentDensity,
   describeTreatmentDensityReport,
@@ -235,6 +237,7 @@ export interface StoryArchitectInput {
         defeat: string;
         escape?: string;
       };
+      encounterProfile?: EncounterSpineProfile;
     }>;
     // Difficulty tier for this episode
     difficultyTier?: string;
@@ -318,6 +321,8 @@ export interface StoryArchitectInput {
      */
     plannedScenes?: PlannedScene[];
     setupPayoffEdges?: SetupPayoffEdge[];
+    /** Episode Spine Contract for this episode when treatment-sourced. */
+    episodeSpine?: EpisodeSpineContract;
   };
 
   /**
@@ -664,6 +669,10 @@ export interface SceneBlueprint {
   encounterBeatPlan?: string[];
   encounterDifficulty?: 'easy' | 'moderate' | 'hard' | 'extreme';
   encounterPartialVictoryCost?: Partial<EncounterCost>;
+  /** ESC encounter profile — stages EncounterArchitect play (e.g. staged_rescue). */
+  encounterProfile?: EncounterSpineProfile;
+  /** ESC unit id this scene projects, when treatment-sourced. */
+  spineUnitId?: string;
 
   // For the encounter scene: describes the stakes and what prior scenes must establish.
   // For non-encounter scenes: describes how THIS scene specifically builds toward the episode encounter
@@ -1488,6 +1497,9 @@ export class StoryArchitect extends BaseAgent {
       ...(scene.encounterSetupContext || []),
       ...(effectivePlannedEncounter.encounterSetupContext || []),
     ]));
+    if (effectivePlannedEncounter.encounterProfile) {
+      scene.encounterProfile = effectivePlannedEncounter.encounterProfile;
+    }
     scene.purpose = scene.purpose || 'bottleneck';
   }
 
@@ -2169,10 +2181,35 @@ export class StoryArchitect extends BaseAgent {
     return 'identity';
   }
 
+  /** ESC lockdown: every non-encounter plannedHasChoice scene must keep a choicePoint. */
+  private materializePlannedHasChoicePoints(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    for (const scene of blueprint.scenes || []) {
+      if (scene.isEncounter || scene.plannedHasChoice !== true || scene.choicePoint) continue;
+      const pressure = this.localChoicePressures(scene)[0]
+        || guidance?.majorChoicePressures?.find((candidate) => this.hasBlueprintText(candidate))
+        || scene.dramaticPurpose
+        || scene.description
+        || `Choose how to handle ${scene.name}`;
+      this.applyTreatmentChoicePressureToScene(scene, pressure, guidance, this.localChoiceResidue(scene));
+    }
+  }
+
+  private collectMissingPlannedChoicePoints(blueprint: EpisodeBlueprint): string[] {
+    return (blueprint.scenes || [])
+      .filter((scene) => !scene.isEncounter && scene.plannedHasChoice === true && !scene.choicePoint)
+      .map((scene) => scene.id);
+  }
+
   private repairTreatmentMajorChoicePressure(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
-    const localChoiceScenes = (blueprint.scenes || [])
-      .filter((scene) => scene.choicePoint && this.localChoicePressures(scene).length > 0);
+    // Prefer per-scene major_choice_pressure contracts. Create a real choicePoint
+    // from that pressure — do not require a prior "The decision turns on…" stub.
+    const localChoiceScenes = (blueprint.scenes || []).filter((scene) =>
+      !scene.isEncounter
+      && scene.plannedHasChoice !== false
+      && this.localChoicePressures(scene).length > 0
+    );
     if (localChoiceScenes.length > 0) {
       for (const scene of localChoiceScenes) {
         const pressure = this.localChoicePressures(scene).find((candidate) => this.splitAuthoredChoiceOptions(candidate).length >= 2)
@@ -2187,7 +2224,7 @@ export class StoryArchitect extends BaseAgent {
     if (!pressure) return;
 
     const scene = this.findSceneForAuthoredChoice(blueprint);
-    if (!scene) return;
+    if (!scene || scene.isEncounter || scene.plannedHasChoice === false) return;
 
     const personalStake = this.pickPersonalStake(
       scene.personalStake,
@@ -2215,12 +2252,20 @@ export class StoryArchitect extends BaseAgent {
    */
   private seedChoiceMenusFromTreatment(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
-    const localChoiceScenes = (blueprint.scenes || [])
-      .filter((scene) => scene.choicePoint && this.localChoicePressures(scene).length > 0);
+    const localChoiceScenes = (blueprint.scenes || []).filter((scene) =>
+      !scene.isEncounter
+      && scene.plannedHasChoice !== false
+      && this.localChoicePressures(scene).length > 0
+    );
     if (localChoiceScenes.length > 0) {
       for (const scene of localChoiceScenes) {
         const pressure = this.localChoicePressures(scene).find((candidate) => this.splitAuthoredChoiceOptions(candidate).length >= 2);
-        if (!pressure || !scene.choicePoint || (scene.choicePoint.optionHints?.length ?? 0) >= 2) continue;
+        if (!pressure) continue;
+        if (!scene.choicePoint) {
+          this.applyTreatmentChoicePressureToScene(scene, pressure, guidance, this.localChoiceResidue(scene));
+          continue;
+        }
+        if ((scene.choicePoint.optionHints?.length ?? 0) >= 2) continue;
         scene.choicePoint.optionHints = this.splitAuthoredChoiceOptions(pressure);
         scene.choicePoint.description = scene.choicePoint.description || `Treatment-defined pressure: ${pressure}`;
         scene.choicePoint.expectedResidue = Array.from(new Set([
@@ -2236,9 +2281,18 @@ export class StoryArchitect extends BaseAgent {
     );
     if (pressures.length === 0) return;
     const altResidue = guidance?.alternativePaths || [];
-    const choiceScenes = (blueprint.scenes || []).filter((s) => s.choicePoint && !s.isEncounter);
+    const choiceScenes = (blueprint.scenes || []).filter((s) =>
+      !s.isEncounter
+      && s.plannedHasChoice !== false
+      && (s.choicePoint || s.plannedHasChoice === true)
+    );
     for (let i = 0; i < choiceScenes.length && i < pressures.length; i += 1) {
-      const cp = choiceScenes[i].choicePoint!;
+      const scene = choiceScenes[i];
+      if (!scene.choicePoint) {
+        this.applyTreatmentChoicePressureToScene(scene, pressures[i], guidance, altResidue);
+        continue;
+      }
+      const cp = scene.choicePoint;
       if ((cp.optionHints?.length ?? 0) >= 2) continue; // already carries an authored menu
       cp.optionHints = this.splitAuthoredChoiceOptions(pressures[i]);
       if (!cp.description?.trim()) cp.description = `Treatment-defined pressure: ${pressures[i]}`;
@@ -3484,6 +3538,7 @@ Remember: The encounter is the heart. Design outward from it.
       branchOutcomes: enc.branchOutcomes
         ? { victory: enc.branchOutcomes.victory, defeat: enc.branchOutcomes.defeat, escape: enc.branchOutcomes.escape }
         : undefined,
+      encounterProfile: enc.encounterProfile || scene.encounterProfile,
     };
   }
 
@@ -3654,28 +3709,28 @@ Remember: The encounter is the heart. Design outward from it.
         )?.sourceText,
         keyBeats: localKeyBeats,
         leadsTo: nextId ? [nextId] : [],
+        spineUnitId: p.spineUnitId,
+        encounterProfile: p.encounterProfile || p.encounter?.encounterProfile,
       };
       const recommendedBeatCount = beatBudgetByScene.get(p.id);
       if (recommendedBeatCount) {
         scene.recommendedBeatCount = recommendedBeatCount;
       }
-      // Standard scenes get a placeholder choice point unless the planned scene
-      // explicitly opts out. Supplemental rebound scenes (threshold, aftermath)
-      // use hasChoice=false to stay prose-only after the binder splits them.
-      // choiceTypePlanner reassigns the type downstream. Encounters carry their
-      // choices internally.
-      if (!isEncounter && p.hasChoice !== false) {
-        const choicePressure = this.plannedSceneChoicePressure(p, localPurpose, requiredBeats);
-        scene.choicePoint = {
-          type: 'strategic',
-          stakes: {
-            want: PLACEHOLDER_STAKES.want(choicePressure),
-            cost: PLACEHOLDER_STAKES.cost,
-            identity: PLACEHOLDER_STAKES.identity,
-          },
-          description: `The decision turns on ${choicePressure}.`,
-          optionHints: [],
-        };
+      // ESC lockdown: plannedHasChoice must materialize a real choicePoint here —
+      // never leave a flag without a point for ChoiceAuthor / playback.
+      if (p.hasChoice && !isEncounter) {
+        const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+        const pressure = this.localChoicePressures(scene)[0]
+          || guidance?.majorChoicePressures?.find((candidate) => this.hasBlueprintText(candidate))
+          || p.dramaticPurpose
+          || localPurpose
+          || `Choose how to handle ${scene.name}`;
+        this.applyTreatmentChoicePressureToScene(
+          scene,
+          pressure,
+          guidance,
+          this.localChoiceResidue(scene),
+        );
       }
       return scene;
     });
@@ -4031,6 +4086,14 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
    */
   private async reauthorGenericPlannerTurns(blueprint: EpisodeBlueprint, input: StoryArchitectInput): Promise<void> {
     if (!isGateEnabled('GATE_SCENE_TURN_REAUTHOR')) return;
+    // ESC-backed treatment spines already own concrete turns — LLM re-author
+    // is a structural drift vector and must not rewrite them.
+    if (input.seasonPlanDirectives?.episodeSpine?.units?.length) {
+      console.info(
+        `[StoryArchitect] Skipping planner-turn re-author for episode ${input.episodeNumber}: Episode Spine Contract is present.`,
+      );
+      return;
+    }
     const scenes = blueprint.scenes ?? [];
     const targets = scenes.filter((scene) =>
       scene.turnContract?.source === 'planner'
@@ -4167,8 +4230,8 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         ) || sceneFallback;
         const choiceDescription = sanitizeBlueprintText(
           scene.choicePoint.description,
-          `The decision turns on ${decisionFallback}.`,
-        ) || `The decision turns on ${decisionFallback}.`;
+          decisionFallback,
+        ) || decisionFallback;
         scene.choicePoint.description = choiceDescription;
         scene.choicePoint.stakes = {
           ...scene.choicePoint.stakes,
@@ -4191,6 +4254,12 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
     }
   }
 
+  private isAuthoredLiteEscEpisode(input: StoryArchitectInput): boolean {
+    const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+    return guidance?.sourceKind === 'authored_lite'
+      && Boolean(input.seasonPlanDirectives?.episodeSpine?.units?.length);
+  }
+
   private validatePreparedBlueprintForPlannedScenes(
     blueprint: EpisodeBlueprint,
     input: StoryArchitectInput,
@@ -4202,13 +4271,20 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         if (text && !warnings.includes(text)) warnings.push(text);
       }
     };
+    const authoredLiteEsc = this.isAuthoredLiteEscEpisode(input);
 
     try {
       this.validateBlueprint(blueprint, input);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
-      if (!cls.advisoryOnly) {
+      // ESC lockdown: TreatmentFidelity / choice gaps are blocking for authored_lite + ESC.
+      const forceHard = authoredLiteEsc && (
+        errorMsg.includes('[TreatmentFidelity]')
+        || errorMsg.includes('[PlannedChoiceGate]')
+        || errorMsg.includes('choicePoint')
+      );
+      if (!cls.advisoryOnly || forceHard) {
         return { success: false, error: errorMsg };
       }
       addWarnings(errorMsg.split('\n'));
@@ -4222,6 +4298,38 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         return { success: false, error: message };
       }
       addWarnings(structuralIssues);
+    }
+
+    if (authoredLiteEsc && input.seasonPlanDirectives?.episodeSpine) {
+      const projectedScenes = blueprint.scenes.map((bp, index) => {
+        const planned = (input.seasonPlanDirectives?.plannedScenes ?? []).find((scene) => scene.id === bp.id);
+        return {
+          id: bp.id,
+          episodeNumber: input.episodeNumber,
+          order: index,
+          kind: (bp.isEncounter ? 'encounter' : 'standard') as 'standard' | 'encounter',
+          title: bp.name,
+          dramaticPurpose: bp.dramaticPurpose || bp.description,
+          narrativeRole: bp.narrativeRole || 'development',
+          locations: bp.location ? [bp.location] : [],
+          npcsInvolved: bp.npcsPresent ?? [],
+          setsUp: bp.setsUp ?? [],
+          paysOff: bp.paysOff ?? [],
+          requiredBeats: bp.requiredBeats ?? [],
+          spineUnitId: bp.spineUnitId ?? planned?.spineUnitId,
+          relationshipPacing: planned?.relationshipPacing,
+        };
+      });
+      const spineResult = new EpisodeSpineContractValidator().validate({
+        spine: input.seasonPlanDirectives.episodeSpine,
+        scenes: projectedScenes,
+      });
+      if (!spineResult.valid) {
+        return {
+          success: false,
+          error: spineResult.issues.map((issue) => `[EpisodeSpineContract] ${issue.message}`).join('\n'),
+        };
+      }
     }
 
     return {
@@ -4430,6 +4538,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       this.repairTreatmentDramaticAudit(blueprint, input);
       this.repairTreatmentMajorChoicePressure(blueprint, input);
       this.seedChoiceMenusFromTreatment(blueprint, input);
+      this.materializePlannedHasChoicePoints(blueprint, input);
       this.repairTreatmentForwardPressure(blueprint, input.seasonPlanDirectives?.treatmentGuidance);
       this.repairTreatmentResidue(blueprint, input);
       this.ensureDramaticAuditMinimums(blueprint, input);
@@ -4448,6 +4557,16 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       this.ensureCharacterIntroductionBeats(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
+
+      const missingChoicePoints = this.collectMissingPlannedChoicePoints(blueprint);
+      if (missingChoicePoints.length > 0) {
+        return {
+          success: false,
+          error:
+            `[PlannedChoiceGate] Episode ${input.episodeNumber} has plannedHasChoice scene(s) without choicePoint: ` +
+            `${missingChoicePoints.join(', ')}. Materialize a real choicePoint before content generation.`,
+        };
+      }
 
       const sceneConstructionIssues = this.applySceneConstructionProfiles(blueprint, input);
       if (sceneConstructionIssues.length > 0 && isGateEnabled('GATE_SCENE_CONSTRUCTION_PREFLIGHT')) {
@@ -4527,6 +4646,17 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         data: blueprint,
         rawResponse: '',
         warnings: plannedValidation.warnings,
+      };
+    }
+
+    // Treatment-sourced episodes must elaborate from planned scenes / ESC —
+    // inventing a parallel scene graph is the primary structural drift vector.
+    if (input.seasonPlanDirectives?.treatmentGuidance || input.seasonPlanDirectives?.episodeSpine) {
+      return {
+        success: false,
+        error:
+          `Episode ${input.episodeNumber} is treatment-sourced but has no plannedScenes to elaborate. ` +
+          'Refuse invent-mode StoryArchitect for treatment runs; rebuild the season scene plan / ESC first.',
       };
     }
 
@@ -5037,6 +5167,10 @@ REQUIREMENTS:
     isParseError: boolean;
   } {
     const advisoryTags = ['[TreatmentFidelity]', '[DramaticStructure]', '[ThemePressure]', '[SceneTurnContract]', '[EpisodePressure]'];
+    // ESC lockdown: for authored_lite + ESC, TreatmentFidelity choice/turn gaps are hard.
+    // Callers pass the authoredLiteEscBlocking hint via a sentinel in the message when needed.
+    // Default classify still treats TreatmentFidelity as advisory unless the message
+    // includes the hard gate tag from collectMissingPlannedChoicePoints / PlannedChoiceGate.
 
     // Classify per line. Advisory validator messages carry a `[Tag]` prefix and
     // can incidentally mention hard-error keywords (e.g. TreatmentFidelity's
@@ -5815,6 +5949,36 @@ If you don't include enough choice points, the story will be rejected as non-int
     input: StoryArchitectInput,
     arc?: EpisodeBlueprint['arc'],
   ): StoryCircleStructure {
+    const spineCircle = input.seasonPlanDirectives?.episodeSpine?.episodeCircle;
+    if (spineCircle) {
+      const empty: StoryCircleStructure = {
+        you: '', need: '', go: '', search: '', find: '', take: '', return: '', change: '',
+      };
+      const fromSpine: StoryCircleStructure = { ...empty };
+      for (const beat of STORY_CIRCLE_BEATS) {
+        const text = spineCircle[beat];
+        if (typeof text === 'string' && text.trim()) fromSpine[beat] = text.trim();
+      }
+      const hasAny = STORY_CIRCLE_BEATS.some((beat) => fromSpine[beat].trim().length > 0);
+      if (hasAny) {
+        // Fill any empty active beats via scoped builder, then prefer spine text.
+        const guidance = input.seasonPlanDirectives?.treatmentGuidance;
+        const scoped = buildScopedEpisodeCircle({
+          episodeNumber: input.episodeNumber,
+          episodeTitle: input.episodeTitle || `Episode ${input.episodeNumber}`,
+          synopsis: input.episodeSynopsis || input.synopsis || 'the episode pressure',
+          majorPressure: guidance?.dramaticQuestion || guidance?.episodePromise,
+          episodeTurns: guidance?.episodeTurns,
+          storyCircleRole: input.episodeStoryCircleRole,
+          arc,
+          isFutureSeasonScopedText: (text) => this.isLikelyFutureSeasonEpisodeCircleText(text, input),
+        });
+        for (const beat of STORY_CIRCLE_BEATS) {
+          if (!fromSpine[beat].trim() && scoped[beat]?.trim()) fromSpine[beat] = scoped[beat];
+        }
+        return fromSpine;
+      }
+    }
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
     return buildScopedEpisodeCircle({
       episodeNumber: input.episodeNumber,

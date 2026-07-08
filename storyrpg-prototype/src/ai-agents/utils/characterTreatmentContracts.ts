@@ -1,5 +1,10 @@
 import type { SeasonPlan } from '../../types/seasonPlan';
-import type { CharacterArchitecture, ProtagonistTreatmentGuidance, StoryEndingTarget } from '../../types/sourceAnalysis';
+import type {
+  CharacterArchitecture,
+  NpcTreatmentGuidance,
+  ProtagonistTreatmentGuidance,
+  StoryEndingTarget,
+} from '../../types/sourceAnalysis';
 import type {
   CharacterTreatmentFieldKind,
   CharacterTreatmentRealizationContract,
@@ -229,8 +234,30 @@ function fallbackContracts(input: {
   return out;
 }
 
+export function buildNpcVisualIdentityContracts(input: {
+  npcGuidance?: NpcTreatmentGuidance[];
+  totalEpisodes: number;
+}): CharacterTreatmentRealizationContract[] {
+  const out: CharacterTreatmentRealizationContract[] = [];
+  for (const npc of input.npcGuidance ?? []) {
+    if (!npc.visualIdentity?.trim()) continue;
+    push(out, {
+      source: 'treatment',
+      characterId: npc.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      characterName: npc.name,
+      totalEpisodes: input.totalEpisodes,
+      fieldName: `${npc.name} visual identity`,
+      sourceText: npc.visualIdentity,
+      contractKind: 'visual_identity',
+      blockingLevel: 'structural',
+    });
+  }
+  return out;
+}
+
 export function buildCharacterTreatmentContracts(input: {
   guidance?: ProtagonistTreatmentGuidance;
+  npcGuidance?: NpcTreatmentGuidance[];
   characterArchitecture?: Parameters<typeof fallbackContracts>[0]['characterArchitecture'];
   protagonist?: { id?: string; name?: string; description?: string; fashionStyle?: unknown };
   endings?: StoryEndingTarget[];
@@ -238,18 +265,26 @@ export function buildCharacterTreatmentContracts(input: {
   treatmentSourced?: boolean;
 }): CharacterTreatmentRealizationContract[] {
   const explicit = explicitContracts(input);
-  if (explicit.length > 0) return explicit;
-  return fallbackContracts(input);
+  const npcVisual = buildNpcVisualIdentityContracts({
+    npcGuidance: input.npcGuidance,
+    totalEpisodes: input.totalEpisodes,
+  });
+  if (explicit.length > 0) return [...explicit, ...npcVisual];
+  return [...fallbackContracts(input), ...npcVisual];
 }
 
 export function buildCharacterTreatmentContractsForPlan(
   plan: Pick<SeasonPlan, 'characterTreatmentContracts' | 'characterArchitecture' | 'protagonist' | 'resolvedEndings' | 'totalEpisodes'> & {
-    treatmentSeasonGuidance?: { protagonistGuidance?: ProtagonistTreatmentGuidance };
+    treatmentSeasonGuidance?: {
+      protagonistGuidance?: ProtagonistTreatmentGuidance;
+      npcGuidance?: NpcTreatmentGuidance[];
+    };
   },
 ): CharacterTreatmentRealizationContract[] {
   if ((plan.characterTreatmentContracts ?? []).length > 0) return plan.characterTreatmentContracts ?? [];
   return buildCharacterTreatmentContracts({
     guidance: plan.treatmentSeasonGuidance?.protagonistGuidance,
+    npcGuidance: plan.treatmentSeasonGuidance?.npcGuidance,
     characterArchitecture: plan.characterArchitecture,
     protagonist: plan.protagonist,
     endings: plan.resolvedEndings,

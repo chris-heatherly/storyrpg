@@ -3,11 +3,18 @@ import { detectStoryEventCues, STORY_EVENT_CUE_ORDER, type StoryEventCue } from 
 
 const EXPLORATION_RE = /\b(?:explores?|wandering|wanders?|roams?|strolls?|walks?\s+(?:through|around|the))\b/i;
 const BOOKSHOP_SOCIAL_RE = /\b(?:bookshop|bookstore|lumina|befriend(?:s|ed|ing)?)\b/i;
-const CLUB_VENUE_RE = /\b(?:valescu|nightlife|club|velvet rope)\b/i;
-const GROUP_FORMATION_RE = /\b(?:dusk club|become\s+friends|forms?\s+(?:the\s+)?\w+\s+club|testing)\b/i;
+const CLUB_VENUE_RE = /\b(?:valescu|nightlife|velvet rope|(?<!dusk\s)club)\b/i;
+const GROUP_FORMATION_RE = /\b(?:dusk club|become\s+friends|forms?\s+(?:the\s+)?\w+\s+club)\b/i;
+/** Social/test beats must rank before bond/group formation (ESC: test < bond). */
+const TEST_BEAT_RE = /\b(?:testing|test(?:s|ed)?)\b/i;
 const ROOFTOP_RE = /\b(?:rooftop|terrace|charcoal suit|kitchen)\b/i;
 const THREAT_TURN_RE = /\b(?:attack(?:s|ed|ing)?|attacked|ambush(?:ed|es)?|rescued|rescue(?:s|d)?|cismigiu|cișmigiu|walk(?:s|ed|ing)?\s+home)\b/i;
 const POST_THREAT_RANK = 60;
+/** Explicit ranks so test never ties with bond under stable sort. */
+export const CHRONOLOGY_RANK_TEST = 42;
+export const CHRONOLOGY_RANK_BOND = 45;
+export const CHRONOLOGY_RANK_LATE_NIGHT_WRITING = 70;
+export const CHRONOLOGY_RANK_BLOG_AFTERMATH = 75;
 
 export function isThreatEncounterTurn(text: string): boolean {
   const cues = detectStoryEventCues(text);
@@ -124,8 +131,11 @@ export function assignAuthoredLiteTurnsToStandardScenes(
 
   const bindOneToOne = (turnIndices: number[], targets: PlannedScene[]) => {
     if (turnIndices.length === 0 || targets.length === 0) return;
+    // ESC lockdown: never stack overflow turns onto the last slot — leave unbound
+    // so callers can error. Cap at targets.length (extra turns stay -1).
     turnIndices.forEach((turnIndex, i) => {
-      const targetScene = targets[Math.min(i, targets.length - 1)];
+      if (i >= targets.length) return;
+      const targetScene = targets[i];
       const slot = turnTargets.indexOf(targetScene);
       if (slot >= 0) assignment[turnIndex] = slot;
     });
@@ -139,12 +149,19 @@ export function assignAuthoredLiteTurnsToStandardScenes(
     const pool = isPostThreatEpisodeTurn(turns[t])
       ? (afterTargets.length > 0 ? afterTargets : turnTargets)
       : (beforeTargets.length > 0 ? beforeTargets : turnTargets);
-    const slot = turnTargets.indexOf(pool[Math.min(t, pool.length - 1)]);
-    assignment[t] = slot >= 0 ? slot : 0;
+    // Do not stack: only bind if a free slot remains for this turn index within the pool.
+    const poolIndex = (isPostThreatEpisodeTurn(turns[t]) ? postThreat : preThreat).indexOf(t);
+    if (poolIndex < 0 || poolIndex >= pool.length) continue;
+    const slot = turnTargets.indexOf(pool[poolIndex]);
+    if (slot >= 0) assignment[t] = slot;
   }
 
-  for (let t = 1; t < assignment.length; t += 1) {
-    if (assignment[t] < assignment[t - 1]) assignment[t] = assignment[t - 1];
+  // Monotonic repair only among already-bound turns — never invent stacking.
+  let lastBound = -1;
+  for (let t = 0; t < assignment.length; t += 1) {
+    if (assignment[t] < 0) continue;
+    if (assignment[t] < lastBound) assignment[t] = lastBound;
+    lastBound = assignment[t];
   }
   return assignment;
 }
@@ -169,14 +186,34 @@ export function chronologyRankForText(text: string): number {
   if (EXPLORATION_RE.test(text) && !BOOKSHOP_SOCIAL_RE.test(text) && !/\b(?:arrives?|arrival|suitcases?)\b/i.test(text)) {
     rank = Math.min(rank, 15);
   }
-  if (CLUB_VENUE_RE.test(text)) {
+  if (CLUB_VENUE_RE.test(text) && !cues.has('blogAftermath') && !cues.has('lateNightWriting')) {
     rank = Math.min(rank, 35);
   }
-  if (GROUP_FORMATION_RE.test(text)) {
-    rank = Math.min(rank, 45);
+  // Test before bond — FORCE these ranks (do not Math.min with earlier socialMeet
+  // cues, or bond stays at 25 and sorts before test at 42).
+  if (TEST_BEAT_RE.test(text) && !GROUP_FORMATION_RE.test(text)) {
+    rank = CHRONOLOGY_RANK_TEST;
   }
-  if (ROOFTOP_RE.test(text)) {
+  if (GROUP_FORMATION_RE.test(text)) {
+    rank = CHRONOLOGY_RANK_BOND;
+  }
+  if (ROOFTOP_RE.test(text) && !cues.has('blogAftermath') && !cues.has('lateNightWriting')) {
     rank = Math.min(rank, 55);
+  }
+  // Apartment threshold / vanish / keycard doorstep is post-rescue aftermath,
+  // not an early venueDoor beat — keycard language otherwise ranks at 20 and
+  // pulls the doorstep scene before bookshop/club (ESC chronology drift).
+  if (/\b(?:doorstep|threshold|vanish(?:es|ed)?)\b/i.test(text)
+    || (/\b(?:key\s*card|keycard)\b/i.test(text) && /\b(?:apartment|flat|home|door)\b/i.test(text))) {
+    rank = Math.max(rank, POST_THREAT_RANK);
+  }
+  // Writing and viral metrics always follow the threat act — never compete with
+  // club/venue ranks from incidental "at the club" wording.
+  if (cues.has('lateNightWriting') || /\b(?:4\s*am|writes?\s+(?:the\s+)?blog|mr\.?\s*midnight|codename)\b/i.test(text)) {
+    rank = Math.max(rank, CHRONOLOGY_RANK_LATE_NIGHT_WRITING);
+  }
+  if (cues.has('blogAftermath') || /\b(?:goes\s+viral|went\s+viral|viral\s+(?:post|blog)|readership)\b/i.test(text)) {
+    rank = Math.max(rank, CHRONOLOGY_RANK_BLOG_AFTERMATH);
   }
 
   return rank;

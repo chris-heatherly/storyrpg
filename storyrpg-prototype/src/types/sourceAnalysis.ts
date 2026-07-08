@@ -380,6 +380,8 @@ export interface TreatmentSeasonGuidance {
   seasonMustResolve?: string;
   futureOpenThreads?: string;
   protagonistGuidance?: ProtagonistTreatmentGuidance;
+  /** Major NPC briefs with per-NPC visual_identity contracts. */
+  npcGuidance?: NpcTreatmentGuidance[];
   worldLocationGuidance?: WorldLocationTreatmentGuidance;
   characterArchitecture?: string;
   stakesArchitecture?: string;
@@ -495,6 +497,20 @@ export interface ProtagonistTreatmentGuidance {
   climaxChoice?: string;
   pressurePoints?: string[];
   visualIdentity?: string;
+}
+
+/** Per-NPC visual / role brief parsed from treatment `### NPC:` sections. */
+export interface NpcTreatmentGuidance {
+  name: string;
+  role?: string;
+  want?: string;
+  leverage?: string;
+  secretOrContradiction?: string;
+  relationshipToProtagonist?: string;
+  howChoicesCanChangeThem?: string;
+  /** Immutable visual tokens from treatment (Voice / visual notes or Visual identity). */
+  visualIdentity?: string;
+  rawSection?: string;
 }
 
 export interface WorldLocationTreatmentGuidance {

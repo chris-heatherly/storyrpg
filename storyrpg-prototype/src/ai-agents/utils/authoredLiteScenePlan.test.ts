@@ -95,7 +95,7 @@ describe('authoredLiteScenePlan intro order', () => {
 });
 
 describe('authoredLiteScenePlan scene budget', () => {
-  it('merges adjacent late-night writing and viral aftermath scenes', () => {
+  it('keeps late-night writing and viral aftermath as separate scenes', () => {
     const scenes = [
       scene('s1-5', 0, {
         dramaticPurpose: 'At 4am she drafts the anonymous blog post under a codename.',
@@ -106,9 +106,9 @@ describe('authoredLiteScenePlan scene budget', () => {
         requiredBeats: [{ id: 'rb2', tier: 'authored', mustDepict: 'viral aftermath', sourceTurn: 'viral' }],
       }),
     ];
-    expect(consolidateAuthoredLiteScenes(liteEpisode(), scenes)).toBeGreaterThan(0);
-    expect(scenes).toHaveLength(1);
-    expect(scenes[0].requiredBeats?.length).toBe(2);
+    // ESC lockdown: never collapse dramatized writing into metrics aftermath.
+    expect(consolidateAuthoredLiteScenes(liteEpisode(), scenes)).toBe(0);
+    expect(scenes).toHaveLength(2);
   });
 
   it('splits stacked spatial beats into separate scenes', () => {

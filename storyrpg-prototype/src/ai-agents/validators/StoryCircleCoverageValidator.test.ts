@@ -90,21 +90,21 @@ describe('StoryCircleCoverageValidator', () => {
     )).toBe(true);
   });
 
-  it('uses the canonical Story Circle polarity pairs', () => {
+  it('blocks weak Story Circle polarity pairs', () => {
     const input = baseInput();
     input.storyCircle!.find = input.storyCircle!.you;
     input.storyCircle!.change = input.storyCircle!.search;
 
     const result = new StoryCircleCoverageValidator().validate(input);
 
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.issues.some((issue) =>
-      issue.severity === 'warning' &&
+      issue.severity === 'error' &&
       issue.location === 'season.storyCircle.you vs season.storyCircle.find' &&
       issue.suggestion?.includes('starting comfort')
     )).toBe(true);
     expect(result.issues.some((issue) =>
-      issue.severity === 'warning' &&
+      issue.severity === 'error' &&
       issue.location === 'season.storyCircle.search vs season.storyCircle.change' &&
       issue.suggestion?.includes('permanent transformation')
     )).toBe(true);

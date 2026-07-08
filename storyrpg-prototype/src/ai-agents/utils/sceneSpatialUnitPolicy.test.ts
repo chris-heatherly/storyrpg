@@ -19,8 +19,8 @@ describe('sceneSpatialUnitPolicy', () => {
       kind: 'standard',
       locations: ['Lumina Books'],
       requiredBeats: [
-        { id: 'a', tier: 'authored', mustDepict: 'She explores the streets of Bucharest.' },
-        { id: 'b', tier: 'authored', mustDepict: 'She wanders into a bookshop owned by Stela who befriends her.' },
+        { id: 'a', tier: 'authored', sourceTurn: 'She explores the streets of Bucharest.', mustDepict: 'She explores the streets of Bucharest.' },
+        { id: 'b', tier: 'authored', sourceTurn: 'She wanders into a bookshop owned by Stela who befriends her.', mustDepict: 'She wanders into a bookshop owned by Stela who befriends her.' },
       ],
     });
     expect(violation?.locationCues.length).toBeGreaterThanOrEqual(2);

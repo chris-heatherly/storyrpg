@@ -148,6 +148,8 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   { validator: 'SceneTurnContractValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
   { validator: 'EpisodePressureArchitectureValidator', stage: 'architecture', tier: 'advisory', dispatchedFrom: 'StoryArchitect' },
   { validator: 'EpisodeStoryCircleValidator', stage: 'architecture', tier: 'blocking', remediation: 'plan-time', dispatchedFrom: 'StoryArchitect.validateBlueprint' },
+  { validator: 'EpisodeSpineContractValidator', stage: 'architecture', tier: 'blocking', remediation: 'plan-time', dispatchedFrom: 'StoryArchitect / seasonScenePlanBuilder' },
+  { validator: 'NpcVisualIdentityValidator', stage: 'architecture', tier: 'blocking', remediation: 'plan-time', dispatchedFrom: 'CharacterDesignPhase / final contract' },
   // Scene-construction preflight: each scene owns one primary turn and one owner per
   // route event before prose. Blocking (regenerate) behind GATE_SCENE_CONSTRUCTION_PREFLIGHT;
   // detection (profiles + SceneOwnershipPreflightValidator) always runs and is saved to
@@ -207,6 +209,8 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // the all-scenes seam in FullStoryPipeline hard-blocks on error-severity
   // unresolved references when GATE_PROP_INTRODUCTION=1. Default-off, advisory.
   { validator: 'PropIntroductionValidator', stage: 'diagnostic', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_PROP_INTRODUCTION', dispatchedFrom: 'narrativeDiagnostics / FullStoryPipeline' },
+  // ChoiceCoverage is advisory by default; authored_lite + ESC promotes missing
+  // planned choices to blocking via ChoiceCoverageInput.blocking.
   { validator: 'ChoiceCoverageValidator', stage: 'diagnostic', tier: 'advisory', dispatchedFrom: 'narrativeDiagnostics' },
 
   // --- Final assembly gate ---

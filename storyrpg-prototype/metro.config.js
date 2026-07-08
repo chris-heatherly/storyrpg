@@ -33,6 +33,18 @@ config.resolver.extraNodeModules = {
 
 // Stub out native Node modules that only run in the worker process
 const emptyModule = path.resolve(__dirname, 'src/empty-module.js');
+const processShim = path.resolve(__dirname, 'src/process-shim.js');
+
+// Ensure process.version exists before crypto-browserify / readable-stream load.
+// Import hoisting in index.ts is not enough — Metro must run this module first.
+const previousBeforeMain = config.serializer?.getModulesRunBeforeMainModule;
+config.serializer = {
+  ...config.serializer,
+  getModulesRunBeforeMainModule: (...args) => {
+    const prior = typeof previousBeforeMain === 'function' ? previousBeforeMain(...args) : [];
+    return [processShim, ...(Array.isArray(prior) ? prior : [])];
+  },
+};
 
 // Use resolveRequest as a more aggressive redirection for modules inside node_modules
 const originalResolveRequest = config.resolver.resolveRequest;

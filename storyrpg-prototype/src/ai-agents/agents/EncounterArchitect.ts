@@ -210,6 +210,12 @@ export interface EncounterArchitectInput {
    * with a generic fight.
    */
   centralConflict?: string;
+  /**
+   * Episode Spine Contract profile. `staged_rescue` requires the authored
+   * rescue to be the primary success path (escape is not a clean win).
+   * `social_test` requires a player-facing test choice. `tactical` is default.
+   */
+  encounterSpineProfile?: import('../../types/episodeSpine').EncounterSpineProfile;
 
   // Protagonist info
   protagonistInfo: {
@@ -1137,6 +1143,31 @@ export class EncounterArchitect extends BaseAgent {
         'This is a SUSTAINED SET PIECE: dramatize it as at least 3 escalating top-level beats',
         '(e.g. breach → repulse → decisive choice), spreading the required beats across them —',
         'never one decision plus a summary outcome.',
+      );
+    }
+    const profile = input.encounterSpineProfile;
+    if (profile === 'staged_rescue') {
+      lines.push(
+        '',
+        '## ENCOUNTER SPINE PROFILE: staged_rescue',
+        '- The authored rescue (named rescuer / rescue beat) MUST be the primary success path.',
+        '- Do NOT treat clean escape as a first-class win that skips the rescue.',
+        '- Escape may exist as a costly partial/defeat-adjacent branch, but victory and',
+        '  partialVictory must stage the rescue spine from the required beats.',
+        '- Aftermath must hand off to the next planned scene (threshold/doorstep), not invent a new venue.',
+      );
+    } else if (profile === 'social_test') {
+      lines.push(
+        '',
+        '## ENCOUNTER SPINE PROFILE: social_test',
+        '- Include at least one player-facing test/choice that earns trust or membership.',
+        '- Do not skip to settled friendship without on-page testing evidence.',
+      );
+    } else if (profile === 'tactical') {
+      lines.push(
+        '',
+        '## ENCOUNTER SPINE PROFILE: tactical',
+        '- Standard tactical branching (victory / partialVictory / defeat / escape) is allowed.',
       );
     }
     return lines.join('\n');

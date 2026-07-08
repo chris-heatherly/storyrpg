@@ -721,6 +721,15 @@ function isEpisodeOpeningScene(scene: PlannedScene, scenes: PlannedScene[]): boo
   return episodeScenes[0]?.id === scene.id;
 }
 
+/** Spatial splits of the opening scene remain part of the cold-open family. */
+function isEpisodeOpeningFamilyScene(scene: PlannedScene, scenes: PlannedScene[]): boolean {
+  if (isEpisodeOpeningScene(scene, scenes)) return true;
+  const opening = scenes
+    .filter((candidate) => candidate.episodeNumber === scene.episodeNumber)
+    .sort((a, b) => a.order - b.order)[0];
+  return Boolean(opening && scene.id.startsWith(`${opening.id}-spatial-`));
+}
+
 function sceneOwningColdOpenBeat(scene: PlannedScene, scenes: PlannedScene[], beat: RequiredBeat): PlannedScene {
   if (beat.tier !== 'coldopen' || isEpisodeOpeningScene(scene, scenes)) return scene;
   const text = beatText(beat);
@@ -731,7 +740,7 @@ function sceneOwningColdOpenBeat(scene: PlannedScene, scenes: PlannedScene[], be
 }
 
 function retierColdOpenBeatForOwner(beat: RequiredBeat, owner: PlannedScene, scenes: PlannedScene[]): RequiredBeat {
-  if (beat.tier !== 'coldopen' || isEpisodeOpeningScene(owner, scenes)) return beat;
+  if (beat.tier !== 'coldopen' || isEpisodeOpeningFamilyScene(owner, scenes)) return beat;
   return {
     ...beat,
     tier: 'authored',
@@ -1732,13 +1741,23 @@ function findOrCreateBlogAftermathScene(
   sourceScene: PlannedScene,
   triggerText?: string,
 ): PlannedScene {
+  // ESC lockdown: viral metrics helpers must never own lateNightWriting cues.
+  // If the source is the dramatized writing scene, still create a separate aftermath.
   const prerequisiteAnchor = latestBlogAftermathPrerequisiteScene(scenes, episodeNumber, sourceScene, triggerText);
   const existing = scenes
     .filter((scene) => scene.episodeNumber === episodeNumber && (isPrimaryBlogAftermathScene(scene) || isSyntheticBlogAftermathScene(scene)))
+    .filter((scene) => !primarySceneCues(scene).has('lateNightWriting') || isSyntheticBlogAftermathScene(scene))
     .sort((a, b) => a.order - b.order)[0];
   if (existing) {
     if (existing.order <= prerequisiteAnchor.order) {
       existing.order = prerequisiteAnchor.order + 0.35;
+    }
+    // Keep handoff text from restaging the writing moment.
+    if (existing.turnContract && !/do not restage/i.test(existing.turnContract.handoff || '')) {
+      existing.turnContract = {
+        ...existing.turnContract,
+        handoff: 'Let the public attention become pressure without restaging the writing moment.',
+      };
     }
     return existing;
   }
@@ -1749,6 +1768,8 @@ function findOrCreateBlogAftermathScene(
     order: prerequisiteAnchor.order + 0.35,
     kind: 'standard',
     encounter: undefined,
+    spineUnitId: undefined,
+    encounterProfile: undefined,
     title: 'The post becomes public pressure',
     planningOrigin: {
       kind: 'binder_split',

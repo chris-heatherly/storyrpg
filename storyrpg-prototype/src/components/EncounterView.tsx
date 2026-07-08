@@ -2288,41 +2288,6 @@ export const EncounterView: React.FC<EncounterViewProps> = ({
           ))}
         </View>
       )}
-
-      {encounter.npcStates && encounter.npcStates.length > 0 && (
-        <View style={styles.npcStateContainer}>
-          {encounter.npcStates.map(npc => {
-            const revealedTell = npc.tells?.find((tell, index) => {
-              const tellId = `${npc.npcId}:${index}`;
-              if (encounterState?.revealedTells?.has(tellId)) return true;
-              const threatPercent = (encounterState?.threatProgress || 0) / (encounterState?.threatMax || 6);
-              const goalPercent = (encounterState?.goalProgress || 0) / (encounterState?.goalMax || 6);
-              switch (tell.revealCondition) {
-                case 'encounter_50_percent': return (threatPercent + goalPercent) / 2 >= 0.5;
-                case 'high_threat': return threatPercent >= 0.75;
-                default: return false;
-              }
-            });
-
-            return (
-              <View key={npc.npcId} style={styles.npcStateBadge}>
-                <Text style={styles.npcName}>{npc.name}</Text>
-                <Text style={[styles.npcDisposition, {
-                  color: (encounterState?.npcDispositions?.[npc.npcId] || npc.currentDisposition) === 'confident' ? TERMINAL.colors.success :
-                         (encounterState?.npcDispositions?.[npc.npcId] || npc.currentDisposition) === 'desperate' ? TERMINAL.colors.error :
-                         (encounterState?.npcDispositions?.[npc.npcId] || npc.currentDisposition) === 'enraged' ? '#f97316' :
-                         (encounterState?.npcDispositions?.[npc.npcId] || npc.currentDisposition) === 'calculating' ? '#8b5cf6' : TERMINAL.colors.amberLight
-                }]}>
-                  {((encounterState?.npcDispositions?.[npc.npcId] || npc.currentDisposition) ?? 'neutral').toUpperCase()}
-                </Text>
-                {revealedTell && (
-                  <Text style={styles.npcTell}>💡 {revealedTell.tellDescription}</Text>
-                )}
-              </View>
-            );
-          })}
-        </View>
-      )}
     </>
   );
 
@@ -2672,39 +2637,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     maxWidth: 80,
-  },
-  // NPC state styles
-  npcStateContainer: {
-    position: 'absolute',
-    top: 130,
-    right: 12,
-    gap: 6,
-    zIndex: 100,
-    alignItems: 'flex-end',
-  },
-  npcStateBadge: {
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    alignItems: 'flex-end',
-    maxWidth: 150,
-  },
-  npcName: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  npcDisposition: {
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-  npcTell: {
-    color: TERMINAL.colors.amberLight,
-    fontSize: 9,
-    marginTop: 2,
-    fontStyle: 'italic',
   },
   // Skill check pill on choice buttons
   skillPill: {

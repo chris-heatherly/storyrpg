@@ -30,6 +30,7 @@ import {
   buildResidueRepairDirectorNotes,
   degradeMissingResidueIssues,
   deriveEpisodeResidueDirective,
+  materializeFlagVariantCallbackHooks,
   missingResidueSceneIds,
   type ResidueEpisodeSceneLike,
   type ResidueRequirement,
@@ -53,7 +54,15 @@ export interface ResidueCriticLike {
 interface ResidueSceneContentLike {
   sceneId?: string;
   startingBeatId?: string;
-  beats?: Array<{ id?: string }>;
+  beats?: Array<{
+    id?: string;
+    callbackHookIds?: string[];
+    textVariants?: Array<{
+      text?: string;
+      callbackHookId?: string;
+      condition?: { type?: string; flag?: string; value?: unknown };
+    }>;
+  }>;
 }
 
 export interface ReconvergenceResidueGateOptions {
@@ -117,7 +126,8 @@ export async function runReconvergenceResidueGate<T extends ResidueValidationRes
           continue;
         }
         const directive = deriveEpisodeResidueDirective(episodeScenes, sceneId);
-        const notes = buildResidueRepairDirectorNotes(sceneId, directive, requirementByScene.get(sceneId));
+        const requirement = requirementByScene.get(sceneId);
+        const notes = buildResidueRepairDirectorNotes(sceneId, directive, requirement);
         const firstBeatId = scene.startingBeatId || scene.beats[0]?.id;
         try {
           const critique = await withTimeout(
@@ -136,11 +146,22 @@ export async function runReconvergenceResidueGate<T extends ResidueValidationRes
             rewrittenBeats as never,
             (ids) => emit({ type: 'warning', phase, message: `Residue repair of ${sceneId}: ${ids.length} rewritten beat(s) [${ids.join(', ')}] matched no beat (drifted ids) — not applied.` }),
           );
-          if (merged > 0) {
+          const allowedFlags = Array.from(new Set([
+            ...directive.gatingFlags,
+            ...(requirement?.gatingFlags ?? []),
+          ]));
+          const callbackResidue = merged > 0
+            ? materializeFlagVariantCallbackHooks(scene, allowedFlags)
+            : 0;
+          if (merged > 0 && callbackResidue > 0) {
             repairedSceneIds.push(sceneId);
-            emit({ type: 'debug', phase, message: `Residue repair rewrote ${merged} beat(s) in ${sceneId} to acknowledge the branch path.` });
+            emit({ type: 'debug', phase, message: `Residue repair rewrote ${merged} beat(s) in ${sceneId} and materialized ${callbackResidue} condition-gated callback residue variant(s).` });
           } else {
-            emit({ type: 'warning', phase, message: `Residue repair for ${sceneId} produced no usable rewrite${critique.error ? ` (${critique.error})` : ''}.` });
+            emit({
+              type: 'warning',
+              phase,
+              message: `Residue repair for ${sceneId} produced no usable condition-gated opening callback${critique.error ? ` (${critique.error})` : ''}.`,
+            });
           }
         } catch (err) {
           emit({

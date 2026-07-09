@@ -218,6 +218,7 @@ import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phase
 import { AssemblyPhase } from './phases/AssemblyPhase';
 import { bindStoryMediaAssets, rethrowAsImagePhaseFailure } from './mediaBinding';
 import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
+import { buildEpisodeDraftCheckpoint, readEpisodeDraftCheckpoint } from './episodeDraftCheckpoint';
 import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
 import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
 import { NPCDepthValidationPhase } from './phases/NPCDepthValidationPhase';
@@ -229,6 +230,7 @@ import {
   savePipelineErrorLog,
   saveLlmLedgerSidecar,
   saveFinalStoryContractFailure,
+  saveFinalContractRepairRound,
   savePartialStory,
   appendFailedRunLedger,
   saveEarlyDiagnostic,
@@ -961,6 +963,9 @@ export class FullStoryPipeline {
         },
       ),
     );
+    BaseAgent.setLlmSemanticFailureObserver((failure) => {
+      this.telemetry.observeSemanticFailure(failure.agentName, failure.provider, failure.category);
+    });
     // WS5 truncation shadow counter: every lossy truncation recovery (landmine
     // L4 — content silently dropped from a "successful" parse) is ledgered per
     // agent in 09-llm-ledger.json and surfaced as a run warning. This shadow
@@ -2550,6 +2555,7 @@ export class FullStoryPipeline {
     this.events = [];
     this.checkpoints = [];
     this.telemetry = new PipelineTelemetry();
+    this._totalTokensUsed = 0;
     this.pipelineStartedAtMs = Date.now();
     this.progressTelemetryTracker.reset();
     this.completedPhases = new Set<string>();
@@ -2982,11 +2988,11 @@ export class FullStoryPipeline {
       await this.checkCancellation();
       this.emit({ type: 'phase_start', phase: 'content', message: 'Phase 4: Writing scene content' });
       this.requirePhases('content_generation', ['episode_architecture']);
-      const resumedSceneContent = this.getResumeOutput<{
-        sceneContents?: SceneContent[];
-        choiceSets?: ChoiceSet[];
-        encounters?: Array<[string, EncounterStructure]>;
-      }>(resumeCheckpoint, 'scene_content');
+      const draftBlueprintFingerprint = episodeBlueprint.scenes.map((scene) => scene.id).join('|');
+      const resumedSceneContent = readEpisodeDraftCheckpoint(
+        this.getResumeOutput<unknown>(resumeCheckpoint, 'scene_content'),
+        { episodeNumber: brief.episode.number, blueprintId: draftBlueprintFingerprint },
+      );
       let contentGenerationResult: {
         sceneContents: SceneContent[];
         choiceSets: ChoiceSet[];
@@ -3035,7 +3041,13 @@ export class FullStoryPipeline {
 	      } else {
 	        this.addCheckpoint(
 	          'Scene Content',
-	          { sceneContents, choiceSets, encounterCount: encounters.size, encounters: Array.from(encounters.entries()) },
+	          buildEpisodeDraftCheckpoint({
+	            episodeNumber: brief.episode.number,
+	            blueprintId: draftBlueprintFingerprint,
+	            sceneContents,
+	            choiceSets,
+	            encounters,
+	          }),
 	          true
 	        );
 	      }
@@ -4975,6 +4987,7 @@ export class FullStoryPipeline {
     this.events = [];
     this.checkpoints = [];
     this.telemetry = new PipelineTelemetry();
+    this._totalTokensUsed = 0;
     this.pipelineStartedAtMs = Date.now();
     this.progressTelemetryTracker.reset();
     this.completedPhases = new Set<string>();
@@ -5621,7 +5634,12 @@ export class FullStoryPipeline {
             }))
           );
           // F4: early-return path — record the failed run in the quality ledger.
-          await appendFailedRunLedger(outputDirectory, episodeResults.filter(r => !r.success).length);
+          await appendFailedRunLedger(outputDirectory, episodeResults.filter(r => !r.success).length, {
+            durationMs: Date.now() - startTime,
+            llmLedger: this.telemetry.getLlmLedger(),
+            remediationSummary: this.getRemediationSummary(),
+          });
+          await saveLlmLedgerSidecar(outputDirectory, this.telemetry.getLlmLedger());
         } catch (_logErr) { /* non-fatal */ }
         
         // Still save partial results (world bible, character bible) for debugging
@@ -5677,7 +5695,11 @@ export class FullStoryPipeline {
           );
           // F4: this episode-failure path returns early (never reaches the
           // terminal catch), so record the failed run in the quality ledger here.
-          await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length);
+          await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length, {
+            durationMs: Date.now() - startTime,
+            llmLedger: this.telemetry.getLlmLedger(),
+            remediationSummary: this.getRemediationSummary(),
+          });
           // P3: persist per-call usage telemetry on this early-return failure path.
           await saveLlmLedgerSidecar(outputDirectory, this.telemetry.getLlmLedger());
         } catch (_logErr) { /* non-fatal */ }
@@ -6035,6 +6057,9 @@ export class FullStoryPipeline {
             blocked: true,
             failureKind: error instanceof PipelineError ? error.phase : (error instanceof Error ? error.name : 'unknown'),
             validatorId: error instanceof PipelineError ? error.agent : undefined,
+            durationMs: Date.now() - startTime,
+            llmLedger: this.telemetry.getLlmLedger(),
+            remediationSummary: this.getRemediationSummary(),
           });
         }
       }
@@ -8597,6 +8622,11 @@ export class FullStoryPipeline {
           if (!rawOutputDirectory) return;
           const outputDirectory = rawOutputDirectory.endsWith('/') ? rawOutputDirectory : `${rawOutputDirectory}/`;
           await saveFinalStoryContractFailure(outputDirectory, story, report);
+        },
+        saveRepairRoundSnapshot: async (snapshot, story, report) => {
+          const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
+          if (!rawOutputDirectory) return;
+          await saveFinalContractRepairRound(rawOutputDirectory, snapshot, story, report);
         },
         disambiguateProtagonistPronouns: this.disambiguateProtagonistPronouns.bind(this),
         authorEncounterOutcomeVariants: this.authorEncounterOutcomeVariants.bind(this),

@@ -360,12 +360,33 @@ function mergeAdjacentAftermathScenes(scenes: PlannedScene[]): number {
   return 0;
 }
 
-function trimSurplusStandardScenes(ep: SeasonEpisode, scenes: PlannedScene[]): number {
+function trimSurplusStandardScenes(
+  ep: SeasonEpisode,
+  scenes: PlannedScene[],
+  episodeSpine?: EpisodeSpineContract,
+): number {
   const spineTurns = authoredLiteSpineTurns(ep);
   const encounterCount = scenes.filter((scene) => scene.kind === 'encounter').length;
   const budget = countAuthoredLiteSceneBudget(spineTurns, encounterCount);
-  const turnBudget = budget.preThreatScenes + budget.postThreatScenes;
+  // ESC may decompose compound turns (test/bond) into more units than the raw
+  // treatment turn list. Never trim below that standard-unit floor or bond/test
+  // units lose their projected scene after elaborate.
+  const escStandardFloor = episodeSpine
+    ? episodeSpine.units.filter((unit) => unit.sceneKind !== 'encounter').length
+    : 0;
+  const turnBudget = Math.max(budget.preThreatScenes + budget.postThreatScenes, escStandardFloor);
   if (turnBudget === 0) return 0;
+  const protectedSpineIds = new Set(
+    (episodeSpine?.units ?? [])
+      .filter((unit) =>
+        unit.kind === 'bond'
+        || unit.kind === 'test'
+        || unit.kind === 'meet'
+        || unit.kind === 'threshold'
+        || (unit.obligations?.length ?? 0) > 0
+      )
+      .map((unit) => unit.id),
+  );
   let removed = 0;
   const countStandard = () => scenes.filter((scene) => scene.kind === 'standard' && scene.narrativeRole !== 'release').length;
   while (countStandard() > turnBudget) {
@@ -373,6 +394,7 @@ function trimSurplusStandardScenes(ep: SeasonEpisode, scenes: PlannedScene[]): n
     for (let i = scenes.length - 1; i >= 0; i -= 1) {
       const scene = scenes[i];
       if (scene.kind !== 'standard' || scene.narrativeRole === 'release') continue;
+      if (scene.spineUnitId && protectedSpineIds.has(scene.spineUnitId)) continue;
       const hasAuthored = (scene.requiredBeats ?? []).some((beat) =>
         beat.tier === 'authored' || beat.tier === 'signature' || beat.tier === 'coldopen');
       if (hasAuthored) continue;
@@ -397,7 +419,7 @@ export function consolidateAuthoredLiteScenes(
   if (!isAuthoredLiteEpisode(ep)) return 0;
   // ESC lockdown: never collapse late_night_writing into viral metrics.
   const mergeChanges = episodeSpine ? 0 : mergeAdjacentAftermathScenes(scenes);
-  return mergeChanges + trimSurplusStandardScenes(ep, scenes);
+  return mergeChanges + trimSurplusStandardScenes(ep, scenes, episodeSpine);
 }
 
 type LocationInferer = (text: string, locations: string[]) => string | undefined;
@@ -599,11 +621,32 @@ export function appendEncounterRescuerNamingBeat(scene: PlannedScene): boolean {
 
 export function applyAuthoredEncounterPresentation(scene: PlannedScene, anchorText: string): boolean {
   const inferred = inferAuthoredEncounterPresentation(anchorText);
-  if (!inferred.type && !inferred.style) return false;
   if (!scene.encounter) return false;
-  if (inferred.type) scene.encounter.type = inferred.type;
-  if (inferred.style) scene.encounter.style = inferred.style;
-  return true;
+  let changed = false;
+  if (inferred.type && scene.encounter.type !== inferred.type) {
+    scene.encounter.type = inferred.type;
+    changed = true;
+  }
+  if (inferred.style && scene.encounter.style !== inferred.style) {
+    scene.encounter.style = inferred.style;
+    changed = true;
+  }
+  const sourceAnchor = anchorText?.replace(/\s+/g, ' ').trim();
+  if (sourceAnchor) {
+    if (scene.encounter.sourceSynopsis !== sourceAnchor) {
+      scene.encounter.sourceSynopsis = sourceAnchor;
+      changed = true;
+    }
+    if (!scene.encounter.authoredAnchor) {
+      scene.encounter.authoredAnchor = sourceAnchor;
+      changed = true;
+    }
+    if (scene.encounter.description?.trim() === sourceAnchor) {
+      delete scene.encounter.description;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /** Stamp outgoing residue obligations onto choice scenes via mechanic-pressure hooks. */
@@ -619,6 +662,15 @@ export function attachAuthoredLiteResidueHooks(
 
   for (const obligation of outgoingResidue) {
     if (obligation.sourceEpisodeNumber !== ep.episodeNumber || !obligation.flag) continue;
+    // Broad season-anchor consequence blurbs are not choice-settable residue.
+    const guidance = `${obligation.authoringGuidance || ''} ${obligation.choiceAnchor || ''}`.trim();
+    if (
+      guidance
+      && (guidance.match(/,/g) || []).length >= 3
+      && /\b(?:blog|dusk club|staged|become live|season anchors?)\b/i.test(guidance)
+    ) {
+      continue;
+    }
     const anchor = obligation.choiceAnchor?.toLowerCase() ?? '';
     const keywords = flagKeywords(obligation.flag);
     const target = scenes.find((scene) =>
@@ -671,6 +723,8 @@ export function finalizeAuthoredLiteScenePlan(
   for (const scene of scenes) {
     if (scene.kind !== 'encounter' || !scene.encounter) continue;
     const anchor = [
+      scene.encounter.sourceSynopsis,
+      scene.encounter.authoredAnchor,
       scene.encounter.description,
       scene.encounter.centralConflict,
       scene.dramaticPurpose,

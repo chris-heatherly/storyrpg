@@ -26,7 +26,19 @@ function sceneContents() {
     {
       sceneId: 's4',
       startingBeatId: 's4-b1',
-      beats: [{ id: 's4-b1', text: 'The gate looms.' } as { id: string; text?: string; textVariants?: unknown }],
+      beats: [{
+        id: 's4-b1',
+        text: 'The gate looms.',
+      } as {
+        id: string;
+        text?: string;
+        callbackHookIds?: string[];
+        textVariants?: Array<{
+          condition?: { type?: string; flag?: string; value?: unknown };
+          text?: string;
+          callbackHookId?: string;
+        }>;
+      }],
     },
   ];
 }
@@ -69,6 +81,8 @@ describe('runReconvergenceResidueGate', () => {
     expect(outcome.attemptedSceneIds).toEqual(['s4']);
     // The regen merged the textVariants into the in-memory scene contents.
     expect(contents[0].beats[0].textVariants).toBeDefined();
+    expect(contents[0].beats[0].textVariants?.[0]?.callbackHookId).toBe('flag:took_bridge');
+    expect(contents[0].beats[0].callbackHookIds).toContain('flag:took_bridge');
     // Exactly ONE regen pass, with the residue requirement injected and the
     // earliest beat flagged.
     expect(critic.execute).toHaveBeenCalledTimes(1);

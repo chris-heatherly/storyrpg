@@ -178,6 +178,23 @@ describe('sceneContractBuilders', () => {
     expect(input.keyBeats.some((beat) => beat.startsWith('PEAK:'))).toBe(true);
   });
 
+  it('never seeds visualThread from treatment titles via Track-the-visible scaffold', () => {
+    const input = scene({
+      name: 'She wanders into a bookshop owned by Stela who befriends her and…',
+      location: 'Lumina Books',
+      requiredBeats: [{
+        id: 'rb-1',
+        tier: 'authored',
+        sourceTurn: 'She wanders into a bookshop owned by Stela who befriends her.',
+        mustDepict: 'She wanders into a bookshop owned by Stela who befriends her.',
+      }],
+    });
+
+    const contract = deriveSceneContract(input, { sceneIndex: 1 });
+    expect(contract.sequenceIntent.visualThread).not.toMatch(/Track the visible consequence/i);
+    expect(contract.sequenceIntent.visualThread).toMatch(/Lumina Books|geography|threshold/i);
+  });
+
   it('hydrates a complete stakes ladder for opening scenes with empty key beats', () => {
     const input = scene({
       id: 's1-arrival-cold-open',

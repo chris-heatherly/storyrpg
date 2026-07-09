@@ -339,6 +339,8 @@ export interface EncounterArchitectInput {
 export interface Phase1Result {
   sceneId: string;
   encounterType: string;
+  /** LLM-authored, second-person playable encounter metadata. */
+  description: string;
   goalClock: { name: string; segments: number; description: string };
   threatClock: { name: string; segments: number; description: string };
   stakes: { victory: string; defeat: string };
@@ -956,6 +958,8 @@ export interface EncounterStructure {
   sceneId: string;
   encounterType: EncounterType;
   encounterStyle?: EncounterNarrativeStyle;
+  /** LLM-authored playable metadata; never copied from treatment source text. */
+  description: string;
   beats: EncounterBeat[];
   startingBeatId: string;
   
@@ -2237,6 +2241,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
 
 ## TEXT RULES
 - Use the protagonist's actual name, concrete pronouns, or you/your; never emit template variables.
+- description: one concrete, second-person playable sentence (40 words maximum) authored from the encounter source; do not copy outline/treatment phrasing.
 - The opening setupText MUST anchor the encounter POV to the protagonist before focusing on NPCs, setting, or threat.
 - Prefer the protagonist's actual name as the subject for concrete protagonist actions; use you/your only for direct reader-facing immediacy.
 - NPCs use their actual names
@@ -2254,6 +2259,7 @@ ${ENCOUNTER_PROSE_DISCIPLINE}
 {
   "sceneId": "${input.sceneId}",
   "encounterType": "${input.encounterType}",
+  "description": "one concrete second-person sentence, 40 words max",
   "encounterStyle": "${input.encounterStyle || 'auto'}",
   "storyboard": {
     "spine": [
@@ -3811,6 +3817,40 @@ RULES:
     }
   }
 
+  /**
+   * Re-author only the shippable encounter description. Source synopsis and
+   * treatment anchors are context, never output fields or deterministic prose.
+   */
+  async reauthorEncounterDescription(input: {
+    currentDescription?: string;
+    sourceSynopsis?: string;
+    sceneName?: string;
+    sceneProse?: string;
+  }): Promise<string | undefined> {
+    const prompt = `Re-author one playable encounter description.
+Return ONLY JSON: {"description":"..."}
+
+Requirements:
+- One concrete second-person sentence, 40 words maximum.
+- Describe the immediate in-world pressure the reader faces.
+- Do not mention treatments, plans, beats, metadata, protagonists, players, stats, dice, or system mechanics.
+- Do not copy the source wording verbatim.
+
+Scene: ${input.sceneName || 'Encounter'}
+Current unsafe description: ${input.currentDescription || 'none'}
+Author-only source context: ${input.sourceSynopsis || 'none'}
+Realized scene prose: ${input.sceneProse || 'none'}`;
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 1);
+      const parsed = this.parseJSON<{ description?: unknown }>(raw);
+      const description = typeof parsed?.description === 'string' ? parsed.description.replace(/\s+/g, ' ').trim() : '';
+      return description || undefined;
+    } catch (err) {
+      console.warn(`[EncounterArchitect] reauthorEncounterDescription failed (field unchanged): ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
   private createDefaultStorylet(
     outcome: 'victory' | 'partialVictory' | 'defeat' | 'escape',
     input: EncounterArchitectInput
@@ -4146,6 +4186,7 @@ ${choiceSection}
 {
   "sceneId": "${input.sceneId}",
   "encounterType": "${input.encounterType}",
+  "description": "one concrete second-person sentence, 40 words max",
   "encounterStyle": "${input.encounterStyle || 'auto'}",
   "storyboard": {
     "spine": [
@@ -4668,6 +4709,7 @@ Beat 2 = "resolution" phase (the climax, all outcomes are terminal)
 {
   "sceneId": "${input.sceneId}",
   "encounterType": "${input.encounterType}",
+  "description": "one concrete second-person sentence, 40 words max",
   "goalClock": { "name": "string", "segments": 6, "description": "string" },
   "threatClock": { "name": "string", "segments": 4, "description": "string" },
   "stakes": { "victory": "string", "defeat": "string" },
@@ -5240,6 +5282,7 @@ CRITICAL RULES:
 ## COMPACT PHASE 1 RETRY
 The prior Gemini attempt exhausted its structured output budget. Keep this answer tiny and complete.
 - No markdown, commentary, alternate drafts, analysis, or extra schema fields.
+- description: one concrete second-person sentence, 40 words maximum; author it from the source situation instead of copying treatment language.
 - setupText: 2 sentences, 45 words maximum.
 - exactly 3 choices only: aggressive, cautious, clever.
 - choice text: 8 words maximum.
@@ -5260,6 +5303,7 @@ ${authoredBeats ? `\n## Must Touch These Beats\n${authoredBeats}\n` : ''}${forma
 {
   "sceneId": "${input.sceneId}",
   "encounterType": "${input.encounterType}",
+  "description": "one concrete second-person sentence, 40 words max",
   "goalClock": { "name": "short string", "segments": 6, "description": "short string" },
   "threatClock": { "name": "short string", "segments": 4, "description": "short string" },
   "stakes": { "victory": "short string", "defeat": "short string" },
@@ -5946,6 +5990,7 @@ Phase 4 now generates bounded storylet slots separately: victory, partialVictory
       sceneId: phase1.sceneId || input.sceneId,
       encounterType: (phase1.encounterType || input.encounterType) as EncounterType,
       encounterStyle: input.encounterStyle,
+      description: phase1.description,
       goalClock: phase1.goalClock || { name: 'Objective', segments: 6, description: 'Achieve the goal' },
       threatClock: phase1.threatClock || { name: 'Danger', segments: 4, description: 'Escalating threat' },
       stakes: phase1.stakes || { victory: 'Overcome the challenge', defeat: 'Suffer the consequences' },

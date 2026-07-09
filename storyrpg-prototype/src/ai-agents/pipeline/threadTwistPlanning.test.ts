@@ -14,6 +14,7 @@ import {
   isThreadTwistPlanningEnabled,
   planEpisodeThreadsAndTwist,
   mergeIntoSeasonLedger,
+  materializeTwistPlan,
   openPriorThreads,
   sceneActiveThreads,
   sceneTwistDirectives,
@@ -22,6 +23,7 @@ import {
   type TwistArchitectLike,
 } from './threadTwistPlanning';
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
+import type { SceneContent } from '../agents/SceneWriter';
 import type { TwistPlan } from '../agents/TwistArchitect';
 import type { NarrativeThread, ThreadLedger } from '../../types';
 
@@ -349,5 +351,98 @@ describe('sceneTwistDirectives (SceneWriter input mapping)', () => {
       { twistKind: 'revelation', beatRole: 'twist', hint: 'The letter.' },
       { twistKind: 'revelation', beatRole: 'satisfaction', hint: 'Sit with it.' },
     ]);
+  });
+});
+
+describe('materializeTwistPlan', () => {
+  it('binds placeholder plan ids to concrete generated beats and marks setup/reveal', () => {
+    const plan = makeTwistPlan({
+      foreshadowBeatId: 'planned-foreshadow',
+      twistBeatId: 'planned-reveal',
+    });
+    const sceneContents: SceneContent[] = [
+      {
+        sceneId: 's1-1',
+        sceneName: 'Opening',
+        startingBeatId: 'actual-setup',
+        beats: [{ id: 'actual-setup', text: 'The mentor flinches at the name.' }],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneId: 's1-2',
+        sceneName: 'Reveal',
+        startingBeatId: 'actual-reveal',
+        beats: [{ id: 'actual-reveal', text: 'The letter names the mentor.' }],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+    ];
+
+    const result = materializeTwistPlan(plan, sceneContents);
+
+    expect(result).toMatchObject({
+      status: 'materialized',
+      foreshadowBeatId: 'actual-setup',
+      twistBeatId: 'actual-reveal',
+    });
+    expect(sceneContents[0].beats[0].plotPointType).toBe('setup');
+    expect(sceneContents[1].beats[0].plotPointType).toBe('revelation');
+    expect(plan.realization?.status).toBe('materialized');
+    expect(plan.directives.map((directive) => directive.beatId)).toEqual(['actual-setup', 'actual-reveal']);
+  });
+
+  it('only defers a missing target through a future partial-season contract', () => {
+    const plan = makeTwistPlan({ twistSceneId: 'episode-3-reveal' });
+
+    const invalid = materializeTwistPlan(plan, []);
+    expect(invalid.status).toBe('invalid');
+    expect(plan.realization).toBeUndefined();
+
+    const deferred = materializeTwistPlan(plan, [], {
+      generatedThroughEpisode: 1,
+      deferredUntilEpisode: 3,
+      reason: 'The current run intentionally generates only episode 1.',
+    });
+    expect(deferred.status).toBe('deferred');
+    expect(plan.realization).toMatchObject({
+      status: 'deferred',
+      deferredUntilEpisode: 3,
+    });
+  });
+
+  it('rejects a same-scene or late foreshadow instead of silently marking it', () => {
+    const plan = makeTwistPlan({
+      foreshadowSceneId: 's1-2',
+      twistSceneId: 's1-1',
+    });
+    const result = materializeTwistPlan(plan, [
+      {
+        sceneId: 's1-1',
+        sceneName: 'Reveal',
+        startingBeatId: 'b1',
+        beats: [{ id: 'b1', text: 'Reveal.' }],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+      {
+        sceneId: 's1-2',
+        sceneName: 'Late setup',
+        startingBeatId: 'b2',
+        beats: [{ id: 'b2', text: 'Too late.' }],
+        moodProgression: [],
+        charactersInvolved: [],
+        keyMoments: [],
+        continuityNotes: [],
+      },
+    ]);
+
+    expect(result.status).toBe('invalid');
   });
 });

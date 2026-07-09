@@ -250,7 +250,7 @@ describe('RelationshipArcLedgerValidator', () => {
       relationshipPacing: [contract],
       beats: [{
         id: 'b1',
-        text: 'The strangers raise their glasses, and for one dangerous second the room feels like family.',
+        text: 'The Archive Circle strangers raise their glasses, and for one dangerous second the group feels like family.',
         choices: [],
       }],
     } as Scene;
@@ -307,7 +307,7 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
   it('fails when narration declares friendship on a first meeting', () => {
     const result = new RelationshipArcLedgerValidator().validate({
       story: npcStory([beatScene('s1-1', [
-        { id: 'b1', text: 'Mika hands you the key card. By the door, she is already your friend.', choices: [] },
+        { id: 'b1', text: 'By the door, Mika is already your friend.', choices: [] },
       ], [npcContract()])]),
       treatmentSourced: true,
     });
@@ -363,7 +363,7 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
   it('still blocks a claimed intimate stage before the ledger earns it', () => {
     const result = new RelationshipArcLedgerValidator().validate({
       story: npcStory([beatScene('s1-1', [
-        { id: 'b1', text: 'Mika pours the wine. The two of you are intimate now, the way only years can make people.', choices: [] },
+        { id: 'b1', text: 'Mika pours the wine, and the two of you are intimate now, the way only years can make people.', choices: [] },
       ], [npcContract()])]),
       treatmentSourced: true,
     });
@@ -570,7 +570,7 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
               id: 'c1',
               text: 'Answer honestly',
               consequences: [{ type: 'relationship', npcId: 'mika', dimension: 'trust', change: 6 }],
-              relationshipValueEvidence: [{ npcId: 'mika', axis: 'love', evidenceTags: ['protected_player'], reason: 'She steps between you and the watcher.', intendedSurface: 'protection' }],
+              relationshipValueEvidence: [{ npcId: 'mika', axis: 'love', evidenceTags: ['protected_player'], reason: 'She steps between you and the watcher.', intendedSurface: 'mutual_aid' }],
             }],
           },
         ], []),

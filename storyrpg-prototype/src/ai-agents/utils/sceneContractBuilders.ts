@@ -17,6 +17,10 @@ import {
   pickBlueprintSafeText,
   stripStructuralTreatmentLabels,
 } from './blueprintTextHygiene';
+import {
+  defaultVisualThreadForLocation,
+  isUnsafeCoverageMetadataText,
+} from './coverageMetadataHygiene';
 
 type SceneContractSource = 'turnContract' | 'requiredBeat' | 'encounter' | 'choice' | 'purpose' | 'role';
 
@@ -372,7 +376,11 @@ export function deriveSceneContract(scene: SceneBlueprint, context: SceneContrac
     startState: pickBlueprintSafeText(scene.sequenceIntent?.startState) || beforeState,
     turningPoint: pickBlueprintSafeText(scene.sequenceIntent?.turningPoint) || concreteTurn,
     endState: pickBlueprintSafeText(scene.sequenceIntent?.endState) || afterState,
-    visualThread: pickBlueprintSafeText(scene.sequenceIntent?.visualThread) || `Track the visible consequence of ${trimSentence(title, 70)}.`,
+    visualThread: (() => {
+      const authored = pickBlueprintSafeText(scene.sequenceIntent?.visualThread);
+      if (authored && !isUnsafeCoverageMetadataText(authored)) return authored;
+      return defaultVisualThreadForLocation(scene.location);
+    })(),
     mechanicThread: scene.sequenceIntent?.mechanicThread || residue[0]?.type,
   };
 

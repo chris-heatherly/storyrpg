@@ -1,4 +1,10 @@
 import type { StructuredJsonSchema } from '../agents/BaseAgent';
+import {
+  RELATIONSHIP_DIMENSIONS,
+  RELATIONSHIP_EVIDENCE_TAGS,
+  RELATIONSHIP_SURFACES,
+  RELATIONSHIP_VALUE_AXES,
+} from '../utils/canonicalChoiceConsequences';
 import { canonicalTintVocabulary } from '../utils/tintVocabulary';
 
 const stringArray = {
@@ -45,6 +51,93 @@ const buildOutcomeTexts = (maxLength: number) => ({
   },
 }) as const;
 
+const consequenceVariant = (
+  required: string[],
+  properties: Record<string, unknown>,
+) => ({
+  type: 'object',
+  additionalProperties: false,
+  required: ['type', ...required],
+  properties,
+}) as const;
+
+const consequenceType = (value: string) => ({ type: 'string', enum: [value] }) as const;
+
+function buildConsequenceSchema(maxDescriptionLength: number) {
+  const numericChange = { type: 'number' } as const;
+  const variants = [
+    consequenceVariant(['attribute', 'change'], {
+      type: consequenceType('attribute'),
+      attribute: shortString(80),
+      change: numericChange,
+    }),
+    consequenceVariant(['skill', 'change'], {
+      type: consequenceType('skill'),
+      skill: shortString(80),
+      change: numericChange,
+    }),
+    consequenceVariant(['npcId', 'dimension', 'change'], {
+      type: consequenceType('relationship'),
+      npcId: shortString(120),
+      dimension: { type: 'string', enum: [...RELATIONSHIP_DIMENSIONS] },
+      change: numericChange,
+    }),
+    consequenceVariant(['npcId', 'axis', 'evidenceTags', 'reason'], {
+      type: consequenceType('relationshipEvidence'),
+      npcId: shortString(120),
+      axis: { type: 'string', enum: [...RELATIONSHIP_VALUE_AXES] },
+      evidenceTags: {
+        type: 'array',
+        minItems: 1,
+        items: { type: 'string', enum: [...RELATIONSHIP_EVIDENCE_TAGS] },
+      },
+      reason: shortString(maxDescriptionLength),
+      intendedSurface: { type: 'string', enum: [...RELATIONSHIP_SURFACES] },
+    }),
+    consequenceVariant(['flag', 'value'], {
+      type: consequenceType('setFlag'),
+      flag: shortString(120),
+      value: { type: 'boolean' },
+    }),
+    consequenceVariant(['score', 'change'], {
+      type: consequenceType('changeScore'),
+      score: shortString(80),
+      change: numericChange,
+    }),
+    consequenceVariant(['score', 'value'], {
+      type: consequenceType('setScore'),
+      score: shortString(80),
+      value: numericChange,
+    }),
+    consequenceVariant(['tag'], {
+      type: consequenceType('addTag'),
+      tag: shortString(80),
+    }),
+    consequenceVariant(['tag'], {
+      type: consequenceType('removeTag'),
+      tag: shortString(80),
+    }),
+    consequenceVariant(['item'], {
+      type: consequenceType('addItem'),
+      item: { type: 'object', additionalProperties: true },
+      quantity: numericChange,
+    }),
+    consequenceVariant(['itemId', 'name', 'description'], {
+      type: consequenceType('addItem'),
+      itemId: shortString(120),
+      name: shortString(120),
+      description: shortString(maxDescriptionLength),
+      quantity: numericChange,
+    }),
+    consequenceVariant(['itemId', 'quantity'], {
+      type: consequenceType('removeItem'),
+      itemId: shortString(120),
+      quantity: numericChange,
+    }),
+  ];
+  return { anyOf: variants } as const;
+}
+
 export interface ChoiceSetSchemaOptions {
   choiceType?: string;
   branching?: boolean;
@@ -88,6 +181,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
       };
   const stakes = buildStakes(stringLimits.stakes);
   const outcomeTexts = buildOutcomeTexts(stringLimits.outcome);
+  const consequence = buildConsequenceSchema(stringLimits.consequenceDescription);
   const requiredChoiceFields = [
     'id',
     'text',
@@ -137,28 +231,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
               tintFlag: { type: 'string', enum: [...canonicalTintVocabulary()] },
               consequences: {
                 type: 'array',
-                items: {
-                  type: 'object',
-                  additionalProperties: true,
-                  required: ['type', 'flag', 'value'],
-                  properties: {
-                    type: shortString(40),
-                    flag: shortString(120),
-                    name: shortString(120),
-                    target: shortString(120),
-                    value: { type: 'boolean' },
-                    score: shortString(80),
-                    skill: shortString(80),
-                    attribute: shortString(80),
-                    npcId: shortString(120),
-                    dimension: shortString(80),
-                    tag: shortString(80),
-                    itemId: shortString(120),
-                    change: { type: 'number' },
-                    quantity: { type: 'number' },
-                    description: shortString(stringLimits.consequenceDescription),
-                  },
-                },
+                items: consequence,
               },
               conditions: {
                 type: 'array',

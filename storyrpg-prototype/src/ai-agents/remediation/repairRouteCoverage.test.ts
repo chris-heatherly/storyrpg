@@ -37,6 +37,9 @@
 import { describe, expect, it } from 'vitest';
 import { GateRepairRouter, type RepairDirectiveKind } from './gateRepairRouter';
 import { GATE_REGISTRY, type GateSpec } from './gateRegistry';
+import { buildEncounterMetadataRepairHandler } from './encounterMetadataRepairHandler';
+import { validateEncounterProducerOutput } from '../pipeline/producerBlockerChecks';
+import type { Story } from '../../types/story';
 
 interface BlockingClassCase {
   name: string;
@@ -670,5 +673,50 @@ describe('R5: every default-on blocking gate has an explicit repair disposition'
 
   it('keeps the diagnostic_stop allowlist rare', () => {
     expect(Object.keys(DIAGNOSTIC_STOP_ALLOWLIST).length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('executable field-owning repair coverage', () => {
+  it('routes encounter.description to its owner and the registered handler clears the finding', async () => {
+    const story = {
+      id: 'route-coverage',
+      title: 'Route Coverage',
+      episodes: [{
+        id: 'ep1',
+        scenes: [{
+          id: 's1-1',
+          name: 'Threshold',
+          beats: [{ id: 'b1', text: 'The latch shifts beneath your hand.' }],
+          encounter: {
+            description: 'You face this pressure: open the door.',
+            sourceSynopsis: 'Author-only source.',
+          },
+        }],
+      }],
+    } as unknown as Story;
+    const issue = {
+      validator: 'RouteContinuityValidator',
+      type: 'unsafe_fallback_prose',
+      severity: 'error',
+      sceneId: 's1-1',
+      fieldPath: 'encounter.description',
+      message: 'Unsafe fallback prose in encounter.description.',
+    };
+    const route = new GateRepairRouter({ story }).routeIssue(issue);
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.reason).toContain('encounter.description');
+
+    const handler = buildEncounterMetadataRepairHandler({
+      author: () => ({
+        reauthorEncounterDescription: async () => 'The latch gives once, then jams as footsteps close behind you.',
+      }),
+    });
+    const result = await handler({
+      story,
+      blockingIssues: [issue],
+    });
+    expect(result.changed).toBe(true);
+    const encounter = story.episodes[0].scenes[0].encounter;
+    expect(validateEncounterProducerOutput('s1-1', encounter)).toHaveLength(0);
   });
 });

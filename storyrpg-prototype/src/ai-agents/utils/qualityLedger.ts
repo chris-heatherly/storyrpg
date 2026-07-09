@@ -60,6 +60,11 @@ export interface QualityLedgerEntry {
   openerMonotonyPassages?: number;
   episodeCount?: number;
   durationMs?: number;
+  llmCalls?: number;
+  llmFailures?: number;
+  llmInputTokens?: number;
+  llmOutputTokens?: number;
+  promptChars?: number;
   /** True when the run was hard-blocked (failed a blocking gate / PipelineError). */
   blocked?: boolean;
   /** Coarse failure category for cross-run triage, e.g. the PipelineError `phase`. */
@@ -76,6 +81,11 @@ export interface QualityLedgerEntry {
   capIds?: string[];
   /** How many of those caps have maxScore < 90 (known shipped defects). */
   blockingCapCount?: number;
+  /** Successful rows are only emitted after both retained package files parse. */
+  packageVerified?: boolean;
+  packageRetention?: 'retain_success_package';
+  storyArtifact?: string;
+  manifestArtifact?: string;
 }
 
 const LEDGER_FILENAME = 'quality-ledger.jsonl';

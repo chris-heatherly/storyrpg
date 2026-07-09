@@ -8,7 +8,7 @@ import {
   STORY_EVENT_CUE_ORDER,
   type StoryEventCue,
 } from '../remediation/storyEventCues';
-import { collectEncounterMetaTexts, collectReaderFacingTexts } from './EncounterAnchorContentValidator';
+import { collectEncounterMetaTextFields, collectEncounterMetaTexts, collectReaderFacingTexts } from './EncounterAnchorContentValidator';
 
 export type RouteContinuityIssueType =
   | 'route_chronology_violation'
@@ -25,6 +25,8 @@ export interface RouteContinuityIssue {
   episodeNumber?: number;
   sceneId?: string;
   beatId?: string;
+  /** Exact story-object path inspected by the validator. */
+  fieldPath?: string;
   validator: 'RouteContinuityValidator';
   suggestion?: string;
 }
@@ -222,7 +224,8 @@ function collectStrings(value: unknown, fields: TextField[], path: string, scene
 function collectRouteTextFields(scene: Scene): TextField[] {
   const fields: TextField[] = [];
   collectReaderFacingTexts(scene).forEach((text, index) => pushText(fields, `scene:${scene.id}.readerFacing[${index}]`, text, scene.id));
-  collectEncounterMetaTexts(scene).forEach((text, index) => pushText(fields, `scene:${scene.id}.encounterMeta[${index}]`, text, scene.id));
+  collectEncounterMetaTextFields(scene).forEach((field) =>
+    pushText(fields, `scene:${scene.id}.${field.path}`, field.text, scene.id));
 
   for (const beat of scene.beats || []) {
     pushText(fields, `scene:${scene.id}.beat:${beat.id}.text`, beat.text, scene.id, beat.id);
@@ -551,6 +554,7 @@ export class RouteContinuityValidator {
             episodeNumber: episode.number,
             sceneId: field.sceneId,
             beatId: field.beatId,
+            fieldPath: field.path.replace(`scene:${scene.id}.`, ''),
             validator: 'RouteContinuityValidator',
             suggestion: pattern?.suggestion || readerLeak?.suggestion || scaffoldLeak?.suggestion || 'Rewrite the field as concrete in-world prose or visual staging.',
           });

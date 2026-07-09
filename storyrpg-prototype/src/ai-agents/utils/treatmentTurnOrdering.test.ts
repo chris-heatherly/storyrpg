@@ -4,6 +4,7 @@ import {
   chronologyRankForText,
   coalesceFragmentedEpisodeTurns,
   countAuthoredLiteSceneBudget,
+  countAuthoredLiteSceneBudgetFromSpine,
   isThreatEncounterTurn,
   orderAuthoredEpisodeTurns,
   positionalTurnAssignment,
@@ -25,6 +26,19 @@ describe('treatmentTurnOrdering', () => {
   it('detects threat encounter turns', () => {
     expect(isThreatEncounterTurn('Walking home through Cismigiu, she is attacked and rescued.')).toBe(true);
     expect(isThreatEncounterTurn('She explores the streets of Bucharest.')).toBe(false);
+    expect(isThreatEncounterTurn(
+      "Kylie returns to Bucharest feeling lucky and finds Radu's hand-knit scarf on her doorstep.",
+    )).toBe(false);
+  });
+
+  it('budgets authored-lite scenes from ESC units when doorstep would look like walkHome', () => {
+    const budget = countAuthoredLiteSceneBudgetFromSpine([
+      { sceneKind: 'standard', kind: 'development' },
+      { sceneKind: 'standard', kind: 'meet' },
+      { sceneKind: 'standard', kind: 'threshold' },
+    ], 1);
+    expect(budget.preThreatScenes).toBe(3);
+    expect(budget.totalScenes).toBe(4);
   });
 
   it('splits compound explore+bookshop turns before binding', () => {

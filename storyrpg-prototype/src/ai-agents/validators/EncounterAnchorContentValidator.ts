@@ -39,7 +39,7 @@
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import type { Episode, Scene, Story } from '../../types';
 import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/scenePlan';
-export { collectEncounterMetaTexts, collectReaderFacingTexts } from './encounterTextSurfaces';
+export { collectEncounterMetaTextFields, collectEncounterMetaTexts, collectReaderFacingTexts } from './encounterTextSurfaces';
 import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
 /** Context for {@link EncounterAnchorContentValidator.validate}. */

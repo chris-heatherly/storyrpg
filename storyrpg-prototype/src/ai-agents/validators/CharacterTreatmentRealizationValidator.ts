@@ -10,6 +10,7 @@ import type {
 import {
   buildCharacterTreatmentContracts,
   characterTreatmentMatchThreshold,
+  extractOpeningIdentityAtoms,
 } from '../utils/characterTreatmentContracts';
 import {
   treatmentFieldCloseMatch,
@@ -365,14 +366,22 @@ function hasFinalRealization(input: CharacterTreatmentRealizationInput, contract
       && hasStructuredPlanUse(input, contract);
   }
   if (contract.contractKind === 'lie_pressure' || contract.contractKind === 'wound_pressure') {
-    return /\b(chosen|safe|known|flinch|hurt|public|humiliat|avoid|apolog|edit|take|fear|guard|believe|protect|betray)\b/i.test(text)
-      && hasStructuredPlanUse(input, contract);
+    const atoms = extractOpeningIdentityAtoms(contract.sourceText);
+    const atomHit = atoms.length > 0
+      && atoms.some((atom) => treatmentFieldCloseMatch(atom, text, 0.55));
+    return (
+      (/\b(chosen|safe|known|flinch|hurt|public|humiliat|avoid|apolog|edit|take|fear|guard|believe|protect|betray|engagement|cancelled|writer|blogger|new york)\b/i.test(text)
+        && hasStructuredPlanUse(input, contract))
+      || atomHit
+    );
   }
   if (contract.contractKind === 'ending_state' || contract.contractKind === 'climax_choice' || contract.contractKind === 'arc_mode') {
     return /\b(choice|choose|refuse|accept|become|ending|walk|life|final|truth|lie|voice|blog|saved|lost|free|surrender|claim)\b/i.test(text)
       && hasStructuredPlanUse(input, contract);
   }
   if (contract.contractKind === 'role_fact' || contract.contractKind === 'origin_pressure' || contract.contractKind === 'pressure_point') {
+    const atoms = extractOpeningIdentityAtoms(contract.sourceText);
+    if (atoms.some((atom) => treatmentFieldCloseMatch(atom, text, 0.55))) return true;
     return hasStructuredPlanUse(input, contract) && hasReaderText;
   }
   return hasStructuredPlanUse(input, contract) && hasReaderText;

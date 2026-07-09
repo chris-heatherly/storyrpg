@@ -198,4 +198,106 @@ describe('buildPlanningRegisterMetadataRepairHandler', () => {
     expect(result.changed).toBe(false);
     expect(JSON.stringify(story)).toBe(before);
   });
+
+  it('clears Track-the-visible coveragePlan fields flagged as unsafe_fallback_prose', async () => {
+    const story = {
+      id: 'story-1',
+      title: 'Test',
+      episodes: [{
+        id: 'ep-1',
+        number: 1,
+        title: 'Episode 1',
+        scenes: [{
+          id: 'scene-1',
+          title: 'Bookshop',
+          type: 'narrative',
+          locationId: 'loc-1',
+          npcsPresent: [],
+          beats: [{
+            id: 'b1',
+            text: 'You follow Stela between the shelves as she names the club.',
+            speaker: 'narrator',
+            coveragePlan: {
+              stagingPattern: 'two-shot',
+              shotDistance: 'MS',
+              cameraAngle: 'eye-level',
+              cameraSide: 'left-of-axis',
+              focalCharacterIds: [],
+              requiredVisibleCharacterIds: [],
+              optionalVisibleCharacterIds: [],
+              offscreenCharacterIds: [],
+              relationshipBlocking: 'Track the visible consequence of She wanders into a bookshop owned by Stela who befriends her and….',
+              coverageReason: 'Authored coverage.',
+              visualContinuity: {
+                preserveFromBeatId: 'b0',
+                reason: 'SequenceDirector: preserve Track the visible consequence of She wanders into a bookshop.',
+              },
+            },
+          }],
+          choices: [],
+        }],
+      }],
+    } as any;
+
+    const result = await buildPlanningRegisterMetadataRepairHandler()({
+      story,
+      blockingIssues: [{
+        type: 'unsafe_fallback_prose',
+        validator: 'RouteContinuityValidator',
+        sceneId: 'scene-1',
+        beatId: 'b1',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(story.episodes[0].scenes[0].beats[0].coveragePlan.relationshipBlocking)
+      .not.toMatch(/Track the visible consequence/i);
+    expect(story.episodes[0].scenes[0].beats[0].coveragePlan.visualContinuity.reason)
+      .not.toMatch(/SequenceDirector:\s*preserve|Track the visible consequence/i);
+  });
+
+  it('does not deterministically rewrite encounter descriptions owned by the encounter author', async () => {
+    const story = {
+      id: 'story-1',
+      title: 'Test',
+      episodes: [{
+        id: 'ep-1',
+        number: 1,
+        title: 'Episode 1',
+        scenes: [{
+          id: 'scene-1',
+          title: 'Attack',
+          type: 'encounter',
+          locationId: 'loc-1',
+          npcsPresent: [],
+          beats: [{ id: 'b1', text: 'You hear footsteps close the gap behind you.', speaker: 'narrator' }],
+          choices: [],
+          encounter: {
+            id: 'enc-1',
+            name: 'Street Attack',
+            description: 'Walking home through Cismigiu, she is attacked',
+            type: 'social',
+            difficulty: 'moderate',
+            rounds: [],
+            outcomes: {
+              victory: { outcomeText: 'You break free and keep moving.' },
+            },
+          },
+        }],
+      }],
+    } as any;
+
+    const result = await buildPlanningRegisterMetadataRepairHandler()({
+      story,
+      blockingIssues: [{
+        type: 'unsafe_fallback_prose',
+        validator: 'RouteContinuityValidator',
+        sceneId: 'scene-1',
+      }],
+    });
+
+    expect(result.changed).toBe(false);
+    expect(story.episodes[0].scenes[0].encounter.description)
+      .toBe('Walking home through Cismigiu, she is attacked');
+  });
 });

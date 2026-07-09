@@ -99,6 +99,22 @@ describe('SequenceDirector', () => {
     expect(scene.beats[1].coveragePlan?.coverageReason).toBe('Authored insert beat.');
   });
 
+  it('does not paste Track-the-visible / SequenceDirector scaffolds into coveragePlan', () => {
+    const scene = sceneFor('bookshop', 'You follow Stela between the shelves as she names the club.');
+    scene.sceneName = 'She wanders into a bookshop owned by Stela who befriends her and…';
+    scene.sequenceIntent = {
+      visualThread: 'Track the visible consequence of She wanders into a bookshop owned by Stela who befriends her and….',
+    };
+
+    applySequenceDirectorPlan(scene, { locationName: 'Lumina Books' });
+
+    expect(scene.sequenceIntent?.visualThread).not.toMatch(/Track the visible consequence/i);
+    for (const beat of scene.beats) {
+      expect(beat.coveragePlan?.relationshipBlocking).not.toMatch(/Track the visible consequence|show who gains or loses distance/i);
+      expect(beat.coveragePlan?.visualContinuity?.reason).not.toMatch(/SequenceDirector:\s*preserve|Track the visible consequence/i);
+    }
+  });
+
   it('preserves a strong authored scene visual sequence plan while filling gaps', () => {
     const scene = sceneFor('authored-plan', 'Mara slides the glass across the bar without looking at Ilya.');
     scene.sceneVisualSequencePlan = {

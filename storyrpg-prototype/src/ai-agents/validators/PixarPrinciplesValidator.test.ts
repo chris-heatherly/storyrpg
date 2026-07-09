@@ -12,6 +12,7 @@ function buildEncounter(overrides: Partial<EncounterStructure>): EncounterStruct
   const base: EncounterStructure = {
     sceneId: 'scene-1',
     encounterType: 'social' as EncounterStructure['encounterType'],
+    description: 'You enter a room where every answer changes who holds the leverage.',
     beats: [],
     startingBeatId: 'beat-1',
     goalClock: { name: 'goal', segments: 4, description: 'reach the goal' },

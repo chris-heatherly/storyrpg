@@ -585,8 +585,12 @@ export interface PlannedEncounter {
   type: EncounterCategory;
   // Optional narrative style layer for non-combat parity
   style?: 'action' | 'social' | 'romantic' | 'dramatic' | 'mystery' | 'stealth' | 'adventure' | 'mixed';
-  // Short description of the encounter
+  // LLM-authored playable description. This may ship after encounter authoring.
   description: string;
+  /** Author-only source synopsis used to brief downstream encounter authoring. */
+  sourceSynopsis?: string;
+  /** Author-only treatment anchor; never copy this field into the runtime package. */
+  authoredAnchor?: string;
   // Difficulty relative to story progression
   difficulty: 'easy' | 'moderate' | 'hard' | 'extreme';
   // Which characters are involved

@@ -373,6 +373,10 @@ export function convertEncounterStructureToEncounter(
   structure: EncounterStructure,
   sceneBlueprint: SceneBlueprint
 ): Encounter {
+  const authoredDescription = structure.description?.trim();
+  if (!authoredDescription) {
+    throw new Error(`Encounter ${structure.sceneId} is missing an LLM-authored playable description`);
+  }
   // Map encounter type
   const encounterType = normalizeEncounterType(structure.encounterType);
   const encounterStyle = inferEncounterStyle(encounterType, structure.encounterStyle);
@@ -498,7 +502,7 @@ export function convertEncounterStructureToEncounter(
     type: encounterType,
     style: encounterStyle,
     name: sceneBlueprint.name,
-    description: sceneBlueprint.encounterDescription || sceneBlueprint.description,
+    description: authoredDescription,
     goalClock,
     threatClock,
     stakes: structure.stakes || {

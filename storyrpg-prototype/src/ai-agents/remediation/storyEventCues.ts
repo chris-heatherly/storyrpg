@@ -134,7 +134,14 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     || /\b(?:rescues?|rescued|rescue|terror|attack(?:ed)?)\b.{0,100}\b(?:story|post|blog|prose|draft|codename|title|viral|proof|retelling|turns?|turned|writes?|wrote|publish(?:es|ed)?)\b/.test(text);
   const violentGrip = /\b(?:attacker|aggressor|rough hands?|hands?|fingers?)\b.{0,80}\bgrip\b/.test(text)
     || /\bgrip\b.{0,80}\b(?:arm|wrist|throat|coat|collar|bicep|shoulder|skin|bone|pain|bruise|breath|attacker|aggressor)\b/.test(text);
-  const liveThreatAction = /\b(?:pinned|attacker|attacks?|attacked|aggressor|knife|scream|freeze|fight back|lunges?|chases?|ambush|threat|rough hands?|grab(?:s|bed)?|don't scream)\b/.test(text)
+  // Strip metaphorical "sounding like a threat" / "without yet sounding like a
+  // threat" before the live-threat lexicon — those are social-pressure lines,
+  // not attack/ambush set pieces (Bite Me Ep3 privacy framing false positive).
+  const threatLexiconText = text.replace(
+    /\b(?:sound(?:s|ing)?|seem(?:s|ing)?|feel(?:s|ing)?)\s+like\s+a\s+threat\b/gi,
+    ' ',
+  );
+  const liveThreatAction = /\b(?:pinned|attacker|attacks?|attacked|aggressor|knife|scream|freeze|fight back|lunges?|chases?|ambush|threat|rough hands?|grab(?:s|bed)?|don't scream)\b/.test(threatLexiconText)
     || violentGrip
     || /\b(?:can stand|can you stand|asks if (?:she|he|you|they) can stand)\b/.test(text);
   const directThreat = liveThreatAction

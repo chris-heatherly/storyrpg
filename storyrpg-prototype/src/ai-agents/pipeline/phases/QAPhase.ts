@@ -45,10 +45,12 @@ import { QA_DEFAULTS } from '../../../constants/validation';
 import { capabilityFactStrings } from '../characterCanonFacts';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
+import { QUALITY_REPAIR_THRESHOLDS } from '../../utils/qualityScoring';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import type { AgentMemoryRequest, AgentMemoryRole } from '../pipelineMemory';
 import type { PipelineMemoryArtifactKind } from '../artifactMemoryTypes';
 import { findSceneForChoiceSet } from '../choiceSetLookup';
+import { materializeFlagVariantCallbackHooks } from '../reconvergenceResidue';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -143,6 +145,121 @@ function restoreMutableList<T>(target: T[], snapshot: T[]): void {
   target.splice(0, target.length, ...cloneMutableList(snapshot));
 }
 
+function isUngroundedJudgeIssue(issue: any): boolean {
+  return /evidence-ungrounded|ungrounded (?:claim|evidence)|quoted text not found/i
+    .test(String(issue?.description ?? issue ?? ''));
+}
+
+function judgeRepairDeficit(report: QAReport): number {
+  const proseScore = typeof report.proseCraft?.overallScore === 'number' ? report.proseCraft.overallScore : 100;
+  const responsivenessScore = typeof report.responsiveness?.overallScore === 'number'
+    ? report.responsiveness.overallScore
+    : 100;
+  const proseErrors = (report.proseCraft?.issues ?? [])
+    .filter((issue) => issue.severity === 'error' && !isUngroundedJudgeIssue(issue)).length;
+  const responsivenessErrors = (report.responsiveness?.issues ?? [])
+    .filter((issue) => issue.severity === 'error' && !isUngroundedJudgeIssue(issue)).length;
+  const weakProbes = (report.responsiveness?.probeVerdicts ?? [])
+    .filter((probe) => probe.verdict === 'cosmetic' || probe.npcReaction === 'static').length;
+  return Math.max(0, QUALITY_REPAIR_THRESHOLDS.proseCraft - proseScore)
+    + Math.max(0, QUALITY_REPAIR_THRESHOLDS.responsiveness - responsivenessScore)
+    + (proseErrors + responsivenessErrors + weakProbes) * 10;
+}
+
+function needsTargetedJudgeRepair(report: QAReport): boolean {
+  return judgeRepairDeficit(report) > 0;
+}
+
+function collectTargetedJudgeSceneRepairs(
+  report: QAReport,
+  choiceSets: ChoiceSet[],
+): Map<string, string[]> {
+  const repairs = new Map<string, string[]>();
+  const add = (sceneId: string | undefined, feedback: string): void => {
+    if (!sceneId) return;
+    const existing = repairs.get(sceneId) ?? [];
+    existing.push(feedback);
+    repairs.set(sceneId, existing);
+  };
+
+  const proseIssues = (report.proseCraft?.issues ?? []).filter((issue) => !isUngroundedJudgeIssue(issue));
+  const proseNeedsRepair = (
+    typeof report.proseCraft?.overallScore === 'number'
+    && report.proseCraft.overallScore < QUALITY_REPAIR_THRESHOLDS.proseCraft
+  ) || proseIssues.some((issue) => issue.severity === 'error');
+  if (proseNeedsRepair) {
+    const localized = proseIssues.filter((issue) => issue.location?.sceneId);
+    if (localized.length > 0) {
+      localized.forEach((issue) => add(
+        issue.location?.sceneId,
+        `Prose craft (${issue.conceptId}): ${issue.description}${issue.suggestion ? ` Fix: ${issue.suggestion}` : ''}`,
+      ));
+    } else {
+      (report.proseCraft?.sampledSceneIds ?? []).slice(0, 3).forEach((sceneId) => add(
+        sceneId,
+        `Prose craft scored ${report.proseCraft?.overallScore}/100, below the ${QUALITY_REPAIR_THRESHOLDS.proseCraft} repair floor. Rewrite for specificity, rhythm, and economy without changing story facts or routes.`,
+      ));
+    }
+  }
+
+  const responsivenessIssues = (report.responsiveness?.issues ?? [])
+    .filter((issue) => !isUngroundedJudgeIssue(issue));
+  const weakProbeIds = new Set(
+    (report.responsiveness?.probeVerdicts ?? [])
+      .filter((probe) => probe.verdict === 'cosmetic' || probe.npcReaction === 'static')
+      .map((probe) => probe.probeId),
+  );
+  const issueProbeIds = new Set(
+    responsivenessIssues
+      .filter((issue) => issue.location?.sceneId && issue.location?.beatId)
+      .map((issue) => `${issue.location!.sceneId}:${issue.location!.beatId}`),
+  );
+  const targetedProbeIds = weakProbeIds.size > 0 ? weakProbeIds : issueProbeIds;
+  const responsivenessNeedsRepair = (
+    typeof report.responsiveness?.overallScore === 'number'
+    && report.responsiveness.overallScore < QUALITY_REPAIR_THRESHOLDS.responsiveness
+  ) || responsivenessIssues.some((issue) => issue.severity === 'error') || weakProbeIds.size > 0;
+  if (responsivenessNeedsRepair) {
+    for (const choiceSet of choiceSets) {
+      const probeId = `${choiceSet.sceneId ?? 'scene'}:${choiceSet.beatId}`;
+      if (targetedProbeIds.size === 0 || !targetedProbeIds.has(probeId)) continue;
+      const routeTargets = Array.from(new Set(
+        (choiceSet.choices ?? [])
+          .map((choice) => choice.nextSceneId)
+          .filter((sceneId): sceneId is string => typeof sceneId === 'string' && sceneId.length > 0),
+      ));
+      routeTargets.forEach((sceneId) => {
+        const routeChoices = (choiceSet.choices ?? []).filter((choice) => choice.nextSceneId === sceneId);
+        const routeFlags = Array.from(new Set(routeChoices.flatMap((choice) =>
+          (choice.consequences ?? [])
+            .filter((consequence) => consequence.type === 'setFlag' && consequence.value !== false)
+            .map((consequence) => consequence.flag),
+        )));
+        const reconvergenceInstruction = routeChoices.length > 1 && routeFlags.length > 0
+          ? ` This is a reconverged target: add condition-gated textVariants to the earliest beat for these existing incoming-choice flags (${routeFlags.join(', ')}), with callbackHookId "flag:<flag>". Keep the base opening valid on every route.`
+          : '';
+        add(
+          sceneId,
+          `Responsiveness route-pair repair for ${probeId}: make this route's opening, NPC behavior, and remembered consequence specifically reflect its incoming choice. Preserve route ids and established facts.${reconvergenceInstruction}`,
+        );
+      });
+    }
+  }
+  return repairs;
+}
+
+function incomingChoiceFlagsForScene(choiceSets: ChoiceSet[], sceneId: string): string[] {
+  return Array.from(new Set(choiceSets.flatMap((choiceSet) =>
+    (choiceSet.choices ?? [])
+      .filter((choice) => choice.nextSceneId === sceneId)
+      .flatMap((choice) =>
+        (choice.consequences ?? [])
+          .filter((consequence) => consequence.type === 'setFlag' && consequence.value !== false)
+          .map((consequence) => consequence.flag),
+      ),
+  )));
+}
+
 function shouldAdoptQARepair(previous: QAReport, next: QAReport): boolean {
   const previousCritical = previous.criticalIssues?.length ?? 0;
   const nextCritical = next.criticalIssues?.length ?? 0;
@@ -151,6 +268,9 @@ function shouldAdoptQARepair(previous: QAReport, next: QAReport): boolean {
   if (nextCritical > previousCritical) return false;
   if (next.passesQA && !previous.passesQA) return true;
   if (nextCritical < previousCritical) return next.overallScore >= previous.overallScore - 5;
+  if (judgeRepairDeficit(next) < judgeRepairDeficit(previous)) {
+    return next.overallScore >= previous.overallScore - 5;
+  }
   return next.overallScore >= previous.overallScore;
 }
 
@@ -241,7 +361,7 @@ export class QAPhase {
         context.emit({
           type: 'phase_complete',
           phase: 'best_practices',
-          message: `Best Practices Score: ${bestPracticesReport.overallScore}/100 - ${bestPracticesReport.overallPassed ? 'PASSED' : 'NEEDS REVIEW'}`,
+          message: `Best Practices component diagnostic: ${bestPracticesReport.overallScore}/100 - ${bestPracticesReport.overallPassed ? 'PASSED' : 'NEEDS REVIEW'} (publishability is reported by qualityScoring)`,
           data: {
             score: bestPracticesReport.overallScore,
             errors: bestPracticesReport.blockingIssues.length,
@@ -294,7 +414,11 @@ export class QAPhase {
       const maxQARepairPasses = brief.options?.maxQARepairPasses ?? 2;
 
       for (let qaRepairPass = 0; qaRepairPass < maxQARepairPasses; qaRepairPass++) {
-        if (qaReport.passesQA && qaReport.criticalIssues.length === 0) break;
+        if (
+          qaReport.passesQA
+          && qaReport.criticalIssues.length === 0
+          && !needsTargetedJudgeRepair(qaReport)
+        ) break;
 
         // === KARPATHY LOOP: QA-driven targeted repair ===
         const previousQaReport = qaReport;
@@ -302,10 +426,11 @@ export class QAPhase {
         context.emit({
           type: 'phase_start',
           phase: 'qa_repair',
-          message: `QA repair pass ${qaRepairPass + 1}/${maxQARepairPasses}: score ${qaReport.overallScore}/100, ${qaReport.criticalIssues.length} critical issue(s)`,
+          message: `QA repair pass ${qaRepairPass + 1}/${maxQARepairPasses}: component diagnostic ${qaReport.overallScore}/100, ${qaReport.criticalIssues.length} critical issue(s)`,
         });
 
         let repairsMade = 0;
+        const repairedSceneIds = new Set<string>();
         const sceneContentsBeforeRepair = cloneMutableList(sceneContents);
         const choiceSetsBeforeRepair = cloneMutableList(choiceSets);
 
@@ -378,7 +503,91 @@ export class QAPhase {
               repairResult.data.isConvergencePoint = sceneContents[sceneIdx].isConvergencePoint;
               sceneContents[sceneIdx] = repairResult.data;
               repairsMade++;
+              repairedSceneIds.add(sceneId);
             }
+          }
+        }
+
+        // Publishability judges use explicit floors. Prose misses rewrite only
+        // their named/sampled scenes; responsiveness misses rewrite the paired
+        // downstream route openings, never the whole episode.
+        const targetedJudgeRepairs = collectTargetedJudgeSceneRepairs(qaReport, choiceSets);
+        for (const [sceneId, feedback] of targetedJudgeRepairs) {
+          if (repairedSceneIds.has(sceneId)) continue;
+          const sceneIdx = sceneContents.findIndex((scene) => scene.sceneId === sceneId);
+          const sceneBlueprint = episodeBlueprint.scenes.find((scene) => scene.id === sceneId);
+          if (sceneIdx < 0 || !sceneBlueprint || sceneBlueprint.isEncounter) continue;
+          const location = worldBible.locations.find((candidate) => candidate.id === sceneBlueprint.location);
+          const protagonistProfile = characterBible.characters.find((candidate) => candidate.id === brief.protagonist.id);
+          context.emit({
+            type: 'regeneration_triggered',
+            phase: 'qa_repair',
+            message: `Repairing publishability target in scene ${sceneId}`,
+          });
+          const repairResult = await withTimeout(this.deps.sceneWriter.execute({
+            sceneBlueprint,
+            storyContext: {
+              title: brief.story.title,
+              genre: brief.story.genre,
+              tone: brief.story.tone,
+              userPrompt: `${brief.userPrompt || ''}\n\nTARGETED PUBLISHABILITY REPAIR:\n${feedback.map((item) => `- ${item}`).join('\n')}`,
+              worldContext: this.deps.buildCompactWorldContext(worldBible, location?.fullDescription || brief.world.premise),
+            },
+            protagonistInfo: {
+              name: brief.protagonist.name,
+              pronouns: brief.protagonist.pronouns,
+              description: protagonistProfile?.fullBackground || brief.protagonist.description,
+              physicalDescription: protagonistProfile?.physicalDescription,
+            },
+            npcs: sceneBlueprint.npcsPresent.map((npcId) => {
+              const profile = resolveCharacterProfile(characterBible.characters, npcId);
+              return {
+                id: npcId,
+                name: profile?.name || npcId,
+                pronouns: profile?.pronouns || 'they/them',
+                description: profile?.overview || '',
+                physicalDescription: profile?.physicalDescription,
+                voiceNotes: profile?.voiceProfile?.writingGuidance || '',
+                currentMood: profile?.voiceProfile?.whenNervous,
+              };
+            }),
+            relevantFlags: episodeBlueprint.suggestedFlags,
+            relevantScores: episodeBlueprint.suggestedScores,
+            targetBeatCount: this.deps.getTargetBeatCountForScene(sceneBlueprint),
+            dialogueHeavy: sceneBlueprint.npcsPresent.length > 0,
+            incomingChoiceContext: sceneBlueprint.incomingChoiceContext,
+            sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
+            memoryContext: await this.memoryContextFor(
+              'SceneWriter',
+              'qa-publishability-repair',
+              brief,
+              sceneBlueprint.id,
+              sceneBlueprint.npcsPresent,
+              ['qa-report', 'scene-content'],
+            ),
+          }), PIPELINE_TIMEOUTS.llmAgent, `SceneWriter.execute(${sceneId} publishability-repair-${qaRepairPass + 1})`);
+          if (repairResult.success && repairResult.data) {
+            repairResult.data.sceneId = sceneId;
+            repairResult.data.sceneName = repairResult.data.sceneName || sceneBlueprint.name;
+            repairResult.data.locationId = sceneContents[sceneIdx].locationId;
+            repairResult.data.settingContext = sceneContents[sceneIdx].settingContext;
+            repairResult.data.branchType = sceneContents[sceneIdx].branchType;
+            repairResult.data.isBottleneck = sceneContents[sceneIdx].isBottleneck;
+            repairResult.data.isConvergencePoint = sceneContents[sceneIdx].isConvergencePoint;
+            const callbackResidue = materializeFlagVariantCallbackHooks(
+              repairResult.data,
+              incomingChoiceFlagsForScene(choiceSets, sceneId),
+            );
+            if (callbackResidue > 0) {
+              context.emit({
+                type: 'debug',
+                phase: 'qa_repair',
+                message: `Materialized ${callbackResidue} condition-gated opening callback variant(s) in ${sceneId}`,
+              });
+            }
+            sceneContents[sceneIdx] = repairResult.data;
+            repairsMade++;
+            repairedSceneIds.add(sceneId);
           }
         }
 
@@ -497,7 +706,7 @@ export class QAPhase {
         context.emit({
           type: 'warning',
           phase: 'qa',
-          message: `QA score ${qaReport.overallScore} below threshold ${threshold} - story may need refinement`,
+          message: `QA component diagnostic ${qaReport.overallScore} below threshold ${threshold} - story may need refinement; publishability is reported by qualityScoring`,
         });
       }
     }

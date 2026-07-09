@@ -1,5 +1,6 @@
 import type { RelationshipPacingContract, RelationshipPacingStage } from '../../types/scenePlan';
 import type { ChoiceType } from './choiceTypePlanner';
+import { hasGroupDefiningChoice } from '../utils/relationshipMilestoneSemantics';
 
 const STAGE_ORDER: RelationshipPacingStage[] = [
   'unmet',
@@ -56,7 +57,7 @@ function capWithoutRelationshipChoice(contract: RelationshipPacingContract): voi
 }
 
 function capGroupWithoutGroupChoice(contract: RelationshipPacingContract): void {
-  if (!contract.groupId || contract.source === 'choice') return;
+  if (!contract.groupId) return;
   contract.startStage = minStage(contract.startStage, 'spark');
   contract.targetStage = minStage(contract.targetStage, 'spark');
   contract.allowedLabels = (contract.allowedLabels || []).filter((label) =>
@@ -84,7 +85,8 @@ export function reconcileRelationshipPacingWithChoiceTypes(scenes: SceneWithRela
     const finalChoiceType = scene.choicePoint?.type ?? scene.choiceType ?? inferChoiceType(scene);
     for (const contract of scene.relationshipPacing || []) {
       const before = JSON.stringify(contract);
-      capGroupWithoutGroupChoice(contract);
+      if (!hasGroupDefiningChoice(scene, contract)) capGroupWithoutGroupChoice(contract);
+      else if (contract.milestone?.kind === 'group_formation') contract.source = 'choice';
       if (finalChoiceType !== 'relationship') capWithoutRelationshipChoice(contract);
       if (JSON.stringify(contract) !== before) changed += 1;
     }

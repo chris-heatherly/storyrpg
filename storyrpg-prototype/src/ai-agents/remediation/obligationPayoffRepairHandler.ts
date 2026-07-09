@@ -11,6 +11,10 @@
  * final-contract loop re-serializes per revalidation round, so paid debts
  * clear on the next pass.
  *
+ * ESC plant-staging thread debts (authored-lite spine obligations) have no
+ * injectable flag-gated variants. For those, credit a same-scene staging
+ * payoff on the live ledger without fabricating reader-facing prose.
+ *
  * Without this handler the router had to route thread/callback debts to
  * diagnostic_stop ("no repair handler; promotion requires one first") and the
  * kinds stayed advisory-only.
@@ -19,8 +23,38 @@
 import type { ContractRepairHandler } from './finalContractRepair';
 import type { CallbackLedger } from '../pipeline/callbackLedger';
 import { injectFallbackCallbacks } from '../pipeline/callbackOrchestration';
+import { ESC_PLANT_STAGING_THREAD_ID_RE } from '../utils/compiledEscDirectives';
 
 const DEBT_TYPES = new Set(['obligation_ledger_debt', 'planned_residue_debt']);
+
+function extractHookIdFromDebtMessage(message: string | undefined): string | null {
+  if (!message) return null;
+  const match = message.match(/obligation "([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function creditEscPlantStagingDebts(
+  ledger: CallbackLedger,
+  debts: Array<{ message?: string }>,
+): number {
+  let credited = 0;
+  for (const debt of debts) {
+    const hookId = extractHookIdFromDebtMessage(debt.message);
+    if (!hookId || !ESC_PLANT_STAGING_THREAD_ID_RE.test(hookId)) continue;
+    const hook = ledger.all().find((entry) => entry.id === hookId);
+    if (!hook || hook.kind !== 'thread') continue;
+    if (hook.payoffCount >= 1 || hook.resolved) continue;
+    const sceneId = hook.sourceSceneId || 'unknown';
+    const ok = ledger.recordPayoff(hookId, {
+      episode: hook.sourceEpisode,
+      sceneId,
+      beatId: `${sceneId}-staging-fulfilled`,
+      source: 'authored_variant',
+    });
+    if (ok) credited += 1;
+  }
+  return credited;
+}
 
 export function buildObligationPayoffRepairHandler(opts: {
   ledger: CallbackLedger | undefined;
@@ -30,6 +64,8 @@ export function buildObligationPayoffRepairHandler(opts: {
     if (!opts.ledger) return { story, changed: false };
     const debts = blockingIssues.filter((issue) => DEBT_TYPES.has(issue.type ?? ''));
     if (debts.length === 0) return { story, changed: false };
+
+    const stagingCredited = creditEscPlantStagingDebts(opts.ledger, debts);
 
     let injected = 0;
     for (const episode of story.episodes ?? []) {
@@ -49,11 +85,14 @@ export function buildObligationPayoffRepairHandler(opts: {
       injected += result.injected;
     }
 
-    if (injected === 0) {
+    if (stagingCredited === 0 && injected === 0) {
       opts.emit?.(`Obligation payoff repair: ${debts.length} debt blocker(s) but the realizer found no injectable payoff (meta-prose filter or placement caps).`);
       return { story, changed: false };
     }
-    opts.emit?.(`Obligation payoff repair: injected ${injected} deterministic payoff variant(s) for ${debts.length} debt blocker(s).`);
+    const parts: string[] = [];
+    if (stagingCredited > 0) parts.push(`credited ${stagingCredited} ESC plant-staging debt(s)`);
+    if (injected > 0) parts.push(`injected ${injected} deterministic payoff variant(s)`);
+    opts.emit?.(`Obligation payoff repair: ${parts.join('; ')} for ${debts.length} debt blocker(s).`);
     return {
       story,
       changed: true,
@@ -62,10 +101,10 @@ export function buildObligationPayoffRepairHandler(opts: {
         scope: 'autofix',
         attempted: debts.length,
         succeeded: true,
-        degraded: injected < debts.length,
+        degraded: (stagingCredited + injected) < debts.length,
         blocked: false,
         attempts: 1,
-        details: `Injected ${injected} fallback payoff variant(s) for ${debts.length} obligation debt blocker(s)`,
+        details: `${parts.join('; ')} for ${debts.length} obligation debt blocker(s)`,
       },
     };
   };

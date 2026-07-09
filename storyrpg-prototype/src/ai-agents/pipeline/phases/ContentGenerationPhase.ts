@@ -186,6 +186,13 @@ import { buildContinueInLocation, buildPriorEncounterOutcomes } from '../scenePr
 import { plannedConsequenceTiersByScene } from '../plannedSceneBudgets';
 import { findChoiceSetForScene } from '../choiceSetLookup';
 import { reconcileRelationshipPacingWithChoiceTypes } from '../relationshipPacingChoiceTypeReconciliation';
+import { runBoundedDensityRepair } from '../boundedDensityRepair';
+import {
+  validateChoiceProducerOutput,
+  validateEncounterProducerOutput,
+  validateSceneProducerOutput,
+  type ProducerBlockerFinding,
+} from '../producerBlockerChecks';
 import { SeasonChoicePlan, episodeTypeCounts } from '../seasonChoicePlan';
 import {
   SeasonSkillPlan,
@@ -198,6 +205,7 @@ import {
   TwistArchitectLike,
   isThreadTwistPlanningEnabled,
   mergeIntoSeasonLedger,
+  materializeTwistPlan,
   openPriorThreads,
   planEpisodeThreadsAndTwist,
   sceneActiveThreads,
@@ -623,6 +631,7 @@ export class ContentGenerationPhase {
     const sceneOwnershipPreflightIssues = new SceneOwnershipPreflightValidator().validate({
       episodeNumber: densityEpisodeNumber,
       storyCircleRole: brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === densityEpisodeNumber)?.storyCircleRole,
+      episodeSpine: brief.seasonPlan?.scenePlan?.episodeSpines?.[densityEpisodeNumber],
       scenes: blueprint.scenes,
     }).issues
       .filter((issue) => issue.severity === 'error')
@@ -668,7 +677,20 @@ export class ContentGenerationPhase {
         },
       );
     }
-    const treatmentDensityReports = analyzeEpisodeTreatmentDensity(blueprint.scenes as never, densityEpisodeNumber);
+    const densityRepair = runBoundedDensityRepair(
+      blueprint.scenes as never,
+      (scenes) => analyzeEpisodeTreatmentDensity(scenes as never, densityEpisodeNumber),
+      unsafeTreatmentDensityReports,
+    );
+    if (densityRepair.changed) {
+      context.emit({
+        type: 'warning',
+        phase: 'scenes',
+        message: `Applied one bounded density repair before content generation: moved ${densityRepair.movedContractIds.length} soft pressure lane(s) along the existing route.`,
+        data: { movedContractIds: densityRepair.movedContractIds },
+      });
+    }
+    const treatmentDensityReports = densityRepair.after;
     const treatmentDensityByScene = new Map(treatmentDensityReports.map((report) => [report.sceneId, report]));
     const overloadedDensityReports = treatmentDensityReports.filter((report) => report.overloaded);
     const sceneById = new Map(blueprint.scenes.map((scene) => [scene.id, scene]));
@@ -3848,13 +3870,48 @@ export class ContentGenerationPhase {
         );
       }
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
+      const completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
+      const completedEncounter = encounters.get(sceneBlueprint.id);
+      const producerBlockers: ProducerBlockerFinding[] = [
+        ...(completedScene ? validateSceneProducerOutput(sceneBlueprint.id, completedScene) : []),
+        ...(completedChoice ? validateChoiceProducerOutput(sceneBlueprint.id, completedChoice) : []),
+        ...(completedEncounter ? validateEncounterProducerOutput(sceneBlueprint.id, completedEncounter) : []),
+      ];
+      if (producerBlockers.length > 0) {
+        if (outputDirectory) {
+          await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-producer-blockers.json`, {
+            schemaVersion: 1,
+            episodeNumber: densityEpisodeNumber,
+            sceneId: sceneBlueprint.id,
+            findings: producerBlockers,
+          });
+        }
+        const summary = producerBlockers
+          .slice(0, 5)
+          .map((finding) => `${finding.ownerPhase}:${finding.fieldPath} (${finding.type})`)
+          .join(' | ');
+        throw new PipelineError(
+          `[ProducerPhaseBlocker] ${sceneBlueprint.id} failed owner-phase validation before checkpoint: ${summary}.`,
+          producerBlockers[0].ownerPhase === 'choice' ? 'choices' : producerBlockers[0].ownerPhase === 'encounter' ? 'encounters' : 'scenes',
+          {
+            agent: producerBlockers[0].ownerPhase === 'choice'
+              ? 'ChoiceAuthor'
+              : producerBlockers[0].ownerPhase === 'encounter'
+                ? 'EncounterArchitect'
+                : 'SceneWriter',
+            context: {
+              sceneId: sceneBlueprint.id,
+              findings: producerBlockers,
+              retryBudget: 1,
+            },
+          },
+        );
+      }
       if (completedScene && outputDirectory && episodeNumber) {
         await this.deps.saveResumeUnit(outputDirectory, sceneUnitId, sceneCheckpointPath, completedScene);
-        const completedChoice = findChoiceSetForScene(choiceSets, completedScene);
         if (completedChoice) {
           await this.deps.saveResumeUnit(outputDirectory, choiceUnitId, choiceCheckpointPath, completedChoice);
         }
-        const completedEncounter = encounters.get(sceneBlueprint.id);
         if (completedEncounter) {
           await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, completedEncounter);
         }
@@ -3950,6 +4007,23 @@ export class ContentGenerationPhase {
     this.deps.sceneWriter.setContractLoadTemperature(undefined);
 
     await this.deps.runSceneCriticPass(sceneContents, characterBible);
+    const twistMaterialization = materializeTwistPlan(
+      this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number),
+      sceneContents,
+    );
+    if (twistMaterialization.status === 'invalid') {
+      context.emit({
+        type: 'warning',
+        phase: 'content',
+        message: `Planned twist did not materialize: ${twistMaterialization.reason}`,
+      });
+    } else if (twistMaterialization.status === 'materialized') {
+      context.emit({
+        type: 'debug',
+        phase: 'content',
+        message: `Materialized planned twist markers on ${twistMaterialization.foreshadowBeatId} → ${twistMaterialization.twistBeatId}`,
+      });
+    }
 
     return { sceneContents, choiceSets, encounters };
   }

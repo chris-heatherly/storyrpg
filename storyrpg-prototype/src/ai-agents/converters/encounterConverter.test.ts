@@ -26,6 +26,7 @@ describe('encounterConverter', () => {
       sceneId: 'scene-1',
       encounterType: 'romantic',
       encounterStyle: 'romantic',
+      description: 'Rain traps you on the balcony with a truth neither of you can postpone.',
       startingBeatId: 'beat-1',
       goalClock: { name: 'Trust', segments: 4, description: 'Build trust' },
       threatClock: { name: 'Distance', segments: 4, description: 'Emotional collapse' },
@@ -180,6 +181,7 @@ describe('encounterConverter', () => {
 
     expect(encounter.type).toBe('romantic');
     expect(encounter.style).toBe('romantic');
+    expect(encounter.description).toBe('Rain traps you on the balcony with a truth neither of you can postpone.');
     const firstBeat = encounter.phases[0].beats[0] as any;
     expect(firstBeat.visualContract?.visualMoment).toBe('Two people on the edge of confession.');
     expect(firstBeat.storyboardFrameId).toBe('sb-commit');
@@ -199,6 +201,7 @@ describe('encounterConverter', () => {
     const structure = {
       sceneId: 'scene-1',
       encounterType: 'dramatic',
+      description: 'You press through a confrontation that threatens to expose the secret.',
       startingBeatId: 'beat-1',
       goalClock: { name: 'Goal', segments: 4, description: 'Goal' },
       threatClock: { name: 'Threat', segments: 4, description: 'Threat' },
@@ -236,6 +239,7 @@ describe('encounterConverter', () => {
     const structure = {
       sceneId: 'scene-1',
       encounterType: 'unknown-showdown',
+      description: 'You face an unfamiliar pressure with no obvious safe route.',
       startingBeatId: 'beat-1',
       goalClock: { name: 'Goal', segments: 4, description: 'Goal' },
       threatClock: { name: 'Threat', segments: 4, description: 'Threat' },

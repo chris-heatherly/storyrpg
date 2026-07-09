@@ -10,6 +10,8 @@ import {
   classifyRelationshipValueState,
   getSurfacesForRung,
 } from '../../engine/relationshipValueLadder';
+import { normalizeCanonicalConsequence } from './canonicalChoiceConsequences';
+import { hasGroupDefiningChoice } from './relationshipMilestoneSemantics';
 
 export type RelationshipSubject =
   | { subjectType: 'npc'; subjectId: string }
@@ -45,6 +47,10 @@ export interface RelationshipArcLedgerEntry {
   blockedLabels: string[];
   blockedAccess: RelationshipAccessBlock[];
   privateContactEarned: boolean;
+  /** Stage permitted at each scene after processing only that scene and prior scenes. */
+  stageBySceneId: Record<string, RelationshipPacingStage>;
+  /** Authored milestone stage earned by a canonical group-defining choice. */
+  earnedMilestoneStage?: RelationshipPacingStage;
 }
 
 export interface RelationshipArcLedger {
@@ -161,6 +167,10 @@ export function relationshipConsequencesForScene(scene: RelationshipSceneRef['sc
 
 export function buildRelationshipArcLedger(story: Story, scenePlan?: SeasonScenePlan): RelationshipArcLedger {
   const npcAliases = buildNpcAliases(story);
+  const resolveKnownNpcId = (rawNpcId: string): string | undefined => {
+    const canonical = canonicalNpcId(rawNpcId, npcAliases);
+    return canonical && npcAliases.has(canonical) ? canonical : undefined;
+  };
   const entries = new Map<string, RelationshipArcLedgerEntry>();
   const relationshipValues = new Map<string, Relationship>();
   const introducedAtIndex = new Map<string, number>();
@@ -207,10 +217,11 @@ export function buildRelationshipArcLedger(story: Story, scenePlan?: SeasonScene
       }
       if (
         subject.subjectType === 'group'
-        && contract.source === 'choice'
+        && hasGroupDefiningChoice(ref.scene, contract)
         && !entry.relationshipChoiceSceneIds.includes(ref.scene.id)
       ) {
         entry.relationshipChoiceSceneIds.push(ref.scene.id);
+        entry.earnedMilestoneStage = contract.milestone?.targetStage;
       }
       entry.blockedLabels = unique([...entry.blockedLabels, ...(contract.blockedLabels ?? [])]);
       sceneSubjects.add(relationshipSubjectKey(subject));
@@ -231,9 +242,16 @@ export function buildRelationshipArcLedger(story: Story, scenePlan?: SeasonScene
       }
     }
 
-    for (const { consequence, choice } of relationshipConsequencesForScene(ref.scene)) {
+    for (const item of relationshipConsequencesForScene(ref.scene)) {
+      const normalized = normalizeCanonicalConsequence(item.consequence, {
+        resolveNpcId: resolveKnownNpcId,
+        rejectUnresolvedNpcIds: true,
+      });
+      if (!normalized.consequence) continue;
+      const consequence = normalized.consequence;
+      const { choice } = item;
       if (consequence.type === 'relationship') {
-        const subjectId = canonicalNpcId(consequence.npcId, npcAliases) ?? normalizeRelationshipKey(consequence.npcId) ?? consequence.npcId;
+        const subjectId = consequence.npcId;
         const entry = ensure({ subjectType: 'npc', subjectId });
         const key = relationshipSubjectKey(entry.subject);
         sceneSubjects.add(key);
@@ -248,7 +266,7 @@ export function buildRelationshipArcLedger(story: Story, scenePlan?: SeasonScene
           entry.relationshipChoiceSceneIds.push(ref.scene.id);
         }
       } else if (consequence.type === 'relationshipEvidence') {
-        const subjectId = canonicalNpcId(consequence.npcId, npcAliases) ?? normalizeRelationshipKey(consequence.npcId) ?? consequence.npcId;
+        const subjectId = consequence.npcId;
         const entry = ensure({ subjectType: 'npc', subjectId });
         sceneSubjects.add(relationshipSubjectKey(entry.subject));
         entry.evidenceTags = unique([...entry.evidenceTags, ...(consequence.evidenceTags ?? [])]);
@@ -273,6 +291,20 @@ export function buildRelationshipArcLedger(story: Story, scenePlan?: SeasonScene
       if (!entry.privateContactEarned && aliases.some((alias) => contactExchangeInText(text, alias))) {
         entry.privateContactEarned = true;
       }
+    }
+    for (const entry of entries.values()) {
+      const key = relationshipSubjectKey(entry.subject);
+      entry.scenesSinceIntro = seenAfterIntro.get(key)?.size ?? 0;
+      let stage = computeStage(entry);
+      const sceneContracts = [...(ref.planned?.relationshipPacing ?? []), ...(ref.scene.relationshipPacing ?? [])];
+      const allowance = sceneContracts.find((contract) => {
+        if (entry.subject.subjectType === 'npc') {
+          return contract.npcId && (canonicalNpcId(contract.npcId, npcAliases) ?? normalizeRelationshipKey(contract.npcId)) === entry.subject.subjectId;
+        }
+        return contract.groupId && normalizeRelationshipKey(contract.groupId) === entry.subject.subjectId;
+      });
+      if (allowance && stageRank(allowance.startStage) > stageRank(stage)) stage = allowance.startStage;
+      entry.stageBySceneId[ref.scene.id] = stage;
     }
   }
 
@@ -306,6 +338,7 @@ export function buildRelationshipArcLedger(story: Story, scenePlan?: SeasonScene
 export function computeStage(entry: RelationshipArcLedgerEntry): RelationshipPacingStage {
   if (!entry.introducedSceneId) return 'unmet';
   if (entry.subject.subjectType === 'group') {
+    if (entry.earnedMilestoneStage) return entry.earnedMilestoneStage;
     if (entry.relationshipChoiceSceneIds.length >= 2) return 'tentative_ally';
     if (entry.relationshipChoiceSceneIds.length >= 1) return 'acquaintance';
     return 'spark';
@@ -357,6 +390,7 @@ function emptyEntry(subject: RelationshipSubject): RelationshipArcLedgerEntry {
     blockedLabels: [],
     blockedAccess: [],
     privateContactEarned: false,
+    stageBySceneId: {},
   };
 }
 

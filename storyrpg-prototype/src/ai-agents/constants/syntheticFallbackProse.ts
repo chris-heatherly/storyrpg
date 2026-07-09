@@ -70,6 +70,11 @@ export const SYNTHETIC_FALLBACK_PROSE_PATTERNS: SyntheticFallbackPattern[] = [
     suggestion: REWRITE_AS_PROSE,
   },
   {
+    label: 'retired encounter synopsis wrapper: face this pressure',
+    pattern: /\bYou face this pressure:/i,
+    suggestion: 'Re-author encounter.description as concrete second-person playable metadata.',
+  },
+  {
     label: 'synthetic choice seed: moment turns on a decision',
     pattern: /\bThe moment turns on a decision\b[^.!?\n]{0,60}\bcannot avoid\b/i,
     suggestion: REWRITE_AS_PROSE,
@@ -253,6 +258,16 @@ export const SYNTHETIC_FALLBACK_PROSE_PATTERNS: SyntheticFallbackPattern[] = [
   {
     label: 'assembly sanitizer: beat prose needs re-author placeholder',
     pattern: /^\s*The moment still needs authored prose before it can continue\.?\s*$/i,
+    suggestion: REWRITE_AS_PROSE,
+  },
+  {
+    label: 'coverage scaffold: track the visible consequence',
+    pattern: /\bTrack\s+the\s+visible\s+consequence\s+of\b/i,
+    suggestion: REWRITE_AS_PROSE,
+  },
+  {
+    label: 'coverage scaffold: SequenceDirector preserve',
+    pattern: /\bSequenceDirector:\s*preserve\b/i,
     suggestion: REWRITE_AS_PROSE,
   },
   // NOT registered: the beat-METADATA defaults from sanitizeSceneContentForReader

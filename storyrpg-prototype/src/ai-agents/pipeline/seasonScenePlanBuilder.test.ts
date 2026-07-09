@@ -4,9 +4,11 @@ import {
   scenesForEpisode,
   edgesForEpisode,
   bindAuthoredTurnsToScenes,
+  compileAuthoredRelationshipMilestones,
   encounterIsCoveredByAuthoredTurns,
   repairRouteCueSceneOrder,
   rebuildTreatmentSeasonScenePlan,
+  syncGenericSceneTitlesFromAuthoredBeats,
 } from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
@@ -220,7 +222,8 @@ describe('buildSeasonScenePlan', () => {
     const enc = sp.scenes.find((s) => s.id === 'treatment-enc-3-1')!;
 
     // Full description survives on the encounter sub-object.
-    expect(enc.encounter?.description).toBe(longDescription);
+    expect(enc.encounter?.sourceSynopsis).toBe(longDescription);
+    expect(enc.encounter?.description).toBeUndefined();
     // The brief carries the authored content, not role boilerplate.
     expect(enc.dramaticPurpose).toContain(longDescription);
     expect(enc.dramaticPurpose).toContain(centralConflict);
@@ -361,6 +364,31 @@ describe('buildSeasonScenePlan', () => {
     expect(groupContracts.length).toBeGreaterThan(1);
     expect(groupContracts.every((contract) => ['spark', 'acquaintance'].includes(contract.targetStage))).toBe(true);
     expect(groupContracts.every((contract) => contract.targetStage !== 'tentative_ally')).toBe(true);
+  });
+
+  it('fails plan-time compatibility when a binding friendship/group milestone has no prior introduction', () => {
+    const scene = {
+      id: 's1-1',
+      episodeNumber: 1,
+      order: 0,
+      kind: 'standard',
+      title: 'Instant Club',
+      dramaticPurpose: 'The group forms.',
+      narrativeRole: 'turn',
+      locations: ['club'],
+      npcsInvolved: ['mika', 'stela'],
+      setsUp: [],
+      paysOff: [],
+      requiredBeats: [{
+        id: 's1-1-rb1',
+        sourceTurn: 'After testing Kylie, Mika and Stela become friends with her and form the Dusk Club.',
+        mustDepict: 'After testing Kylie, Mika and Stela become friends with her and form the Dusk Club.',
+        tier: 'authored',
+      }],
+    } as PlannedScene;
+
+    expect(() => compileAuthoredRelationshipMilestones([scene]))
+      .toThrow(/no compatible earning path/);
   });
 
   it('does not create relationship pacing contracts for the protagonist', () => {
@@ -841,7 +869,8 @@ describe('buildSeasonScenePlan', () => {
     const encounterScenes = scenes.filter((s) => s.kind === 'encounter');
     expect(encounterScenes).toHaveLength(1);
     expect(encounterScenes[0].id).toBe('enc-1');
-    expect(encounterScenes[0].encounter?.description).toContain('Cișmigiu Gardens');
+    expect(encounterScenes[0].encounter?.sourceSynopsis).toContain('Cișmigiu Gardens');
+    expect(encounterScenes[0].encounter?.description).toBeUndefined();
     expect((encounterScenes[0].requiredBeats ?? []).some((beat) => beat.mustDepict.includes('pinned to a tree'))).toBe(true);
 
     const encounterIndex = scenes.findIndex((s) => s.id === 'enc-1');
@@ -850,7 +879,7 @@ describe('buildSeasonScenePlan', () => {
     );
     expect(encounterIndex).toBeGreaterThanOrEqual(0);
     expect(rosesIndex).toBeGreaterThan(encounterIndex);
-    expect(scenes.filter((s) => s.encounter?.description?.includes('Cișmigiu Gardens'))).toHaveLength(1);
+    expect(scenes.filter((s) => s.encounter?.sourceSynopsis?.includes('Cișmigiu Gardens'))).toHaveLength(1);
   });
 
   it('keeps an uncovered planned encounter as a standalone encounter scene', () => {
@@ -995,8 +1024,9 @@ describe('bindAuthoredTurnsToScenes — encounter scenes get no spine turns (bit
     expect(encounters[0].id).toBe('treatment-enc-1-1');
     expect(encounters[0].requiredBeats?.some((beat) => beat.mustDepict.includes('Cișmigiu at 1am'))).toBe(true);
     expect(encounters[0].requiredBeats?.some((beat) => beat.tier === 'signature')).toBe(false);
-    expect(encounters[0].encounter?.description).toContain('Cișmigiu at 1am');
-    expect(encounters[0].encounter?.description).not.toContain('rooftop bar at sunset');
+    expect(encounters[0].encounter?.sourceSynopsis).toContain('Cișmigiu at 1am');
+    expect(encounters[0].encounter?.sourceSynopsis).not.toContain('rooftop bar at sunset');
+    expect(encounters[0].encounter?.description).toBeUndefined();
     expect(scenes.filter((scene) => scene.id === 'treatment-enc-1-1')).toHaveLength(1);
   });
 });
@@ -1114,6 +1144,50 @@ describe('repairRouteCueSceneOrder (plan-retry rung, bite-me 2026-07-03T18-19-01
 });
 
 describe('projectSpineOntoScenes', () => {
+  it('syncs a treatment scene title from final event ownership, not a stale pre-binding beat', () => {
+    const scene = {
+      id: 's1-street',
+      episodeNumber: 1,
+      order: 2,
+      kind: 'standard',
+      spineUnitId: 'ep1-u3',
+      title: 'She enters the bookshop and meets Stela',
+      dramaticPurpose: 'The street encounter changes the route.',
+      narrativeRole: 'turn',
+      locations: ['Old Town street'],
+      npcsInvolved: [],
+      setsUp: [],
+      paysOff: [],
+      hasChoice: false,
+      requiredBeats: [{
+        id: 'stale-bookshop',
+        tier: 'authored',
+        sourceTurn: 'She enters the bookshop and meets Stela.',
+        mustDepict: 'She enters the bookshop and meets Stela.',
+      }],
+      sceneEventOwnership: {
+        id: 's1-street-ownership',
+        sceneId: 's1-street',
+        ownedEvents: [{
+          key: 'cue:antagonistContact',
+          cue: 'antagonistContact',
+          text: 'Across the street, she catches her first clear sight of the watcher.',
+          sourceContractIds: ['ep1-u3'],
+        }],
+        incomingContext: [],
+        outgoingResidue: [],
+        forbiddenRestageEvents: [],
+        sourceContractIds: ['ep1-u3'],
+        diagnostics: [],
+        promptGuidance: [],
+      },
+    } as PlannedScene;
+
+    expect(syncGenericSceneTitlesFromAuthoredBeats([scene])).toBe(1);
+    expect(scene.title).toContain('first clear sight of the watcher');
+    expect(scene.title).not.toContain('bookshop');
+  });
+
   it('assigns spineUnitId and staged_rescue encounterProfile onto matching scenes', () => {
     const ep = episode(1, ['you'], {
       locations: ['Bucharest', 'Lumina Books', 'Vâlcescu Club', 'Cișmigiu Gardens', 'Kylie Apartment'],
@@ -1170,6 +1244,76 @@ describe('projectSpineOntoScenes', () => {
     if (testAt >= 0 && bondAt >= 0) expect(testAt).toBeLessThan(bondAt);
     if (writingAt >= 0 && aftermathAt >= 0) expect(writingAt).toBeLessThan(aftermathAt);
     expect(projected.some((scene) => scene.hasChoice)).toBe(true);
+    const milestoneOwner = projected.find((scene) =>
+      (scene.relationshipPacing ?? []).some((contract) => contract.milestone?.kind === 'group_formation')
+    );
+    expect(milestoneOwner?.choiceType).toBe('relationship');
+    const milestone = milestoneOwner?.relationshipPacing?.find((contract) => contract.milestone)?.milestone;
+    expect(milestone).toMatchObject({
+      subjectId: 'dusk-club',
+      targetStage: 'friend',
+      choiceSceneId: milestoneOwner?.id,
+    });
+    expect(milestone?.introductionSceneIds.length).toBeGreaterThan(0);
+    expect(milestone?.testSceneIds.length).toBeGreaterThan(0);
+    for (const scene of projected.filter((candidate) => candidate.id !== milestoneOwner?.id)) {
+      expect(scene.dramaticPurpose).not.toMatch(/become friends and form the Dusk Club/i);
+      expect(scene.stakes ?? '').not.toMatch(/become friends and form the Dusk Club/i);
+      expect((scene.mechanicPressure ?? []).map((pressure) => pressure.storyPressure).join(' '))
+        .not.toMatch(/become friends and form the Dusk Club/i);
+    }
+  });
+
+  it('keeps a projected scene for every ESC bond/test unit after surplus trim (Bite Me ep1)', () => {
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 6,
+      locations: ['Bucharest', 'Lumina Books', 'Vâlcescu Club', 'Cișmigiu Gardens', "Kylie's Apartment"],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+          'She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.',
+          'After testing Kylie, the three become friends and form the Dusk Club.',
+          'At a rooftop bar she catches the attention of a man in a charcoal suit and a rougher man near the kitchen.',
+          'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes.',
+          'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight, and by evening the post has gone viral.',
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const spine = sp.episodeSpines?.[1];
+    expect(spine).toBeDefined();
+    const bond = spine!.units.find((unit) => unit.kind === 'bond');
+    const test = spine!.units.find((unit) => unit.kind === 'test');
+    expect(bond).toBeDefined();
+    expect(test).toBeDefined();
+    const scenes = scenesForEpisode(sp, 1);
+    expect(scenes.some((scene) => scene.spineUnitId === bond!.id)).toBe(true);
+    expect(scenes.some((scene) => scene.spineUnitId === test!.id)).toBe(true);
+  });
+
+  it('floors authored-lite scenes to ESC standard units so meet/threshold are not orphaned (Bite Me ep3)', () => {
+    const ep = episode(3, ['search'], {
+      estimatedSceneCount: 3,
+      locations: ["Victor's Estate", 'Bucharest', "Kylie's Lipscani Apartment"],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          'Victor gently frames the blog as a privacy problem, asking for her discretion.',
+          'Beneath the romance she notices a crying model, a strange photograph, and a locked wing.',
+          "Kylie returns to Bucharest feeling lucky and finds Radu's hand-knit scarf on her doorstep.",
+        ],
+      },
+    });
+    const sp = buildSeasonScenePlan(plan([ep]));
+    const spine = sp.episodeSpines?.[3];
+    expect(spine).toBeDefined();
+    const standardUnits = spine!.units.filter((unit) => unit.sceneKind !== 'encounter');
+    const scenes = scenesForEpisode(sp, 3);
+    const mapped = new Set(scenes.map((scene) => scene.spineUnitId).filter(Boolean));
+    for (const unit of standardUnits) {
+      expect(mapped.has(unit.id), `missing projection for ${unit.id} (${unit.kind})`).toBe(true);
+    }
   });
 
   it('skips rebuildTreatmentSeasonScenePlan when sourceHash is unchanged', () => {

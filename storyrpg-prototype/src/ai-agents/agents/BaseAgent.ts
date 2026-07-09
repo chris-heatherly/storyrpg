@@ -18,6 +18,7 @@ import {
   geminiSseHandler,
 } from './streamLLM';
 import { isBillingQuotaMessage } from '../utils/providerErrors';
+import type { LlmFailureCategory } from '../utils/pipelineTelemetry';
 
 const log = createLogger('BaseAgent');
 
@@ -253,11 +254,16 @@ export interface TruncationObservation {
 export interface LlmCallObservation {
   agentName: string;
   provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
+  model?: string;
+  phase?: string;
   success: boolean;
   durationMs: number;
   queueWaitMs: number;
   attempt: number;
   error?: string;
+  failureCategory?: LlmFailureCategory;
+  promptChars?: number;
+  schemaName?: string;
   /**
    * Token usage reported by the provider, when available. Populated by the
    * anthropic, gemini, and OpenAI transports. Undefined
@@ -357,6 +363,11 @@ export abstract class BaseAgent {
     backoffJitterRatio: 0.15,
   };
   private static _observer?: (observation: LlmCallObservation) => void;
+  private static _semanticFailureObserver?: (event: {
+    agentName: string;
+    provider: LlmCallObservation['provider'];
+    category: Extract<LlmFailureCategory, 'parse' | 'validation'>;
+  }) => void;
 
   // Single source of truth with isLlmQuotaError — a new quota phrase added to
   // one and not the other used to split retry classification from error wrapping.
@@ -426,6 +437,33 @@ export abstract class BaseAgent {
     return { isRetryable, isAbortError, isConnectionFailure };
   }
 
+  static classifyLlmFailureCategory(input: {
+    message: string;
+    errorName?: string;
+    signalAborted?: boolean;
+    isQuotaError?: boolean;
+  }): LlmFailureCategory {
+    const message = String(input.message || '').toLowerCase();
+    if (input.isQuotaError) return 'quota';
+    if (
+      input.signalAborted
+      || input.errorName === 'AbortError'
+      || /\b(timeout|timed out|deadline exceeded)\b/.test(message)
+    ) return 'timeout';
+    if (/\b(safety|blocked|content filter|prohibited content|harm category)\b/.test(message)) return 'safety';
+    if (
+      /\b(schema|response[_ ]?format|tool[_ ]?choice|invalid argument)\b/.test(message)
+      && /\b(reject|invalid|unsupported|failed|400|422)\b/.test(message)
+    ) return 'schema_rejection';
+    if (/\b(parse|json|malformed|unexpected token)\b/.test(message)) return 'parse';
+    if (/\b(validation|validator|contract)\b/.test(message)) return 'validation';
+    if (
+      /\b(fetch failed|network|econnreset|econnrefused|socket|terminated|overloaded|rate limit)\b/.test(message)
+      || /\b(?:500|502|503|529)\b/.test(message)
+    ) return 'transport';
+    return 'unknown';
+  }
+
   constructor(name: string, config: AgentConfig) {
     this.name = name;
     this.config = config;
@@ -449,6 +487,10 @@ export abstract class BaseAgent {
 
   static setLlmCallObserver(observer?: (observation: LlmCallObservation) => void): void {
     BaseAgent._observer = observer;
+  }
+
+  static setLlmSemanticFailureObserver(observer?: typeof BaseAgent._semanticFailureObserver): void {
+    BaseAgent._semanticFailureObserver = observer;
   }
 
   /**
@@ -534,6 +576,14 @@ Do not use markdown code blocks around the JSON.
       ...(systemMessage ? [systemMessage] : []),
       ...otherMessages,
     ];
+    const promptChars = fullMessages.reduce((total, message) => {
+      if (typeof message.content === 'string') return total + message.content.length;
+      return total + message.content.reduce((sum, part) => {
+        if (part.type === 'text') return sum + part.text.length;
+        if (part.type === 'image_url') return sum + part.image_url.url.length;
+        return sum + part.source.data.length;
+      }, 0);
+    }, 0);
 
     if (BaseAgent._transportOverride) {
       return BaseAgent._transportOverride({
@@ -604,6 +654,7 @@ Do not use markdown code blocks around the JSON.
         BaseAgent._observer?.({
           agentName: this.name,
           provider: this.config.provider,
+          model: this.config.model,
           success: true,
           durationMs: Date.now() - callStart,
           queueWaitMs,
@@ -613,6 +664,8 @@ Do not use markdown code blocks around the JSON.
               ? { inputTokens: usageCapture.inputTokens, outputTokens: usageCapture.outputTokens }
               : undefined,
           requestedMaxTokens,
+          promptChars,
+          schemaName: options?.jsonSchema?.name,
         });
         return result;
       } catch (error) {
@@ -636,12 +689,21 @@ Do not use markdown code blocks around the JSON.
         BaseAgent._observer?.({
           agentName: this.name,
           provider: this.config.provider,
+          model: this.config.model,
           success: false,
           durationMs: Date.now() - callStart,
           queueWaitMs,
           attempt,
           error: lastError.message,
+          failureCategory: BaseAgent.classifyLlmFailureCategory({
+            message: lastError.message,
+            errorName: lastError.name,
+            signalAborted: !!(options?.signal?.aborted || this.activeAbortSignal?.aborted),
+            isQuotaError,
+          }),
           requestedMaxTokens,
+          promptChars,
+          schemaName: options?.jsonSchema?.name,
         });
 
         // Truncation is not a transient provider failure. Retrying the same
@@ -1755,6 +1817,15 @@ Do not use markdown code blocks around the JSON.
         return result;
       } catch (repairError) {
         if (repairError instanceof TruncatedLLMResponseError) throw repairError;
+        try {
+          BaseAgent._semanticFailureObserver?.({
+            agentName: this.name,
+            provider: this.config.provider,
+            category: 'parse',
+          });
+        } catch {
+          // Observation must never break parsing.
+        }
         // All attempts failed - throw original error with context
         throw new Error(`Failed to parse JSON response: ${firstError}\nResponse: ${response.slice(0, 500)}...`);
       }

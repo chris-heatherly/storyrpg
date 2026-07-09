@@ -16,6 +16,8 @@
  * runtime does not consume witnessReactions, and the validator would reject them).
  */
 
+import { normalizeCanonicalConsequence } from './canonicalChoiceConsequences';
+
 export interface NpcRosterEntry {
   id: string;
   name?: string;
@@ -148,7 +150,12 @@ export function canonicalizeStoryWitnessReactions(story: unknown): WitnessCanoni
 // Relationship-consequence NPC-id canonicalization
 // ============================================================================
 
-const REL_CONSEQUENCE_TYPES = new Set(['adjustRelationship', 'changeRelationship', 'relationship']);
+const REL_CONSEQUENCE_TYPES = new Set([
+  'adjustRelationship',
+  'changeRelationship',
+  'relationship',
+  'relationshipEvidence',
+]);
 
 function isRelationshipConsequence(v: unknown): v is Record<string, unknown> {
   return (
@@ -192,20 +199,21 @@ export function canonicalizeRelationshipConsequences(
     : [];
   if (cleanRoster.length === 0) return result; // no authoritative roster → leave untouched
 
-  // Returns true to KEEP the consequence, false to DROP it.
-  const resolveOrDrop = (c: Record<string, unknown>): boolean => {
+  // Returns the canonical consequence to KEEP, or undefined to DROP it.
+  const normalizeOrDrop = (c: Record<string, unknown>): Record<string, unknown> | undefined => {
     result.total++;
     const rawId = typeof c.npcId === 'string' ? c.npcId : '';
-    const canonical = rawId ? resolveWitnessNpcId(rawId, cleanRoster) : undefined;
-    if (canonical) {
-      if (canonical !== rawId) {
-        c.npcId = canonical;
-        result.remapped++;
-      }
-      return true;
+    const normalized = normalizeCanonicalConsequence(c, {
+      resolveNpcId: (id) => resolveWitnessNpcId(id, cleanRoster),
+      rejectUnresolvedNpcIds: true,
+    });
+    if (normalized.consequence) {
+      const canonical = (normalized.consequence as { npcId?: string }).npcId;
+      if (canonical && canonical !== rawId) result.remapped++;
+      return normalized.consequence as unknown as Record<string, unknown>;
     }
     result.dropped++;
-    return false;
+    return undefined;
   };
 
   const visit = (n: unknown): void => {
@@ -217,17 +225,20 @@ export function canonicalizeRelationshipConsequences(
     const obj = n as Record<string, unknown>;
 
     if (Array.isArray(obj.consequences)) {
-      obj.consequences = (obj.consequences as unknown[]).filter((c) =>
-        isRelationshipConsequence(c) ? resolveOrDrop(c as Record<string, unknown>) : true,
-      );
+      obj.consequences = (obj.consequences as unknown[]).flatMap((c) => {
+        if (!isRelationshipConsequence(c)) return [c];
+        const normalized = normalizeOrDrop(c as Record<string, unknown>);
+        return normalized ? [normalized] : [];
+      });
     }
     if (Array.isArray(obj.delayedConsequences)) {
-      obj.delayedConsequences = (obj.delayedConsequences as unknown[]).filter((d) => {
+      obj.delayedConsequences = (obj.delayedConsequences as unknown[]).flatMap((d) => {
         const inner =
           d && typeof d === 'object' ? (d as Record<string, unknown>).consequence : undefined;
-        return isRelationshipConsequence(inner)
-          ? resolveOrDrop(inner as Record<string, unknown>)
-          : true;
+        if (!isRelationshipConsequence(inner)) return [d];
+        const normalized = normalizeOrDrop(inner as Record<string, unknown>);
+        if (!normalized || !d || typeof d !== 'object') return [];
+        return [{ ...(d as Record<string, unknown>), consequence: normalized }];
       });
     }
 

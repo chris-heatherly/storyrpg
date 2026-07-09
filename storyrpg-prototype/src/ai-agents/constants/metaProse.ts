@@ -83,6 +83,18 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     suggestion: 'Rewrite in second-person present-tense scene prose; treatment summaries must not ship as beat text.',
   },
   {
+    // Mid-sentence paste of treatment synopsis into otherwise second-person prose
+    // (bite-me 2026-07-09: Mika dialogue + "She wanders into a bookshop owned by Stela…").
+    pattern: /\bShe\s+wanders\s+into\s+a\s+bookshop\s+owned\s+by\b|\bAfter\s+testing\s+\w+,\s+the\s+three\s+become\s+friends\b|\bWalking\s+home\s+through\s+\w+,\s+she\s+is\s+attacked\b/i,
+    label: 'embedded treatment synopsis paste',
+    suggestion: 'Remove pasted treatment outline sentences; keep only second-person dramatization.',
+  },
+  {
+    pattern: /\bturn:treatment_turn_ep\d+|\bLEVERAGE:\s*At a\b|\baftermath:treatment_ep\d+\b/i,
+    label: 'treatment turn/leverage register',
+    suggestion: 'Remove planning-register labels (turn:/LEVERAGE:/aftermath:) from reader-facing prose.',
+  },
+  {
     pattern: /(?:^|[.!?]\s+)At a\b[^.!?]{8,}\bshe\b[^.!?]{8,}\b(?:catches?|attention|man in)\b/i,
     label: 'third-person treatment scene summary',
     suggestion: 'Rewrite as concrete second-person staging; never paste treatment scene summaries into beat prose.',
@@ -101,6 +113,18 @@ export const READER_PROSE_LEAK_PATTERNS: Array<{ pattern: RegExp; label: string;
     pattern: /\bStage\s+the\s+pressure\s+through\s+visible\s+action,\s*reaction,\s*object\s+movement,\s*distance,\s*or\s+dialogue\s+around\b/i,
     label: 'sequence staging directive',
     suggestion: 'Replace sequence-staging directives with concrete in-world action and reaction.',
+  },
+  {
+    // Deterministic SequenceDirector / sceneContractBuilders scaffold that pastes
+    // treatment titles into coveragePlan metadata (bite-me 2026-07-09 final contract).
+    pattern: /\bTrack\s+the\s+visible\s+consequence\s+of\b/i,
+    label: 'visible-consequence coverage scaffold',
+    suggestion: 'Replace coverage scaffolds with concrete spatial/character blocking; never paste treatment titles into coveragePlan.',
+  },
+  {
+    pattern: /\bSequenceDirector:\s*preserve\b/i,
+    label: 'SequenceDirector preserve scaffold',
+    suggestion: 'Replace SequenceDirector preserve scaffolds with concrete continuity notes about environment, lighting, or subject.',
   },
   {
     pattern: /\bThe\s+response\s+changes\s+access,\s*trust,\s*information,\s*or\s*danger\s+around\b/i,

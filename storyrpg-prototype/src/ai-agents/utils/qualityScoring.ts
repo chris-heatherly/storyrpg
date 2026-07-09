@@ -94,6 +94,21 @@ export interface QualityEligibility {
   capsApplied: QualityCap[];
 }
 
+export const QUALITY_REPAIR_THRESHOLDS = {
+  proseCraft: 70,
+  responsiveness: 70,
+} as const;
+
+export interface QualityRepairTarget {
+  kind: 'scene_prose' | 'route_pair';
+  component: 'prose_craft' | 'responsiveness';
+  threshold: number;
+  actualScore: number;
+  reason: string;
+  sceneIds: string[];
+  probeIds: string[];
+}
+
 export interface StoryCircleBeatEvidence {
   beat: StoryCircleBeat;
   status: 'realized' | 'metadata-only' | 'missing';
@@ -106,6 +121,8 @@ export interface StoryCircleBeatEvidence {
 export interface StoryCircleQualityScoreBasis {
   version: 4;
   profile: 'authored-treatment' | 'freeform';
+  /** The sole run-level publishability score. Legacy report scores are diagnostics only. */
+  publishabilityScore: number;
   rawScore: number;
   finalScore: number;
   evidenceCoverage: number;
@@ -123,6 +140,7 @@ export interface StoryCircleQualityScoreBasis {
     validationScore?: number;
     finalStoryContractScore?: number;
   };
+  repairTargets: QualityRepairTarget[];
   unmappedFindings: QualityFinding[];
   penalties: string[];
 }
@@ -496,6 +514,7 @@ export function deriveStoryCircleQualityScore(
   };
 
   applyCaps(caps, storyCircle, staticSignals, inputs, collectedFindings);
+  const repairTargets = buildQualityRepairTargets(inputs);
   const evidenceCoverage = computeEvidenceCoverage(inputs, storyCircle, staticSignals, profile);
   if (evidenceCoverage < 75) {
     caps.push({
@@ -522,6 +541,7 @@ export function deriveStoryCircleQualityScore(
   const basis: StoryCircleQualityScoreBasis = {
     version: 4,
     profile,
+    publishabilityScore: finalScore,
     rawScore,
     finalScore,
     evidenceCoverage,
@@ -535,6 +555,7 @@ export function deriveStoryCircleQualityScore(
       ordered: storyCircle.ordered,
     },
     legacySubscores,
+    repairTargets,
     unmappedFindings,
     penalties: caps.map((cap) => `${cap.id}: ${cap.reason}`),
   };
@@ -556,6 +577,7 @@ export function deriveStoryCircleQualityScore(
         'Legacy-structure fields are ignored; legacy-structure-only evidence receives no scoring credit.',
         'qaScore, validationScore, and finalStoryContractScore are retained only as diagnostics.',
         'v4: LLM judge grades (prose craft, responsiveness) set concept base scores; evidence-requiring domains are excluded from the average when their judge never ran.',
+        'Publishability caps do not replace or weaken final-contract correctness gates; ungrounded judge findings remain advisory.',
       ],
     },
   };
@@ -713,7 +735,18 @@ function addStoryCircleFindings(
   domains: Record<QualityDomainId, DomainAccumulator>,
   storyCircle: StoryCircleEvidenceSummary,
 ): void {
-  STORY_CIRCLE_BEATS.forEach((beat) => {
+  // Only score beats that are in-scope for this package. Partial-season runs
+  // already scope missingBeats / metadataOnlyBeats to active episode roles;
+  // later-season beats stay "missing" in the raw map but must not emit findings.
+  const inScope = new Set<StoryCircleBeat>([
+    ...storyCircle.missingBeats,
+    ...storyCircle.metadataOnlyBeats,
+    ...STORY_CIRCLE_BEATS.filter((beat) => storyCircle.beats[beat]?.status === 'realized'),
+  ]);
+  // Full-season fallback: if nothing was scoped (no brief roles), keep legacy behavior.
+  const beatsToScore = inScope.size > 0 ? [...inScope] : STORY_CIRCLE_BEATS;
+
+  beatsToScore.forEach((beat) => {
     const beatEvidence = storyCircle.beats[beat];
     if (beatEvidence.status === 'realized') {
       domains.story_circle_spine.evidence.push(`${beat}: ${beatEvidence.evidence[0] ?? 'realized on-page'}`);
@@ -1390,6 +1423,87 @@ function hasIssue(issues: Array<Partial<FinalStoryContractIssue>>, pattern: RegE
   );
 }
 
+function isUngroundedAdvisory(value: unknown): boolean {
+  return /evidence-ungrounded|ungrounded (?:claim|evidence)|quoted text not found/i.test(String(value ?? ''));
+}
+
+function judgeIssueSceneIds(issues: any[]): string[] {
+  return uniqueStrings(
+    issues
+      .filter((issue) => !isUngroundedAdvisory(issue?.description ?? issue))
+      .map((issue) => issue?.location?.sceneId)
+      .filter((sceneId): sceneId is string => typeof sceneId === 'string' && sceneId.length > 0),
+  );
+}
+
+function buildQualityRepairTargets(inputs: StoryCircleQualityScoreInputs): QualityRepairTarget[] {
+  const qa = inputs.qaReport as any;
+  const targets: QualityRepairTarget[] = [];
+  const proseScore = normalizeScore(qa?.proseCraft?.overallScore);
+  const proseIssues = Array.isArray(qa?.proseCraft?.issues) ? qa.proseCraft.issues : [];
+  const groundedProseErrors = proseIssues.filter((issue: any) =>
+    issue?.severity === 'error' && !isUngroundedAdvisory(issue?.description ?? issue),
+  );
+  if (
+    proseScore !== undefined
+    && (proseScore < QUALITY_REPAIR_THRESHOLDS.proseCraft || groundedProseErrors.length > 0)
+  ) {
+    const issueSceneIds = judgeIssueSceneIds(groundedProseErrors.length > 0 ? groundedProseErrors : proseIssues);
+    const sampledSceneIds = Array.isArray(qa?.proseCraft?.sampledSceneIds)
+      ? qa.proseCraft.sampledSceneIds.filter((sceneId: unknown): sceneId is string => typeof sceneId === 'string')
+      : [];
+    targets.push({
+      kind: 'scene_prose',
+      component: 'prose_craft',
+      threshold: QUALITY_REPAIR_THRESHOLDS.proseCraft,
+      actualScore: proseScore,
+      reason: groundedProseErrors.length > 0
+        ? `${groundedProseErrors.length} grounded prose-craft error(s) require focused scene repair.`
+        : `Prose craft ${proseScore} is below the ${QUALITY_REPAIR_THRESHOLDS.proseCraft} repair floor.`,
+      sceneIds: uniqueStrings([...issueSceneIds, ...sampledSceneIds]).slice(0, 3),
+      probeIds: [],
+    });
+  }
+
+  const responsivenessScore = normalizeScore(qa?.responsiveness?.overallScore);
+  const responsivenessIssues = Array.isArray(qa?.responsiveness?.issues) ? qa.responsiveness.issues : [];
+  const groundedResponsivenessErrors = responsivenessIssues.filter((issue: any) =>
+    issue?.severity === 'error' && !isUngroundedAdvisory(issue?.description ?? issue),
+  );
+  const probeVerdicts = Array.isArray(qa?.responsiveness?.probeVerdicts) ? qa.responsiveness.probeVerdicts : [];
+  const weakProbeIds = uniqueStrings(
+    probeVerdicts
+      .filter((probe: any) => probe?.verdict === 'cosmetic' || probe?.npcReaction === 'static')
+      .map((probe: any) => probe?.probeId)
+      .filter((probeId: unknown): probeId is string => typeof probeId === 'string' && probeId.length > 0),
+  );
+  if (
+    responsivenessScore !== undefined
+    && (
+      responsivenessScore < QUALITY_REPAIR_THRESHOLDS.responsiveness
+      || groundedResponsivenessErrors.length > 0
+      || weakProbeIds.length > 0
+    )
+  ) {
+    targets.push({
+      kind: 'route_pair',
+      component: 'responsiveness',
+      threshold: QUALITY_REPAIR_THRESHOLDS.responsiveness,
+      actualScore: responsivenessScore,
+      reason: weakProbeIds.length > 0
+        ? `${weakProbeIds.length} route-pair probe(s) are cosmetic or leave NPC reactions static.`
+        : groundedResponsivenessErrors.length > 0
+          ? `${groundedResponsivenessErrors.length} grounded responsiveness error(s) require route-pair repair.`
+          : `Responsiveness ${responsivenessScore} is below the ${QUALITY_REPAIR_THRESHOLDS.responsiveness} repair floor.`,
+      sceneIds: judgeIssueSceneIds(
+        groundedResponsivenessErrors.length > 0 ? groundedResponsivenessErrors : responsivenessIssues,
+      ),
+      probeIds: weakProbeIds,
+    });
+  }
+  return targets;
+}
+
 function applyCaps(
   caps: QualityCap[],
   storyCircle: StoryCircleEvidenceSummary,
@@ -1484,6 +1598,80 @@ function applyCaps(
       maxScore: 69,
       reason: 'A critical beat appears in the wrong scene or chronology.',
       domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+
+  const deterministicChronologyFindings = collectedFindings.filter((finding) =>
+    !isUngroundedAdvisory(finding.message)
+    && finding.source !== 'qa-report'
+    && finding.source !== 'quality-council'
+    && /chronolog|timeline|out.of.order|duplicate.*(?:event|atom)|route_duplicate_event|causal order|prerequisite/i
+      .test(`${finding.validator ?? ''} ${finding.message}`),
+  );
+  const chronologyErrors = deterministicChronologyFindings.filter((finding) =>
+    finding.severity === 'critical' || finding.severity === 'error',
+  );
+  if (chronologyErrors.length > 0) {
+    caps.push({
+      id: 'chronology_health_error',
+      maxScore: 69,
+      reason: `${chronologyErrors.length} grounded chronology/causal-order error(s) remain.`,
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  } else if (deterministicChronologyFindings.length > 0) {
+    caps.push({
+      id: 'chronology_health_warning',
+      maxScore: 84,
+      reason: `${deterministicChronologyFindings.length} chronology/causal-order warning(s) remain.`,
+      domainId: 'scene_coherence_prose_continuity',
+    });
+  }
+
+  const twistFindings = collectedFindings.filter((finding) =>
+    !isUngroundedAdvisory(finding.message)
+    && /TwistQualityValidator|twist realization|foreshadow.*(?:missing|after|late)|reveal.*(?:unearned|unprepared)/i
+      .test(`${finding.validator ?? ''} ${finding.message}`),
+  );
+  const twistErrors = twistFindings.filter((finding) =>
+    finding.severity === 'critical' || finding.severity === 'error',
+  );
+  if (twistErrors.length > 0) {
+    caps.push({
+      id: 'twist_realization_error',
+      maxScore: 79,
+      reason: `${twistErrors.length} twist/foreshadow realization error(s) remain.`,
+      domainId: 'dramatic_structure_architecture',
+    });
+  } else if (twistFindings.length > 0) {
+    caps.push({
+      id: 'twist_realization_warning',
+      maxScore: 89,
+      reason: `${twistFindings.length} twist/foreshadow realization warning(s) remain.`,
+      domainId: 'dramatic_structure_architecture',
+    });
+  }
+
+  const obligationFindings = collectedFindings.filter((finding) =>
+    !isUngroundedAdvisory(finding.message)
+    && /ObligationLedgerValidator|ResidueObligationValidator|SetupPayoffValidator|CallbackCoverageValidator|missing.*(?:obligation|payoff|callback)|unpaid|dangling.*(?:promise|setup)|planned_residue_debt/i
+      .test(`${finding.validator ?? ''} ${finding.message}`),
+  );
+  const obligationErrors = obligationFindings.filter((finding) =>
+    finding.severity === 'critical' || finding.severity === 'error',
+  );
+  if (obligationErrors.length > 0) {
+    caps.push({
+      id: 'obligation_health_error',
+      maxScore: 74,
+      reason: `${obligationErrors.length} payoff/callback/residue obligation error(s) remain.`,
+      domainId: 'dramatic_structure_architecture',
+    });
+  } else if (obligationFindings.length > 0) {
+    caps.push({
+      id: 'obligation_health_warning',
+      maxScore: 84,
+      reason: `${obligationFindings.length} payoff/callback/residue obligation warning(s) remain.`,
+      domainId: 'dramatic_structure_architecture',
     });
   }
 
@@ -1622,6 +1810,58 @@ function applyCaps(
     });
   }
 
+  const proseScore = normalizeScore((inputs.qaReport as any)?.proseCraft?.overallScore);
+  const proseIssues = Array.isArray((inputs.qaReport as any)?.proseCraft?.issues)
+    ? (inputs.qaReport as any).proseCraft.issues
+    : [];
+  const groundedProseErrors = proseIssues.filter((issue: any) =>
+    issue?.severity === 'error' && !isUngroundedAdvisory(issue?.description ?? issue),
+  );
+  if (proseScore !== undefined && proseScore < QUALITY_REPAIR_THRESHOLDS.proseCraft) {
+    caps.push({
+      id: 'prose_craft_below_publish_floor',
+      maxScore: proseScore < 60 ? 69 : 79,
+      reason: `Prose craft ${proseScore} is below the ${QUALITY_REPAIR_THRESHOLDS.proseCraft} publish/repair floor.`,
+      domainId: 'prose_craft',
+    });
+  } else if (groundedProseErrors.length > 0) {
+    caps.push({
+      id: 'prose_craft_errors_remain',
+      maxScore: 79,
+      reason: `${groundedProseErrors.length} grounded prose-craft error(s) remain.`,
+      domainId: 'prose_craft',
+    });
+  }
+
+  const responsivenessScore = normalizeScore((inputs.qaReport as any)?.responsiveness?.overallScore);
+  const responsivenessIssues = Array.isArray((inputs.qaReport as any)?.responsiveness?.issues)
+    ? (inputs.qaReport as any).responsiveness.issues
+    : [];
+  const groundedResponsivenessErrors = responsivenessIssues.filter((issue: any) =>
+    issue?.severity === 'error' && !isUngroundedAdvisory(issue?.description ?? issue),
+  );
+  const responsivenessProbes = Array.isArray((inputs.qaReport as any)?.responsiveness?.probeVerdicts)
+    ? (inputs.qaReport as any).responsiveness.probeVerdicts
+    : [];
+  const cosmeticProbeCount = responsivenessProbes.filter((probe: any) =>
+    probe?.verdict === 'cosmetic' || probe?.npcReaction === 'static',
+  ).length;
+  if (responsivenessScore !== undefined && responsivenessScore < QUALITY_REPAIR_THRESHOLDS.responsiveness) {
+    caps.push({
+      id: 'responsiveness_below_publish_floor',
+      maxScore: responsivenessScore < 60 ? 69 : 79,
+      reason: `Responsiveness ${responsivenessScore} is below the ${QUALITY_REPAIR_THRESHOLDS.responsiveness} publish/repair floor.`,
+      domainId: 'branching_consequence_memory',
+    });
+  } else if (groundedResponsivenessErrors.length > 0 || cosmeticProbeCount > 0) {
+    caps.push({
+      id: 'responsiveness_errors_remain',
+      maxScore: 84,
+      reason: `${groundedResponsivenessErrors.length} grounded responsiveness error(s) and ${cosmeticProbeCount} cosmetic/static route probe(s) remain.`,
+      domainId: 'branching_consequence_memory',
+    });
+  }
+
   if (!signals.finalStoryPresent || inputs.finalStoryContractReport?.passed === false) {
     caps.push({
       id: 'final_package_playability_hard_blocker',
@@ -1681,7 +1921,22 @@ function enforceAboveNinetyRequirements(
   }
   const addedCaps: QualityCap[] = [];
   const noCaps = caps.length === 0;
-  const allStoryCircleRealized = STORY_CIRCLE_BEATS.every((beat) => storyCircle.beats[beat].status === 'realized');
+  // Partial-season packages only require in-scope beats (already reflected in
+  // missingBeats / metadataOnlyBeats). Full seasons still require the full loop.
+  const inScopeBeats = STORY_CIRCLE_BEATS.filter((beat) =>
+    storyCircle.beats[beat]?.status === 'realized'
+    || storyCircle.missingBeats.includes(beat)
+    || storyCircle.metadataOnlyBeats.includes(beat)
+    || (
+      storyCircle.missingBeats.length === 0
+      && storyCircle.metadataOnlyBeats.length === 0
+      && storyCircle.beats[beat]?.status !== 'missing'
+    ),
+  );
+  const beatsRequiredFor90 = inScopeBeats.length > 0 ? inScopeBeats : STORY_CIRCLE_BEATS;
+  const allStoryCircleRealized = beatsRequiredFor90.every((beat) => storyCircle.beats[beat].status === 'realized')
+    && storyCircle.missingBeats.length === 0
+    && storyCircle.metadataOnlyBeats.length === 0;
   const allCoreDomainsAtLeast85 = domains
     .filter((domain) => domain.active)
     .every((domain) => domain.score >= 85);
@@ -1695,7 +1950,7 @@ function enforceAboveNinetyRequirements(
     addedCaps.push({
       id: 'above_90_requirements_not_met',
       maxScore: 89,
-      reason: 'Scores at or above 90 require no caps, all Story Circle beats realized on-page, all core domains at least 85, no leakage, meaningful agency, and prose-craft judge evidence.',
+      reason: 'Scores at or above 90 require no caps, all in-scope Story Circle beats realized on-page, all core domains at least 85, no leakage, meaningful agency, and prose-craft judge evidence.',
     });
     return { score: Math.min(score, 89), addedCaps };
   }

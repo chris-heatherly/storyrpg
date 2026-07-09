@@ -204,6 +204,10 @@ export interface Choice extends ChoiceCore {
   failureResidue?: FailureResidue;
   visualResidueHint?: string;
   relationshipValueEvidence?: RelationshipValueEvidence[];
+  /** Marks the option that earns an authored relationship/group milestone. */
+  relationshipMilestoneId?: string;
+  /** Named group earned by this option; never inferred from generic choice presence. */
+  relationshipGroupId?: string;
   mechanicPressure?: MechanicPressureContract[];
   /** Planned season residue obligations this choice creates or pays. */
   residueObligationIds?: string[];

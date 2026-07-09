@@ -385,11 +385,10 @@ describe('choice assembly preservation', () => {
       npcId: 'mika',
       relationshipType: 'affection',
       change: 8,
-    } as any)).toMatchObject({
+    } as any)).toEqual({
       type: 'relationship',
       npcId: 'mika',
       dimension: 'affection',
-      relationshipType: 'affection',
       change: 8,
     });
 
@@ -398,11 +397,10 @@ describe('choice assembly preservation', () => {
       npcId: 'stela',
       aspect: 'trust',
       change: -10,
-    } as any)).toMatchObject({
+    } as any)).toEqual({
       type: 'relationship',
       npcId: 'stela',
       dimension: 'trust',
-      aspect: 'trust',
       change: -10,
     });
   });

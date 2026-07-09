@@ -1,19 +1,50 @@
 /**
  * Authored-lite ESC collapse: seed thread/twist/arc directives from compiled
  * ESC obligations instead of ThreadPlanner / TwistArchitect / CharacterArcTracker.
+ *
+ * Plant-function ESC obligations (`thread_setup`, `consequence_seed`,
+ * `information_reveal`) are staging contracts: they are satisfied when the
+ * plant scene exists on-page. They must NOT become same-episode unpaid
+ * Chekhov's-gun debts on the unified obligation ledger.
  */
 
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
 import type { TwistPlan } from '../agents/TwistArchitect';
 import type { CharacterArcTargets } from '../agents/CharacterArcTracker';
 import type { NarrativeThread, ThreadLedger } from '../../types/narrativeThread';
-import type { EpisodeSpineContract } from '../../types/episodeSpine';
+import type { EpisodeSpineContract, SpineObligationKind } from '../../types/episodeSpine';
 import type { ArcPressureTreatmentContract } from '../../types/scenePlan';
 import { mergeIntoSeasonLedger } from '../pipeline/threadTwistPlanning';
 
 export interface CompiledThreadTwistSeed {
   threads: NarrativeThread[];
   twistPlan?: TwistPlan;
+}
+
+/** ESC obligation kinds that mean "stage this beat on-page", not "pay off later". */
+export const ESC_PLANT_STAGING_KINDS = new Set<SpineObligationKind>([
+  'thread_setup',
+  'consequence_seed',
+  'information_reveal',
+]);
+
+export const ESC_PLANT_STAGING_TAG = 'esc-plant-staging';
+
+/** Callback-ledger / ThreadLedger ids for ESC plant staging (after `thread:` prefix). */
+export const ESC_PLANT_STAGING_THREAD_ID_RE =
+  /^(?:thread:)?(?:consequence_seed|information_reveal|thread_setup)-/i;
+
+export function normalizeEscPlantText(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function isEscPlantStagingThread(thread: Pick<NarrativeThread, 'id' | 'tags'>): boolean {
+  const tags = thread.tags ?? [];
+  if (tags.includes(ESC_PLANT_STAGING_TAG)) return true;
+  if (tags.includes('esc-compiled') && tags.some((tag) => ESC_PLANT_STAGING_KINDS.has(tag as SpineObligationKind))) {
+    return true;
+  }
+  return ESC_PLANT_STAGING_THREAD_ID_RE.test(thread.id);
 }
 
 export function buildCompiledThreadTwistFromEsc(
@@ -23,17 +54,22 @@ export function buildCompiledThreadTwistFromEsc(
 ): CompiledThreadTwistSeed {
   const unitsById = new Map((spine?.units ?? []).map((unit) => [unit.id, unit] as const));
   const threads: NarrativeThread[] = [];
+  const seenPlantTexts = new Set<string>();
   let twistPlan: TwistPlan | undefined;
   const scenes = blueprint.scenes ?? [];
   for (const scene of scenes) {
     const unit = scene.spineUnitId ? unitsById.get(scene.spineUnitId) : undefined;
     const obligations = unit?.obligations ?? [];
     for (const obligation of obligations) {
-      if (
-        obligation.kind === 'thread_setup'
-        || obligation.kind === 'consequence_seed'
-        || obligation.kind === 'information_reveal'
-      ) {
+      if (ESC_PLANT_STAGING_KINDS.has(obligation.kind)) {
+        const plantKey = normalizeEscPlantText(obligation.text);
+        // Same plant text often arrives as both consequence_seed and
+        // information_reveal — one staging debt, not two.
+        if (!plantKey || seenPlantTexts.has(plantKey)) continue;
+        seenPlantTexts.add(plantKey);
+
+        const plantBeatId = `${scene.id}-plant`;
+        const stagingBeatId = `${scene.id}-staging-fulfilled`;
         threads.push({
           id: obligation.id,
           kind: obligation.kind === 'information_reveal' ? 'reveal' : 'seed',
@@ -41,10 +77,17 @@ export function buildCompiledThreadTwistFromEsc(
           label: obligation.text.slice(0, 80),
           description: obligation.text,
           introducedInEpisode: episodeNumber,
-          plants: [{ sceneId: scene.id, beatId: `${scene.id}-plant`, note: obligation.text.slice(0, 120) }],
-          payoffs: [],
-          status: 'planned',
-          tags: ['esc-compiled', obligation.kind],
+          // Plant-function ESC obligations are fulfilled by staging, not by a
+          // later Chekhov payoff. Credit the same scene so obligation seeding
+          // marks the ledger entry paid in-episode.
+          plants: [{ sceneId: scene.id, beatId: plantBeatId, note: obligation.text.slice(0, 120) }],
+          payoffs: [{
+            sceneId: scene.id,
+            beatId: stagingBeatId,
+            note: 'ESC plant staging fulfilled on-page',
+          }],
+          status: 'paid_off',
+          tags: ['esc-compiled', ESC_PLANT_STAGING_TAG, obligation.kind],
         });
       }
       if (obligation.kind === 'twist_reveal' && !twistPlan) {

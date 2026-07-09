@@ -599,6 +599,69 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
 });
 
 describe('ChoiceAuthor relationship consequence repair', () => {
+  it('emits canonical movement and evidence for every member of a compiled group milestone', () => {
+    const author: any = new ChoiceAuthor(config);
+    const milestone = {
+      id: 'scene-1-milestone-dusk-club',
+      kind: 'group_formation',
+      sourceText: 'After testing Kylie, they become friends and form the Dusk Club.',
+      subjectType: 'group',
+      subjectId: 'dusk-club',
+      targetStage: 'friend',
+      introductionSceneIds: ['scene-0'],
+      testSceneIds: ['scene-1'],
+      choiceSceneId: 'scene-1',
+      memberNpcIds: ['mika', 'stela'],
+      requiredEvidenceTags: ['respected_agency'],
+    };
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        { id: 'join', text: 'Choose to form the Dusk Club together', choiceType: 'relationship', consequences: [] },
+        { id: 'wait', text: 'Ask for more time', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'The Dusk Club',
+        choicePoint: { type: 'relationship', stakes: { want: 'belong', cost: 'risk trust', identity: 'choose connection' } },
+        relationshipPacing: [{
+          id: 'scene-1-rel-dusk-club',
+          source: 'choice',
+          groupId: 'dusk-club',
+          startStage: 'spark',
+          targetStage: 'friend',
+          allowedLabels: ['friend'],
+          blockedLabels: [],
+          requiredEvidence: [],
+          minScenesSinceIntroduction: 1,
+          maxDeltaThisScene: 6,
+          mechanicDimensions: ['trust'],
+          milestone,
+        }],
+      },
+      npcsInScene: [
+        { id: 'mika', name: 'Mika', pronouns: 'she/her', description: 'A sharp ally' },
+        { id: 'stela', name: 'Stela', pronouns: 'she/her', description: 'A guarded ally' },
+      ],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    const defining = choiceSet.choices.find((choice: any) => choice.relationshipMilestoneId === milestone.id);
+    expect(defining).toMatchObject({ relationshipGroupId: 'dusk-club', choiceType: 'relationship' });
+    expect(defining.consequences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'relationship', npcId: 'mika', dimension: 'trust' }),
+      expect.objectContaining({ type: 'relationship', npcId: 'stela', dimension: 'trust' }),
+    ]));
+    expect(defining.relationshipValueEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ npcId: 'mika', evidenceTags: expect.arrayContaining(['respected_agency']) }),
+      expect.objectContaining({ npcId: 'stela', evidenceTags: expect.arrayContaining(['respected_agency']) }),
+    ]));
+  });
+
   it('repairs each relationship option, not only the first option in the set', () => {
     const author: any = new ChoiceAuthor(config);
     const choiceSet = makeChoiceSet({

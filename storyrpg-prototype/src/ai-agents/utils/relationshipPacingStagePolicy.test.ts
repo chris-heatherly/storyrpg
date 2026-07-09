@@ -82,7 +82,7 @@ describe('relationshipPacingStagePolicy', () => {
     expect(scenes[0].relationshipPacing[0].blockedLabels).toContain('one of us');
   });
 
-  it('caps first group choice movement at acquaintance instead of instant friendship', () => {
+  it('does not treat a generic relationship choice as group-defining', () => {
     const scenes = [{
       id: 's1',
       choicePoint: { type: 'relationship' },
@@ -103,7 +103,7 @@ describe('relationshipPacingStagePolicy', () => {
 
     normalizeRelationshipPacingStages(scenes);
 
-    expect(scenes[0].relationshipPacing[0].targetStage).toBe('acquaintance');
-    expect(scenes[0].relationshipPacing[0].allowedLabels).toContain('new acquaintance');
+    expect(scenes[0].relationshipPacing[0].targetStage).toBe('spark');
+    expect(scenes[0].relationshipPacing[0].allowedLabels).toContain('joke');
   });
 });

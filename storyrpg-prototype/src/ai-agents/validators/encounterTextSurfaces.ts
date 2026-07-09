@@ -137,31 +137,50 @@ export function collectReaderFacingTexts(scene: Scene): string[] {
  * prose, while realization validators use collectReaderFacingTexts above.
  */
 export function collectEncounterMetaTexts(scene: Scene): string[] {
+  return collectEncounterMetaTextFields(scene).map((field) => field.text);
+}
+
+export interface EncounterMetaTextField {
+  /** Exact path relative to the scene object. */
+  path: string;
+  text: string;
+}
+
+/**
+ * Collect only shippable encounter metadata and preserve exact field ownership.
+ * Planning provenance is skipped as a whole subtree.
+ */
+export function collectEncounterMetaTextFields(scene: Scene): EncounterMetaTextField[] {
   const enc = scene.encounter as unknown as Record<string, unknown> | undefined;
   if (!enc) return [];
-  const texts: string[] = [];
+  const fields: EncounterMetaTextField[] = [];
   const keys = new Set([
     'narrativeText', 'outcomeText', 'setupText', 'escalationText',
     'visualMoment', 'visualNarrative', 'visibleCost', 'visibleComplication',
     'immediateEffect', 'lingeringEffect',
     'description', 'victory', 'defeat', 'onSuccess', 'onFailure',
   ]);
+  const authorOnlyKeys = new Set(['sourceSynopsis', 'authoredAnchor']);
   const seen = new Set<object>();
-  const visit = (node: unknown): void => {
+  const visit = (node: unknown, path: string): void => {
     if (!node || typeof node !== 'object' || seen.has(node)) return;
     seen.add(node as object);
     if (Array.isArray(node)) {
-      for (const item of node) visit(item);
+      node.forEach((item, index) => visit(item, `${path}[${index}]`));
       return;
     }
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (authorOnlyKeys.has(key)) continue;
+      const childPath = `${path}.${key}`;
       if (typeof value === 'string') {
-        if (keys.has(key)) pushReaderText(texts, value);
+        if (keys.has(key) && isReaderFacingText(value)) {
+          fields.push({ path: childPath, text: value.trim() });
+        }
       } else if (value && typeof value === 'object') {
-        visit(value);
+        visit(value, childPath);
       }
     }
   };
-  visit(enc);
-  return texts;
+  visit(enc, 'encounter');
+  return fields;
 }

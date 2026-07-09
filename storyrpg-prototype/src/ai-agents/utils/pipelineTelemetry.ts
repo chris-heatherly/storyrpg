@@ -1,11 +1,26 @@
+export type LlmFailureCategory =
+  | 'transport'
+  | 'schema_rejection'
+  | 'parse'
+  | 'validation'
+  | 'safety'
+  | 'timeout'
+  | 'quota'
+  | 'unknown';
+
 export interface ProviderCallMetric {
   agentName: string;
   provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
+  model?: string;
+  phase?: string;
   success: boolean;
   durationMs: number;
   queueWaitMs: number;
   attempt: number;
   error?: string;
+  failureCategory?: LlmFailureCategory;
+  promptChars?: number;
+  schemaName?: string;
   /**
    * Token usage reported by the provider, when available. Populated by the
    * BaseAgent observer path for anthropic + gemini; undefined for openai or
@@ -25,6 +40,11 @@ export interface ProviderCallMetric {
 export interface PhaseMetric {
   phase: string;
   durationMs: number;
+  calls?: number;
+  failures?: number;
+  promptChars?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 /**
@@ -63,6 +83,10 @@ export interface LlmLedgerAgentRow {
    * shrink the ask before it starts failing runs.
    */
   nearCapCalls: number;
+  /** Failure attempts grouped by actionable category. */
+  failureCategories: Partial<Record<LlmFailureCategory, number>>;
+  /** Exact serialized prompt characters sent across all attempts. */
+  totalPromptChars: number;
 }
 
 /**
@@ -86,6 +110,8 @@ export interface LlmLedger {
     truncatedResponses: number;
     /** Total calls at ≥85% of their actual output cap (P3 leading indicator). */
     nearCapCalls: number;
+    totalPromptChars: number;
+    failureCategories: Partial<Record<LlmFailureCategory, number>>;
   };
   byAgent: LlmLedgerAgentRow[];
   phases: PhaseMetric[];
@@ -107,6 +133,11 @@ export class PipelineTelemetry {
   private readonly phaseStarts = new Map<string, number>();
   private readonly phaseMetrics: PhaseMetric[] = [];
   private readonly providerCallMetrics: ProviderCallMetric[] = [];
+  private readonly semanticFailures: Array<{
+    agentName: string;
+    provider: ProviderCallMetric['provider'];
+    category: Extract<LlmFailureCategory, 'parse' | 'validation'>;
+  }> = [];
   /** Lossy truncation recoveries, keyed `agentName::provider` (see WS5 shadow counter). */
   private readonly truncationCounts = new Map<string, number>();
 
@@ -125,7 +156,22 @@ export class PipelineTelemetry {
   }
 
   observeProviderCall(metric: ProviderCallMetric): void {
-    this.providerCallMetrics.push(metric);
+    this.providerCallMetrics.push({
+      ...metric,
+      phase: metric.phase ?? this.getActivePhase() ?? 'unattributed',
+    });
+  }
+
+  observeSemanticFailure(
+    agentName: string,
+    provider: ProviderCallMetric['provider'],
+    category: Extract<LlmFailureCategory, 'parse' | 'validation'>,
+  ): void {
+    this.semanticFailures.push({ agentName, provider, category });
+  }
+
+  private getActivePhase(): string | undefined {
+    return Array.from(this.phaseStarts.keys()).at(-1);
   }
 
   /** Record one lossy truncation recovery for an agent (BaseAgent observer). */
@@ -213,6 +259,8 @@ export class PipelineTelemetry {
           usageReported: 0,
           truncatedResponses: 0,
           nearCapCalls: 0,
+          failureCategories: {},
+          totalPromptChars: 0,
         };
         byAgent.set(key, row);
       }
@@ -227,6 +275,18 @@ export class PipelineTelemetry {
         row.usageReported += 1;
       }
       if (isNearCap(m)) row.nearCapCalls += 1;
+      row.totalPromptChars += m.promptChars ?? 0;
+      if (!m.success) {
+        const category = m.failureCategory ?? 'unknown';
+        row.failureCategories[category] = (row.failureCategories[category] ?? 0) + 1;
+      }
+    }
+
+    for (const failure of this.semanticFailures) {
+      const row = byAgent.get(`${failure.agentName}::${failure.provider}`);
+      if (row) {
+        row.failureCategories[failure.category] = (row.failureCategories[failure.category] ?? 0) + 1;
+      }
     }
 
     for (const row of byAgent.values()) {
@@ -253,7 +313,18 @@ export class PipelineTelemetry {
       usageReported: this.providerCallMetrics.filter((m) => m.usage).length,
       truncatedResponses: [...this.truncationCounts.values()].reduce((s, n) => s + n, 0),
       nearCapCalls: this.providerCallMetrics.filter(isNearCap).length,
+      totalPromptChars: this.providerCallMetrics.reduce((s, m) => s + (m.promptChars ?? 0), 0),
+      failureCategories: {} as Partial<Record<LlmFailureCategory, number>>,
     };
+    for (const metric of this.providerCallMetrics) {
+      if (!metric.success) {
+        const category = metric.failureCategory ?? 'unknown';
+        totals.failureCategories[category] = (totals.failureCategories[category] ?? 0) + 1;
+      }
+    }
+    for (const failure of this.semanticFailures) {
+      totals.failureCategories[failure.category] = (totals.failureCategories[failure.category] ?? 0) + 1;
+    }
     totals.failures = totals.calls - totals.successes;
     totals.avgDurationMs = Math.round(totals.totalDurationMs / totals.calls);
 
@@ -262,8 +333,35 @@ export class PipelineTelemetry {
     return {
       totals,
       byAgent: rows,
-      phases: [...this.phaseMetrics],
+      phases: this.buildPhaseMetrics(),
     };
+  }
+
+  private buildPhaseMetrics(): PhaseMetric[] {
+    const durations = new Map(this.phaseMetrics.map((metric) => [metric.phase, metric.durationMs]));
+    const phases = new Map<string, PhaseMetric>();
+    for (const metric of this.providerCallMetrics) {
+      const phase = metric.phase ?? 'unattributed';
+      const row = phases.get(phase) ?? {
+        phase,
+        durationMs: durations.get(phase) ?? 0,
+        calls: 0,
+        failures: 0,
+        promptChars: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      row.calls! += 1;
+      if (!metric.success) row.failures! += 1;
+      row.promptChars! += metric.promptChars ?? 0;
+      row.inputTokens! += metric.usage?.inputTokens ?? 0;
+      row.outputTokens! += metric.usage?.outputTokens ?? 0;
+      phases.set(phase, row);
+    }
+    for (const metric of this.phaseMetrics) {
+      if (!phases.has(metric.phase)) phases.set(metric.phase, metric);
+    }
+    return Array.from(phases.values());
   }
 }
 
@@ -293,11 +391,16 @@ export function buildLlmCallObserver(
     resolve().observeProviderCall({
       agentName: observation.agentName,
       provider: observation.provider,
+      model: observation.model,
+      phase: observation.phase,
       success: observation.success,
       durationMs: observation.durationMs,
       queueWaitMs: observation.queueWaitMs,
       attempt: observation.attempt,
       error: observation.error,
+      failureCategory: observation.failureCategory,
+      promptChars: observation.promptChars,
+      schemaName: observation.schemaName,
       // Forward provider-reported token usage so the ledger can total tokens.
       usage: observation.usage,
       // Forward the actual request cap so the ledger can flag near-cap calls.

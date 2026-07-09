@@ -59,6 +59,7 @@ function makePhase1(): Phase1Result {
   return {
     sceneId: 'scene-3',
     encounterType: 'dramatic',
+    description: 'You hold the hall while the confrontation closes around you.',
     goalClock: { name: 'Drive back', segments: 6, description: 'goal' },
     threatClock: { name: 'Overwhelmed', segments: 4, description: 'threat' },
     stakes: { victory: 'You prevail.', defeat: 'You fall.' },

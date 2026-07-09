@@ -351,6 +351,25 @@ export type RelationshipPacingStage =
 
 export type RelationshipPacingSource = 'treatment' | 'planner' | 'encounter' | 'choice';
 
+export interface RelationshipMilestoneContract {
+  id: string;
+  kind: 'friendship' | 'group_formation';
+  sourceText: string;
+  subjectType: 'npc' | 'group';
+  subjectId: string;
+  targetStage: RelationshipPacingStage;
+  introductionSceneIds: string[];
+  testSceneIds: string[];
+  choiceSceneId: string;
+  memberNpcIds: string[];
+  requiredEvidenceTags: Array<
+    'respected_agency'
+    | 'sacrificed_without_control'
+    | 'repaired_harm'
+    | 'protected_player'
+  >;
+}
+
 /**
  * Generator-only relationship pacing contract. It lets planning, prose,
  * choices, validators, and repair agree on what level of relationship has
@@ -369,6 +388,8 @@ export interface RelationshipPacingContract {
   minScenesSinceIntroduction: number;
   maxDeltaThisScene: number;
   mechanicDimensions: Array<'trust' | 'affection' | 'respect' | 'fear'>;
+  /** Authored milestone earning path, when this contract realizes one. */
+  milestone?: RelationshipMilestoneContract;
 }
 
 export type MechanicPressureDomain =
@@ -875,14 +896,16 @@ export interface AuthoredTreatmentFieldContract {
 export interface PlannedSceneEncounter {
   /** What kind of encounter. */
   type: EncounterCategory;
-  /**
-   * The FULL authored encounter description from the treatment/season plan.
-   * The scene's `title` is a truncated label — this is what downstream
-   * generation (the encounter directive → EncounterArchitect) must receive.
-   * G12 endsong: losing this to the 60-char title staged the siege from the
-   * fragment "…a sustained defensive set piece (wall bre".
-   */
+  /** LLM-authored playable metadata, when a planning agent supplied it. */
   description?: string;
+  /**
+   * The full author-only source synopsis from the treatment/season plan.
+   * The scene title is only a truncated label; EncounterArchitect receives this
+   * as source context, but assembly must never serialize it.
+   */
+  sourceSynopsis?: string;
+  /** Author-only treatment anchor for the encounter's binding moment. */
+  authoredAnchor?: string;
   /** Optional narrative style layer for non-combat parity. */
   style?: 'action' | 'social' | 'romantic' | 'dramatic' | 'mystery' | 'stealth' | 'adventure' | 'mixed';
   /** Difficulty relative to story progression. */

@@ -4,6 +4,7 @@ import type { PlannedScene } from '../../types/scenePlan';
 import {
   attachAuthoredLiteResidueHooks,
   consolidateAuthoredLiteScenes,
+  applyAuthoredEncounterPresentation,
   drainDuplicateAuthoredBeats,
   enforceNpcIntroOrderOnScenes,
   inferAuthoredEncounterPresentation,
@@ -181,5 +182,25 @@ describe('authoredLiteScenePlan encounter + residue', () => {
     }]);
     expect(attached).toBe(1);
     expect(scenes[0].mechanicPressure?.[0]?.mechanicRef?.flag).toBe('blog_tone_wary');
+  });
+});
+
+describe('authored encounter provenance', () => {
+  it('keeps treatment synopsis author-only instead of manufacturing reader prose', () => {
+    const planned = scene('enc-1', 0, {
+      kind: 'encounter',
+      encounter: {
+        id: 'treatment-enc-1-1',
+        name: 'Street Attack',
+        description: 'Walking home through Cismigiu, she is attacked',
+        type: 'social',
+        difficulty: 'moderate',
+      } as any,
+    });
+    expect(applyAuthoredEncounterPresentation(planned, 'Walking home through Cismigiu, she is attacked')).toBe(true);
+    expect(planned.encounter?.sourceSynopsis).toBe('Walking home through Cismigiu, she is attacked');
+    expect(planned.encounter?.authoredAnchor).toBe('Walking home through Cismigiu, she is attacked');
+    expect(planned.encounter?.description).toBeUndefined();
+    expect(JSON.stringify(planned)).not.toContain('You face this pressure:');
   });
 });

@@ -10,6 +10,7 @@ import {
   writeFinalStoryPackage,
   savePartialStory,
   saveFinalStoryContractFailure,
+  saveFinalContractRepairRound,
 } from './pipelineOutputWriter';
 
 vi.mock('expo-file-system', () => ({
@@ -806,6 +807,49 @@ describe('pipelineOutputWriter', () => {
     await expect(readFile(`${outputDir}08-final-story.json`, 'utf8')).rejects.toThrow();
   });
 
+  it('writes versioned repair-round candidates for replay', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-contract-repair-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+    const report = {
+      passed: false,
+      blockingIssues: [{
+        validator: 'RouteContinuityValidator',
+        type: 'unsafe_fallback_prose',
+        sceneId: 'scene-1',
+        fieldPath: 'encounter.description',
+        message: 'Unsafe encounter description.',
+      }],
+    };
+    await saveFinalContractRepairRound(outputDir, {
+      schemaVersion: 1,
+      validatorVersion: '2026-07-09',
+      round: 1,
+      inputHash: 'fnv1a32:before',
+      beforeIssueKeys: ['before'],
+      afterIssueKeys: ['after'],
+      attemptedIssueKeys: ['before'],
+      changedFieldPaths: ['story.episodes[0].scenes[0].encounter.description'],
+      handlerAttempts: [{
+        handler: 'encounterMetadataRepair',
+        attemptedIssueKeys: ['before'],
+        changedFieldPaths: ['story.episodes[0].scenes[0].encounter.description'],
+        claimedChanged: true,
+      }],
+      clearedIssueKeys: [],
+      introducedIssueKeys: [],
+      revalidationDelta: { beforeBlocking: 1, afterBlocking: 1, cleared: 0, introduced: 0 },
+      passed: false,
+    }, makeStory(), report);
+
+    const artifact = JSON.parse(await readFile(`${outputDir}repair-snapshots/round-01.json`, 'utf8'));
+    expect(artifact.schemaVersion).toBe(1);
+    expect(artifact.validatorVersion).toBe('2026-07-09');
+    expect(artifact.snapshot.changedFieldPaths).toContain('story.episodes[0].scenes[0].encounter.description');
+    expect(artifact.candidateHash).toMatch(/^fnv1a32:/);
+    expect(artifact.report.passed).toBe(false);
+  });
+
   it('writes final story packages through Node built-in modules when require is unavailable', async () => {
     const originalGetBuiltinModule = process.getBuiltinModule;
     const requestedModules: string[] = [];
@@ -1002,5 +1046,81 @@ describe('pipelineOutputWriter', () => {
       '07b-final-story-contract.failed.json',
       '99-pipeline-errors.json',
     ]));
+  });
+
+  it('only records success after the retained story package verifies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'storyrpg-output-ledger-'));
+    tempDirs.push(root);
+    const outputDir = `${join(root, 'run-1')}/`;
+    await mkdir(outputDir, { recursive: true });
+
+    await savePipelineOutputs(outputDir, {
+      brief: {
+        story: {
+          id: 'story-writer-test',
+          title: 'Story Writer Test',
+          genre: 'Mystery',
+          synopsis: 'A tiny story package fixture.',
+          themes: [],
+        },
+      },
+      finalStory: makeStory(),
+      finalStoryContractReport: passingFinalStoryContract(),
+      llmLedger: {
+        totals: {
+          calls: 2,
+          successes: 1,
+          failures: 1,
+          totalDurationMs: 10,
+          avgDurationMs: 5,
+          totalQueueWaitMs: 0,
+          totalInputTokens: 100,
+          totalOutputTokens: 20,
+          usageReported: 1,
+          truncatedResponses: 0,
+          nearCapCalls: 0,
+          totalPromptChars: 900,
+          failureCategories: { schema_rejection: 1 },
+        },
+        byAgent: [],
+        phases: [],
+      },
+    } as any, 321);
+
+    const rows = (await readFile(join(root, 'quality-ledger.jsonl'), 'utf8')).trim().split('\n');
+    expect(JSON.parse(rows.at(-1)!)).toMatchObject({
+      outcome: 'success',
+      durationMs: 321,
+      llmCalls: 2,
+      llmFailures: 1,
+      llmInputTokens: 100,
+      llmOutputTokens: 20,
+      promptChars: 900,
+      packageVerified: true,
+      packageRetention: 'retain_success_package',
+      storyArtifact: `${outputDir}story.json`,
+      manifestArtifact: `${outputDir}manifest.json`,
+    });
+  });
+
+  it('does not emit a false success row for diagnostic-only saves', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'storyrpg-output-partial-'));
+    tempDirs.push(root);
+    const outputDir = `${join(root, 'run-1')}/`;
+    await mkdir(outputDir, { recursive: true });
+
+    await savePipelineOutputs(outputDir, {
+      brief: {
+        story: {
+          id: 'story-writer-test',
+          title: 'Story Writer Test',
+          genre: 'Mystery',
+          synopsis: 'A partial fixture.',
+          themes: [],
+        },
+      },
+    } as any, 123);
+
+    await expect(readFile(join(root, 'quality-ledger.jsonl'), 'utf8')).rejects.toThrow();
   });
 });

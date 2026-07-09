@@ -50,6 +50,18 @@ export interface TwistPlan {
     twistKind: TwistKind;
     hint: string;
   }>;
+  /**
+   * Deterministic post-authoring reconciliation. A planned twist is either
+   * bound to concrete generated beat ids or explicitly deferred by a bounded
+   * partial-season contract; it must not remain silently planned-only.
+   */
+  realization?: {
+    status: 'materialized' | 'deferred';
+    foreshadowBeatId?: string;
+    twistBeatId?: string;
+    deferredUntilEpisode?: number;
+    reason?: string;
+  };
 }
 
 export interface TwistArchitectInput {

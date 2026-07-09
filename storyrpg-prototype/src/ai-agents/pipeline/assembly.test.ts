@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Assembly, type AssemblyDeps } from './assembly';
+import { Assembly, assertNoAuthorOnlyEncounterFields, type AssemblyDeps } from './assembly';
 import type { PipelineEvent } from './events';
 
 /**
@@ -38,6 +38,21 @@ function makeFullAssembly() {
 
 const sceneWith = (id: string, beats: Array<{ id: string; choices?: unknown[] }>) => ({ id, beats });
 const linearBlueprint = (id: string, leadsTo: string[]) => ({ scenes: [{ id, leadsTo }] });
+
+describe('encounter provenance assembly boundary', () => {
+  it('rejects author-only source fields in a runtime encounter', () => {
+    expect(() => assertNoAuthorOnlyEncounterFields({
+      description: 'You are trapped between the gate and the shadow.',
+      sourceSynopsis: 'She is attacked in the park.',
+    }, 'scene-1')).toThrow(/encounter\.sourceSynopsis/);
+  });
+
+  it('accepts an encounter containing only shippable metadata', () => {
+    expect(() => assertNoAuthorOnlyEncounterFields({
+      description: 'You are trapped between the gate and the shadow.',
+    }, 'scene-1')).not.toThrow();
+  });
+});
 
 describe('Assembly.assembleBeatChoices (shared attachment for both assembly paths)', () => {
   const assembly = new Assembly({ emit: () => {} } as unknown as AssemblyDeps);
@@ -332,6 +347,7 @@ describe('Assembly encounter info markers', () => {
         {
           sceneId: 'treatment-enc-3-1',
           encounterType: 'social',
+          description: 'A guest traps you at the dinner table with a name he should not know.',
           beats: [{
             id: 'beat-1',
             phase: 'opening',

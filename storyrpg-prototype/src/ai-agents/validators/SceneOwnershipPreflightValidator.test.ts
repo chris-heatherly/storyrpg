@@ -18,6 +18,7 @@ function scene(overrides: Partial<SceneOwnershipPreflightScene>): SceneOwnership
     turnContract: overrides.turnContract,
     sceneEventOwnership: overrides.sceneEventOwnership,
     sceneConstructionProfile: overrides.sceneConstructionProfile,
+    spineUnitId: overrides.spineUnitId,
   };
 }
 
@@ -33,6 +34,87 @@ describe('SceneOwnershipPreflightValidator', () => {
 
     expect(result.valid).toBe(false);
     expect(result.issues.map((issue) => issue.message).join(' ')).toContain('multiple primary scene owners');
+  });
+
+  it('blocks ESC prerequisite inversions before prose generation', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      episodeSpine: {
+        episodeNumber: 1,
+        sourceHash: 'fixture',
+        episodeStoryCircleBeats: ['you'],
+        polarityFacets: [],
+        units: [
+          {
+            id: 'write-post',
+            order: 0,
+            text: 'At 4am she writes the post.',
+            kind: 'late_night_writing',
+            storyCircleFacets: ['you'],
+            prerequisites: [],
+            sceneKind: 'standard',
+          },
+          {
+            id: 'viral-aftermath',
+            order: 1,
+            text: 'By evening the post has gone viral.',
+            kind: 'aftermath',
+            storyCircleFacets: ['you'],
+            prerequisites: ['write-post'],
+            sceneKind: 'standard',
+          },
+        ],
+      },
+      scenes: [
+        scene({ id: 'aftermath', order: 0, spineUnitId: 'viral-aftermath' }),
+        scene({ id: 'writing', order: 1, spineUnitId: 'write-post' }),
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.message).join(' ')).toContain('ESC causal inversion');
+  });
+
+  it('blocks aftermath ownership before its causal event owner', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 'viral',
+          order: 0,
+          sceneEventOwnership: ownership('viral', 'blogAftermath', 'The post has already gone viral.'),
+        }),
+        scene({
+          id: 'writing',
+          order: 1,
+          sceneEventOwnership: ownership('writing', 'lateNightWriting', 'At 4am she writes the first post.'),
+        }),
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.message).join(' ')).toContain('before its prerequisite event lateNightWriting');
+  });
+
+  it('blocks duplicate first-event ownership', () => {
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes: [
+        scene({
+          id: 'first-sighting',
+          order: 0,
+          sceneEventOwnership: ownership('first-sighting', 'antagonistContact', 'She first sees the watcher across the bar.'),
+        }),
+        scene({
+          id: 'duplicate-sighting',
+          order: 1,
+          sceneEventOwnership: ownership('duplicate-sighting', 'antagonistContact', 'For the first time, she spots the watcher outside.'),
+        }),
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.message).join(' ')).toContain('duplicates first-event ownership');
   });
 
   it('blocks non-opening cold-open required beats', () => {
@@ -307,3 +389,22 @@ describe('SceneOwnershipPreflightValidator', () => {
     expect(result.issues.map((issue) => issue.message).join(' ')).toContain('Story Circle role "need"');
   });
 });
+
+function ownership(
+  sceneId: string,
+  cue: NonNullable<SceneOwnershipPreflightScene['sceneEventOwnership']>['ownedEvents'][number]['cue'],
+  text: string,
+): NonNullable<SceneOwnershipPreflightScene['sceneEventOwnership']> {
+  return {
+    id: `${sceneId}-ownership`,
+    episodeNumber: 1,
+    sceneId,
+    ownedEvents: [{ key: `cue:${cue}`, cue, text, sourceContractIds: [`${sceneId}-contract`] }],
+    incomingContext: [],
+    outgoingResidue: [],
+    forbiddenRestageEvents: [],
+    sourceContractIds: [`${sceneId}-contract`],
+    diagnostics: [],
+    promptGuidance: [],
+  };
+}

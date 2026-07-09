@@ -34,13 +34,20 @@ import {
 import type { ComprehensiveValidationReport } from '../../types/validation';
 import { runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
-import { runFinalContractRepair, buildDeterministicContractHandlers, type ContractRepairHandler, type ContractRepairReport } from '../remediation/finalContractRepair';
+import {
+  runFinalContractRepair,
+  buildDeterministicContractHandlers,
+  type ContractRepairHandler,
+  type ContractRepairReport,
+  type ContractRepairRoundSnapshot,
+} from '../remediation/finalContractRepair';
 import { GateRepairRouter } from '../remediation/gateRepairRouter';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { buildEncounterCostRepairHandler } from '../remediation/encounterCostRepairHandler';
+import { buildEncounterMetadataRepairHandler } from '../remediation/encounterMetadataRepairHandler';
 import { buildSceneTurnContractRepairHandler } from '../remediation/sceneTurnContractRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
@@ -748,6 +755,11 @@ export interface FinalContractDeps {
     findings?: unknown;
   }) => Promise<void>;
   saveFailedContractArtifacts?: (story: Story, report: FinalStoryContractReport) => Promise<void>;
+  saveRepairRoundSnapshot?: (
+    snapshot: ContractRepairRoundSnapshot,
+    story: Story,
+    report: ContractRepairReport,
+  ) => Promise<void>;
   disambiguateProtagonistPronouns: (story: Story, brief: FullCreativeBrief) => Promise<void>;
   authorEncounterOutcomeVariants: (story: Story) => Promise<void>;
   relationshipDimensionsForNpc: (
@@ -1220,6 +1232,19 @@ export class FinalContract {
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
           })),
         );
+        handlers.push(
+          guardLlmHandler(buildEncounterMetadataRepairHandler({
+            author: () => {
+              try {
+                return new EncounterArchitect({ ...this.deps.config.agents.storyArchitect, maxTokens: 4096 });
+              } catch (err) {
+                console.warn(`[Pipeline] Encounter metadata contract repair: EncounterArchitect unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          })),
+        );
       }
       // Generic planner central turns are blueprint METADATA the scene-prose
       // handler explicitly skips (no prose rewrite can change the contract the
@@ -1260,6 +1285,8 @@ export class FinalContract {
         maxAttemptsPerIssue: 2,
         dedupeIssueFingerprints: true,
         canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),
+        requireMutationEvidence: true,
+        onRoundSnapshot: this.deps.saveRepairRoundSnapshot,
       });
       report = outcome.report as FinalStoryContractReport;
       for (const rec of outcome.records) await this.deps.recordRemediationSafe(rec);

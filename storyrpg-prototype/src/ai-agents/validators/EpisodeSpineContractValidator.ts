@@ -126,6 +126,39 @@ export class EpisodeSpineContractValidator extends BaseValidator {
       .slice()
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
 
+    // Every ESC unit with obligations (or bond/test kinds) must own a scene.
+    // Orphan bond units (e.g. "form the Dusk Club") let group naming drift into
+    // earlier meet scenes and invert treatment chronology.
+    const mappedUnitIds = new Set(projected.map((scene) => scene.spineUnitId).filter(Boolean));
+    for (const unit of spine.units) {
+      if (mappedUnitIds.has(unit.id)) continue;
+      const hasObligations = (unit.obligations ?? []).length > 0;
+      const loadBearingKind = unit.kind === 'bond' || unit.kind === 'test' || unit.kind === 'meet' || unit.kind === 'threshold';
+      if (!hasObligations && !loadBearingKind) continue;
+      issues.push(this.error(
+        `Spine unit "${unit.id}" (${unit.kind}) has no projected scene.`,
+        `episodeSpine:${spine.episodeNumber}:${unit.id}`,
+        'Increase the authored-lite standard scene budget so every ESC unit maps 1:1, or merge the unit only after its obligations are owned.',
+      ));
+    }
+
+    // Bond units must not project earlier than their test prerequisite scene.
+    for (const scene of projected) {
+      const unit = unitById.get(scene.spineUnitId!);
+      if (!unit || unit.kind !== 'bond') continue;
+      const testPrereq = unit.prerequisites.find((id) => unitById.get(id)?.kind === 'test');
+      if (!testPrereq) continue;
+      const testScene = projected.find((candidate) => candidate.spineUnitId === testPrereq);
+      if (!testScene) continue;
+      if ((scene.order ?? 0) < (testScene.order ?? 0)) {
+        issues.push(this.error(
+          `Bond spine unit "${unit.id}" projects to scene "${scene.id}" before test unit "${testPrereq}" (scene "${testScene.id}").`,
+          scene.id,
+          'Keep test-before-bond chronology: group formation must not precede the social test.',
+        ));
+      }
+    }
+
     let previousUnitOrder = Number.NEGATIVE_INFINITY;
     for (const scene of projected) {
       const unit = unitById.get(scene.spineUnitId!)!;

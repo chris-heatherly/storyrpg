@@ -103,6 +103,34 @@ function hasSettledGroupLanguage(text: string): boolean {
   });
 }
 
+function hasSettledLanguageForGroup(text: string, groupId: string): boolean {
+  const aliases = [groupId, groupId.replace(/-/g, ' ')].map(escaped);
+  return sentenceWindows(text).some((window) =>
+    !isVenueClubSentence(window)
+    && new RegExp(`\\b(?:${aliases.join('|')})\\b`, 'i').test(window)
+    && GROUP_IDENTITY_RE.test(window)
+    && !PROVISIONAL_GROUP_CONTEXT_RE.test(window)
+  );
+}
+
+function settledGroupMatchOnScene(
+  scene: Story['episodes'][number]['scenes'][number],
+  groupId: string,
+): { fieldPath: string; text: string } | undefined {
+  const surfaces: Array<{ fieldPath: string; text: string }> = [{ fieldPath: 'name', text: scene.name ?? '' }];
+  for (let beatIndex = 0; beatIndex < (scene.beats ?? []).length; beatIndex += 1) {
+    const beat = scene.beats[beatIndex];
+    surfaces.push({ fieldPath: `beats[${beatIndex}].text`, text: beat.text ?? '' });
+    for (let variantIndex = 0; variantIndex < (beat.textVariants ?? []).length; variantIndex += 1) {
+      surfaces.push({
+        fieldPath: `beats[${beatIndex}].textVariants[${variantIndex}].text`,
+        text: beat.textVariants?.[variantIndex]?.text ?? '',
+      });
+    }
+  }
+  return surfaces.find((surface) => hasSettledLanguageForGroup(surface.text, groupId));
+}
+
 /** Named nightlife venues ("Valescu Club") are locations, not social groups. */
 function isVenueClubSentence(window: string): boolean {
   const hay = window.toLowerCase();
@@ -163,20 +191,56 @@ function isThirdPartyFriendLabel(matchText: string, text: string, index: number)
   return THIRD_PARTY_POSSESSIVE_PREFIX_RE.test(prefix);
 }
 
-function hasHighStageRelationshipLabel(text: string): boolean {
-  HIGH_STAGE_LABEL_RE.lastIndex = 0;
-  for (const match of text.matchAll(HIGH_STAGE_LABEL_RE)) {
-    if (isNegated(text, match.index ?? 0)) continue;
-    if (match[0].toLowerCase() === 'family' && !isFamilyRelationshipClaim(text, match.index ?? 0)) {
-      continue;
+interface SubjectLabelMatch {
+  fieldPath: string;
+  text: string;
+  label: string;
+}
+
+function subjectLabelMatches(
+  scene: Story['episodes'][number]['scenes'][number],
+  contract: RelationshipPacingContract,
+  story: Story,
+): SubjectLabelMatch[] {
+  const surfaces: Array<{ fieldPath: string; text: string }> = [
+    { fieldPath: 'name', text: scene.name ?? '' },
+  ];
+  for (let beatIndex = 0; beatIndex < (scene.beats ?? []).length; beatIndex += 1) {
+    const beat = scene.beats[beatIndex];
+    surfaces.push({ fieldPath: `beats[${beatIndex}].text`, text: beat.text ?? '' });
+    for (let variantIndex = 0; variantIndex < (beat.textVariants ?? []).length; variantIndex += 1) {
+      surfaces.push({
+        fieldPath: `beats[${beatIndex}].textVariants[${variantIndex}].text`,
+        text: beat.textVariants?.[variantIndex]?.text ?? '',
+      });
     }
-    if (match[0].toLowerCase() === 'intimate' && isSensationIntimate(text, match.index ?? 0)) {
-      continue;
+    for (let choiceIndex = 0; choiceIndex < (beat.choices ?? []).length; choiceIndex += 1) {
+      const choice = beat.choices?.[choiceIndex];
+      surfaces.push({ fieldPath: `beats[${beatIndex}].choices[${choiceIndex}].text`, text: choice?.text ?? '' });
+      surfaces.push({ fieldPath: `beats[${beatIndex}].choices[${choiceIndex}].reactionText`, text: choice?.reactionText ?? '' });
     }
-    if (isThirdPartyFriendLabel(match[0], text, match.index ?? 0)) continue;
-    return true;
   }
-  return false;
+  const aliases = contract.npcId
+    ? displayAliasesForNpc(story, contract.npcId)
+    : [contract.groupId ?? '', (contract.groupId ?? '').replace(/-/g, ' ')];
+  const subjectRe = aliases.filter((alias) => alias.length >= 3).map(escaped);
+  if (subjectRe.length === 0) return [];
+
+  const hits: SubjectLabelMatch[] = [];
+  for (const surface of surfaces) {
+    for (const window of sentenceWindows(surface.text)) {
+      if (!new RegExp(`\\b(?:${subjectRe.join('|')})\\b`, 'i').test(window)) continue;
+      const labelRe = new RegExp(HIGH_STAGE_LABEL_RE.source, 'ig');
+      for (const match of window.matchAll(labelRe)) {
+        if (isNegated(window, match.index ?? 0)) continue;
+        if (match[0].toLowerCase() === 'family' && !isFamilyRelationshipClaim(window, match.index ?? 0)) continue;
+        if (match[0].toLowerCase() === 'intimate' && isSensationIntimate(window, match.index ?? 0)) continue;
+        if (isThirdPartyFriendLabel(match[0], window, match.index ?? 0)) continue;
+        hits.push({ fieldPath: surface.fieldPath, text: window, label: match[0] });
+      }
+    }
+  }
+  return hits;
 }
 
 const HIGH_STAGE_LABEL_SINGLE_RE = new RegExp(HIGH_STAGE_LABEL_RE.source, 'i');
@@ -307,7 +371,11 @@ function walkRelationshipConditions(condition: ConditionExpression, visit: (cond
   if (raw.condition) walkRelationshipConditions(raw.condition, visit);
 }
 
-function effectiveTargetStage(contract: RelationshipPacingContract, entry: RelationshipArcLedgerEntry): RelationshipPacingStage {
+function effectiveTargetStage(
+  contract: RelationshipPacingContract,
+  entry: RelationshipArcLedgerEntry,
+  currentStage: RelationshipPacingStage = entry.currentStage,
+): RelationshipPacingStage {
   // Forgive stale planner/encounter targets down to what plan-time normalization
   // would have allowed. Treatment- and choice-sourced contracts keep their authored
   // intent unless the ledger head proves they overshoot what was earned on-page.
@@ -325,8 +393,8 @@ function effectiveTargetStage(contract: RelationshipPacingContract, entry: Relat
   // Never validate a contract target above the deterministic ledger head — spurious
   // choice detection or duplicate plan/story contracts must not inflate the target
   // (bite-me 2026-07-04: s1-3 targeted acquaintance while ledger only permitted spark).
-  if (stageRank(target) > stageRank(entry.currentStage)) {
-    target = entry.currentStage;
+  if (stageRank(target) > stageRank(currentStage)) {
+    target = currentStage;
   }
   return target;
 }
@@ -406,11 +474,12 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
         const loc = `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${contract.id}`;
         if (!entry) continue;
 
-        const targetStage = effectiveTargetStage(contract, entry);
+        const stageAtScene = entry.stageBySceneId[ref.scene.id] ?? entry.currentStage;
+        const targetStage = effectiveTargetStage(contract, entry, stageAtScene);
 
-        if (stageRank(targetStage) > stageRank(entry.currentStage)) {
+        if (stageRank(targetStage) > stageRank(stageAtScene)) {
           pushIssue(this.error(
-            `Scene "${ref.scene.id}" targets ${targetStage} for ${contract.npcId ?? contract.groupId}, but the deterministic relationship ledger only permits ${entry.currentStage}.`,
+            `Scene "${ref.scene.id}" targets ${targetStage} for ${contract.npcId ?? contract.groupId}, but the deterministic relationship ledger only permits ${stageAtScene}.`,
             loc,
             'Lower the scene target stage or add prior full scenes, relationship choices, stat movement, and evidence tags that earn the higher stage.',
           ), `contract:target:${ref.episodeNumber}:${ref.scene.id}:${key}:${targetStage}:${entry.currentStage}`);
@@ -467,7 +536,7 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
         // RelationshipPacingValidator, but gated on the deterministic ledger
         // stage instead of the contract target so an earned bond can never be
         // forced into cold rewrites).
-        if (stageRank(entry.currentStage) < stageRank('friend')) {
+        if (stageRank(stageAtScene) < stageRank('friend')) {
           if (COMPRESSED_FAMILIARITY_RE.test(text)) {
             const compressed = `Scene "${ref.scene.id}" compresses a new relationship into old-friend familiarity before the ledger earns it.`;
             pushIssue(
@@ -516,20 +585,23 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
         accumulated.set(`npc:${npcKey}:${dim}`, (accumulated.get(`npc:${npcKey}:${dim}`) ?? 0) + delta);
       }
 
-      if (hasHighStageRelationshipLabel(text)) {
-        for (const contract of contracts) {
-          const key = contractSubjectKey(contract);
-          const entry = key ? ledger.byKey.get(key) : undefined;
-          if (!entry) continue;
-          if (stageRank(entry.currentStage) < stageRank('friend')) {
+      for (const contract of contracts) {
+        const key = contractSubjectKey(contract);
+        const entry = key ? ledger.byKey.get(key) : undefined;
+        if (!entry) continue;
+        const matches = subjectLabelMatches(ref.scene, contract, input.story);
+        if (matches.length === 0) continue;
+        const stageAtScene = entry.stageBySceneId[ref.scene.id] ?? entry.currentStage;
+        for (const match of matches) {
+          if (stageRank(stageAtScene) < stageRank('friend')) {
             pushIssue(this.error(
-              `Scene "${ref.scene.id}" uses friend/trusted/intimate relationship language before "${contract.npcId ?? contract.groupId}" is ledger-earned past ${entry.currentStage}.`,
-              `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:label`,
+              `Scene "${ref.scene.id}" uses friend/trusted/intimate relationship language ("${match.label}") for subject "${contract.npcId ?? contract.groupId}" before that subject is ledger-earned past ${stageAtScene}; matched ${match.fieldPath}: "${match.text}".`,
+              `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:label:${match.fieldPath}`,
               'Rewrite the language as spark, guarded warmth, invitation, or testing until relationship choices and evidence earn a stronger label.',
-            ), `label:high-stage:${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:${entry.currentStage}`);
-          } else if (!VISIBLE_CALLBACK_RE.test(text) && stageRank(entry.currentStage) >= stageRank('friend') && positiveCore(entry) < 12) {
+            ), `label:high-stage:${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:${match.fieldPath}:${match.label}`);
+          } else if (!VISIBLE_CALLBACK_RE.test(match.text) && positiveCore(entry) < 12) {
             pushIssue(this.warning(
-              `Scene "${ref.scene.id}" claims an earned bond for "${contract.npcId ?? contract.groupId}" without visible callback/payoff language.`,
+              `Scene "${ref.scene.id}" claims an earned bond for subject "${contract.npcId ?? contract.groupId}" at ${match.fieldPath} without visible callback/payoff language.`,
               `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:payoff`,
               'Show the remembered choice, favor, warning, repair, or cost that makes the bond feel earned.',
             ), `label:payoff:${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}`);
@@ -540,9 +612,14 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
       if (hasSettledGroupLanguage(text)) {
         const groupEntries = ledger.entries.filter((entry) => entry.subject.subjectType === 'group');
         for (const entry of groupEntries) {
-          if (stageRank(entry.currentStage) <= stageRank('spark')) {
+          const stageAtScene = entry.stageBySceneId[ref.scene.id] ?? entry.currentStage;
+          const match = settledGroupMatchOnScene(ref.scene, entry.subject.subjectId);
+          if (
+            match
+            && stageRank(stageAtScene) <= stageRank('spark')
+          ) {
             pushIssue(this.error(
-              `Scene "${ref.scene.id}" treats group "${entry.subject.subjectId}" as settled membership while the ledger only permits a provisional spark.`,
+              `Scene "${ref.scene.id}" treats group "${entry.subject.subjectId}" as settled membership while the ledger only permits a provisional spark; matched ${match.fieldPath}: "${match.text}".`,
               `relationshipArc:ep${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:group`,
               'Keep the group name as a joke, dare, or fragile invitation until individual relationships and a group-defining choice earn membership.',
             ), `group:settled:${ref.episodeNumber}:${ref.scene.id}:${relationshipSubjectKey(entry.subject)}:${entry.currentStage}`);

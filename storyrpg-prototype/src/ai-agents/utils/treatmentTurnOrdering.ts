@@ -17,6 +17,11 @@ export const CHRONOLOGY_RANK_LATE_NIGHT_WRITING = 70;
 export const CHRONOLOGY_RANK_BLOG_AFTERMATH = 75;
 
 export function isThreatEncounterTurn(text: string): boolean {
+  // Doorstep/threshold aftermath is a standard beat, not the attack/rescue set piece.
+  if (/\b(?:doorstep|threshold|vanish(?:es|ed)?)\b/i.test(text)
+    && !/\b(?:attack(?:s|ed|ing)?|ambush(?:ed|es)?|rescue(?:s|d)?|rescued|scream(?:s|ed)?|knife|pinned|shadow\s+strikes?)\b/i.test(text)) {
+    return false;
+  }
   const cues = detectStoryEventCues(text);
   return cues.has('threatEncounter') || cues.has('walkHome') || THREAT_TURN_RE.test(text);
 }
@@ -111,6 +116,31 @@ export function countAuthoredLiteSceneBudget(turns: string[], standaloneEncounte
 }
 
 /**
+ * When ESC is present, budget from unit.sceneKind — not heuristic threat cues.
+ * Doorstep/threshold aftermath often matches walkHome and would otherwise be
+ * excluded from both pre- and post-threat pools, orphaning the unit.
+ */
+export function countAuthoredLiteSceneBudgetFromSpine(
+  units: Array<{ sceneKind?: string; kind?: string }>,
+  standaloneEncounterCount: number,
+): {
+  preThreatScenes: number;
+  postThreatScenes: number;
+  totalScenes: number;
+} {
+  const standardCount = units.filter((unit) => unit.sceneKind !== 'encounter').length;
+  const encounterCount = Math.max(
+    standaloneEncounterCount,
+    units.filter((unit) => unit.sceneKind === 'encounter' || unit.kind === 'set_piece').length,
+  );
+  return {
+    preThreatScenes: Math.max(1, standardCount),
+    postThreatScenes: 0,
+    totalScenes: Math.max(1, standardCount) + encounterCount,
+  };
+}
+
+/**
  * Bind authored turns to standard scenes while respecting encounter placement in
  * the full playback timeline. Uses one turn per scene slot (no positional stacking)
  * when enough targets exist in each act.
@@ -197,8 +227,11 @@ export function chronologyRankForText(text: string): number {
   if (GROUP_FORMATION_RE.test(text)) {
     rank = CHRONOLOGY_RANK_BOND;
   }
-  if (ROOFTOP_RE.test(text) && !cues.has('blogAftermath') && !cues.has('lateNightWriting')) {
-    rank = Math.min(rank, 55);
+  // Suitors/rooftop must follow test→bond (club formation), not precede them via
+  // socialMeet cue rank 40.
+  if (ROOFTOP_RE.test(text) && !cues.has('blogAftermath') && !cues.has('lateNightWriting')
+    && !TEST_BEAT_RE.test(text) && !GROUP_FORMATION_RE.test(text)) {
+    rank = CHRONOLOGY_RANK_BOND + 5;
   }
   // Apartment threshold / vanish / keycard doorstep is post-rescue aftermath,
   // not an early venueDoor beat — keycard language otherwise ranks at 20 and

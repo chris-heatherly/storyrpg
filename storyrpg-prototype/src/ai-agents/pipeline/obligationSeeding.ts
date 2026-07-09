@@ -15,6 +15,7 @@
 import type { ThreadLedger } from '../../types/narrativeThread';
 import type { CallbackHook, CallbackLedger } from './callbackLedger';
 import { resolveSceneTreatmentSeeds } from './episodePlantContext';
+import { isEscPlantStagingThread } from '../utils/compiledEscDirectives';
 
 export interface ObligationSeedingResult {
   threadsRegistered: number;
@@ -35,6 +36,10 @@ export function isObligationPaid(hook: CallbackHook): boolean {
  * Register every PLANTED thread as a `thread:<id>` obligation; credit one
  * payoff per authored payoff beat. Unplanted threads promise nothing yet and
  * are skipped (SetupPayoffValidator still flags them as structural issues).
+ *
+ * ESC plant-staging threads (authored-lite spine obligations) are fulfilled by
+ * on-page staging: if they somehow lack an explicit payoff entry, credit the
+ * plant scene so they never seal-block as unpaid Chekhov debt.
  */
 export function registerThreadObligations(
   ledger: CallbackLedger,
@@ -47,7 +52,13 @@ export function registerThreadObligations(
     if (!thread.id || !(thread.plants?.length)) continue;
     const id = `thread:${thread.id}`;
     const minEpisode = thread.introducedInEpisode ?? episodeNumber;
-    const maxEpisode = thread.expectedPaidOffByEpisode ?? Math.max(minEpisode, episodeNumber);
+    const plantStaging = isEscPlantStagingThread(thread);
+    // Plant-staging ESC obligations are same-scene fulfilled; leave the window
+    // open (season-wide) when no explicit due episode was authored so a stale
+    // empty-payoff entry cannot escalate to a same-episode seal error.
+    const maxEpisode = plantStaging
+      ? (thread.expectedPaidOffByEpisode ?? minEpisode)
+      : (thread.expectedPaidOffByEpisode ?? Math.max(minEpisode, episodeNumber));
     ledger.add({
       id,
       kind: 'thread',
@@ -59,7 +70,18 @@ export function registerThreadObligations(
       payoffWindow: { minEpisode, maxEpisode: Math.max(minEpisode, maxEpisode) },
     });
     threadsRegistered += 1;
-    for (const payoff of thread.payoffs ?? []) {
+
+    const payoffs = [...(thread.payoffs ?? [])];
+    if (plantStaging && payoffs.length === 0) {
+      const plant = thread.plants[0]!;
+      payoffs.push({
+        sceneId: plant.sceneId,
+        beatId: `${plant.beatId || plant.sceneId}-staging-fulfilled`,
+        note: 'ESC plant staging fulfilled on-page',
+      });
+    }
+
+    for (const payoff of payoffs) {
       const credited = ledger.recordPayoff(id, {
         episode: episodeNumber,
         sceneId: payoff.sceneId,

@@ -69,6 +69,27 @@ describe('findNpcPronounInconsistencies', () => {
     expect(res.findings).toHaveLength(0);
   });
 
+  it('does NOT attach plural thugs and their nerve to the nearby named NPC', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(['Vraxxan advances until the thugs lose their nerve and scatter.']),
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT attach an unrostered named third party pronoun to the roster NPC', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(['Vraxxan watches Stela as she steadies her hands.']),
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
+  it('does NOT attach a singular third-party actor pronoun to the roster NPC', () => {
+    const res = findNpcPronounInconsistencies(
+      storyWith(['Lysandra corners the thug before he can reach the door.']),
+    );
+    expect(res.findings).toHaveLength(0);
+  });
+
   it('skips multi-person sentences (ambiguous attribution)', () => {
     const res = findNpcPronounInconsistencies(
       storyWith(['Thorne looks at Lysandra and her jaw tightens.']),

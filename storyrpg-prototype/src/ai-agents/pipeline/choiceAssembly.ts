@@ -6,6 +6,10 @@ import { canonicalizeConditionOutcomeFlags } from '../utils/encounterOutcomeFlag
 import { getFlagRegistry } from './flagRegistry';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
+import {
+  normalizeCanonicalConsequence,
+  normalizeCanonicalConsequences,
+} from '../utils/canonicalChoiceConsequences';
 
 /**
  * Route a fallback choice set across a branch point's distinct `leadsTo` targets so
@@ -402,48 +406,49 @@ export function reconcileChoiceSetBeatIds(
  * Normalize a Consequence object to fix common LLM field-name deviations.
  */
 export function normalizeConsequence(c: Consequence): Consequence {
-  const raw = c as Record<string, unknown>;
-  if ((c.type === 'changeScore' || c.type === 'setScore') && !('score' in c) && typeof raw.target === 'string') {
-    return { ...(c as Record<string, unknown>), score: raw.target as string } as Consequence;
+  const normalized = normalizeCanonicalConsequence(c);
+  if (!normalized.consequence) {
+    throw new Error(`Invalid choice consequence: ${normalized.reason ?? 'unknown canonical contract failure'}`);
   }
-  if (c.type === 'setFlag' && !('flag' in c) && typeof raw.name === 'string') {
-    return normalizeConsequence({ ...(c as Record<string, unknown>), flag: raw.name as string } as Consequence);
-  }
+  const consequence = normalized.consequence;
+  const raw = consequence as unknown as Record<string, unknown>;
   // G12: authored tints rarely matched the identity engine's canonical vocabulary
   // (tint:bold vs tint:boldness), leaving the whole tint tier inert at runtime.
-  if (c.type === 'setFlag' && typeof raw.flag === 'string' && (raw.flag as string).startsWith('tint:')) {
+  if (consequence.type === 'setFlag' && typeof raw.flag === 'string' && (raw.flag as string).startsWith('tint:')) {
     const canonical = getFlagRegistry().mintTintFlag(raw.flag as string, 'choiceAssembly');
     if (canonical !== raw.flag) {
-      return { ...(c as unknown as Record<string, unknown>), flag: canonical } as unknown as Consequence;
+      return { ...consequence, flag: canonical };
     }
   }
   // Every authored setter is registered at assembly, so late-stage
   // reconciliation and validators can consult the registry instead of
   // re-scanning the story (audit item 2).
-  if (c.type === 'setFlag' && typeof raw.flag === 'string') {
+  if (consequence.type === 'setFlag' && typeof raw.flag === 'string') {
     const registry = getFlagRegistry();
     registry.register(raw.flag as string, registry.kindOf(raw.flag as string), 'choiceAssembly');
   }
-  if (c.type === 'relationship' && !('dimension' in c)) {
-    const dimensionAlias = raw.relationshipType ?? raw.aspect;
-    if (typeof dimensionAlias === 'string') {
-      return { ...(c as Record<string, unknown>), dimension: dimensionAlias } as Consequence;
-    }
-  }
-  return c;
+  return consequence;
 }
 
 export function normalizeConsequences(consequences: Consequence[] | undefined): Consequence[] | undefined {
   if (!consequences || !Array.isArray(consequences)) return consequences;
-  return consequences.map(normalizeConsequence);
+  const canonical = normalizeCanonicalConsequences(consequences);
+  for (const rejected of canonical.rejected) {
+    console.warn(`[choiceAssembly] Dropped malformed consequence #${rejected.index + 1}: ${rejected.reason}`);
+  }
+  return canonical.consequences.map(normalizeConsequence);
 }
 
 function normalizeDelayedConsequences(delayedConsequences: Choice['delayedConsequences']): Choice['delayedConsequences'] {
   if (!delayedConsequences || !Array.isArray(delayedConsequences)) return delayedConsequences;
-  return delayedConsequences.map((entry) => ({
-    ...entry,
-    consequence: normalizeConsequence(entry.consequence),
-  }));
+  return delayedConsequences.flatMap((entry) => {
+    const canonical = normalizeCanonicalConsequence(entry.consequence);
+    if (!canonical.consequence) {
+      console.warn(`[choiceAssembly] Dropped malformed delayed consequence: ${canonical.reason}`);
+      return [];
+    }
+    return [{ ...entry, consequence: normalizeConsequence(canonical.consequence) }];
+  });
 }
 
 /**

@@ -19,6 +19,11 @@ import { EncounterStructure } from '../agents/EncounterArchitect';
 import type { EncounterTelemetry } from '../agents/EncounterArchitect';
 import type { SceneValidationResult } from '../validators/IncrementalValidators';
 import type { FinalStoryContractReport } from '../validators/FinalStoryContractValidator';
+import type {
+  ContractRepairReport,
+  ContractRepairRoundSnapshot,
+} from '../remediation/finalContractRepair';
+import { buildFinalContractRepairReplayArtifact } from '../remediation/finalContractRepairReplay';
 import type { QualityCouncilReport } from '../quality-council/types';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
@@ -937,7 +942,14 @@ export function deriveRunQualityScore(
 export async function appendFailedRunLedger(
   outputDir: string,
   errorCount = 1,
-  details?: { blocked?: boolean; failureKind?: string; validatorId?: string },
+  details?: {
+    blocked?: boolean;
+    failureKind?: string;
+    validatorId?: string;
+    durationMs?: number;
+    llmLedger?: LlmLedger | null;
+    remediationSummary?: { attempted: number; succeeded: number; degraded: number };
+  },
 ): Promise<void> {
   if (!outputDir) return;
   try {
@@ -949,8 +961,46 @@ export async function appendFailedRunLedger(
       blocked: details?.blocked,
       failureKind: details?.failureKind,
       validatorId: details?.validatorId,
+      durationMs: details?.durationMs,
+      llmCalls: details?.llmLedger?.totals.calls,
+      llmFailures: details?.llmLedger?.totals.failures,
+      llmInputTokens: details?.llmLedger?.totals.totalInputTokens,
+      llmOutputTokens: details?.llmLedger?.totals.totalOutputTokens,
+      promptChars: details?.llmLedger?.totals.totalPromptChars,
+      remediationsAttempted: details?.remediationSummary?.attempted,
+      remediationsSucceeded: details?.remediationSummary?.succeeded,
+      remediationsDegraded: details?.remediationSummary?.degraded,
     });
   } catch { /* ledger is best-effort */ }
+}
+
+function verifyRetainedPackage(outputDir: string): {
+  verified: boolean;
+  storyArtifact: string;
+  manifestArtifact: string;
+} {
+  const result = {
+    verified: false,
+    storyArtifact: `${outputDir}story.json`,
+    manifestArtifact: `${outputDir}manifest.json`,
+  };
+  if (!hasNodeFs()) return result;
+  try {
+    const fs = nodeRequire<typeof import('fs')>('fs');
+    const story = JSON.parse(fs.readFileSync(result.storyArtifact, 'utf8')) as unknown;
+    const manifest = JSON.parse(fs.readFileSync(result.manifestArtifact, 'utf8')) as {
+      files?: Array<{ type?: string; path?: string }>;
+    };
+    result.verified = Boolean(
+      story
+      && manifest
+      && Array.isArray(manifest.files)
+      && manifest.files.some((file) => file.type === 'story' && file.path === result.storyArtifact),
+    );
+  } catch {
+    result.verified = false;
+  }
+  return result;
 }
 
 /**
@@ -1004,6 +1054,30 @@ export async function saveFinalStoryContractFailure(
     console.info('[OutputWriter] Wrote final-contract failure report and repaired partial snapshot');
   } catch (e) {
     console.warn('[OutputWriter] Failed to write final-contract failure artifacts (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** Persist the post-revalidation candidate for deterministic offline replay. */
+export async function saveFinalContractRepairRound(
+  outputDir: string,
+  snapshot: ContractRepairRoundSnapshot,
+  story: Story,
+  report: ContractRepairReport,
+): Promise<void> {
+  if (!outputDir || !story) return;
+  try {
+    const directory = `${outputDir.replace(/\/?$/, '/')}repair-snapshots/`;
+    await ensureDirectory(directory);
+    const filename = `round-${String(snapshot.round).padStart(2, '0')}.json`;
+    await writeJsonFile(
+      directory + filename,
+      buildFinalContractRepairReplayArtifact(snapshot, story, report),
+    );
+  } catch (error) {
+    console.warn(
+      '[OutputWriter] Failed to write final-contract repair snapshot (non-fatal):',
+      error instanceof Error ? error.message : String(error),
+    );
   }
 }
 
@@ -2211,9 +2285,16 @@ export async function savePipelineOutputs(
   // Save manifest
   const manifestPath = outputDir + 'manifest.json';
   await writeJsonFile(manifestPath, manifest);
+  const retainedPackage = outputs.finalStory
+    ? verifyRetainedPackage(outputDir)
+    : { verified: false, storyArtifact: `${outputDir}story.json`, manifestArtifact: manifestPath };
 
   console.log(`[OutputWriter] ✓ Saved ${files.length} files to ${outputDir}`);
   console.log(`[OutputWriter] Summary:`, manifest.summary);
+
+  // Diagnostic/partial saves have no retained package and are ledgered by the
+  // terminal failure path with the actual failure category and LLM totals.
+  if (!outputs.finalStory) return manifest;
 
   // Record the successful run in the cross-run quality ledger (B3). Base dir is
   // derived from the run dir's parent so test runs don't pollute the real
@@ -2233,7 +2314,7 @@ export async function savePipelineOutputs(
       runDir: runNameFromDir(outputDir),
       storyId: manifest.storyId,
       storyTitle: manifest.storyTitle,
-      outcome: 'success',
+      outcome: retainedPackage.verified ? 'success' : 'partial',
       overallScore: manifest.summary?.qualityScore,
       qaScore: manifest.summary?.qaScore,
       qaSkippedChecks: outputs.qaReport?.skippedChecks,
@@ -2247,6 +2328,18 @@ export async function savePipelineOutputs(
       openerMonotonyPassages: openerMonotony,
       capIds: quality.basis.caps.map((cap) => cap.id),
       blockingCapCount: quality.basis.caps.filter((cap) => cap.maxScore < 90).length,
+      durationMs: duration,
+      llmCalls: outputs.llmLedger?.totals.calls,
+      llmFailures: outputs.llmLedger?.totals.failures,
+      llmInputTokens: outputs.llmLedger?.totals.totalInputTokens,
+      llmOutputTokens: outputs.llmLedger?.totals.totalOutputTokens,
+      promptChars: outputs.llmLedger?.totals.totalPromptChars,
+      packageVerified: retainedPackage.verified,
+      ...(retainedPackage.verified ? {
+        packageRetention: 'retain_success_package' as const,
+        storyArtifact: retainedPackage.storyArtifact,
+        manifestArtifact: retainedPackage.manifestArtifact,
+      } : {}),
     });
   } catch { /* ledger is best-effort */ }
 

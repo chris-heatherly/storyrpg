@@ -74,6 +74,47 @@ describe('registerThreadObligations (P2.3)', () => {
     expect(ledger.serialize().hooks.filter((h) => h.id === 'thread:locked-drawer')).toHaveLength(1);
     expect(paid && isObligationPaid(paid)).toBe(true);
   });
+
+  it('auto-credits ESC plant-staging threads that lack an explicit payoff entry', () => {
+    const ledger = new CallbackLedger({ storyId: 's' });
+    const result = registerThreadObligations(ledger, {
+      threads: [
+        {
+          id: 'consequence_seed-1-kylie-arrives-in-bucharest-with-two-suit',
+          kind: 'seed',
+          priority: 'minor',
+          label: 'Kylie arrives in Bucharest',
+          description: 'Kylie arrives in Bucharest with two suitcases.',
+          introducedInEpisode: 1,
+          plants: [{ sceneId: 's1-1', beatId: 's1-1-plant' }],
+          payoffs: [],
+          status: 'planted',
+          tags: ['esc-compiled', 'esc-plant-staging', 'consequence_seed'],
+        },
+        {
+          id: 'real-chekhov-gun',
+          kind: 'promise',
+          priority: 'major',
+          label: 'Real unpaid promise',
+          description: 'Must still block when unpaid.',
+          introducedInEpisode: 1,
+          expectedPaidOffByEpisode: 1,
+          plants: [{ sceneId: 's1-2', beatId: 'b1' }],
+          payoffs: [],
+          status: 'planted',
+        },
+      ],
+    }, 1);
+
+    expect(result.threadsRegistered).toBe(2);
+    expect(result.threadPayoffsCredited).toBe(1);
+    const staging = ledger.serialize().hooks.find(
+      (h) => h.id === 'thread:consequence_seed-1-kylie-arrives-in-bucharest-with-two-suit',
+    );
+    const real = ledger.serialize().hooks.find((h) => h.id === 'thread:real-chekhov-gun');
+    expect(staging && isObligationPaid(staging)).toBe(true);
+    expect(real && isObligationPaid(real)).toBe(false);
+  });
 });
 
 describe('registerSeedObligations (P2.3)', () => {

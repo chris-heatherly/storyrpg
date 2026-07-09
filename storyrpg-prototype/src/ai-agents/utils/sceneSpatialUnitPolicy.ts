@@ -89,10 +89,12 @@ function spatialUnitsFromHardTexts(hardTexts: string[]): string[] {
 }
 
 export function spatialMovementAllowance(
-  _ownedEvents: SceneEventOwnershipProfile['ownedEvents'] | undefined,
-  _hardTexts: string[],
+  ownedEvents: SceneEventOwnershipProfile['ownedEvents'] | undefined,
+  hardTexts: string[],
 ): number {
-  return 1;
+  return sceneOwnsMovementCueFromOwnership(ownedEvents) || sceneOwnsMovementCueFromTexts(hardTexts)
+    ? 2
+    : 1;
 }
 
 export interface SpatialUnitViolation {

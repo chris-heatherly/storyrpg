@@ -84,10 +84,10 @@ function makeStory(): Story {
         }],
         beats: [{
           id: 's1-5-b1',
-          text: 'You tell yourself the glossy friend group is becoming real before anyone has risked anything.',
+          text: 'You tell yourself the glossy Dusk Club friend group is becoming real before anyone has risked anything.',
           textVariants: [{
             condition: { type: 'flag', flag: 'survived', value: true },
-            text: 'The new friends gather around you too fast.',
+            text: 'The Dusk Club new friends gather around you too fast.',
           }],
           choices: [{
             id: 'c1',
@@ -129,7 +129,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     const beforeChoiceParsed = JSON.parse(beforeChoice);
     expect(afterChoice.id).toBe(beforeChoiceParsed.id);
     expect(afterChoice.nextSceneId).toBe(beforeChoiceParsed.nextSceneId);
-    expect(afterChoice.reactionText).toContain('people moving around him');
+    expect(afterChoice.reactionText).toBe(beforeChoiceParsed.reactionText);
     expect(targetBeat.text).toContain('new circle');
     expect(targetBeat.textVariants?.[0]?.text).toContain('new companions');
     expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
@@ -175,7 +175,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     });
 
     expect(result.changed).toBe(true);
-    expect(scene.relationshipPacing?.map((contract) => contract.targetStage)).toEqual(['spark', 'spark']);
+    expect(scene.relationshipPacing?.map((contract) => contract.targetStage)).toEqual(['spark', 'friend']);
   });
 
   it('rewrites group trust claims as provisional circle language', async () => {
@@ -187,19 +187,32 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
 
     const result = await buildRelationshipPacingLabelRepairHandler()({
       story,
-      blockingIssues: initial.issues.map((issue) => ({
+      blockingIssues: [{
         validator: 'RelationshipArcLedgerValidator',
         type: 'relationship_pacing_violation',
         sceneId: scene.id,
-        severity: issue.severity,
-        message: issue.message,
-        suggestion: issue.suggestion,
-      })),
+        severity: 'error',
+        fieldPath: 'beats[0].text',
+        message: `Scene "${scene.id}" treats group "dusk-club" as settled membership; matched beats[0].text.`,
+      }],
     });
 
     expect(result.changed).toBe(true);
     expect(scene.beats[0].text).toContain('still a dare');
     expect(scene.beats[0].text).toContain('fragile circle');
+
+    const stale = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: [{
+        validator: 'RelationshipArcLedgerValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: 'error',
+        fieldPath: 'beats[0].text',
+        message: `Scene "${scene.id}" treats group "dusk-club" as settled membership; matched beats[0].text.`,
+      }],
+    });
+    expect(stale.changed).toBe(false);
   });
 
   it('clears premature "official first meeting" labels in base beats and conditional variants without touching benign "official" uses', async () => {
@@ -296,8 +309,8 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
   it('downgrades unearned relationship labels in scene headers', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1] as any;
-    scene.name = 'Friend debrief';
-    scene.title = 'Friend debrief';
+    scene.name = 'Mika friend debrief';
+    scene.title = 'Mika friend debrief';
     scene.beats[0].text = 'Mika and Stela compare the night like a dare, not a settled bond.';
     scene.beats[0].textVariants = [];
     scene.beats[0].choices = [];
@@ -318,8 +331,8 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     });
 
     expect(result.changed).toBe(true);
-    expect(scene.name).toBe('ally debrief');
-    expect(scene.title).toBe('ally debrief');
+    expect(scene.name).toBe('Mika ally debrief');
+    expect(scene.title).toBe('Mika friend debrief');
     expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });
 
@@ -331,13 +344,13 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     beat.textVariants = [];
     beat.choices = [{
       id: 'protect-the-circle',
-      text: 'Choose your best friend over the stranger.',
+      text: 'Choose Mika, your best friend, over the stranger.',
       stakes: {
         want: 'Keep the table warm.',
         cost: 'Ignore the stranger.',
-        identity: 'My friends are my priority; strangers can wait.',
+        identity: 'Mika and my friends are my priority; strangers can wait.',
       },
-      reactionText: 'The warmth of friendship is a welcome shield.',
+      reactionText: 'Mika offers the warmth of friendship as a shield.',
       nextSceneId: 's1-6',
     } as any];
 
@@ -359,7 +372,7 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(result.changed).toBe(true);
     const choice = beat.choices?.[0] as any;
     expect(choice.text).toContain('sharp new ally');
-    expect(choice.stakes.identity).toContain('these companions');
+    expect(choice.stakes.identity).toContain('my friends');
     expect(choice.reactionText).toContain('guarded warmth');
     expect(new RelationshipArcLedgerValidator().validate({ story, treatmentSourced: true }).valid).toBe(true);
   });

@@ -709,6 +709,9 @@ export class GateRepairRouter {
       // that both left them unrepaired and withheld LLM repair from other
       // findings in the same report.
       if (issue.type === 'unsafe_fallback_prose' && issue.sceneId) {
+        if (issue.fieldPath === 'encounter.description') {
+          return directive('same_scene_retry', issue, 'The exact encounter.description field must be re-authored by its encounter-metadata owner.');
+        }
         return directive('same_scene_retry', issue, 'Deterministic fallback/template prose must be re-authored by the LLM in this scene.');
       }
       return directive('diagnostic_stop', issue, 'Route continuity issue has no safe direct prose repair route.');

@@ -45,6 +45,30 @@ import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
 
+const AUTHOR_ONLY_ENCOUNTER_FIELDS = new Set(['sourceSynopsis', 'authoredAnchor']);
+
+/** Defense-in-depth: planning provenance must never cross into a story package. */
+export function assertNoAuthorOnlyEncounterFields(encounter: unknown, sceneId: string): void {
+  const visit = (value: unknown, path: string): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      return;
+    }
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (AUTHOR_ONLY_ENCOUNTER_FIELDS.has(key)) {
+        throw new PipelineError(
+          `Author-only encounter field crossed assembly at ${path}.${key}`,
+          'assembly',
+          { context: { sceneId, fieldPath: `${path}.${key}` } },
+        );
+      }
+      visit(child, `${path}.${key}`);
+    }
+  };
+  visit(encounter, 'encounter');
+}
+
 export interface AssemblyDeps {
   config: PipelineConfig;
   emit: (event: Omit<PipelineEvent, 'timestamp'>) => void;
@@ -130,6 +154,7 @@ export class Assembly {
         ? convertEncounterStructureToEncounter(encounterStructure, sceneBlueprint)
         : undefined;
       if (encounter) {
+        assertNoAuthorOnlyEncounterFields(encounter, sceneBlueprint.id);
         emitSceneInfoMarkersOnBeats(sceneBlueprint, encounterInfoMarkerTargets(encounter as any));
       }
 
@@ -407,6 +432,7 @@ export class Assembly {
           ? convertEncounterStructureToEncounter(encounterStructure, sb)
           : undefined;
         if (encounter) {
+          assertNoAuthorOnlyEncounterFields(encounter, sb.id);
           emitSceneInfoMarkersOnBeats(sb, encounterInfoMarkerTargets(encounter as any));
         }
       } catch (convError) {

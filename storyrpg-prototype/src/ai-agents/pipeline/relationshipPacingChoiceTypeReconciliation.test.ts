@@ -24,10 +24,10 @@ describe('reconcileRelationshipPacingWithChoiceTypes', () => {
     expect(reconcileRelationshipPacingWithChoiceTypes(scenes)).toBe(1);
     expect(scenes[0].relationshipPacing[0]).toMatchObject({
       source: 'planner',
-      startStage: 'acquaintance',
-      targetStage: 'acquaintance',
+      startStage: 'spark',
+      targetStage: 'spark',
     });
-    expect(scenes[0].relationshipPacing[0].allowedLabels).toContain('new acquaintance');
+    expect(scenes[0].relationshipPacing[0].allowedLabels).toContain('provisional name');
     expect(scenes[0].relationshipPacing[0].blockedLabels).toContain('trusted ally');
   });
 
@@ -104,5 +104,60 @@ describe('reconcileRelationshipPacingWithChoiceTypes', () => {
 
     expect(reconcileRelationshipPacingWithChoiceTypes(scenes)).toBe(0);
     expect(scenes[0].relationshipPacing[0].targetStage).toBe('tentative_ally');
+  });
+
+  it('preserves a compiled group milestone only when an option emits canonical member movement and evidence', () => {
+    const milestone = {
+      id: 'scene-e-milestone-dusk-club',
+      kind: 'group_formation' as const,
+      sourceText: 'After testing her, they become friends and form the Dusk Club.',
+      subjectType: 'group' as const,
+      subjectId: 'dusk-club',
+      targetStage: 'friend' as const,
+      introductionSceneIds: ['scene-c'],
+      testSceneIds: ['scene-d'],
+      choiceSceneId: 'scene-e',
+      memberNpcIds: ['mika', 'stela'],
+      requiredEvidenceTags: ['respected_agency' as const],
+    };
+    const scenes = [{
+      id: 'scene-e',
+      choicePoint: { type: 'relationship' as const },
+      beats: [{
+        choices: [{
+          id: 'join',
+          text: 'Choose the circle.',
+          choiceType: 'relationship' as const,
+          relationshipMilestoneId: milestone.id,
+          relationshipGroupId: 'dusk-club',
+          consequences: [
+            { type: 'relationship' as const, npcId: 'mika', dimension: 'trust' as const, change: 4 },
+            { type: 'relationship' as const, npcId: 'stela', dimension: 'trust' as const, change: 4 },
+          ],
+          relationshipValueEvidence: [
+            { npcId: 'mika', axis: 'trust' as const, evidenceTags: ['respected_agency' as const], reason: 'Mika leaves the decision to her.' },
+            { npcId: 'stela', axis: 'trust' as const, evidenceTags: ['respected_agency' as const], reason: 'Stela accepts her answer.' },
+          ],
+        }],
+      }],
+      relationshipPacing: [{
+        id: 'scene-e-rel-dusk',
+        source: 'treatment' as const,
+        groupId: 'dusk-club',
+        startStage: 'spark' as const,
+        targetStage: 'friend' as const,
+        allowedLabels: ['friend'],
+        blockedLabels: [],
+        requiredEvidence: [],
+        minScenesSinceIntroduction: 1,
+        maxDeltaThisScene: 6,
+        mechanicDimensions: ['trust' as const],
+        milestone,
+      }],
+    }];
+
+    expect(reconcileRelationshipPacingWithChoiceTypes(scenes)).toBe(1);
+    expect(scenes[0].relationshipPacing[0].source).toBe('choice');
+    expect(scenes[0].relationshipPacing[0].targetStage).toBe('friend');
   });
 });

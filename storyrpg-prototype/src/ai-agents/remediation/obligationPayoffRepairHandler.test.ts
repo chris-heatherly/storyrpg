@@ -100,4 +100,40 @@ describe('buildObligationPayoffRepairHandler', () => {
     expect(result.changed).toBe(false);
     expect(emitted.some((m) => m.includes('no injectable payoff'))).toBe(true);
   });
+
+  it('credits ESC plant-staging thread debts without injecting reader prose', async () => {
+    const ledger = new CallbackLedger({ storyId: 's' });
+    ledger.add({
+      id: 'thread:consequence_seed-1-kylie-arrives-in-bucharest-with-two-suit',
+      kind: 'thread',
+      sourceEpisode: 1,
+      sourceSceneId: 's1-1',
+      sourceChoiceId: '',
+      flags: [],
+      summary: 'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.',
+      payoffWindow: { minEpisode: 1, maxEpisode: 1 },
+    } as never);
+    const stagingDebt = {
+      type: 'obligation_ledger_debt',
+      severity: 'error',
+      message: 'thread obligation "thread:consequence_seed-1-kylie-arrives-in-bucharest-with-two-suit" (Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.) is unpaid: due by episode 1, currently at episode 1.',
+      validator: 'ObligationLedgerValidator',
+    } as never;
+    const story = storyWithBeats();
+    const emitted: string[] = [];
+    const handler = buildObligationPayoffRepairHandler({ ledger, emit: (m) => emitted.push(m) });
+
+    const result = await handler({ story, blockingIssues: [stagingDebt] } as never);
+
+    expect(result.changed).toBe(true);
+    const hook = ledger.all().find(
+      (h) => h.id === 'thread:consequence_seed-1-kylie-arrives-in-bucharest-with-two-suit',
+    );
+    expect(hook?.payoffCount).toBeGreaterThan(0);
+    const variants = (story.episodes[0].scenes as Array<{ beats?: Array<{ textVariants?: unknown[] }> }>)
+      .flatMap((scene) => scene.beats ?? [])
+      .flatMap((beat) => beat.textVariants ?? []);
+    expect(variants).toHaveLength(0);
+    expect(emitted.some((m) => m.includes('ESC plant-staging'))).toBe(true);
+  });
 });

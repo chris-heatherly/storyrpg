@@ -45,6 +45,8 @@ export interface ContractRepairReport {
     sceneId?: string;
     /** Beat the finding points at when the validator can localize it. */
     beatId?: string;
+    /** Exact object path inspected by the validator (for field-owned repair). */
+    fieldPath?: string;
     episodeNumber?: number;
   }>;
 }
@@ -74,6 +76,37 @@ export interface ContractRepairResult {
    * selected issue is charged when the round changed anything).
    */
   attemptedIssueKeys?: string[];
+  /** Exact story paths the handler owns and changed, when known. */
+  changedFieldPaths?: string[];
+}
+
+export const FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION = 1;
+export const FINAL_CONTRACT_VALIDATOR_VERSION = '2026-07-09';
+
+export interface ContractRepairRoundSnapshot {
+  schemaVersion: typeof FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION;
+  validatorVersion: typeof FINAL_CONTRACT_VALIDATOR_VERSION;
+  round: number;
+  inputHash: string;
+  beforeIssueKeys: string[];
+  afterIssueKeys: string[];
+  attemptedIssueKeys: string[];
+  changedFieldPaths: string[];
+  handlerAttempts: Array<{
+    handler: string;
+    attemptedIssueKeys: string[];
+    changedFieldPaths: string[];
+    claimedChanged: boolean;
+  }>;
+  clearedIssueKeys: string[];
+  introducedIssueKeys: string[];
+  revalidationDelta: {
+    beforeBlocking: number;
+    afterBlocking: number;
+    cleared: number;
+    introduced: number;
+  };
+  passed: boolean;
 }
 
 export interface FinalContractRepairOutcome {
@@ -116,8 +149,61 @@ export function contractRepairIssueFingerprint(issue: ContractRepairIssue): stri
     issue.episodeNumber ?? '',
     issue.sceneId ?? '',
     issue.beatId ?? '',
+    issue.fieldPath ?? '',
     compactFingerprintText(moment),
   ].join('::');
+}
+
+export function finalContractRepairInputHash(value: unknown): string {
+  const text = JSON.stringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function cloneForRepairEvidence<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function collectChangedFieldPaths(
+  before: unknown,
+  after: unknown,
+  path = 'story',
+  output: string[] = [],
+  limit = 256,
+): string[] {
+  if (output.length >= limit || Object.is(before, after)) return output;
+  if (
+    before === null
+    || after === null
+    || typeof before !== 'object'
+    || typeof after !== 'object'
+  ) {
+    output.push(path);
+    return output;
+  }
+  if (Array.isArray(before) || Array.isArray(after)) {
+    if (!Array.isArray(before) || !Array.isArray(after)) {
+      output.push(path);
+      return output;
+    }
+    const length = Math.max(before.length, after.length);
+    for (let index = 0; index < length && output.length < limit; index += 1) {
+      collectChangedFieldPaths(before[index], after[index], `${path}[${index}]`, output, limit);
+    }
+    return output;
+  }
+  const beforeRecord = before as Record<string, unknown>;
+  const afterRecord = after as Record<string, unknown>;
+  const keys = new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)]);
+  for (const key of keys) {
+    if (output.length >= limit) break;
+    collectChangedFieldPaths(beforeRecord[key], afterRecord[key], `${path}.${key}`, output, limit);
+  }
+  return output;
 }
 
 function selectRepairableIssuesForRound(
@@ -309,6 +395,10 @@ export async function runFinalContractRepair(opts: {
   dedupeIssueFingerprints?: boolean;
   /** Optional guard: return false to stop spending the remediation budget. */
   canSpend?: () => boolean;
+  /** Persist or inspect a versioned, replayable record after each changed round. */
+  onRoundSnapshot?: (snapshot: ContractRepairRoundSnapshot, story: Story, report: ContractRepairReport) => Promise<void> | void;
+  /** Fail when a handler claims success without changing validator-visible story data. */
+  requireMutationEvidence?: boolean;
 }): Promise<FinalContractRepairOutcome> {
   const maxAttempts = opts.maxAttempts ?? 2;
   let story = opts.story;
@@ -331,15 +421,39 @@ export async function runFinalContractRepair(opts: {
 
     attempts += 1;
 
+    const roundInputHash = finalContractRepairInputHash(story);
+    const roundBefore = cloneForRepairEvidence(story);
+    const beforeIssueKeys = round.issues.map(contractRepairIssueFingerprint);
     let roundChanged = false;
     let anyHandlerReportedAttempts = false;
     const attemptedThisRound = new Set<string>();
-    for (const handler of opts.handlers) {
+    const handlerReportedPaths = new Set<string>();
+    const handlerAttempts: ContractRepairRoundSnapshot['handlerAttempts'] = [];
+    for (let handlerIndex = 0; handlerIndex < opts.handlers.length; handlerIndex += 1) {
+      const handler = opts.handlers[handlerIndex];
+      const handlerBefore = cloneForRepairEvidence(story);
       const result = await handler({ story, blockingIssues: round.issues });
       if (result.attemptedIssueKeys) {
         anyHandlerReportedAttempts = true;
         for (const key of result.attemptedIssueKeys) attemptedThisRound.add(key);
       }
+      for (const path of result.changedFieldPaths ?? []) handlerReportedPaths.add(path);
+      const handlerObservedPaths = result.changed
+        ? collectChangedFieldPaths(handlerBefore, result.story)
+        : [];
+      const handlerChangedPaths = Array.from(new Set([
+        ...(result.changedFieldPaths ?? []),
+        ...handlerObservedPaths,
+      ])).sort();
+      if (opts.requireMutationEvidence && result.changed && handlerChangedPaths.length === 0) {
+        throw new Error(`Final contract repair handler ${handler.name || `handler-${handlerIndex + 1}`} claimed success without changing validator-visible story evidence.`);
+      }
+      handlerAttempts.push({
+        handler: handler.name || `handler-${handlerIndex + 1}`,
+        attemptedIssueKeys: result.attemptedIssueKeys ?? [],
+        changedFieldPaths: handlerChangedPaths,
+        claimedChanged: result.changed,
+      });
       if (result.changed) {
         roundChanged = true;
         story = result.story;
@@ -348,6 +462,14 @@ export async function runFinalContractRepair(opts: {
     }
 
     if (!roundChanged) break; // fixpoint: nothing left any handler can fix
+    // Revalidate before charging issue fingerprints. A handler only consumes
+    // budget after the canonical validators have observed its candidate.
+    report = await opts.revalidate(story);
+    const observedChangedPaths = collectChangedFieldPaths(roundBefore, story);
+    const changedFieldPaths = Array.from(new Set([...handlerReportedPaths, ...observedChangedPaths])).sort();
+    if (opts.requireMutationEvidence && changedFieldPaths.length === 0) {
+      throw new Error(`Final contract repair round ${attempts} claimed success without changing validator-visible story evidence.`);
+    }
     // Charge the per-issue budget only for issues a handler actually attempted.
     // Charging on SELECTION (the old behavior) exhausted issues the capped
     // handlers never reached: with maxAttemptsPerIssue=2 and >8 distinct scene
@@ -359,7 +481,30 @@ export async function runFinalContractRepair(opts: {
     for (const key of chargeKeys) {
       issueAttempts.set(key, (issueAttempts.get(key) ?? 0) + 1);
     }
-    report = await opts.revalidate(story);
+    const afterIssueKeys = report.blockingIssues.map(contractRepairIssueFingerprint);
+    const afterIssueSet = new Set(afterIssueKeys);
+    const beforeIssueSet = new Set(beforeIssueKeys);
+    const snapshot: ContractRepairRoundSnapshot = {
+      schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
+      validatorVersion: FINAL_CONTRACT_VALIDATOR_VERSION,
+      round: attempts,
+      inputHash: roundInputHash,
+      beforeIssueKeys,
+      afterIssueKeys,
+      attemptedIssueKeys: chargeKeys,
+      changedFieldPaths,
+      handlerAttempts,
+      clearedIssueKeys: beforeIssueKeys.filter((key) => !afterIssueSet.has(key)),
+      introducedIssueKeys: afterIssueKeys.filter((key) => !beforeIssueSet.has(key)),
+      revalidationDelta: {
+        beforeBlocking: beforeIssueKeys.length,
+        afterBlocking: afterIssueKeys.length,
+        cleared: beforeIssueKeys.filter((key) => !afterIssueSet.has(key)).length,
+        introduced: afterIssueKeys.filter((key) => !beforeIssueSet.has(key)).length,
+      },
+      passed: report.passed,
+    };
+    await opts.onRoundSnapshot?.(snapshot, story, report);
   }
 
   return {

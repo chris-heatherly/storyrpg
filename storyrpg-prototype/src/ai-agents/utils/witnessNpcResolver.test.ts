@@ -181,7 +181,26 @@ describe('canonicalizeRelationshipConsequences', () => {
     };
     const res = canonicalizeRelationshipConsequences(choice, ROSTER);
     expect(res).toEqual({ total: 1, remapped: 1, dropped: 0 });
-    expect((choice.consequences[0] as any).npcId).toBe('char-mihaela-mika-drgan');
+    expect(choice.consequences[0]).toEqual({
+      type: 'relationship',
+      npcId: 'char-mihaela-mika-drgan',
+      dimension: 'affection',
+      change: 5,
+    });
+  });
+
+  it('drops relationship-shaped flag records before ledger consumption', () => {
+    const choice = {
+      consequences: [{
+        type: 'relationship',
+        npcId: 'mika',
+        flag: 'mika_trust_up',
+        value: true,
+      }],
+    };
+    const res = canonicalizeRelationshipConsequences(choice, ROSTER);
+    expect(res).toEqual({ total: 1, remapped: 0, dropped: 1 });
+    expect(choice.consequences).toEqual([]);
   });
 
   it('handles delayedConsequences[].consequence and drops unresolvable targets', () => {

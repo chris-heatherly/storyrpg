@@ -1,4 +1,10 @@
 import type { Beat, BeatCoveragePlan, SceneVisualSequencePlan, VisualStagingPattern } from '../../types';
+import {
+  defaultRelationshipBlocking,
+  defaultVisualContinuityReason,
+  defaultVisualThreadForLocation,
+  isUnsafeCoverageMetadataText,
+} from '../utils/coverageMetadataHygiene';
 import type { GeneratedBeat, SceneContent } from './SceneWriter';
 
 export interface SequenceDirectorDiagnostic {
@@ -81,7 +87,14 @@ function isSpecificButUnconventional(value: unknown): boolean {
 
 function isStrongAuthoredText(value: unknown): boolean {
   if (isPlaceholderText(value) || isWeak(value)) return false;
+  if (isUnsafeCoverageMetadataText(clean(value))) return false;
   return !isGenericVisualPlanText(value) || isSpecificButUnconventional(value);
+}
+
+function safeVisualThread(value: unknown, locationName?: string): string {
+  const text = clean(value);
+  if (text && isStrongAuthoredText(text)) return text;
+  return defaultVisualThreadForLocation(locationName);
 }
 
 function authoredTextOr(value: unknown, fallback: string): string {
@@ -164,12 +177,12 @@ function inferActivity(text: string): string {
   return 'a visible exchange where distance, posture, attention, or object control changes';
 }
 
-function inferVisualThread(scene: SceneContent, text: string): string {
+function inferVisualThread(scene: SceneContent, text: string, locationName?: string): string {
   const authored = clean(scene.sequenceIntent?.visualThread);
-  if (!isWeak(authored)) return authored;
+  if (authored && isStrongAuthoredText(authored)) return authored;
   const prop = text.match(/\b(letter|key|ring|charm|phone|screen|map|knife|cup|door|window|blood|wound|bag|book|mask|coin|flower|lantern|torch|photograph|ticket)\b/i)?.[0];
   if (prop) return `the ${prop} changing attention, possession, or meaning across the scene`;
-  return 'the changing distance, gaze, and hand positions between the visible characters';
+  return defaultVisualThreadForLocation(locationName);
 }
 
 function inferBeatRole(index: number, count: number, beat: GeneratedBeat): NonNullable<Beat['sequenceIntent']>['beatRole'] {
@@ -240,7 +253,7 @@ export function buildSceneVisualSequencePlan(scene: SceneContent, context: Seque
     ? clean(sequence?.endState)
     : clean((scene.beats || [])[Math.max(0, (scene.beats || []).length - 1)]?.dramaticIntent?.statusAfter)
       || 'By the end, the characters occupy a new emotional, tactical, or informational position.';
-  const inferredVisualThread = inferVisualThread(scene, text);
+  const inferredVisualThread = inferVisualThread(scene, text, context.locationName);
   const inferredAnchorZones = inferAnchorZones(text, scene.sceneName);
   let anchorZones = authoredListOr<string>(authoredPlan?.anchorZones, inferredAnchorZones, 2);
   let visualThread = authoredTextOr(authoredPlan?.visualThread, inferredVisualThread);
@@ -312,6 +325,11 @@ export function applySequenceDirectorPlan(scene: SceneContent, context: Sequence
   const sequencePlan = buildSceneVisualSequencePlan(scene, context);
   const warnings: string[] = [];
   scene.sceneVisualSequencePlan = sequencePlan;
+  const resolvedVisualThread = safeVisualThread(
+    scene.sequenceIntent?.visualThread || sequencePlan.visualThread,
+    context.locationName || sequencePlan.geography,
+  );
+  sequencePlan.visualThread = resolvedVisualThread;
   scene.sequenceIntent = {
     ...(scene.sequenceIntent || {}),
     objective: scene.sequenceIntent?.objective || sequencePlan.objective,
@@ -320,7 +338,7 @@ export function applySequenceDirectorPlan(scene: SceneContent, context: Sequence
     startState: scene.sequenceIntent?.startState || clean(scene.beats?.[0]?.visualMoment) || `The sequence begins in ${sequencePlan.geography}.`,
     turningPoint: scene.sequenceIntent?.turningPoint || sequencePlan.turningPoint,
     endState: scene.sequenceIntent?.endState || sequencePlan.endState,
-    visualThread: scene.sequenceIntent?.visualThread || sequencePlan.visualThread,
+    visualThread: resolvedVisualThread,
   };
 
   const coverageBeatIds: string[] = [];
@@ -334,7 +352,10 @@ export function applySequenceDirectorPlan(scene: SceneContent, context: Sequence
       ...(scene.sequenceIntent || {}),
       ...(beat.sequenceIntent || {}),
       beatRole: role,
-      visualThread: beat.sequenceIntent?.visualThread || sequencePlan.visualThread,
+      visualThread: safeVisualThread(
+        beat.sequenceIntent?.visualThread || sequencePlan.visualThread,
+        context.locationName || sequencePlan.geography,
+      ),
       turningPoint: beat.sequenceIntent?.turningPoint || sequencePlan.turningPoint,
       endState: beat.sequenceIntent?.endState || sequencePlan.endState,
     };
@@ -348,6 +369,10 @@ export function applySequenceDirectorPlan(scene: SceneContent, context: Sequence
     const requiredVisibleCharacterIds = existing?.requiredVisibleCharacterIds?.length
       ? existing.requiredVisibleCharacterIds
       : visibleIds;
+    const continuityMode = role === 'turn' ? 'preserve_scene_axis' : 'fresh_composition';
+    const authoredBlocking = isStrongAuthoredText(existing?.relationshipBlocking)
+      ? existing!.relationshipBlocking
+      : (isStrongAuthoredText(beat.relationshipDynamic) ? beat.relationshipDynamic : undefined);
 
     beat.coveragePlan = {
       stagingPattern,
@@ -358,16 +383,24 @@ export function applySequenceDirectorPlan(scene: SceneContent, context: Sequence
       requiredVisibleCharacterIds,
       optionalVisibleCharacterIds: existing?.optionalVisibleCharacterIds || [],
       offscreenCharacterIds: existing?.offscreenCharacterIds || offscreenIds(scene, requiredVisibleCharacterIds),
-      relationshipBlocking: isStrongAuthoredText(existing?.relationshipBlocking) ? existing!.relationshipBlocking
-        : beat.relationshipDynamic
-        || `${sequencePlan.visualThread}; show who gains or loses distance, control, or attention.`,
+      relationshipBlocking: authoredBlocking || defaultRelationshipBlocking(),
       coverageReason: isStrongAuthoredText(existing?.coverageReason) ? existing!.coverageReason
         : `${role} beat in the scene sequence: ${beat.dramaticIntent?.visibleTurn || beat.visualMoment || beat.primaryAction || beat.text}`,
-      visualContinuity: existing?.visualContinuity || {
-        mode: role === 'turn' ? 'preserve_scene_axis' : 'fresh_composition',
-        reason: `SequenceDirector: preserve ${sequencePlan.visualThread} while varying shot size, camera side, and focal subject.`,
-        preserve: ['environment', 'lighting'],
-      },
+      visualContinuity: (() => {
+        const existingContinuity = existing?.visualContinuity;
+        if (
+          existingContinuity
+          && isStrongAuthoredText(existingContinuity.reason)
+          && !isUnsafeCoverageMetadataText(existingContinuity.reason)
+        ) {
+          return existingContinuity;
+        }
+        return {
+          mode: continuityMode,
+          reason: defaultVisualContinuityReason(continuityMode),
+          preserve: existingContinuity?.preserve?.length ? existingContinuity.preserve : ['environment', 'lighting'],
+        };
+      })(),
     };
     if (existing?.relationshipBlocking && !isStrongAuthoredText(existing.relationshipBlocking)) {
       warnings.push(`Repaired weak relationshipBlocking for ${beat.id}.`);

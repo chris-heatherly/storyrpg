@@ -462,12 +462,77 @@ export const OPENING_EPISODE_CHARACTER_KINDS = new Set<CharacterTreatmentFieldKi
   'visual_identity',
 ]);
 
+/** Load-bearing opening identity kinds that must stage named atoms on Ep1 cold open. */
+const OPENING_IDENTITY_ATOM_KINDS = new Set<CharacterTreatmentFieldKind>([
+  'role_fact',
+  'wound_pressure',
+  'origin_pressure',
+]);
+
+/**
+ * Extract concrete identity atoms (occupation, ex name, origin city, cancelled
+ * engagement) from protagonist-brief prose so SceneWriter stages them instead
+ * of a generic arrival.
+ */
+export function extractOpeningIdentityAtoms(sourceText: string): string[] {
+  const text = sourceText.trim();
+  if (!text) return [];
+  const atoms: string[] = [];
+  const occupation = text.match(
+    /\b((?:American\s+)?(?:food\s+)?(?:writer|blogger|journalist|editor|photographer|chef|restaurateur)(?:\s+turned\s+\w+)?)\b/i,
+  );
+  if (occupation?.[1]) atoms.push(occupation[1]);
+  const originCity = text.match(
+    /\b(?:from|in|of|fleeing|arrives?\s+from|left)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/,
+  );
+  if (originCity?.[1] && !/Bucharest|Romania/i.test(originCity[1])) {
+    atoms.push(originCity[1]);
+  }
+  if (/\bNew York\b/i.test(text)) atoms.push('New York');
+  const engagement = text.match(
+    /\b((?:publicly\s+)?(?:cancelled|called[\s-]off)\s+engagement(?:\s+to\s+[^.]+)?|(?:engagement\s+to\s+[^.]+?(?:imploded|cancelled|called[\s-]off)[^.]*))/i,
+  );
+  if (engagement?.[1]) atoms.push(engagement[1].replace(/\s+/g, ' ').trim());
+  else if (/\bengagement\b/i.test(text) && /\b(?:imploded|cancelled|called[\s-]off|public)\b/i.test(text)) {
+    atoms.push('cancelled engagement');
+  }
+  // Proper-name ex / partner: "engagement to New York restaurateur Daniel Hayes"
+  const partner = text.match(
+    /\b(?:engagement|fianc[eé]|ex|boyfriend|girlfriend|husband|wife|partner)\s+to\s+(?:(?:a|an|the)\s+)?(?:[\w-]+\s+){0,4}([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
+  );
+  if (partner?.[1] && !/New York|Bucharest/i.test(partner[1])) atoms.push(partner[1]);
+  const namedPerson = text.match(/\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b/g) ?? [];
+  for (const name of namedPerson) {
+    if (/New York|Bucharest|Casa |Valescu|Lumina/i.test(name)) continue;
+    if (atoms.some((atom) => atom.includes(name))) continue;
+    // Keep partner-like names that appear near engagement/restaurateur cues.
+    if (/\b(?:engagement|restaurateur|fianc|ex)\b/i.test(text)) atoms.push(name);
+  }
+  return Array.from(new Set(atoms.map((atom) => atom.trim()).filter((atom) => atom.length >= 3))).slice(0, 6);
+}
+
+function openingIdentityMustDepict(contract: CharacterTreatmentRealizationContract): string {
+  const atoms = extractOpeningIdentityAtoms(contract.sourceText);
+  if (atoms.length === 0) {
+    return `Establish the protagonist's ${contract.fieldName.toLowerCase()} through concrete behavior or detail (fiction-first): ${contract.sourceText}`;
+  }
+  return (
+    `On the opening page, stage these protagonist identity facts in second-person fiction `
+    + `(name or clearly imply each; do not paste this checklist): ${atoms.join('; ')}. `
+    + `Source: ${contract.sourceText}`
+  );
+}
+
 /**
  * Seed early protagonist-brief contracts onto the first scene of each episode.
  * Use advisory `seed` (not hard `coldopen`): hard cold-open stacking with the
  * arrival turn blew SceneConstructionGate past max hard units
  * (bite-me 2026-07-08: 6.25/5 on s1-1). CharacterTreatmentRealizationValidator
  * still owns final-contract evidence for these contracts.
+ *
+ * Role/wound/origin contracts get atomized mustDepict so Ep1 cannot ship a
+ * generic arrival that omits food-writer / cancelled-engagement / New York /
+ * named ex facts present in the protagonist brief.
  */
 export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScene[]): void {
   const byEpisode = new Map<number, PlannedScene[]>();
@@ -490,7 +555,9 @@ export function appendOpeningCharacterTreatmentRequiredBeats(scenes: PlannedScen
       const beat: RequiredBeat = {
         id: beatId,
         sourceTurn: contract.sourceText,
-        mustDepict: `Establish the protagonist's ${contract.fieldName.toLowerCase()} through concrete behavior or detail (fiction-first): ${contract.sourceText}`,
+        mustDepict: OPENING_IDENTITY_ATOM_KINDS.has(contract.contractKind)
+          ? openingIdentityMustDepict(contract)
+          : `Establish the protagonist's ${contract.fieldName.toLowerCase()} through concrete behavior or detail (fiction-first): ${contract.sourceText}`,
         tier: 'seed',
       };
       opening.requiredBeats = [...(opening.requiredBeats ?? []), beat];

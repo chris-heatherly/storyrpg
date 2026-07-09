@@ -168,6 +168,87 @@ describe('qualityScoring v4: graded judge intake', () => {
     expect(character?.concepts.find((c) => c.id === 'npc_reacts_to_player_choice')?.score).toBe(30);
     expect(character?.score).toBeLessThan(100);
   });
+
+  it('makes low prose and responsiveness grades visible as publishability caps and repair targets', () => {
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory(),
+      qaReport: {
+        overallScore: 94,
+        proseCraft: {
+          overallScore: 62,
+          conceptScores: [{ conceptId: 'sentence_craft', score: 62, evidence: 'flat scene prose' }],
+          issues: [{ severity: 'error', conceptId: 'sentence_craft', location: { sceneId: 's1' }, description: 'The scene repeats itself.' }],
+          sampledSceneIds: ['s1'],
+        },
+        responsiveness: {
+          overallScore: 58,
+          conceptScores: [{ conceptId: 'choice_reflected_in_prose', score: 58, evidence: 'routes reconverge identically' }],
+          probeVerdicts: [{ probeId: 's1:b1', verdict: 'cosmetic', npcReaction: 'static', notes: 'same opening' }],
+          issues: [],
+        },
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    expect(result.basis.publishabilityScore).toBe(result.score);
+    expect(result.basis.legacySubscores.qaScore).toBe(94);
+    expect(result.basis.caps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'prose_craft_below_publish_floor', maxScore: 79 }),
+      expect.objectContaining({ id: 'responsiveness_below_publish_floor', maxScore: 69 }),
+    ]));
+    expect(result.basis.repairTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'scene_prose', actualScore: 62, sceneIds: ['s1'] }),
+      expect.objectContaining({ kind: 'route_pair', actualScore: 58, probeIds: ['s1:b1'] }),
+    ]));
+    expect(result.score).toBeLessThanOrEqual(69);
+  });
+
+  it('caps grounded chronology, twist, and obligation health independently of legacy scores', () => {
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory(),
+      bestPracticesReport: {
+        overallScore: 98,
+        overallPassed: false,
+        blockingIssues: [
+          { validator: 'TreatmentEventLedgerValidator', severity: 'error', message: 'Blog aftermath occurs before the blog is written: chronology is inverted.' },
+          { validator: 'TwistQualityValidator', severity: 'error', message: 'The reveal has no prior foreshadow.' },
+          { validator: 'ObligationLedgerValidator', severity: 'error', message: 'Required payoff obligation remains unpaid.' },
+        ],
+        warnings: [],
+        suggestions: [],
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    expect(result.basis.legacySubscores.validationScore).toBe(98);
+    expect(result.basis.caps.map((cap) => cap.id)).toEqual(expect.arrayContaining([
+      'chronology_health_error',
+      'twist_realization_error',
+      'obligation_health_error',
+    ]));
+    expect(result.score).toBeLessThanOrEqual(69);
+  });
+
+  it('keeps evidence-ungrounded judge claims advisory instead of creating health caps or repair targets', () => {
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory(),
+      qaReport: {
+        overallScore: 91,
+        proseCraft: {
+          overallScore: 82,
+          conceptScores: [{ conceptId: 'sentence_craft', score: 82, evidence: 'generally specific' }],
+          issues: [{
+            severity: 'error',
+            conceptId: 'sentence_craft',
+            location: { sceneId: 's1' },
+            description: 'Invented quote. [evidence-ungrounded: quoted text not found in story prose; downgraded from error]',
+          }],
+          sampledSceneIds: ['s1'],
+        },
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    expect(result.basis.caps.some((cap) => cap.id === 'prose_craft_errors_remain')).toBe(false);
+    expect(result.basis.repairTargets.some((target) => target.component === 'prose_craft')).toBe(false);
+  });
 });
 
 describe('qualityScoring v4: routing and severity', () => {

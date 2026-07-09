@@ -301,6 +301,42 @@ export interface ResidueRepairDirective {
   pathSummaries: string[];
 }
 
+export interface CallbackResidueSceneLike {
+  startingBeatId?: string;
+  beats?: Array<{
+    id?: string;
+    callbackHookIds?: string[];
+    textVariants?: Array<{
+      text?: string;
+      callbackHookId?: string;
+      condition?: { type?: string; flag?: string; value?: unknown };
+    }>;
+  }>;
+}
+
+/**
+ * Bind authored flag-gated opening variants to the callback ledger namespace.
+ * This only reconciles metadata on prose the LLM already authored.
+ */
+export function materializeFlagVariantCallbackHooks(
+  scene: CallbackResidueSceneLike,
+  allowedFlags: string[],
+): number {
+  const openingBeat = scene.beats?.find((beat) => beat.id === scene.startingBeatId) ?? scene.beats?.[0];
+  if (!openingBeat) return 0;
+  const allowed = new Set(allowedFlags);
+  let materialized = 0;
+  for (const variant of openingBeat.textVariants ?? []) {
+    const flag = variant.condition?.type === 'flag' ? variant.condition.flag?.trim() : undefined;
+    if (!flag || !variant.text?.trim() || (allowed.size > 0 && !allowed.has(flag))) continue;
+    const callbackHookId = `flag:${flag}`;
+    variant.callbackHookId = callbackHookId;
+    openingBeat.callbackHookIds = Array.from(new Set([...(openingBeat.callbackHookIds ?? []), callbackHookId]));
+    materialized += 1;
+  }
+  return materialized;
+}
+
 /**
  * Derive the repair-time residue directive from the ASSEMBLED episode: which
  * scenes/choices actually route into the target, and which real, already-authored
@@ -367,8 +403,9 @@ export function buildResidueRepairDirectorNotes(
   const lines: string[] = [
     `RECONVERGENCE RESIDUE REPAIR for scene ${sceneId} (validator-enforced).`,
     'This scene is reached from multiple story paths, but its prose reads identically on every path. Fix it surgically:',
-    '- ADD at least one `textVariants` entry to the FLAGGED (earliest) beat. Each variant: { "condition": { "type": "flag", "flag": "<flag>", "value": true }, "text": "<one or two sentences of path-specific residue prose>" }.',
+    '- ADD at least one `textVariants` entry to the FLAGGED (earliest) beat. Each variant: { "condition": { "type": "flag", "flag": "<flag>", "value": true }, "text": "<one or two sentences of path-specific residue prose>", "callbackHookId": "flag:<flag>" }.',
     '- Keep the beat\'s base `text` true on every path; the variants carry the path-specific acknowledgment (a wound, a debt, a witness, a changed relationship).',
+    '- Put the same `flag:<flag>` id in the beat\'s `callbackHookIds` so the callback ledger can credit the residue.',
     '- Do NOT change beat ids, navigation, choices, or any other beat. Return the flagged beat (with its existing text plus the new textVariants) in `rewrittenBeats`.',
   ];
   if (gatingFlags.length > 0) {

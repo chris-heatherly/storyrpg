@@ -27,6 +27,7 @@ import type { AgentResponse } from '../agents/BaseAgent';
 import type { ThreadPlannerInput } from '../agents/ThreadPlanner';
 import type { TwistArchitectInput, TwistPlan, TwistKind } from '../agents/TwistArchitect';
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
+import type { SceneContent } from '../agents/SceneWriter';
 import type { GenerationSettingsConfig } from '../config';
 import type { NarrativeThread, ThreadLedger } from '../../types';
 import type {
@@ -90,6 +91,93 @@ export interface EpisodeThreadTwistResult {
   threadLedger?: ThreadLedger;
   /** Present only when TwistArchitect produced a non-empty plan. */
   twistPlan?: TwistPlan;
+}
+
+export interface TwistMaterializationResult {
+  status: 'not_planned' | 'materialized' | 'deferred' | 'invalid';
+  foreshadowBeatId?: string;
+  twistBeatId?: string;
+  reason?: string;
+}
+
+export interface TwistDeferralContract {
+  generatedThroughEpisode: number;
+  deferredUntilEpisode: number;
+  reason: string;
+}
+
+/**
+ * Reconcile plan-time placeholder beat ids with the concrete beats SceneWriter
+ * returned. This only writes narrative metadata; it never authors prose.
+ */
+export function materializeTwistPlan(
+  plan: TwistPlan | undefined,
+  sceneContents: SceneContent[],
+  deferral?: TwistDeferralContract,
+): TwistMaterializationResult {
+  if (!plan) return { status: 'not_planned' };
+  const foreshadowSceneIndex = sceneContents.findIndex((scene) => scene.sceneId === plan.foreshadowSceneId);
+  const twistSceneIndex = sceneContents.findIndex((scene) => scene.sceneId === plan.twistSceneId);
+  if (foreshadowSceneIndex < 0 || twistSceneIndex < 0) {
+    if (deferral && deferral.deferredUntilEpisode > deferral.generatedThroughEpisode) {
+      plan.realization = {
+        status: 'deferred',
+        deferredUntilEpisode: deferral.deferredUntilEpisode,
+        reason: deferral.reason,
+      };
+      return { status: 'deferred', reason: deferral.reason };
+    }
+    return {
+      status: 'invalid',
+      reason: `Twist plan references missing scene(s): foreshadow=${plan.foreshadowSceneId}, twist=${plan.twistSceneId}.`,
+    };
+  }
+  if (foreshadowSceneIndex >= twistSceneIndex) {
+    return {
+      status: 'invalid',
+      reason: `Twist foreshadow scene ${plan.foreshadowSceneId} must precede reveal scene ${plan.twistSceneId}.`,
+    };
+  }
+  const foreshadowScene = sceneContents[foreshadowSceneIndex];
+  const twistScene = sceneContents[twistSceneIndex];
+  const foreshadowBeat = foreshadowScene.beats.find((beat) => beat.id === plan.foreshadowBeatId)
+    || foreshadowScene.beats.find((beat) => !beat.isChoicePoint)
+    || foreshadowScene.beats[0];
+  const twistBeat = twistScene.beats.find((beat) => beat.id === plan.twistBeatId)
+    || [...twistScene.beats].reverse().find((beat) => !beat.isChoicePoint)
+    || twistScene.beats[twistScene.beats.length - 1];
+  if (!foreshadowBeat || !twistBeat) {
+    return {
+      status: 'invalid',
+      reason: `Twist plan cannot materialize because ${!foreshadowBeat ? plan.foreshadowSceneId : plan.twistSceneId} has no generated beat.`,
+    };
+  }
+
+  foreshadowBeat.plotPointType = 'setup';
+  foreshadowBeat.twistKind = plan.kind;
+  twistBeat.plotPointType = plan.kind === 'revelation' ? 'revelation' : 'twist';
+  twistBeat.twistKind = plan.kind;
+  plan.foreshadowBeatId = foreshadowBeat.id;
+  plan.twistBeatId = twistBeat.id;
+  plan.directives = plan.directives.map((directive) => {
+    if (directive.sceneId === plan.foreshadowSceneId && (directive.beatRole === 'foreshadow' || directive.beatRole === 'misdirect')) {
+      return { ...directive, beatId: foreshadowBeat.id };
+    }
+    if (directive.sceneId === plan.twistSceneId && (directive.beatRole === 'reveal' || directive.beatRole === 'aftermath')) {
+      return { ...directive, beatId: twistBeat.id };
+    }
+    return directive;
+  });
+  plan.realization = {
+    status: 'materialized',
+    foreshadowBeatId: foreshadowBeat.id,
+    twistBeatId: twistBeat.id,
+  };
+  return {
+    status: 'materialized',
+    foreshadowBeatId: foreshadowBeat.id,
+    twistBeatId: twistBeat.id,
+  };
 }
 
 /**

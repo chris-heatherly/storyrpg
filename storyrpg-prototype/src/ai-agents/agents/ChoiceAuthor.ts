@@ -50,6 +50,9 @@ import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExa
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
+import {
+  normalizeCanonicalConsequences,
+} from '../utils/canonicalChoiceConsequences';
 import { authorFacingMechanicPressureText } from '../utils/treatmentFieldContracts';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
 
@@ -732,7 +735,10 @@ Stat checks for relationship/strategic/dilemma:
 
 Consequences:
 - setFlag shape: {"type":"setFlag","flag":"accepted_quartz","value":true}
+- relationship shape: {"type":"relationship","npcId":"char-mihaela-mika-drgan","dimension":"trust","change":5}
+- changeScore shape: {"type":"changeScore","score":"blog_reach","change":1}
 - never put a flag name in value.
+- never add flag/value fields to relationship or score consequences.
 
 Return JSON only.`;
   }
@@ -797,76 +803,26 @@ Return JSON only.`;
         ? [choice.consequences as unknown as Consequence]
         : [];
 
-    consequences.forEach((consequence, index) => {
-      if (consequence?.type !== 'setFlag') return;
-      const raw = consequence as unknown as Record<string, unknown>;
-      const flag = typeof raw.flag === 'string'
-        ? raw.flag.trim()
-        : typeof raw.name === 'string'
-          ? raw.name.trim()
-          : '';
-      const value = typeof raw.value === 'string' ? raw.value.trim() : raw.value;
-
-      if (!flag && !this.parseFlagFromValue(value).flag) {
-        issues.push(
-          `Choice "${choiceId}" has malformed setFlag consequence #${index + 1}; use {"type":"setFlag","flag":"meaningful_flag","value":true}, not a bare value.`,
-        );
-      }
-      if (flag && typeof value === 'string' && value.length > 0 && !this.parseBooleanString(value)) {
-        issues.push(
-          `Choice "${choiceId}" setFlag "${flag}" has non-boolean value "${value}"; setFlag.value must be true or false.`,
-        );
-      }
-    });
+    const canonical = normalizeCanonicalConsequences(consequences);
+    for (const rejected of canonical.rejected) {
+      issues.push(
+        `Choice "${choiceId}" has malformed consequence #${rejected.index + 1}: ${rejected.reason}.`,
+      );
+    }
 
     return issues;
   }
 
   private normalizeChoiceConsequences(choice: GeneratedChoice): void {
-    const normalized: Consequence[] = [];
-    for (const consequence of choice.consequences || []) {
-      if (consequence?.type !== 'setFlag') {
-        normalized.push(consequence);
-        continue;
-      }
-
-      const raw = consequence as unknown as Record<string, unknown>;
-      const authoredFlag = typeof raw.flag === 'string' && raw.flag.trim()
-        ? raw.flag.trim()
-        : typeof raw.name === 'string' && raw.name.trim()
-          ? raw.name.trim()
-          : '';
-      const parsedFromValue = this.parseFlagFromValue(raw.value);
-      const flag = authoredFlag || parsedFromValue.flag;
-      if (!flag) continue;
-
-      const explicitBoolean = typeof raw.value === 'boolean'
-        ? raw.value
-        : typeof raw.value === 'string'
-          ? this.parseBooleanString(raw.value)
-          : undefined;
-      const value = explicitBoolean ?? parsedFromValue.value ?? true;
-      normalized.push({ ...(raw as object), type: 'setFlag', flag, value } as Consequence);
+    const canonical = normalizeCanonicalConsequences(choice.consequences || []);
+    if (canonical.rejected.length > 0) {
+      throw new Error(
+        `Choice "${choice.id}" contains non-canonical consequences: ${
+          canonical.rejected.map((item) => `#${item.index + 1} ${item.reason}`).join('; ')
+        }`,
+      );
     }
-    choice.consequences = normalized;
-  }
-
-  private parseFlagFromValue(value: unknown): { flag?: string; value?: boolean } {
-    if (typeof value !== 'string') return {};
-    const trimmed = value.trim();
-    if (!trimmed || this.parseBooleanString(trimmed) !== undefined) return {};
-    const colonMatch = trimmed.match(/^([A-Za-z0-9_:\-./]+):(true|false)$/i);
-    if (colonMatch) {
-      return { flag: colonMatch[1], value: colonMatch[2].toLowerCase() === 'true' };
-    }
-    return { flag: trimmed, value: true };
-  }
-
-  private parseBooleanString(value: string): boolean | undefined {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true') return true;
-    if (normalized === 'false') return false;
-    return undefined;
+    choice.consequences = canonical.consequences;
   }
 
   /**
@@ -1829,14 +1785,16 @@ If branch topology makes the assigned tier impossible, stay fiction-first and ch
 ${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
 ## Character Arc Milestone Targets (from Arc Tracker)
 Design at least ONE choice whose consequences move the protagonist toward these targets.
-Tag any such consequence with \`arcDriving: true\` so downstream validators can measure it.
-${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity \`${h.dimension}\`: target ${h.direction} (${h.magnitude}). A consequence like \`{ type: "setFlag", name: "arc:${h.dimension}:${h.direction}", arcDriving: true }\` is ideal.`).join('\n')}
+Use canonical consequences only; arc movement is measured from their actual discriminated fields.
+${(input.arcTargets.identityDeltaHints || []).map(h => `- Identity \`${h.dimension}\`: target ${h.direction} (${h.magnitude}). A consequence like \`{ "type": "setFlag", "flag": "arc:${h.dimension}:${h.direction}", "value": true }\` is ideal.`).join('\n')}
 ${(input.arcTargets.relationshipTrajectory || []).map(r => `- Relationship with ${r.npcId} (${r.dimension}): ${r.direction} — ${r.hint}`).join('\n')}
 ` : ''}
 ${input.sceneBlueprint.relationshipPacing?.length ? `
 ## Relationship Pacing Contracts
 Design relationship consequences and aftermath at the earned stage, not the future desired stage.
 ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; max relationship delta this scene ${c.maxDeltaThisScene}; allowed labels: ${c.allowedLabels.join(', ')}; blocked labels: ${c.blockedLabels.join(', ')}; evidence: ${c.requiredEvidence.join('; ')}`).join('\n')}
+- When a contract includes an authored milestone, one qualifying option MUST carry relationshipMilestoneId and relationshipGroupId, plus canonical relationship movement and relationshipValueEvidence for every named member. A generic relationship/expression choice does not earn group membership.
+${input.sceneBlueprint.relationshipPacing.filter((c) => c.milestone).map((c) => `  MILESTONE ${c.milestone!.id}: group ${c.groupId}; members ${c.milestone!.memberNpcIds.join(', ')}; choice scene ${c.milestone!.choiceSceneId}; required evidence tags ${c.milestone!.requiredEvidenceTags.join(', ')}.`).join('\n')}
 - Relationship choices must show behavioral aftermath: changed distance, invitation, withholding, teasing, remembered detail, vulnerability, challenge, or refusal.
 - A relationship choice that claims meaning must include both a numeric relationship consequence and relationshipValueEvidence. The numeric consequence answers what hidden trust/affection/respect/fear changed; relationshipValueEvidence answers what dramatic kind of moment occurred.
 - Use relationshipValueEvidence to mark the McKee-square surface the choice earned: mutual aid or confession requires agency-respecting evidence; withheld care requires absence/avoidance evidence; hostility requires sabotage/attack/retaliation evidence; protective control or aid-with-strings requires coercion, guilt, agency removal, or conditional-help evidence.
@@ -1998,8 +1956,8 @@ Compactness limits:
 
 Canonical consequence examples:
 - setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}
-- relationship: {"type":"relationship","flag":"mika_trust_up","value":true,"npcId":"char-mika-drgan","change":5}
-- score: {"type":"changeScore","name":"blog_reach","change":1}
+- relationship: {"type":"relationship","npcId":"char-mihaela-mika-drgan","dimension":"trust","change":5}
+- score: {"type":"changeScore","score":"blog_reach","change":1}
 
 CRITICAL REQUIREMENTS:
 1. Create exactly ${input.optionCount} unique, meaningful choices
@@ -2117,8 +2075,8 @@ Branching choices need nextSceneId.
 
 ## Consequences
 - setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}
-- relationship: {"type":"relationship","flag":"mika_trust_up","value":true,"npcId":"char-mika-drgan","change":5}
-- score: {"type":"changeScore","name":"blog_reach","change":1}
+- relationship: {"type":"relationship","npcId":"char-mihaela-mika-drgan","dimension":"trust","change":5}
+- score: {"type":"changeScore","score":"blog_reach","change":1}
 - Never put the flag name in value. Never emit {"type":"setFlag","value":"flag_name"}.
 
 ## Stat Checks
@@ -2221,6 +2179,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
           `movement/evidence on ${repaired} option(s) — repaired at option level.`
         );
       }
+      this.ensureAuthoredRelationshipMilestone(choiceSet, input);
       this.capRelationshipConsequences(choiceSet, input);
     }
     if (choiceSet.choiceType !== 'relationship' && input.sceneBlueprint.relationshipPacing?.length) {
@@ -2531,6 +2490,44 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     }
     const pacingDimension = input.sceneBlueprint.relationshipPacing?.[0]?.mechanicDimensions?.[0];
     return pacingDimension ?? 'trust';
+  }
+
+  private ensureAuthoredRelationshipMilestone(choiceSet: ChoiceSet, input: ChoiceAuthorInput): void {
+    const contract = (input.sceneBlueprint.relationshipPacing ?? []).find((candidate) =>
+      candidate.milestone?.choiceSceneId === input.sceneBlueprint.id
+      && candidate.milestone.kind === 'group_formation'
+    );
+    const milestone = contract?.milestone;
+    if (!contract?.groupId || !milestone || choiceSet.choices.length === 0) return;
+
+    const choice = choiceSet.choices.find((candidate) =>
+      candidate.relationshipMilestoneId === milestone.id
+      || /\b(?:join|form|found|name|christen|choose|stay|accept|together|club|circle|crew)\b/i.test(
+        `${candidate.text ?? ''} ${candidate.choiceIntent ?? ''}`,
+      )
+    ) ?? choiceSet.choices[0];
+    choice.choiceType = 'relationship';
+    choice.relationshipMilestoneId = milestone.id;
+    choice.relationshipGroupId = contract.groupId;
+
+    const maxDelta = Math.max(1, Math.min(6, Math.abs(contract.maxDeltaThisScene || 6)));
+    for (const npcId of milestone.memberNpcIds) {
+      const hasMovement = (choice.consequences ?? []).some((consequence) =>
+        consequence.type === 'relationship' && consequence.npcId === npcId
+      );
+      if (!hasMovement) {
+        choice.consequences = [
+          ...(choice.consequences ?? []),
+          { type: 'relationship', npcId, dimension: contract.mechanicDimensions[0] ?? 'trust', change: maxDelta },
+        ];
+      }
+      this.ensureRelationshipValueEvidence(
+        choice,
+        npcId,
+        contract.mechanicDimensions[0] ?? 'trust',
+        true,
+      );
+    }
   }
 
   private capRelationshipConsequences(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {

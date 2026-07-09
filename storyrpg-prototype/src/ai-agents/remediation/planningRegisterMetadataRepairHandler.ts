@@ -1,5 +1,11 @@
 import type { Story } from '../../types/story';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
+import {
+  defaultRelationshipBlocking,
+  defaultVisualContinuityReason,
+  defaultVisualThreadForLocation,
+  isUnsafeCoverageMetadataText,
+} from '../utils/coverageMetadataHygiene';
 import { authorFacingInformationMovementText } from '../utils/treatmentFieldContracts';
 import type { ContractRepairHandler } from './finalContractRepair';
 
@@ -197,60 +203,117 @@ function replacementForSceneField(scene: MutableRecord, original: string): strin
 function replacementForEncounterField(scene: MutableRecord, encounter: MutableRecord, original: string): string | undefined {
   const ledgerSafe = sanitizeLedgerPlanningText(original);
   if (ledgerSafe) return ledgerSafe;
-
   const stripped = stripPlanningPrefix(original);
-  if (!isWeakReplacement(stripped)) return stripped;
-
+  if (!isWeakReplacement(stripped) && !needsMetadataSanitize(stripped)) return stripped;
   const encounterDescription = firstReadableSentence(encounter.description);
-  if (encounterDescription) return encounterDescription;
-
+  if (encounterDescription && !needsMetadataSanitize(encounterDescription)) return encounterDescription;
   const sceneDescription = firstReadableSentence(scene.description);
-  if (sceneDescription) return sceneDescription;
-
+  if (sceneDescription && !needsMetadataSanitize(sceneDescription)) return sceneDescription;
   const firstBeat = Array.isArray(scene.beats) ? scene.beats[0] as MutableRecord | undefined : undefined;
   return firstReadableSentence(firstBeat?.text);
+}
+
+function needsMetadataSanitize(text: string | undefined): boolean {
+  return isUnsafeCoverageMetadataText(text) || isPlanningRegisterText(text);
+}
+
+function repairCoveragePlanFields(beat: MutableRecord, scene: MutableRecord): number {
+  const coverage = beat.coveragePlan;
+  if (!coverage || typeof coverage !== 'object') return 0;
+  const plan = coverage as MutableRecord;
+  let rewritten = 0;
+
+  if (typeof plan.relationshipBlocking === 'string' && needsMetadataSanitize(plan.relationshipBlocking)) {
+    const dynamic = typeof beat.relationshipDynamic === 'string' && !needsMetadataSanitize(beat.relationshipDynamic)
+      ? beat.relationshipDynamic
+      : defaultRelationshipBlocking();
+    plan.relationshipBlocking = dynamic;
+    rewritten += 1;
+  }
+  if (typeof plan.coverageReason === 'string' && needsMetadataSanitize(plan.coverageReason)) {
+    const fallback = firstReadableSentence(beat.visualMoment)
+      || firstReadableSentence(beat.primaryAction)
+      || firstReadableSentence(beat.text)
+      || 'Beat coverage follows the scene geography and visible turn.';
+    plan.coverageReason = fallback;
+    rewritten += 1;
+  }
+  const continuity = plan.visualContinuity;
+  if (continuity && typeof continuity === 'object') {
+    const cont = continuity as MutableRecord;
+    if (typeof cont.reason === 'string' && needsMetadataSanitize(cont.reason)) {
+      const mode = cont.mode === 'preserve_scene_axis' ? 'preserve_scene_axis' : 'fresh_composition';
+      cont.reason = defaultVisualContinuityReason(mode);
+      rewritten += 1;
+    }
+  }
+  return rewritten;
+}
+
+function repairSequenceIntentFields(record: MutableRecord, locationHint?: string): number {
+  const intent = record.sequenceIntent;
+  if (!intent || typeof intent !== 'object') return 0;
+  const seq = intent as MutableRecord;
+  let rewritten = 0;
+  if (typeof seq.visualThread === 'string' && needsMetadataSanitize(seq.visualThread)) {
+    seq.visualThread = defaultVisualThreadForLocation(locationHint);
+    rewritten += 1;
+  }
+  for (const key of ['objective', 'activity', 'obstacle', 'startState', 'turningPoint', 'endState'] as const) {
+    const value = seq[key];
+    if (typeof value !== 'string' || !needsMetadataSanitize(value)) continue;
+    // Drop synopsis-shaped sequence fields rather than inventing reader prose.
+    delete seq[key];
+    rewritten += 1;
+  }
+  return rewritten;
 }
 
 function repairEncounterPlanningText(scene: MutableRecord, encounter: MutableRecord, value: unknown): number {
   if (!value || typeof value !== 'object') return 0;
   let rewritten = 0;
-
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index++) {
       const item = value[index];
-      if (typeof item === 'string' && isPlanningRegisterText(item)) {
+      if (typeof item === 'string' && needsMetadataSanitize(item)) {
         const replacement = replacementForEncounterField(scene, encounter, item);
         if (replacement && replacement !== item) {
           value[index] = replacement;
           rewritten += 1;
         }
-        continue;
+      } else {
+        rewritten += repairEncounterPlanningText(scene, encounter, item);
       }
-      rewritten += repairEncounterPlanningText(scene, encounter, item);
     }
     return rewritten;
   }
-
   const record = value as MutableRecord;
   for (const [key, child] of Object.entries(record)) {
     if (typeof child === 'string') {
-      if (!isPlanningRegisterText(child)) continue;
+      // encounter.description has an exact-path LLM owner; this deterministic
+      // metadata cleaner must never author or POV-convert it.
+      if (key === 'description' && record === encounter) continue;
+      if (!needsMetadataSanitize(child)) continue;
       const replacement = replacementForEncounterField(scene, encounter, child);
-      if (!replacement || replacement === child) continue;
-      record[key] = replacement;
-      rewritten += 1;
+      if (replacement && replacement !== child) {
+        record[key] = replacement;
+        rewritten += 1;
+      }
     } else if (child && typeof child === 'object') {
       rewritten += repairEncounterPlanningText(scene, encounter, child);
     }
   }
-
   return rewritten;
 }
 
 function hasPlanningRegisterBlocker(
   issues: Parameters<ContractRepairHandler>[0]['blockingIssues'],
 ): boolean {
-  return issues.some((issue) => issue.validator === 'PlanningRegisterLeakValidator' || issue.type === 'planning_register_prose');
+  return issues.some((issue) =>
+    issue.validator === 'PlanningRegisterLeakValidator'
+    || issue.type === 'planning_register_prose'
+    || issue.type === 'unsafe_fallback_prose'
+  );
 }
 
 export function buildPlanningRegisterMetadataRepairHandler(): ContractRepairHandler {
@@ -265,17 +328,22 @@ export function buildPlanningRegisterMetadataRepairHandler(): ContractRepairHand
         const scene = sceneValue as MutableRecord;
         for (const field of SCENE_METADATA_FIELDS) {
           const value = scene[field];
-          if (typeof value !== 'string' || !isPlanningRegisterText(value)) continue;
+          if (typeof value !== 'string' || !needsMetadataSanitize(value)) continue;
           const replacement = replacementForSceneField(scene, value);
           if (!replacement || replacement === value) continue;
           scene[field] = replacement;
           rewritten += 1;
         }
 
+        rewritten += repairSequenceIntentFields(
+          scene,
+          typeof scene.location === 'string' ? scene.location : undefined,
+        );
+
         for (const beatValue of (Array.isArray(scene.beats) ? scene.beats : [])) {
           const beat = beatValue as MutableRecord;
           const text = beat.text;
-          if (typeof text === 'string' && isPlanningRegisterText(text)) {
+          if (typeof text === 'string' && needsMetadataSanitize(text)) {
             const replacement = replacementForBeatText(beat, text);
             if (replacement && replacement !== text) {
               beat.text = replacement;
@@ -285,17 +353,20 @@ export function buildPlanningRegisterMetadataRepairHandler(): ContractRepairHand
 
           for (const field of BEAT_METADATA_FIELDS) {
             const value = beat[field];
-            if (typeof value !== 'string' || !isPlanningRegisterText(value)) continue;
+            if (typeof value !== 'string' || !needsMetadataSanitize(value)) continue;
             const replacement = replacementForBeatField(field, beat, value);
             if (!replacement || replacement === value) continue;
             beat[field] = replacement;
             rewritten += 1;
           }
 
+          rewritten += repairCoveragePlanFields(beat, scene);
+          rewritten += repairSequenceIntentFields(beat);
+
           for (const variantValue of (Array.isArray(beat.textVariants) ? beat.textVariants : [])) {
             const variant = variantValue as MutableRecord;
             const value = variant.text;
-            if (typeof value !== 'string' || !isPlanningRegisterText(value)) continue;
+            if (typeof value !== 'string' || !needsMetadataSanitize(value)) continue;
             const replacement = replacementForVariantText(beat, value);
             if (!replacement || replacement === value) continue;
             variant.text = replacement;
@@ -305,6 +376,7 @@ export function buildPlanningRegisterMetadataRepairHandler(): ContractRepairHand
 
         if (scene.encounter && typeof scene.encounter === 'object') {
           rewritten += repairEncounterPlanningText(scene, scene.encounter as MutableRecord, scene.encounter);
+          rewritten += repairSequenceIntentFields(scene.encounter as MutableRecord);
         }
       }
     }

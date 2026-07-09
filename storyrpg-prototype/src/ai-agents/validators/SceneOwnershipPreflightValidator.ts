@@ -1,4 +1,5 @@
 import type { RequiredBeat, SceneConstructionProfile, SceneEventOwnershipProfile, SceneTurnContract, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
+import type { EpisodeSpineContract } from '../../types/episodeSpine';
 import type { StoryCircleRoleAssignment } from '../../types/sourceAnalysis';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import { detectPrimaryStoryEventCues } from '../remediation/storyEventCues';
@@ -29,15 +30,28 @@ export interface SceneOwnershipPreflightScene {
   storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   sceneEventOwnership?: SceneEventOwnershipProfile;
   sceneConstructionProfile?: SceneConstructionProfile;
+  spineUnitId?: string;
 }
 
 export interface SceneOwnershipPreflightInput {
   episodeNumber?: number;
   storyCircleRole?: StoryCircleRoleAssignment[];
+  episodeSpine?: EpisodeSpineContract;
   scenes: SceneOwnershipPreflightScene[];
 }
 
 const HARD_TIERS = new Set<RequiredBeat['tier']>(['authored', 'signature', 'coldopen']);
+const FIRST_EVENT_RE = /\b(?:first|first-ever|for the first time|initial)\b/i;
+const SINGLE_OWNER_CUES = new Set([
+  'venueDoor',
+  'objectHandoff',
+  'threatEncounter',
+  'antagonistContact',
+  'blogAftermath',
+]);
+const CAUSAL_CUE_PREREQUISITES = new Map<string, string[]>([
+  ['blogAftermath', ['lateNightWriting']],
+]);
 
 const TIME_CUE_RE = /\b(?:night (?:one|two|three|four|\d+)|\d+\s*(?:am|pm)|morning|dawn|dusk|sunset|midnight|noon|afternoon|evening|later|earlier|next (?:day|morning|night)|previous (?:day|night)|same night|the next day)\b/gi;
 
@@ -138,8 +152,27 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
     );
 
     const primaryAtomOwners = new Map<string, string>();
+    const eventOwners = new Map<string, string>();
+    const ownedCueIndices = new Map<string, number[]>();
     for (const scene of scenes) {
       const sceneId = scene.id ?? 'scene';
+      const sceneIndex = scenes.indexOf(scene);
+      for (const event of scene.sceneEventOwnership?.ownedEvents ?? []) {
+        const cueIndices = ownedCueIndices.get(event.cue) ?? [];
+        cueIndices.push(sceneIndex);
+        ownedCueIndices.set(event.cue, cueIndices);
+        if (!SINGLE_OWNER_CUES.has(event.cue) && !FIRST_EVENT_RE.test(event.text)) continue;
+        const firstOwner = eventOwners.get(event.key);
+        if (firstOwner && firstOwner !== sceneId) {
+          issues.push(this.error(
+            `Scene "${sceneId}" duplicates first-event ownership of ${event.cue}; first owner is "${firstOwner}".`,
+            sceneId,
+            'Keep the first event on one scene owner and route later mentions as consequence, callback, or aftermath.',
+          ));
+        } else {
+          eventOwners.set(event.key, sceneId);
+        }
+      }
       for (const atomId of scene.treatmentAtomIds ?? []) {
         const first = primaryAtomOwners.get(atomId);
         if (first && first !== sceneId) {
@@ -213,6 +246,65 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
           sceneId,
           'Route concrete encounter obligations to an encounter scene or split the scene before prose generation.',
         ));
+      }
+    }
+
+    for (const [cue, prerequisiteCues] of CAUSAL_CUE_PREREQUISITES) {
+      for (const cueIndex of ownedCueIndices.get(cue) ?? []) {
+        for (const prerequisiteCue of prerequisiteCues) {
+          const prerequisiteIndices = ownedCueIndices.get(prerequisiteCue) ?? [];
+          if (prerequisiteIndices.some((index) => index < cueIndex)) continue;
+          const sceneId = scenes[cueIndex]?.id ?? 'scene';
+          issues.push(this.error(
+            `Scene "${sceneId}" owns ${cue} before its prerequisite event ${prerequisiteCue} has an earlier owner.`,
+            sceneId,
+            `Assign ${prerequisiteCue} to an earlier scene, or defer ${cue} until after that event.`,
+          ));
+        }
+      }
+    }
+
+    if (input.episodeSpine) {
+      const ownerByUnit = new Map<string, { scene: SceneOwnershipPreflightScene; index: number }>();
+      scenes.forEach((scene, index) => {
+        if (!scene.spineUnitId) return;
+        const prior = ownerByUnit.get(scene.spineUnitId);
+        if (prior && prior.scene.id !== scene.id) {
+          issues.push(this.error(
+            `ESC unit "${scene.spineUnitId}" has multiple scene owners: "${prior.scene.id ?? 'scene'}" and "${scene.id ?? 'scene'}".`,
+            scene.id,
+            'Assign each ESC event unit to exactly one scene before prose generation.',
+          ));
+          return;
+        }
+        ownerByUnit.set(scene.spineUnitId, { scene, index });
+      });
+      for (const unit of input.episodeSpine.units) {
+        const owner = ownerByUnit.get(unit.id);
+        if (!owner) {
+          issues.push(this.error(
+            `ESC unit "${unit.id}" (${unit.kind}) has no scene owner.`,
+            `episode-${input.episodeSpine.episodeNumber}`,
+            'Project every in-scope ESC unit onto one scene before prose generation.',
+          ));
+          continue;
+        }
+        for (const prerequisiteId of unit.prerequisites) {
+          const prerequisiteOwner = ownerByUnit.get(prerequisiteId);
+          if (!prerequisiteOwner) {
+            issues.push(this.error(
+              `ESC unit "${unit.id}" depends on "${prerequisiteId}", but the prerequisite has no scene owner.`,
+              owner.scene.id,
+              'Project the prerequisite unit before its dependent event.',
+            ));
+          } else if (prerequisiteOwner.index >= owner.index) {
+            issues.push(this.error(
+              `ESC causal inversion: "${unit.id}" (${unit.kind}) is owned by "${owner.scene.id ?? 'scene'}" before prerequisite "${prerequisiteId}" owned by "${prerequisiteOwner.scene.id ?? 'scene'}".`,
+              owner.scene.id,
+              'Reorder scene ownership to preserve prerequisite → event → aftermath.',
+            ));
+          }
+        }
       }
     }
 

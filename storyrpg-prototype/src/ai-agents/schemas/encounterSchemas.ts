@@ -382,12 +382,13 @@ export function buildEncounterStructureJsonSchema(): StructuredJsonSchema {
     schema: {
       type: 'object',
       additionalProperties: true,
-      required: ['sceneId', 'encounterType', 'beats', 'startingBeatId', 'goalClock', 'threatClock', 'stakes', 'storylets'],
+      required: ['sceneId', 'encounterType', 'description', 'beats', 'startingBeatId', 'goalClock', 'threatClock', 'stakes', 'storylets'],
       properties: {
         id: { type: 'string' },
         sceneId: { type: 'string' },
         encounterType: { type: 'string' },
         encounterStyle: { type: 'string' },
+        description: shortString(360),
         beats: {
           type: 'array',
           items: compactEncounterBeat,
@@ -454,10 +455,11 @@ export function buildEncounterPhase1JsonSchema(): StructuredJsonSchema {
     schema: {
       type: 'object',
       additionalProperties: false,
-      required: ['sceneId', 'encounterType', 'goalClock', 'threatClock', 'stakes', 'openingBeat'],
+      required: ['sceneId', 'encounterType', 'description', 'goalClock', 'threatClock', 'stakes', 'openingBeat'],
       properties: {
         sceneId: { type: 'string' },
         encounterType: { type: 'string' },
+        description: shortString(360),
         goalClock: clock,
         threatClock: clock,
         stakes,
@@ -522,10 +524,11 @@ export function buildEncounterPhase1CompactJsonSchema(): StructuredJsonSchema {
     schema: {
       type: 'object',
       additionalProperties: false,
-      required: ['sceneId', 'encounterType', 'goalClock', 'threatClock', 'stakes', 'openingBeat'],
+      required: ['sceneId', 'encounterType', 'description', 'goalClock', 'threatClock', 'stakes', 'openingBeat'],
       properties: {
         sceneId: shortString(120),
         encounterType: shortString(60),
+        description: shortString(240),
         goalClock: clock,
         threatClock: clock,
         stakes,

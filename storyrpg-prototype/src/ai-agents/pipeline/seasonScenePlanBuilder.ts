@@ -23,6 +23,7 @@ import type {
   MechanicPressureContract,
   MechanicPressureDomain,
   MechanicPressureSource,
+  RelationshipMilestoneContract,
   RelationshipPacingContract,
   RequiredBeat,
   SceneNarrativeRole,
@@ -60,6 +61,7 @@ import {
   assignAuthoredLiteTurnsToStandardScenes,
   coalesceFragmentedEpisodeTurns,
   countAuthoredLiteSceneBudget,
+  countAuthoredLiteSceneBudgetFromSpine,
   isThreatEncounterTurn,
   orderAuthoredEpisodeTurns,
   sortPlannedScenesByChronologyCue,
@@ -148,13 +150,41 @@ function truncateAtWordBoundary(text: string | undefined, maxLength: number): st
   return `${(lastSpace > maxLength / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
+/**
+ * Consequence seeds that are stageable plants — not broad season-anchor blurbs
+ * that invent residue flags no choice can set.
+ */
+function isStageableConsequenceSeed(value: string): boolean {
+  const text = value.trim();
+  if (!text) return false;
+  if ((text.match(/,/g) || []).length >= 3 && /\b(?:and|become|all)\b/i.test(text)) return false;
+  if (/\bbecome live season anchors?\b/i.test(text)) return false;
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9']+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length < 4) return false;
+  const hasSpatialAnchor = words.some((word) => [
+    'in', 'inside', 'outside', 'on', 'under', 'behind', 'beside', 'near', 'across', 'through', 'into', 'from', 'at',
+  ].includes(word));
+  const hasPhysicalSignal = words.some((word) => [
+    'body', 'blood', 'car', 'card', 'chain', 'chair', 'courtyard', 'door', 'eyes', 'face', 'floor', 'glass', 'hand',
+    'key', 'letter', 'light', 'mirror', 'phone', 'pocket', 'room', 'shadow', 'shoe', 'stone', 'table', 'voice',
+    'wall', 'window', 'suitcase', 'address', 'apartment', 'scarf', 'ward', 'candle', 'kitchen', 'rooftop',
+    'negroni', 'dog', 'quartz', 'wine', 'ring', 'wallet', 'coat',
+  ].includes(word));
+  return hasSpatialAnchor || hasPhysicalSignal;
+}
+
 /** Map a season-level PlannedEncounter onto the encounter sub-object of a scene. */
 export function toSceneEncounter(enc: NonNullable<SeasonEpisode['plannedEncounters']>[number]): PlannedSceneEncounter {
   return {
     type: enc.type,
-    // The FULL authored description — the scene title is a truncated label and
-    // must never be the only surviving copy of the anchor text (G12 endsong).
-    description: enc.description,
+    // Planning source remains author-only. EncounterArchitect owns the
+    // shippable runtime description.
+    sourceSynopsis: enc.sourceSynopsis || enc.description,
+    authoredAnchor: enc.authoredAnchor || enc.centralConflict || enc.description,
     style: enc.style,
     difficulty: enc.difficulty,
     relevantSkills: enc.relevantSkills ?? [],
@@ -416,6 +446,8 @@ function inferPlannerTurnContract(scene: PlannedScene): SceneTurnContract {
   if (scene.kind === 'encounter') {
     const central =
       scene.encounter?.centralConflict
+      || scene.encounter?.authoredAnchor
+      || scene.encounter?.sourceSynopsis
       || scene.encounter?.description
       || scene.dramaticPurpose
       || scene.title;
@@ -735,6 +767,135 @@ function applyRelationshipPacingContracts(
       if (!isProtagonistRelationshipRef(npc, protagonistKeys)) npcSeen.set(npc, (npcSeen.get(npc) ?? 0) + 1);
     }
   }
+}
+
+const AUTHORED_FRIENDSHIP_MILESTONE_RE =
+  /\b(?:become|became|are|be)\s+(?:close\s+|real\s+|good\s+)?friends?\b/i;
+const AUTHORED_GROUP_MILESTONE_RE =
+  /\b(?:form|forms|formed|found|founds|founded|start|starts|started|name|names|named|christen|christens|christened)\b[^.!?\n]{0,100}\b(?:club|circle|crew|society)\b/i;
+const RELATIONSHIP_TEST_RE =
+  /\b(?:test|tests|tested|testing|risk|risks|risked|protect|protects|protected|invite|invites|invited|trust|trusts|trusted|choose|chooses|chose|gift|gives|gave|key\s*card|quartz)\b/i;
+
+function authoredMilestoneText(scene: PlannedScene): string | undefined {
+  return (scene.requiredBeats ?? [])
+    .filter((beat) => beat.tier === 'authored')
+    .map((beat) => beat.mustDepict || beat.sourceTurn)
+    .find((text) =>
+      AUTHORED_FRIENDSHIP_MILESTONE_RE.test(text)
+      || AUTHORED_GROUP_MILESTONE_RE.test(text)
+    );
+}
+
+function removeMilestoneSentence(value: string | undefined, sourceText: string): string | undefined {
+  if (!value) return value;
+  const sourceWords = new Set(sourceText.toLowerCase().match(/[a-z0-9']{4,}/g) ?? []);
+  const parts = value.match(/[^.!?]+[.!?]?/g) ?? [value];
+  const kept = parts.filter((part) => {
+    if (!AUTHORED_FRIENDSHIP_MILESTONE_RE.test(part) && !AUTHORED_GROUP_MILESTONE_RE.test(part)) return true;
+    const words = part.toLowerCase().match(/[a-z0-9']{4,}/g) ?? [];
+    const overlap = words.filter((word) => sourceWords.has(word)).length;
+    return overlap < Math.min(4, Math.max(2, Math.floor(sourceWords.size / 3)));
+  });
+  const next = kept.join(' ').replace(/\s+/g, ' ').trim();
+  return next || undefined;
+}
+
+/**
+ * Compile binding authored friendship/group claims into an executable earning
+ * path. This runs after authored-turn binding, so scene ownership and order are
+ * known before any prose is requested.
+ */
+export function compileAuthoredRelationshipMilestones(
+  scenes: PlannedScene[],
+  protagonist?: SeasonPlan['protagonist'],
+): RelationshipMilestoneContract[] {
+  const ordered = [...scenes].sort((a, b) => (a.episodeNumber - b.episodeNumber) || (a.order - b.order));
+  const protagonistKeys = protagonistRelationshipKeys(protagonist);
+  const milestones: RelationshipMilestoneContract[] = [];
+
+  for (let index = 0; index < ordered.length; index += 1) {
+    const owner = ordered[index];
+    const sourceText = authoredMilestoneText(owner);
+    if (!sourceText) continue;
+    const groupId = groupIdForText(owner, sourceText);
+    if (
+      !groupId
+      || !AUTHORED_GROUP_MILESTONE_RE.test(sourceText)
+      || (!AUTHORED_FRIENDSHIP_MILESTONE_RE.test(sourceText) && !RELATIONSHIP_TEST_RE.test(sourceText))
+    ) continue;
+
+    const candidateNpcIds = Array.from(new Set([
+      ...(owner.npcsInvolved ?? []),
+      ...ordered.slice(0, index).flatMap((scene) => scene.npcsInvolved ?? []),
+    ]));
+    const explicitlyNamed = candidateNpcIds.filter((npcId) =>
+      new RegExp(`\\b${npcId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[-_]+/g, '[-_\\s]+')}\\b`, 'i').test(sourceText)
+    );
+    const memberNpcIds = (explicitlyNamed.length > 0 ? explicitlyNamed : candidateNpcIds)
+      .filter((npcId) => npcId && !isProtagonistRelationshipRef(npcId, protagonistKeys))
+      .slice(0, 4);
+    const prior = ordered.slice(0, index);
+    const introductionSceneIds = prior
+      .filter((scene) => memberNpcIds.some((npcId) => (scene.npcsInvolved ?? []).includes(npcId)))
+      .map((scene) => scene.id);
+    const testSceneIds = [
+      ...prior.filter((scene) =>
+        memberNpcIds.some((npcId) => (scene.npcsInvolved ?? []).includes(npcId))
+        && RELATIONSHIP_TEST_RE.test(relationshipTextForScene(scene))
+      ).map((scene) => scene.id),
+      ...(RELATIONSHIP_TEST_RE.test(sourceText) ? [owner.id] : []),
+    ];
+
+    if (memberNpcIds.length === 0 || introductionSceneIds.length === 0 || testSceneIds.length === 0) {
+      throw new Error(
+        `Relationship milestone "${sourceText}" in scene ${owner.id} has no compatible earning path `
+        + `(members=${memberNpcIds.length}, introductions=${introductionSceneIds.length}, tests=${testSceneIds.length}).`,
+      );
+    }
+
+    const milestone: RelationshipMilestoneContract = {
+      id: `${owner.id}-milestone-${groupId}`,
+      kind: 'group_formation',
+      sourceText,
+      subjectType: 'group',
+      subjectId: groupId,
+      targetStage: AUTHORED_FRIENDSHIP_MILESTONE_RE.test(sourceText) ? 'friend' : 'acquaintance',
+      introductionSceneIds: Array.from(new Set(introductionSceneIds)),
+      testSceneIds: Array.from(new Set(testSceneIds)),
+      choiceSceneId: owner.id,
+      memberNpcIds,
+      requiredEvidenceTags: ['respected_agency'],
+    };
+    milestones.push(milestone);
+    owner.hasChoice = true;
+    owner.choiceType = 'relationship';
+
+    const contracts = owner.relationshipPacing ?? [];
+    let groupContract = contracts.find((contract) => contract.groupId && slugId(contract.groupId) === groupId);
+    if (!groupContract) {
+      groupContract = buildGroupPacingContract(owner, introductionSceneIds.length, sourceText, groupId);
+      contracts.push(groupContract);
+    }
+    groupContract.source = 'choice';
+    groupContract.targetStage = milestone.targetStage;
+    groupContract.milestone = milestone;
+    groupContract.requiredEvidence = Array.from(new Set([
+      ...(groupContract.requiredEvidence ?? []),
+      'the group-defining option must move every named member relationship canonically',
+      'the group-defining option must emit relationshipValueEvidence for every named member',
+    ]));
+    owner.relationshipPacing = contracts;
+
+    for (const scene of ordered) {
+      if (scene.id === owner.id) continue;
+      scene.dramaticPurpose = removeMilestoneSentence(scene.dramaticPurpose, sourceText) || scene.title;
+      scene.stakes = removeMilestoneSentence(scene.stakes, sourceText);
+      for (const pressure of scene.mechanicPressure ?? []) {
+        pressure.storyPressure = removeMilestoneSentence(pressure.storyPressure, sourceText) || scene.dramaticPurpose;
+      }
+    }
+  }
+  return milestones;
 }
 
 const ITEM_PRESSURE_RE = /\b(key\s*card|keycard|card|key|quartz|crystal|ring|knife|letter|book|map|phone|object|gift|token|weapon|access)\b/i;
@@ -1071,6 +1232,8 @@ function sceneMatchText(scene: PlannedScene): string {
     scene.dramaticPurpose,
     ...(scene.locations ?? []),
     looksLikeBroadEpisodeSummary(scene.stakes) ? undefined : scene.stakes,
+    scene.encounter?.sourceSynopsis,
+    scene.encounter?.authoredAnchor,
     scene.encounter?.description,
   ]
     .filter(Boolean)
@@ -1229,7 +1392,8 @@ function promoteAuthoredSceneToEncounter(scene: PlannedScene, enc: EpisodePlanne
   scene.stakes = enc.stakes || scene.stakes;
   scene.encounter = {
     ...toSceneEncounter(enc),
-    description: narrowedDescription || enc.description,
+    sourceSynopsis: narrowedDescription || enc.sourceSynopsis || enc.description,
+    authoredAnchor: narrowedDescription || enc.authoredAnchor || enc.centralConflict || enc.description,
     centralConflict: narrowedDescription || enc.centralConflict,
   };
   scene.hasChoice = true;
@@ -1252,7 +1416,7 @@ export function promoteCoveredAuthoredEncounters(
       if (scene === owner) continue;
       const isStandaloneDuplicate =
         scene.kind === 'encounter'
-        && (scene.id === enc.id || scene.encounter?.description === enc.description);
+        && (scene.id === enc.id || scene.encounter?.sourceSynopsis === (enc.sourceSynopsis || enc.description));
       if (isStandaloneDuplicate) scenes.splice(i, 1);
     }
 
@@ -1712,7 +1876,9 @@ export function bindAuthoredTurnsToScenes(
   }
   for (const seed of guidance?.consequenceSeeds ?? []) {
     const text = seed?.trim();
-    if (text) seedSpecs.push({ text, toOpening: false, tier: 'seed' });
+    if (!text) continue;
+    if (!isStageableConsequenceSeed(text)) continue;
+    seedSpecs.push({ text, toOpening: false, tier: 'seed' });
   }
   // Information-ledger plants for THIS episode (WS12L). Each ledger entry the episode
   // introduces or touches (the vampire reveal's "unphotographable" property, a model
@@ -1795,12 +1961,25 @@ export function buildEpisodeScenes(
   const turnCount = turns.length;
   const standaloneEncounterCount = encounters.filter((enc) => !coveredEncounterIds.has(enc.id)).length;
   const liteBudget = isAuthoredLiteEpisode(ep)
-    ? countAuthoredLiteSceneBudget(turns, standaloneEncounterCount)
+    ? (
+      episodeSpine?.units?.length
+        ? countAuthoredLiteSceneBudgetFromSpine(episodeSpine.units, standaloneEncounterCount)
+        : countAuthoredLiteSceneBudget(turns, standaloneEncounterCount)
+    )
     : undefined;
+  // ESC may decompose compound turns into more standard units than raw turn budget.
+  const escStandardFloor = (episodeSpine?.units ?? []).filter((unit) => unit.sceneKind !== 'encounter').length;
+  const escEncounterFloor = (episodeSpine?.units ?? []).filter((unit) =>
+    unit.sceneKind === 'encounter' || unit.kind === 'set_piece'
+  ).length;
   const desired = liteBudget
-    ? Math.max(MIN_SCENES_PER_EPISODE, liteBudget.totalScenes)
+    ? Math.max(
+      MIN_SCENES_PER_EPISODE,
+      liteBudget.totalScenes,
+      escStandardFloor + Math.max(standaloneEncounterCount, escEncounterFloor, liteBudget.totalScenes - liteBudget.preThreatScenes - liteBudget.postThreatScenes),
+    )
     : isAuthoredLiteEpisode(ep)
-      ? Math.max(MIN_SCENES_PER_EPISODE, turnCount + standaloneEncounterCount)
+      ? Math.max(MIN_SCENES_PER_EPISODE, turnCount + standaloneEncounterCount, escStandardFloor + standaloneEncounterCount)
       : clampSceneCount(ep.estimatedSceneCount || 5, turnCount);
 
   const scenes: PlannedScene[] = [];
@@ -1883,8 +2062,11 @@ export function buildEpisodeScenes(
       ));
 
   if (liteBudget) {
+    // Prefer ESC standard-unit floor so meet/bond/threshold units always get slots.
+    const preThreatScenes = Math.max(liteBudget.preThreatScenes, Math.max(0, escStandardFloor - liteBudget.postThreatScenes));
+    const postThreatScenes = Math.max(liteBudget.postThreatScenes, 0);
     pushStandard('setup');
-    for (let i = 1; i < liteBudget.preThreatScenes; i += 1) {
+    for (let i = 1; i < preThreatScenes; i += 1) {
       pushStandard('development');
     }
     for (const enc of encounters) {
@@ -1925,7 +2107,12 @@ export function buildEpisodeScenes(
       applyPlannerTurnContract(scenes[scenes.length - 1]);
       order += 1;
     }
-    for (let i = 0; i < liteBudget.postThreatScenes; i += 1) {
+    for (let i = 0; i < postThreatScenes; i += 1) {
+      pushStandard('development');
+    }
+    // Final pad: if false-positive threat partitioning still undershot ESC
+    // standard units, add development slots before projection.
+    while (scenes.filter((scene) => scene.kind === 'standard').length < escStandardFloor) {
       pushStandard('development');
     }
   } else {
@@ -2051,6 +2238,8 @@ function spineUnitSceneOverlap(unit: EpisodeSpineUnit, scene: PlannedScene): num
     scene.title,
     scene.dramaticPurpose,
     ...(scene.requiredBeats ?? []).map((beat) => beat.mustDepict || beat.sourceTurn),
+    scene.encounter?.sourceSynopsis,
+    scene.encounter?.authoredAnchor,
     scene.encounter?.description,
     scene.signatureMoment,
   ].filter(Boolean).join(' ');
@@ -2065,7 +2254,8 @@ function promoteSpineUnitToEncounterScene(scene: PlannedScene, unit: EpisodeSpin
     scene.encounter = {
       ...scene.encounter,
       encounterProfile: unit.encounterProfile || scene.encounter.encounterProfile,
-      description: scene.encounter.description || unit.text,
+      sourceSynopsis: scene.encounter.sourceSynopsis || unit.text,
+      authoredAnchor: scene.encounter.authoredAnchor || unit.text,
       centralConflict: scene.encounter.centralConflict || unit.text,
     };
     return;
@@ -2079,7 +2269,8 @@ function promoteSpineUnitToEncounterScene(scene: PlannedScene, unit: EpisodeSpin
   scene.encounterProfile = unit.encounterProfile;
   scene.encounter = {
     type: unit.encounterProfile === 'social_test' ? 'social' : 'combat',
-    description: unit.text,
+    sourceSynopsis: unit.text,
+    authoredAnchor: unit.text,
     difficulty: 'moderate',
     relevantSkills: [],
     centralConflict: unit.text,
@@ -2368,6 +2559,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
       storyCircleRole: ep.storyCircleRole,
     });
   }
+  compileAuthoredRelationshipMilestones(scenes, plan.protagonist);
   normalizeRelationshipPacingStages(scenes);
   attachSceneConstructionProfiles(scenes);
   attachSceneEventOwnershipProfiles(scenes);
@@ -2387,6 +2579,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
       throw new Error(`Episode ${ep.episodeNumber} spine contract failed: ${blockers}`);
     }
   }
+  syncGenericSceneTitlesFromAuthoredBeats(scenes);
 
   return {
     scenes,
@@ -2441,6 +2634,32 @@ export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
     episodes,
     scenePlan,
   };
+}
+
+export function syncGenericSceneTitlesFromAuthoredBeats(scenes: PlannedScene[]): number {
+  let changed = 0;
+  for (const scene of scenes) {
+    const genericTitle = /^(setup|development|release|turn)\s+scene\s+\d+$/i.test(scene.title || '');
+    if (!genericTitle && !scene.spineUnitId) continue;
+    const primaryBeat = (scene.requiredBeats ?? []).find((beat) =>
+      (beat.tier === 'authored' || beat.tier === 'coldopen' || beat.tier === 'signature')
+      && Boolean(beat.mustDepict?.trim()),
+    );
+    // This function intentionally runs only after final ownership, construction,
+    // and event profiles are attached. Prefer the final owned event/turn over a
+    // pre-binding required beat so a routed street event cannot retain a stale
+    // bookshop title.
+    const ownedTurn = scene.sceneEventOwnership?.ownedEvents[0]?.text?.trim()
+      || scene.sceneConstructionProfile?.primaryTurn.text?.trim()
+      || scene.turnContract?.centralTurn?.trim()
+      || primaryBeat?.mustDepict?.trim();
+    if (!ownedTurn) continue;
+    const next = truncateAtWordBoundary(ownedTurn, 72);
+    if (!next || next === scene.title) continue;
+    scene.title = next;
+    changed += 1;
+  }
+  return changed;
 }
 
 /** Return just the scenes belonging to a given episode, in order. */

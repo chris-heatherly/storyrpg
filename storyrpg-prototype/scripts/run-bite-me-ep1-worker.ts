@@ -11,9 +11,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type AgentConfig, type PipelineConfig } from '../src/ai-agents/config';
 import { parseDocument } from '../src/ai-agents/utils/documentParser';
+import { readAnalysisCache, writeAnalysisCache, type AnalysisCacheIdentity } from './analysisCache';
 
 const PROXY = process.env.EXPO_PUBLIC_PROXY_URL || 'http://localhost:3001';
 const TREATMENT = process.argv[2] || path.resolve(__dirname, '../../treatments/Bite_Me_StoryRPG_Lite_Treatment.md');
+const ANALYSIS_OPTIONS = { targetScenesPerEpisode: 6, pacing: 'moderate' as const };
+
+function analysisCacheIdentity(
+  config: PipelineConfig,
+  treatment: string,
+  briefTitle: string,
+): AnalysisCacheIdentity {
+  // SourceMaterialAnalyzer/SeasonPlanner use the architecture-tier profile.
+  const agent = config.agents?.storyArchitect;
+  return {
+    sourceText: treatment,
+    provider: agent?.provider || 'unknown',
+    model: agent?.model || 'unknown',
+    options: { title: briefTitle, preferences: ANALYSIS_OPTIONS },
+  };
+}
 
 type WorkerJob = {
   id: string;
@@ -122,7 +139,7 @@ async function runAnalysisJob(
       analysisInput: {
         sourceText: treatment,
         title: briefTitle,
-        preferences: { targetScenesPerEpisode: 6, pacing: 'moderate' as const },
+        preferences: ANALYSIS_OPTIONS,
       },
     },
   });
@@ -131,7 +148,11 @@ async function runAnalysisJob(
   const analysisResult = await waitForJob(analysisJobId, 'analysis');
   if (analysisResult.success) {
     fs.mkdirSync(path.dirname(analysisCachePath), { recursive: true });
-    fs.writeFileSync(analysisCachePath, JSON.stringify(analysisResult));
+    writeAnalysisCache(
+      analysisCachePath,
+      analysisCacheIdentity(config, treatment, briefTitle),
+      analysisResult,
+    );
     log(`analysis result cached to disk: ${analysisCachePath} (retry with REUSE_ANALYSIS=1)`);
   }
   return analysisResult;
@@ -163,8 +184,17 @@ async function main(): Promise<void> {
     }
     analysisResult = job.result;
   } else if (process.env.REUSE_ANALYSIS === '1' && fs.existsSync(analysisCachePath)) {
-    log(`reusing analysis result from disk: ${analysisCachePath}`);
-    analysisResult = JSON.parse(fs.readFileSync(analysisCachePath, 'utf8')) as Record<string, unknown>;
+    const cached = readAnalysisCache<Record<string, unknown>>(
+      analysisCachePath,
+      analysisCacheIdentity(primaryConfig, treatment, briefTitle),
+    );
+    if (cached) {
+      log(`reusing fingerprint-matched analysis result from disk: ${analysisCachePath}`);
+      analysisResult = cached;
+    } else {
+      log(`analysis cache is stale or incompatible; regenerating: ${analysisCachePath}`);
+      analysisResult = await runAnalysisJob(primaryConfig, treatment, briefTitle, analysisCachePath);
+    }
   } else {
     try {
       analysisResult = await runAnalysisJob(primaryConfig, treatment, briefTitle, analysisCachePath);

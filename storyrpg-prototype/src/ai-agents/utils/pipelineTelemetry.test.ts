@@ -58,6 +58,7 @@ function anthropicStreamResponse(): Response {
 afterEach(() => {
   setLLMStreamingEnabled(true);
   BaseAgent.setLlmCallObserver(undefined);
+  BaseAgent.setLlmSemanticFailureObserver(undefined);
   vi.restoreAllMocks();
 });
 
@@ -88,6 +89,61 @@ describe('PipelineTelemetry.getLlmLedger aggregation', () => {
     expect(ledger.totals.usageReported).toBe(1);
     expect(ledger.totals.totalInputTokens).toBe(120);
     expect(ledger.totals.totalOutputTokens).toBe(42);
+  });
+
+  it('groups failure categories and call/token/prompt budgets by phase', () => {
+    const telemetry = new PipelineTelemetry();
+    telemetry.startPhase('choice_generation');
+    telemetry.observeProviderCall({
+      agentName: 'Choice Author',
+      provider: 'gemini',
+      success: false,
+      durationMs: 20,
+      queueWaitMs: 2,
+      attempt: 0,
+      failureCategory: 'schema_rejection',
+      promptChars: 1200,
+    });
+    telemetry.observeSemanticFailure('Choice Author', 'gemini', 'parse');
+    telemetry.endPhase('choice_generation');
+
+    const ledger = telemetry.getLlmLedger()!;
+    expect(ledger.totals.failureCategories).toMatchObject({
+      schema_rejection: 1,
+      parse: 1,
+    });
+    expect(ledger.totals.totalPromptChars).toBe(1200);
+    expect(ledger.byAgent[0].failureCategories).toMatchObject({
+      schema_rejection: 1,
+      parse: 1,
+    });
+    expect(ledger.phases[0]).toMatchObject({
+      phase: 'choice_generation',
+      calls: 1,
+      failures: 1,
+      promptChars: 1200,
+    });
+  });
+});
+
+describe('BaseAgent failure classification', () => {
+  it('distinguishes provider schema, safety, timeout, transport, and quota failures', () => {
+    expect(BaseAgent.classifyLlmFailureCategory({
+      message: '400 invalid response schema',
+    })).toBe('schema_rejection');
+    expect(BaseAgent.classifyLlmFailureCategory({
+      message: 'candidate blocked by safety filter',
+    })).toBe('safety');
+    expect(BaseAgent.classifyLlmFailureCategory({
+      message: 'request timed out',
+    })).toBe('timeout');
+    expect(BaseAgent.classifyLlmFailureCategory({
+      message: 'fetch failed: ECONNRESET',
+    })).toBe('transport');
+    expect(BaseAgent.classifyLlmFailureCategory({
+      message: 'quota exhausted',
+      isQuotaError: true,
+    })).toBe('quota');
   });
 });
 

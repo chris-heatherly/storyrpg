@@ -2,6 +2,7 @@ import type {
   RelationshipPacingContract,
   RelationshipPacingStage,
 } from '../../types/scenePlan';
+import { hasGroupDefiningChoice } from './relationshipMilestoneSemantics';
 
 export interface RelationshipPacingSceneLike {
   id?: string;
@@ -67,14 +68,6 @@ function stageRank(stage: RelationshipPacingStage | undefined): number {
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
-}
-
-function hasGroupDefiningChoice(scene: RelationshipPacingSceneLike): boolean {
-  return scene.hasChoice === true
-    || scene.plannedHasChoice === true
-    || scene.choicePoint?.type === 'relationship'
-    || scene.choicePoint?.type === 'dilemma'
-    || scene.choicePoint?.type === 'strategic';
 }
 
 function capContract(contract: RelationshipPacingContract, cap: RelationshipPacingStage): boolean {
@@ -179,9 +172,13 @@ export function normalizeRelationshipPacingStages<T extends RelationshipPacingSc
   for (const scene of scenes) {
     for (const contract of scene.relationshipPacing ?? []) {
       if (contract.groupId) {
-        if (!hasGroupDefiningChoice(scene)) {
+        if (!hasGroupDefiningChoice(scene, contract)) {
           if (capContract(contract, 'spark')) changed += 1;
-        } else if (stageRank(contract.startStage) <= stageRank('spark') && stageRank(contract.targetStage) > stageRank('acquaintance')) {
+        } else if (
+          !contract.milestone
+          && stageRank(contract.startStage) <= stageRank('spark')
+          && stageRank(contract.targetStage) > stageRank('acquaintance')
+        ) {
           if (capContract(contract, 'acquaintance')) changed += 1;
         }
         if (sharpenEarlyLabels(contract)) changed += 1;

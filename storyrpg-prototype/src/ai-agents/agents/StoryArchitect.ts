@@ -3297,6 +3297,8 @@ Remember: The encounter is the heart. Design outward from it.
         'end_state_change',
       ]),
       scene.signatureMoment,
+      scene.encounter?.sourceSynopsis,
+      scene.encounter?.authoredAnchor,
       scene.encounter?.description,
       scene.encounter?.centralConflict,
       scene.stakes,
@@ -3380,6 +3382,8 @@ Remember: The encounter is the heart. Design outward from it.
       scene.dramaticPurpose,
       scene.stakes,
       scene.signatureMoment,
+      scene.encounter?.sourceSynopsis,
+      scene.encounter?.authoredAnchor,
       scene.encounter?.description,
       scene.encounter?.centralConflict,
       scene.turnContract?.centralTurn,
@@ -3524,7 +3528,7 @@ Remember: The encounter is the heart. Design outward from it.
       // Prefer the FULL authored description — scene.title is a truncated
       // display label, and feeding it here staged the G12 endsong siege from
       // the fragment "…a sustained defensive set piece (wall bre".
-      description: enc.description || scene.title || scene.dramaticPurpose,
+      description: enc.sourceSynopsis || enc.authoredAnchor || enc.description || scene.title || scene.dramaticPurpose,
       difficulty: enc.difficulty,
       npcsInvolved: scene.npcsInvolved ?? [],
       stakes: scene.stakes ?? '',
@@ -3643,6 +3647,8 @@ Remember: The encounter is the heart. Design outward from it.
         p.turnContract?.turnEvent,
         p.turnContract?.centralTurn,
         p.signatureMoment,
+        p.encounter?.sourceSynopsis,
+        p.encounter?.authoredAnchor,
         p.encounter?.description,
         p.encounter?.centralConflict,
         ...(p.authoredTreatmentFields || [])

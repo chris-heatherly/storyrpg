@@ -426,6 +426,7 @@ describe('analyzeRelationshipDynamics', () => {
 const makePhase1 = (): Phase1Result => ({
   sceneId: 'scene-3',
   encounterType: 'dramatic',
+  description: 'You face Eros across the hall while the drawn dagger catches the light.',
   goalClock: { name: 'Resolve', segments: 6, description: 'Resolve the confrontation' },
   threatClock: { name: 'Escalation', segments: 4, description: 'Things spiral out' },
   stakes: { victory: 'Earn trust', defeat: 'Lose everything' },

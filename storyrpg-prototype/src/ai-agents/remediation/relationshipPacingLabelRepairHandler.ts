@@ -133,12 +133,22 @@ function permittedStagesByScene(
   return out;
 }
 
-function repairText(value: unknown): { value: unknown; changed: boolean } {
+function repairText(value: unknown, subject?: string): { value: unknown; changed: boolean } {
   if (typeof value !== 'string' || !value.trim()) return { value, changed: false };
-  let next = value;
-  for (const [pattern, replacement] of LABEL_REPLACEMENTS) {
-    next = next.replace(pattern, replacement);
-  }
+  const subjectAliases = subject
+    ? [subject, subject.replace(/-/g, ' ')].map((alias) => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    : [];
+  const subjectRe = subjectAliases.length > 0 ? new RegExp(`\\b(?:${subjectAliases.join('|')})\\b`, 'i') : undefined;
+  const rewrite = (text: string): string => {
+    let next = text;
+    for (const [pattern, replacement] of LABEL_REPLACEMENTS) next = next.replace(pattern, replacement);
+    return next;
+  };
+  const next = subjectRe
+    ? (value.match(/[^.!?]+[.!?]?/g) ?? [value])
+      .map((sentence) => subjectRe.test(sentence) ? rewrite(sentence) : sentence)
+      .join('')
+    : rewrite(value);
   return { value: next, changed: next !== value };
 }
 
@@ -234,11 +244,73 @@ function rewriteRelationshipPacingContracts(scene: MutableRecord, forcedCap?: Re
   return rewritten;
 }
 
+interface ScopedRepairTarget {
+  sceneId: string;
+  subject?: string;
+  fieldPath?: string;
+}
+
+function scopedTargets(
+  issues: Parameters<ContractRepairHandler>[0]['blockingIssues'],
+): ScopedRepairTarget[] {
+  const targets: ScopedRepairTarget[] = [];
+  for (const issue of issues) {
+    if (!isRelationshipPacingIssue(issue) || !issue.sceneId) continue;
+    const subject = /\bsubject "([^"]+)"/i.exec(issue.message ?? '')?.[1]
+      ?? /\bgroup "([^"]+)"/i.exec(issue.message ?? '')?.[1];
+    const fieldPath = issue.fieldPath
+      ?? /\bmatched ([^:]+):\s*"/i.exec(issue.message ?? '')?.[1];
+    targets.push({ sceneId: issue.sceneId, subject, fieldPath });
+  }
+  return targets;
+}
+
+function rewriteExactField(scene: MutableRecord, fieldPath: string, subject?: string): number {
+  const parts = fieldPath.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
+  let owner: unknown = scene;
+  for (const part of parts.slice(0, -1)) {
+    if (!owner || typeof owner !== 'object') return 0;
+    owner = (owner as MutableRecord)[part];
+  }
+  if (!owner || typeof owner !== 'object') return 0;
+  const key = parts[parts.length - 1];
+  const result = repairText((owner as MutableRecord)[key], subject);
+  if (!result.changed) return 0;
+  (owner as MutableRecord)[key] = result.value;
+  return 1;
+}
+
+function rewriteSubjectContracts(
+  scene: MutableRecord,
+  subject: string | undefined,
+  forcedCap?: RelationshipPacingStage,
+): number {
+  if (!subject) return rewriteRelationshipPacingContracts(scene, forcedCap);
+  const contracts = Array.isArray(scene.relationshipPacing) ? scene.relationshipPacing : [];
+  let rewritten = 0;
+  const key = subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  for (const contract of contracts) {
+    if (!contract || typeof contract !== 'object') continue;
+    const typed = contract as RelationshipPacingContract;
+    const contractSubject = String(typed.npcId ?? typed.groupId ?? '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (contractSubject !== key) continue;
+    if (typed.milestone && !forcedCap) continue;
+    const capped = capTargetStage(typed, forcedCap);
+    if (capped.changed) {
+      typed.targetStage = capped.targetStage;
+      rewritten += 1;
+    }
+  }
+  return rewritten;
+}
+
 export function buildRelationshipPacingLabelRepairHandler(): ContractRepairHandler {
   return ({ story, blockingIssues }) => {
     if (!hasRelationshipPacingBlocker(blockingIssues)) return { story, changed: false };
 
     const sceneIds = sceneIdsForRelationshipPacing(blockingIssues);
+    const targets = scopedTargets(blockingIssues);
     const permittedByScene = permittedStagesByScene(blockingIssues);
     if (sceneIds.size === 0) return { story, changed: false };
 
@@ -246,12 +318,20 @@ export function buildRelationshipPacingLabelRepairHandler(): ContractRepairHandl
     for (const episode of (story as Story).episodes ?? []) {
       for (const scene of episode.scenes ?? []) {
         if (!scene.id || !sceneIds.has(scene.id)) continue;
-        rewritten += rewriteRelationshipPacingContracts(
-          scene as unknown as MutableRecord,
-          permittedByScene.get(scene.id),
-        );
-        rewritten += rewriteSceneHeader(scene as unknown as MutableRecord);
-        for (const beat of scene.beats ?? []) rewritten += rewriteBeat(beat as unknown as MutableRecord);
+        const sceneTargets = targets.filter((target) => target.sceneId === scene.id);
+        for (const target of sceneTargets) {
+          rewritten += rewriteSubjectContracts(
+            scene as unknown as MutableRecord,
+            target.subject,
+            permittedByScene.get(scene.id),
+          );
+          if (target.fieldPath) {
+            rewritten += rewriteExactField(scene as unknown as MutableRecord, target.fieldPath, target.subject);
+          } else {
+            rewritten += rewriteSceneHeader(scene as unknown as MutableRecord);
+            for (const beat of scene.beats ?? []) rewritten += rewriteBeat(beat as unknown as MutableRecord);
+          }
+        }
       }
     }
 

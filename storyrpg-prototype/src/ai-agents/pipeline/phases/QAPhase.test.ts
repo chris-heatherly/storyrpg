@@ -143,6 +143,220 @@ describe('QAPhase', () => {
     expect(events.some(e => e.type === 'warning' && (e as any).phase === 'qa')).toBe(false);
   });
 
+  it('repairs low prose-craft scenes even when legacy QA passes', async () => {
+    const lowCraft = makeQAReport({
+      overallScore: 94,
+      passesQA: true,
+      proseCraft: {
+        overallScore: 61,
+        issues: [{
+          severity: 'error',
+          conceptId: 'sentence_craft',
+          location: { sceneId: 'scene-1' },
+          description: 'The prose repeats abstract phrasing.',
+          suggestion: 'Use concrete action.',
+        }],
+        sampledSceneIds: ['scene-1'],
+      },
+    });
+    const improved = makeQAReport({
+      overallScore: 94,
+      proseCraft: { overallScore: 78, issues: [], sampledSceneIds: ['scene-1'] },
+    });
+    const runFullQA = vi.fn(async () => improved);
+    runFullQA.mockResolvedValueOnce(lowCraft);
+    const deps = makeDeps({
+      qaRunner: { runFullQA } as any,
+      sceneWriter: {
+        execute: vi.fn(async () => ({
+          success: true,
+          data: { sceneId: 'scene-1', sceneName: 'Scene One', beats: [{ id: 'beat-1', text: 'Concrete action replaces abstraction.' }] },
+        })),
+      } as any,
+    });
+    const input = makeInput();
+
+    const result = await new QAPhase(deps).run(input, makeContext([]));
+
+    expect((deps.sceneWriter.execute as any)).toHaveBeenCalledTimes(1);
+    expect((deps.sceneWriter.execute as any).mock.calls[0][0].storyContext.userPrompt)
+      .toContain('TARGETED PUBLISHABILITY REPAIR');
+    expect(runFullQA).toHaveBeenCalledTimes(2);
+    expect(result.qaReport?.proseCraft?.overallScore).toBe(78);
+  });
+
+  it('routes cosmetic responsiveness probes to paired downstream scene repair', async () => {
+    const lowResponsiveness = makeQAReport({
+      overallScore: 92,
+      passesQA: true,
+      responsiveness: {
+        overallScore: 58,
+        issues: [],
+        probeVerdicts: [{
+          probeId: 'scene-1:beat-1',
+          verdict: 'cosmetic',
+          npcReaction: 'static',
+          notes: 'same downstream opening',
+        }],
+      },
+    });
+    const improved = makeQAReport({
+      overallScore: 92,
+      responsiveness: { overallScore: 78, issues: [], probeVerdicts: [] },
+    });
+    const runFullQA = vi.fn(async () => improved);
+    runFullQA.mockResolvedValueOnce(lowResponsiveness);
+    const deps = makeDeps({
+      qaRunner: { runFullQA } as any,
+      sceneWriter: {
+        execute: vi.fn(async (request: any) => ({
+          success: true,
+          data: {
+            sceneId: request.sceneBlueprint.id,
+            sceneName: request.sceneBlueprint.name,
+            beats: [{ id: `${request.sceneBlueprint.id}-beat`, text: 'The route remembers the choice.' }],
+          },
+        })),
+      } as any,
+    });
+    const input = makeInput({
+      episodeBlueprint: {
+        scenes: [
+          {
+            id: 'scene-1', name: 'Choice', location: 'loc-1', npcsPresent: [],
+            leadsTo: ['scene-2', 'scene-3'], choicePoint: { optionHints: ['a', 'b'] },
+          },
+          { id: 'scene-2', name: 'Route A', location: 'loc-1', npcsPresent: [], leadsTo: [] },
+          { id: 'scene-3', name: 'Route B', location: 'loc-1', npcsPresent: [], leadsTo: [] },
+        ],
+        suggestedFlags: [],
+        suggestedScores: [],
+        suggestedTags: [],
+      } as any,
+      sceneContents: [
+        { sceneId: 'scene-1', sceneName: 'Choice', beats: [{ id: 'beat-1', text: 'Choose.' }] },
+        { sceneId: 'scene-2', sceneName: 'Route A', beats: [{ id: 'a1', text: 'Same opening.' }] },
+        { sceneId: 'scene-3', sceneName: 'Route B', beats: [{ id: 'b1', text: 'Same opening.' }] },
+      ] as any,
+      choiceSets: [{
+        sceneId: 'scene-1',
+        beatId: 'beat-1',
+        choiceType: 'expression',
+        choices: [
+          { id: 'c1', nextSceneId: 'scene-2' },
+          { id: 'c2', nextSceneId: 'scene-3' },
+        ],
+      }] as any,
+    });
+
+    const result = await new QAPhase(deps).run(input, makeContext([]));
+
+    expect((deps.sceneWriter.execute as any)).toHaveBeenCalledTimes(2);
+    expect((deps.sceneWriter.execute as any).mock.calls.map((call: any[]) => call[0].sceneBlueprint.id))
+      .toEqual(['scene-2', 'scene-3']);
+    expect(result.qaReport?.responsiveness?.overallScore).toBe(78);
+  });
+
+  it('repairs same-target cosmetic choices with condition-gated opening callback residue', async () => {
+    const lowResponsiveness = makeQAReport({
+      overallScore: 90,
+      passesQA: true,
+      responsiveness: {
+        overallScore: 58,
+        issues: [],
+        probeVerdicts: [{
+          probeId: 'scene-1:beat-1',
+          verdict: 'cosmetic',
+          npcReaction: 'static',
+          notes: 'identical next-scene opening',
+        }],
+      },
+    });
+    const improved = makeQAReport({
+      responsiveness: { overallScore: 80, issues: [], probeVerdicts: [] },
+    });
+    const runFullQA = vi.fn()
+      .mockResolvedValueOnce(lowResponsiveness)
+      .mockResolvedValue(improved);
+    const deps = makeDeps({
+      qaRunner: { runFullQA } as any,
+      sceneWriter: {
+        execute: vi.fn(async (request: any) => ({
+          success: true,
+          data: {
+            sceneId: request.sceneBlueprint.id,
+            sceneName: request.sceneBlueprint.name,
+            startingBeatId: 'opening',
+            beats: [{
+              id: 'opening',
+              text: 'The room waits.',
+              textVariants: [
+                {
+                  condition: { type: 'flag', flag: 'answered_boldly', value: true },
+                  text: 'Mika meets your boldness with a startled grin.',
+                },
+                {
+                  condition: { type: 'flag', flag: 'answered_gently', value: true },
+                  text: 'Mika lowers her voice in answer to your gentleness.',
+                },
+              ],
+            }],
+          },
+        })),
+      } as any,
+    });
+    const input = makeInput({
+      episodeBlueprint: {
+        scenes: [
+          {
+            id: 'scene-1', name: 'Choice', location: 'loc-1', npcsPresent: ['mika'],
+            leadsTo: ['scene-2'], choicePoint: { optionHints: ['bold', 'gentle'] },
+          },
+          { id: 'scene-2', name: 'Reconvergence', location: 'loc-1', npcsPresent: ['mika'], leadsTo: [] },
+        ],
+        suggestedFlags: ['answered_boldly', 'answered_gently'],
+        suggestedScores: [],
+        suggestedTags: [],
+      } as any,
+      sceneContents: [
+        { sceneId: 'scene-1', sceneName: 'Choice', beats: [{ id: 'beat-1', text: 'Choose.' }] },
+        { sceneId: 'scene-2', sceneName: 'Reconvergence', beats: [{ id: 'opening', text: 'Same opening.' }] },
+      ] as any,
+      choiceSets: [{
+        sceneId: 'scene-1',
+        beatId: 'beat-1',
+        choiceType: 'relationship',
+        choices: [
+          {
+            id: 'c1',
+            nextSceneId: 'scene-2',
+            consequences: [{ type: 'setFlag', flag: 'answered_boldly', value: true }],
+          },
+          {
+            id: 'c2',
+            nextSceneId: 'scene-2',
+            consequences: [{ type: 'setFlag', flag: 'answered_gently', value: true }],
+          },
+        ],
+      }] as any,
+    });
+
+    await new QAPhase(deps).run(input, makeContext([]));
+
+    const prompt = (deps.sceneWriter.execute as any).mock.calls[0][0].storyContext.userPrompt;
+    expect(prompt).toContain('condition-gated textVariants');
+    expect(prompt).toContain('answered_boldly');
+    const opening = input.sceneContents[1].beats[0];
+    expect(opening.textVariants?.map((variant) => variant.callbackHookId)).toEqual([
+      'flag:answered_boldly',
+      'flag:answered_gently',
+    ]);
+    expect(opening.callbackHookIds).toEqual([
+      'flag:answered_boldly',
+      'flag:answered_gently',
+    ]);
+  });
+
   it('skips entirely when brief.options.runQA is false', async () => {
     const deps = makeDeps();
     const events: PipelineEvent[] = [];

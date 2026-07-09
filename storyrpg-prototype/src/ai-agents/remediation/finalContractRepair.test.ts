@@ -199,6 +199,56 @@ describe('runFinalContractRepair', () => {
     expect(out.exhaustedIssueCount).toBe(0);
   });
 
+  it('revalidates before charging and records before/after paths for replay', async () => {
+    const localStory = {
+      id: 'round-evidence',
+      title: 'Round Evidence',
+      episodes: [{ id: 'ep1', scenes: [{ id: 's1-1', beats: [{ id: 'b1', text: 'unsafe' }] }] }],
+    } as unknown as Story;
+    const snapshots: any[] = [];
+    let revalidated = false;
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: {
+        passed: false,
+        blockingIssues: [{ validator: 'RouteContinuityValidator', type: 'unsafe_fallback_prose', sceneId: 's1-1', fieldPath: 'beats[0].text', message: 'unsafe' }],
+      },
+      handlers: [({ story: candidate, blockingIssues }) => {
+        (candidate as any).episodes[0].scenes[0].beats[0].text = 'authored';
+        return {
+          story: candidate,
+          changed: true,
+          attemptedIssueKeys: blockingIssues.map((issue) => [
+            issue.validator ?? '', issue.type ?? '', '', '', '', issue.sceneId ?? '', '', issue.fieldPath ?? '', issue.message ?? '',
+          ].join('::')),
+        };
+      }],
+      revalidate: async () => {
+        revalidated = true;
+        return pass;
+      },
+      onRoundSnapshot: (snapshot) => {
+        expect(revalidated).toBe(true);
+        snapshots.push(snapshot);
+      },
+      requireMutationEvidence: true,
+    });
+    expect(out.passed).toBe(true);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].changedFieldPaths).toContain('story.episodes[0].scenes[0].beats[0].text');
+    expect(snapshots[0].clearedIssueKeys).toHaveLength(1);
+  });
+
+  it('fails loudly when a handler claims success without mutation evidence', async () => {
+    await expect(runFinalContractRepair({
+      story,
+      initialReport: fail,
+      handlers: [() => ({ story, changed: true })],
+      revalidate: async () => fail,
+      requireMutationEvidence: true,
+    })).rejects.toThrow(/claimed success without changing/i);
+  });
+
   it('stops early when canSpend denies another round', async () => {
     const out = await runFinalContractRepair({
       story,

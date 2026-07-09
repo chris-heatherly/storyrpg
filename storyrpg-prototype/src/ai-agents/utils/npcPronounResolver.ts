@@ -60,7 +60,7 @@ const SECOND_PERSON_RE = /\b(?:you|your|yours|yourself)\b/i;
 // commonly modify non-person nouns ("both hands", "the broken ranks") and would mask a
 // real singular-they misgendering ("Thorne braces both hands … at their shoulder").
 const PLURAL_CUE_RE =
-  /\b(?:they all|them all|both of them|both men|both women|the others|soldiers?|men|women|guards?|people|crowd|group|council|raiders?|troops?|everyone|all of them|the rest of them|between them|distance between)\b/i;
+  /\b(?:they all|them all|both of them|both men|both women|the others|soldiers?|men|women|guards?|people|crowd|group|council|raiders?|troops?|thugs?|attackers?|assailants?|bandits?|goons?|mercenaries|enemies|suitors?|patrons?|customers?|everyone|all of them|the rest of them|between them|distance between)\b/i;
 
 const WRONG_BINARY: Record<Gender, RegExp> = {
   // he/him NPC → feminine pronouns are wrong
@@ -80,7 +80,7 @@ const THEY_RE = /\b(they|them|their|theirs|themselves)\b/i;
 // which are usually POSSESSED by the named NPC ("her voice is cold") and would mask a real
 // misgendering. Each token here denotes a SEPARATE person who can own the contrary pronoun.
 const ALT_REFERENT_RE =
-  /\b(stranger|commander|captain|figure|attacker|raider|soldier|guard|man|woman|girl|boy|person|someone|somebody|child|speaker|the other|the rest|whoever|rescuer|protector|driver|caller|host|hostess|gentleman|lady|chef|bartender|barman|waiter|waitress|doorman|valet|bouncer|concierge)\b/i;
+  /\b(stranger|commander|captain|figure|attacker|assailant|thug|raider|bandit|goon|mercenary|enemy|soldier|guard|suitor|patron|customer|victim|witness|man|woman|girl|boy|person|someone|somebody|child|speaker|the other|the rest|whoever|rescuer|protector|driver|caller|host|hostess|gentleman|lady|chef|bartender|barman|waiter|waitress|doorman|valet|bouncer|concierge)\b/i;
 
 // A dialogue speaker tag where the pronoun is the SPEAKER of a quote, not the named NPC
 // who is merely the quote's subject/object — "'Victor something,' SHE offers", "Victor
@@ -203,6 +203,28 @@ function buildNpcEntries(npcs: Array<{ id?: string; name?: string; pronouns?: st
   return out;
 }
 
+const PROPER_NAME_STOPWORDS = new Set([
+  'The', 'A', 'An', 'And', 'But', 'Then', 'When', 'While', 'After', 'Before', 'As', 'His', 'Her', 'Their',
+  'He', 'She', 'They', 'You', 'Your', 'This', 'That', 'It',
+]);
+
+function hasThirdPartyProperName(
+  sentence: string,
+  npc: NpcEntry,
+  nameIndex: number,
+  pronounIndex: number,
+): boolean {
+  const npcTokens = new Set(
+    npc.name.split(/\s+/).map((token) => token.replace(/[^A-Za-z]/g, '')).filter(Boolean),
+  );
+  const between = sentence.slice(nameIndex + 1, pronounIndex);
+  for (const match of between.matchAll(/\b([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,})\b/g)) {
+    const token = match[1].replace(/[’'-].*$/, '');
+    if (!npcTokens.has(token) && !PROPER_NAME_STOPWORDS.has(token)) return true;
+  }
+  return false;
+}
+
 /**
  * Scan a story's reader-facing prose for NPC pronoun inconsistencies. Returns one
  * finding per offending sentence (deduped by location+sentence).
@@ -309,6 +331,11 @@ export function findNpcPronounInconsistencies(
     // … hiding his …" flagged Kylie/"his" though "his" refers to the unnamed lodge-keeper).
     const nameHit = npc.nameRe.exec(sentence);
     if (!nameHit || nameHit.index >= wrongIndex) return;
+    // A named person absent from the canonical roster is still a plausible
+    // third-party antecedent: "Victor watches Stela as she loses her nerve."
+    // Do not bind that pronoun to the one roster NPC merely because Stela was
+    // omitted from the roster.
+    if (hasThirdPartyProperName(sentence, npc, nameHit.index, wrongIndex)) return;
 
     const key = `${location}::${sentence.trim()}`;
     if (seen.has(key)) return;

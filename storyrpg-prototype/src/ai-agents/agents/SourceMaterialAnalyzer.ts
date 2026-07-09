@@ -1237,7 +1237,9 @@ Return ONLY valid JSON.
             sourceChapters: `Treatment episode ${episodeNumber}`,
             plotPoints: treatmentPlotPoints,
             mainCharacters: [structure.protagonist.name],
-            locations: [],
+            locations: (treatment.seasonGuidance?.worldLocationGuidance?.keyLocations || [])
+              .map((loc) => loc.name)
+              .filter(Boolean),
             narrativeArc: {
               setup: guidance.encounterBuildup || treatmentSynopsis || guidance.episodePromise || 'Treatment setup',
               conflict: guidance.encounterCentralConflict || guidance.encounterAnchors?.[0] || guidance.episodePromise || guidance.dramaticQuestion || 'Treatment conflict',
@@ -1280,7 +1282,11 @@ Return ONLY valid JSON.
         plotPoints: episodePlotPoints,
         mainCharacters: ep.mainCharacters,
         supportingCharacters: [],
-        locations: ep.locations,
+        locations: ep.locations.length > 0
+          ? ep.locations
+          : (treatment.seasonGuidance?.worldLocationGuidance?.keyLocations || [])
+            .map((loc) => loc.name)
+            .filter(Boolean),
         estimatedSceneCount: clampSceneCount(input.preferences?.targetScenesPerEpisode || this.defaultScenesPerEpisode),
         estimatedChoiceCount: input.preferences?.targetChoicesPerEpisode || this.defaultChoicesPerEpisode,
         storyCircleRole,

@@ -102,8 +102,57 @@ describe('compileEpisodeSpine', () => {
     }
   });
 
+  it('still assigns locationIds when episode locations are empty', () => {
+    const spine = compileEpisodeSpine(liteEpisode({
+      episodeNumber: 2,
+      locations: [],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          'Dating After Dusk becomes a real local curiosity as Kylie follows Mika toward Valescu Club.',
+          'Victor gives her the best conversation she has had in years, praising her writing.',
+          "On a mountain research trip, Kylie's cab breaks down and Radu fixes it.",
+          'She returns home with two very different men in her phone.',
+        ],
+      },
+    }));
+    expect(spine).toBeDefined();
+    for (const unit of spine!.units) {
+      expect(unit.locationId, unit.id).toBeTruthy();
+    }
+  });
+
   it('returns undefined for non-treatment episodes', () => {
     const ep = liteEpisode({ treatmentGuidance: undefined });
     expect(compileEpisodeSpine(ep)).toBeUndefined();
+  });
+
+  it('binds treatment obligations onto authored-lite units', () => {
+    const spine = compileEpisodeSpine(liteEpisode({
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          'She explores the streets of Bucharest and wanders into a bookshop owned by Stela who befriends her.',
+          'After testing Kylie, the three become friends and form the Dusk Club.',
+          'On the rooftop bar at sunset, two suitors compete for her attention.',
+          'Walking home through Cismigiu Gardens, Kylie is attacked and Victor rescues her.',
+          'At her apartment doorstep, Victor vanishes through the keycard door.',
+          'At 4am she writes the blog post as Mr. Midnight.',
+          'By evening the post goes viral at the club.',
+        ],
+        consequenceSeeds: ['Victor vanishing plants the keycard mystery'],
+        majorChoicePressures: ['Whether to trust the Dusk Club'],
+        encounterAnchors: ['Cismigiu Gardens attack'],
+        informationMovement: 'Mr. Midnight blog goes public',
+      },
+    }));
+    expect(spine).toBeDefined();
+    const allKinds = spine!.units.flatMap((unit) => (unit.obligations ?? []).map((o) => o.kind));
+    expect(allKinds).toContain('consequence_seed');
+    expect(allKinds).toContain('choice_pressure');
+    expect(allKinds).toContain('signature_device');
+    expect(allKinds).toContain('information_reveal');
+    expect(allKinds).toContain('thread_setup');
+    expect(allKinds).toContain('twist_reveal');
   });
 });

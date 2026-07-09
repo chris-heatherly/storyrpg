@@ -121,4 +121,16 @@ describe('BranchManager (deterministic skeleton + annotation)', () => {
     expect(res.data!.branchPaths).toHaveLength(1);
     expect(res.data!.reconvergencePoints).toHaveLength(0);
   });
+
+  it('skips LLM annotation when skipLlmAnnotation is set (authored-lite)', async () => {
+    const spy = vi.spyOn(BranchManager.prototype as any, 'callLLM').mockResolvedValue('{}');
+    const res = await new BranchManager(config).execute({
+      ...makeInput(),
+      skipLlmAnnotation: true,
+    });
+    expect(spy).not.toHaveBeenCalled();
+    expect(res.success).toBe(true);
+    expect(res.data!.branchPaths).toHaveLength(2);
+    expect(res.data!.branchPaths[0].name).toContain('→');
+  });
 });

@@ -1378,10 +1378,18 @@ export function inferAuthoredLocationFromText(text: string | undefined, location
   if (/\b(?:club|venue|key card|keycard|side entrance|private door|service entrance)\b/.test(normalized)) {
     return declaredMatch(/\b(?:club|venue|door|entrance)/) || 'Vâlcescu Club';
   }
-  if (/\b(?:estate|country house|hedge maze|rose garden)\b/.test(normalized)) {
-    return declaredMatch(/\b(?:estate|country|maze|garden)/) || "Victor's Estate";
+  if (/\b(?:apartment|flat|home|doorstep|threshold|returns?\s+home)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:apartment|flat|home|residence|lipscani)/)
+      || "Kylie's Lipscani Apartment";
   }
-  return undefined;
+  if (/\b(?:casa\s+lupului|mountain\s+research|carpathian|lodge|near\s+bran|\bbran\b)\b/.test(normalized)
+    || (/\bmountain\b/.test(normalized) && !/\bcodename\b/.test(normalized))) {
+    return declaredMatch(/\b(?:lupului|mountain|lodge|bran)/) || 'Casa Lupului';
+  }
+  if (/\b(?:casa\s+stelarum|estate|country house|hedge maze|rose garden)\b/.test(normalized)) {
+    return declaredMatch(/\b(?:stelarum|estate|country|maze|garden)/) || 'Casa Stelarum';
+  }
+  return locations[0];
 }
 
 /**

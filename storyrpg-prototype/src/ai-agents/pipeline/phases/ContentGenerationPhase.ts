@@ -210,6 +210,12 @@ import {
   toChoiceAuthorArcTargets,
 } from '../characterArcPlanning';
 import type { CharacterArcTargets } from '../../agents/CharacterArcTracker';
+import { isAuthoredLiteEpisode } from '../../utils/authoredLiteScenePlan';
+import {
+  applyCompiledThreadTwistToLedger,
+  buildCompiledArcTargetsFromPlan,
+  buildCompiledThreadTwistFromEsc,
+} from '../../utils/compiledEscDirectives';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import {
   compactSceneWriterInput,
@@ -395,6 +401,51 @@ export class ContentGenerationPhase {
       artifactKinds,
     });
     return block || this.deps.cachedPipelineMemory || undefined;
+  }
+
+  /**
+   * Authored-lite: seed season thread ledger + twist plan from ESC-compiled
+   * obligations instead of calling ThreadPlanner / TwistArchitect LLMs.
+   */
+  private seedCompiledThreadTwistFromEsc(
+    blueprint: EpisodeBlueprint,
+    episodeNumber: number,
+    context: PipelineContext,
+    brief?: FullCreativeBrief,
+  ): void {
+    const spine = brief?.seasonPlan?.scenePlan?.episodeSpines?.[episodeNumber];
+    const seed = buildCompiledThreadTwistFromEsc(blueprint, episodeNumber, spine);
+    applyCompiledThreadTwistToLedger(this.deps.seasonThreadLedger, seed, episodeNumber);
+    if (seed.threads.length > 0) {
+      context.emit({
+        type: 'debug',
+        phase: 'content',
+        message: `ESC-compiled thread ledger: ${seed.threads.length} thread(s) for episode ${episodeNumber}`,
+      });
+    }
+    if (seed.twistPlan) {
+      this.deps.episodeTwistPlans.set(episodeNumber, seed.twistPlan);
+    }
+  }
+
+  /**
+   * Authored-lite: seed ChoiceAuthor arc targets from season arcPressureContracts
+   * / ESC polarity without CharacterArcTracker LLM.
+   */
+  private seedCompiledArcTargetsFromPlan(
+    brief: FullCreativeBrief,
+    episodeNumber: number,
+    blueprint: EpisodeBlueprint,
+  ): void {
+    const arcTargets = buildCompiledArcTargetsFromPlan({
+      episodeId: blueprint.episodeId,
+      episodeNumber,
+      contracts: brief.seasonPlan?.arcPressureContracts,
+      polarityFacets: brief.seasonPlan?.scenePlan?.episodeSpines?.[episodeNumber]?.polarityFacets,
+    });
+    if (arcTargets) {
+      this.deps.episodeArcTargets.set(episodeNumber, arcTargets);
+    }
   }
 
   private sceneDensityCanExpandWithBeatBudget(report: TreatmentDensityReport, scene: SceneBlueprint | undefined): boolean {
@@ -724,9 +775,21 @@ export class ContentGenerationPhase {
     // Thread/Twist planning (Phase 5.3 + 6 wiring): author this episode's thread
     // ledger + TwistPlan after the blueprint is final, before scene prose. All logic
     // lives in threadTwistPlanning (monolith ratchet). Default-off; both agents fail open.
-    if (isThreadTwistPlanningEnabled(context.config.generation)) {
+    // Authored-lite ESC collapse: skip LLM planners — obligations were compiled into ESC.
+    // Force with STORYRPG_THREAD_TWIST_PLANNING=1 for polish mode.
+    {
       const ttEpisode = episodeNumber ?? brief.episode.number;
       const ttSeasonEpisode = brief.seasonPlan?.episodes.find((e) => e.episodeNumber === ttEpisode);
+      const authoredLite = isAuthoredLiteEpisode(ttSeasonEpisode);
+      const forceThreadTwist = typeof process !== 'undefined' && process.env.STORYRPG_THREAD_TWIST_PLANNING === '1';
+      if (authoredLite && !forceThreadTwist) {
+        context.emit({
+          type: 'debug',
+          phase: 'content',
+          message: 'thread_twist_skipped_authored_lite: using ESC-compiled obligations',
+        });
+        this.seedCompiledThreadTwistFromEsc(blueprint, ttEpisode, context, brief);
+      } else if (isThreadTwistPlanningEnabled(context.config.generation)) {
       await Promise.all([
         this.memoryContextFor('ThreadPlanner', 'thread-planning', brief, undefined, ['thread-ledger']),
         this.memoryContextFor('TwistArchitect', 'twist-planning', brief, undefined, ['twist-plan']),
@@ -777,15 +840,27 @@ export class ContentGenerationPhase {
           seasonThreadCount: this.deps.seasonThreadLedger.threads.length,
         }).catch(() => undefined);
       }
+      }
     }
 
     // Character-arc tracking (WS0 wiring): author this episode's identity/
     // relationship targets after the blueprint is final, before scene prose.
     // All logic lives in characterArcPlanning (monolith ratchet). Default-off;
     // the agent fails open.
-    if (isCharacterArcTrackingEnabled(context.config.generation)) {
+    // Authored-lite: skip LLM — arc pressure compiled into ESC polarity/obligations.
+    {
       const atEpisode = episodeNumber ?? brief.episode.number;
       const atSeasonEpisode = brief.seasonPlan?.episodes.find((e) => e.episodeNumber === atEpisode);
+      const authoredLite = isAuthoredLiteEpisode(atSeasonEpisode);
+      const forceArc = typeof process !== 'undefined' && process.env.STORYRPG_CHARACTER_ARC_TRACKING === '1';
+      if (authoredLite && !forceArc) {
+        context.emit({
+          type: 'debug',
+          phase: 'content',
+          message: 'character_arc_skipped_authored_lite: using ESC polarity / arcPressureContracts',
+        });
+        this.seedCompiledArcTargetsFromPlan(brief, atEpisode, blueprint);
+      } else if (isCharacterArcTrackingEnabled(context.config.generation)) {
       await this.memoryContextFor('CharacterArcTracker', 'character-arc-planning', brief, undefined, ['character-arc-targets']);
       const { arcTargets } = await planEpisodeArcTargets({
         enabled: true,
@@ -821,6 +896,7 @@ export class ContentGenerationPhase {
             arcTargets,
           }).catch(() => undefined);
         }
+      }
       }
     }
 

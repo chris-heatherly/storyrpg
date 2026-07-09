@@ -215,7 +215,35 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(requiredText).toContain('Mika\'s key card');
     expect(requiredText).toContain('quartz');
     expect(encounterText.toLowerCase()).toContain('rooftop bar at sunset');
-    expect(result.data!.notes.join('\n')).toContain('kept deterministic treatment-bound spine');
+    expect(result.data!.notes.join('\n')).toMatch(
+      /authored-lite ESC projection is sole structural author|kept deterministic treatment-bound spine/,
+    );
+  });
+
+  it('refuses authorScenePlanLLM for authored-lite ESC plans', async () => {
+    const planner = makePlanner();
+    const plan = {
+      episodes: [{ episodeNumber: 1, treatmentGuidance: { sourceKind: 'authored_lite' } }],
+      scenePlan: { scenes: [] },
+    };
+    await expect((planner as any).authorScenePlanLLM(plan)).rejects.toThrow(/\[EscAuthority\]/);
+  });
+
+  it('detects authored-lite scene identity drift after budget overlay', () => {
+    const planner = makePlanner();
+    const plan = {
+      scenePlan: {
+        scenes: [
+          { id: 's1', order: 0, spineUnitId: 'u1' },
+          { id: 's2', order: 1, spineUnitId: 'u2' },
+        ],
+      },
+      episodes: [],
+    };
+    const fingerprint = (planner as any).fingerprintAuthoredLiteScenePlan(plan);
+    plan.scenePlan.scenes[0].order = 9;
+    expect(() => (planner as any).assertAuthoredLiteScenePlanFrozen(plan, fingerprint, 'post-budget'))
+      .toThrow(/\[EscAuthority\].*drifted/);
   });
 
   it('maps treatment episode guidance into encounters, cliffhangers, branches, and ending routes', () => {

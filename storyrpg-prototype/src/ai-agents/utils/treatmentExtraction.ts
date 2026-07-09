@@ -939,6 +939,49 @@ function parseWorldLocationLine(line: string): WorldLocationTreatmentLocationGui
   };
 }
 
+/**
+ * Lite treatments often pack several places into one Key locations bullet as
+ * prose sentences ("Valescu Club on … danger. Cismigiu Gardens, the foggy…").
+ * Expand those into one guidance entry per place when dash-delimited parsing
+ * yields nothing usable.
+ */
+function expandProseKeyLocationBlob(blob: string): WorldLocationTreatmentLocationGuidance[] {
+  const cleaned = blob.trim().replace(/^-\s+/, '').replace(/^\*\*Key locations?:\*\*\s*/i, '');
+  if (!cleaned || cleaned.length < 20) return [];
+
+  const chunks = cleaned
+    .split(/(?<=[.!?])\s+(?=[A-Z“"'])/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+
+  const entries: WorldLocationTreatmentLocationGuidance[] = [];
+  for (const chunk of chunks) {
+    const nameMatch = chunk.match(
+      /^((?:Kylie'?s\s+)?[A-Z][\w'’]*(?:\s+(?:Books|Club|Gardens?|Gardens|Lodge|Estate|Apartment|Bar|House|Cafe|Café|Park|Library|Hotel|Manor|Castle|[A-Z][\w'’]*)){0,4})/,
+    );
+    const beforeComma = chunk.split(',')[0]?.trim() || '';
+    let rawName = (nameMatch?.[1] || beforeComma)
+      .replace(/\s+on\s+.+$/i, '')
+      .replace(/\s+near\s+.+$/i, '')
+      .replace(/\s+at\s+.+$/i, '')
+      .trim();
+    // Prefer fuller apartment phrasing when the sentence continues with it.
+    if (/^Kylie'?s\s+Lipscani$/i.test(rawName) && /\bapartment\b/i.test(chunk)) {
+      rawName = "Kylie's Lipscani apartment";
+    }
+    if (!rawName || rawName.length < 3 || rawName.length > 80) continue;
+    // Skip sentence fragments that are clearly not place names.
+    if (/^(?:Victor|Radu|Mika|Stela|She|He|They|The)\b/i.test(rawName) && !/\b(?:Club|Gardens?|Books|Apartment|Estate|Lodge)\b/i.test(rawName)) {
+      continue;
+    }
+    entries.push({
+      name: rawName,
+      sourceText: chunk,
+    });
+  }
+  return entries;
+}
+
 function bulletLinesFromSubheading(section: string, labels: string[]): string[] {
   const subsection = getFlexibleHeadingSection(section, labels);
   if (!subsection.trim()) return [];
@@ -961,9 +1004,20 @@ function parseWorldLocationGuidance(markdown: string): WorldLocationTreatmentGui
     getFlexibleInlineOrIndentedList(section, ['3-6 key locations', 'Key locations', 'Locations']),
     bulletLinesFromSubheading(section, ['key locations', 'locations']),
   );
-  const keyLocations = keyLocationLines
+  let keyLocations = keyLocationLines
     .map(parseWorldLocationLine)
     .filter(Boolean) as WorldLocationTreatmentLocationGuidance[];
+  if (keyLocations.length === 0 && keyLocationLines.length > 0) {
+    keyLocations = keyLocationLines.flatMap((line) => expandProseKeyLocationBlob(line));
+  } else if (keyLocations.length <= 1) {
+    const longBlobs = keyLocationLines.filter((line) => line.length > 160);
+    if (longBlobs.length > 0) {
+      const expanded = longBlobs.flatMap((line) => expandProseKeyLocationBlob(line));
+      if (expanded.length > keyLocations.length) {
+        keyLocations = expanded;
+      }
+    }
+  }
 
   const guidance: WorldLocationTreatmentGuidance = {
     rawSection: section,

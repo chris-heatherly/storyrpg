@@ -1843,6 +1843,7 @@ ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npc
 - Do not use large relationship deltas as a shortcut around pacing. If the scene does not contain a full relationship test, keep deltas small and avoid friend/trusted/intimate labels.
 - First-meeting choices cannot assume private phone access. Do not write choices, feedback, reminders, or witness reactions where the protagonist texts/calls/DMs an unmet NPC or already has their number before on-page exchange.
 - Do not use blocked labels in choice text, outcome text, feedback, reminder plans, or residue.
+- When a group/club is being named at spark, write the christening as a dare, joke, toast, or provisional name. Never write "make it official", "we are the X Club", "official first meeting", or settled membership language — those labels are blocked until the ledger earns them.
 ` : ''}
 ${input.sceneBlueprint.mechanicPressure?.length ? `
 ## Narrative Mechanic Pressure Contracts

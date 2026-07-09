@@ -109,6 +109,25 @@ function architecturalRepairBlockersFor(
   });
 }
 
+/** Human-readable replan route for architecture-class final-contract blockers. */
+export function describeArchitecturalReplanRoute(
+  issues: ContractRepairReport['blockingIssues'],
+  routeIssue: (issue: ContractRepairReport['blockingIssues'][number]) => ReturnType<GateRepairRouter['routeIssue']>,
+): string {
+  const kinds = new Set(
+    issues.map((issue) => routeIssue(issue).kind).filter((kind) =>
+      kind === 'blueprint_rebalance' || kind === 'episode_replan' || kind === 'diagnostic_stop',
+    ),
+  );
+  if (kinds.has('episode_replan')) {
+    return 'Fail closed: re-run architecture or rebuild ESC via rebuildTreatmentSeasonScenePlan — final contract must not invent scene order/topology.';
+  }
+  if (kinds.has('blueprint_rebalance')) {
+    return 'Fail closed: re-run EpisodeArchitecture (fill-slots) or ESC projection refresh — final contract must not invent structure.';
+  }
+  return 'Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair.';
+}
+
 export function guardLlmContractRepairForArchitecture(
   handler: ContractRepairHandler,
   routeIssue: (issue: ContractRepairReport['blockingIssues'][number]) => ReturnType<GateRepairRouter['routeIssue']>,
@@ -127,11 +146,16 @@ export function guardLlmContractRepairForArchitecture(
     // skipping it; skip only when NOTHING it could act on remains.
     const architecturalIds = new Set(blockers.map((issue) => issue));
     const repairable = ctx.blockingIssues.filter((issue) => !architecturalIds.has(issue));
+    const replanHint = describeArchitecturalReplanRoute(blockers, routeIssue);
     if (repairable.length === 0) {
-      emit(`Final contract LLM repair skipped this round because all ${blockers.length} blocker(s) require blueprint, route, or relationship architecture repair first.`);
+      emit(
+        `Final contract LLM repair skipped this round because all ${blockers.length} blocker(s) require blueprint, route, or relationship architecture repair first. ${replanHint}`,
+      );
       return { story: ctx.story, changed: false };
     }
-    emit(`Final contract LLM repair proceeding on ${repairable.length} repairable issue(s); ${blockers.length} architecture-class blocker(s) withheld from LLM repair this round.`);
+    emit(
+      `Final contract LLM repair proceeding on ${repairable.length} repairable issue(s); ${blockers.length} architecture-class blocker(s) withheld from LLM repair this round. ${replanHint}`,
+    );
     return handler({ ...ctx, blockingIssues: repairable });
   };
 }
@@ -1087,10 +1111,15 @@ export class FinalContract {
         routeIssue,
       );
       if (initialArchitecturalRepairBlockers.length > 0) {
+        const replanHint = describeArchitecturalReplanRoute(initialArchitecturalRepairBlockers, routeIssue);
         this.deps.emit({
           type: 'debug',
           phase: input.phase,
-          message: `Final contract repair will defer LLM prose/outcome repair while ${initialArchitecturalRepairBlockers.length} blocker(s) require blueprint, route, or relationship architecture repair first.`,
+          message: `Final contract repair will defer LLM prose/outcome repair while ${initialArchitecturalRepairBlockers.length} blocker(s) require blueprint, route, or relationship architecture repair first. ${replanHint}`,
+          data: {
+            architecturalBlockerCount: initialArchitecturalRepairBlockers.length,
+            replanRoute: replanHint,
+          },
         } as any);
       }
       const guardLlmHandler = (handler: ContractRepairHandler): ContractRepairHandler =>

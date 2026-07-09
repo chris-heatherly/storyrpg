@@ -15,11 +15,23 @@ import {
   repairPrematureUncastNpcTextVariants,
   selectFinalContractPlannedChoiceTypes,
   sceneTurnWarningsForRepair,
+  describeArchitecturalReplanRoute,
 } from './finalContract';
 import { runFinalContractRepair, type ContractRepairReport } from '../remediation/finalContractRepair';
 import { buildOutcomeTextRepairHandler, type OutcomeReauthorAgent } from '../remediation/outcomeTextRepairHandler';
 import { GateRepairRouter } from '../remediation/gateRepairRouter';
 import { FALLBACK_OUTCOME_TEXT_POOLS } from '../constants/choiceTextFallbacks';
+
+describe('describeArchitecturalReplanRoute', () => {
+  it('points episode_replan blockers at ESC rebuild', () => {
+    const routeIssue = () => ({ kind: 'episode_replan' as const, reason: 'x', attemptBudget: 1, qualityFloor: { overall: 70, voice: 70, stakes: 70, rejectDrop: 8 }, unsafeForProsePatch: true });
+    const hint = describeArchitecturalReplanRoute(
+      [{ validator: 'X', severity: 'error', message: 'm' }] as ContractRepairReport['blockingIssues'],
+      routeIssue as never,
+    );
+    expect(hint).toMatch(/rebuildTreatmentSeasonScenePlan|ESC/);
+  });
+});
 
 function storyWithBeat(text: string): Story {
   return {

@@ -1,6 +1,6 @@
 # Current Pipeline Status
 
-**Last Updated:** May 25, 2026
+**Last Updated:** July 8, 2026
 
 This is the short operational status of the codebase as it exists now. It is
 intended to answer "what is live?" before older architecture notes or audit
@@ -30,15 +30,47 @@ boundary is enforced by `npm run check:reader-boundary`.
 
 ## Current Generation Flow
 
+### Authored-lite treatments (`sourceKind === 'authored_lite'`)
+
+Structural authorship collapses to five stages. ESC is the sole structural
+author; later agents compile, realize, or enforce — they do not invent scene
+order or topology.
+
+1. **Parse + ESC** — `treatmentExtraction` / `SourceMaterialAnalyzer` →
+   `compileEpisodeSpine` → `seasonScenePlanBuilder` projection.
+   `SeasonPlannerAgent` may only overlay metadata (budgets/flags); it must not
+   call `authorScenePlanLLM` or mutate scene id/order/`spineUnitId`.
+2. **Facts** — `WorldBuilder` + `CharacterDesigner` (world/character bibles).
+3. **Realize** — `StoryArchitect` fill-slots only (ESC unit text → turnContracts);
+   `BranchManager` deterministic skeleton (LLM annotation skipped unless
+   `STORYRPG_BRANCH_ANNOTATION=1` / branch shadow mode);
+   `SceneWriter` / `ChoiceAuthor` / `EncounterArchitect` with ESC-compiled
+   thread/twist/arc directives (Thread/Twist/Arc LLMs skipped unless
+   `STORYRPG_THREAD_TWIST_PLANNING=1` / `STORYRPG_CHARACTER_ARC_TRACKING=1`).
+4. **Enforce** — plan-time fidelity + `EpisodeSpineContractValidator`; final
+   text contract with prose/field repair only. Structural classes
+   (`blueprint_rebalance` / `episode_replan`) fail closed toward architecture
+   retry or ESC/`rebuildTreatmentSeasonScenePlan` refresh.
+5. **Media** — post-story images/video/audio after the text contract passes.
+
+Skip telemetry (debug events): `thread_twist_skipped_authored_lite`,
+`character_arc_skipped_authored_lite`, `branch_annotation_skipped_authored_lite`.
+
+Cognee remains advisory-only: index compiled ESC/ledger facts, not competing
+LLM plans.
+
+### Non-authored-lite / invent-mode
+
 1. Optional source analysis via `SourceMaterialAnalyzer`.
-2. Optional season planning via `SeasonPlannerAgent` and
-   `StoryCircleCoverageValidator`.
+2. Optional season planning via `SeasonPlannerAgent` (may LLM-upgrade scene
+   plans when not treatment-bound) and `StoryCircleCoverageValidator`.
 3. Shared foundation: `WorldBuilder`, `CharacterDesigner`, `NPCDepthValidator`,
    and `PhaseValidator`.
-4. Per-episode planning and content: `StoryArchitect`, `BranchManager`,
-   `SceneWriter`, `ChoiceAuthor`, and `EncounterArchitect`.
-5. Narrative scaffolding: `ThreadPlanner`, `TwistArchitect`,
-   `CharacterArcTracker`, `CallbackLedger`, and optional `SceneCritic`.
+4. Per-episode planning and content: `StoryArchitect` (invent-mode allowed),
+   `BranchManager`, `SceneWriter`, `ChoiceAuthor`, and `EncounterArchitect`.
+5. Optional narrative scaffolding: `ThreadPlanner`, `TwistArchitect`,
+   `CharacterArcTracker` (when generation flags enable them), plus
+   `CallbackLedger` and optional `SceneCritic`.
 6. Mechanical story metadata: story verbs, affordance sources, witness
    reactions, failure residue, branch-shadow diagnostics, and visualizer
    diagnostics where enabled.
@@ -58,10 +90,9 @@ boundary is enforced by `npm run check:reader-boundary`.
    optional Playwright multi-path QA, and image remediation/re-save when
    possible.
 
-`SavingPhase` is wired and tested. `WorldBuildingPhase` is scaffolded in
-`src/ai-agents/pipeline/phases/` but is not yet the fully wired active boundary
-for world-building behavior. Continue phase extraction as behavior-preserving
-migrations.
+`SavingPhase` and `WorldBuildingPhase` are wired active paths under
+`src/ai-agents/pipeline/phases/`. Continue phase extraction as
+behavior-preserving migrations.
 
 ## Output Contract
 

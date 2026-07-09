@@ -260,6 +260,39 @@ describe('buildRelationshipPacingLabelRepairHandler', () => {
     expect(beat.text).toContain('first operation');
   });
 
+  it('rewrites group christening "make it official" without touching city official / official business (bite-me 2026-07-08)', async () => {
+    const story = makeStory();
+    const scene = story.episodes[0].scenes[1];
+    const beat = scene.beats[0];
+    beat.text = 'A city official waved you past on official business.';
+    beat.textVariants = [];
+    beat.choices = [{
+      id: 'c-official',
+      text: "Let's make it official. We'll call ourselves the Dusk Club.",
+      nextSceneId: 's1-6',
+      consequences: [],
+    }];
+
+    const result = await buildRelationshipPacingLabelRepairHandler()({
+      story,
+      blockingIssues: [{
+        validator: 'RelationshipArcLedgerValidator',
+        type: 'relationship_pacing_violation',
+        sceneId: scene.id,
+        severity: 'error',
+        message: `Scene "${scene.id}" uses unearned relationship label(s): official.`,
+        suggestion: 'Rewrite as invitation, dare until relationship choices and evidence earn the stronger label.',
+      }],
+    });
+
+    expect(result.changed).toBe(true);
+    expect(beat.choices?.[0]?.text).toContain('try the name on');
+    expect(beat.choices?.[0]?.text).not.toMatch(/\bmake it official\b/i);
+    expect(beat.choices?.[0]?.nextSceneId).toBe('s1-6');
+    expect(beat.text).toContain('city official');
+    expect(beat.text).toContain('official business');
+  });
+
   it('downgrades unearned relationship labels in scene headers', async () => {
     const story = makeStory();
     const scene = story.episodes[0].scenes[1] as any;

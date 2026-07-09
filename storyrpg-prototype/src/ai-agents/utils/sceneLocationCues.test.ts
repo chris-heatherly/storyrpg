@@ -75,6 +75,14 @@ describe('uniqueMajorLocationCues', () => {
     ).toEqual(['museum', 'rooftop bar']);
   });
 
+  it('does not treat gerund action phrases as places (bite-me 2026-07-08 s1-4)', () => {
+    // "Testing Kylie" is Title Case and verb-free enough to look like a place
+    // name under the old heuristic; it must not become a second major cue
+    // beside the apartment and abort SceneConstructionGate.
+    expect(uniqueMajorLocationCues(['apartment', 'Testing Kylie'])).toEqual(['apartment']);
+    expect(uniqueMajorLocationCues(['Testing Kylie'])).toEqual([]);
+  });
+
   it('accepts proper place names and venue labels, rejects prose', () => {
     expect(uniqueMajorLocationCues(['Cișmigiu'])).toEqual(['cismigiu']);
     expect(uniqueMajorLocationCues(['Vâlcescu Club'])).toEqual(['valcescu club']);

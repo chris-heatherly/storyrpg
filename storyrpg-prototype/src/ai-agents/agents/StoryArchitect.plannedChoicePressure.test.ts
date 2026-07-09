@@ -68,7 +68,8 @@ describe('StoryArchitect planned-scene choice pressure', () => {
     const description = blueprint.scenes[0].choicePoint?.description || '';
     const want = blueprint.scenes[0].choicePoint?.stakes?.want || '';
     expect(`${description} ${want}`).not.toMatch(/\brescued by\b|\bexternal rescue\b|\boutside force\b/i);
-    expect(`${description} ${want}`).toMatch(/\bprotagonist\b.*\brespond\b|\bchoice\b/i);
+    expect(`${description} ${want}`).toMatch(/\bprotagonist\b/i);
+    expect(`${description} ${want}`).toMatch(/\bdecide\b|\brespond\b|\bchoice\b/i);
   });
 
   it('rewrites externally resolved treatment theme pressure into player-action theme answers', () => {
@@ -106,5 +107,62 @@ describe('StoryArchitect planned-scene choice pressure', () => {
 
     expect(scene.choicePoint.themeAnswer).not.toMatch(/\brescued by\b|\bexternal rescue\b|\boutside force\b/i);
     expect(scene.choicePoint.themeAnswer).toMatch(/\bPlayer\/protagonist choice\b/);
+  });
+
+  it('copies ESC unit text into turnContract for authored-lite fill-slots', () => {
+    const architect = new StoryArchitect(config) as unknown as {
+      buildBlueprintFromPlannedScenes(input: StoryArchitectInput): {
+        scenes: Array<{ spineUnitId?: string; turnContract?: { centralTurn?: string; turnEvent?: string } }>;
+      };
+    };
+    const escText = 'At 4am she writes the blog post as Mr. Midnight.';
+    const blueprint = architect.buildBlueprintFromPlannedScenes(makeInput({
+      seasonPlanDirectives: {
+        episodeSpine: {
+          episodeNumber: 1,
+          sourceHash: 'h',
+          episodeStoryCircleBeats: ['you'],
+          polarityFacets: [],
+          units: [{
+            id: 'u-write',
+            order: 0,
+            text: escText,
+            kind: 'late_night_writing',
+            storyCircleFacets: ['you'],
+            prerequisites: [],
+            sceneKind: 'standard',
+          }],
+        },
+        plannedScenes: [{
+          id: 's1-1',
+          episodeNumber: 1,
+          order: 0,
+          kind: 'standard',
+          title: 'Writing',
+          dramaticPurpose: 'Generic planner turn',
+          narrativeRole: 'development',
+          locations: ['Apartment'],
+          npcsInvolved: [],
+          setsUp: [],
+          paysOff: [],
+          requiredBeats: [],
+          hasChoice: false,
+          spineUnitId: 'u-write',
+          turnContract: {
+            turnId: 's1-1-turn',
+            source: 'treatment',
+            beforeState: 'before',
+            afterState: 'after',
+            centralTurn: 'Generic planner turn',
+            turnEvent: 'Generic planner turn',
+            handoff: 'next',
+          },
+        }],
+      },
+    }));
+
+    expect(blueprint.scenes[0].spineUnitId).toBe('u-write');
+    expect(blueprint.scenes[0].turnContract?.centralTurn).toBe(escText);
+    expect(blueprint.scenes[0].turnContract?.turnEvent).toBe(escText);
   });
 });

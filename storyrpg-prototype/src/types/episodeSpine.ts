@@ -25,6 +25,23 @@ export type SpineUnitKind =
 
 export type EncounterSpineProfile = 'tactical' | 'staged_rescue' | 'social_test';
 
+/** Compiled obligation kinds absorbed into ESC so later LLM planners need not reinvent them. */
+export type SpineObligationKind =
+  | 'information_reveal'
+  | 'consequence_seed'
+  | 'choice_pressure'
+  | 'signature_device'
+  | 'arc_pressure'
+  | 'thread_setup'
+  | 'twist_reveal';
+
+export interface SpineUnitObligation {
+  id: string;
+  kind: SpineObligationKind;
+  /** Treatment / ledger text this unit must realize or plant. */
+  text: string;
+}
+
 export interface EpisodeSpineUnit {
   /** Stable id within the episode (e.g. `ep1-u3`). */
   id: string;
@@ -45,6 +62,12 @@ export interface EpisodeSpineUnit {
   encounterProfile?: EncounterSpineProfile;
   /** Maps to PlannedScene.kind when projected. */
   sceneKind: 'standard' | 'encounter';
+  /**
+   * Treatment obligations bound to this unit at compile time (reveals, seeds,
+   * choice pressures, arc pressure). Downstream agents consume these; they must
+   * not invent competing structural obligations.
+   */
+  obligations?: SpineUnitObligation[];
 }
 
 export interface EpisodeSpineContract {

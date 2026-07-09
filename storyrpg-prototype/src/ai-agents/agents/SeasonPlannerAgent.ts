@@ -310,11 +310,19 @@ Your plans must define:
     // guaranteed fallback. Here we attempt to UPGRADE it to an LLM-authored
     // spine (scenes planned with real dramatic content + setup/payoff logic).
     // On any failure the deterministic spine is kept.
+    //
+    // Authored-lite / treatment ESC lockdown: NEVER call authorScenePlanLLM —
+    // ESC + seasonScenePlanBuilder own scene order/identity. SeasonPlanner may
+    // only overlay metadata (budgets/flags) onto the projected plan.
     const isTreatmentSourcedPlan = seasonPlan.episodes.some((ep) => Boolean(ep.treatmentGuidance));
+    const isAuthoredLitePlan = seasonPlan.episodes.some(
+      (ep) => ep.treatmentGuidance?.sourceKind === 'authored_lite',
+    );
     if (
       isSceneFirstPlanningEnabled() &&
       seasonPlan.scenePlan &&
       !isTreatmentSourcedPlan
+      && !isAuthoredLitePlan
     ) {
       const authored = await this.authorScenePlanLLM(
         seasonPlan,
@@ -329,10 +337,22 @@ Your plans must define:
           `Scene-first planning: LLM-authored spine (${authored.scenes.length} scenes, ${authored.setupPayoffEdges.length} setup/payoff edges).`,
         );
       }
-    } else if (seasonPlan.scenePlan && isTreatmentSourcedPlan) {
+    } else if (seasonPlan.scenePlan && (isTreatmentSourcedPlan || isAuthoredLitePlan)) {
+      // Defense in depth: snapshot scene identity before budget overlay so any
+      // later mutation of order/id/spineUnitId is detectable.
+      const authoredLiteSceneFingerprint = isAuthoredLitePlan
+        ? this.fingerprintAuthoredLiteScenePlan(seasonPlan)
+        : null;
       seasonPlan.notes.push(
-        'Scene-first planning: kept deterministic treatment-bound spine so authored required beats remain the source of truth.',
+        isAuthoredLitePlan
+          ? 'Scene-first planning: authored-lite ESC projection is sole structural author; SeasonPlanner metadata overlay only.'
+          : 'Scene-first planning: kept deterministic treatment-bound spine so authored required beats remain the source of truth.',
       );
+      // Stash fingerprint on the plan object for the post-budget assert below.
+      if (authoredLiteSceneFingerprint) {
+        (seasonPlan as { __authoredLiteSceneFingerprint?: string }).__authoredLiteSceneFingerprint =
+          authoredLiteSceneFingerprint;
+      }
     }
 
     // Season choice/consequence BUDGET layer. Runs AFTER the scene plan is built
@@ -454,6 +474,13 @@ Your plans must define:
           `consequence mix ${pct(consequenceMix, ['callback', 'tint', 'branchlet', 'branch'])}.`,
       );
 
+      // Authored-lite: budgets may annotate scenes but must not reorder/replace them.
+      if (isAuthoredLitePlan) {
+        const expected = (seasonPlan as { __authoredLiteSceneFingerprint?: string }).__authoredLiteSceneFingerprint;
+        this.assertAuthoredLiteScenePlanFrozen(seasonPlan, expected, 'post-budget');
+        delete (seasonPlan as { __authoredLiteSceneFingerprint?: string }).__authoredLiteSceneFingerprint;
+      }
+
       // HARD GATE (opt-in, default OFF). Only when GATE_SEASON_BUDGETS=1 do
       // error-severity budget findings block the plan. Mirrors the arcPressure
       // gate below.
@@ -547,11 +574,19 @@ Your plans must define:
    * Author the season scene plan via the LLM, normalized + validated. Returns
    * null on any failure (truncated/invalid JSON, spine validation errors) so the
    * caller keeps the deterministic spine. See {@link normalizeAuthoredScenePlan}.
+   *
+   * Must never be called for authored-lite / treatment ESC plans — those use
+   * compileEpisodeSpine + seasonScenePlanBuilder as sole structural author.
    */
   private async authorScenePlanLLM(
     plan: SeasonPlan,
     opts: { minScenesPerEpisode?: number } = {},
   ): Promise<SeasonScenePlan | null> {
+    if (plan.episodes.some((ep) => ep.treatmentGuidance?.sourceKind === 'authored_lite')) {
+      throw new Error(
+        '[EscAuthority] authorScenePlanLLM refused: authored-lite ESC projection is the sole structural author.',
+      );
+    }
     try {
       const prompt = buildScenePlanPrompt(plan);
       const response = await this.callLLM([{ role: 'user', content: prompt }]);
@@ -562,8 +597,38 @@ Your plans must define:
       }
       return normalized;
     } catch (error) {
+      if (error instanceof Error && error.message.includes('[EscAuthority]')) throw error;
       console.warn('[SeasonPlanner] Scene-plan authoring failed; keeping deterministic spine:', error);
       return null;
+    }
+  }
+
+  /** Stable fingerprint of scene id/order/spineUnitId for authored-lite freeze checks. */
+  private fingerprintAuthoredLiteScenePlan(plan: SeasonPlan): string {
+    const scenes = (plan.scenePlan?.scenes ?? [])
+      .slice()
+      .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+      .map((scene) => `${scene.id}|${scene.order}|${scene.spineUnitId ?? ''}`);
+    return scenes.join(';');
+  }
+
+  /**
+   * Authored-lite consumeEscPlan invariant: SeasonPlanner may overlay budgets/
+   * flags but must not change scene identity or ESC projection order.
+   */
+  private assertAuthoredLiteScenePlanFrozen(
+    plan: SeasonPlan,
+    expectedFingerprint: string | null | undefined,
+    phase: string,
+  ): void {
+    if (!expectedFingerprint) return;
+    const actual = this.fingerprintAuthoredLiteScenePlan(plan);
+    if (actual !== expectedFingerprint) {
+      throw new Error(
+        `[EscAuthority] Authored-lite scene plan identity drifted during ${phase}. ` +
+          'SeasonPlanner must only annotate budgets/flags onto the ESC projection, never reorder or replace scenes. ' +
+          `expected=${expectedFingerprint} actual=${actual}`,
+      );
     }
   }
 

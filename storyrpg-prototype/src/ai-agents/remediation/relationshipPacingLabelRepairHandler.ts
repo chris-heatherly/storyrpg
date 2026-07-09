@@ -12,15 +12,23 @@ const LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bthe\s+(club|circle|crew|group)'s\s+trust\b/gi, 'this fragile circle\'s trust'],
   [/\b([A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group))\s+is\s+real\b/gi, '$1 is still a dare'],
   [/\b(?:the\s+)?[A-Z][A-Za-z0-9'’ -]*(?:club|circle|crew|group)\s+is\s+now\b/gi, 'the name stays provisional as'],
+  // Group christening that uses "official" as a naming proposal, not a job title
+  // (bite-me 2026-07-08: "Let's make it official. We'll call ourselves the Dusk
+  // Club." survived first-official rewrites and sealed the ep1 contract). Keep
+  // benign uses ("city official", "official business") untouched.
+  [/\bmake\s+it\s+official\b/gi, 'try the name on'],
+  [/\bmake\s+this\s+official\b/gi, 'try the name on'],
+  [/\bmake\s+(?:ourselves|ourselves\s+\w+)\s+official\b/gi, 'try the name on'],
+  [/\bmade\s+it\s+official\b/gi, 'tried the name on'],
+  [/\bmaking\s+it\s+official\b/gi, 'trying the name on'],
   // "official first meeting" formalizes a group before it is earned ("Welcome to
   // the Dusk Club, official first meeting."). Drop the premature "official"
   // wherever it sits next to "first", noun-agnostic: the LLM keeps minting new
   // milestone nouns faster than a list can chase them (bite-me 2026-07-04:
   // "first official meeting", then "first official operation", then "first
   // official mission" each survived a noun-list version of this rule and
-  // blocked the ep1 seal). Legitimate uses without "first" ("city official",
-  // "official business", "made it official") are untouched, and this handler
-  // only runs on scenes already flagged for the blocked label.
+  // blocked the ep1 seal). This handler only runs on scenes already flagged
+  // for the blocked label.
   [/\bofficial\s+first\s+/gi, 'first '],
   [/\bfirst\s+official\s+/gi, 'first '],
   [/\binner circle\b/gi, 'people moving around him'],

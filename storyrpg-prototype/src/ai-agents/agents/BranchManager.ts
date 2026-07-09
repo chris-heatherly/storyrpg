@@ -57,6 +57,12 @@ export interface BranchManagerInput {
   episodeStoryCircleRole?: StoryCircleRoleAssignment[];
   /** Episode-level fractal Story Circle from StoryArchitect. */
   episodeCircle?: StoryCircleStructure;
+
+  /**
+   * Authored-lite ESC path: skip LLM annotation by default (deterministic
+   * skeleton only). Set true to force annotation for debug.
+   */
+  skipLlmAnnotation?: boolean;
 }
 
 // Output types
@@ -164,6 +170,13 @@ provided. Never invent ids that were not given to you.
     //    flat (labels + prose keyed by deterministic ids), so the parse-failure
     //    surface is tiny. If it fails we keep the deterministic skeleton with
     //    fallback labels — the structure downstream consumers rely on is intact.
+    if (input.skipLlmAnnotation) {
+      console.info(
+        `[BranchManager] Authored-lite / skipLlmAnnotation for ${input.episodeId}; using deterministic skeleton only.`,
+      );
+      return { success: true, data: analysis };
+    }
+
     if (skeleton.reconvergence.length === 0 && skeleton.paths.length <= 1) {
       // Linear episode — no branches or reconvergence worth annotating. Skip the
       // LLM round-trip entirely (saves a call and removes its failure surface).

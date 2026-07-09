@@ -207,6 +207,9 @@ describe('extractTreatmentFromMarkdown lite treatment format', () => {
 
     expect(treatment.episodes[1]?.sourceKind).toBe('authored_lite');
     expect(treatment.episodes[1]?.authoredTitle).toBe('The Sealed Bell');
+    expect(treatment.seasonGuidance?.worldLocationGuidance?.keyLocations?.map((loc) => loc.name)).toEqual([
+      'Drowned archive',
+    ]);
     expect(treatment.episodes[1]?.rawStoryCircleRole).toBe('you + need');
     expect(treatment.episodes[1]?.synopsis).toContain('Mara finds Jonas');
     expect(treatment.episodes[1]?.episodePromise).toContain('controlled silence');

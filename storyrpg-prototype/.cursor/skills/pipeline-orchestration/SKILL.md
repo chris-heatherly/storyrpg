@@ -42,6 +42,25 @@ BrowserQAPhase           → optional Playwright multi-path QA and image remedia
 SavingPhase              → story package, manifest, diagnostics, output writing
 ```
 
+### Authored-lite structural collapse
+
+When episode `treatmentGuidance.sourceKind === 'authored_lite'`, treat structure as:
+
+**Parse+ESC → Facts → Realize → Enforce → Media**
+
+| Stage | Owner | Must not |
+|---|---|---|
+| Parse+ESC | `compileEpisodeSpine` + `seasonScenePlanBuilder`; SeasonPlanner metadata overlay only | Invent/reorder scenes; `authorScenePlanLLM` |
+| Facts | WorldBuilder / CharacterDesigner | Rewrite ESC order |
+| Realize | StoryArchitect fill-slots; BranchManager skeleton; SceneWriter/ChoiceAuthor/EncounterArchitect | Invent topology; Thread/Twist/Arc LLMs (default off) |
+| Enforce | EpisodeSpineContractValidator, plan-time fidelity, final contract prose/field repair | Final-contract structural invention (`blueprint_rebalance` / `episode_replan` → architecture/ESC rebuild) |
+| Media | post-story image/video/audio | Run before text contract |
+
+Debug skip events: `thread_twist_skipped_authored_lite`, `character_arc_skipped_authored_lite`,
+`branch_annotation_skipped_authored_lite`. Force polish LLMs with
+`STORYRPG_THREAD_TWIST_PLANNING=1`, `STORYRPG_CHARACTER_ARC_TRACKING=1`,
+`STORYRPG_BRANCH_ANNOTATION=1`. Cognee stays advisory — index compiled ESC/ledger facts.
+
 Story authoring completes before post-story media. Images/video/audio decorate authored story
 artifacts; do not interleave media generation with story agents unless you are explicitly changing
 that contract. Find phases by filename and event labels, not hard-coded line numbers.

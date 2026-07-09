@@ -186,6 +186,23 @@ function escaped(value: string): string {
 }
 
 /**
+ * "Make it official" / "call ourselves …" is a provisional naming proposal, not
+ * settled membership. Bare blocked-label "official" must not abort christening
+ * choices that the repair handler and spark allowed-labels already treat as
+ * invitation/dare language (bite-me 2026-07-08 s1-5).
+ */
+function isProvisionalOfficialNaming(text: string, matchIndex: number): boolean {
+  const start = Math.max(0, matchIndex - 48);
+  const end = Math.min(text.length, matchIndex + 72);
+  const window = text.slice(start, end);
+  if (/\bmake(?:s|ing)?\s+(?:it|this|ourselves)\s+official\b/i.test(window)) return true;
+  if (/\bmade\s+(?:it|this)\s+official\b/i.test(window)) return true;
+  if (/\bcall(?:s|ing|ed)?\s+(?:ourselves|it|this|the\s+group)\b/i.test(window)) return true;
+  if (PROVISIONAL_GROUP_CONTEXT_RE.test(window)) return true;
+  return false;
+}
+
+/**
  * Contract-authored blocked labels beyond the generic high-stage vocabulary
  * (merge: ported from RelationshipPacingValidator). Generic labels stay the
  * ledger label check's job; this only catches custom contract terms.
@@ -200,6 +217,7 @@ function customBlockedLabelHits(text: string, contract: RelationshipPacingContra
     for (const match of text.matchAll(re)) {
       if (isNegated(text, match.index ?? 0)) continue;
       if (label.toLowerCase() === 'family' && !isFamilyRelationshipClaim(text, match.index ?? 0)) continue;
+      if (label.toLowerCase() === 'official' && isProvisionalOfficialNaming(text, match.index ?? 0)) continue;
       hits.push(label);
       break;
     }

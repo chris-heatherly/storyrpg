@@ -445,6 +445,61 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
     expect(result.issues.some((issue) => issue.message.includes('unearned relationship label'))).toBe(true);
   });
 
+  it('does not treat provisional "make it official" christening as an unearned official label (bite-me 2026-07-08)', () => {
+    const scene = {
+      id: 's1-5',
+      name: 'Formation',
+      startingBeatId: 'b1',
+      relationshipPacing: [pacing({
+        startStage: 'spark',
+        targetStage: 'spark',
+        allowedLabels: ['joke', 'dare', 'invitation', 'provisional circle'],
+        blockedLabels: ['official', 'settled membership', 'friends'],
+      })],
+      beats: [{
+        id: 'b1',
+        text: 'Mika raises her glass like a dare, not a vow.',
+        choices: [{
+          id: 'c1',
+          text: "Let's make it official. We'll call ourselves the Dusk Club.",
+          consequences: [],
+        }],
+      }],
+    } as Scene;
+
+    const result = new RelationshipArcLedgerValidator().validate({ story: story(scene), treatmentSourced: true });
+
+    expect(result.issues.some((issue) => issue.message.includes('unearned relationship label(s): official'))).toBe(false);
+  });
+
+  it('still blocks settled "is official now" membership language via custom blocked labels', () => {
+    const scene = {
+      id: 's1-5',
+      name: 'Formation',
+      startingBeatId: 'b1',
+      relationshipPacing: [pacing({
+        startStage: 'spark',
+        targetStage: 'spark',
+        allowedLabels: ['joke', 'dare'],
+        blockedLabels: ['official'],
+      })],
+      beats: [{
+        id: 'b1',
+        text: 'Mika grins. The Dusk Club is official now, and everyone at the table belongs.',
+        choices: [],
+      }],
+    } as Scene;
+
+    const result = new RelationshipArcLedgerValidator().validate({ story: story(scene), treatmentSourced: true });
+
+    expect(
+      result.issues.some((issue) =>
+        issue.message.includes('unearned relationship label')
+        || issue.message.includes('settled membership')
+      ),
+    ).toBe(true);
+  });
+
   it('flags relationship-gated choices that prior consequences cannot reach', () => {
     const result = new RelationshipArcLedgerValidator().validate({
       story: npcStory([beatScene('s1-1', [

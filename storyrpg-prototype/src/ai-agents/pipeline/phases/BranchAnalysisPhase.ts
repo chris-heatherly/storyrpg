@@ -19,6 +19,7 @@ import { EpisodeBlueprint } from '../../agents/StoryArchitect';
 import { analyzeBranchTopology } from '../../utils/branchTopology';
 import { buildBranchShadowDiff, type BranchShadowDiff } from '../../utils/branchShadowDiff';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
+import { isAuthoredLiteEpisode } from '../../utils/authoredLiteScenePlan';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import { PipelineContext } from './index';
 
@@ -54,6 +55,16 @@ export class BranchAnalysisPhase {
       const seasonEpisode = currentEpisodeNumber
         ? brief.seasonPlan?.episodes?.find(e => e.episodeNumber === currentEpisodeNumber)
         : undefined;
+      const authoredLite = isAuthoredLiteEpisode(seasonEpisode);
+      const forceBranchAnnotation = context.config.generation?.branchShadowModeEnabled === true
+        || process.env.STORYRPG_BRANCH_ANNOTATION === '1';
+      if (authoredLite && !forceBranchAnnotation) {
+        context.emit({
+          type: 'debug',
+          phase: 'branch_analysis',
+          message: 'branch_annotation_skipped_authored_lite: deterministic skeleton only',
+        });
+      }
 
       const result = await withTimeout(this.deps.branchManager.execute({
         episodeId: blueprint.episodeId,
@@ -73,6 +84,7 @@ export class BranchAnalysisPhase {
         seasonStoryCircle: brief.seasonPlan?.storyCircle,
         episodeStoryCircleRole: seasonEpisode?.storyCircleRole,
         episodeCircle: blueprint.episodeCircle,
+        skipLlmAnnotation: authoredLite && !forceBranchAnnotation,
       }), PIPELINE_TIMEOUTS.llmAgent, 'BranchManager.execute');
 
       if (!result.success || !result.data) {

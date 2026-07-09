@@ -78,7 +78,12 @@ function stripLargeValues(obj, maxStringLen = 512) {
 function isMissingApiKey(value) {
   if (typeof value !== 'string') return true;
   const v = value.trim().toLowerCase();
-  return !v || v === 'dummy' || v === 'placeholder' || v === 'your-api-key' || v === '[redacted]';
+  return !v
+    || v === 'dummy'
+    || v === 'placeholder'
+    || v === 'your-api-key'
+    || v === 'redacted'
+    || v === '[redacted]';
 }
 
 function buildWorkerConfigSnapshot(config) {

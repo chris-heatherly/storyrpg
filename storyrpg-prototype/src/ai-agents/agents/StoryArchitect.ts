@@ -3601,16 +3601,42 @@ Remember: The encounter is the heart. Design outward from it.
       const localPurpose = this.localPurposeForPlannedScene(p, requiredBeats);
       const localKeyBeats = this.collectLocalSceneKeyBeats(p, requiredBeats, localPurpose);
       const signatureMoment = this.isChoiceMenuPlanningText(p.signatureMoment) ? undefined : p.signatureMoment;
+      const spineUnit = p.spineUnitId
+        ? input.seasonPlanDirectives?.episodeSpine?.units?.find((unit) => unit.id === p.spineUnitId)
+        : undefined;
+      const escTurnText = spineUnit?.text?.trim() && !this.isChoiceMenuPlanningText(spineUnit.text)
+        ? spineUnit.text.trim()
+        : undefined;
       const rawTurnContract = p.turnContract as (SceneTurnContract & { pressurePeak?: string }) | undefined;
-      const turnContract = rawTurnContract
+      // ESC fill-slots: when a spine unit owns concrete turn text, copy it into
+      // the turnContract so architect/LLM re-author cannot invent a competing turn.
+      const turnContract = escTurnText
         ? {
-            ...rawTurnContract,
-            centralTurn: this.hasReaderSafeBlueprintText(rawTurnContract.centralTurn) ? rawTurnContract.centralTurn : localPurpose,
-            pressurePeak: this.hasReaderSafeBlueprintText(rawTurnContract.pressurePeak) ? rawTurnContract.pressurePeak : localPurpose,
-            turnEvent: this.hasReaderSafeBlueprintText(rawTurnContract.turnEvent) ? rawTurnContract.turnEvent : localPurpose,
-            handoff: this.hasReaderSafeBlueprintText(rawTurnContract.handoff) ? rawTurnContract.handoff : localPurpose,
+            ...(rawTurnContract ?? {
+              turnId: `${p.id}-esc-turn`,
+              source: 'treatment' as const,
+              beforeState: `Before: ${escTurnText}`,
+              afterState: `After: ${escTurnText}`,
+              centralTurn: escTurnText,
+              turnEvent: escTurnText,
+              handoff: `Carry the visible consequence forward from ${escTurnText}`,
+            }),
+            centralTurn: escTurnText,
+            pressurePeak: escTurnText,
+            turnEvent: escTurnText,
+            handoff: rawTurnContract?.handoff && this.hasReaderSafeBlueprintText(rawTurnContract.handoff)
+              ? rawTurnContract.handoff
+              : `Carry the visible consequence forward from ${escTurnText}`,
           }
-        : rawTurnContract;
+        : rawTurnContract
+          ? {
+              ...rawTurnContract,
+              centralTurn: this.hasReaderSafeBlueprintText(rawTurnContract.centralTurn) ? rawTurnContract.centralTurn : localPurpose,
+              pressurePeak: this.hasReaderSafeBlueprintText(rawTurnContract.pressurePeak) ? rawTurnContract.pressurePeak : localPurpose,
+              turnEvent: this.hasReaderSafeBlueprintText(rawTurnContract.turnEvent) ? rawTurnContract.turnEvent : localPurpose,
+              handoff: this.hasReaderSafeBlueprintText(rawTurnContract.handoff) ? rawTurnContract.handoff : localPurpose,
+            }
+          : rawTurnContract;
       const locationHintTexts = [
         p.title,
         localPurpose,
@@ -4327,7 +4353,22 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       if (!spineResult.valid) {
         return {
           success: false,
-          error: spineResult.issues.map((issue) => `[EpisodeSpineContract] ${issue.message}`).join('\n'),
+          error: `[EpisodeSpineContract] Authored-lite ESC drift after elaborate — architect must not change scene order/spineUnitId:\n${spineResult.issues.map((issue) => `[EpisodeSpineContract] ${issue.message}`).join('\n')}`,
+        };
+      }
+      // Extra hard-fail: projected spineUnitId order must match ESC unit order.
+      const projectedUnitIds = projectedScenes
+        .map((scene) => scene.spineUnitId)
+        .filter((id): id is string => Boolean(id));
+      const escUnitIds = input.seasonPlanDirectives.episodeSpine.units.map((unit) => unit.id);
+      const projectedInEscOrder = projectedUnitIds.filter((id) => escUnitIds.includes(id));
+      const expectedOrder = escUnitIds.filter((id) => projectedUnitIds.includes(id));
+      if (projectedInEscOrder.join('|') !== expectedOrder.join('|')) {
+        return {
+          success: false,
+          error:
+            `[EpisodeSpineContract] Authored-lite spineUnitId order drifted after elaborate. ` +
+            `expected=${expectedOrder.join(',')} actual=${projectedInEscOrder.join(',')}`,
         };
       }
     }

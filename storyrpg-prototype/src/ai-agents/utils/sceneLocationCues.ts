@@ -39,6 +39,7 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
   const normalized = normalizeLocationText(value);
   if (!normalized) return undefined;
   if (/^(?:purpose|scene|episode|next|before|after|consequence|consequences|turn|handoff)\b/.test(normalized)) return undefined;
+  if (ACTION_GERUND_OPENER_RE.test(normalized)) return undefined;
   const lexicon = getStoryLexicon();
   // Story-signature places collapse to their canonical cue.
   for (const place of lexicon.signaturePlaces) {
@@ -102,6 +103,12 @@ const VENUE_NOUNS = [
 const VENUE_NOUN_RE = new RegExp(`\\b(?:${VENUE_NOUNS.join('|')})\\b`, 'i');
 const PLACE_STOPWORDS = new Set(['of', 'the', 'and', 'de', 'la', 'le', 'du', 'des']);
 
+// Present-participle / gerund openers are dramatic actions ("Testing Kylie",
+// "Walking Home"), not places. Title-case alone used to promote them into
+// major location cues and abort SceneConstructionGate (bite-me 2026-07-08
+// s1-4: apartment + "testing kylie").
+const ACTION_GERUND_OPENER_RE = /^(?:testing|walking|running|writing|reading|waiting|meeting|leaving|arriving|returning|following|watching|asking|telling|calling|opening|closing|entering|exiting|crossing|climbing|driving|riding|eating|drinking|dancing|kissing|holding|finding|losing|saving|rescuing|attacking|hiding|seeking|searching|choosing|deciding|planning|forming|becoming|gathering|praising|nudging|fixing|breaking|feeding|giving|taking|keeping|staying|going|coming)\b/i;
+
 // A proper place name reads as Title Case ("Vâlcescu Club", "Cișmigiu") — its
 // first word is capitalized and no word is a lowercase content word. This
 // distinguishes a real location label from a short prose fragment that merely
@@ -109,6 +116,7 @@ const PLACE_STOPWORDS = new Set(['of', 'the', 'and', 'de', 'la', 'le', 'du', 'de
 function looksLikeProperPlace(text: string): boolean {
   const stripped = text.replace(/^(?:the|a|an)\s+/i, '').trim();
   if (!stripped) return false;
+  if (ACTION_GERUND_OPENER_RE.test(stripped)) return false;
   const words = stripped.split(/\s+/);
   if (!/^[A-ZÀ-Ž]/.test(words[0])) return false;
   return words.every((word) => /^[A-ZÀ-Ž0-9]/.test(word) || PLACE_STOPWORDS.has(word.toLowerCase()));

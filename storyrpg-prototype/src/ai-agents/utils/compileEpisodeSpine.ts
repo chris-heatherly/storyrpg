@@ -11,7 +11,9 @@ import type {
   EpisodeSpineContract,
   EpisodeSpineUnit,
   SeasonSpineContract,
+  SpineObligationKind,
   SpineUnitKind,
+  SpineUnitObligation,
 } from '../../types/episodeSpine';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 import { storyCircleRoleBeats } from './storyCircleDistribution';
@@ -53,13 +55,28 @@ function inferLocationId(text: string, locations: string[]): string | undefined 
   if (/\b(?:rooftop|terrace)\b/.test(normalized)) {
     return locations.find((loc) => /\b(?:rooftop|terrace|bar)/i.test(loc)) || 'Rooftop Bar';
   }
-  if (/\b(?:club|valescu|nightlife)\b/.test(normalized)) {
+  if (/\b(?:club|valescu|valcescu|nightlife)\b/.test(normalized)) {
     return locations.find((loc) => /\bclub/i.test(loc)) || 'Vâlcescu Club';
   }
-  if (/\b(?:apartment|flat|home|doorstep|threshold)\b/.test(normalized)) {
-    return locations.find((loc) => /\b(?:apartment|flat|home|residence)/i.test(loc));
+  // Home/threshold before mountain: "returns home … codename for The Mountain"
+  // must pin the apartment, not Casa Lupului.
+  if (/\b(?:apartment|flat|home|doorstep|threshold|returns?\s+home)\b/.test(normalized)) {
+    return locations.find((loc) => /\b(?:apartment|flat|home|residence|lipscani)/i.test(loc))
+      || "Kylie's Lipscani Apartment";
   }
-  return locations[0];
+  if (/\b(?:casa\s+lupului|mountain\s+research|carpathian|lodge|near\s+bran|\bbran\b)\b/.test(normalized)
+    || (/\bmountain\b/.test(normalized) && !/\bcodename\b/.test(normalized))) {
+    return locations.find((loc) => /\b(?:lupului|mountain|lodge|bran)/i.test(loc)) || 'Casa Lupului';
+  }
+  if (/\b(?:casa\s+stelarum|estate|boyar|equinox)\b/.test(normalized)) {
+    return locations.find((loc) => /\b(?:stelarum|estate|boyar)/i.test(loc)) || 'Casa Stelarum';
+  }
+  if (/\b(?:conversation|dates?|dating|blog|writing|praising\s+her\s+writing)\b/.test(normalized)) {
+    return locations.find((loc) => /\b(?:club|cafe|café|bar|bucharest)/i.test(loc))
+      || locations[0]
+      || 'Bucharest';
+  }
+  return locations[0] || 'Bucharest';
 }
 
 function capitalizeFirst(text: string): string {
@@ -196,6 +213,104 @@ function hashSource(ep: SeasonEpisode, turns: string[]): string {
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
+function slugObligationId(kind: SpineObligationKind, text: string, index: number): string {
+  const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  return `${kind}-${index + 1}-${slug || 'item'}`;
+}
+
+function tokenOverlapScore(a: string, b: string): number {
+  const tokensA = new Set(a.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 4));
+  const tokensB = new Set(b.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 4));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let hits = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) hits += 1;
+  }
+  return hits / Math.min(tokensA.size, tokensB.size);
+}
+
+function bestUnitIndexForText(units: EpisodeSpineUnit[], text: string): number {
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let i = 0; i < units.length; i += 1) {
+    const score = tokenOverlapScore(units[i].text, text);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  // Prefer encounter/set_piece for signature/threat language when overlap is weak.
+  if (bestScore < 0.15 && /\b(?:attack|ambush|rescue|signature|device)\b/i.test(text)) {
+    const encounterIdx = units.findIndex((unit) => unit.sceneKind === 'encounter' || unit.kind === 'set_piece');
+    if (encounterIdx >= 0) return encounterIdx;
+  }
+  return bestIdx;
+}
+
+/**
+ * Bind treatment obligations (reveals, seeds, choice pressures, arc facets) onto
+ * ESC units so Thread/Twist/Arc LLM planners are not required for authored-lite.
+ */
+export function bindTreatmentObligationsToUnits(
+  ep: SeasonEpisode,
+  units: EpisodeSpineUnit[],
+  polarityFacets: string[],
+): void {
+  if (units.length === 0) return;
+  const guidance = ep.treatmentGuidance;
+  if (!guidance) return;
+
+  const push = (kind: SpineObligationKind, texts: string[] | undefined) => {
+    for (const [index, raw] of (texts ?? []).entries()) {
+      const text = cleanText(raw);
+      if (!text) continue;
+      const unit = units[bestUnitIndexForText(units, text)];
+      const obligation: SpineUnitObligation = {
+        id: slugObligationId(kind, text, index),
+        kind,
+        text,
+      };
+      unit.obligations = [...(unit.obligations ?? []), obligation];
+    }
+  };
+
+  push('consequence_seed', guidance.consequenceSeeds);
+  push('choice_pressure', guidance.majorChoicePressures);
+  push('signature_device', guidance.encounterAnchors);
+  if (guidance.informationMovement?.trim()) {
+    push('information_reveal', [guidance.informationMovement]);
+  }
+  // Arc polarity facets bind to the first unit that shares tokens, else unit 0.
+  push('arc_pressure', polarityFacets);
+
+  // Thread setup / twist reveal heuristics from turn kinds.
+  for (const unit of units) {
+    if (unit.kind === 'late_night_writing' || unit.kind === 'threshold') {
+      unit.obligations = [
+        ...(unit.obligations ?? []),
+        {
+          id: slugObligationId('twist_reveal', unit.text, unit.order),
+          kind: 'twist_reveal',
+          text: unit.text,
+        },
+      ];
+    }
+    if (unit.kind === 'meet' || unit.kind === 'bond' || unit.kind === 'test') {
+      const already = (unit.obligations ?? []).some((o) => o.kind === 'thread_setup');
+      if (!already) {
+        unit.obligations = [
+          ...(unit.obligations ?? []),
+          {
+            id: slugObligationId('thread_setup', unit.text, unit.order),
+            kind: 'thread_setup',
+            text: unit.text,
+          },
+        ];
+      }
+    }
+  }
+}
+
 function rawEpisodeTurns(ep: SeasonEpisode): string[] {
   const guidance = ep.treatmentGuidance;
   let turns: string[] = [];
@@ -278,6 +393,10 @@ export function compileEpisodeSpine(
 
   for (let i = 0; i < units.length; i += 1) {
     units[i].prerequisites = buildPrerequisites(draftUnits, i, units[i].kind);
+  }
+
+  if (isAuthoredLiteEpisode(ep)) {
+    bindTreatmentObligationsToUnits(ep, units, polarityFacets);
   }
 
   return {

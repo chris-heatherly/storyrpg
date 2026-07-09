@@ -1867,6 +1867,7 @@ ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npc
 - Show relationship movement through behavior: proximity, eye contact, teasing, withholding, invitation, remembered detail, vulnerability, challenge, refusal, protection, or changed access.
 - If an NPC is at unmet or first-meeting stage, do not let the protagonist text, call, DM, receive private replies from, or already have that NPC's number until the scene shows the introduction and how contact access is exchanged.
 - If a group name appears early, make it a dare, joke, invitation, or fragile beginning unless prior scenes have earned settled membership.
+- Never write "make it official", "we are the X Club", "official first meeting", or settled membership language for a new group at spark — name it as a toast, dare, joke, or provisional circle instead.
 - A first introduction can turn unmet into spark, but it cannot also conduct the later friendship/trust/intimacy proof. Keep first-meeting prose curious, wary, provisional, or testing unless the ledger contract explicitly permits more.
 - Treat McKee-square movement as behavior, not labels: care with agency, withheld care, active hostility, or control/coercion disguised as care. A scene that claims relationship movement must show the value turn on-page; a quiet setup scene must not imply that the relationship already moved.
 - Do not use blocked labels in narration, scene takeaways, visual metadata, relationshipDynamic, or transition/bridge prose.

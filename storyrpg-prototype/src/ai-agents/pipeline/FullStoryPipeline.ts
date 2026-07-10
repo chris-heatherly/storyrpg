@@ -9252,6 +9252,10 @@ export class FullStoryPipeline {
     recallCount: number;
     writeCount: number;
     emptyRecallCount: number;
+    recallFailureCount: number;
+    writeFailureCount: number;
+    cognifyFailureCount: number;
+    circuitOpenSkipCount: number;
     breakerOpenCount: number;
     totalResultCount: number;
     totalLatencyMs: number;
@@ -9262,6 +9266,10 @@ export class FullStoryPipeline {
       recallCount: summary.recallCount,
       writeCount: summary.writeCount,
       emptyRecallCount: summary.emptyRecallCount,
+      recallFailureCount: summary.recallFailureCount,
+      writeFailureCount: summary.writeFailureCount,
+      cognifyFailureCount: summary.cognifyFailureCount,
+      circuitOpenSkipCount: summary.circuitOpenSkipCount,
       breakerOpenCount: summary.breakerOpenCount,
       totalResultCount: summary.totalResultCount,
       totalLatencyMs: summary.totalLatencyMs,
@@ -9270,7 +9278,9 @@ export class FullStoryPipeline {
   }
 
   private memoryFlushTargets(): string[] {
-    const raw = process.env.STORYRPG_MEMORY_FLUSH_AT || 'episode,qa,run';
+    // Cognee's graph extraction takes a database writer lock. Flush after QA by
+    // default so scene-authoring recalls do not contend with cognify work.
+    const raw = process.env.STORYRPG_MEMORY_FLUSH_AT || 'qa';
     return raw.split(',').map((part: string) => part.trim()).filter(Boolean);
   }
 

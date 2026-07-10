@@ -91,6 +91,10 @@ export interface QualityLedgerEntry {
     recallCount: number;
     writeCount: number;
     emptyRecallCount: number;
+    recallFailureCount: number;
+    writeFailureCount: number;
+    cognifyFailureCount: number;
+    circuitOpenSkipCount: number;
     breakerOpenCount: number;
     totalResultCount: number;
     totalLatencyMs: number;

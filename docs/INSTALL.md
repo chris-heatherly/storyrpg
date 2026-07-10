@@ -384,6 +384,7 @@ LLM_API_KEY=your-openai-compatible-key
 cd storyrpg-prototype
 docker compose -f docker-compose.cognee.yml up -d
 npm run memory:health
+npm run memory:doctor
 ```
 
 3. Seed memory:
@@ -394,9 +395,24 @@ npm run memory:index-run -- --storyId your-generated-story-folder
 npm run memory:ask -- "What validator failures have repeated recently?"
 ```
 
+`memory:index-project` creates a content-hashed project dataset and atomically
+activates it through `pipeline-memories/cognee-project-dataset.json`. Workers
+read that manifest at startup, so re-indexing replaces the active project
+knowledge instead of mixing stale documentation into future recall.
+
 If Cognee is unavailable, the pipeline fails open and falls back to the local
 `pipeline-memories/` file provider when configured. Cognee env vars are
 server/generator-side only and must not be prefixed with `EXPO_PUBLIC_`.
+
+`memory:doctor` checks authenticated search as well as the unauthenticated
+health endpoint. This is the operational readiness check to use before a
+generation run. StoryRPG bounds concurrent Cognee recalls and defers graph
+extraction until QA by default; set `STORYRPG_MEMORY_COGNIFY_ON_WRITE=1` only
+for deliberate low-volume maintenance work.
+
+Proxy-spawned generation workers also enqueue Cognee writes through a
+proxy-owned durable outbox. The outbox drains and cognifies only after active
+story workers are idle, so a busy Cognee writer cannot block scene generation.
 
 ### 4.d) Optional — LoRA Auto-Training Sidecar
 
@@ -954,6 +970,7 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 | `npm run memory:index-run` | Index a generated story run into Cognee (`-- --storyId <folder>` optional) |
 | `npm run memory:ask` | Query Cognee project/validator memory (`-- "question"`) |
 | `npm run memory:health` | Check Cognee sidecar health |
+| `npm run memory:doctor` | Check Cognee health plus authenticated project-memory search |
 | `npm run proxy:compose:up` | Start proxy in Docker |
 | `npm run proxy:compose:down` | Stop Docker proxy |
 | `npm run proxy:compose:logs` | View Docker proxy logs |

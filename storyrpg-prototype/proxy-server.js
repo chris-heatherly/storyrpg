@@ -12,6 +12,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const { getBudgets: getLlmTransportBudgets } = require('./llm-transport-policy');
 const { createCachedStore } = require('./proxy/cachedJsonStore');
@@ -29,6 +30,7 @@ const { registerModelScanRoutes } = require('./proxy/modelScanRoutes');
 const { registerGeneratorSettingsRoutes } = require('./proxy/generatorSettingsRoutes');
 const { registerAnthropicProxyRoutes } = require('./proxy/anthropicProxyRoutes');
 const { registerMemoryRoutes } = require('./proxy/memoryRoutes');
+const { createMemoryOutboxService } = require('./proxy/memoryOutboxService');
 const { registerElevenLabsRoutes } = require('./proxy/elevenLabsRoutes');
 const { registerAtlasCloudRoutes } = require('./proxy/atlasCloudRoutes');
 const { registerMidApiRoutes } = require('./proxy/midApiRoutes');
@@ -57,6 +59,12 @@ const REF_IMAGES_DIR = RUNTIME.refImagesDir;
 const PIPELINE_MEMORY_ROOT = RUNTIME.pipelineMemoryRoot;
 const DELETED_STORIES_FILE = RUNTIME.deletedStoriesFile;
 const WORKER_CHECKPOINT_OUTPUT_DIR = RUNTIME.workerCheckpointOutputDir;
+if (!process.env.STORYRPG_MEMORY_OUTBOX_TOKEN) {
+  process.env.STORYRPG_MEMORY_OUTBOX_TOKEN = crypto.randomBytes(24).toString('hex');
+}
+if (!process.env.STORYRPG_MEMORY_OUTBOX_URL) {
+  process.env.STORYRPG_MEMORY_OUTBOX_URL = `http://127.0.0.1:${PORT}/internal/memory/outbox`;
+}
 
 const { listLatestStoryRecords, createStoryCatalogEntry, createFullStoryResponse } =
   createStoryCatalog(STORIES_DIR, PORT);
@@ -129,6 +137,15 @@ registerGenerationJobRoutes(app, lifecycle, {
   workerCheckpointOutputDir: WORKER_CHECKPOINT_OUTPUT_DIR,
 });
 lifecycle.registerWorkerLifecycleRoutes(app);
+
+const memoryOutbox = createMemoryOutboxService({
+  memoryRoot: PIPELINE_MEMORY_ROOT,
+  lifecycle,
+  baseUrl: process.env.COGNEE_BASE_URL || 'http://localhost:8000',
+  apiKey: process.env.COGNEE_API_KEY || '',
+  token: process.env.STORYRPG_MEMORY_OUTBOX_TOKEN,
+});
+memoryOutbox.registerRoutes(app);
 
 registerMemoryRoutes(app, { memoryRoot: PIPELINE_MEMORY_ROOT });
 registerElevenLabsRoutes(app, { audioRootDir: STORIES_DIR, port: PORT });

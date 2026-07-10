@@ -46,4 +46,23 @@ describe('AgentMemoryContextBuilder', () => {
 
     expect(recallForAgent).toHaveBeenCalledTimes(2);
   });
+
+  it('does not reuse a cache entry when fact or artifact filters differ', async () => {
+    const recallForAgent = vi.fn(async () => ({
+      renderedPromptBlock: 'memory',
+      retrievals: [],
+      datasetNames: [],
+      nodeNames: [],
+      warnings: [],
+      provenance: [],
+    }));
+    const builder = new AgentMemoryContextBuilder({ recallForAgent } as unknown as PipelineMemory);
+    const base = { agentRole: 'SceneWriter' as const, lifecycle: 'scene-authoring', storyId: 'Story' };
+
+    await builder.renderedPromptBlock({ ...base, factKinds: ['scene-canon'] });
+    await builder.renderedPromptBlock({ ...base, factKinds: ['source-obligation'] });
+    await builder.renderedPromptBlock({ ...base, artifactKinds: ['scene-content'] });
+
+    expect(recallForAgent).toHaveBeenCalledTimes(3);
+  });
 });

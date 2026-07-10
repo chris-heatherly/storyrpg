@@ -1031,6 +1031,14 @@ export interface MemoryConfig {
   recallEnabled?: boolean;
   writeEnabled?: boolean;
   cognifyEnabled?: boolean;
+  /** Opt in to graph extraction after each individual write. Off by default: Cognee's writer is single-file locked. */
+  cognifyOnWrite?: boolean;
+  /** Per-worker cap for concurrent historical-memory recalls. */
+  searchConcurrency?: number;
+  /** Server-internal proxy endpoint that durably queues Cognee writes. */
+  outboxUrl?: string;
+  /** Ephemeral proxy token for the server-internal outbox endpoint. */
+  outboxToken?: string;
   maxPromptChars?: number;
   timeoutMs?: number;
   failOpen?: boolean;
@@ -1114,6 +1122,10 @@ export function resolveMemoryConfig(env: Record<string, string | undefined>): Me
     recallEnabled: env.STORYRPG_MEMORY_RECALL !== '0',
     writeEnabled: env.STORYRPG_MEMORY_WRITE !== '0',
     cognifyEnabled: env.STORYRPG_MEMORY_COGNIFY !== '0',
+    cognifyOnWrite: env.STORYRPG_MEMORY_COGNIFY_ON_WRITE === '1',
+    searchConcurrency: Math.max(1, Number.parseInt(env.STORYRPG_MEMORY_SEARCH_CONCURRENCY || '2', 10) || 2),
+    outboxUrl: env.STORYRPG_MEMORY_OUTBOX_URL || undefined,
+    outboxToken: env.STORYRPG_MEMORY_OUTBOX_TOKEN || undefined,
     maxPromptChars: Number.parseInt(env.STORYRPG_MEMORY_MAX_PROMPT_CHARS || '6000', 10) || 6000,
     timeoutMs: Number.parseInt(env.STORYRPG_MEMORY_TIMEOUT_MS || '8000', 10) || 8000,
     failOpen: env.STORYRPG_MEMORY_FAIL_OPEN !== '0',

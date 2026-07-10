@@ -10,6 +10,7 @@ import {
   resolveCogneeLlmTarget,
   type PipelineMemoryPacket,
 } from './pipelineMemory';
+import { memoryTelemetry } from './memoryTelemetry';
 import { resolveMemoryConfig, type PipelineConfig } from '../config';
 
 function makeConfig(overrides: Record<string, unknown> = {}): PipelineConfig {
@@ -39,6 +40,7 @@ function makeConfig(overrides: Record<string, unknown> = {}): PipelineConfig {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  memoryTelemetry.reset();
 });
 
 function okResponse(payload: unknown = {}) {
@@ -69,7 +71,7 @@ describe('renderPipelineMemoryPacket', () => {
 });
 
 describe('CogneeHttpMemoryProvider', () => {
-  it('posts add and cognify requests for memory records (after a health probe)', async () => {
+  it('posts memory records without graph extraction during active writes', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse());
     vi.stubGlobal('fetch', fetchMock);
 
@@ -82,7 +84,7 @@ describe('CogneeHttpMemoryProvider', () => {
       nodeSet: ['validator'],
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
     const [addCall] = callsTo(fetchMock, '/api/v1/add');
     expect(addCall[1]).toMatchObject({ method: 'POST' });
@@ -91,18 +93,14 @@ describe('CogneeHttpMemoryProvider', () => {
     const addBody = addCall[1].body as FormData;
     expect(addBody.get('data')).toBeInstanceOf(Blob);
     expect(addBody.get('run_in_background')).toBe('true');
-    const [cognifyCall] = callsTo(fetchMock, '/api/v1/cognify');
-    expect(JSON.parse(cognifyCall[1].body)).toMatchObject({
-      datasets: ['storyrpg-validator-history'],
-      runInBackground: true,
-    });
+    expect(callsTo(fetchMock, '/api/v1/cognify')).toHaveLength(0);
   });
 
   it('cognifies each dataset at most once per run', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse());
     vi.stubGlobal('fetch', fetchMock);
 
-    const provider = new CogneeHttpMemoryProvider(makeConfig().memory!);
+    const provider = new CogneeHttpMemoryProvider(makeConfig({ cognifyOnWrite: true }).memory!);
     await provider.remember({ kind: 'generation', dataset: 'storyrpg-run-x', title: 'A', text: 'a' });
     await provider.remember({ kind: 'generation', dataset: 'storyrpg-run-x', title: 'B', text: 'b' });
     await provider.cognify(['storyrpg-run-x', 'storyrpg-run-y']);
@@ -172,6 +170,24 @@ describe('PipelineMemory', () => {
     const memory = new PipelineMemory({ config: makeConfig() });
 
     await expect(memory.recallPacket()).resolves.toBeNull();
+  });
+
+  it('records failed memory operations instead of reporting them as empty successes', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return okResponse();
+      throw new DOMException('This operation was aborted', 'AbortError');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const memory = new PipelineMemory({ config: makeConfig() });
+
+    await memory.writeRecord({ kind: 'generation', title: 'failed write', text: 'x' });
+    const summary = memoryTelemetry.getSummary();
+
+    expect(summary.writeCount).toBe(1);
+    expect(summary.writeFailureCount).toBe(1);
+    expect(summary.errors).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalled();
   });
 
   it('opens the circuit breaker after 3 consecutive failures and short-circuits further calls', async () => {
@@ -338,6 +354,12 @@ describe('resolveMemoryConfig', () => {
       STORYRPG_MEMORY_LLM_MODEL: 'claude-sonnet-4-6',
       STORYRPG_MEMORY_LLM_API_KEY: 'k',
     }).llm).toEqual({ mode: 'custom', provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' });
+  });
+
+  it('defaults to bounded recall concurrency and deferred cognify', () => {
+    const config = resolveMemoryConfig({});
+    expect(config.searchConcurrency).toBe(2);
+    expect(config.cognifyOnWrite).toBe(false);
   });
 });
 

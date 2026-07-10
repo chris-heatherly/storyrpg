@@ -488,6 +488,21 @@ async function runCompileEpisode(payload: WorkerPayload) {
   });
 }
 
+async function applyActiveCogneeProjectDataset(memory: ReturnType<typeof resolveMemoryConfig>) {
+  const memoryRoot = memory.directory || process.env.MEMORY_DIR;
+  if (!memoryRoot) return memory;
+  try {
+    const raw = await fs.readFile(path.join(memoryRoot, 'cognee-project-dataset.json'), 'utf8');
+    const manifest = JSON.parse(raw);
+    if (typeof manifest?.activeDataset === 'string' && manifest.activeDataset) {
+      return { ...memory, projectDataset: manifest.activeDataset };
+    }
+  } catch {
+    // No versioned project index exists yet; preserve the configured dataset.
+  }
+  return memory;
+}
+
 async function main() {
   const payloadPath = process.argv[2];
   if (!payloadPath) throw new Error('Missing payload path');
@@ -505,7 +520,7 @@ async function main() {
   // default applies (mirror = follow the narrative model at run time).
   if (payload.config && typeof payload.config === 'object') {
     const clientMemoryLlm = payload.config.memory?.llm;
-    const serverMemory = resolveMemoryConfig(process.env);
+    const serverMemory = await applyActiveCogneeProjectDataset(resolveMemoryConfig(process.env));
     payload.config.memory = clientMemoryLlm?.mode === 'custom' && clientMemoryLlm.provider
       ? { ...serverMemory, llm: clientMemoryLlm }
       : serverMemory;

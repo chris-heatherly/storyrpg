@@ -9,6 +9,7 @@
 
 import { PipelineConfig, type MemoryConfig, type MemoryLlmConfig } from '../config';
 import { getMemoryStore, NodeMemoryStore, type MemoryStore } from '../utils/memoryStore';
+import { AsyncSemaphore } from '../utils/concurrency';
 import type {
   PipelineFactRecord,
   PipelineMemoryArtifactKind,
@@ -26,6 +27,7 @@ import {
   memoryTelemetry,
   memoryTelemetryEnabled,
   type MemoryTelemetryProvider,
+  type MemoryTelemetryStatus,
 } from './memoryTelemetry';
 import type { ArtifactMemoryService } from './artifactMemoryService';
 import type { FactMemoryService } from './factMemoryService';
@@ -110,6 +112,12 @@ const HEALTH_PROBE_TIMEOUT_MS = 3000;
 // per-call timeouts (2026-07-04: every write burst aborted at 8s against a
 // busy Cognee, ~20 warns/run).
 const BREAKER_THRESHOLD = 3;
+
+interface MemoryAttempt<T> {
+  value: T;
+  status: Extract<MemoryTelemetryStatus, 'success' | 'failed' | 'circuit_open'>;
+  error?: string;
+}
 
 export type AgentMemoryRole =
   | 'SourceMaterialAnalyzer'
@@ -660,6 +668,36 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     return `${this.baseUrl}/api/v1/${path.replace(/^\/+/, '')}`;
   }
 
+  private async enqueueOutbox(record: PipelineMemoryRecord): Promise<void> {
+    const outboxUrl = this.config.outboxUrl;
+    if (!outboxUrl) return;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.config.outboxToken) headers['X-StoryRPG-Memory-Token'] = this.config.outboxToken;
+    const response = await fetchWithTimeout(outboxUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ record }),
+    }, this.timeoutMs());
+    if (!response.ok) {
+      throw new Error(`Cognee outbox enqueue failed: ${response.status} ${await response.text()}`);
+    }
+  }
+
+  private async requestOutboxDrain(): Promise<void> {
+    const outboxUrl = this.config.outboxUrl;
+    if (!outboxUrl) return;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.config.outboxToken) headers['X-StoryRPG-Memory-Token'] = this.config.outboxToken;
+    const response = await fetchWithTimeout(`${outboxUrl.replace(/\/+$/, '')}/drain`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    }, this.timeoutMs());
+    if (!response.ok) {
+      throw new Error(`Cognee outbox drain request failed: ${response.status} ${await response.text()}`);
+    }
+  }
+
   private timeoutMs(): number {
     return this.config.timeoutMs || DEFAULT_TIMEOUT_MS;
   }
@@ -675,6 +713,12 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async remember(record: PipelineMemoryRecord): Promise<void> {
     if (!this.config.writeEnabled || !this.baseUrl) return;
+    // The proxy owns durable enqueueing and drains only when story workers are
+    // idle. This keeps advisory writes off the generation critical path.
+    if (this.config.outboxUrl) {
+      await this.enqueueOutbox(record);
+      return;
+    }
     if (!(await this.ensureHealthy())) return;
     await this.ensureLlmSynced();
     const dataset = record.dataset || this.config.projectDataset || DEFAULT_PROJECT_DATASET;
@@ -699,7 +743,12 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
       throw new Error(`Cognee add failed: ${addResponse.status} ${await addResponse.text()}`);
     }
 
-    if (this.config.cognifyEnabled && record.cognify !== false) {
+    const shouldCognify = record.cognify === true || (
+      this.config.cognifyEnabled &&
+      this.config.cognifyOnWrite === true &&
+      record.cognify !== false
+    );
+    if (shouldCognify) {
       await this.cognify([dataset], { background: true });
     }
   }
@@ -766,6 +815,10 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
 
   async cognify(datasets: string[], options: { background?: boolean } = {}): Promise<void> {
     if (!this.config.cognifyEnabled || !this.baseUrl || datasets.length === 0) return;
+    if (this.config.outboxUrl) {
+      await this.requestOutboxDrain();
+      return;
+    }
     // Cognify at most once per dataset per run: each call kicks off LLM graph
     // extraction inside the Cognee container, and the per-artifact cadence
     // starved concurrent /add ingestion into 8s aborts (2026-07-04).
@@ -825,7 +878,11 @@ export class PipelineMemory {
 
   private breakerOpen = false;
 
-  constructor(private deps: PipelineMemoryDeps) {}
+  private readonly recallSemaphore: AsyncSemaphore;
+
+  constructor(private deps: PipelineMemoryDeps) {
+    this.recallSemaphore = new AsyncSemaphore(deps.config.memory?.searchConcurrency || 2);
+  }
 
   private get config(): MemoryConfig | undefined {
     return this.deps.config.memory;
@@ -875,6 +932,7 @@ export class PipelineMemory {
       resultCount: number;
       emptyContext: boolean;
       latencyMs: number;
+      status: MemoryTelemetryStatus;
       error: string;
     }> = {},
   ): void {
@@ -893,30 +951,41 @@ export class PipelineMemory {
       resultCount: details.resultCount || 0,
       emptyContext: details.emptyContext === true,
       latencyMs: details.latencyMs || 0,
+      status: details.status || (details.error ? 'failed' : 'success'),
       error: details.error,
     });
   }
 
-  private async bestEffort<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
-    if (this.breakerOpen) return fallback;
+  private async bestEffort<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<MemoryAttempt<T>> {
+    if (this.breakerOpen) return { value: fallback, status: 'circuit_open' };
     try {
       const result = await fn();
       this.consecutiveFailures = 0;
-      return result;
+      return { value: result, status: 'success' };
     } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
       if (this.defaults.failOpen) {
         this.consecutiveFailures += 1;
-        if (this.breakerOpen) return fallback; // concurrent failure raced past the open breaker; already logged
+        if (this.breakerOpen) return { value: fallback, status: 'circuit_open', error }; // concurrent failure raced past the open breaker; already logged
         if (this.consecutiveFailures >= BREAKER_THRESHOLD) {
           this.breakerOpen = true;
-          this.recordTelemetry('breaker_open', label, { error: err instanceof Error ? err.message : String(err) });
+          this.recordTelemetry('breaker_open', label, { status: 'failed', error });
           console.warn(`[Pipeline] Memory: disabled for the rest of this run after ${this.consecutiveFailures} consecutive failures (last: ${label}):`, err);
         } else {
           console.warn(`[Pipeline] Memory: ${label} failed:`, err);
         }
-        return fallback;
+        return { value: fallback, status: 'failed', error };
       }
       throw err;
+    }
+  }
+
+  private async withRecallSlot<T>(fn: () => Promise<T>): Promise<T> {
+    const release = await this.recallSemaphore.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
     }
   }
 
@@ -951,16 +1020,18 @@ export class PipelineMemory {
     const config = this.config;
     if (!config?.enabled || config.writeEnabled === false) return;
     const started = Date.now();
-    await this.bestEffort('write record', async () => {
+    const attempt = await this.bestEffort('write record', async () => {
       await this.getProvider().remember(record);
-      this.recordTelemetry('write', record.kind, {
-        datasets: record.dataset ? [record.dataset] : [],
-        nodeNames: record.nodeSet,
-        queryCount: 1,
-        resultCount: 1,
-        latencyMs: Date.now() - started,
-      });
     }, undefined);
+    this.recordTelemetry('write', record.kind, {
+      datasets: record.dataset ? [record.dataset] : [],
+      nodeNames: record.nodeSet,
+      queryCount: 1,
+      resultCount: attempt.status === 'success' ? 1 : 0,
+      latencyMs: Date.now() - started,
+      status: attempt.status,
+      error: attempt.error,
+    });
   }
 
   async recallPacket(request: PipelineMemoryRecallRequest = {}): Promise<PipelineMemoryPacket | null> {
@@ -968,7 +1039,7 @@ export class PipelineMemory {
     if (!config?.enabled || config.recallEnabled === false) return null;
     const started = Date.now();
     const recallMode = request.recallMode || 'artifact-projection';
-    const result = await this.bestEffort('recall', async () => {
+    const attempt = await this.bestEffort('recall', () => this.withRecallSlot(async () => {
       const routerDeps = this.recallRouterDeps();
       if (recallRouterEnabled() && routerDeps) {
         return executeRecall({
@@ -980,7 +1051,8 @@ export class PipelineMemory {
         maxPromptChars: this.defaults.maxPromptChars,
         ...request,
       });
-    }, null);
+    }), null);
+    const result = attempt.value;
     this.recordTelemetry('recall', 'recallPacket', {
       recallMode,
       datasets: result?.datasetNames || request.datasets || [],
@@ -989,6 +1061,8 @@ export class PipelineMemory {
       resultCount: result?.sourceSnippets.length || 0,
       emptyContext: !result || result.sourceSnippets.length === 0,
       latencyMs: Date.now() - started,
+      status: attempt.status === 'success' && (!result || result.sourceSnippets.length === 0) ? 'empty' : attempt.status,
+      error: attempt.error,
     });
     return result;
   }
@@ -1085,6 +1159,7 @@ export class PipelineMemory {
       resultCount: corroboration.validatedFacts.length + corroboration.candidateFacts.length,
       emptyContext: corroboration.corroboratedSnippets.length === 0,
       latencyMs: 0,
+      status: corroboration.corroboratedSnippets.length === 0 ? 'empty' : 'success',
     });
     const priorFailures = corroboration.corroboratedSnippets.filter((snippet) => /\b(fail(?:ed|ure)?|blocking|regression|error|repair)\b/i.test(snippet));
     const relatedFindings = corroboration.corroboratedSnippets.filter((snippet) => /\b(finding|validator|warning|issue|gate)\b/i.test(snippet));
@@ -1236,16 +1311,18 @@ export class PipelineMemory {
     const uniqueDatasets = uniqueStrings(datasets);
     if (!uniqueDatasets.length) return;
     const started = Date.now();
-    await this.bestEffort('cognify datasets', async () => {
+    const attempt = await this.bestEffort('cognify datasets', async () => {
       const provider = this.getProvider();
       if (provider.cognify) await provider.cognify(uniqueDatasets, options);
-      this.recordTelemetry('cognify', 'cognifyDatasets', {
-        datasets: uniqueDatasets,
-        queryCount: uniqueDatasets.length,
-        resultCount: uniqueDatasets.length,
-        latencyMs: Date.now() - started,
-      });
     }, undefined);
+    this.recordTelemetry('cognify', 'cognifyDatasets', {
+      datasets: uniqueDatasets,
+      queryCount: uniqueDatasets.length,
+      resultCount: attempt.status === 'success' ? uniqueDatasets.length : 0,
+      latencyMs: Date.now() - started,
+      status: attempt.status,
+      error: attempt.error,
+    });
   }
 
   async writeGenerationMemory(opts: {
@@ -1344,7 +1421,20 @@ export class PipelineMemory {
 
   async readCharacterMemory(characterName: string): Promise<string | null> {
     if (!this.config?.enabled || !this.config.characterKnowledge) return null;
-    return this.bestEffort('read character memory', () => this.getProvider().readCharacterMemory(characterName), null);
+    const started = Date.now();
+    const attempt = await this.bestEffort('read character memory', () => this.withRecallSlot(
+      () => this.getProvider().readCharacterMemory(characterName),
+    ), null);
+    this.recordTelemetry('recall', 'character-memory', {
+      datasets: [`storyrpg-character-${slugifyMemoryKey(characterName)}`],
+      queryCount: 1,
+      resultCount: attempt.value ? 1 : 0,
+      emptyContext: !attempt.value,
+      latencyMs: Date.now() - started,
+      status: attempt.status === 'success' && !attempt.value ? 'empty' : attempt.status,
+      error: attempt.error,
+    });
+    return attempt.value;
   }
 
   async writeValidatorMemory(opts: {

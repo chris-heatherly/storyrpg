@@ -41,11 +41,18 @@ export class AgentMemoryContextBuilder {
       sceneId: request.sceneId || '',
       characters: [...(request.characterIds || [])].sort(),
       artifacts: [...(request.artifactIds || [])].sort(),
+      artifactKinds: [...(request.artifactKinds || [])].sort(),
+      factKinds: [...(request.factKinds || [])].sort(),
+      factIds: [...(request.factIds || [])].sort(),
       validators: [...(request.validatorNames || [])].sort(),
       queries: request.queries || [],
       datasets: request.datasets || [],
       nodeNames: request.nodeNames || [],
+      recallMode: request.recallMode || null,
+      sourceFingerprint: request.sourceFingerprint || null,
+      treatmentId: request.treatmentId || null,
       topK: request.topK ?? null,
+      maxPromptChars: request.maxPromptChars ?? null,
     });
   }
 }

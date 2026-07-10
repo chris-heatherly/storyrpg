@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import fs from 'fs/promises';
+import crypto from 'crypto';
 import path from 'path';
 import process from 'process';
 
@@ -9,8 +11,10 @@ const workspaceRoot = path.resolve(appRoot, '..');
 
 const baseUrl = (process.env.COGNEE_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 const apiKey = process.env.COGNEE_API_KEY || '';
-const projectDataset = process.env.COGNEE_PROJECT_DATASET || 'storyrpg-project';
+const defaultProjectDataset = process.env.COGNEE_PROJECT_DATASET || 'storyrpg-project';
 const runDatasetPrefix = process.env.COGNEE_RUN_DATASET_PREFIX || 'storyrpg-run';
+const memoryRoot = process.env.MEMORY_DIR ? path.resolve(process.env.MEMORY_DIR) : path.join(appRoot, 'pipeline-memories');
+const projectManifestFile = path.join(memoryRoot, 'cognee-project-dataset.json');
 
 function headers(json = true) {
   const h = {};
@@ -34,6 +38,22 @@ async function readIfExists(file) {
   } catch {
     return null;
   }
+}
+
+async function activeProjectDataset() {
+  try {
+    const manifest = JSON.parse(await fs.readFile(projectManifestFile, 'utf8'));
+    return typeof manifest.activeDataset === 'string' && manifest.activeDataset ? manifest.activeDataset : defaultProjectDataset;
+  } catch {
+    return defaultProjectDataset;
+  }
+}
+
+async function writeProjectManifest(manifest) {
+  await fs.mkdir(memoryRoot, { recursive: true });
+  const temp = `${projectManifestFile}.${process.pid}.tmp`;
+  await fs.writeFile(temp, JSON.stringify(manifest, null, 2), { mode: 0o600 });
+  await fs.rename(temp, projectManifestFile);
 }
 
 async function addText(dataset, title, text, nodeSet = []) {
@@ -87,16 +107,23 @@ async function indexProject() {
     'docs/READER_GENERATOR_SPLIT.md',
     'docs/INSTALL.md',
   ];
-  let count = 0;
+  const sources = [];
+  const digest = crypto.createHash('sha256');
   for (const rel of files) {
     const full = path.join(workspaceRoot, rel);
     const text = await readIfExists(full);
     if (!text) continue;
-    await addText(projectDataset, rel, text, ['project-docs', rel.replace(/[^a-z0-9]+/gi, '-')]);
-    count += 1;
+    digest.update(rel).update('\0').update(text).update('\0');
+    sources.push({ rel, text });
   }
-  await cognify(projectDataset);
-  console.log(`Indexed ${count} project document(s) into ${projectDataset}`);
+  const contentHash = digest.digest('hex');
+  const dataset = `${defaultProjectDataset}-v${contentHash.slice(0, 12)}`;
+  for (const { rel, text } of sources) {
+    await addText(dataset, rel, text, ['project-docs', rel.replace(/[^a-z0-9]+/gi, '-'), `source-hash:${contentHash.slice(0, 16)}`]);
+  }
+  await cognify(dataset);
+  await writeProjectManifest({ schemaVersion: 1, activeDataset: dataset, contentHash, indexedAt: new Date().toISOString(), sourceFiles: sources.map(({ rel }) => rel) });
+  console.log(`Indexed ${sources.length} project document(s) into ${dataset} and activated it.`);
 }
 
 async function latestRunDir() {
@@ -151,7 +178,7 @@ async function indexRun(args) {
 async function ask(args) {
   const query = args.join(' ').trim();
   if (!query) throw new Error('Usage: npm run memory:ask -- "<query>"');
-  const datasets = [projectDataset, process.env.COGNEE_VALIDATOR_DATASET || 'storyrpg-validator-history'];
+  const datasets = [await activeProjectDataset(), process.env.COGNEE_VALIDATOR_DATASET || 'storyrpg-validator-history'];
   const result = await search(query, datasets);
   console.log(JSON.stringify(result, null, 2));
 }
@@ -164,6 +191,20 @@ async function health() {
   console.log(`Cognee healthy at ${baseUrl}`);
 }
 
+async function doctor() {
+  await health();
+  const projectDataset = await activeProjectDataset();
+  const result = await search('StoryRPG memory readiness check', [projectDataset]);
+  const resultCount = Array.isArray(result) ? result.length : 1;
+  console.log(JSON.stringify({
+    provider: 'cognee',
+    baseUrl,
+    projectDataset,
+    authenticatedSearch: 'ok',
+    resultCount,
+  }, null, 2));
+}
+
 const [command, ...args] = process.argv.slice(2);
 
 try {
@@ -171,8 +212,9 @@ try {
   else if (command === 'index-run') await indexRun(args);
   else if (command === 'ask') await ask(args);
   else if (command === 'health') await health();
+  else if (command === 'doctor') await doctor();
   else {
-    throw new Error('Usage: memory.mjs <index-project|index-run|ask|health>');
+    throw new Error('Usage: memory.mjs <index-project|index-run|ask|health|doctor>');
   }
 } catch (err) {
   console.error(err instanceof Error ? err.message : String(err));

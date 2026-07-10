@@ -729,6 +729,11 @@ export interface StoryCircleBeatRealizationContract {
   targetEpisodeNumber?: number;
   requiredRealization: StoryCircleBeatRealizationTarget[];
   eventAtoms: string[];
+  /**
+   * Load-bearing markers (times, numbers, quoted codenames) that must appear
+   * in non-summary prose when this contract requires final_prose realization.
+   */
+  preservedMarkers?: string[];
   stateChange?: string;
   targetSceneIds: string[];
   blockingLevel: 'treatment' | 'structural' | 'warning';

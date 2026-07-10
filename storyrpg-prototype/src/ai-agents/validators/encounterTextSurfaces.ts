@@ -131,6 +131,79 @@ export function collectReaderFacingTexts(scene: Scene): string[] {
   return texts;
 }
 
+/** All terminal paths that may carry load-bearing signature aftermath. */
+export const ENCOUNTER_OUTCOME_TIERS = [
+  'victory',
+  'partialVictory',
+  'success',
+  'complicated',
+  'defeat',
+  'escape',
+  'failure',
+] as const;
+
+const PLAYABLE_OUTCOME_TIERS = ENCOUNTER_OUTCOME_TIERS;
+
+/**
+ * Reader-facing prose scoped to one encounter outcome tier: shared setup/phase
+ * beats plus that tier's terminal outcomes and storylet beats only.
+ * Used so victory/partial paths cannot "borrow" aftermath prose from a sibling
+ * storylet the player never sees on their path.
+ */
+export function collectReaderFacingTextsForEncounterOutcomeTier(
+  scene: Scene,
+  tiers: readonly string[] = PLAYABLE_OUTCOME_TIERS,
+): Map<string, string[]> {
+  const byTier = new Map<string, string[]>();
+  const encounter = scene.encounter as EncounterLike | undefined;
+  if (!encounter) return byTier;
+
+  const shared: string[] = [];
+  for (const beat of scene.beats ?? []) collectBeatText(shared, beat);
+  for (const beat of encounter.beats ?? []) collectBeatText(shared, beat);
+  for (const phase of encounter.phases ?? []) {
+    for (const beat of phase.beats ?? []) collectBeatText(shared, beat);
+  }
+
+  const storylets = encounter.storylets && typeof encounter.storylets === 'object'
+    ? encounter.storylets as Record<string, { beats?: unknown[] } | undefined>
+    : {};
+  const outcomes = encounter.outcomes ?? {};
+
+  for (const tier of tiers) {
+    const texts = [...shared];
+    collectOutcomeTexts(texts, outcomes[tier]);
+    // Alias success↔victory / complicated↔partialVictory for architect variants.
+    if (tier === 'victory') collectOutcomeTexts(texts, outcomes.success);
+    if (tier === 'partialVictory') collectOutcomeTexts(texts, outcomes.complicated);
+    if (tier === 'success') collectOutcomeTexts(texts, outcomes.victory);
+    if (tier === 'complicated') collectOutcomeTexts(texts, outcomes.partialVictory);
+
+    const storylet = storylets[tier]
+      || (tier === 'victory' ? storylets.success : undefined)
+      || (tier === 'partialVictory' ? storylets.complicated : undefined)
+      || (tier === 'success' ? storylets.victory : undefined)
+      || (tier === 'complicated' ? storylets.partialVictory : undefined)
+      || (tier === 'defeat' ? storylets.failure : undefined)
+      || (tier === 'failure' ? storylets.defeat : undefined)
+      || (tier === 'escape' ? storylets.escape : undefined);
+    for (const beat of storylet?.beats ?? []) collectBeatText(texts, beat);
+    if (tier === 'defeat') collectOutcomeTexts(texts, outcomes.failure);
+    if (tier === 'failure') collectOutcomeTexts(texts, outcomes.defeat);
+
+    // Only report tiers that actually have tier-specific prose (outcome or storylet).
+    const hasTierpecific = Boolean(outcomes[tier] || storylets[tier]
+      || (tier === 'victory' && (outcomes.success || storylets.success))
+      || (tier === 'partialVictory' && (outcomes.complicated || storylets.complicated))
+      || (tier === 'success' && (outcomes.victory || storylets.victory))
+      || (tier === 'complicated' && (outcomes.partialVictory || storylets.partialVictory))
+      || (tier === 'failure' && (outcomes.defeat || storylets.defeat))
+      || (tier === 'defeat' && (outcomes.failure || storylets.failure)));
+    if (hasTierpecific) byTier.set(tier, texts);
+  }
+  return byTier;
+}
+
 /**
  * Reader-facing encounter META texts outside the strict realization surface.
  * Used by broad text hygiene scans that should include visual/cost/supporting

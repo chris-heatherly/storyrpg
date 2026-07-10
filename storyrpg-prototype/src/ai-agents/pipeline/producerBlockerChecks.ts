@@ -79,6 +79,9 @@ const VISIBLE_TEXT_KEYS = new Set([
 const COVERAGE_KEYS = new Set([
   'visualThread', 'relationshipBlocking', 'coverageReason', 'reason',
 ]);
+const BEAT_VISUAL_METADATA_KEYS = new Set([
+  'visualMoment', 'primaryAction', 'emotionalRead', 'relationshipDynamic',
+]);
 
 function asRecord(value: unknown): MutableRecord | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -139,7 +142,8 @@ function walkProducerText(
       }
       const isCoverageField = COVERAGE_KEYS.has(key)
         && (key !== 'reason' || /\b(?:coveragePlan|visualContinuity)\b/.test(path));
-      if (isCoverageField && isUnsafeCoverageMetadataText(child)) {
+      const isBeatVisualMetadata = BEAT_VISUAL_METADATA_KEYS.has(key);
+      if ((isCoverageField || isBeatVisualMetadata) && isUnsafeCoverageMetadataText(child)) {
         findings.push({
           validator: 'ProducerPhaseBlockerValidator',
           type: 'unsafe_metadata',
@@ -149,7 +153,9 @@ function walkProducerText(
           sceneId,
           fieldPath,
           message: `Unsafe planning/treatment metadata detected at ${fieldPath} during ${ownerPhase} production.`,
-          suggestion: 'Sanitize the owned metadata field and re-run producer hygiene before checkpointing.',
+          suggestion: isBeatVisualMetadata
+            ? 'Clear or re-derive visualMoment/primaryAction from dramatized beat.text; never paste treatment synopsis.'
+            : 'Sanitize the owned metadata field and re-run producer hygiene before checkpointing.',
         });
       }
     } else {
@@ -178,6 +184,18 @@ export function postLlmMetadataHygiene(value: unknown, location?: string): strin
       const before = JSON.stringify(record.sequenceIntent);
       record.sequenceIntent = sanitizeSequenceIntentMetadata(record.sequenceIntent as never, location);
       if (JSON.stringify(record.sequenceIntent) !== before) changedPaths.push(`${path}.sequenceIntent`);
+    }
+    // Clear treatment synopsis pasted into beat visual metadata (RouteContinuity-scanned).
+    for (const key of BEAT_VISUAL_METADATA_KEYS) {
+      if (typeof record[key] !== 'string') continue;
+      if (!isUnsafeCoverageMetadataText(record[key] as string)) continue;
+      const text = typeof record.text === 'string' ? (record.text as string).trim() : '';
+      if (text && !isUnsafeCoverageMetadataText(text)) {
+        record[key] = text.split(/(?<=[.!?])\s+/)[0]?.trim() || text;
+      } else {
+        delete record[key];
+      }
+      changedPaths.push(`${path}.${key}`);
     }
     for (const [key, child] of Object.entries(record)) {
       if (AUTHOR_ONLY_KEYS.has(key)) continue;

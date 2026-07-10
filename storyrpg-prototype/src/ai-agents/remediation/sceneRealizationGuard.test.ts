@@ -636,6 +636,58 @@ describe('insertMissingMomentBeats', () => {
     expect(skipped[0]).toContain('terse action summary needs prose rewrite');
   });
 
+  it('skips third-person treatment synopsis moments (Bite Me bookshop) instead of pasting them', () => {
+    const bookshop =
+      'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const beats = [
+      { id: 'b1', text: 'You push open the bookshop door and the bell answers.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'Stela watches you from behind the counter.' },
+    ];
+    const missing = [{
+      moment: bookshop,
+      validator: 'RequiredBeatRealizationValidator' as const,
+      tier: 'authored',
+      missingTokens: ['bookshop', 'stela'],
+    }];
+    const skipped: string[] = [];
+
+    insertMissingMomentBeats('s1-3', beats, missing, {
+      onSkip: (m, reason) => skipped.push(`${m.tier}:${reason}`),
+    });
+
+    expect(beats.map((beat) => beat.id)).toEqual(['b1', 'b2']);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toContain('treatment/design summary');
+  });
+
+  it('never clones recovery text into visualMoment or primaryAction', () => {
+    const beats = [
+      { id: 's1-b1', text: 'The rooftop noise rises.', nextBeatId: 's1-b2' },
+      { id: 's1-b2', text: 'What do you do?', isChoicePoint: true, choices: [{ id: 'c1' }] },
+    ];
+    const missing = missingRequiredMoments(
+      { requiredBeats: [{ tier: 'seed', mustDepict: 'The stray dog in the courtyard, watching.' }] },
+      beats,
+    );
+
+    insertMissingMomentBeats('s1', beats, missing);
+
+    const inserted = beats[1] as { text?: string; visualMoment?: string; primaryAction?: string };
+    expect(inserted.text).toBe('The stray dog in the courtyard, watching.');
+    expect(inserted.visualMoment).toBeUndefined();
+    expect(inserted.primaryAction).toBeUndefined();
+  });
+
+  it('does not count a verbatim treatment synopsis paste as dramatization', () => {
+    const bookshop =
+      'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const beats = [{ id: 'b1', text: bookshop }];
+    expect(missingRequiredMoments(
+      { requiredBeats: [{ tier: 'authored', mustDepict: bookshop }] },
+      beats,
+    )).toHaveLength(1);
+  });
+
   it('can still place an earlier night-two fallback before night-three when explicitly allowed', () => {
     const beats = [
       { id: 'b1', text: 'The last sunset warms the Lipscani apartment.', nextBeatId: 'b2' },

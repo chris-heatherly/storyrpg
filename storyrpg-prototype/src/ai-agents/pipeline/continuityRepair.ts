@@ -13,6 +13,7 @@
  */
 
 import { findUnconsumed } from './reliabilityGuards';
+import { isUnsafeCoverageMetadataText } from '../utils/coverageMetadataHygiene';
 
 export interface ContinuityFinding {
   severity: 'error' | 'warning' | 'suggestion';
@@ -238,6 +239,21 @@ interface MergeableBeat {
   id?: string;
   text?: string;
   textVariants?: unknown;
+  visualMoment?: string;
+  primaryAction?: string;
+}
+
+/** When beat.text was rewritten but visual metadata still holds treatment synopsis, re-derive from text. */
+function syncUnsafeVisualMetadataFromText(beat: MergeableBeat): void {
+  const text = typeof beat.text === 'string' ? beat.text.trim() : '';
+  if (!text || isUnsafeCoverageMetadataText(text)) return;
+  const sentence = text.split(/(?<=[.!?])\s+/)[0]?.trim() || text;
+  if (typeof beat.visualMoment === 'string' && isUnsafeCoverageMetadataText(beat.visualMoment)) {
+    beat.visualMoment = sentence;
+  }
+  if (typeof beat.primaryAction === 'string' && isUnsafeCoverageMetadataText(beat.primaryAction)) {
+    beat.primaryAction = sentence;
+  }
 }
 /**
  * Encounter prose beats carry their text in different fields than flat scene
@@ -329,8 +345,11 @@ export function mergeRevalidatedContinuityIssues<T extends { location?: { sceneI
 
 /**
  * Merge SceneCritic-rewritten beats back into an already-assembled story, matching
- * by beat id and replacing ONLY prose (`text` and, when provided, `textVariants`).
- * Ids, navigation, choice points, and visual fields are never touched. Returns the
+ * by beat id and replacing prose (`text` and, when provided, `textVariants`).
+ * When a rewrite clears text but visualMoment/primaryAction still hold treatment
+ * synopsis (RouteContinuity unsafe_fallback_prose), re-derive those fields from
+ * the new text so metadata cannot re-trigger the same gate.
+ * Ids, navigation, and choice points are never touched. Returns the
  * number of beats updated. Pure (mutates the passed story in place, like the rest
  * of the assembly path) — unit-testable.
  */
@@ -352,6 +371,7 @@ export function mergeRewrittenBeatsIntoStory(
         if (!rewrite) continue;
         if (typeof rewrite.text === 'string' && rewrite.text.trim()) beat.text = rewrite.text;
         if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
+        syncUnsafeVisualMetadataFromText(beat);
         consumed.add(beat.id as string);
         merged += 1;
       }

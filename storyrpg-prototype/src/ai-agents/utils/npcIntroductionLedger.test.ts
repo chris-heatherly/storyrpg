@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { forbiddenNpcNames, introducedNpcIds, isIntroducedNpc, npcIdsNamedInProse, plannedIntroductionsForEpisode } from './npcIntroductionLedger';
+import {
+  detectAnonymousPlantStaging,
+  ensembleObligationsFromContractText,
+  forbiddenNpcNames,
+  introducedNpcIds,
+  isIntroducedNpc,
+  npcIdsNamedInProse,
+  plannedIntroductionsForEpisode,
+  resolveCharacterIntroMode,
+  resolveEnsembleNpcIdsFromText,
+} from './npcIntroductionLedger';
 
 const roster = [
   { id: 'char-victor', name: 'Victor Vâlcescu' },
@@ -141,5 +151,74 @@ describe('plannedIntroductionsForEpisode', () => {
       'stela-pavel',
       'victor-valcescu',
     ]);
+  });
+});
+
+describe('detectAnonymousPlantStaging / resolveCharacterIntroMode', () => {
+  it('detects stranger / charcoal-suit / rescuer staging without a roster name as anonymous_plant', () => {
+    const staging =
+      'In the park at 1am a stranger in a charcoal suit intervenes — the rescuer pulls you free of the shadow.';
+    expect(detectAnonymousPlantStaging({ characterName: 'Victor Valcescu', stagingText: staging })).toBe(true);
+    expect(resolveCharacterIntroMode({ characterName: 'Victor Valcescu', stagingText: staging })).toBe('anonymous_plant');
+  });
+
+  it('returns named when staging clearly introduces them by roster name', () => {
+    const staging = 'In Cișmigiu Gardens at 1am, the shadow pins Kylie before Victor Valcescu intervenes.';
+    expect(detectAnonymousPlantStaging({ characterName: 'Victor Valcescu', stagingText: staging })).toBe(false);
+    expect(resolveCharacterIntroMode({ characterName: 'Victor Valcescu', stagingText: staging })).toBe('named');
+  });
+
+  it('returns named when staging uses a distinctive first name', () => {
+    const staging = 'Victor steps between you and the dark, charcoal suit catching the streetlight.';
+    expect(resolveCharacterIntroMode({ characterName: 'Victor Valcescu', stagingText: staging })).toBe('named');
+  });
+
+  it('returns named when there are no anonymous descriptors', () => {
+    const staging = 'A woman with silver-streaked hair sets down her glass and offers a hand.';
+    expect(detectAnonymousPlantStaging({ characterName: 'Stela Pavel', stagingText: staging })).toBe(false);
+    expect(resolveCharacterIntroMode({ characterName: 'Stela Pavel', stagingText: staging })).toBe('named');
+  });
+});
+
+describe('resolveEnsembleNpcIdsFromText / ensembleObligationsFromContractText', () => {
+  it('binds named multi-party friendship beats to roster ids', () => {
+    const fullRoster = [
+      { id: 'char-mika', name: 'Mika Dragan' },
+      { id: 'char-stela', name: 'Stela Pavel' },
+      { id: 'char-kylie', name: 'Kylie Marinescu' },
+    ];
+    const ids = resolveEnsembleNpcIdsFromText({
+      stagingText: 'At the club, Mika, Stela, and Kylie become friends and toast the night.',
+      roster: fullRoster,
+      excludeIds: ['char-kylie'],
+    });
+    expect(ids.sort()).toEqual(['char-mika', 'char-stela']);
+  });
+
+  it('ignores collective cues that do not name roster members', () => {
+    const ids = resolveEnsembleNpcIdsFromText({
+      stagingText: 'The three become friends over drinks.',
+      roster: [
+        { id: 'char-mika', name: 'Mika Dragan' },
+        { id: 'char-stela', name: 'Stela Pavel' },
+      ],
+    });
+    expect(ids).toEqual([]);
+  });
+
+  it('derives ensemble obligations from planned contract text', () => {
+    const obligations = ensembleObligationsFromContractText({
+      plannedSceneContractText: new Map([
+        ['s1-3', 'Mika and Stela become friends with the newcomer at Valescu Club.'],
+        ['s1-4', 'A quiet walk home alone.'],
+      ]),
+      roster: [
+        { id: 'char-mika', name: 'Mika Dragan' },
+        { id: 'char-stela', name: 'Stela Pavel' },
+      ],
+    });
+    expect(obligations).toHaveLength(1);
+    expect(obligations[0].sceneId).toBe('s1-3');
+    expect(obligations[0].requiredNpcIds.sort()).toEqual(['char-mika', 'char-stela']);
   });
 });

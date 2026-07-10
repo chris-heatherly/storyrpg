@@ -122,9 +122,12 @@ describe('CharacterIntroductionValidator', () => {
         ],
       }],
     );
-    const result = validator.validate({ story });
-    const warnings = result.issues.filter((i) => i.severity === 'warning');
+    const advisory = validator.validate({ story });
+    const warnings = advisory.issues.filter((i) => i.severity === 'warning');
     expect(warnings.some((w) => w.message.includes('metadata only'))).toBe(true);
+
+    const blocking = validator.validate({ story, treatmentSourced: true });
+    expect(blocking.issues.some((i) => i.severity === 'error' && i.message.includes('metadata only'))).toBe(true);
   });
 
   it('flags first appearances that imply an off-page friend group before introduction', () => {
@@ -304,5 +307,145 @@ describe('CharacterIntroductionValidator', () => {
       }],
     );
     expect(validator.validate({ story }).issues).toEqual([]);
+  });
+
+  it('passes anonymous_plant cast when first-contact stranger staging is present (treatmentSourced)', () => {
+    const story = makeStory(
+      [{ id: 'char-victor', name: 'Victor Valcescu' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 'enc-1-1',
+            charactersInvolved: ['char-victor'],
+            beats: [beat('A stranger in a charcoal suit steps between you and the shadow and offers a hand.')],
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.filter((i) => i.message.includes('metadata only'))).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('still errors on Sylvanor-style metadata-only when named intro is expected (treatmentSourced)', () => {
+    const story = makeStory(
+      [{ id: 'char-sylvanor', name: 'Sylvanor Dawnheart' }],
+      [{
+        number: 2,
+        scenes: [
+          makeScene({ id: 'enc-2-1', charactersInvolved: ['char-sylvanor'], beats: [beat('The archive floor gives way beneath you.')] }),
+        ],
+      }],
+    );
+    const result = validator.validate({ story, treatmentSourced: true });
+    expect(result.issues.some((i) => i.severity === 'error' && i.message.includes('metadata only'))).toBe(true);
+  });
+
+  it('still errors on cold name-drops even when anonymousPlantNpcIds is set', () => {
+    const story = makeStory(
+      [{ id: 'char-victor', name: 'Victor Valcescu' }],
+      [{
+        number: 2,
+        scenes: [
+          makeScene({ id: 's2-4', beats: [beat("You open Victor's first. Of course you do.")] }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.some((i) => i.severity === 'error' && i.message.includes('never met them'))).toBe(true);
+  });
+
+  it('errors when anonymous_plant is cast without name AND without first-contact staging', () => {
+    const story = makeStory(
+      [{ id: 'char-victor', name: 'Victor Valcescu' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 'enc-1-1',
+            charactersInvolved: ['char-victor'],
+            beats: [beat('Fog clings to the willow. Something moves in the dark.')],
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.some((i) => i.severity === 'error' && i.message.includes('metadata only'))).toBe(true);
+  });
+
+  it('errors when multi-party obligation cast is missing a required NPC (treatmentSourced)', () => {
+    const story = makeStory(
+      [
+        { id: 'char-mika', name: 'Mika Dragan' },
+        { id: 'char-stela', name: 'Stela Pavel' },
+      ],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-3',
+            charactersInvolved: ['char-stela'],
+            beats: [beat('Stela Pavel raises a glass. "To new friends," she says.')],
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      ensembleObligations: [{
+        sceneId: 's1-3',
+        requiredNpcIds: ['char-mika', 'char-stela'],
+        sourceText: 'Mika and Stela become friends at the club.',
+      }],
+    });
+    expect(result.issues.some((i) =>
+      i.severity === 'error'
+      && i.location?.includes('ensemble-obligation')
+      && i.message.includes('Mika Dragan')
+    )).toBe(true);
+  });
+
+  it('errors when anonymous plant roster name leaks in encounter outcomeText before reveal', () => {
+    const story = makeStory(
+      [{ id: 'char-victor', name: 'Victor Valcescu' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 'enc-1-1',
+            charactersInvolved: ['char-victor'],
+            beats: [],
+            encounter: {
+              outcomes: {
+                victory: { outcomeText: 'Victor Valcescu walks you to the threshold and vanishes.' },
+              },
+            } as never,
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.some((i) =>
+      i.severity === 'error'
+      && i.location?.includes('anonymous-plant-leak')
+    )).toBe(true);
   });
 });

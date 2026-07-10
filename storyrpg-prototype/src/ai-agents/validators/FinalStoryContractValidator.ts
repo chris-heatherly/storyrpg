@@ -759,7 +759,8 @@ export class FinalStoryContractValidator {
           `${flagResult.metrics.writeOnlyFlags} write-only flag(s) (of ${flagResult.metrics.settersTotal} setters / ${flagResult.metrics.consumersTotal} consumers)`,
         );
       }
-      const blockFlags = isGateEnabledAt('GATE_FLAG_CONTRACT', 'season-final');
+      const blockFlags = isGateEnabledAt('GATE_FLAG_CONTRACT', 'season-final')
+        || input.treatmentSourced === true;
       for (const issue of flagResult.issues) {
         issues.push({
           type: 'unset_flag_condition',
@@ -782,7 +783,8 @@ export class FinalStoryContractValidator {
     // non-vacuous comparison.)
     if (input.callbackLedger) {
       const blockResidue = isGateEnabledAt('GATE_RESIDUE_CONSUME', 'season-final')
-        || input.authoredLiteContract === true;
+        || input.authoredLiteContract === true
+        || input.treatmentSourced === true;
       // NON-RESIDUE PROMOTION (2026-07-03): thread/seed/callback kinds now
       // escalate under their own gates — repair-first is satisfied by the
       // deterministic obligation-payoff handler (router: deterministic_cleanup),

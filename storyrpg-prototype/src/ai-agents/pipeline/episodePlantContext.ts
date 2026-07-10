@@ -307,12 +307,15 @@ export function emitTreatmentSeedConsequences(choices: Choice[], seedFlags: read
 // ========================================
 
 const BRANCH_AXIS_PREFIX = 'treatment_branch_';
+/** Treatment consequence-chain flags planned as residue (`consequence_*`). */
+const CONSEQUENCE_CHAIN_PREFIX = 'consequence_';
 
 /**
  * Resolve the ending-axis flags (`treatment_branch_*`) a scene's choices must
  * SET on-page, from the StoryArchitect-recorded `choicePoint.setsBranchAxes`.
- * Order-preserving, deduped, prefix-guarded. Mirrors
- * {@link resolveSceneTreatmentSeeds} but for the ending-axis channel.
+ * Also emits planned `consequence_*` treatment-chain flags recorded on the same
+ * surface so residue chains are authored, not only planned.
+ * Order-preserving, deduped. Mirrors {@link resolveSceneTreatmentSeeds}.
  */
 export function resolveSceneBranchAxes(scene: {
   choicePoint?: { setsBranchAxes?: string[] };
@@ -320,7 +323,10 @@ export function resolveSceneBranchAxes(scene: {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const flag of scene.choicePoint?.setsBranchAxes ?? []) {
-    if (typeof flag !== 'string' || !flag.startsWith(BRANCH_AXIS_PREFIX) || seen.has(flag)) continue;
+    if (typeof flag !== 'string' || seen.has(flag)) continue;
+    const isAxis = flag.startsWith(BRANCH_AXIS_PREFIX);
+    const isChain = flag.startsWith(CONSEQUENCE_CHAIN_PREFIX);
+    if (!isAxis && !isChain) continue;
     seen.add(flag);
     out.push(flag);
   }

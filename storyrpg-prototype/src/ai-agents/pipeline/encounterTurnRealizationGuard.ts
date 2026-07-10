@@ -17,12 +17,20 @@ import type { EncounterStructure } from '../agents/EncounterArchitect';
 import type { SceneBlueprint } from '../agents/StoryArchitect';
 import { missingMomentTokens, momentDepicted } from '../remediation/realizationScoring';
 import { isGenericScenePlannerText } from '../utils/sceneContractBuilders';
-import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
+import { extractPreservedMarkers } from '../utils/treatmentEventAtomizer';
+import {
+  collectReaderFacingTexts,
+  collectReaderFacingTextsForEncounterOutcomeTier,
+  ENCOUNTER_OUTCOME_TIERS,
+} from '../validators/encounterTextSurfaces';
+import { normalizeRealizationText } from '../remediation/realizationEvaluator';
 
 export interface EncounterTurnRealizationMiss {
   label: string;
   moment: string;
   missingTokens: string[];
+  /** When set, the miss is scoped to one playable outcome tier's reader path. */
+  outcomeTier?: string;
 }
 
 export interface EncounterTurnRealizationAssessment {
@@ -98,6 +106,33 @@ function uniqueMoments(moments: Array<{ label: string; moment: string }>): Array
   return out;
 }
 
+/** Signature atoms (preserved markers + concrete content phrases) that every terminal must realize. */
+function signatureAtomsForMoments(moments: Array<{ label: string; moment: string }>): string[] {
+  const atoms = new Set<string>();
+  for (const { moment } of moments) {
+    for (const marker of extractPreservedMarkers(moment)) {
+      const cleaned = cleanText(marker);
+      if (cleaned) atoms.add(cleaned);
+    }
+  }
+  return Array.from(atoms);
+}
+
+function atomPresentInProse(atom: string, prose: string): boolean {
+  const needle = normalizeRealizationText(atom);
+  if (!needle) return true;
+  const hay = normalizeRealizationText(prose);
+  if (hay.includes(needle)) return true;
+  // Soft clock-time / viral equivalence (mirrors TreatmentEventLedgerValidator).
+  if (/^\d{1,2}\s*a\.?m\.?$/i.test(atom) || /^4am$/i.test(atom)) {
+    return /\b4\s*a\.?m\.?\b|\bfour\s+(?:in\s+the\s+)?morning\b/.test(hay);
+  }
+  if (/^viral$/i.test(atom) || /^gone viral$/i.test(atom)) {
+    return /\bviral\b|\bgone\s+viral\b/.test(hay);
+  }
+  return false;
+}
+
 export function assessEncounterTurnRealization(
   sceneBlueprint: Pick<SceneBlueprint, 'id' | 'name' | 'turnContract' | 'requiredBeats' | 'signatureMoment'>,
   encounter: EncounterStructure,
@@ -118,7 +153,7 @@ export function assessEncounterTurnRealization(
       : []),
     ...concreteRequiredBeatMoments(sceneBlueprint.requiredBeats),
   ]);
-  const misses = moments
+  const misses: EncounterTurnRealizationMiss[] = moments
     .filter(({ moment }) => !momentDepicted('RequiredBeatRealizationValidator', moment, prose))
     .map(({ label, moment }) => ({
       label,
@@ -126,6 +161,48 @@ export function assessEncounterTurnRealization(
       missingTokens: missingMomentTokens('RequiredBeatRealizationValidator', moment, prose),
     }))
     .filter((miss) => !missingTokensCoveredByEncounterSynonyms(miss, prose));
+
+  // Per-tier check: success paths must each carry the full turn/required moment.
+  // Defeat/escape get the signature-atom lock below (same load-bearing markers)
+  // without requiring the entire compound turn on every failure path.
+  const byTier = collectReaderFacingTextsForEncounterOutcomeTier(scene, ENCOUNTER_OUTCOME_TIERS);
+  const successTiers = new Set(['victory', 'partialVictory', 'success', 'complicated']);
+  const signatureAtoms = signatureAtomsForMoments(moments);
+  for (const [tier, tierTexts] of byTier) {
+    const tierProse = tierTexts.join(' ');
+    if (!tierProse.trim()) continue;
+    if (successTiers.has(tier)) {
+      for (const { label, moment } of moments) {
+        if (momentDepicted('RequiredBeatRealizationValidator', moment, tierProse)) continue;
+        if (missingTokensCoveredByEncounterSynonyms({
+          label,
+          moment,
+          missingTokens: missingMomentTokens('RequiredBeatRealizationValidator', moment, tierProse),
+        }, tierProse)) continue;
+        const missingTokens = missingMomentTokens('RequiredBeatRealizationValidator', moment, tierProse);
+        // Avoid duplicate global misses when the union also failed.
+        if (misses.some((m) => m.label === label && !m.outcomeTier && m.moment === moment)) continue;
+        misses.push({
+          label: `${label} [${tier}]`,
+          moment,
+          missingTokens,
+          outcomeTier: tier,
+        });
+      }
+    }
+    // Signature-atom lock across ALL terminals with tier-specific prose.
+    for (const atom of signatureAtoms) {
+      if (atomPresentInProse(atom, tierProse)) continue;
+      if (misses.some((m) => m.outcomeTier === tier && m.moment === atom)) continue;
+      misses.push({
+        label: `signature atom [${tier}]`,
+        moment: atom,
+        missingTokens: [atom],
+        outcomeTier: tier,
+      });
+    }
+  }
+
   return { passed: misses.length === 0, prose, misses };
 }
 
@@ -136,7 +213,8 @@ export function formatEncounterTurnRealizationFeedback(assessment: EncounterTurn
       const missing = miss.missingTokens.length > 0
         ? ` Missing content words: ${miss.missingTokens.join(', ')}.`
         : '';
-      return `- ${miss.label} is under-realized: "${miss.moment}".${missing}`;
+      const tier = miss.outcomeTier ? ` (outcome path: ${miss.outcomeTier})` : '';
+      return `- ${miss.label}${tier} is under-realized: "${miss.moment}".${missing}`;
     })
     .join('\n');
 }

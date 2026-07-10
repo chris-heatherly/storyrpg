@@ -247,8 +247,22 @@ describe('resolveSceneTreatmentSeeds + emitSceneTreatmentSeeds (GAP-C wiring)', 
 
 describe('ending-axis emitters (treatment_branch_*)', () => {
   it('resolveSceneBranchAxes reads setsBranchAxes and prefix-guards', () => {
-    const scene = { choicePoint: { setsBranchAxes: ['treatment_branch_a', 'route_x', 'treatment_branch_a', 'treatment_branch_b'] } };
-    expect(resolveSceneBranchAxes(scene)).toEqual(['treatment_branch_a', 'treatment_branch_b']);
+    const scene = { choicePoint: { setsBranchAxes: ['treatment_branch_a', 'route_x', 'treatment_branch_a', 'treatment_branch_b', 'consequence_treatment_chain_ep1_1'] } };
+    expect(resolveSceneBranchAxes(scene)).toEqual([
+      'treatment_branch_a',
+      'treatment_branch_b',
+      'consequence_treatment_chain_ep1_1',
+    ]);
+  });
+
+  it('emitSceneBranchAxes emits consequence_* chain flags recorded on setsBranchAxes', () => {
+    const scene = { choicePoint: { setsBranchAxes: ['consequence_treatment_chain_ep1_1'] } };
+    const choices: Choice[] = [
+      { id: 'c1', text: 'Accept the invitation.', consequences: [] } as unknown as Choice,
+    ];
+    emitSceneBranchAxes(scene, choices);
+    const flags = (choices[0].consequences ?? []).filter((x: any) => x.type === 'setFlag').map((x: any) => x.flag);
+    expect(flags).toContain('consequence_treatment_chain_ep1_1');
   });
 
   it('emitSceneBranchAxes distributes axes round-robin across choices so distinct choices drive distinct axes', () => {

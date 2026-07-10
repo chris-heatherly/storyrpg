@@ -39,7 +39,13 @@ import type {
   SeasonResidueObligation,
 } from '../../types/seasonPlan';
 import { assignInfoLedgerPhasesToScenes } from '../pipeline/infoRevealAssignment';
-import { normalizeCharacterSlug, resolveRosterCharacter } from '../utils/npcIntroductionLedger';
+import {
+  normalizeCharacterSlug,
+  resolveCharacterIntroMode,
+  resolveEnsembleNpcIdsFromText,
+  resolveRosterCharacter,
+  type CharacterIntroMode,
+} from '../utils/npcIntroductionLedger';
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { assignBlueprintTimeline, normalizeTimeOfDay, prettifyEmbeddedLocationIds, type SceneTimeOfDay } from '../utils/sceneTimeline';
 import { extractEpisodeInvariants } from '../utils/episodeInvariants';
@@ -909,6 +915,54 @@ export class StoryArchitect extends BaseAgent {
     assignBlueprintTimeline(blueprint.scenes || []);
   }
 
+  private plannedSceneStagingText(scene: PlannedScene): string {
+    return [
+      scene.title,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.centralTurn,
+      scene.dramaticPurpose,
+      ...(scene.requiredBeats ?? [])
+        .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
+        .map((beat) => beat.mustDepict || beat.sourceTurn),
+    ].filter(Boolean).join(' ');
+  }
+
+  private sceneBlueprintStagingText(scene: SceneBlueprint): string {
+    return [
+      scene.name,
+      scene.description,
+      scene.dramaticPurpose,
+      scene.dramaticQuestion,
+      scene.narrativeFunction,
+      scene.conflictEngine,
+      scene.encounterDescription,
+      scene.encounterCentralConflict,
+      ...(scene.keyBeats || []),
+      ...(scene.encounterBeatPlan || []),
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.centralTurn,
+      ...(scene.requiredBeats ?? [])
+        .filter((beat) => beat.tier !== 'seed' && beat.tier !== 'connective')
+        .map((beat) => `${beat.sourceTurn} ${beat.mustDepict}`),
+    ].filter(Boolean).join(' ');
+  }
+
+  private resolveIntroModeForCharacter(
+    character: { id: string; name: string },
+    stagingText: string,
+  ): CharacterIntroMode {
+    return resolveCharacterIntroMode({ characterName: character.name, stagingText });
+  }
+
+  private isAnonymousPlantNpcRef(
+    npcRef: string,
+    stagingText: string,
+    roster: Array<{ id: string; name: string }>,
+  ): boolean {
+    const resolved = resolveRosterCharacter(npcRef, roster) ?? { id: npcRef, name: npcRef };
+    return this.resolveIntroModeForCharacter(resolved, stagingText) === 'anonymous_plant';
+  }
+
   private findIntroductionSceneForCharacter(
     character: { id: string; name: string },
     blueprint: EpisodeBlueprint,
@@ -919,20 +973,39 @@ export class StoryArchitect extends BaseAgent {
       value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const name = normalizeName(character.name);
     const firstName = name.split(/\s+/).filter(Boolean)[0] ?? '';
+    const characterSlug = normalizeCharacterSlug(character.id || character.name);
     const matchesCharacter = (text: string): boolean => {
       const haystack = normalizeName(text);
       if (!haystack) return false;
       if (haystack.includes(name)) return true;
       return firstName.length > 2 && new RegExp(`\\b${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(haystack);
     };
-    const plannedStagingText = (scene: PlannedScene): string => [
-      scene.title,
-      scene.turnContract?.turnEvent,
-      scene.turnContract?.centralTurn,
-      ...(scene.requiredBeats ?? [])
-        .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
-        .map((beat) => beat.mustDepict || beat.sourceTurn),
-    ].filter(Boolean).join(' ');
+    const plannedCastsCharacter = (plannedScene: PlannedScene): boolean =>
+      (plannedScene.npcsInvolved ?? []).some((npc) => {
+        const value = String(npc || '');
+        if (matchesCharacter(value)) return true;
+        return normalizeCharacterSlug(value) === characterSlug;
+      });
+    const isAnonymousPlantForCharacter = (stagingText: string, plannedScene?: PlannedScene): boolean => {
+      if (this.resolveIntroModeForCharacter(character, stagingText) !== 'anonymous_plant') return false;
+      if (!plannedScene) return true;
+      if (plannedCastsCharacter(plannedScene)) return true;
+      // Encounter plants often list the roster id on the planned encounter while
+      // the scene turn stages only stranger / suit / rescuer language.
+      const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters ?? [];
+      return plannedEncounters.some((enc) => {
+        const listed = (enc.npcsInvolved ?? []).some((npc) => {
+          const value = String(npc || '');
+          return matchesCharacter(value) || normalizeCharacterSlug(value) === characterSlug;
+        });
+        if (!listed) return false;
+        return enc.id === plannedScene.id
+          || Boolean((plannedScene as { plannedEncounterId?: string }).plannedEncounterId === enc.id)
+          || plannedScene.kind === 'encounter'
+          || plannedScene.narrativeRole === 'encounter'
+          || plannedScene.narrativeRole === 'climax';
+      });
+    };
 
     const sceneForPlanned = (plannedScene: PlannedScene): SceneBlueprint | undefined =>
       blueprint.scenes.find((candidate) => candidate.id === plannedScene.id);
@@ -963,8 +1036,14 @@ export class StoryArchitect extends BaseAgent {
 
     const candidates: Array<{ scene: SceneBlueprint; index: number }> = [];
     const considerPlannedScene = (plannedScene: PlannedScene, stagingText: string): void => {
-      if (!matchesCharacter(stagingText) || isPassingMentionOnly(stagingText) || isForeshadowNameDropOnly(stagingText)) return;
-      if (plannedScene.order === 0 && !matchesCharacter(plannedScene.turnContract?.turnEvent || plannedScene.title || '')) {
+      const namedMatch = matchesCharacter(stagingText);
+      const anonymousPlant = isAnonymousPlantForCharacter(stagingText, plannedScene);
+      if ((!namedMatch && !anonymousPlant) || isPassingMentionOnly(stagingText) || isForeshadowNameDropOnly(stagingText)) return;
+      if (
+        plannedScene.order === 0
+        && !matchesCharacter(plannedScene.turnContract?.turnEvent || plannedScene.title || '')
+        && !anonymousPlant
+      ) {
         return;
       }
       const scene = sceneForPlanned(plannedScene);
@@ -972,12 +1051,10 @@ export class StoryArchitect extends BaseAgent {
       candidates.push({ scene, index: blueprintIndex(scene) });
     };
 
-    const explicitCastScenes = planned.filter((plannedScene) =>
-      (plannedScene.npcsInvolved ?? []).some((npc) => matchesCharacter(String(npc || ''))),
-    );
+    const explicitCastScenes = planned.filter((plannedScene) => plannedCastsCharacter(plannedScene));
     const stagingSources = explicitCastScenes.length > 0 ? explicitCastScenes : planned;
     for (const plannedScene of stagingSources) {
-      considerPlannedScene(plannedScene, plannedStagingText(plannedScene));
+      considerPlannedScene(plannedScene, this.plannedSceneStagingText(plannedScene));
     }
 
     for (const plannedScene of planned) {
@@ -1002,6 +1079,38 @@ export class StoryArchitect extends BaseAgent {
    * scene carries them, and give the FIRST scene that does an explicit
    * introduction key beat the SceneWriter must hit. Idempotent.
    */
+  /**
+   * Multi-party cast hygiene: when a scene's required beats / turn contract name
+   * ≥2 NPCs in a group-formation beat ("become friends", "trio", club formation),
+   * union those roster ids into `npcsPresent` so the writer and final intro
+   * validator see the same ensemble obligation.
+   */
+  private ensureEnsembleCastObligations(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
+    const roster = (input.availableNPCs ?? []).map((npc) => ({ id: npc.id, name: npc.name }));
+    if (roster.length === 0) return;
+    for (const scene of blueprint.scenes || []) {
+      const staging = [
+        scene.turnContract?.centralTurn,
+        scene.turnContract?.turnEvent,
+        scene.signatureMoment,
+        ...(scene.requiredBeats ?? []).map((beat) => `${beat.mustDepict || ''} ${beat.sourceTurn || ''}`),
+        ...(scene.keyBeats || []),
+      ].filter(Boolean).join(' ');
+      if (!staging.trim()) continue;
+      const required = resolveEnsembleNpcIdsFromText({
+        stagingText: staging,
+        roster,
+      });
+      if (required.length < 2) continue;
+      const present = new Set((scene.npcsPresent || []).map((id) => normalizeCharacterSlug(id)));
+      for (const npcId of required) {
+        if (present.has(normalizeCharacterSlug(npcId))) continue;
+        scene.npcsPresent = [...(scene.npcsPresent || []), npcId];
+        present.add(normalizeCharacterSlug(npcId));
+      }
+    }
+  }
+
   private ensureCharacterIntroductionBeats(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const roster = (input.availableNPCs ?? []).map((npc) => ({ id: npc.id, name: npc.name }));
     const intros = (input.introducesCharacters ?? []).map((character) =>
@@ -1054,22 +1163,26 @@ export class StoryArchitect extends BaseAgent {
 
     const introducedKeys = new Set<string>();
     const planned = [...(input.seasonPlanDirectives?.plannedScenes ?? [])].sort((a, b) => a.order - b.order);
-    const plannedStagingText = (scene: PlannedScene): string => [
-      scene.title,
-      scene.turnContract?.turnEvent,
-      scene.turnContract?.centralTurn,
-      ...(scene.requiredBeats ?? [])
-        .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature')
-        .map((beat) => beat.mustDepict || beat.sourceTurn),
-    ].filter(Boolean).join(' ');
     const introductionPriority = (character: { id: string; name: string }): number => {
       const needle = normalizeName(character.name);
       const firstName = needle.split(/\s+/).filter(Boolean)[0] ?? '';
+      const characterSlug = normalizeCharacterSlug(character.id || character.name);
       for (const plannedScene of planned) {
-        const text = normalizeName(plannedStagingText(plannedScene));
+        const staging = this.plannedSceneStagingText(plannedScene);
+        const text = normalizeName(staging);
         const fullIndex = text.indexOf(needle);
         const firstIndex = firstName.length > 2 ? text.search(new RegExp(`\\b${firstName}\\b`)) : -1;
-        const index = fullIndex >= 0 ? fullIndex : firstIndex;
+        let index = fullIndex >= 0 ? fullIndex : firstIndex;
+        if (index < 0) {
+          const castTied = (plannedScene.npcsInvolved ?? []).some((npc) => {
+            const value = String(npc || '');
+            return normalizeName(value).includes(needle)
+              || normalizeCharacterSlug(value) === characterSlug;
+          });
+          if (castTied && this.resolveIntroModeForCharacter(character, staging) === 'anonymous_plant') {
+            index = 0;
+          }
+        }
         if (index >= 0) return plannedScene.order * 1000 + index;
       }
       return Number.MAX_SAFE_INTEGER;
@@ -1095,8 +1208,27 @@ export class StoryArchitect extends BaseAgent {
         continue;
       }
       introducedKeys.add(introductionKey);
-      if (!sceneCastsCharacter(target, character.id, character.name)) {
-        target.npcsPresent = [...(target.npcsPresent || []), character.id];
+      const plannedForTarget = planned.find((scene) => scene.id === target.id);
+      const stagingText = [
+        plannedForTarget ? this.plannedSceneStagingText(plannedForTarget) : '',
+        this.sceneBlueprintStagingText(target),
+      ].filter(Boolean).join(' ');
+      const introMode = this.resolveIntroModeForCharacter(character, stagingText);
+      if (introMode === 'named') {
+        if (!sceneCastsCharacter(target, character.id, character.name)) {
+          target.npcsPresent = [...(target.npcsPresent || []), character.id];
+        }
+      } else {
+        // anonymous_plant: keep identity linked for later reveal, but do NOT
+        // force the roster id into cast (validator treats cast as "must name").
+        target.npcsPresent = (target.npcsPresent || []).filter((npc) =>
+          normalizeCharacterSlug(String(npc || '')) !== introductionKey
+          && normalizeName(String(npc || '')) !== normalizeName(character.name));
+        if (target.encounterRequiredNpcIds?.length) {
+          target.encounterRequiredNpcIds = target.encounterRequiredNpcIds.filter((npc) =>
+            normalizeCharacterSlug(String(npc || '')) !== introductionKey
+            && normalizeName(String(npc || '')) !== normalizeName(character.name));
+        }
       }
       // Pre-intro cast trim: the reader cannot have "met" this character in a
       // scene that plays before their first meeting — drop them from earlier
@@ -1105,18 +1237,22 @@ export class StoryArchitect extends BaseAgent {
       for (let earlier = 0; earlier < targetIndex; earlier += 1) {
         const scene = scenes[earlier];
         if (!sceneCastsCharacter(scene, character.id, character.name)) continue;
-        if (sceneMentionsCharacter(scene, character.name)) continue; // authored text stages them — leave the cast honest
+        if (introMode === 'named' && sceneMentionsCharacter(scene, character.name)) continue; // authored text stages them — leave the cast honest
         scene.npcsPresent = (scene.npcsPresent || []).filter((npc) =>
           normalizeCharacterSlug(String(npc || '')) !== introductionKey);
       }
       const already = (target.keyBeats || []).some((beat) => {
         const normalizedBeat = normalizeName(String(beat || ''));
         return normalizedBeat.includes(`first meeting with ${normalizeName(character.name)}`)
-          || normalizedBeat.includes(`introduce ${normalizeName(character.name)}`);
+          || normalizedBeat.includes(`introduce ${normalizeName(character.name)}`)
+          || normalizedBeat.includes(`anonymous first contact`)
+          || normalizedBeat.includes(`anonymous plant`);
       });
       if (!already) {
         target.keyBeats = [
-          `First meeting with ${character.name}: this is the reader's FIRST time seeing them — establish who they are and how they relate to the protagonist through action or dialogue before they drive the plot`,
+          introMode === 'anonymous_plant'
+            ? `Anonymous first contact (linked to ${character.name}): stage them as a stranger/anonymous figure with distinctive visual cues — do NOT use their roster name yet; keep identity linked for a later reveal`
+            : `First meeting with ${character.name}: this is the reader's FIRST time seeing them — establish who they are and how they relate to the protagonist through action or dialogue before they drive the plot`,
           ...(target.keyBeats || []),
         ];
       }
@@ -1126,9 +1262,12 @@ export class StoryArchitect extends BaseAgent {
           ...(target.requiredBeats ?? []),
           {
             id: introBeatId,
-            sourceTurn: `First meeting with ${character.name}`,
-            mustDepict:
-              `You meet ${character.name} for the first time in this scene — show how they enter your attention, how they name themselves or are named to you, and one concrete identifying detail before any familiarity or group-belonging language.`,
+            sourceTurn: introMode === 'anonymous_plant'
+              ? `Anonymous first contact (linked to ${character.name})`
+              : `First meeting with ${character.name}`,
+            mustDepict: introMode === 'anonymous_plant'
+              ? `You meet a stranger for the first time in this scene — stage them with distinctive visual cues as an anonymous figure (do NOT use the roster name ${character.name} yet); show first-contact behavior and keep their true identity linked for a later reveal.`
+              : `You meet ${character.name} for the first time in this scene — show how they enter your attention, how they name themselves or are named to you, and one concrete identifying detail before any familiarity or group-belonging language.`,
             tier: 'authored',
           },
         ];
@@ -1459,7 +1598,24 @@ export class StoryArchitect extends BaseAgent {
     );
     const existingSkills = scene.encounterRelevantSkills || [];
     const plannedSkills = effectivePlannedEncounter.relevantSkills || [];
-    const npcIds = new Set([...(scene.npcsPresent || []), ...(scene.encounterRequiredNpcIds || []), ...(effectivePlannedEncounter.npcsInvolved || [])]);
+    const stagingText = [
+      this.sceneBlueprintStagingText(scene),
+      effectivePlannedEncounter.description,
+      effectivePlannedEncounter.centralConflict,
+      effectivePlannedEncounter.stakes,
+    ].filter(Boolean).join(' ');
+    const npcIds = new Set([...(scene.npcsPresent || []), ...(scene.encounterRequiredNpcIds || [])]);
+    for (const npcRef of effectivePlannedEncounter.npcsInvolved || []) {
+      // anonymous_plant roster ids must not be cast as named members until named intro.
+      // Resolve display name when possible so slug ids still detect named staging.
+      const displayName = String(npcRef).includes(' ') || /[A-Z]/.test(String(npcRef))
+        ? String(npcRef)
+        : String(npcRef).replace(/^char-/, '').replace(/-/g, ' ');
+      if (resolveCharacterIntroMode({ characterName: displayName, stagingText }) === 'anonymous_plant') {
+        continue;
+      }
+      npcIds.add(npcRef);
+    }
 
     scene.isEncounter = true;
     scene.plannedEncounterId = effectivePlannedEncounter.id;
@@ -2663,6 +2819,7 @@ export class StoryArchitect extends BaseAgent {
 
     this.registerConsequenceSeedEmitters(blueprint, input, guidance);
     this.registerBranchAxisEmitters(blueprint, input);
+    this.registerConsequenceChainEmitters(blueprint, input);
   }
 
   private fictionFirstResidueSummary(text: string): string {
@@ -2727,10 +2884,13 @@ export class StoryArchitect extends BaseAgent {
     blueprint: EpisodeBlueprint,
     input: StoryArchitectInput,
   ): void {
-    const BRANCH_AXIS_PREFIX = 'treatment_branch_';
+    // Emit every seasonFlag scheduled for this episode (ending axes AND
+    // season-anchor flags). Previously only `treatment_branch_*` were wired,
+    // so other setInEpisode flags never received a ChoiceAuthor setFlag and
+    // downstream residue/flag contracts stayed unpaid.
     const axisFlags = (input.seasonPlanDirectives?.flagsToSet || [])
       .map((f) => f.flag)
-      .filter((flag): flag is string => typeof flag === 'string' && flag.startsWith(BRANCH_AXIS_PREFIX));
+      .filter((flag): flag is string => typeof flag === 'string' && flag.trim().length > 0);
     if (axisFlags.length === 0) return;
 
     const scenes = blueprint.scenes || [];
@@ -2906,6 +3066,77 @@ export class StoryArchitect extends BaseAgent {
     }
   }
 
+  /**
+   * Treatment fidelity — make planned consequence-chain residue flags SET on-page.
+   *
+   * SeasonPlanner encodes each authored consequence chain as a
+   * `consequence_<slug>` SeasonResidueObligation. Those land on
+   * `outgoingResidue` / `choicePoint.residueObligationIds`, but if ChoiceAuthor
+   * never stamps the matching setFlag the ledger seals with `missingOutgoing`.
+   * Mirror {@link registerBranchAxisEmitters}: record the chain flags on
+   * `setsBranchAxes` so {@link emitSceneBranchAxes} attaches real setFlag
+   * consequences (and applyChoiceResidueBackstop remains a second backstop).
+   */
+  private registerConsequenceChainEmitters(
+    blueprint: EpisodeBlueprint,
+    input: StoryArchitectInput,
+  ): void {
+    const outgoing = input.seasonPlanDirectives?.outgoingResidue || [];
+    const chainFlags = outgoing
+      .map((obligation) => obligation.flag)
+      .filter((flag): flag is string =>
+        typeof flag === 'string'
+        && flag.startsWith('consequence_')
+        && flag.trim().length > 0
+      );
+    if (chainFlags.length === 0) return;
+
+    const scenes = blueprint.scenes || [];
+    if (scenes.length === 0) return;
+
+    blueprint.suggestedFlags = Array.isArray(blueprint.suggestedFlags) ? blueprint.suggestedFlags : [];
+    const knownFlagNames = new Set(blueprint.suggestedFlags.map((f) => f.name));
+    for (const flag of chainFlags) {
+      if (knownFlagNames.has(flag)) continue;
+      knownFlagNames.add(flag);
+      const obligation = outgoing.find((entry) => entry.flag === flag);
+      blueprint.suggestedFlags.push({
+        name: flag,
+        description: obligation?.authoringGuidance
+          || obligation?.choiceAnchor
+          || `Treatment consequence-chain flag set on-page: ${flag}`,
+      });
+    }
+
+    const choiceScenes = scenes.filter((s) => s.choicePoint);
+    if (choiceScenes.length === 0) return;
+    // Prefer a scene already assigned this residue; else last choice-bearing scene.
+    const host = choiceScenes.find((scene) =>
+      chainFlags.some((flag) => {
+        const obligation = outgoing.find((entry) => entry.flag === flag);
+        return obligation && scene.choicePoint?.residueObligationIds?.includes(obligation.id);
+      })
+    ) || choiceScenes.find((s) => s.choicePoint?.branches)
+      || choiceScenes[choiceScenes.length - 1];
+    if (!host.choicePoint) return;
+    host.choicePoint.setsBranchAxes = Array.from(new Set([
+      ...(host.choicePoint.setsBranchAxes || []),
+      ...chainFlags,
+    ]));
+    for (const flag of chainFlags) {
+      const obligation = outgoing.find((entry) => entry.flag === flag);
+      if (!obligation) continue;
+      host.choicePoint.residueObligationIds = Array.from(new Set([
+        ...(host.choicePoint.residueObligationIds || []),
+        obligation.id,
+      ]));
+      host.residueObligationIds = Array.from(new Set([
+        ...(host.residueObligationIds || []),
+        obligation.id,
+      ]));
+    }
+  }
+
   private validatePlannedEncounterCoverage(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const plannedEncounters = input.seasonPlanDirectives?.plannedEncounters || [];
     if (plannedEncounters.length === 0) return;
@@ -2961,7 +3192,19 @@ export class StoryArchitect extends BaseAgent {
       const requiredNpcIds = new Set(matchedScene.encounterRequiredNpcIds || []);
       const sceneNpcIds = new Set(matchedScene.npcsPresent || []);
       const missingNpcIds: string[] = [];
+      const stagingText = [
+        this.sceneBlueprintStagingText(matchedScene),
+        plannedEncounter.description,
+        plannedEncounter.centralConflict,
+        plannedEncounter.stakes,
+      ].filter(Boolean).join(' ');
       for (const npcId of plannedEncounter.npcsInvolved || []) {
+        const displayName = String(npcId).includes(' ') || /[A-Z]/.test(String(npcId))
+          ? String(npcId)
+          : String(npcId).replace(/^char-/, '').replace(/-/g, ' ');
+        if (resolveCharacterIntroMode({ characterName: displayName, stagingText }) === 'anonymous_plant') {
+          continue;
+        }
         if (!requiredNpcIds.has(npcId)) {
           missingNpcIds.push(npcId);
           requiredNpcIds.add(npcId);
@@ -4603,6 +4846,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
+      this.ensureEnsembleCastObligations(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
 
@@ -5060,6 +5304,7 @@ REQUIREMENTS:
       this.assignInfoReveals(blueprint, input);
       this.assignSceneTimeline(blueprint);
       this.ensureCharacterIntroductionBeats(blueprint, input);
+      this.ensureEnsembleCastObligations(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
 

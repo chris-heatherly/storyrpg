@@ -74,7 +74,14 @@ import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacin
 import { detectBeatTenseDrift, isSceneWideTenseDrift, sceneTenseCensus } from '../../utils/proseTense';
 import { buildSceneDependencyGraph, buildTopologicalWaves } from '../../utils/dependencyGraph';
 import { slugify as idSlugify } from '../../utils/idUtils';
-import { forbiddenNpcNames, introducedNpcIds, isIntroducedNpc, npcIdsNamedInProse } from '../../utils/npcIntroductionLedger';
+import {
+  forbiddenNpcNames,
+  introducedNpcIds,
+  isIntroducedNpc,
+  npcIdsNamedInProse,
+  resolveCharacterIntroMode,
+  resolveRosterCharacter,
+} from '../../utils/npcIntroductionLedger';
 import { saveEarlyDiagnostic } from '../../utils/pipelineOutputWriter';
 import {
   buildRealizedEpisodeSoFarSummary,
@@ -3050,10 +3057,30 @@ export class ContentGenerationPhase {
           ].filter(Boolean).join(' ');
           return !OFF_PAGE_RELATION.test(text);
         };
+        const encounterStagingText = [
+          sceneBlueprint.name,
+          sceneBlueprint.description,
+          sceneBlueprint.encounterDescription,
+          sceneBlueprint.encounterCentralConflict,
+          ...(sceneBlueprint.encounterBeatPlan || []),
+          ...(sceneBlueprint.keyBeats || []),
+          plannedEnc?.description,
+          plannedEnc?.centralConflict,
+          plannedEnc?.stakes,
+        ].filter(Boolean).join(' ');
+        const rosterForIntro = characterBible.characters
+          .filter((c) => c.id !== brief.protagonist.id)
+          .map((c) => ({ id: c.id, name: c.name }));
+        const isAnonymousPlantRef = (npcId: string): boolean => {
+          const resolved = resolveRosterCharacter(npcId, rosterForIntro);
+          const characterName = resolved?.name
+            || (String(npcId).includes(' ') ? String(npcId) : String(npcId).replace(/^char-/, '').replace(/-/g, ' '));
+          return resolveCharacterIntroMode({ characterName, stagingText: encounterStagingText }) === 'anonymous_plant';
+        };
         const encounterRequiredNpcIds = filterProtagonistEncounterRefs(
           collectEncounterParticipantRefs(sceneBlueprint, plannedEnc),
           brief.protagonist,
-        ).filter(isStageablePresent);
+        ).filter(isStageablePresent).filter((npcId) => !isAnonymousPlantRef(npcId));
         
         // NOTE: encounterRelevantSkills are passed to the architect as *prompt
         // hints* (see availableSkills/encounterRelevantSkills inputs below), but
@@ -3097,22 +3124,72 @@ export class ContentGenerationPhase {
           level: s.level || 1,
         })) || [];
 
-        // Build NPCs list - add a fallback antagonist if none present for combat/chase encounters
-        let npcsInvolved = encounterRequiredNpcIds.map(npcId => {
-          const profile = resolveCharacterProfile(characterBible.characters, npcId);
-          const npcBrief = brief.npcs.find(n => n.id === npcId);
-          return {
-            id: npcId,
-            name: profile?.name || npcId,
-            pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
-            role: (npcBrief?.role === 'antagonist' ? 'enemy' : 
-                   npcBrief?.role === 'ally' || npcBrief?.role === 'love_interest' || npcBrief?.role === 'mentor' ? 'ally' : 
-                   npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
-            description: profile?.overview || '',
-            physicalDescription: profile?.physicalDescription,
-            voiceNotes: profile?.voiceProfile?.writingGuidance || '',
-          };
+        // On-page introduction state for encounter NPCs (mirrors SceneWriter).
+        const introducedBeforeEncounter = introducedNpcIds({
+          episodeNumber: brief.episode.number,
+          rosterNpcIds: rosterForIntro.map((c) => c.id),
+          characterIntroductions: brief.seasonPlan?.characterIntroductions,
+          alreadyStagedNpcIds: sceneContents.flatMap((content) => [
+            ...(content.charactersInvolved || []),
+            ...npcIdsNamedInProse(
+              (content.beats || [])
+                .flatMap((beat) => [
+                  beat.text,
+                  (beat as { setupText?: string }).setupText,
+                  (beat as { escalationText?: string }).escalationText,
+                  ...((beat as { textVariants?: Array<{ text?: string }> }).textVariants || []).map((v) => v.text),
+                ])
+                .filter(Boolean)
+                .join(' '),
+              rosterForIntro,
+            ),
+          ]),
         });
+
+        // Build NPCs list - add a fallback antagonist if none present for combat/chase encounters
+        // Also include anonymous-plant participants as prompt-only (not cast as named roster).
+        const anonymousPlantRefs = filterProtagonistEncounterRefs(
+          collectEncounterParticipantRefs(sceneBlueprint, plannedEnc),
+          brief.protagonist,
+        ).filter(isStageablePresent).filter(isAnonymousPlantRef);
+
+        let npcsInvolved = [
+          ...encounterRequiredNpcIds.map(npcId => {
+            const profile = resolveCharacterProfile(characterBible.characters, npcId);
+            const npcBrief = brief.npcs.find(n => n.id === npcId);
+            const isFirst = !isIntroducedNpc(introducedBeforeEncounter, npcId);
+            return {
+              id: npcId,
+              name: profile?.name || npcId,
+              pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
+              role: (npcBrief?.role === 'antagonist' ? 'enemy' :
+                     npcBrief?.role === 'ally' || npcBrief?.role === 'love_interest' || npcBrief?.role === 'mentor' ? 'ally' :
+                     npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
+              description: profile?.overview || '',
+              physicalDescription: profile?.physicalDescription,
+              voiceNotes: profile?.voiceProfile?.writingGuidance || '',
+              isFirstOnPageAppearance: isFirst,
+              introMode: (isFirst ? 'named' : undefined) as 'named' | 'anonymous_plant' | undefined,
+            };
+          }),
+          ...anonymousPlantRefs.map(npcId => {
+            const profile = resolveCharacterProfile(characterBible.characters, npcId);
+            const npcBrief = brief.npcs.find(n => n.id === npcId);
+            return {
+              id: npcId,
+              name: profile?.name || npcId,
+              pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
+              role: (npcBrief?.role === 'antagonist' ? 'enemy' :
+                     npcBrief?.role === 'ally' || npcBrief?.role === 'love_interest' || npcBrief?.role === 'mentor' ? 'ally' :
+                     npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
+              description: profile?.overview || profile?.physicalDescription || 'A stranger with distinctive visual cues',
+              physicalDescription: profile?.physicalDescription,
+              voiceNotes: profile?.voiceProfile?.writingGuidance || '',
+              isFirstOnPageAppearance: true,
+              introMode: 'anonymous_plant' as const,
+            };
+          }),
+        ];
 
         // If no NPCs for an encounter that typically needs one, create a placeholder
         if (npcsInvolved.length === 0 && ['combat', 'chase', 'social', 'stealth'].includes(sceneBlueprint.encounterType || '')) {
@@ -3137,8 +3214,18 @@ export class ContentGenerationPhase {
             description: sceneBlueprint.encounterDescription || 'An opposing force',
             physicalDescription: undefined,
             voiceNotes: '',
+            isFirstOnPageAppearance: true,
+            introMode: 'anonymous_plant' as const,
           }];
         }
+
+        const notYetIntroducedNames = forbiddenNpcNames({
+          roster: rosterForIntro,
+          introduced: introducedBeforeEncounter,
+          // Anonymous plants are in the prompt cast but must stay on the ban-list
+          // so the architect does not name their roster identity.
+          sceneCastIds: encounterRequiredNpcIds,
+        });
 
         if (plannedEnc && sceneBlueprint.plannedEncounterId !== plannedEnc.id) {
           throw new PipelineError(
@@ -3278,6 +3365,7 @@ export class ContentGenerationPhase {
             relevantSkills: protagonistSkills.length > 0 ? protagonistSkills : undefined,
           },
           npcsInvolved,
+          notYetIntroducedNames,
           availableSkills: defaultSkills,
           targetBeatCount,
           victoryNextSceneId,

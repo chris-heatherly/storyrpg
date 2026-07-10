@@ -803,17 +803,64 @@ describe('StoryArchitect treatment fidelity validation', () => {
 
     (architect as any).registerBranchAxisEmitters(blueprint, input);
 
-    // Both ending axes registered as known flags; non-axis flags ignored.
+    // All seasonFlags scheduled for this episode are registered so emitters can set them.
     const names = blueprint.suggestedFlags.map((f: any) => f.name);
     expect(names).toContain('treatment_branch_essence_spent_vs_hoarded');
     expect(names).toContain('treatment_branch_mercy_vs_vengeance');
-    expect(names).not.toContain('route_some_route');
-    expect(names).not.toContain('plain_flag');
+    expect(names).toContain('route_some_route');
+    expect(names).toContain('plain_flag');
     // Recorded on the choice-bearing scene so emitSceneBranchAxes can set them on-page.
-    expect(blueprint.scenes[1].choicePoint.setsBranchAxes).toEqual([
+    expect(blueprint.scenes[1].choicePoint.setsBranchAxes).toEqual(expect.arrayContaining([
       'treatment_branch_essence_spent_vs_hoarded',
       'treatment_branch_mercy_vs_vengeance',
-    ]);
+      'route_some_route',
+      'plain_flag',
+    ]));
+  });
+
+  it('registerConsequenceChainEmitters wires consequence_* residue flags onto a choice scene', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        outgoingResidue: [
+          {
+            id: 'chain:treatment_chain_ep1_1',
+            source: 'consequence_chain',
+            sourceEpisodeNumber: 1,
+            choiceAnchor: 'Accept the invitation',
+            flag: 'consequence_treatment_chain_ep1_1',
+            conditionKey: 'consequence_treatment_chain_ep1_1',
+            kind: 'failure_residue',
+            payoffPolicy: 'episode_window',
+            targetEpisodeNumbers: [2, 3],
+            sourceMaterial: { residueHints: ['The invitation residue'] },
+            authoringGuidance: 'Set the chain flag on the bottleneck choice.',
+            requiredSurface: ['text_variant'],
+            priority: 'major',
+          },
+        ],
+      },
+    });
+    const blueprint: any = {
+      episodeId: 'episode-1',
+      number: 1,
+      suggestedFlags: [],
+      scenes: [
+        { id: 's1-1', isEncounter: true, encounterSetupContext: [] },
+        {
+          id: 's1-2',
+          choicePoint: { type: 'dilemma', stakes: {}, description: 'Bottleneck.', optionHints: [], branches: [{}, {}] },
+          encounterSetupContext: [],
+        },
+      ],
+    };
+
+    (architect as any).registerConsequenceChainEmitters(blueprint, input);
+
+    expect(blueprint.suggestedFlags.map((f: any) => f.name)).toContain('consequence_treatment_chain_ep1_1');
+    expect(blueprint.scenes[1].choicePoint.setsBranchAxes).toContain('consequence_treatment_chain_ep1_1');
+    expect(blueprint.scenes[1].choicePoint.residueObligationIds).toContain('chain:treatment_chain_ep1_1');
   });
 
   it('repairs treatment theme pressure and forward pressure into validator-visible fields', () => {
@@ -3749,5 +3796,55 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     const release = blueprint.scenes.find((scene: any) => scene.id === 's1-4');
     expect(release?.description).toContain('DM pile');
     expect(release?.location).toBe("Kylie's Lipscani Apartment");
+  });
+
+  it('anonymous_plant intro does not force roster id into encounter cast', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      introducesCharacters: [{ id: 'victor', name: 'Victor Valcescu' }],
+      availableNPCs: [{ id: 'victor', name: 'Victor Valcescu', role: 'antagonist' }],
+      seasonPlanDirectives: {
+        plannedScenes: [
+          {
+            ...plannedStandard('enc-1-1', 0, 'climax'),
+            kind: 'encounter',
+            title: 'park rescue',
+            dramaticPurpose: 'A stranger in a charcoal suit intervenes when the shadow attacks.',
+            locations: ['Park'],
+            npcsInvolved: ['Victor Valcescu'],
+            requiredBeats: [{
+              id: 'enc-rb',
+              tier: 'authored',
+              sourceTurn: 'A stranger in a charcoal suit rescues you from the shadow.',
+              mustDepict: 'A stranger in a charcoal suit rescues you from the shadow.',
+            }],
+            turnContract: {
+              turnId: 'enc-turn',
+              source: 'treatment',
+              centralTurn: 'A stranger in a charcoal suit intervenes.',
+              beforeState: 'Before',
+              turnEvent: 'A stranger in a charcoal suit rescues you.',
+              afterState: 'After',
+              handoff: 'Next',
+            },
+          },
+        ],
+        plannedEncounters: [{
+          id: 'enc-1-1',
+          type: 'dramatic',
+          description: 'A stranger in a charcoal suit intervenes when the shadow attacks.',
+          stakes: 'Survival',
+          npcsInvolved: ['victor'],
+        }],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    (architect as any).ensureCharacterIntroductionBeats(blueprint, input);
+    const scene = blueprint.scenes.find((s: any) => s.id === 'enc-1-1') || blueprint.scenes[0];
+    expect(scene.keyBeats.join(' ')).toMatch(/Anonymous first contact|anonymous/i);
+    expect(scene.npcsPresent || []).not.toContain('victor');
+    expect(scene.requiredBeats.some((b: any) => /do NOT use the roster name/i.test(b.mustDepict || ''))).toBe(true);
   });
 });

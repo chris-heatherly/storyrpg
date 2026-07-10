@@ -121,6 +121,33 @@ describe('assessEncounterTurnRealization', () => {
     expect(result.passed).toBe(true);
   });
 
+  it('fails when aftermath lives only in a sibling storylet the victory path does not include', () => {
+    const enc = encounter();
+    // Put the threshold tail only on defeat storylet; victory path stays short.
+    enc.storylets = {
+      victory: {
+        id: 'victory',
+        title: 'Short win',
+        beats: [{ id: 'victory-b1', text: 'The charcoal suit nods once.' }],
+      },
+      defeat: {
+        id: 'defeat',
+        title: 'Aftermath',
+        beats: [{
+          id: 'defeat-b1',
+          text: 'At the threshold, he kisses your hand, declines to come in, and vanishes into the fog.',
+        }],
+      },
+    };
+    enc.outcomes = {
+      victory: { outcomeText: 'You survive. The stranger nods and is gone.' },
+    } as never;
+
+    const result = assessEncounterTurnRealization(blueprint(), enc);
+    expect(result.passed).toBe(false);
+    expect(result.misses.some((miss) => miss.outcomeTier === 'victory' || /\[victory\]/.test(miss.label))).toBe(true);
+  });
+
   it('accepts threshold refusal wording instead of requiring literal decline tokens', () => {
     const result = assessEncounterTurnRealization(
       blueprint(),
@@ -128,6 +155,68 @@ describe('assessEncounterTurnRealization', () => {
     );
 
     expect(result.passed).toBe(true);
+  });
+
+  it('fails when a defeat terminal omits a preserved signature atom present on the turn', () => {
+    // Use a quoted marker that is NOT in shared setup prose — shared setup already
+    // says "1am", so clock markers alone cannot prove per-terminal locking.
+    const turn =
+      'The rescuer walks you home, whispers "threshold vow", declines to come in, and vanishes.';
+    const enc = encounter();
+    enc.beats = [{
+      id: 'beat-1',
+      phase: 'setup',
+      name: 'Willow',
+      setupText: 'A shadow pins you hard against a willow.',
+      choices: [],
+    }] as never;
+    enc.storylets = {
+      victory: {
+        id: 'victory',
+        title: 'Threshold',
+        beats: [{
+          id: 'victory-b1',
+          text: 'He walks you home, whispers "threshold vow", declines to come in, and vanishes into the fog.',
+        }],
+      },
+      defeat: {
+        id: 'defeat',
+        title: 'Aftermath',
+        beats: [{ id: 'defeat-b1', text: 'The park goes quiet. You limp home alone without a vow.' }],
+      },
+    };
+    enc.outcomes = {
+      victory: { outcomeText: 'He walks you home and whispers "threshold vow" before he vanishes.' },
+      defeat: { outcomeText: 'You escape the shadow but the night ends without a walk home.' },
+    } as never;
+
+    const result = assessEncounterTurnRealization(
+      blueprint({
+        turnContract: {
+          turnId: 'turn-atom',
+          source: 'encounter',
+          centralTurn: turn,
+          beforeState: 'Alone.',
+          turnEvent: turn,
+          afterState: 'Rescued.',
+          handoff: 'Home.',
+        },
+        requiredBeats: [{
+          id: 'sig-atom',
+          tier: 'authored',
+          sourceTurn: turn,
+          mustDepict: turn,
+        }],
+        signatureMoment: turn,
+      }),
+      enc,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.misses.some((miss) =>
+      miss.outcomeTier === 'defeat'
+      && /threshold vow|signature atom/i.test(`${miss.label} ${miss.moment}`)
+    )).toBe(true);
   });
 
   it('ignores generic planner turns but still enforces concrete required beats', () => {

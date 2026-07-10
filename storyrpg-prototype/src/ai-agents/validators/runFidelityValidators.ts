@@ -63,6 +63,7 @@ import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
+import { resolveCharacterIntroMode } from '../utils/npcIntroductionLedger';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 import {
   StoryCircleAnchorConformanceValidator,
@@ -241,10 +242,36 @@ function plannedSceneContractTextFromScenePlan(
       ]),
       ...(view.storyCircleBeatContracts ?? []).map((contract) => contract?.sourceText),
       (view as { signatureMoment?: string }).signatureMoment,
+      scene.title,
+      scene.dramaticPurpose,
+      scene.turnContract?.turnEvent,
+      scene.turnContract?.centralTurn,
+      scene.encounterDescription,
+      ...(scene.encounterBeatPlan ?? []),
     ].filter(Boolean).join(' ');
     if (text) out.set(scene.id, text);
   }
   return out;
+}
+
+/** Roster ids whose planned contract text is an anonymous plant (stranger/suit/rescuer). */
+function anonymousPlantNpcIdsFromScenePlan(
+  story: Story,
+  plannedSceneContractText: ReadonlyMap<string, string> | undefined,
+): Set<string> | undefined {
+  if (!plannedSceneContractText?.size) return undefined;
+  const roster = (story.npcs || []).map((npc) => ({ id: npc.id, name: npc.name }));
+  if (roster.length === 0) return undefined;
+  const out = new Set<string>();
+  for (const npc of roster) {
+    for (const text of plannedSceneContractText.values()) {
+      if (resolveCharacterIntroMode({ characterName: npc.name, stagingText: text }) === 'anonymous_plant') {
+        out.add(npc.id);
+        break;
+      }
+    }
+  }
+  return out.size > 0 ? out : undefined;
 }
 
 function scopedScenePlan(scenePlan: SeasonScenePlan | undefined, active: Set<number> | undefined): SeasonScenePlan | undefined {
@@ -911,10 +938,13 @@ function collectFidelityFindings(
   // name-drop (storyrpg-lite 2026-07-05 s1-2 "her other friend Mika").
   if (isGateEnabled('GATE_CHARACTER_INTRODUCTION')) {
     guard(() => {
+      const plannedSceneContractText = plannedSceneContractTextFromScenePlan(scenePlan);
       const result = new CharacterIntroductionValidator().validate({
         story,
         characterIntroductions: seasonPlan?.characterIntroductions,
-        plannedSceneContractText: plannedSceneContractTextFromScenePlan(scenePlan),
+        plannedSceneContractText,
+        treatmentSourced,
+        anonymousPlantNpcIds: anonymousPlantNpcIdsFromScenePlan(story, plannedSceneContractText),
       });
       return toFindings('CharacterIntroductionValidator', result.issues);
     });

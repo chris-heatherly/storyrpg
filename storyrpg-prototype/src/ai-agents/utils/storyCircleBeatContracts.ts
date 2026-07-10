@@ -20,6 +20,7 @@ import {
   treatmentFieldTokens,
 } from './treatmentFieldContracts';
 import { toStageableTreatmentMoment } from './stageableTreatmentMoment';
+import { extractPreservedMarkers } from './treatmentEventAtomizer';
 
 const BEAT_LABELS: Record<StoryCircleBeat, RegExp[]> = {
   you: [/\byou\b/i],
@@ -217,6 +218,7 @@ export function buildStoryCircleBeatContracts(input: {
       targetEpisodeNumber: targetEpisodeFor(input.guidance, beat, input.totalEpisodes),
       requiredRealization: requiredRealizationFor(beat, stageable || sourceText),
       eventAtoms: atoms.length > 0 ? atoms : [stageable || sourceText],
+      preservedMarkers: extractPreservedMarkers(stageable || sourceText),
       stateChange: STATE_CHANGE_RE.test(stageable || sourceText) ? (stageable || sourceText) : undefined,
       targetSceneIds: [],
       blockingLevel: level,
@@ -338,6 +340,7 @@ export function buildEpisodeCircleBeatContracts(input: {
       targetEpisodeNumber: input.episodeNumber,
       requiredRealization: requiredEpisodeRealizationFor(beat, stageable || sourceText),
       eventAtoms: atoms.length > 0 ? atoms : [stageable || sourceText],
+      preservedMarkers: extractPreservedMarkers(stageable || sourceText),
       stateChange: STATE_CHANGE_RE.test(stageable || sourceText) ? (stageable || sourceText) : undefined,
       targetSceneIds: target ? [target.id] : [],
       blockingLevel: 'structural',
@@ -532,6 +535,7 @@ export function normalizeStoryCircleContractForSceneProse(contract: StoryCircleB
       ...contract,
       sourceText: stageableSource,
       eventAtoms: atoms.length > 0 ? atoms : [stageableSource],
+      preservedMarkers: extractPreservedMarkers(stageableSource),
     }];
   }
   return [];

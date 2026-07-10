@@ -89,8 +89,24 @@ describe('creation-side residue check (shadow parity gap, bite-me 2026-07-03T03-
 
     expect(report.findings).toHaveLength(1);
     expect(report.findings[0].gateId).toBe('GATE_RESIDUE_CONSUME');
-    expect(report.findings[0].severity).toBe('warning');
+    // Treatment consequence_* chains are load-bearing — error so seal can block.
+    expect(report.findings[0].severity).toBe('error');
     expect(report.findings[0].message).toContain('no choice creates its flag');
+  });
+
+  it('keeps non-chain residue creation misses as warnings', () => {
+    const ledger = ledgerWith([
+      hook('flag:accepted_quartz', {
+        kind: 'residue',
+        sourceChoiceId: '',
+        sourceEpisode: 1,
+        flags: ['accepted_quartz'],
+        payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+      }),
+    ]);
+
+    const report = validateObligationLedger(ledger, { episodeNumber: 1, generatedThroughEpisode: 1 });
+    expect(report.findings[0]?.severity).toBe('warning');
   });
 
   it('does not flag once a real choice has set the flag (sourceChoiceId merged in)', () => {

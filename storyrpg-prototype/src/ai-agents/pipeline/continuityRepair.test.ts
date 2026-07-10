@@ -203,6 +203,31 @@ describe('mergeRewrittenBeatsIntoStory', () => {
     mergeRewrittenBeatsIntoStory(story as any, 's', [{ id: 'b', text: 'new' }], onUnmatched);
     expect(onUnmatched).not.toHaveBeenCalled();
   });
+
+  it('re-derives unsafe visualMoment/primaryAction from rewritten beat.text', () => {
+    const synopsis =
+      'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const story = {
+      episodes: [{ scenes: [{
+        id: 's1-3',
+        beats: [{
+          id: 'b1',
+          text: synopsis,
+          visualMoment: synopsis,
+          primaryAction: synopsis,
+        }],
+      }] }],
+    };
+    mergeRewrittenBeatsIntoStory(story as any, 's1-3', [{
+      id: 'b1',
+      text: 'You slip between the shelves while Stela names the club like a dare.',
+    }]);
+    const beat = story.episodes[0].scenes[0].beats[0];
+    expect(beat.text).toMatch(/^You slip/);
+    expect(beat.visualMoment).not.toMatch(/She wanders into a bookshop/i);
+    expect(beat.primaryAction).not.toMatch(/She wanders into a bookshop/i);
+    expect(beat.visualMoment).toMatch(/You slip between the shelves/);
+  });
 });
 
 describe('mergeRewrittenEncounterBeatsIntoStory', () => {

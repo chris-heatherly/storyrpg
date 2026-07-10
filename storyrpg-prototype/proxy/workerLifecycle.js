@@ -1646,8 +1646,8 @@ function createWorkerLifecycle({
       || process.env.EXPO_PUBLIC_OPENROUTER_API_KEY
       || '';
     const envGeminiKey =
-      process.env.EXPO_PUBLIC_GEMINI_API_KEY
-      || process.env.GEMINI_API_KEY
+      process.env.GEMINI_API_KEY
+      || process.env.EXPO_PUBLIC_GEMINI_API_KEY
       || '';
     const envAtlasKey =
       process.env.ATLAS_CLOUD_API_KEY

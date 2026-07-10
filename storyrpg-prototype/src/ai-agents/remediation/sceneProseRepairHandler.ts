@@ -34,10 +34,14 @@ import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { SYNTHETIC_FALLBACK_PROSE_PATTERNS } from '../constants/syntheticFallbackProse';
+import { isUnsafeCoverageMetadataText } from '../utils/coverageMetadataHygiene';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
-import { scenePassesCharacterIntroductionOffPageCheck } from '../validators/CharacterIntroductionValidator';
+import {
+  characterIntroductionIssueCleared,
+  scenePassesCharacterIntroductionOffPageCheck,
+} from '../validators/CharacterIntroductionValidator';
 import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
 import { contractRepairIssueFingerprint, type ContractRepairHandler, type ContractRepairReport } from './finalContractRepair';
 import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
@@ -302,11 +306,16 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
       continue;
     }
     if (issue.validator === 'CharacterIntroductionValidator') {
-      const offPage = /off-page familiarity|settled group belonging/i.test(issue.message ?? '');
+      const offPage = /off-page familiarity|settled group belonging|back-reference/i.test(issue.message ?? '');
+      const anonymousPlant = /anonymous|stranger|first-contact plant|visual cues/i.test(
+        `${issue.suggestion || ''} ${issue.message || ''}`,
+      );
       lines.push(
         offPage
           ? '  NON-NEGOTIABLE: this is the reader\'s FIRST on-page meeting with the named character(s). Rewrite every beat in second person ("you/your"). Stage the bookshop encounter as live first contact: how you notice them, how they name themselves or are named to you, one concrete identifying detail, and guarded/testing warmth — NOT summary prose ("She explores… Stela who befriends her"), NOT time-jump familiarity, NOT "the woman from the bookstore", NOT club belonging or "friends now" language. Mentioning a later club as an invitation is fine; treating them as already-known company is not.'
-          : '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
+          : anonymousPlant
+            ? '  NON-NEGOTIABLE: this is an ANONYMOUS PLANT. Stage first-contact with a stranger/anonymous figure and distinctive visual cues. Do NOT use their roster name yet. Keep identity linked for a later reveal.'
+            : '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
       );
       continue;
     }
@@ -508,11 +517,16 @@ function mutableTextCarriersFor(scene: RepairableStoryScene): RepairableTextCarr
  * variants) — the haystack for predicting whether a finding will clear.
  */
 function sceneProseForScoring(scene: RepairableStoryScene): string {
-  type ProseBeat = EncounterProseBeat & { textVariants?: Array<{ text?: string }> };
+  type ProseBeat = EncounterProseBeat & {
+    textVariants?: Array<{ text?: string }>;
+    visualMoment?: string;
+    primaryAction?: string;
+  };
   const parts: string[] = [scene.name ?? ''];
   const collect = (beats: ProseBeat[] | undefined): void => {
     for (const b of beats || []) {
       parts.push(b.text ?? '', b.setupText ?? '', b.escalationText ?? '');
+      parts.push(b.visualMoment ?? '', b.primaryAction ?? '');
       for (const variant of b.textVariants || []) parts.push(variant?.text ?? '');
     }
   };
@@ -663,18 +677,39 @@ function plannedMissingMomentNotes(scene: RepairableStoryScene, plannedSource?: 
   ].join('\n');
 }
 
-/** Predict the re-validation: does the scene's prose now depict every flagged and active planned moment? */
-function characterIntroductionIssuesCleared(
+/** Predict whether CharacterIntroductionValidator issues are cleared after repair. */
+export function characterIntroductionIssuesCleared(
   scene: RepairableStoryScene,
   issues: RepairableIssue[],
 ): boolean {
   const introIssues = issues.filter((issue) => issue.validator === 'CharacterIntroductionValidator');
   if (introIssues.length === 0) return true;
-  const names = introIssues
-    .map((issue) => /"([^"]+)"/.exec(issue.message ?? '')?.[1])
-    .filter((name): name is string => Boolean(name));
-  if (names.length === 0) return true;
-  return scenePassesCharacterIntroductionOffPageCheck(scene as unknown as import('../../types').Scene, names);
+  return introIssues.every((issue) => {
+    const location = String(issue.location || '');
+    const message = String(issue.message || '');
+    const isOffPage = location.includes(':offpage-familiarity')
+      || location.includes(':offpage-backreference')
+      || /off-page familiarity|settled group belonging|back-reference/i.test(message);
+    if (isOffPage) {
+      const name = /"([^"]+)"/.exec(message)?.[1];
+      return scenePassesCharacterIntroductionOffPageCheck(
+        scene as unknown as import('../../types').Scene,
+        name ? [name] : [],
+      );
+    }
+    // Metadata-only / never-names: require the name in prose, OR anonymous-plant
+    // first-contact staging (detected from issue suggestion / message cues).
+    const anonymousHint = /anonymous|stranger|first-contact plant|visual cues/i.test(
+      `${issue.suggestion || ''} ${message}`,
+    );
+    return characterIntroductionIssueCleared(
+      scene as unknown as import('../../types').Scene,
+      issue,
+      anonymousHint
+        ? { anonymousPlantNpcIds: new Set([location.split(':').pop() || ''].filter(Boolean)) }
+        : undefined,
+    );
+  });
 }
 
 function allMomentsDepicted(
@@ -715,9 +750,42 @@ function sceneContainsRegisteredPlaceholder(scene: RepairableStoryScene): boolea
     || SYNTHETIC_FALLBACK_PROSE_PATTERNS.some((entry) => entry.pattern.test(prose));
 }
 
+function sceneContainsTreatmentProseLeak(scene: RepairableStoryScene): boolean {
+  type FieldBeat = {
+    text?: string;
+    setupText?: string;
+    escalationText?: string;
+    visualMoment?: string;
+    primaryAction?: string;
+    textVariants?: Array<{ text?: string }>;
+  };
+  const checkBeat = (beat: FieldBeat | undefined): boolean => {
+    if (!beat) return false;
+    const fields = [
+      beat.text, beat.setupText, beat.escalationText,
+      beat.visualMoment, beat.primaryAction,
+      ...(beat.textVariants ?? []).map((v) => v?.text),
+    ];
+    return fields.some((field) => typeof field === 'string' && isUnsafeCoverageMetadataText(field));
+  };
+  if ((scene.beats ?? []).some((beat) => checkBeat(beat as FieldBeat))) return true;
+  const enc = scene.encounter;
+  if (!enc) return false;
+  for (const phase of enc.phases || []) {
+    if ((phase.beats ?? []).some((beat) => checkBeat(beat as FieldBeat))) return true;
+  }
+  const storylets = Array.isArray(enc.storylets) ? enc.storylets : Object.values(enc.storylets ?? {});
+  for (const storylet of storylets) {
+    if ((storylet?.beats ?? []).some((beat) => checkBeat(beat as FieldBeat))) return true;
+  }
+  return false;
+}
+
 function proseHygieneIssueCleared(scene: RepairableStoryScene, issue: RepairableIssue): boolean {
   if (issue.type === 'unsafe_fallback_prose') {
-    return !sceneContainsRegisteredPlaceholder(scene);
+    // Cleared only when both registered synthetic placeholders AND treatment
+    // synopsis leaks (including visualMoment/primaryAction) are gone.
+    return !sceneContainsRegisteredPlaceholder(scene) && !sceneContainsTreatmentProseLeak(scene);
   }
   if (issue.validator === 'RelationshipArcLedgerValidator') {
     // Critic rewrites are accepted for predicted-clear; final revalidation is the net.

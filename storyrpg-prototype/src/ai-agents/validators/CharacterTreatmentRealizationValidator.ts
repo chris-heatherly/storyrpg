@@ -334,9 +334,50 @@ function hasStructuredPlanUse(input: CharacterTreatmentRealizationInput, contrac
   return targetScenes.length > 0;
 }
 
+/** Concrete visual/voice tokens from a bible/treatment visual field (not thematic fluff). */
+function visualIdentityAtoms(sourceText: string): string[] {
+  const text = String(sourceText ?? '').trim();
+  if (!text) return [];
+  const atoms: string[] = [];
+  const patterns = [
+    /\b(?:[\w-]+-)?(?:platinum|silver|blonde|blond|brunette|auburn|black|dark|red|copper|honey)\s*-?\s*(?:blonde|blond|brunette)?\s*(?:bob|hair|braid|curls?|waves?)\b/gi,
+    /\b(?:tortoiseshell|wire[- ]rim(?:med)?|thick[- ]rim(?:med)?)\s+glasses\b/gi,
+    /\b(?:quartz|silver|gold|signet)\s+(?:pendant|ring|bracelet|watch)\b/gi,
+    /\b(?:charcoal|black|velvet|leather|trench)\s*(?:suit|coat|dress|jacket)?\b/gi,
+    /\bslip\s+dresses?\b/gi,
+    /\b(?:bracelets?|pendant|signet|scar|puncture|glasses|trench)\b/gi,
+    /\b(?:soft|raspy|smoky|bright|low)\s+(?:voice|laugh|accent)\b/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const atom = match[0]?.trim();
+      if (atom && atom.length >= 4) atoms.push(atom.toLowerCase());
+    }
+  }
+  return Array.from(new Set(atoms)).slice(0, 8);
+}
+
 function hasFinalRealization(input: CharacterTreatmentRealizationInput, contract: CharacterTreatmentRealizationContract): boolean {
   if (!hasVisualProfile(input, contract)) return false;
-  if (contract.contractKind === 'visual_identity') return true;
+
+  // Visual identity must land as reader-facing appearance/voice cues on the
+  // intro/target scenes — metadata-only fashionStyle is not enough.
+  if (contract.contractKind === 'visual_identity') {
+    // Use story prose only — protagonistText includes fashionStyle metadata and
+    // would make this check a no-op again.
+    const storyText = targetedStoryText(input, contract);
+    if (treatmentFieldCloseMatch(contract.sourceText, storyText, Math.max(0.22, characterTreatmentMatchThreshold(contract)))) {
+      return true;
+    }
+    const atoms = visualIdentityAtoms(contract.sourceText);
+    if (atoms.length === 0) {
+      return hasStructuredPlanUse(input, contract)
+        && /\b(?:hair|eyes|voice|suit|dress|glasses|pendant|bracelet|scar|coat|jacket|braid|bob|trench)\b/i.test(storyText);
+    }
+    const hay = storyText.toLowerCase();
+    const hits = atoms.filter((atom) => hay.includes(atom) || treatmentFieldCloseMatch(atom, storyText, 0.7));
+    return hits.length >= Math.min(2, atoms.length);
+  }
 
   const text = [
     targetedStoryText(input, contract),

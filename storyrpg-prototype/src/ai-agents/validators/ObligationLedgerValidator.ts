@@ -87,12 +87,20 @@ export function validateObligationLedger(
     // ResidueObligationValidator's "did not create flag" class. Checked
     // before paid-ness: an auto-injected payoff can credit the hook while
     // the choice-side flag still doesn't exist.
+    //
+    // Treatment consequence chains (`consequence_*`) are load-bearing: promote
+    // to error so final contract can block seal under GATE_RESIDUE_CONSUME /
+    // treatmentSourced. Other residue stays advisory (warning) to avoid
+    // over-blocking soft residue that the seal may abandon.
     if (hook.kind === 'residue' && !hook.sourceChoiceId && hook.sourceEpisode <= episodeNumber) {
+      const isTreatmentChain = (hook.flags ?? []).some((flag) =>
+        typeof flag === 'string' && flag.startsWith('consequence_')
+      ) || /^flag:consequence_/.test(hook.id);
       findings.push({
         gateId: gateFor(hook.kind),
         kind: 'residue',
         hookId: hook.id,
-        severity: 'warning',
+        severity: isTreatmentChain ? 'error' : 'warning',
         message:
           `residue obligation "${hook.id}" (${hook.summary}) was planned to originate in episode ${hook.sourceEpisode} ` +
           `but no choice creates its flag.`,

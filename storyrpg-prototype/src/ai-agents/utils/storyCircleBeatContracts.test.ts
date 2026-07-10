@@ -364,8 +364,10 @@ describe('storyCircleBeatContracts', () => {
       },
     });
 
+    // Role appositions are stripped by toStageableTreatmentMoment before atomization
+    // so depiction gates do not demand dossier adjectives in second-person prose.
     expect(contracts[0].eventAtoms).toEqual([
-      'The protagonist arrives in the capital as a careful observer, wounded traveler with one bag, and writer trying to rebuild',
+      'The protagonist arrives in the capital, traveler with one bag, and writer trying',
     ]);
   });
 

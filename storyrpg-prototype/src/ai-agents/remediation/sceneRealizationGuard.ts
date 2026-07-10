@@ -24,8 +24,9 @@
  */
 
 import { missingMomentTokens, momentDepicted } from './realizationScoring';
-import { characterIntroductionMomentName, getRealizationPovContext, hasSecondPersonAddress } from './realizationEvaluator';
+import { characterIntroductionMomentName, getRealizationPovContext, hasSecondPersonAddress, normalizeRealizationText } from './realizationEvaluator';
 import { isGenericScenePlannerText } from '../utils/sceneContractBuilders';
+import { isUnsafeCoverageMetadataText } from '../utils/coverageMetadataHygiene';
 
 /** The contract surface both SceneBlueprint and (tagged) SceneContent carry. */
 export interface SceneContractSource {
@@ -84,8 +85,8 @@ export interface RequiredMoment {
 
 /** Depicted when the moment itself OR any registered alternate is on-page. */
 function momentOrAlternateDepicted(m: RequiredMoment, prose: string): boolean {
-  if (momentDepicted(m.validator, m.moment, prose)) return true;
-  return (m.alternates ?? []).some((alt) => alt && momentDepicted(m.validator, alt, prose));
+  if (momentSatisfiedByProse(m.validator, m.moment, prose)) return true;
+  return (m.alternates ?? []).some((alt) => alt && momentSatisfiedByProse(m.validator, alt, prose));
 }
 
 export interface MissingMoment extends RequiredMoment {
@@ -322,12 +323,38 @@ function isStoryCircleSummaryTier(tier: string): boolean {
 
 /** Treatment/design-summary red flags that must never ship as player prose:
  * meta role labels, character-design appositives ("as a charming, wounded
- * observer"), and goal-statement language ("the intent to rebuild"). */
+ * observer"), goal-statement language ("the intent to rebuild"), and the same
+ * third-person synopsis / planning leaks the final RouteContinuity gate uses. */
 function isTreatmentSummaryProse(moment: string): boolean {
   if (/\bthe (?:narrator|protagonist)\b/i.test(moment)) return true;
   if (/\bas an? [a-z'’-]+, [a-z'’-]+ [a-z'’-]+\b/i.test(moment)) return true;
   if (/\b(?:with )?the intent to [a-z]/i.test(moment)) return true;
+  // Shared with RouteContinuity / coverage hygiene — e.g. "She wanders into a
+  // bookshop owned by Stela…" must never be pasted as recovery prose/metadata.
+  if (isUnsafeCoverageMetadataText(moment)) return true;
   return false;
+}
+
+/**
+ * Verbatim paste of an unsafe treatment synopsis into beat.text must not count
+ * as dramatization — otherwise insertMissingMomentBeats can "satisfy" the gate
+ * that justified the paste.
+ */
+export function momentSatisfiedByProse(
+  validator: string | undefined,
+  moment: string,
+  prose: string,
+): boolean {
+  if (!momentDepicted(validator, moment, prose)) return false;
+  if (!isUnsafeCoverageMetadataText(moment)) return true;
+  const needle = normalizeRealizationText(moment);
+  const hay = normalizeRealizationText(prose);
+  if (!needle || !hay) return false;
+  // Exact (or near-exact) synopsis paste is summary-only, not scene drama.
+  if (hay === needle) return false;
+  // Prose that is mostly the synopsis plus a short wrapper still fails.
+  if (hay.includes(needle) && hay.length <= needle.length + 40) return false;
+  return true;
 }
 
 /** In a second-person story, a moment that NAMES the protagonist is planning
@@ -421,7 +448,7 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
   }
   const currentProse = proseOfBeats(beats);
   const safeMissing = missing.filter((m) => {
-    if (momentDepicted(m.validator, m.moment, currentProse)) {
+    if (momentSatisfiedByProse(m.validator, m.moment, currentProse)) {
       options.onSkip?.(m, 'moment is already depicted in current prose');
       return false;
     }
@@ -471,12 +498,13 @@ export function insertMissingMomentBeats<T extends RealizableBeat>(
     const text = authoredMomentText(m.moment);
     if (!text) return;
     const id = `${sceneId}-authored-${safeIdPart(m.tier)}-${safeIdPart(m.moment)}-${index + 1}`;
+    // Never clone authored obligation text into image/visual metadata — those
+    // fields are RouteContinuity-scanned and must be derived from dramatized
+    // beat.text (sanitizeSceneContentForReader / SceneWriter visual contract).
     inserted.push({
       id,
       text,
       nextBeatId: beats[insertAt]?.id,
-      visualMoment: text,
-      primaryAction: text,
     } as T);
   });
 

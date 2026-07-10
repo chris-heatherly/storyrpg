@@ -50,6 +50,41 @@ describe('producer blocker ownership', () => {
     expect(validateSceneProducerOutput('s1-1', scene)).toHaveLength(0);
   });
 
+  it('clears treatment synopsis pasted into visualMoment/primaryAction at scene time', () => {
+    const synopsis =
+      'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const scene = {
+      beats: [{
+        id: 'b1',
+        text: 'You follow Stela between the shelves as she names the club.',
+        visualMoment: synopsis,
+        primaryAction: synopsis,
+      }],
+    };
+    // Hygiene runs inside validate and clears fields from dramatized beat.text.
+    expect(validateSceneProducerOutput('s1-3', scene)).toHaveLength(0);
+    expect(scene.beats[0].visualMoment).not.toMatch(/She wanders into a bookshop/i);
+    expect(scene.beats[0].primaryAction).not.toMatch(/She wanders into a bookshop/i);
+    expect(scene.beats[0].visualMoment).toMatch(/You follow Stela/);
+
+    const dirty = {
+      beats: [{
+        id: 'b1',
+        text: synopsis,
+        visualMoment: synopsis,
+        primaryAction: synopsis,
+      }],
+    };
+    // When text is also synopsis, hygiene deletes visual fields rather than cloning.
+    const changed = postLlmMetadataHygiene(dirty);
+    expect(changed).toEqual(expect.arrayContaining([
+      'producer.beats[0].visualMoment',
+      'producer.beats[0].primaryAction',
+    ]));
+    expect(dirty.beats[0].visualMoment).toBeUndefined();
+    expect(dirty.beats[0].primaryAction).toBeUndefined();
+  });
+
   it('blocks malformed relationship consequences immediately after choice production', () => {
     const findings = validateChoiceProducerOutput('s1-3', {
       choices: [{

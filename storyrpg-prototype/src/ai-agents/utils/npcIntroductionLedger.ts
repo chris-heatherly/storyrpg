@@ -262,3 +262,149 @@ export function forbiddenNpcNames(opts: {
     .map((npc) => npc.name)
     .filter((name) => name.trim().length > 0);
 }
+
+/**
+ * How a character's first on-page plant should be staged.
+ *
+ * - `named`: introduce them by roster name (standard first meeting).
+ * - `anonymous_plant`: treatment stages them via anonymous descriptors
+ *   (stranger / charcoal suit / rescuer / figure) without revealing the
+ *   roster identity yet — later scenes name the reveal.
+ */
+export type CharacterIntroMode = 'named' | 'anonymous_plant';
+
+/** Anonymous visual / role descriptors used when a treatment plants a character without naming them. */
+const ANONYMOUS_PLANT_DESCRIPTOR_RE =
+  /\b(?:stranger|rescuer|savior|saviour|silhouette|unnamed\s+(?:man|woman|person|figure)|(?:mysterious|hooded|masked|shadowy)\s+(?:man|woman|person|figure|stranger)|(?:man|woman|person|figure)\s+in\s+(?:a\s+)?(?:charcoal|dark|black|grey|gray|navy)\s+(?:suit|coat|cloak)|(?:charcoal|dark|black)\s+suit|a\s+(?:tall\s+)?(?:man|woman)\s+in\s+(?:a\s+)?suit|the\s+(?:man|woman)\s+(?:who\s+)?(?:rescues?|saves?|intervenes?))\b/i;
+
+function normalizeIntroText(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** True when staging text uses the roster full name or a distinctive first name as on-page identity. */
+function stagingNamesCharacter(characterName: string, stagingText: string): boolean {
+  const haystack = ` ${normalizeIntroText(stagingText)} `;
+  const fullName = normalizeIntroText(characterName);
+  if (!fullName || !haystack.trim()) return false;
+  if (haystack.includes(` ${fullName} `)) return true;
+  const first = fullName.split(' ')[0] ?? '';
+  return first.length >= 3 && new RegExp(`\\b${first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(haystack);
+}
+
+/**
+ * True when planned/staging text describes the character via anonymous
+ * descriptors WITHOUT using the roster full name or unique first name as an
+ * on-page identity. False when staging clearly names them for introduction.
+ */
+export function detectAnonymousPlantStaging(opts: {
+  characterName: string;
+  stagingText: string;
+}): boolean {
+  const staging = String(opts.stagingText || '').trim();
+  if (!staging || !String(opts.characterName || '').trim()) return false;
+  if (stagingNamesCharacter(opts.characterName, staging)) return false;
+  return ANONYMOUS_PLANT_DESCRIPTOR_RE.test(staging);
+}
+
+/** Resolve whether this character's plant in the given staging text is named or anonymous. */
+export function resolveCharacterIntroMode(opts: {
+  characterName: string;
+  stagingText: string;
+}): CharacterIntroMode {
+  return detectAnonymousPlantStaging(opts) ? 'anonymous_plant' : 'named';
+}
+
+/**
+ * Collect roster NPC ids whose staging text for a scene is an anonymous plant.
+ * Content-agnostic: driven only by descriptor language vs roster naming.
+ */
+export function anonymousPlantNpcIdsFromStaging(opts: {
+  roster: Array<{ id: string; name: string }>;
+  stagingText: string;
+  candidateIds?: string[];
+}): string[] {
+  const staging = String(opts.stagingText || '').trim();
+  if (!staging) return [];
+  const candidates = opts.candidateIds?.length
+    ? opts.roster.filter((npc) => {
+        const slugs = new Set([
+          normalizeCharacterSlug(npc.id),
+          normalizeCharacterSlug(npc.name),
+        ]);
+        return opts.candidateIds!.some((ref) => {
+          const resolved = resolveRosterCharacter(ref, opts.roster);
+          const slug = normalizeCharacterSlug(resolved?.id || ref);
+          return slugs.has(slug) || normalizeCharacterSlug(ref) === normalizeCharacterSlug(npc.id);
+        });
+      })
+    : opts.roster;
+  return candidates
+    .filter((npc) => detectAnonymousPlantStaging({ characterName: npc.name, stagingText: staging }))
+    .map((npc) => npc.id);
+}
+
+/** Collective / multi-party staging cues that obligate an ensemble cast. */
+const ENSEMBLE_OBLIGATION_RE =
+  /\b(?:the\s+three|trio|threesome|all\s+three|three\s+(?:of\s+them|become|become\s+friends)|become\s+(?:close\s+|real\s+|good\s+)?friends?|form(?:s|ed)?\s+(?:a\s+|the\s+)?(?:club|crew|circle|group)|(?:club|crew|circle)\s+(?:forms?|forms\s+up))\b/i;
+
+/**
+ * Resolve roster NPC ids obligated by multi-party staging text.
+ * Content-agnostic: only NPCs explicitly named in the text are obligated
+ * (collective cues like "the three" alone do not invent cast from the full roster).
+ */
+export function resolveEnsembleNpcIdsFromText(opts: {
+  stagingText: string;
+  roster: Array<{ id: string; name: string }>;
+  /** Optional prior/candidate cast ids — used only to resolve aliases of named members. */
+  candidateIds?: string[];
+  /** Exclude protagonist / player refs from the ensemble. */
+  excludeIds?: string[];
+}): string[] {
+  const staging = String(opts.stagingText || '').trim();
+  if (!staging) return [];
+  const exclude = new Set((opts.excludeIds ?? []).map((id) => normalizeCharacterSlug(id)));
+  const named = opts.roster.filter((npc) => {
+    if (exclude.has(normalizeCharacterSlug(npc.id))) return false;
+    return stagingNamesCharacter(npc.name, staging);
+  });
+  if (named.length < 2) return [];
+  // Collective cue or explicit multi-name staging both bind when ≥2 are named.
+  if (!ENSEMBLE_OBLIGATION_RE.test(staging) && named.length < 2) return [];
+  return named.slice(0, 4).map((npc) => npc.id);
+}
+
+export interface EnsembleCastObligation {
+  sceneId: string;
+  requiredNpcIds: string[];
+  sourceText: string;
+}
+
+/**
+ * Derive multi-party cast obligations from per-scene planned contract text.
+ * A scene whose contract names ≥2 NPCs in a group-formation / multi-party beat
+ * must cast (and introduce) each named member.
+ */
+export function ensembleObligationsFromContractText(opts: {
+  plannedSceneContractText: ReadonlyMap<string, string>;
+  roster: Array<{ id: string; name: string }>;
+  excludeIds?: string[];
+}): EnsembleCastObligation[] {
+  const out: EnsembleCastObligation[] = [];
+  for (const [sceneId, text] of opts.plannedSceneContractText) {
+    if (!ENSEMBLE_OBLIGATION_RE.test(text)) continue;
+    const requiredNpcIds = resolveEnsembleNpcIdsFromText({
+      stagingText: text,
+      roster: opts.roster,
+      excludeIds: opts.excludeIds,
+    });
+    if (requiredNpcIds.length < 2) continue;
+    out.push({ sceneId, requiredNpcIds, sourceText: text.slice(0, 240) });
+  }
+  return out;
+}

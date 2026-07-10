@@ -3,9 +3,11 @@ import {
   buildSceneClusterRepairHandler,
   buildSceneProseRepairHandler,
   buildSceneRepairDirectorNotes,
+  characterIntroductionIssuesCleared,
   selectSceneProseRepairs,
 } from './sceneProseRepairHandler';
 import type { Story } from '../../types/story';
+import type { Scene } from '../../types/story';
 
 const SIGNATURE =
   'Two anchors, light then dark — the rooftop bar at sunset on night three where the Dusk Club locks into place and Kylie catches both men watching her; then Cișmigiu at 1am, eight seconds of fog, a shadow, a scream, and a rescue.';
@@ -1155,5 +1157,70 @@ describe('prose/cluster deferral deadlock (bite-me 2026-07-03T14-10-21 s1-1 regr
     expect(emitted.some((message) => message.includes('deferred'))).toBe(true);
     expect(result.changed).toBe(false);
     expect(critic.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('characterIntroductionIssuesCleared', () => {
+  const metadataIssue = {
+    validator: 'CharacterIntroductionValidator',
+    severity: 'error',
+    type: 'character_introduction',
+    message:
+      '"Victor Valcescu" first appears in the cast of scene "enc-1-1" (episode 1) but the prose of that scene never names them, and no earlier scene introduced them — they exist in metadata only, not on-page.',
+    location: 'characterIntroduction:ep1:enc-1-1:char-victor',
+    suggestion: 'Have the prose of "enc-1-1" actually present Victor Valcescu: name them and let the protagonist register who they are.',
+  };
+
+  it('requires naming for metadata-only issues (named intro)', () => {
+    const unnamed = {
+      id: 'enc-1-1',
+      beats: [{ id: 'b1', text: 'Fog clings to the willow. Something moves in the dark.' }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(unnamed as never, [metadataIssue])).toBe(false);
+
+    const named = {
+      id: 'enc-1-1',
+      beats: [{ id: 'b1', text: 'Victor Valcescu steps between you and the shadow and offers a hand.' }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(named as never, [metadataIssue])).toBe(true);
+  });
+
+  it('accepts first-contact staging for anonymous_plant metadata issues', () => {
+    const anonymousIssue = {
+      ...metadataIssue,
+      suggestion:
+        'Stage Victor Valcescu as an anonymous first-contact plant in "enc-1-1" (stranger/visual cues, no roster name yet) or name them on-page if this is a named intro.',
+    };
+    const staged = {
+      id: 'enc-1-1',
+      beats: [{ id: 'b1', text: 'A stranger in a charcoal suit steps between you and the shadow and offers a hand.' }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(staged as never, [anonymousIssue])).toBe(true);
+  });
+
+  it('keeps off-page-familiarity checks for :offpage-familiarity locations', () => {
+    const offPageIssue = {
+      validator: 'CharacterIntroductionValidator',
+      severity: 'error',
+      type: 'character_introduction',
+      message:
+        '"Mika Drăgan" first appears in scene "s1-1" (episode 1) inside prose that implies off-page familiarity or settled group belonging before the reader has met them.',
+      location: 'characterIntroduction:ep1:s1-1:char-mika:offpage-familiarity',
+      suggestion: 'Introduce Mika with first-contact behavior.',
+    };
+    const familiar = {
+      id: 's1-1',
+      beats: [{
+        id: 'b1',
+        text: 'It has only been three days with Mika, so every easy gesture still feels slightly staged as she refills your wine.',
+      }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(familiar as never, [offPageIssue])).toBe(false);
+
+    const firstContact = {
+      id: 's1-1',
+      beats: [{ id: 'b1', text: 'A woman with silver-streaked hair offers a hand. "Mika," she says.' }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(firstContact as never, [offPageIssue])).toBe(true);
   });
 });

@@ -33,6 +33,12 @@ export interface TreatmentEventAtom {
   sourceSection?: string;
   isPlayableEvent: boolean;
   /**
+   * Load-bearing tokens that must survive paraphrase (times, numbers, quoted
+   * codenames, proper entities). Downstream ledger checks can require these
+   * markers in non-summary prose windows.
+   */
+  preservedMarkers?: string[];
+  /**
    * Generator-only route/event cues inferred from the concrete event text.
    * These mirror scene-event ownership cues without importing pipeline types
    * into the shared treatment model.

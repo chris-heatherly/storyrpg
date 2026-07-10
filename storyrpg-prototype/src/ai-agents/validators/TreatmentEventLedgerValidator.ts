@@ -1,11 +1,13 @@
-import type { Beat, Scene, Story } from '../../types';
+import type { Scene, Story } from '../../types';
 import type { PlannedScene, SceneOwnedEvent, SeasonScenePlan, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import { detectRealizedStoryEventCues, type StoryEventCue } from '../remediation/storyEventCues';
 import { evaluateMomentRealization, normalizeRealizationText } from '../remediation/realizationEvaluator';
 import { buildEncounterEventSignature } from '../utils/encounterEventSignature';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { toStageableTreatmentMoment } from '../utils/stageableTreatmentMoment';
+import { extractPreservedMarkers } from '../utils/treatmentEventAtomizer';
 import { BaseValidator } from './BaseValidator';
+import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
 export type TreatmentEventLedgerStatus =
   | 'missing'
@@ -57,38 +59,8 @@ const ENFORCED_OWNERSHIP_CUES = new Set<StoryEventCue>([
 
 const ABSTRACT_ENCOUNTER_RE = /^(?:can|will|whether|how|what)\b/i;
 
-function textOfBeat(beat: Beat): string {
-  const rawVariants = (beat as { textVariants?: unknown }).textVariants;
-  const textVariants = Array.isArray(rawVariants)
-    ? rawVariants
-    : rawVariants && typeof rawVariants === 'object'
-      ? [rawVariants]
-      : [];
-  return [
-    beat.text,
-    ...textVariants.map((variant) => (variant as { text?: unknown }).text),
-  ].filter(Boolean).join(' ');
-}
-
 function readerFacingSceneProse(scene: Scene): string {
-  const parts: string[] = [scene.name, ...(scene.beats || []).map(textOfBeat)];
-  const enc = scene.encounter as
-    | { situation?: string; phases?: Array<{ beats?: unknown[] }>; storylets?: unknown }
-    | undefined;
-  if (enc?.situation) parts.push(enc.situation);
-  const collect = (beats: unknown[] | undefined): void => {
-    for (const raw of beats || []) {
-      const beat = raw as Partial<Beat> & { setupText?: string; escalationText?: string };
-      parts.push(beat.text || '', beat.setupText || '', beat.escalationText || '');
-    }
-  };
-  if (enc) {
-    for (const phase of enc.phases || []) collect(phase.beats);
-    const storylets = Array.isArray(enc.storylets)
-      ? enc.storylets
-      : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
-    for (const storylet of storylets) collect((storylet as { beats?: unknown[] } | undefined)?.beats);
-  }
+  const parts = [scene.name, ...collectReaderFacingTexts(scene)];
   return parts.filter(Boolean).join('\n');
 }
 
@@ -192,11 +164,38 @@ function directRealizationStatus(
   if (!globalDepicted) return 'missing';
 
   const windows = proseWindows(prose);
-  if (directWindowDepicts(sourceText, windows)) return 'direct';
+  if (directWindowDepicts(sourceText, windows)) {
+    return markersPreserved(contract, prose) ? 'direct' : 'summary_only';
+  }
 
   const meaningfulAtoms = atoms.length > 0 ? atoms : [sourceText];
   const directAtoms = meaningfulAtoms.every((atom) => directWindowDepicts(atom, windows));
-  return directAtoms ? 'direct' : 'summary_only';
+  if (!directAtoms) return 'summary_only';
+  return markersPreserved(contract, prose) ? 'direct' : 'summary_only';
+}
+
+/** True when every preserved marker appears in non-summary prose (normalized). */
+function markersPreserved(contract: StoryCircleBeatRealizationContract, prose: string): boolean {
+  const markers = (contract.preservedMarkers?.length
+    ? contract.preservedMarkers
+    : extractPreservedMarkers(contract.sourceText))
+    .map((marker) => marker.trim())
+    .filter(Boolean);
+  if (markers.length === 0) return true;
+  const hay = normalizeRealizationText(nonSummaryProse(prose) || prose);
+  return markers.every((marker) => {
+    const needle = normalizeRealizationText(marker);
+    if (!needle) return true;
+    if (hay.includes(needle)) return true;
+    // Soft equivalence for clock times: "4am" ↔ "4 a.m." ↔ "four in the morning"
+    if (/^\d{1,2}\s*a\.?m\.?$/i.test(marker) || /^4am$/i.test(marker)) {
+      return /\b4\s*a\.?m\.?\b|\bfour\s+(?:in\s+the\s+)?morning\b/.test(hay);
+    }
+    if (/^viral$/i.test(marker) || /^gone viral$/i.test(marker)) {
+      return /\bviral\b|\bgone\s+viral\b|\b(?:thousands?|tens?\s+of\s+thousands?|shares?|reads?)\b/.test(hay);
+    }
+    return false;
+  });
 }
 
 function episodeLevelDirectRealization(contract: StoryCircleBeatRealizationContract, prose: string): boolean {

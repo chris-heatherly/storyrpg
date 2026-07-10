@@ -40,9 +40,10 @@
 
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import type { PlannedScene, RequiredBeat, SeasonScenePlan } from '../../types/scenePlan';
-import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
-import { PRESENCE_MIN_SCORE } from '../remediation/realizationEvaluator';
+import { PRESENCE_MIN_SCORE, normalizeRealizationText } from '../remediation/realizationEvaluator';
+import { extractPreservedMarkers } from '../utils/treatmentEventAtomizer';
+import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
 /** Stopwords stripped before keyword overlap (mirrors TreatmentFidelityValidator). */
 const STOPWORDS = new Set([
@@ -201,40 +202,44 @@ function signatureInverted(signature: string, prose: string): boolean {
   return false;
 }
 
-/** All reader-facing prose on a single beat (text + variant texts). */
-function beatProse(beat: Beat): string {
-  return [beat.text, ...((beat.textVariants || []).map((variant) => variant.text))]
-    .filter(Boolean)
-    .join(' ');
-}
-
 /** All reader-facing prose for one generated scene (flat beats + encounter content). */
 function sceneProse(scene: Scene): string {
-  const parts: string[] = [scene.name, ...(scene.beats || []).map(beatProse)];
-  // Encounter scenes carry their prose in `encounter.phases[].beats` and
-  // `encounter.storylets[].beats`, NOT `scene.beats` — so an encounter-staged
-  // signature device (e.g. the rooftop→Cișmigiu "two anchors" anchor) would read as
-  // "missing" if we only scanned scene.beats. Include encounter prose too.
-  const enc = scene.encounter as
-    | { phases?: Array<{ beats?: unknown[] }>; storylets?: unknown }
-    | undefined;
-  if (enc) {
-    const collect = (beats: unknown[] | undefined): void => {
-      for (const beat of beats || []) {
-        const b = beat as Partial<Beat> & { setupText?: string; escalationText?: string };
-        parts.push(b.text || '', b.setupText || '', b.escalationText || '');
-        for (const variant of b.textVariants || []) parts.push(variant.text || '');
-      }
-    };
-    for (const phase of enc.phases || []) collect(phase.beats);
-    const storylets = Array.isArray(enc.storylets)
-      ? enc.storylets
-      : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
-    for (const storylet of storylets) {
-      if (storylet && typeof storylet === 'object') collect((storylet as { beats?: unknown[] }).beats);
-    }
-  }
+  const parts: string[] = [scene.name, ...collectReaderFacingTexts(scene)];
   return parts.filter(Boolean).join(' ');
+}
+
+/** Recap / memory windows that must not satisfy a first-authored signature act. */
+const SUMMARY_ONLY_RE =
+  /\b(?:two\s+weeks?|three\s+weeks?|weeks?\s+ago|days?\s+ago|earlier|before\s+tonight|back\s+then|once|remembered|recalled|memory|backstory|it\s+was\s+on\s+one\s+of\s+those|had\s+(?:appeared|intervened|rescued|saved|happened|been|come|gone|left|met|found|started|landed))\b/i;
+
+function nonSummaryProse(prose: string): string {
+  const sentences = prose
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const kept = sentences.filter((sentence) => !SUMMARY_ONLY_RE.test(sentence));
+  return kept.join(' ') || prose;
+}
+
+/** True when every preserved marker from the signature appears in non-summary prose. */
+function signatureMarkersPreserved(signature: string, prose: string): boolean {
+  const markers = extractPreservedMarkers(signature).map((m) => m.trim()).filter(Boolean);
+  if (markers.length === 0) return true;
+  const hay = normalizeRealizationText(nonSummaryProse(prose));
+  return markers.every((marker) => {
+    const needle = normalizeRealizationText(marker);
+    if (!needle) return true;
+    if (hay.includes(needle)) return true;
+    if (/^\d{1,2}\s*a\.?m\.?$/i.test(marker) || /^4am$/i.test(marker)) {
+      return /\b4\s*a\.?m\.?\b|\bfour\s+(?:in\s+the\s+)?morning\b/.test(hay);
+    }
+    if (/^viral$/i.test(marker) || /^gone viral$/i.test(marker)) {
+      return /\bviral\b|\bgone\s+viral\b|\b(?:thousands?|tens?\s+of\s+thousands?|shares?|reads?)\b/.test(hay);
+    }
+    // Quoted titles / codenames: require the marker itself in non-summary prose.
+    return false;
+  });
 }
 
 /** All reader-facing prose for one generated episode. */
@@ -429,6 +434,19 @@ export class SignatureDevicePresenceValidator extends BaseValidator {
         // demote — a concrete staged description that was summarized away blocks, even if
         // it is long / em-dashed / parenthetical (the keyword-overlap < 0.5 signal is
         // high-precision: the moment's nouns are essentially absent from the scene).
+        const demotePresence = input.strictPresence
+          ? isMetaNarrationSignature(sig.text)
+          : designNote;
+        issues.push(demotePresence ? this.warning(message, where, suggestion) : this.error(message, where, suggestion));
+        continue;
+      }
+
+      // Owned markers (quoted titles, clock times, viral tokens) must appear in
+      // non-summary reader prose — metadata/turnContract alone does not satisfy.
+      if (!signatureMarkersPreserved(sig.text, haystack)) {
+        const markers = extractPreservedMarkers(sig.text).join(', ');
+        const message = `Signature device markers are missing from reader-facing prose of episode ${sig.episodeNumber} scene "${sig.sceneId}" (markers: ${markers}). Recap-only or metadata-only placement does not count as the first authored act.`;
+        const suggestion = 'Write the preserved markers (titles, times, codenames) into beat/encounter reader prose in this scene — not only into turnContract or planning metadata.';
         const demotePresence = input.strictPresence
           ? isMetaNarrationSignature(sig.text)
           : designNote;

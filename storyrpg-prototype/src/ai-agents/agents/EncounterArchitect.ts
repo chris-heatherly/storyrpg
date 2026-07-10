@@ -240,7 +240,23 @@ export interface EncounterArchitectInput {
      * instead of sounding generic.
      */
     voiceNotes?: string;
+    /**
+     * True when the reader has never met this NPC on-page before this encounter.
+     * Mirrors SceneWriter's first-appearance directive.
+     */
+    isFirstOnPageAppearance?: boolean;
+    /**
+     * How to stage a first appearance: named intro vs anonymous plant
+     * (stranger / visual cues only — forbid roster name until later reveal).
+     */
+    introMode?: 'named' | 'anonymous_plant';
   }>;
+
+  /**
+   * Roster names the reader has not met and who are not in this encounter's
+   * cast — do not name them (cold name-drop ban-list, same as SceneWriter).
+   */
+  notYetIntroducedNames?: string[];
 
   // Available skills for challenges
   availableSkills: Array<{
@@ -2155,6 +2171,53 @@ Please try again. Key rules:
   }
 
   /**
+   * Format one NPC line for encounter prompts, including first-appearance /
+   * anonymous-plant directives (mirrors SceneWriter).
+   */
+  private formatNpcInvolvedLine(
+    npc: EncounterArchitectInput['npcsInvolved'][number],
+    options: { includePhysical?: boolean; compact?: boolean } = {},
+  ): string {
+    const introMode = npc.introMode
+      ?? (npc.isFirstOnPageAppearance ? 'named' : undefined);
+    let introNote = '';
+    if (introMode === 'anonymous_plant') {
+      introNote = `\n  - **ANONYMOUS PLANT (CRITICAL)**: the reader has NEVER met this person by name. Stage them as a stranger/anonymous figure with distinctive visual cues from their description. FORBID using the roster name "${npc.name}" anywhere in encounter prose, dialogue tags, or outcome text. Keep identity linked for a later reveal; use stranger/rescuer/figure language and first-contact staging only.`;
+    } else if (introMode === 'named' || npc.isFirstOnPageAppearance) {
+      introNote = `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page by name: show who they are and what the protagonist notices — through action and dialogue, not a bio dump. Do NOT write them as already-familiar.`;
+    }
+    if (options.compact) {
+      return `- ${npc.name} (${npc.id}): ${npc.role}${npc.voiceNotes ? ` — Voice: ${npc.voiceNotes}` : ''}${introNote}`;
+    }
+    let line = `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}`;
+    if (options.includePhysical && npc.physicalDescription) {
+      line += `\n  Physical Appearance (CANONICAL): ${npc.physicalDescription}`;
+    }
+    if (npc.voiceNotes) line += `\n  Voice: ${npc.voiceNotes}`;
+    return `${line}${introNote}`;
+  }
+
+  private formatNotYetIntroducedSection(input: EncounterArchitectInput): string {
+    if (!input.notYetIntroducedNames?.length) return '';
+    return `
+> NOT YET INTRODUCED (do NOT name these characters in this encounter — the reader has not met them yet):
+> ${input.notYetIntroducedNames.join(', ')}.
+`;
+  }
+
+  private npcReferenceGuidance(input: EncounterArchitectInput): string {
+    const hasAnonymous = input.npcsInvolved.some(
+      (npc) => npc.introMode === 'anonymous_plant',
+    );
+    if (hasAnonymous) {
+      return `- For NPCs marked ANONYMOUS PLANT: never use their roster name; refer by stranger/visual cues only. For other NPCs, use each exact name and listed pronouns; never swap a character's gender.
+- When the protagonist and a named NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.`;
+    }
+    return `- Use each NPC's exact name and their listed pronouns; never swap a character's gender.
+- When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.`;
+  }
+
+  /**
    * Lean, reliable prompt that asks the LLM only for creative content.
    * Everything structural (visual contracts, tension curves, NPC states, env elements,
    * escalation triggers, information visibility, pixar fields, metadata) is filled by
@@ -2167,7 +2230,7 @@ Please try again. Key rules:
     const protagonist = input.protagonistInfo.name || 'the protagonist';
     const omitStorylets = options.omitStorylets === true;
     const npcsList = input.npcsInvolved
-      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}${npc.voiceNotes ? `\n  Voice: ${npc.voiceNotes}` : ''}`)
+      .map(npc => this.formatNpcInvolvedLine(npc))
       .join('\n');
 
     const skill1 = input.availableSkills[0]?.name || 'athletics';
@@ -2227,12 +2290,11 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
       ? `Correct: he/him/his/himself. WRONG: she/her/hers/herself.`
       : `Use they/them/their/themselves (singular).`}
 - WRITE THE PROTAGONIST IN SECOND PERSON ("you", "your") throughout — this is the house POV and removes pronoun ambiguity entirely. Do NOT narrate the protagonist in the third person by name + pronoun (write "you hold his gaze", never "${protagonist} holds his gaze"). Reserve third-person + a concrete pronoun for NPCs only.
-- Use each NPC's exact name and their listed pronouns; never swap a character's gender.
-- When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.
+${this.npcReferenceGuidance(input)}
 
 ## NPCs
 ${npcsList || 'None'}
-
+${this.formatNotYetIntroducedSection(input)}
 ## Connections
 - Victory → ${input.victoryNextSceneId || 'next scene'}
 - Defeat → ${input.defeatNextSceneId || 'next scene'}
@@ -4031,11 +4093,7 @@ Realized scene prose: ${input.sceneProse || 'none'}`;
 
   private buildPrompt(input: EncounterArchitectInput): string {
     const npcsList = input.npcsInvolved
-      .map(npc => {
-        let line = `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} - ${npc.description}`;
-        if (npc.physicalDescription) line += `\n  Physical Appearance (CANONICAL): ${npc.physicalDescription}`;
-        return line;
-      })
+      .map(npc => this.formatNpcInvolvedLine(npc, { includePhysical: true }))
       .join('\n');
 
     const skillsList = input.availableSkills
@@ -4129,7 +4187,7 @@ ${protagonistSkills}
 
 ## NPCs Involved
 ${npcsList || 'None'}
-
+${this.formatNotYetIntroducedSection(input)}
 ## Available Skills
 ${skillsList}
 
@@ -5255,7 +5313,7 @@ CRITICAL RULES:
   ): string {
     const protagonist = input.protagonistInfo.name || 'the protagonist';
     const npcsList = input.npcsInvolved
-      .map(npc => `- ${npc.name} (${npc.id}, ${npc.pronouns}): ${npc.role} — ${npc.description}${npc.voiceNotes ? `\n  Voice: ${npc.voiceNotes}` : ''}`)
+      .map(npc => this.formatNpcInvolvedLine(npc))
       .join('\n');
     const skillsList = input.availableSkills.slice(0, 6)
       .map(s => `${s.name} (${s.attribute})`)
@@ -5385,12 +5443,11 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
       ? `Correct: he/him/his/himself. WRONG: she/her/hers/herself.`
       : `Use they/them/their/themselves (singular).`}
 - WRITE THE PROTAGONIST IN SECOND PERSON ("you", "your") throughout — this is the house POV and removes pronoun ambiguity entirely. Do NOT narrate the protagonist in the third person by name + pronoun (write "you hold his gaze", never "${protagonist} holds his gaze"). Reserve third-person + a concrete pronoun for NPCs only.
-- Use each NPC's exact name and their listed pronouns; never swap a character's gender.
-- When the protagonist and an NPC share the scene, use NAMES (not bare pronouns) to keep references unambiguous.
+${this.npcReferenceGuidance(input)}
 
 ## NPCs
 ${npcsList || 'None'}
-${relationshipSection}
+${this.formatNotYetIntroducedSection(input)}${relationshipSection}
 ${ENCOUNTER_PROSE_DISCIPLINE}
 
 ## TEXT RULES
@@ -5493,7 +5550,7 @@ Replace ALL placeholders with actual narrative. Return ONLY the JSON object.`;
     options: { compactRetry?: boolean } = {},
   ): string {
     const npcsList = input.npcsInvolved
-      .map(npc => `- ${npc.name} (${npc.id}): ${npc.role}${npc.voiceNotes ? ` — Voice: ${npc.voiceNotes}` : ''}`)
+      .map(npc => this.formatNpcInvolvedLine(npc, { compact: true }))
       .join('\n');
 
     const relationshipSection = brief.briefText

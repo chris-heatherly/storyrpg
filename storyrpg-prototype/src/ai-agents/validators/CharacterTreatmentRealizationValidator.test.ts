@@ -331,16 +331,34 @@ describe('CharacterTreatmentRealizationValidator', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('does not require visual identity to be repeated in final prose when visual metadata exists', () => {
+  it('requires visual identity cues in final prose, not metadata alone', () => {
     const selected = contracts().filter((contract) => contract.contractKind === 'visual_identity');
+    expect(selected.length).toBeGreaterThan(0);
     const plan = assignedPlan(selected);
-    const result = new CharacterTreatmentRealizationValidator().validate({
+    const missing = new CharacterTreatmentRealizationValidator().validate({
       story: story({ 's1-1': 'Kylie starts the night without listing her outfit.' }),
       seasonPlan: plan,
       sourceAnalysis: analysis(selected),
       treatmentSourced: true,
       phase: 'final',
     });
-    expect(result.valid).toBe(true);
+    expect(missing.issues.some((issue) =>
+      issue.message.includes(selected[0].fieldName)
+      || issue.message.includes(selected[0].sourceText.slice(0, 24)),
+    )).toBe(true);
+
+    const realized = new CharacterTreatmentRealizationValidator().validate({
+      story: story({
+        's1-1': 'Kylie pushes tortoiseshell glasses up her nose, honey-blonde hair loose, slip dress under a trench.',
+      }),
+      seasonPlan: plan,
+      sourceAnalysis: analysis(selected),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+    expect(realized.issues.filter((issue) =>
+      issue.severity === 'error'
+      && (issue.message.includes(selected[0].fieldName) || issue.message.includes(selected[0].sourceText.slice(0, 24))),
+    )).toHaveLength(0);
   });
 });

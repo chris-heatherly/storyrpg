@@ -342,4 +342,31 @@ describe('SignatureDevicePresenceValidator', () => {
     expect(result.valid).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
+
+  it('FAIL: owned quoted marker present only as recap/memory does not satisfy first authored act', () => {
+    const sig = 'She titles the post "Dating After Dusk" and hits publish at 4am.';
+    const result = run({
+      plan: plan([plannedScene('s1-6', 1, { signatureMoment: sig })]),
+      story: story([episode(1, [generatedScene('s1-6', [
+        beat('b1', 'Weeks ago she had titled something Dating After Dusk and remembered hitting publish sometime after midnight.'),
+      ])])]),
+      strictPresence: true,
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) =>
+      i.severity === 'error' && /markers are missing|Recap-only/i.test(i.message)
+    )).toBe(true);
+  });
+
+  it('PASS: owned quoted marker appears in non-summary reader prose', () => {
+    const sig = 'She titles the post "Dating After Dusk" and hits publish at 4am.';
+    const result = run({
+      plan: plan([plannedScene('s1-6', 1, { signatureMoment: sig })]),
+      story: story([episode(1, [generatedScene('s1-6', [
+        beat('b1', 'You type the title Dating After Dusk, hit publish at 4am, and watch the first shares land.'),
+      ])])]),
+      strictPresence: true,
+    });
+    expect(result.valid).toBe(true);
+  });
 });

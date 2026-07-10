@@ -40,8 +40,16 @@
  */
 
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
-import type { Beat } from '../../types/content';
 import type { Scene, Story } from '../../types/story';
+import {
+  ensembleObligationsFromContractText,
+  normalizeCharacterSlug,
+  resolveCharacterIntroMode,
+  resolveRosterCharacter,
+  type CharacterIntroMode,
+  type EnsembleCastObligation,
+} from '../utils/npcIntroductionLedger';
+import { collectReaderFacingTexts, collectEncounterMetaTexts } from './encounterTextSurfaces';
 
 function normalize(value: string): string {
   return value
@@ -53,43 +61,12 @@ function normalize(value: string): string {
     .trim();
 }
 
-/** All reader-facing prose of one scene (beats + variants + encounter content). */
+/** All reader-facing prose of one scene (beats + variants + encounter outcomes/storylets). */
 function sceneProse(scene: Scene): string {
-  const parts: string[] = [];
-  for (const beat of scene.beats || []) {
-    const b = beat as Beat;
-    if (b.text) parts.push(b.text);
-    for (const variant of b.textVariants || []) {
-      if (variant.text) parts.push(variant.text);
-    }
-  }
-  const enc = scene.encounter as
-    | {
-        setupText?: string;
-        phases?: Array<{ beats?: Array<{ text?: string; setupText?: string; escalationText?: string }> }>;
-        storylets?: unknown;
-      }
-    | undefined;
-  if (enc) {
-    if (enc.setupText) parts.push(enc.setupText);
-    const collect = (beats: Array<{ text?: string; setupText?: string; escalationText?: string }> | undefined): void => {
-      for (const b of beats || []) {
-        if (b.text) parts.push(b.text);
-        if (b.setupText) parts.push(b.setupText);
-        if (b.escalationText) parts.push(b.escalationText);
-      }
-    };
-    for (const phase of enc.phases || []) collect(phase.beats);
-    const storylets = Array.isArray(enc.storylets)
-      ? enc.storylets
-      : Object.values((enc.storylets ?? {}) as Record<string, unknown>);
-    for (const storylet of storylets) {
-      if (storylet && typeof storylet === 'object') {
-        collect((storylet as { beats?: Array<{ text?: string }> }).beats);
-      }
-    }
-  }
-  return parts.join(' ');
+  return [
+    ...collectReaderFacingTexts(scene),
+    ...collectEncounterMetaTexts(scene),
+  ].join(' ');
 }
 
 interface RosterEntry {
@@ -131,7 +108,7 @@ function proseNames(entry: RosterEntry, normalizedProse: string): boolean {
 const FIRST_APPEARANCE_OFFPAGE_FAMILIARITY_RE = /\b(?:only|just)\s+been\s+(?:\w+\s+){0,3}(?:hours?|days?|nights?|weeks?)\s+(?:with|around)\b[^.!?]{0,220}\b(?:easy\s+gesture|refills?\s+your\s+(?:wine|glass)|watches?\s+over\s+the\s+rim|kindness|belong|belonging|inside\s+joke|the\s+club)\b/i;
 // "her other friend Mika" is an introduction phrase, not settled membership.
 const FIRST_APPEARANCE_SETTLED_GROUP_RE = /\b(?:dusk\s+club|club|crew|circle|group)\b[^.!?]{0,160}\b(?:belong|belonging|inside\s+joke|usual|already|one\s+of\s+us|friends?\s+now|best\s+friend)\b/i;
-const FIRST_CONTACT_STAGING_RE = /\b(?:you\s+meet|meets?\s+you|offers?\s+(?:a\s+)?hand|introduces?\s+(?:herself|himself|themselves|you)|says?,?\s*["']|["'][^"']{0,80}["']\s*,?\s*(?:she|he|they)\s+says?|a\s+woman\b[^.!?]{0,80}\bsays?\b|stranger\b[^.!?]{0,80}\b(?:says?|offers?|steps?)\b)/i;
+const FIRST_CONTACT_STAGING_RE = /\b(?:you\s+meet|meets?\s+you|offers?\s+(?:a\s+)?hand|introduces?\s+(?:herself|himself|themselves|you)|says?,?\s*["']|["'][^"']{0,80}["']\s*,?\s*(?:she|he|they)\s+says?|a\s+woman\b[^.!?]{0,80}\bsays?\b|(?:stranger|rescuer|silhouette|figure)\b[^.!?]{0,100}\b(?:says?|offers?|steps?|pulls?|grabs?|intervenes?|rescues?|saves?)|(?:man|woman)\s+in\s+(?:a\s+)?(?:charcoal|dark|black)\s+suit\b[^.!?]{0,80}\b(?:steps?|intervenes?|pulls?|rescues?|saves?|offers?))/i;
 const FIRST_APPEARANCE_THIRD_PERSON_SUMMARY_RE = /\b(?:she|he)\s+(?:explores?|wanders?|arrives?|steps?|walks?)\b/i;
 
 function hasPlayerReference(text: string): boolean {
@@ -140,6 +117,54 @@ function hasPlayerReference(text: string): boolean {
 
 function hasFirstContactStaging(rawProse: string): boolean {
   return FIRST_CONTACT_STAGING_RE.test(rawProse);
+}
+
+/** Exported for repair predicted-clear and callers that need the same staging check. */
+export function sceneHasFirstContactStaging(scene: Scene): boolean {
+  return hasFirstContactStaging(sceneProse(scene));
+}
+
+/** Whether scene prose names any of the given display names (full or unique first token). */
+export function sceneNamesAnyCharacter(scene: Scene, npcNames: string[]): boolean {
+  const normalizedProse = normalize(sceneProse(scene));
+  return npcNames.some((name) => {
+    const entry = { id: '', name, fullName: normalize(name) } as RosterEntry;
+    const first = entry.fullName.split(' ')[0];
+    if (first.length >= 3) (entry as RosterEntry).firstToken = first;
+    return proseNames(entry, normalizedProse);
+  });
+}
+
+/**
+ * Predicted-clear for CharacterIntroductionValidator issues.
+ * - off-page-familiarity / offpage-backreference: existing off-page check.
+ * - metadata-only / never-names: require naming OR (anonymous_plant) first-contact staging.
+ */
+export function characterIntroductionIssueCleared(
+  scene: Scene,
+  issue: { message?: string; location?: string; type?: string },
+  opts?: { anonymousPlantNpcIds?: ReadonlySet<string>; npcId?: string },
+): boolean {
+  const location = String(issue.location || '');
+  const message = String(issue.message || '');
+  const isOffPage = location.includes(':offpage-familiarity')
+    || location.includes(':offpage-backreference')
+    || /off-page familiarity|settled group belonging|back-reference/i.test(message);
+  const name = /"([^"]+)"/.exec(message)?.[1];
+  if (isOffPage) {
+    if (!name) return scenePassesCharacterIntroductionOffPageCheck(scene, []);
+    return scenePassesCharacterIntroductionOffPageCheck(scene, [name]);
+  }
+  // Metadata-only / never-names class.
+  if (name && sceneNamesAnyCharacter(scene, [name])) return true;
+  const npcId = opts?.npcId
+    || location.split(':').slice(-1)[0]?.replace(/:offpage.*$/, '');
+  const isAnonymous = (npcId && opts?.anonymousPlantNpcIds?.has(npcId))
+    || (npcId && opts?.anonymousPlantNpcIds?.has(normalizeCharacterSlug(npcId)))
+    || (name && opts?.anonymousPlantNpcIds && [...opts.anonymousPlantNpcIds].some((id) =>
+      normalizeCharacterSlug(id) === normalizeCharacterSlug(name || '')));
+  if (isAnonymous) return sceneHasFirstContactStaging(scene);
+  return false;
 }
 
 function impliesOffPageFamiliarityOnFirstAppearance(rawProse: string, newNamesInScene: number): boolean {
@@ -213,6 +238,27 @@ export interface CharacterIntroductionInput {
    * the treatment demands the forward reference).
    */
   plannedSceneContractText?: ReadonlyMap<string, string>;
+  /**
+   * When true (treatment-sourced runs), metadata-only cast presence is an error:
+   * an NPC in scene cast must be named on-page by that scene, not only in roster.
+   * Exception: {@link anonymousPlantNpcIds} / {@link characterIntroModes} with
+   * `anonymous_plant` may satisfy via first-contact staging without naming.
+   */
+  treatmentSourced?: boolean;
+  /**
+   * Roster NPC ids whose planned intro is an anonymous plant (stranger / suit /
+   * rescuer staging). Class-2 cast-without-name is OK when first-contact staging
+   * is present; still errors if cast with neither name nor first-contact staging.
+   */
+  anonymousPlantNpcIds?: ReadonlySet<string> | string[];
+  /** Optional per-NPC intro mode; `anonymous_plant` entries feed the same escape hatch. */
+  characterIntroModes?: ReadonlyMap<string, CharacterIntroMode> | Record<string, CharacterIntroMode>;
+  /**
+   * Multi-party cast obligations (e.g. "the three become friends"): each listed
+   * NPC must be in the scene cast and introduced on-page (or anonymous_plant
+   * first-contact) by that scene. Derived from planned contract text when omitted.
+   */
+  ensembleObligations?: EnsembleCastObligation[];
 }
 
 export class CharacterIntroductionValidator extends BaseValidator {
@@ -227,6 +273,38 @@ export class CharacterIntroductionValidator extends BaseValidator {
       return { valid: true, score: 100, issues: [], suggestions: [] };
     }
 
+    const anonymousPlantIds = new Set<string>();
+    const addAnonymous = (idOrName: string) => {
+      const slug = normalizeCharacterSlug(idOrName);
+      if (slug) anonymousPlantIds.add(slug);
+    };
+    if (input.anonymousPlantNpcIds) {
+      for (const id of input.anonymousPlantNpcIds) addAnonymous(id);
+    }
+    if (input.characterIntroModes) {
+      const modes = input.characterIntroModes instanceof Map
+        ? input.characterIntroModes
+        : new Map(Object.entries(input.characterIntroModes));
+      for (const [id, mode] of modes) {
+        if (mode === 'anonymous_plant') addAnonymous(id);
+      }
+    }
+    // Derive from planned contract text when callers don't pass an explicit set.
+    if (anonymousPlantIds.size === 0 && input.plannedSceneContractText) {
+      for (const npc of roster) {
+        for (const text of input.plannedSceneContractText.values()) {
+          if (resolveCharacterIntroMode({ characterName: npc.name, stagingText: text }) === 'anonymous_plant') {
+            addAnonymous(npc.id);
+            break;
+          }
+        }
+      }
+    }
+    const isAnonymousPlant = (npc: RosterEntry): boolean =>
+      anonymousPlantIds.has(normalizeCharacterSlug(npc.id))
+      || anonymousPlantIds.has(normalizeCharacterSlug(npc.name))
+      || anonymousPlantIds.has(npc.fullName.replace(/\s+/g, '-'));
+
     // Reading-order walk: episodes by number, scenes in array order.
     const orderedScenes: Array<{ episodeNumber: number; scene: Scene; rawProse: string; prose: string }> = [];
     const episodes = [...(input.story.episodes || [])].sort((a, b) => a.number - b.number);
@@ -234,6 +312,87 @@ export class CharacterIntroductionValidator extends BaseValidator {
       for (const scene of episode.scenes || []) {
         const rawProse = sceneProse(scene);
         orderedScenes.push({ episodeNumber: episode.number, scene, rawProse, prose: normalize(rawProse) });
+      }
+    }
+
+    // Class 5 — anonymous_plant hard-info leak: roster name appears on ANY reader
+    // surface before a scheduled named reveal (first cast scene that names them,
+    // or any later scene). Treatment-sourced → error.
+    if (anonymousPlantIds.size > 0) {
+      for (const npc of roster) {
+        if (!isAnonymousPlant(npc)) continue;
+        let firstNamedIdx = -1;
+        let firstPlantIdx = -1;
+        for (let i = 0; i < orderedScenes.length; i++) {
+          const at = orderedScenes[i];
+          const named = proseNames(npc, at.prose);
+          const cast = castIncludes(npc, at.scene);
+          if (firstNamedIdx < 0 && named) firstNamedIdx = i;
+          if (firstPlantIdx < 0 && cast && hasFirstContactStaging(at.rawProse) && !named) firstPlantIdx = i;
+        }
+        // Leak: named in prose at/before the plant scene, or named with no prior
+        // anonymous first-contact plant when this NPC is scheduled as anonymous.
+        if (firstNamedIdx >= 0) {
+          const namedAt = orderedScenes[firstNamedIdx];
+          const plantOk = firstPlantIdx >= 0 && firstPlantIdx < firstNamedIdx;
+          // Naming at first cast without prior plant is OK only if that scene is
+          // the reveal — but anonymous_plant mode forbids naming until reveal.
+          // Any naming while still in anonymous_plant schedule (no earlier plant
+          // OR naming in the plant scene itself) is a hard-info leak.
+          if (!plantOk) {
+            const message =
+              `"${npc.name}" is named in reader-facing prose of scene "${namedAt.scene.id}" (episode ${namedAt.episodeNumber}) while scheduled as an anonymous plant — roster identity must stay hidden until the reveal scene.`;
+            const location = `characterIntroduction:ep${namedAt.episodeNumber}:${namedAt.scene.id}:${npc.id}:anonymous-plant-leak`;
+            const suggestion =
+              `Keep ${npc.name} anonymous on all reader surfaces (beats, encounter outcomes, storylets, aftermath) until the planned reveal; use stranger/visual descriptors only.`;
+            issues.push(input.treatmentSourced
+              ? this.error(message, location, suggestion)
+              : this.warning(message, location, suggestion));
+          }
+        }
+      }
+    }
+
+    // Class 6 — multi-party ensemble cast obligation.
+    const ensembleObligations = input.ensembleObligations?.length
+      ? input.ensembleObligations
+      : (input.plannedSceneContractText
+        ? ensembleObligationsFromContractText({
+            plannedSceneContractText: input.plannedSceneContractText,
+            roster: roster.map((n) => ({ id: n.id, name: n.name })),
+          })
+        : []);
+    for (const obligation of ensembleObligations) {
+      const sceneEntry = orderedScenes.find((entry) => String(entry.scene.id) === String(obligation.sceneId));
+      if (!sceneEntry) continue;
+      for (const npcId of obligation.requiredNpcIds) {
+        const resolved = resolveRosterCharacter(npcId, roster.map((n) => ({ id: n.id, name: n.name })));
+        const npc = roster.find((entry) =>
+          normalizeCharacterSlug(entry.id) === normalizeCharacterSlug(resolved?.id || npcId)
+          || normalizeCharacterSlug(entry.name) === normalizeCharacterSlug(resolved?.name || npcId)
+        );
+        if (!npc) continue;
+        const inCast = castIncludes(npc, sceneEntry.scene);
+        const named = proseNames(npc, sceneEntry.prose);
+        const anonymousOk = isAnonymousPlant(npc) && hasFirstContactStaging(sceneEntry.rawProse);
+        // Prior introduction counts: named/cast in an earlier scene.
+        const sceneIdx = orderedScenes.indexOf(sceneEntry);
+        const introducedEarlier = orderedScenes.slice(0, sceneIdx).some((prior) =>
+          proseNames(npc, prior.prose) || castIncludes(npc, prior.scene)
+        );
+        if (inCast && (named || anonymousOk || introducedEarlier)) continue;
+        if (!inCast || (!named && !anonymousOk && !introducedEarlier)) {
+          const message = !inCast
+            ? `Multi-party obligation in scene "${obligation.sceneId}" requires "${npc.name}" in the cast (from: "${obligation.sourceText.slice(0, 120)}"), but they are missing from charactersInvolved.`
+            : `Multi-party obligation in scene "${obligation.sceneId}" requires "${npc.name}" on-page (named or anonymous first-contact), but the prose never stages them.`;
+          const location = `characterIntroduction:ep${sceneEntry.episodeNumber}:${obligation.sceneId}:${npc.id}:ensemble-obligation`;
+          const suggestion = !inCast
+            ? `Add ${npc.name} to the cast of "${obligation.sceneId}" and introduce them on-page before the group-formation beat.`
+            : `Stage ${npc.name} on-page in "${obligation.sceneId}" (name them, or anonymous_plant first-contact if scheduled).`;
+          issues.push(input.treatmentSourced
+            ? this.error(message, location, suggestion)
+            : this.warning(message, location, suggestion));
+        }
       }
     }
 
@@ -268,16 +427,29 @@ export class CharacterIntroductionValidator extends BaseValidator {
       }
 
       // Class 2 — metadata-only presence: cast somewhere, never named on-page by then.
+      // Named intro expectation: treatment-sourced → ERROR when never named.
+      // anonymous_plant: OK if first-contact staging is present; still ERROR if
+      // cast with neither name nor first-contact staging.
       if (firstCastIdx >= 0) {
         const at = orderedScenes[firstCastIdx];
         const namedByThen = firstProseIdx >= 0 && firstProseIdx <= firstCastIdx;
         const namedInCastScene = proseNames(npc, at.prose);
         if (!namedByThen && !namedInCastScene) {
-          issues.push(this.warning(
-            `"${npc.name}" first appears in the cast of scene "${at.scene.id}" (episode ${at.episodeNumber}) but the prose of that scene never names them, and no earlier scene introduced them — they exist in metadata only, not on-page.`,
-            `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`,
-            `Have the prose of "${at.scene.id}" actually present ${npc.name}: name them and let the protagonist register who they are.`,
-          ));
+          const anonymousOk = isAnonymousPlant(npc) && hasFirstContactStaging(at.rawProse);
+          if (!anonymousOk) {
+            const message =
+              `"${npc.name}" first appears in the cast of scene "${at.scene.id}" (episode ${at.episodeNumber}) but the prose of that scene never names them, and no earlier scene introduced them — they exist in metadata only, not on-page.`;
+            const location = `characterIntroduction:ep${at.episodeNumber}:${at.scene.id}:${npc.id}`;
+            const suggestion = isAnonymousPlant(npc)
+              ? `Stage ${npc.name} as an anonymous first-contact plant in "${at.scene.id}" (stranger/visual cues, no roster name yet) or name them on-page if this is a named intro.`
+              : `Have the prose of "${at.scene.id}" actually present ${npc.name}: name them and let the protagonist register who they are.`;
+            // Treatment-sourced runs: second-lead plants that stay anonymous break
+            // season payoffs — promote to blocking. Non-treatment stays advisory.
+            // anonymous_plant with first-contact staging already escaped above.
+            issues.push(input.treatmentSourced
+              ? this.error(message, location, suggestion)
+              : this.warning(message, location, suggestion));
+          }
         }
         const firstOnPageIdx = firstProseIdx >= 0 ? Math.min(firstProseIdx, firstCastIdx) : firstCastIdx;
         if (firstOnPageIdx === firstCastIdx && namedInCastScene) {

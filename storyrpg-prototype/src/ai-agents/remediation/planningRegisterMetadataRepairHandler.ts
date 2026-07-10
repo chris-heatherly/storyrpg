@@ -149,7 +149,7 @@ function replacementForBeatField(
   if (ledgerSafe) return ledgerSafe;
 
   const stripped = stripPlanningPrefix(original);
-  if (!isWeakReplacement(stripped)) return stripped;
+  if (!isWeakReplacement(stripped) && !needsMetadataSanitize(stripped)) return stripped;
 
   const proseFallback = firstReadableSentence(beat.text);
   if (proseFallback) return proseFallback;
@@ -169,13 +169,13 @@ function replacementForBeatText(beat: MutableRecord, original: string): string |
   if (ledgerSafe) return ledgerSafe;
 
   const stripped = stripPlanningPrefix(original);
-  if (!isWeakReplacement(stripped)) return stripped;
+  if (!isWeakReplacement(stripped) && !needsMetadataSanitize(stripped)) return stripped;
 
   const visualFallback = firstReadableSentence(beat.visualMoment);
-  if (visualFallback) return visualFallback;
+  if (visualFallback && !needsMetadataSanitize(visualFallback)) return visualFallback;
 
   const actionFallback = firstReadableSentence(beat.primaryAction);
-  if (actionFallback) return actionFallback;
+  if (actionFallback && !needsMetadataSanitize(actionFallback)) return actionFallback;
 
   return undefined;
 }

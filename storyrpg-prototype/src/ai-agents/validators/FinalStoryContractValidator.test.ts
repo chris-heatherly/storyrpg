@@ -1883,7 +1883,34 @@ describe('unified obligation ledger at the final contract (the flip)', () => {
     const finding = [...report.warnings, ...report.blockingIssues].find((i) => i.type === 'planned_residue_debt');
     expect(finding).toBeDefined();
     expect(finding?.validator).toBe('ObligationLedgerValidator');
-    expect(finding?.severity).toBe('warning'); // GATE_RESIDUE_CONSUME default-off
+    // Without treatmentSourced / GATE_RESIDUE_CONSUME, ledger errors stay advisory.
+    expect(finding?.severity).toBe('warning');
+    expect(finding?.message).toContain('no choice creates its flag');
+  });
+
+  it('blocks treatment-sourced missingOutgoing consequence-chain residue at seal', async () => {
+    const { CallbackLedger } = await import('../pipeline/callbackLedger');
+    const ledger = new CallbackLedger({ storyId: 's' });
+    ledger.add({
+      id: 'flag:consequence_treatment_chain_ep1_1',
+      kind: 'residue',
+      sourceEpisode: 1,
+      sourceSceneId: 's1-1',
+      sourceChoiceId: '',
+      flags: ['consequence_treatment_chain_ep1_1'],
+      summary: 'Planned residue obligation: chain ep1-1',
+      payoffWindow: { minEpisode: 2, maxEpisode: 4 },
+    } as never);
+
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      callbackLedger: ledger.serialize(),
+      treatmentSourced: true,
+    });
+
+    const finding = report.blockingIssues.find((i) => i.type === 'planned_residue_debt');
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe('error');
     expect(finding?.message).toContain('no choice creates its flag');
   });
 

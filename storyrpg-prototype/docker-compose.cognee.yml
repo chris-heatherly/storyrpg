@@ -22,7 +22,12 @@ services:
       - EMBEDDING_PROVIDER=gemini
       - EMBEDDING_MODEL=gemini/gemini-embedding-001
       - EMBEDDING_DIMENSIONS=3072
-      - EMBEDDING_API_KEY=${EXPO_PUBLIC_GEMINI_API_KEY:-}
+      - EMBEDDING_API_KEY=${GEMINI_API_KEY:-}
+      # Persist cognee's databases in the mounted volume. Without these the
+      # image writes to /app/cognee/.cognee_system + .data_storage inside the
+      # container layer and every recreate wipes datasets + minted API keys.
+      - SYSTEM_ROOT_DIRECTORY=/app/.cognee/system
+      - DATA_ROOT_DIRECTORY=/app/.cognee/data
     volumes:
       - cognee-data:/app/.cognee
 

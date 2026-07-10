@@ -83,6 +83,7 @@ export function atomizeTreatmentText(input: TreatmentAtomizerInput): TreatmentEv
         requiredEntities: extractEntities(eventText),
         requiredLocations: extractLocations(eventText),
         timeCue: extractTimeCue(eventText),
+        preservedMarkers: extractPreservedMarkers(eventText),
         realizationMode: playable ? 'dramatize' : 'context_only',
         sourceSection: input.sourceSection,
         isPlayableEvent: playable,
@@ -179,6 +180,25 @@ function concreteEventText(text: string): string {
 
 function extractTimeCue(text: string): string | undefined {
   return text.match(TIME_CUE_PATTERN)?.[0];
+}
+
+/** Times, numbers, and quoted codenames that must survive paraphrase. */
+export function extractPreservedMarkers(text: string): string[] {
+  const markers = new Set<string>();
+  const time = extractTimeCue(text);
+  if (time) markers.add(time);
+  for (const match of text.matchAll(/\b\d{1,3}(?:,\d{3})*(?:\+|k|K)?\b/g)) {
+    if (match[0]) markers.add(match[0]);
+  }
+  for (const match of text.matchAll(/["“]([^"”]{2,40})["”]/g)) {
+    const quoted = match[1]?.trim();
+    if (quoted) markers.add(quoted);
+  }
+  // Common viral/scale markers when present in treatment text.
+  for (const match of text.matchAll(/\b(?:viral|gone viral|4\s*a\.?m\.?|4am|codename)\b/gi)) {
+    if (match[0]) markers.add(match[0]);
+  }
+  return Array.from(markers).slice(0, 8);
 }
 
 function extractLocations(text: string): string[] {

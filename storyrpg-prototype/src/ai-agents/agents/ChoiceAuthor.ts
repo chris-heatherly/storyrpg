@@ -37,6 +37,12 @@ import {
 } from '../../types/sourceAnalysis';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import type { ConsequenceTier, MechanicPressureContract, RelationshipPacingContract } from '../../types/scenePlan';
+import { normalizeRelationshipKey } from '../utils/relationshipArcLedger';
+import {
+  effectiveNpcDeltaCap,
+  isNpcPacingContract,
+  mergeSceneRelationshipPacing,
+} from '../utils/effectiveRelationshipPacing';
 // Phase 1.4: STAKES_TRIANGLE / CHOICE_GEOMETRY / FIVE_FACTOR_TEST are delivered
 // via the shared CORE_STORYTELLING_PROMPT (BaseAgent system prompt) and no
 // longer re-embedded here, to eliminate token duplication and drift risk.
@@ -2180,12 +2186,11 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
         );
       }
       this.ensureAuthoredRelationshipMilestone(choiceSet, input);
-      this.capRelationshipConsequences(choiceSet, input);
     }
-    if (choiceSet.choiceType !== 'relationship' && input.sceneBlueprint.relationshipPacing?.length) {
-      this.capRelationshipConsequences(choiceSet, input);
-    }
+    // Mechanic-pressure metadata may attach a default magnitude of 6; clamp
+    // relationship deltas AFTER that so planned maxDeltaThisScene wins.
     this.ensureMechanicPressureMetadata(choiceSet, input);
+    this.capRelationshipConsequences(choiceSet, input);
 
     if (sceneCallsForRelationshipPayoff) {
       const hasRelationshipPayoff = choiceSet.choices.some(choice =>
@@ -2468,13 +2473,40 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     return validNpcs[0];
   }
 
+  private relationshipPacingKey(value: string | undefined): string | undefined {
+    const normalized = normalizeRelationshipKey(value);
+    if (!normalized) return undefined;
+    return normalized.replace(/^char-/, '') || undefined;
+  }
+
+  private relationshipPacingKeysMatch(a: string | undefined, b: string | undefined): boolean {
+    const left = this.relationshipPacingKey(a);
+    const right = this.relationshipPacingKey(b);
+    if (!left || !right) return false;
+    return left === right || left.includes(right) || right.includes(left);
+  }
+
   private relationshipPacingForNpc(input: ChoiceAuthorInput, npcId?: string): RelationshipPacingContract | undefined {
     const contracts = input.sceneBlueprint.relationshipPacing ?? [];
     if (npcId) {
       const exact = contracts.find((contract) => contract.npcId === npcId);
       if (exact) return exact;
+      const aliased = contracts.find((contract) => this.relationshipPacingKeysMatch(contract.npcId, npcId));
+      if (aliased) return aliased;
+      // Fall back to NPC name aliases from the scene cast when contract ids are display names.
+      const npc = input.npcsInScene.find((candidate) =>
+        this.relationshipPacingKeysMatch(candidate.id, npcId)
+        || this.relationshipPacingKeysMatch(candidate.name, npcId)
+      );
+      if (npc) {
+        const byCast = contracts.find((contract) =>
+          this.relationshipPacingKeysMatch(contract.npcId, npc.id)
+          || this.relationshipPacingKeysMatch(contract.npcId, npc.name)
+        );
+        if (byCast) return byCast;
+      }
     }
-    return contracts.find((contract) => contract.npcId) ?? contracts[0];
+    return contracts.find((contract) => isNpcPacingContract(contract));
   }
 
   private relationshipConsequenceDimension(input: ChoiceAuthorInput): 'trust' | 'affection' | 'respect' | 'fear' {
@@ -2530,14 +2562,17 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     }
   }
 
+  /** Default early-scene safety cap when no pacing contract is present (matches pacingMaxDelta(0)). */
+  private static readonly DEFAULT_RELATIONSHIP_DELTA_CAP = 6;
+
   private capRelationshipConsequences(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+    const contracts = mergeSceneRelationshipPacing(undefined, input.sceneBlueprint.relationshipPacing);
     let capped = 0;
     for (const choice of choiceSet.choices) {
       for (const consequence of choice.consequences ?? []) {
         if (consequence.type !== 'relationship' || typeof consequence.change !== 'number') continue;
-        const contract = this.relationshipPacingForNpc(input, consequence.npcId);
-        if (!contract || !Number.isFinite(contract.maxDeltaThisScene) || contract.maxDeltaThisScene <= 0) continue;
-        const max = Math.abs(contract.maxDeltaThisScene);
+        const contractCap = effectiveNpcDeltaCap(contracts, consequence.npcId, new Map());
+        const max = contractCap ?? ChoiceAuthor.DEFAULT_RELATIONSHIP_DELTA_CAP;
         if (consequence.change > max) {
           consequence.change = max;
           capped += 1;
@@ -2757,6 +2792,12 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
   ): MechanicPressureContract {
     const domain = this.domainForConsequence(consequence, choice);
     const id = `${input.sceneBlueprint.id}-${choice.id}-pressure`;
+    const relationshipNpcId = consequence?.type === 'relationship'
+      ? (consequence as Consequence & { npcId?: string }).npcId
+      : undefined;
+    const pacingCap = domain === 'relationship'
+      ? this.relationshipPacingForNpc(input, relationshipNpcId)?.maxDeltaThisScene
+      : undefined;
     return {
       id,
       source: 'choice',
@@ -2769,7 +2810,9 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       allowedPayoffs: [input.plannedConsequenceTier === 'branch' ? 'route permission with visible cost' : 'later callback, text variant, small access shift, or NPC posture change'],
       blockedPayoffs: ['instant intimacy, loyalty, mastery, full trust, or information the player did not earn'],
       originatingSceneId: input.sceneBlueprint.id,
-      maxMagnitudeThisScene: domain === 'relationship' ? 6 : 10,
+      maxMagnitudeThisScene: domain === 'relationship'
+        ? Math.abs(pacingCap && pacingCap > 0 ? pacingCap : ChoiceAuthor.DEFAULT_RELATIONSHIP_DELTA_CAP)
+        : 10,
     };
   }
 

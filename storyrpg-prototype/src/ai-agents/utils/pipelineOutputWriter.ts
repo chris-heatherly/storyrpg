@@ -528,6 +528,15 @@ export interface PipelineOutputs {
     succeeded: number;
     degraded: number;
   };
+  memorySummary?: {
+    recallCount: number;
+    writeCount: number;
+    emptyRecallCount: number;
+    breakerOpenCount: number;
+    totalResultCount: number;
+    totalLatencyMs: number;
+    errorCount: number;
+  };
 }
 
 export type QualityScoreBasis = StoryCircleQualityScoreBasis;
@@ -949,6 +958,15 @@ export async function appendFailedRunLedger(
     durationMs?: number;
     llmLedger?: LlmLedger | null;
     remediationSummary?: { attempted: number; succeeded: number; degraded: number };
+    memorySummary?: {
+      recallCount: number;
+      writeCount: number;
+      emptyRecallCount: number;
+      breakerOpenCount: number;
+      totalResultCount: number;
+      totalLatencyMs: number;
+      errorCount: number;
+    };
   },
 ): Promise<void> {
   if (!outputDir) return;
@@ -970,6 +988,7 @@ export async function appendFailedRunLedger(
       remediationsAttempted: details?.remediationSummary?.attempted,
       remediationsSucceeded: details?.remediationSummary?.succeeded,
       remediationsDegraded: details?.remediationSummary?.degraded,
+      memory: details?.memorySummary,
     });
   } catch { /* ledger is best-effort */ }
 }
@@ -2324,6 +2343,7 @@ export async function savePipelineOutputs(
       remediationsAttempted: outputs.remediationSummary?.attempted,
       remediationsSucceeded: outputs.remediationSummary?.succeeded,
       remediationsDegraded: outputs.remediationSummary?.degraded,
+      memory: outputs.memorySummary,
       secondPersonOpenerRatio: openerRatio,
       openerMonotonyPassages: openerMonotony,
       capIds: quality.basis.caps.map((cap) => cap.id),

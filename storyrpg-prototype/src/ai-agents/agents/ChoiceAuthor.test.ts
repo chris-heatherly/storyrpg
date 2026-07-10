@@ -662,6 +662,97 @@ describe('ChoiceAuthor relationship consequence repair', () => {
     ]));
   });
 
+  it('clamps relationship deltas to contract maxDelta across display-name vs char-* ids', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'relationship',
+      choices: [
+        {
+          id: 'confess',
+          text: 'Tell Mika the truth about the blog',
+          choiceType: 'relationship',
+          consequences: [
+            { type: 'relationship', npcId: 'char-mika-dragan', dimension: 'trust', change: 10 },
+            { type: 'relationship', npcId: 'char-mika-dragan', dimension: 'respect', change: 10 },
+          ],
+        },
+        { id: 'deflect', text: 'Keep the blog private', choiceType: 'relationship', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 's1-3',
+        name: 'Confession',
+        choicePoint: {
+          type: 'relationship',
+          stakes: { want: 'be known', cost: 'risk rejection', identity: 'choose honesty' },
+        },
+        relationshipPacing: [{
+          id: 's1-3-rel-mika',
+          source: 'planner',
+          npcId: 'Mika Dragan',
+          startStage: 'acquaintance',
+          targetStage: 'acquaintance',
+          allowedLabels: ['guarded warmth'],
+          blockedLabels: ['friend'],
+          requiredEvidence: [],
+          minScenesSinceIntroduction: 0,
+          maxDeltaThisScene: 8,
+          mechanicDimensions: ['trust', 'respect'],
+        }],
+      },
+      npcsInScene: [
+        { id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'Sharp ally' },
+      ],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    const confess = choiceSet.choices.find((choice: any) => choice.id === 'confess');
+    expect(confess.consequences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'relationship', npcId: 'char-mika-dragan', dimension: 'trust', change: 8 }),
+      expect.objectContaining({ type: 'relationship', npcId: 'char-mika-dragan', dimension: 'respect', change: 8 }),
+    ]));
+  });
+
+  it('clamps relationship deltas to the default safety cap when pacing is missing', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      beatId: 'b1',
+      choiceType: 'strategic',
+      choices: [
+        {
+          id: 'c1',
+          text: 'Lean on Mika anyway',
+          choiceType: 'strategic',
+          consequences: [
+            { type: 'relationship', npcId: 'char-mika-dragan', dimension: 'trust', change: 10 },
+          ],
+        },
+        { id: 'c2', text: 'Go alone', choiceType: 'strategic', consequences: [] },
+        { id: 'c3', text: 'Wait', choiceType: 'strategic', consequences: [] },
+      ],
+    });
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 's1-3',
+        name: 'No pacing',
+        choicePoint: { type: 'strategic', stakes: { want: 'survive', cost: 'isolation', identity: 'choose help' } },
+        relationshipPacing: [],
+      },
+      npcsInScene: [
+        { id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'Sharp ally' },
+      ],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    expect(choiceSet.choices[0].consequences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'relationship', npcId: 'char-mika-dragan', dimension: 'trust', change: 6 }),
+    ]));
+  });
+
   it('repairs each relationship option, not only the first option in the set', () => {
     const author: any = new ChoiceAuthor(config);
     const choiceSet = makeChoiceSet({

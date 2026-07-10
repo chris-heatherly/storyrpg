@@ -589,4 +589,55 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
 
     expect(result.valid).toBe(true);
   });
+
+  it('does not apply group maxDelta to individual NPC relationship consequences', () => {
+    const stelaContract: RelationshipPacingContract = {
+      id: 's1-3-rel-stela',
+      source: 'planner',
+      npcId: 'char-stela-pavel',
+      startStage: 'acquaintance',
+      targetStage: 'acquaintance',
+      minScenesSinceIntroduction: 0,
+      maxDeltaThisScene: 8,
+      requiredEvidence: [],
+      allowedLabels: ['guarded warmth'],
+      blockedLabels: ['friend'],
+      mechanicDimensions: ['trust', 'respect'],
+    };
+    const groupContract = pacing({
+      id: 's1-3-rel-dusk',
+      groupId: 'dusk-club',
+      maxDeltaThisScene: 6,
+      npcId: undefined,
+    });
+    const scene = {
+      id: 's1-3',
+      name: 'Confession',
+      startingBeatId: 'b1',
+      relationshipPacing: [stelaContract, groupContract],
+      beats: [{
+        id: 'b1',
+        text: 'Stela listens while you explain the blog.',
+        choices: [{
+          id: 'c1',
+          text: 'Confess',
+          choiceType: 'relationship',
+          consequences: [
+            { type: 'relationship', npcId: 'char-stela-pavel', dimension: 'trust', change: 8 },
+            { type: 'relationship', npcId: 'char-stela-pavel', dimension: 'respect', change: 8 },
+          ],
+        }],
+      }],
+    } as Scene;
+
+    const result = new RelationshipArcLedgerValidator().validate({
+      story: {
+        ...story(scene),
+        npcs: [{ id: 'char-stela-pavel', name: 'Stela Pavel' }],
+      },
+      treatmentSourced: true,
+    });
+
+    expect(result.issues.filter((issue) => /above the ledger cap/i.test(issue.message))).toHaveLength(0);
+  });
 });

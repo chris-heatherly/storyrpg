@@ -1171,7 +1171,10 @@ export function buildSceneConstructionPromptView<T extends SceneConstructionScen
       : scene.requiredBeats,
     signatureMoment: signatureActive ? scene.signatureMoment : undefined,
     storyCircleBeatContracts: keepByProfile(profile, 'storyCircle', scene.storyCircleBeatContracts),
-    relationshipPacing: keepByProfile(profile, 'relationshipPacing', scene.relationshipPacing),
+    // Relationship pacing is a hard cap/guidance contract, not optional texture.
+    // Filtering it through keepByProfile dropped soft-lane caps before ChoiceAuthor
+    // (bite-me 2026-07-09: s1-3 Mika trust/respect +10 vs planned maxDelta 8).
+    relationshipPacing: scene.relationshipPacing,
     mechanicPressure: keepByProfile(profile, 'mechanicPressure', scene.mechanicPressure),
     authoredTreatmentFields: keepByProfile(profile, 'treatmentField', scene.authoredTreatmentFields),
     seasonPromiseContracts: keepByProfile(profile, 'seasonPromise', scene.seasonPromiseContracts),

@@ -44,8 +44,25 @@ import { PipelineError } from './errors';
 import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
+import type { RelationshipPacingContract } from '../../types/scenePlan';
+import { mergeSceneRelationshipPacing } from '../utils/effectiveRelationshipPacing';
 
 const AUTHOR_ONLY_ENCOUNTER_FIELDS = new Set(['sourceSynopsis', 'authoredAnchor']);
+
+/**
+ * Reattach season-plan relationship pacing when a blueprint/scene lost its
+ * contracts (construction-profile soft-lane stripping). Caps must survive to
+ * ChoiceAuthor and RelationshipArcLedgerValidator.
+ */
+export function resolveSceneRelationshipPacing(
+  sceneId: string,
+  existing: RelationshipPacingContract[] | undefined,
+  brief: Pick<FullCreativeBrief, 'seasonPlan'>,
+): RelationshipPacingContract[] | undefined {
+  const planned = brief.seasonPlan?.scenePlan?.scenes?.find((scene) => scene.id === sceneId);
+  const merged = mergeSceneRelationshipPacing(planned?.relationshipPacing, existing);
+  return merged.length > 0 ? merged : existing;
+}
 
 /** Defense-in-depth: planning provenance must never cross into a story package. */
 export function assertNoAuthorOnlyEncounterFields(encounter: unknown, sceneId: string): void {
@@ -289,7 +306,11 @@ export class Assembly {
         // SceneTransitionContinuityValidator can verify the prose honored them.
         timeline: sceneTimelineMetaForScene(sceneBlueprint, content.transitionIn),
         turnContract: sceneBlueprint.turnContract,
-        relationshipPacing: sceneBlueprint.relationshipPacing,
+        relationshipPacing: resolveSceneRelationshipPacing(
+          sceneBlueprint.id,
+          sceneBlueprint.relationshipPacing,
+          brief,
+        ),
         mechanicPressure: sceneBlueprint.mechanicPressure,
         sceneEventOwnership: sceneBlueprint.sceneEventOwnership,
         authoredTreatmentFields: sceneBlueprint.authoredTreatmentFields,
@@ -572,7 +593,7 @@ export class Assembly {
         // final-gate transition validators can read planned time/place.
         timeline: sceneTimelineMetaForScene(sb, content.transitionIn),
         turnContract: sb.turnContract,
-        relationshipPacing: sb.relationshipPacing,
+        relationshipPacing: resolveSceneRelationshipPacing(sb.id, sb.relationshipPacing, brief),
         mechanicPressure: sb.mechanicPressure,
         sceneEventOwnership: sb.sceneEventOwnership,
         authoredTreatmentFields: sb.authoredTreatmentFields,

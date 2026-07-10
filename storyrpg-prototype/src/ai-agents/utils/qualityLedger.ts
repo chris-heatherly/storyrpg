@@ -86,6 +86,16 @@ export interface QualityLedgerEntry {
   packageRetention?: 'retain_success_package';
   storyArtifact?: string;
   manifestArtifact?: string;
+  /** Pipeline memory telemetry rollup for the run (Cognee recall/write health). */
+  memory?: {
+    recallCount: number;
+    writeCount: number;
+    emptyRecallCount: number;
+    breakerOpenCount: number;
+    totalResultCount: number;
+    totalLatencyMs: number;
+    errorCount: number;
+  };
 }
 
 const LEDGER_FILENAME = 'quality-ledger.jsonl';

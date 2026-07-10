@@ -8,6 +8,17 @@ import type {
 
 const MAX_FACTS_PER_ARTIFACT = 80;
 
+export interface FactQueryFilter {
+  storyId?: string;
+  runId?: string;
+  episodeNumber?: number;
+  sceneId?: string;
+  factKinds?: PipelineMemoryFactKind[];
+  factIds?: string[];
+  artifactIds?: string[];
+  limit?: number;
+}
+
 function text(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const clean = value.replace(/\s+/g, ' ').trim();
@@ -302,7 +313,43 @@ function collectValidatorFacts(envelope: PipelineArtifactEnvelope, record: Recor
 }
 
 export class FactMemoryService {
+  private readonly liveFacts = new Map<string, PipelineFactRecord>();
+  private readonly factsByKind = new Map<PipelineMemoryFactKind, Set<string>>();
+  private readonly factsByArtifact = new Map<string, Set<string>>();
+
   constructor(private readonly memory: PipelineMemory) {}
+
+  queryLiveFacts(filter: FactQueryFilter = {}): PipelineFactRecord[] {
+    const limit = filter.limit || 80;
+    const matches = Array.from(this.liveFacts.values()).filter((fact) => {
+      if (filter.storyId && fact.storyId !== filter.storyId) return false;
+      if (filter.runId && fact.runId !== filter.runId) return false;
+      if (filter.episodeNumber != null && fact.episodeNumber !== filter.episodeNumber) return false;
+      if (filter.sceneId && fact.sceneId !== filter.sceneId) return false;
+      if (filter.factKinds?.length && !filter.factKinds.includes(fact.factKind)) return false;
+      if (filter.factIds?.length && !filter.factIds.includes(fact.factId)) return false;
+      if (filter.artifactIds?.length) {
+        const refs = fact.artifactRefs.map((ref) => ref.artifactId);
+        if (!filter.artifactIds.some((id) => refs.includes(id))) return false;
+      }
+      return fact.status !== 'superseded' && fact.status !== 'rejected';
+    });
+    return matches.slice(0, limit);
+  }
+
+  resolveFact(factId: string): PipelineFactRecord | null {
+    return this.liveFacts.get(factId) || null;
+  }
+
+  private registerLiveFact(fact: PipelineFactRecord): void {
+    this.liveFacts.set(fact.factId, fact);
+    if (!this.factsByKind.has(fact.factKind)) this.factsByKind.set(fact.factKind, new Set());
+    this.factsByKind.get(fact.factKind)!.add(fact.factId);
+    for (const ref of fact.artifactRefs) {
+      if (!this.factsByArtifact.has(ref.artifactId)) this.factsByArtifact.set(ref.artifactId, new Set());
+      this.factsByArtifact.get(ref.artifactId)!.add(fact.factId);
+    }
+  }
 
   extractFacts(envelope: PipelineArtifactEnvelope): PipelineFactRecord[] {
     const payload = envelope.payload && typeof envelope.payload === 'object'
@@ -384,6 +431,7 @@ export class FactMemoryService {
   async writeFactsForArtifact(envelope: PipelineArtifactEnvelope): Promise<PipelineFactRecord[]> {
     const facts = this.extractFacts(envelope);
     for (const fact of facts) {
+      this.registerLiveFact(fact);
       this.enqueueWrite(() => this.memory.writeFactSnapshot(fact));
     }
     if (facts.length > 0) {

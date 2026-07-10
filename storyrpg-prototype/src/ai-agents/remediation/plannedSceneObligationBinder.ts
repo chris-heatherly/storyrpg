@@ -1802,6 +1802,18 @@ function latestBlogAftermathPrerequisiteScene(
   sourceScene: PlannedScene,
   triggerText?: string,
 ): PlannedScene {
+  // Prefer writing/draft owners when present so newly created aftermath helpers
+  // never anchor solely on threat when the writing beat exists later.
+  const writingAnchors = scenes
+    .filter((scene) => scene.episodeNumber === episodeNumber)
+    .filter((scene) =>
+      primarySceneCues(scene).has('lateNightWriting')
+      || isBlogDraftText(sceneText(scene))
+      || isPrimaryBlogDraftScene(scene)
+    )
+    .sort((a, b) => b.order - a.order);
+  if (writingAnchors[0]) return writingAnchors[0];
+
   const triggerCues = eventCues(triggerText);
   const cueOrder: SceneEventCue[] = [
     'arrival',
@@ -1862,6 +1874,23 @@ function latestPrerequisiteForSyntheticBlogAftermath(
   scenes: PlannedScene[],
   scene: PlannedScene,
 ): PlannedScene | undefined {
+  // Prefer an existing lateNightWriting / draft scene over threat-only anchors
+  // so viral aftermath cannot land between the attack and the writing beat
+  // (bite-me 2026-07-09: s1-blog-aftermath before s1-7).
+  const writingAnchors = scenes
+    .filter((candidate) =>
+      candidate.episodeNumber === scene.episodeNumber
+      && candidate.id !== scene.id
+      && !isSyntheticBlogAftermathScene(candidate)
+    )
+    .filter((candidate) =>
+      primarySceneCues(candidate).has('lateNightWriting')
+      || isBlogDraftText(sceneText(candidate))
+      || isPrimaryBlogDraftScene(candidate)
+    )
+    .sort((a, b) => b.order - a.order);
+  if (writingAnchors[0]) return writingAnchors[0];
+
   const prerequisiteCues = blogAftermathPrerequisiteCues(scene);
   return scenes
     .filter((candidate) =>
@@ -1886,8 +1915,27 @@ function orderSyntheticBlogAftermathScenes(
   decisions: PlannedSceneBindingDecision[],
 ): void {
   for (const scene of scenes.filter(isSyntheticBlogAftermathScene)) {
-    const anchor = latestPrerequisiteForSyntheticBlogAftermath(scenes, scene);
-    if (!anchor || scene.order > anchor.order) continue;
+    const writingAnchor = scenes
+      .filter((candidate) =>
+        candidate.episodeNumber === scene.episodeNumber
+        && candidate.id !== scene.id
+        && !isSyntheticBlogAftermathScene(candidate)
+        && (
+          primarySceneCues(candidate).has('lateNightWriting')
+          || isBlogDraftText(sceneText(candidate))
+          || isPrimaryBlogDraftScene(candidate)
+        )
+      )
+      .sort((a, b) => b.order - a.order)[0];
+    const anchor = writingAnchor ?? latestPrerequisiteForSyntheticBlogAftermath(scenes, scene);
+    if (!anchor) continue;
+    // When a writing scene exists, aftermath must follow it even if it already
+    // sits after some other prerequisite (e.g. threat).
+    if (writingAnchor) {
+      if (scene.order > writingAnchor.order) continue;
+    } else if (scene.order > anchor.order) {
+      continue;
+    }
     scene.order = anchor.order + 0.35;
     decisions.push({
       action: 'rebound',
@@ -1897,7 +1945,9 @@ function orderSyntheticBlogAftermathScenes(
       episodeNumber: scene.episodeNumber,
       fromSceneId: scene.id,
       toSceneId: anchor.id,
-      reason: 'Synthetic public-post aftermath helper was ordered after prerequisite scene-local events instead of immediately after its source scene.',
+      reason: writingAnchor
+        ? 'Synthetic public-post aftermath helper was ordered before its lateNightWriting owner; moved after the writing scene.'
+        : 'Synthetic public-post aftermath helper was ordered after prerequisite scene-local events instead of immediately after its source scene.',
     });
   }
 }

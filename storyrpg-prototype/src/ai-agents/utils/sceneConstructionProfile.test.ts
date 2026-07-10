@@ -1099,4 +1099,61 @@ describe('duplicate-text obligation flooding (bite-me 2026-07-03T18-26-54 s1-3 r
     );
     expect(hardAtoms).toHaveLength(0);
   });
+
+  it('preserves relationshipPacing contracts through construction-profile compaction', () => {
+    const mikaContract = {
+      id: 's1-3-rel-mika',
+      source: 'planner' as const,
+      npcId: 'char-mika-dragan',
+      startStage: 'acquaintance' as const,
+      targetStage: 'acquaintance' as const,
+      allowedLabels: ['guarded warmth'],
+      blockedLabels: ['friend'],
+      requiredEvidence: ['show reciprocity'],
+      minScenesSinceIntroduction: 0,
+      maxDeltaThisScene: 8,
+      mechanicDimensions: ['trust', 'respect'] as Array<'trust' | 'respect'>,
+    };
+    const stelaContract = {
+      id: 's1-3-rel-stela',
+      source: 'planner' as const,
+      npcId: 'char-stela-pavel',
+      startStage: 'spark' as const,
+      targetStage: 'acquaintance' as const,
+      allowedLabels: ['invitation'],
+      blockedLabels: ['friend'],
+      requiredEvidence: ['show behavior before naming the bond'],
+      minScenesSinceIntroduction: 0,
+      maxDeltaThisScene: 8,
+      mechanicDimensions: ['trust'] as Array<'trust'>,
+    };
+    const scene: SceneConstructionSceneLike = {
+      id: 's1-3',
+      episodeNumber: 1,
+      order: 3,
+      npcsPresent: ['char-mika-dragan', 'char-stela-pavel'],
+      turnContract: {
+        turnId: 's1-3-turn',
+        source: 'planner',
+        centralTurn: 'Kylie confesses the blog to Mika at the table.',
+        beforeState: 'The secret is still private.',
+        turnEvent: 'Kylie confesses the blog to Mika at the table.',
+        afterState: 'Mika knows the truth.',
+        handoff: 'The night continues.',
+      },
+      relationshipPacing: [mikaContract, stelaContract],
+      requiredBeats: [{
+        id: 'confession',
+        tier: 'authored',
+        sourceTurn: 'Kylie confesses the blog to Mika at the table.',
+        mustDepict: 'Kylie confesses the blog to Mika at the table.',
+      }],
+    };
+
+    applySceneConstructionProfilesToScenes([scene], { episodeNumber: 1 });
+    const view = buildSceneConstructionPromptView(scene);
+
+    expect(scene.relationshipPacing).toEqual([mikaContract, stelaContract]);
+    expect(view.relationshipPacing).toEqual([mikaContract, stelaContract]);
+  });
 });

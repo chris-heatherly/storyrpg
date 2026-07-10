@@ -14,6 +14,10 @@ import {
   stageRank,
   type RelationshipArcLedgerEntry,
 } from '../utils/relationshipArcLedger';
+import {
+  mergeSceneRelationshipPacing,
+  relationshipConsequenceMatchesNpcContract,
+} from '../utils/effectiveRelationshipPacing';
 import { getStoryLexicon } from '../config/storyLexicon';
 import { BaseValidator, type ValidationIssue, type ValidationResult } from './BaseValidator';
 
@@ -466,7 +470,10 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
 
     for (const ref of refs) {
       const text = sceneVisibleText(ref.scene);
-      const contracts = [...(ref.planned?.relationshipPacing ?? []), ...(ref.scene.relationshipPacing ?? [])];
+      const contracts = mergeSceneRelationshipPacing(
+        ref.planned?.relationshipPacing,
+        ref.scene.relationshipPacing,
+      );
 
       for (const contract of contracts) {
         const key = contractSubjectKey(contract);
@@ -493,19 +500,25 @@ export class RelationshipArcLedgerValidator extends BaseValidator {
           ), `contract:choice:${ref.episodeNumber}:${ref.scene.id}:${key}:${targetStage}`);
         }
 
-        const consequences = relationshipConsequencesForScene(ref.scene).filter(({ consequence }) =>
-          consequence.type === 'relationship' && (!contract.npcId || slug(consequence.npcId) === slug(contract.npcId))
-        );
-        for (const { consequence } of consequences) {
-          if (consequence.type !== 'relationship') continue;
-          const delta = Number(consequence.change ?? 0);
-          const cap = Math.abs(contract.maxDeltaThisScene || 0);
-          if (cap > 0 && Math.abs(delta) > cap && !hasMajorPositiveEvidence(entry)) {
-            pushIssue(this.error(
-              `Scene "${ref.scene.id}" changes ${consequence.npcId}.${consequence.dimension} by ${delta}, above the ledger cap ${cap} without major evidence.`,
-              loc,
-              'Reduce the relationship delta or add a genuine on-page sacrifice, repair, agency-respecting protection, or mutual-aid choice.',
-            ), `contract:delta:${ref.episodeNumber}:${ref.scene.id}:${key}:${consequence.npcId}:${consequence.dimension}:${delta}:${cap}`);
+        // Group pacing contracts govern membership/stage/labels — not per-NPC stat deltas.
+        // (!contract.npcId) previously matched every relationship consequence and
+        // applied the group maxDelta (e.g. dusk-club cap 6) to Stela +8 NPC deltas.
+        if (contract.npcId) {
+          const consequences = relationshipConsequencesForScene(ref.scene).filter(({ consequence }) =>
+            consequence.type === 'relationship'
+            && relationshipConsequenceMatchesNpcContract(contract, consequence.npcId, aliases)
+          );
+          for (const { consequence } of consequences) {
+            if (consequence.type !== 'relationship') continue;
+            const delta = Number(consequence.change ?? 0);
+            const cap = Math.abs(contract.maxDeltaThisScene || 0);
+            if (cap > 0 && Math.abs(delta) > cap && !hasMajorPositiveEvidence(entry)) {
+              pushIssue(this.error(
+                `Scene "${ref.scene.id}" changes ${consequence.npcId}.${consequence.dimension} by ${delta}, above the ledger cap ${cap} without major evidence.`,
+                loc,
+                'Reduce the relationship delta or add a genuine on-page sacrifice, repair, agency-respecting protection, or mutual-aid choice.',
+              ), `contract:delta:${ref.episodeNumber}:${ref.scene.id}:${key}:${consequence.npcId}:${consequence.dimension}:${delta}:${cap}`);
+            }
           }
         }
 

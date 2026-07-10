@@ -93,10 +93,38 @@ function collectIds(value: unknown, ids: Set<string>, keywords: Set<string>, dep
   }
 }
 
+export interface ArtifactQueryFilter {
+  artifactKind?: PipelineMemoryArtifactKind;
+  artifactIds?: string[];
+  storyId?: string;
+  episodeNumber?: number;
+  sceneId?: string;
+  limit?: number;
+}
+
 export class ArtifactMemoryService {
   private readonly liveArtifacts = new Map<string, PipelineArtifactEnvelope>();
 
   constructor(private readonly memory: PipelineMemory) {}
+
+  listLiveArtifacts(filter: ArtifactQueryFilter = {}): PipelineArtifactEnvelope[] {
+    const matches = Array.from(this.liveArtifacts.values()).filter((envelope) => {
+      if (filter.artifactKind && envelope.artifactKind !== filter.artifactKind) return false;
+      if (filter.storyId && envelope.storyId !== filter.storyId) return false;
+      if (filter.episodeNumber != null && envelope.episodeNumber !== filter.episodeNumber) return false;
+      if (filter.sceneId && envelope.sceneId !== filter.sceneId) return false;
+      if (filter.artifactIds?.length && !filter.artifactIds.includes(envelope.artifactId)) return false;
+      return true;
+    });
+    return matches.slice(0, filter.limit || matches.length);
+  }
+
+  findByKind(
+    kind: PipelineMemoryArtifactKind,
+    filter: Pick<ArtifactQueryFilter, 'storyId' | 'episodeNumber' | 'sceneId' | 'limit'> = {},
+  ): PipelineArtifactEnvelope[] {
+    return this.listLiveArtifacts({ ...filter, artifactKind: kind });
+  }
 
   buildEnvelope<T>(input: WritePipelineArtifactInput<T>): PipelineArtifactEnvelope<T> {
     const payloadText = stableStringify(input.payload);

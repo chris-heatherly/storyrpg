@@ -25,6 +25,7 @@ import { buildDesignNoteLeakStripHandler } from './designNoteLeakHandler';
 import { buildPlanningRegisterMetadataRepairHandler } from './planningRegisterMetadataRepairHandler';
 import { buildPlayerFacingProseRepairHandler } from './playerFacingProseRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from './relationshipPacingLabelRepairHandler';
+import { buildRelationshipDeltaCapRepairHandler } from './relationshipDeltaCapRepairHandler';
 import { buildTransitionBridgeRepairHandler } from './transitionBridgeRepairHandler';
 import { buildTenseDriftRepairHandler } from './tenseDriftRepairHandler';
 
@@ -566,6 +567,10 @@ export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
     // beat/scene metadata that image planning and the reader may consume, without
     // changing story text, choices, encounters, or navigation.
     buildPlanningRegisterMetadataRepairHandler(),
+    // Relationship ledger delta overshoot: clamp consequence.change to the planned
+    // maxDeltaThisScene (preserve sign). Run before label downgrade so numeric
+    // overshoot is fixed first; does not invent major-evidence tags.
+    buildRelationshipDeltaCapRepairHandler(),
     // Relationship-pacing residue: downgrade unearned high-stage labels in visible
     // prose/choice text for scenes the RelationshipPacingValidator already flagged.
     // This preserves the gate and the relationship turn while avoiding repeated

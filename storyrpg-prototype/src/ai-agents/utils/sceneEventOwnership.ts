@@ -76,6 +76,14 @@ const CANONICAL_CUE_KEYS = new Set<SceneEventOwnershipCue>([
   'endingAftermath',
 ]);
 
+/**
+ * Causal cue prerequisites that must be owned earlier than their dependents.
+ * Keep in sync with SceneOwnershipPreflightValidator.CAUSAL_CUE_PREREQUISITES.
+ */
+export const CAUSAL_CUE_OWNERSHIP_PREREQUISITES: ReadonlyArray<readonly [SceneEventOwnershipCue, readonly SceneEventOwnershipCue[]]> = [
+  ['blogAftermath', ['lateNightWriting']],
+];
+
 const WALK_HOME_ESCORT_RE = /\b[A-Z][a-z]+\b[^.!?\n]{0,180}\b(?:walks?|guides?|escorts?)\b[^.!?\n]{0,80}\bhome\b/i;
 // Escort body-language alone is a romance-prose staple — gestures only count
 // as walk-home when the text also moves toward a dwelling (keep in sync with
@@ -394,9 +402,22 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
       }
       if (encounterIndex >= 0 && sceneIndex > encounterIndex && previousOwnedEvents.length > 0) {
         const maxPreviousOrder = Math.max(...previousOwnedEvents.map((event) => eventOrder(event.cue)));
-        const regressed = profile.ownedEvents.filter(
-          (event) => eventOrder(event.cue) < maxPreviousOrder,
-        );
+        // If an earlier scene already owns a causal dependent (e.g. blogAftermath),
+        // do not demote this scene's prerequisite (lateNightWriting) as regressive —
+        // that is a chronology inversion for repairCausalCueOwnershipOrder to fix,
+        // not an aftermath restage (bite-me 2026-07-09).
+        const regressed = profile.ownedEvents.filter((event) => {
+          if (eventOrder(event.cue) >= maxPreviousOrder) return false;
+          for (const [dependent, prerequisites] of CAUSAL_CUE_OWNERSHIP_PREREQUISITES) {
+            if (
+              prerequisites.includes(event.cue)
+              && previousOwnedEvents.some((prior) => prior.cue === dependent)
+            ) {
+              return false;
+            }
+          }
+          return true;
+        });
         if (regressed.length > 0) {
           const regressedKeys = new Set(regressed.map((event) => event.key));
           profile.ownedEvents = profile.ownedEvents.filter((event) => !regressedKeys.has(event.key));
@@ -468,6 +489,315 @@ export function validateSceneEventOwnershipPlan<T extends SceneEventOwnershipSce
       }
     }
   });
+
+  return diagnostics;
+}
+
+/**
+ * Causal cue prerequisites that must be owned earlier than their dependents.
+ * Keep in sync with SceneOwnershipPreflightValidator.CAUSAL_CUE_PREREQUISITES.
+ * (Canonical export lives above attachSceneEventOwnershipProfiles.)
+ */
+const DEFAULT_LATE_NIGHT_WRITING_TURN =
+  'At 4am the protagonist writes the first anonymous public post under a codename.';
+
+function sceneOwnsCue(scene: SceneEventOwnershipSceneLike, cue: SceneEventOwnershipCue): boolean {
+  return (scene.sceneEventOwnership?.ownedEvents ?? []).some((event) => event.cue === cue);
+}
+
+function scenePrimaryCueText(scene: SceneEventOwnershipSceneLike): string {
+  return [
+    scene.sceneConstructionProfile?.primaryTurn?.text,
+    scene.turnContract?.centralTurn,
+    scene.turnContract?.turnEvent,
+    scene.dramaticPurpose,
+    scene.narrativeFunction,
+    scene.description,
+    scene.title,
+    scene.name,
+    ...(scene.requiredBeats ?? []).filter(isHardBeat).map((beat) => beat.mustDepict || beat.sourceTurn),
+  ].map(cleanText).filter(Boolean).join(' ');
+}
+
+function sceneLooksLikeWritingOwner(scene: SceneEventOwnershipSceneLike): boolean {
+  if (sceneOwnsCue(scene, 'lateNightWriting')) return true;
+  if (sceneOwnsCue(scene, 'blogAftermath')) return false;
+  const cues = detectPrimaryStoryEventCues(scenePrimaryCueText(scene));
+  return cues.has('lateNightWriting') && !cues.has('blogAftermath');
+}
+
+function sceneLooksLikeBlogAftermath(scene: SceneEventOwnershipSceneLike): boolean {
+  if (sceneOwnsCue(scene, 'blogAftermath')) return true;
+  const id = cleanText(scene.id);
+  if (/^s\d+-blog-aftermath$/i.test(id)) return true;
+  const cues = detectPrimaryStoryEventCues(scenePrimaryCueText(scene));
+  return cues.has('blogAftermath') && !cues.has('lateNightWriting');
+}
+
+function isSyntheticBlogAftermathHelper(scene: SceneEventOwnershipSceneLike): boolean {
+  const origin = (scene as { planningOrigin?: { kind?: string; splitKind?: string } }).planningOrigin;
+  if (origin?.kind === 'binder_split'
+    && (origin.splitKind === 'viral_aftermath' || origin.splitKind === 'public_blog_aftermath')) {
+    return true;
+  }
+  return /^s\d+-blog-aftermath$/i.test(cleanText(scene.id));
+}
+
+function extractWritingSeedText(aftermath: SceneEventOwnershipSceneLike): string {
+  const candidates = [
+    ...(aftermath.requiredBeats ?? []).map((beat) => beat.mustDepict || beat.sourceTurn),
+    aftermath.turnContract?.centralTurn,
+    aftermath.turnContract?.turnEvent,
+    aftermath.dramaticPurpose,
+    aftermath.description,
+  ].map(cleanText).filter(Boolean);
+  for (const text of candidates) {
+    if (detectPrimaryStoryEventCues(text).has('lateNightWriting')) return text;
+  }
+  return DEFAULT_LATE_NIGHT_WRITING_TURN;
+}
+
+function makeLateNightWritingScene<T extends SceneEventOwnershipSceneLike>(
+  template: T,
+  episodeNumber: number,
+  order: number,
+  writingText: string,
+): T {
+  const id = `s${episodeNumber}-late-night-writing`;
+  const base = {
+    id,
+    episodeNumber,
+    order,
+    kind: 'standard',
+    title: 'Late-night writing',
+    name: 'Late-night writing',
+    description: writingText,
+    dramaticPurpose: writingText,
+    narrativeFunction: writingText,
+    narrativeRole: 'development',
+    location: (template as { location?: string }).location || 'Apartment',
+    locations: (template as { locations?: string[] }).locations?.length
+      ? [...((template as { locations?: string[] }).locations ?? [])]
+      : ['Apartment'],
+    mood: (template as { mood?: string }).mood || 'intimate',
+    purpose: 'transition' as const,
+    dramaticQuestion: 'Will the private night become public testimony?',
+    wantVsNeed: 'Want: process the night. Need: claim authorship.',
+    conflictEngine: 'Exhaustion and the urge to publish collide.',
+    npcsPresent: [],
+    npcsInvolved: [],
+    setsUp: [],
+    paysOff: [],
+    keyBeats: [writingText],
+    leadsTo: [],
+    spineUnitId: undefined,
+    requiredBeats: [{
+      id: `${id}-writing`,
+      sourceTurn: writingText,
+      mustDepict: writingText,
+      tier: 'authored' as const,
+    }],
+    ownedChronologyKeys: ['lateNightWriting'],
+    planningOrigin: {
+      kind: 'binder_split' as const,
+      splitKind: 'late_night_writing' as const,
+      parentSceneId: template.id,
+      reason: 'Inserted lateNightWriting owner so blogAftermath cannot precede its causal prerequisite.',
+    },
+    turnContract: {
+      turnId: `${id}-turn`,
+      source: 'treatment' as const,
+      centralTurn: writingText,
+      beforeState: 'The night is still private.',
+      turnEvent: writingText,
+      afterState: 'Private experience has become a public post.',
+      handoff: 'Hand public attention forward without restaging the writing moment.',
+    },
+  };
+  return base as unknown as T;
+}
+
+function renormalizeSceneOrders<T extends SceneEventOwnershipSceneLike>(scenes: T[]): void {
+  scenes.forEach((scene, index) => {
+    scene.order = index;
+  });
+}
+
+type TransitionOutLike = {
+  toSceneId: string;
+  connector?: 'therefore' | 'but';
+  causalLink?: string;
+  pressureChange?: string;
+};
+
+function syncTransitionOutForLeadsTo(
+  scene: { leadsTo?: string[]; transitionOut?: TransitionOutLike[] | TransitionOutLike; name?: string; title?: string; description?: string; dramaticPurpose?: string },
+): void {
+  const leadsTo = Array.isArray(scene.leadsTo) ? scene.leadsTo : [];
+  if (!('transitionOut' in scene) && leadsTo.length === 0) return;
+  const existing = Array.isArray(scene.transitionOut)
+    ? scene.transitionOut
+    : scene.transitionOut
+      ? [scene.transitionOut]
+      : [];
+  const byTarget = new Map(
+    existing
+      .filter((transition) => transition?.toSceneId)
+      .map((transition) => [transition.toSceneId, transition]),
+  );
+  const fromLabel = cleanText(scene.name || scene.title || scene.dramaticPurpose || scene.description || 'this scene') || 'this scene';
+  scene.transitionOut = leadsTo.map((toSceneId) => {
+    const existingTransition = byTarget.get(toSceneId);
+    if (existingTransition?.causalLink && existingTransition?.pressureChange) {
+      return {
+        ...existingTransition,
+        toSceneId,
+        connector: existingTransition.connector === 'but' ? 'but' : 'therefore',
+      };
+    }
+    return {
+      toSceneId,
+      connector: existingTransition?.connector === 'but' ? 'but' : 'therefore',
+      causalLink: existingTransition?.causalLink
+        || `${fromLabel} changes the situation, therefore ${toSceneId} becomes necessary.`,
+      pressureChange: existingTransition?.pressureChange
+        || `${fromLabel} escalates into the pressure of ${toSceneId}.`,
+    };
+  });
+}
+
+function repairSequentialLeadsTo<T extends SceneEventOwnershipSceneLike>(scenes: T[]): void {
+  for (let index = 0; index < scenes.length; index += 1) {
+    const scene = scenes[index] as T & {
+      leadsTo?: string[];
+      transitionOut?: TransitionOutLike[] | TransitionOutLike;
+    };
+    if (!Array.isArray(scene.leadsTo)) continue;
+    const next = scenes[index + 1];
+    if (!next?.id) {
+      scene.leadsTo = [];
+      syncTransitionOutForLeadsTo(scene);
+      continue;
+    }
+    // Preserve multi-branch graphs; only fix empty or single sequential links.
+    if (scene.leadsTo.length <= 1) {
+      scene.leadsTo = [next.id];
+    }
+    // Causal reorder can change leadsTo after StoryArchitect.repairSceneTransitions;
+    // keep transitionOut aligned so DramaticStructure does not abort on the new edge.
+    syncTransitionOutForLeadsTo(scene);
+  }
+}
+
+/**
+ * Deterministic plan-time repair for causal cue ownership inversions
+ * (bite-me 2026-07-09: s1-blog-aftermath before s1-7 lateNightWriting).
+ * Reorders or inserts a writing owner before blogAftermath, then refreshes
+ * ownership profiles. Does not weaken SceneOwnershipPreflightValidator.
+ */
+export function repairCausalCueOwnershipOrder<T extends SceneEventOwnershipSceneLike>(
+  scenes: T[],
+  options: { episodeNumber?: number } = {},
+): SceneEventOwnershipDiagnostic[] {
+  if (scenes.length === 0) return [];
+  const diagnostics: SceneEventOwnershipDiagnostic[] = [];
+
+  // Reorder from text/id cues BEFORE attaching ownership so regressive
+  // demotion cannot strip lateNightWriting while blogAftermath sits earlier.
+  const episodeNumbers = Array.from(new Set(
+    scenes.map((scene) => scene.episodeNumber ?? options.episodeNumber ?? 1),
+  )).sort((a, b) => a - b);
+
+  let changed = false;
+  for (const episodeNumber of episodeNumbers) {
+    for (let pass = 0; pass < 3; pass += 1) {
+      const episodeScenes = scenes.filter(
+        (scene) => (scene.episodeNumber ?? options.episodeNumber ?? 1) === episodeNumber,
+      );
+      const aftermathScenes = episodeScenes.filter(sceneLooksLikeBlogAftermath);
+      if (aftermathScenes.length === 0) break;
+
+      let writingOwner = episodeScenes.find(sceneLooksLikeWritingOwner);
+      if (!writingOwner) {
+        const aftermath = aftermathScenes[0];
+        const writingText = extractWritingSeedText(aftermath);
+        const aftermathIndex = scenes.indexOf(aftermath);
+        const created = makeLateNightWritingScene(
+          aftermath,
+          episodeNumber,
+          (aftermath.order ?? Math.max(0, aftermathIndex)) - 0.25,
+          writingText,
+        );
+        (created as { spineUnitId?: string }).spineUnitId = undefined;
+        scenes.splice(Math.max(0, aftermathIndex), 0, created);
+        writingOwner = created;
+        changed = true;
+        diagnostics.push({
+          sceneId: created.id,
+          episodeNumber,
+          severity: 'warning',
+          message: `Inserted lateNightWriting owner "${created.id}" before blogAftermath so causal ownership can seal.`,
+        });
+        continue;
+      }
+
+      let passChanged = false;
+      for (const aftermath of aftermathScenes) {
+        const writingIndex = scenes.indexOf(writingOwner);
+        const aftermathIndex = scenes.indexOf(aftermath);
+        if (writingIndex < 0 || aftermathIndex < 0) continue;
+        if (writingIndex < aftermathIndex) continue;
+
+        const [moved] = scenes.splice(writingIndex, 1);
+        const targetIndex = writingIndex < aftermathIndex ? aftermathIndex - 1 : aftermathIndex;
+        scenes.splice(targetIndex, 0, moved);
+        if (isSyntheticBlogAftermathHelper(aftermath)) {
+          (aftermath as { spineUnitId?: string }).spineUnitId = undefined;
+        }
+        changed = true;
+        passChanged = true;
+        diagnostics.push({
+          sceneId: moved.id,
+          episodeNumber,
+          severity: 'warning',
+          message: `Reordered lateNightWriting owner "${moved.id}" before blogAftermath owner "${aftermath.id}".`,
+        });
+        writingOwner = moved;
+      }
+
+      if (!passChanged) break;
+    }
+  }
+
+  if (changed) {
+    renormalizeSceneOrders(scenes);
+    repairSequentialLeadsTo(scenes);
+  }
+
+  attachSceneEventOwnershipProfiles(scenes, options);
+
+  // Final causal check — surface residual inversions as errors for the gate.
+  for (const [dependent, prerequisites] of CAUSAL_CUE_OWNERSHIP_PREREQUISITES) {
+    scenes.forEach((scene, index) => {
+      if (!sceneOwnsCue(scene, dependent)) return;
+      const episodeNumber = scene.episodeNumber ?? options.episodeNumber ?? 1;
+      for (const prerequisite of prerequisites) {
+        const hasEarlier = scenes
+          .slice(0, index)
+          .some((candidate) =>
+            (candidate.episodeNumber ?? options.episodeNumber ?? 1) === episodeNumber
+            && sceneOwnsCue(candidate, prerequisite),
+          );
+        if (hasEarlier) continue;
+        diagnostics.push({
+          sceneId: scene.id,
+          episodeNumber,
+          severity: 'error',
+          message: `Scene "${scene.id ?? 'scene'}" owns ${dependent} before its prerequisite event ${prerequisite} has an earlier owner.`,
+        });
+      }
+    });
+  }
 
   return diagnostics;
 }

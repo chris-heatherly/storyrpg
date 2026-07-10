@@ -336,8 +336,8 @@ describe('buildSeasonScenePlan', () => {
     const scenes = scenesForEpisode(sp, 1);
 
     const firstMeetingContracts = scenes.flatMap((s) => s.relationshipPacing ?? []);
-    expect(firstMeetingContracts.some((c) => c.npcId === 'mika' && ['spark', 'acquaintance'].includes(c.targetStage))).toBe(true);
-    expect(firstMeetingContracts.some((c) => c.npcId === 'mika' && c.blockedLabels.includes('friend'))).toBe(true);
+    expect(firstMeetingContracts.some((c) => c.npcId === 'char-mika' && ['spark', 'acquaintance'].includes(c.targetStage))).toBe(true);
+    expect(firstMeetingContracts.some((c) => c.npcId === 'char-mika' && c.blockedLabels.includes('friend'))).toBe(true);
     expect(firstMeetingContracts.some((c) => c.groupId === 'dusk-club' && c.allowedLabels.includes('provisional name'))).toBe(true);
     expect(firstMeetingContracts.every((c) => c.targetStage !== 'trusted_ally' && c.targetStage !== 'intimate')).toBe(true);
   });
@@ -405,8 +405,8 @@ describe('buildSeasonScenePlan', () => {
     } as any));
     const contracts = scenesForEpisode(sp, 1).flatMap((s) => s.relationshipPacing ?? []);
 
-    expect(contracts.some((c) => c.npcId === 'Mika Dragan')).toBe(true);
-    expect(contracts.some((c) => c.npcId === 'Kylie Marinescu')).toBe(false);
+    expect(contracts.some((c) => c.npcId === 'char-mika-dragan')).toBe(true);
+    expect(contracts.some((c) => c.npcId === 'char-kylie-marinescu' || c.npcId === 'Kylie Marinescu')).toBe(false);
   });
 
   it('produces a signature device on the anchor scene from the visual anchor', () => {

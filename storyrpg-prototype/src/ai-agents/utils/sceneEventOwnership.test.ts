@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   attachSceneEventOwnershipProfiles,
   buildSceneEventOwnershipPromptSection,
+  repairCausalCueOwnershipOrder,
   stripRegressiveAuthoredBeats,
   type SceneEventOwnershipSceneLike,
 } from './sceneEventOwnership';
+import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
 import type { SceneConstructionObligation, SceneConstructionProfile } from '../../types/scenePlan';
 
 describe('sceneEventOwnership', () => {
@@ -647,5 +649,258 @@ describe('sceneEventOwnership', () => {
     expect(prompt).toContain('Owned events — HARD CONTRACT');
     expect(prompt).toContain('Already happened before this scene');
     expect(prompt).toContain('Do not restage');
+  });
+});
+
+describe('repairCausalCueOwnershipOrder', () => {
+  function constructionProfile(
+    sceneId: string,
+    text: string,
+  ): SceneConstructionProfile {
+    const primary = {
+      source: 'sceneTurn' as const,
+      id: `${sceneId}-turn`,
+      slot: 'primary_turn' as const,
+      text,
+      reason: 'One scene, one dramatic turn.',
+      hardUnits: 1,
+      softUnits: 0,
+    };
+    return {
+      id: `profile:${sceneId}`,
+      sceneId,
+      episodeNumber: 1,
+      primaryTurn: {
+        id: primary.id,
+        source: 'sceneTurn',
+        text,
+        beforeState: 'Before.',
+        turnEvent: text,
+        afterState: 'After.',
+        handoff: 'Carry pressure forward.',
+        sourceContractIds: [primary.id],
+      },
+      obligations: [primary],
+      sourceContractIds: [primary.id],
+      activeCast: [],
+      capacity: {
+        hardUnits: 1,
+        softUnits: 0,
+        totalUnits: 1,
+        maxHardUnits: 3,
+        maxTotalUnits: 5,
+        activeCastCount: 0,
+        maxActiveCast: 3,
+        activeConflictCount: 1,
+        introductionCount: 0,
+        explicitTimeCueCount: 0,
+        explicitLocationCueCount: 0,
+        beatBudget: { min: 3, recommended: 4, max: 8 },
+      },
+      routedObligationIds: [],
+      conflictDiagnostics: [],
+      promptGuidance: [],
+    };
+  }
+
+  it('reorders the failed Ep1 layout so lateNightWriting precedes blogAftermath', () => {
+    // Exact failed order from storyrpg-lite-treatment_2026-07-09T19-12-42.
+    const scenes: Array<SceneEventOwnershipSceneLike & {
+      leadsTo?: string[];
+      transitionOut?: Array<{ toSceneId: string; connector: 'therefore' | 'but'; causalLink: string; pressureChange: string }>;
+      name?: string;
+    }> = [
+      {
+        id: 'treatment-enc-1-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'encounter',
+        isEncounter: true,
+        spineUnitId: 'ep1-threat',
+        name: 'Walking home through Cismigiu',
+        leadsTo: ['s1-blog-aftermath'],
+        transitionOut: [{
+          toSceneId: 's1-blog-aftermath',
+          connector: 'therefore',
+          causalLink: 'The rescue forces public attention.',
+          pressureChange: 'Threat residue becomes public pressure.',
+        }],
+        sceneConstructionProfile: constructionProfile(
+          'treatment-enc-1-1',
+          'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes.',
+        ),
+      },
+      {
+        id: 's1-blog-aftermath',
+        episodeNumber: 1,
+        order: 1,
+        kind: 'standard',
+        planningOrigin: {
+          kind: 'binder_split',
+          splitKind: 'viral_aftermath',
+          parentSceneId: 's1-7',
+          reason: 'Synthetic viral aftermath helper.',
+        },
+        leadsTo: ['s1-7'],
+        transitionOut: [{
+          toSceneId: 's1-7',
+          connector: 'therefore',
+          causalLink: 'Public pressure demands the writing beat.',
+          pressureChange: 'Attention escalates into authorship.',
+        }],
+        sceneConstructionProfile: constructionProfile(
+          's1-blog-aftermath',
+          'The post becomes visible public pressure.',
+        ),
+      },
+      {
+        id: 's1-7',
+        episodeNumber: 1,
+        order: 2,
+        kind: 'standard',
+        spineUnitId: 'ep1-writing',
+        leadsTo: [],
+        transitionOut: [],
+        sceneConstructionProfile: constructionProfile(
+          's1-7',
+          'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight',
+        ),
+      },
+    ];
+
+    const diagnostics = repairCausalCueOwnershipOrder(scenes, { episodeNumber: 1 });
+    const ids = scenes.map((scene) => scene.id);
+
+    expect(ids.indexOf('s1-7')).toBeLessThan(ids.indexOf('s1-blog-aftermath'));
+    expect(scenes.find((scene) => scene.id === 's1-7')?.spineUnitId).toBe('ep1-writing');
+    expect(scenes.find((scene) => scene.id === 'treatment-enc-1-1')?.spineUnitId).toBe('ep1-threat');
+    expect(diagnostics.some((item) => /Reordered lateNightWriting/.test(item.message))).toBe(true);
+    expect(diagnostics.filter((item) => item.severity === 'error')).toEqual([]);
+
+    const encounter = scenes.find((scene) => scene.id === 'treatment-enc-1-1')!;
+    expect(encounter.leadsTo).toEqual(['s1-7']);
+    expect(encounter.transitionOut?.map((transition) => transition.toSceneId)).toEqual(['s1-7']);
+    expect(encounter.transitionOut?.[0]?.causalLink).toBeTruthy();
+    expect(encounter.transitionOut?.[0]?.pressureChange).toBeTruthy();
+
+    const preflight = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes,
+    });
+    expect(preflight.valid).toBe(true);
+  });
+
+  it('inserts a lateNightWriting owner when blogAftermath has no writing scene', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 'treatment-enc-1-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'encounter',
+        isEncounter: true,
+        spineUnitId: 'ep1-threat',
+        sceneConstructionProfile: constructionProfile(
+          'treatment-enc-1-1',
+          'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger.',
+        ),
+      },
+      {
+        id: 's1-blog-aftermath',
+        episodeNumber: 1,
+        order: 1,
+        kind: 'standard',
+        planningOrigin: {
+          kind: 'binder_split',
+          splitKind: 'viral_aftermath',
+          parentSceneId: 'treatment-enc-1-1',
+          reason: 'Synthetic viral aftermath helper.',
+        },
+        sceneConstructionProfile: constructionProfile(
+          's1-blog-aftermath',
+          'The post becomes visible public pressure as strangers react online.',
+        ),
+      },
+    ];
+
+    const diagnostics = repairCausalCueOwnershipOrder(scenes, { episodeNumber: 1 });
+    const writing = scenes.find((scene) => scene.id === 's1-late-night-writing');
+    const aftermathIndex = scenes.findIndex((scene) => scene.id === 's1-blog-aftermath');
+    const writingIndex = scenes.findIndex((scene) => scene.id === 's1-late-night-writing');
+
+    expect(writing).toBeTruthy();
+    expect(writing?.spineUnitId).toBeUndefined();
+    expect(writingIndex).toBeLessThan(aftermathIndex);
+    expect(diagnostics.some((item) => /Inserted lateNightWriting/.test(item.message))).toBe(true);
+    expect(diagnostics.filter((item) => item.severity === 'error')).toEqual([]);
+
+    const preflight = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      scenes,
+    });
+    expect(preflight.valid).toBe(true);
+  });
+
+  it('preserves relative ESC-mapped unit order while moving only the writing helper', () => {
+    const scenes: SceneEventOwnershipSceneLike[] = [
+      {
+        id: 's1-1',
+        episodeNumber: 1,
+        order: 0,
+        kind: 'standard',
+        spineUnitId: 'ep1-arrival',
+        sceneConstructionProfile: constructionProfile(
+          's1-1',
+          'Kylie arrives in Bucharest with two suitcases and her grandmother\'s address.',
+        ),
+      },
+      {
+        id: 'treatment-enc-1-1',
+        episodeNumber: 1,
+        order: 1,
+        kind: 'encounter',
+        isEncounter: true,
+        spineUnitId: 'ep1-threat',
+        sceneConstructionProfile: constructionProfile(
+          'treatment-enc-1-1',
+          'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger.',
+        ),
+      },
+      {
+        id: 's1-blog-aftermath',
+        episodeNumber: 1,
+        order: 2,
+        kind: 'standard',
+        planningOrigin: {
+          kind: 'binder_split',
+          splitKind: 'viral_aftermath',
+          parentSceneId: 's1-7',
+          reason: 'Synthetic viral aftermath helper.',
+        },
+        sceneConstructionProfile: constructionProfile(
+          's1-blog-aftermath',
+          'The post becomes visible public pressure.',
+        ),
+      },
+      {
+        id: 's1-7',
+        episodeNumber: 1,
+        order: 3,
+        kind: 'standard',
+        spineUnitId: 'ep1-writing',
+        sceneConstructionProfile: constructionProfile(
+          's1-7',
+          'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight',
+        ),
+      },
+    ];
+
+    repairCausalCueOwnershipOrder(scenes, { episodeNumber: 1 });
+
+    const mapped = scenes
+      .filter((scene) => scene.spineUnitId)
+      .map((scene) => scene.spineUnitId);
+    expect(mapped).toEqual(['ep1-arrival', 'ep1-threat', 'ep1-writing']);
+    expect(scenes.map((scene) => scene.id).indexOf('s1-7'))
+      .toBeLessThan(scenes.map((scene) => scene.id).indexOf('s1-blog-aftermath'));
   });
 });

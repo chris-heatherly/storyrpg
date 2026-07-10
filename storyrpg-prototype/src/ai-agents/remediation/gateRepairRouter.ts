@@ -882,6 +882,11 @@ export class GateRepairRouter {
       if (/\b(?:relationship language|unearned relationship label|old-friend familiarity|private contact|phone\/contact access)\b/i.test(issueText)) {
         return directive('same_scene_retry', issue, 'Unearned relationship label or access language is repairable in this scene\'s prose.');
       }
+      // Over-cap relationship deltas are deterministic: clamp change to the
+      // planned maxDeltaThisScene (relationshipDeltaCapRepairHandler).
+      if (/\babove the ledger cap\b/i.test(issueText)) {
+        return directive('same_scene_retry', issue, 'Relationship delta exceeds ledger cap; clamp consequence change to maxDeltaThisScene.');
+      }
       if (/\b(?:relationship choice|group-defining player choice|only permits|target(?:s|ed)?\s+\w+|before any player relationship choice|ledger-earned)\b/i.test(issueText)) {
         return directive('episode_replan', issue, 'Relationship arc ledger mismatch requires choice/relationship architecture, not prose-only repair.');
       }

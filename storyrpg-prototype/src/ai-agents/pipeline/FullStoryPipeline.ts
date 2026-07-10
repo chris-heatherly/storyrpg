@@ -194,6 +194,7 @@ import { ImageSupport } from './imageSupport';
 import {
   PipelineMemory,
   renderPipelineMemoryPacket,
+  slugifyMemoryKey,
   type AgentMemoryRequest,
   type AgentMemoryRole,
   type PipelineMemoryPacket,
@@ -204,6 +205,8 @@ import { ValidatorEvidenceService } from './validatorEvidenceService';
 import { ArtifactMemoryService } from './artifactMemoryService';
 import { ArtifactContextResolver } from './artifactContextResolver';
 import { FactMemoryService } from './factMemoryService';
+import { recallValidatorMemory } from './validatorMemory';
+import { memoryTelemetry, type MemoryRunSummary } from './memoryTelemetry';
 import type { PipelineMemoryArtifactKind, PipelineMemoryFactKind, WritePipelineArtifactInput } from './artifactMemoryTypes';
 import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
@@ -1296,12 +1299,12 @@ export class FullStoryPipeline {
       'FinalStoryContractValidator',
       input.phase || 'final-contract',
       input.brief,
-      { artifactKinds: ['story-json', 'qa-report', 'final-contract'], evidenceMode: 'corroborated-evidence' },
+      { artifactKinds: ['story-json', 'qa-report', 'final-contract'], artifactIds: input.brief.story.title ? [input.brief.story.title] : undefined },
     );
     const report = await this.finalContract().enforceFinalStoryContract(input);
     if (report) {
       report.memoryEvidence = [
-        this.validatorEvidenceService().summarize(evidence, 'corroborated-evidence'),
+        this.validatorEvidenceService().summarize(evidence, evidence.corroborationRequired ? 'corroborated-evidence' : 'advisory-memory'),
       ];
       await this.writeArtifactMemory({
         artifactKind: 'final-contract',
@@ -2184,6 +2187,7 @@ export class FullStoryPipeline {
       encounterImageDiagnostics,
       llmLedger: this.telemetry.getLlmLedger() ?? undefined,
       remediationSummary: this.getRemediationSummary(),
+      memorySummary: this.getMemorySummaryForLedger(),
     }, Date.now() - startTime);
 
     this.emit({
@@ -2619,6 +2623,7 @@ export class FullStoryPipeline {
 
     try {
       // Read pipeline optimization memory (prior generation insights)
+      memoryTelemetry.reset();
       this.cachedPipelineMemory = await this.recallPipelineMemory();
       if (this.cachedPipelineMemory) {
         this.emit({
@@ -3170,7 +3175,7 @@ export class FullStoryPipeline {
 	        'IntegratedBestPracticesValidator',
 	        'quick-validation',
 	        brief,
-	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'] },
 	      );
 	      const quickValidation = await this.quickValidationPhase().run(
 	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
@@ -3217,6 +3222,7 @@ export class FullStoryPipeline {
 	          },
 	        }).catch(() => {});
 	      }
+      await this.flushPipelineMemory(brief.story.title, 'episode');
 
       // === PHASE 5: QUALITY ASSURANCE ===
       await this.checkCancellation();
@@ -3230,7 +3236,7 @@ export class FullStoryPipeline {
 	        'IntegratedBestPracticesValidator',
 	        'full-qa',
 	        brief,
-	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure'], evidenceMode: 'advisory-memory' },
+	        { artifactKinds: ['scene-content', 'choice-set', 'encounter-structure', 'qa-report'] },
 	      );
 	      const { qaReport, bestPracticesReport } = await this.qaPhase().run(
 	        { brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, encounters },
@@ -3281,6 +3287,7 @@ export class FullStoryPipeline {
 	          },
 	        }).catch(() => {});
 	      }
+      await this.flushPipelineMemory(brief.story.title, 'qa');
 
       await this.repairWeakCliffhangerBeforeImages(
         brief,
@@ -4100,12 +4107,14 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     blueprint: EpisodeBlueprint
   ): Promise<BranchAnalysis | null> {
-    await this.getScopedAgentMemoryContext('BranchManager', 'branch-analysis', brief, {
-      artifactKinds: ['episode-blueprint'],
+    const memoryContext = await this.getScopedAgentMemoryContext('BranchManager', 'branch-analysis', brief, {
+      artifactKinds: ['episode-blueprint', 'branch-analysis'],
+      recallMode: 'facts-first',
     });
     const deps = { branchManager: this.branchManager } satisfies Partial<BranchAnalysisPhaseDeps> as unknown as BranchAnalysisPhaseDeps;
     Object.defineProperties(deps, {
       branchShadowDiffs: { get: () => this.branchShadowDiffs },
+      memoryContext: { get: () => memoryContext },
     });
     const result = await new BranchAnalysisPhase(deps).run(brief, blueprint, {
       config: this.config,
@@ -4917,7 +4926,7 @@ export class FullStoryPipeline {
         'runPlanTimeFidelityChecks',
         'plan-fidelity',
         baseBrief,
-        { artifactKinds: ['source-analysis', 'season-plan'], evidenceMode: 'advisory-memory' },
+        { artifactKinds: ['source-analysis', 'season-plan'] },
       );
       const planFidelity = runPlanTimeFidelityChecks({
         seasonPlan: baseBrief.seasonPlan,
@@ -5638,6 +5647,7 @@ export class FullStoryPipeline {
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
+            memorySummary: this.getMemorySummaryForLedger(),
           });
           await saveLlmLedgerSidecar(outputDirectory, this.telemetry.getLlmLedger());
         } catch (_logErr) { /* non-fatal */ }
@@ -5699,6 +5709,7 @@ export class FullStoryPipeline {
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
+            memorySummary: this.getMemorySummaryForLedger(),
           });
           // P3: persist per-call usage telemetry on this early-return failure path.
           await saveLlmLedgerSidecar(outputDirectory, this.telemetry.getLlmLedger());
@@ -5935,6 +5946,7 @@ export class FullStoryPipeline {
         qualityCouncilReport: this.qualityCouncil?.getReport(),
         encounterImageDiagnostics: allEncounterImageDiagnostics,
         remediationSummary: this.getRemediationSummary(),
+      memorySummary: this.getMemorySummaryForLedger(),
       }, Date.now() - startTime);
       const multiEpTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Multi-episode save timed out')), 120_000)
@@ -6060,6 +6072,7 @@ export class FullStoryPipeline {
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
+            memorySummary: this.getMemorySummaryForLedger(),
           });
         }
       }
@@ -9216,9 +9229,58 @@ export class FullStoryPipeline {
 
   private pipelineMemory(): PipelineMemory {
     if (!this._pipelineMemory) {
-      this._pipelineMemory = new PipelineMemory({ config: this.config });
+      this._pipelineMemory = new PipelineMemory({
+        config: this.config,
+        getRecallDeps: () => ({
+          artifactMemory: this._artifactMemoryService,
+          factMemory: this._factMemoryService,
+        }),
+      });
     }
     return this._pipelineMemory;
+  }
+
+  getMemoryTelemetrySummary(): MemoryRunSummary {
+    const summary = memoryTelemetry.getSummary();
+    return {
+      ...summary,
+      errors: summary.errors.slice(0, 20),
+    };
+  }
+
+  private getMemorySummaryForLedger(): {
+    recallCount: number;
+    writeCount: number;
+    emptyRecallCount: number;
+    breakerOpenCount: number;
+    totalResultCount: number;
+    totalLatencyMs: number;
+    errorCount: number;
+  } {
+    const summary = this.getMemoryTelemetrySummary();
+    return {
+      recallCount: summary.recallCount,
+      writeCount: summary.writeCount,
+      emptyRecallCount: summary.emptyRecallCount,
+      breakerOpenCount: summary.breakerOpenCount,
+      totalResultCount: summary.totalResultCount,
+      totalLatencyMs: summary.totalLatencyMs,
+      errorCount: summary.errors.length,
+    };
+  }
+
+  private memoryFlushTargets(): string[] {
+    const raw = process.env.STORYRPG_MEMORY_FLUSH_AT || 'episode,qa,run';
+    return raw.split(',').map((part: string) => part.trim()).filter(Boolean);
+  }
+
+  private async flushPipelineMemory(storyId: string, lifecycle: 'episode' | 'qa' | 'run'): Promise<void> {
+    if (!this.memoryFlushTargets().includes(lifecycle)) return;
+    await this.factMemoryService().flush();
+    await this.pipelineMemory().cognifyDatasets([
+      `storyrpg-run-${slugifyMemoryKey(storyId)}`,
+      this.config.memory?.validatorDataset || 'storyrpg-validator-history',
+    ], { background: true });
   }
 
   private get renderedPipelineMemory(): string | null {
@@ -9308,19 +9370,17 @@ export class FullStoryPipeline {
     briefOrStoryId?: FullCreativeBrief | string,
     extra: Partial<Parameters<ValidatorEvidenceService['recall']>[0]> = {},
   ): Promise<ValidatorEvidenceBundle> {
-    const storyId = typeof briefOrStoryId === 'string' ? briefOrStoryId : briefOrStoryId?.story.title;
-    const episodeNumber = typeof briefOrStoryId === 'string' ? undefined : briefOrStoryId?.episode?.number;
-    const sourceFingerprint = typeof briefOrStoryId === 'string'
-      ? undefined
-      : briefOrStoryId?.multiEpisode?.sourceAnalysis?.sourceTitle;
-    return this.validatorEvidenceService().recall({
+    const brief = typeof briefOrStoryId === 'string' ? undefined : briefOrStoryId;
+    const mergedExtra = typeof briefOrStoryId === 'string'
+      ? { ...extra, storyId: briefOrStoryId }
+      : extra;
+    return recallValidatorMemory(
+      this.validatorEvidenceService(),
       validator,
       lifecycle,
-      storyId,
-      episodeNumber,
-      sourceFingerprint,
-      ...extra,
-    });
+      brief,
+      mergedExtra,
+    );
   }
 
   private async writeArtifactMemory<T>(input: WritePipelineArtifactInput<T>): Promise<void> {

@@ -29,6 +29,8 @@ import { PipelineContext } from './index';
 
 export interface BranchAnalysisPhaseDeps {
   branchManager: Pick<BranchManager, 'execute'>;
+  /** Scoped pipeline memory for BranchManager prompts. */
+  readonly memoryContext?: string | null;
   /** Accessor-backed run-scoped sink for I5 shadow-mode diffs. */
   readonly branchShadowDiffs: Array<{ episodeId: string; diff: BranchShadowDiff }>;
 }
@@ -85,6 +87,7 @@ export class BranchAnalysisPhase {
         episodeStoryCircleRole: seasonEpisode?.storyCircleRole,
         episodeCircle: blueprint.episodeCircle,
         skipLlmAnnotation: authoredLite && !forceBranchAnnotation,
+        memoryContext: this.deps.memoryContext || undefined,
       }), PIPELINE_TIMEOUTS.llmAgent, 'BranchManager.execute');
 
       if (!result.success || !result.data) {

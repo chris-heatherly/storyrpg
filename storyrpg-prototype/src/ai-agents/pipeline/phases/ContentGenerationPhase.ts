@@ -68,7 +68,7 @@ import {
   buildSceneConstructionPromptView,
   applySceneConstructionProfilesToScenes,
 } from '../../utils/sceneConstructionProfile';
-import { attachSceneEventOwnershipProfiles } from '../../utils/sceneEventOwnership';
+import { attachSceneEventOwnershipProfiles, repairCausalCueOwnershipOrder } from '../../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacingStagePolicy';
 import { detectBeatTenseDrift, isSceneWideTenseDrift, sceneTenseCensus } from '../../utils/proseTense';
@@ -625,7 +625,11 @@ export class ContentGenerationPhase {
     const sceneConstructionIssues = sceneConstruction.diagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
+    const causalRepairDiagnostics = repairCausalCueOwnershipOrder(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
     const sceneEventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: densityEpisodeNumber })
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
+    const causalRepairErrors = causalRepairDiagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
     const sceneOwnershipPreflightIssues = new SceneOwnershipPreflightValidator().validate({
@@ -644,6 +648,7 @@ export class ContentGenerationPhase {
         generatedAt: new Date().toISOString(),
         issues: sceneConstructionIssues,
         eventOwnershipIssues: sceneEventOwnershipIssues,
+        causalRepairDiagnostics,
         sceneOwnershipPreflightIssues,
         routeCueIssues,
         sceneConstructionApplications: sceneConstruction.applications,
@@ -654,6 +659,7 @@ export class ContentGenerationPhase {
     const preProseConstructionIssues = [
       ...sceneConstructionIssues,
       ...sceneEventOwnershipIssues,
+      ...causalRepairErrors,
       ...sceneOwnershipPreflightIssues,
       ...routeCueIssueMessages,
     ];

@@ -1,11 +1,36 @@
 import type { AgentMemoryRequest, AgentMemoryRole, ValidatorEvidenceRequest } from './pipelineMemory';
 import type { PipelineMemoryFactKind } from './artifactMemoryTypes';
+import type { RecallMode } from './memoryRecallRouter';
 
 export interface PlannedMemoryQuery {
   query: string;
   factKinds?: PipelineMemoryFactKind[];
   topK?: number;
 }
+
+export interface RoleRecallDefaults {
+  recallMode: RecallMode;
+  searchType?: string;
+}
+
+export const roleRecallDefaults: Partial<Record<AgentMemoryRole, RoleRecallDefaults>> = {
+  SourceMaterialAnalyzer: { recallMode: 'facts-first' },
+  WorldBuilder: { recallMode: 'facts-first' },
+  CharacterDesigner: { recallMode: 'facts-first' },
+  StoryArchitect: { recallMode: 'facts-first' },
+  BranchManager: { recallMode: 'facts-first' },
+  SceneWriter: { recallMode: 'facts-first' },
+  ChoiceAuthor: { recallMode: 'facts-first' },
+  EncounterArchitect: { recallMode: 'facts-first' },
+  ThreadPlanner: { recallMode: 'facts-first' },
+  TwistArchitect: { recallMode: 'facts-first' },
+  CharacterArcTracker: { recallMode: 'facts-first' },
+  ImageAgentTeam: { recallMode: 'facts-first' },
+  AudioGenerationService: { recallMode: 'facts-first' },
+  VideoDirectorAgent: { recallMode: 'facts-first' },
+  QARunner: { recallMode: 'validator-history' },
+  FinalContract: { recallMode: 'facts-first' },
+};
 
 function scopeText(request: Pick<AgentMemoryRequest, 'storyId' | 'episodeNumber' | 'sceneId' | 'characterIds' | 'artifactKinds' | 'artifactIds' | 'factKinds'>): string {
   return [

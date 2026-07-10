@@ -14,7 +14,22 @@ import type {
   PipelineMemoryArtifactKind,
   PipelineMemoryFactKind,
 } from './artifactMemoryTypes';
-import { planAgentMemoryQueries, planValidatorMemoryQueries } from './memoryQueryPlanner';
+import { planAgentMemoryQueries, planValidatorMemoryQueries, roleRecallDefaults } from './memoryQueryPlanner';
+import { corroborateFacts } from './memoryCorroboration';
+import { composeMemoryPrompt } from './memoryPromptComposer';
+import {
+  executeRecall,
+  recallRouterEnabled,
+  type MemoryRecallRouterDeps,
+} from './memoryRecallRouter';
+import {
+  memoryTelemetry,
+  memoryTelemetryEnabled,
+  type MemoryTelemetryProvider,
+} from './memoryTelemetry';
+import type { ArtifactMemoryService } from './artifactMemoryService';
+import type { FactMemoryService } from './factMemoryService';
+import type { ArtifactPointer } from './artifactMemoryTypes';
 
 export type PipelineMemoryProviderName = 'cognee' | 'file' | 'disabled';
 
@@ -72,8 +87,15 @@ export interface MemoryProvider {
   readCharacterMemory(characterName: string): Promise<string | null>;
 }
 
+export interface PipelineMemoryRecallDeps {
+  artifactMemory?: ArtifactMemoryService;
+  factMemory?: FactMemoryService;
+  loadArtifactFromDisk?: (pointer: ArtifactPointer) => Promise<unknown | null>;
+}
+
 export interface PipelineMemoryDeps {
   config: PipelineConfig;
+  getRecallDeps?: () => PipelineMemoryRecallDeps;
 }
 
 const DEFAULT_PROJECT_DATASET = 'storyrpg-project';
@@ -328,9 +350,9 @@ function renderAgentMemoryContext(
   packets: PipelineMemoryPacket[],
   maxChars: number,
 ): string | null {
-  const snippets = uniqueStrings(packets.flatMap((packet) => packet.sourceSnippets));
   const warnings = uniqueStrings(packets.flatMap((packet) => packet.warnings));
-  if (!snippets.length && !warnings.length) return null;
+  const composed = composeMemoryPrompt(packets, maxChars);
+  if (!composed && !warnings.length) return null;
   const lines = [
     'Retrieved Pipeline Memory',
     'Advisory context; do not contradict fixed canon.',
@@ -339,8 +361,7 @@ function renderAgentMemoryContext(
     request.episodeNumber != null ? `Episode: ${request.episodeNumber}` : null,
     request.sceneId ? `Scene: ${request.sceneId}` : null,
     '',
-    snippets.length ? 'Relevant Memory:' : null,
-    ...snippets.map((snippet) => `- ${snippet}`),
+    composed,
     warnings.length ? '\nMemory Warnings:' : null,
     ...warnings.map((warning) => `- ${warning}`),
   ].filter((line) => line != null) as string[];
@@ -827,6 +848,55 @@ export class PipelineMemory {
     return this.provider;
   }
 
+  private recallRouterDeps(): MemoryRecallRouterDeps | null {
+    const recallDeps = this.deps.getRecallDeps?.();
+    if (!recallDeps) return null;
+    return {
+      provider: this.getProvider(),
+      artifactMemory: recallDeps.artifactMemory,
+      factMemory: recallDeps.factMemory,
+      loadArtifactFromDisk: recallDeps.loadArtifactFromDisk,
+      defaultDatasets: [this.defaults.projectDataset, this.defaults.validatorDataset],
+      validatorDataset: this.defaults.validatorDataset,
+      projectDataset: this.defaults.projectDataset,
+    };
+  }
+
+  private recordTelemetry(
+    operation: 'recall' | 'write' | 'cognify' | 'corroborate' | 'breaker_open',
+    phase: string,
+    details: Partial<{
+      agentRole: AgentMemoryRole;
+      validator: string;
+      recallMode: string;
+      datasets: string[];
+      nodeNames: string[];
+      queryCount: number;
+      resultCount: number;
+      emptyContext: boolean;
+      latencyMs: number;
+      error: string;
+    }> = {},
+  ): void {
+    if (!memoryTelemetryEnabled()) return;
+    const provider = this.getProvider().name as MemoryTelemetryProvider;
+    memoryTelemetry.record({
+      phase,
+      operation,
+      provider,
+      agentRole: details.agentRole,
+      validator: details.validator,
+      recallMode: details.recallMode,
+      datasets: details.datasets || [],
+      nodeNames: details.nodeNames || [],
+      queryCount: details.queryCount || 0,
+      resultCount: details.resultCount || 0,
+      emptyContext: details.emptyContext === true,
+      latencyMs: details.latencyMs || 0,
+      error: details.error,
+    });
+  }
+
   private async bestEffort<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
     if (this.breakerOpen) return fallback;
     try {
@@ -839,6 +909,7 @@ export class PipelineMemory {
         if (this.breakerOpen) return fallback; // concurrent failure raced past the open breaker; already logged
         if (this.consecutiveFailures >= BREAKER_THRESHOLD) {
           this.breakerOpen = true;
+          this.recordTelemetry('breaker_open', label, { error: err instanceof Error ? err.message : String(err) });
           console.warn(`[Pipeline] Memory: disabled for the rest of this run after ${this.consecutiveFailures} consecutive failures (last: ${label}):`, err);
         } else {
           console.warn(`[Pipeline] Memory: ${label} failed:`, err);
@@ -879,16 +950,47 @@ export class PipelineMemory {
   async writeRecord(record: PipelineMemoryRecord): Promise<void> {
     const config = this.config;
     if (!config?.enabled || config.writeEnabled === false) return;
-    await this.bestEffort('write record', () => this.getProvider().remember(record), undefined);
+    const started = Date.now();
+    await this.bestEffort('write record', async () => {
+      await this.getProvider().remember(record);
+      this.recordTelemetry('write', record.kind, {
+        datasets: record.dataset ? [record.dataset] : [],
+        nodeNames: record.nodeSet,
+        queryCount: 1,
+        resultCount: 1,
+        latencyMs: Date.now() - started,
+      });
+    }, undefined);
   }
 
   async recallPacket(request: PipelineMemoryRecallRequest = {}): Promise<PipelineMemoryPacket | null> {
     const config = this.config;
     if (!config?.enabled || config.recallEnabled === false) return null;
-    return this.bestEffort('recall', () => this.getProvider().recall({
-      maxPromptChars: this.defaults.maxPromptChars,
-      ...request,
-    }), null);
+    const started = Date.now();
+    const recallMode = request.recallMode || 'artifact-projection';
+    const result = await this.bestEffort('recall', async () => {
+      const routerDeps = this.recallRouterDeps();
+      if (recallRouterEnabled() && routerDeps) {
+        return executeRecall({
+          maxPromptChars: this.defaults.maxPromptChars,
+          ...request,
+        }, routerDeps);
+      }
+      return this.getProvider().recall({
+        maxPromptChars: this.defaults.maxPromptChars,
+        ...request,
+      });
+    }, null);
+    this.recordTelemetry('recall', 'recallPacket', {
+      recallMode,
+      datasets: result?.datasetNames || request.datasets || [],
+      nodeNames: request.nodeNames,
+      queryCount: result?.queryLog.length || (request.queries?.length || 1),
+      resultCount: result?.sourceSnippets.length || 0,
+      emptyContext: !result || result.sourceSnippets.length === 0,
+      latencyMs: Date.now() - started,
+    });
+    return result;
   }
 
   async recallForAgent(request: AgentMemoryRequest): Promise<AgentMemoryContext> {
@@ -896,6 +998,7 @@ export class PipelineMemory {
     const datasets = this.agentDatasets(request);
     const nodeNames = agentNodeNames(request);
     const plannedQueries = planAgentMemoryQueries(request);
+    const roleDefaults = roleRecallDefaults[request.agentRole];
     const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
       queries: [plan.query],
       datasets,
@@ -907,7 +1010,8 @@ export class PipelineMemory {
       artifactIds: request.artifactIds,
       factKinds: plan.factKinds,
       factIds: request.factIds,
-      recallMode: request.recallMode || 'facts-first',
+      recallMode: request.recallMode || roleDefaults?.recallMode || 'facts-first',
+      searchType: roleDefaults?.searchType,
       topK: request.topK || plan.topK || DEFAULT_TOP_K,
       maxPromptChars,
     })));
@@ -930,6 +1034,15 @@ export class PipelineMemory {
     const datasets = this.validatorDatasets(request);
     const nodeNames = validatorNodeNames(request);
     const plannedQueries = planValidatorMemoryQueries(request);
+    const recallMode = request.recallMode || (
+      request.evidenceMode === 'artifact-required'
+        ? 'exact-artifact-pointer'
+        : request.evidenceMode === 'corroborated-evidence'
+          ? 'facts-first'
+          : request.evidenceMode === 'advisory-memory'
+            ? 'validator-history'
+            : 'facts-first'
+    );
     const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
       queries: [plan.query],
       datasets,
@@ -941,34 +1054,68 @@ export class PipelineMemory {
       artifactIds: request.artifactIds,
       factKinds: plan.factKinds,
       factIds: request.factIds,
-      recallMode: request.recallMode || 'facts-first',
+      recallMode,
       topK: request.topK || plan.topK || DEFAULT_TOP_K,
       maxPromptChars: request.maxPromptChars || this.defaults.maxPromptChars,
     })));
     const retrievals = packets.filter((packet): packet is PipelineMemoryPacket => Boolean(packet));
+    const recallDeps = this.deps.getRecallDeps?.();
+    const candidateFacts = recallDeps?.factMemory?.queryLiveFacts({
+      storyId: request.storyId,
+      episodeNumber: request.episodeNumber,
+      factKinds: request.factKinds,
+      factIds: request.factIds,
+      artifactIds: request.artifactIds,
+      limit: request.topK || 12,
+    }) || [];
     const snippets = uniqueStrings(retrievals.flatMap((packet) => packet.sourceSnippets)).map(summarizeValidatorSnippet);
-    const priorFailures = snippets.filter((snippet) => /\b(fail(?:ed|ure)?|blocking|regression|error|repair)\b/i.test(snippet));
-    const relatedFindings = snippets.filter((snippet) => /\b(finding|validator|warning|issue|gate)\b/i.test(snippet));
+    const corroboration = recallDeps?.artifactMemory
+      ? corroborateFacts(snippets, candidateFacts, recallDeps.artifactMemory)
+      : {
+        validatedFacts: [],
+        candidateFacts,
+        rejectedFacts: [],
+        corroboratedSnippets: snippets,
+        facts: [],
+        confidence: snippets.length ? 0.35 : 0,
+      };
+    this.recordTelemetry('corroborate', request.lifecycle, {
+      validator: request.validator,
+      recallMode,
+      resultCount: corroboration.validatedFacts.length + corroboration.candidateFacts.length,
+      emptyContext: corroboration.corroboratedSnippets.length === 0,
+      latencyMs: 0,
+    });
+    const priorFailures = corroboration.corroboratedSnippets.filter((snippet) => /\b(fail(?:ed|ure)?|blocking|regression|error|repair)\b/i.test(snippet));
+    const relatedFindings = corroboration.corroboratedSnippets.filter((snippet) => /\b(finding|validator|warning|issue|gate)\b/i.test(snippet));
     const retrievalWarnings = uniqueStrings([
       ...retrievals.flatMap((packet) => packet.warnings),
       request.evidenceMode === 'corroborated-evidence' || request.evidenceMode === 'artifact-required'
         ? 'Cognee evidence must be corroborated against current typed artifacts before deterministic use.'
         : 'Cognee snippets are advisory memory only and do not change validator pass/fail decisions.',
-      retrievals.length === 0 ? 'Memory evidence unavailable; validator must use current artifacts only.' : undefined,
+      corroboration.candidateFacts.length
+        ? `${corroboration.candidateFacts.length} candidate fact(s) lacked live artifact corroboration.`
+        : undefined,
+      request.evidenceMode === 'artifact-required' && corroboration.validatedFacts.length === 0
+        ? 'Artifact-required evidence mode found no corroborated facts; validator must use current artifacts only.'
+        : undefined,
+      retrievals.length === 0 && candidateFacts.length === 0
+        ? 'Memory evidence unavailable; validator must use current artifacts only.'
+        : undefined,
     ]);
     return {
       validator: request.validator,
       lifecycle: request.lifecycle,
       artifactIds: request.artifactIds || [],
-      facts: [],
+      facts: corroboration.facts,
       priorFailures,
       relatedFindings,
-      sourceSnippets: snippets,
-      confidence: snippets.length ? 0.35 : 0,
+      sourceSnippets: corroboration.corroboratedSnippets.map(summarizeValidatorSnippet),
+      confidence: corroboration.confidence,
       provenance: retrievals.flatMap((packet) => packetProvenance(packet, nodeNames)),
       retrievalWarnings,
-      validatedFacts: [],
-      candidateFacts: [],
+      validatedFacts: corroboration.validatedFacts,
+      candidateFacts: corroboration.candidateFacts,
       artifactPointers: (request.artifactIds || []).map((artifactId) => ({
         artifactId,
         artifactKind: request.artifactKinds?.[0] || 'story-json',
@@ -1088,9 +1235,16 @@ export class PipelineMemory {
     if (!config?.enabled || config.cognifyEnabled === false) return;
     const uniqueDatasets = uniqueStrings(datasets);
     if (!uniqueDatasets.length) return;
+    const started = Date.now();
     await this.bestEffort('cognify datasets', async () => {
       const provider = this.getProvider();
       if (provider.cognify) await provider.cognify(uniqueDatasets, options);
+      this.recordTelemetry('cognify', 'cognifyDatasets', {
+        datasets: uniqueDatasets,
+        queryCount: uniqueDatasets.length,
+        resultCount: uniqueDatasets.length,
+        latencyMs: Date.now() - started,
+      });
     }, undefined);
   }
 

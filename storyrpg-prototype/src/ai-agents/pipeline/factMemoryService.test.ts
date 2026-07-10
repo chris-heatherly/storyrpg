@@ -33,6 +33,9 @@ describe('FactMemoryService', () => {
     const facts = await factMemory.writeFactsForArtifact(envelope);
     await factMemory.flush();
 
+    const liveFacts = factMemory.queryLiveFacts({ factKinds: ['scene-canon'], storyId: 'Bite Me' });
+    expect(liveFacts.length).toBeGreaterThan(0);
+
     expect(facts.map((fact) => fact.factKind)).toEqual(expect.arrayContaining([
       'scene-canon',
       'residue-obligation',

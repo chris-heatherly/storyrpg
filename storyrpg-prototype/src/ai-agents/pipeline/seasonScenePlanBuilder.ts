@@ -73,7 +73,12 @@ import {
   compareEncounterEventSignatures,
 } from '../utils/encounterEventSignature';
 import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfile';
-import { attachSceneEventOwnershipProfiles, eventOrder, stripRegressiveAuthoredBeats } from '../utils/sceneEventOwnership';
+import {
+  attachSceneEventOwnershipProfiles,
+  eventOrder,
+  repairCausalCueOwnershipOrder,
+  stripRegressiveAuthoredBeats,
+} from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
@@ -533,6 +538,17 @@ function slugId(value: string): string {
     .slice(0, 48) || 'relationship';
 }
 
+/** Canonical `char-*` id for pacing contracts (matches ChoiceAuthor / ledger). */
+function canonicalPacingNpcId(npcId: string): string {
+  const slug = slugId(npcId.replace(/^char-/i, ''));
+  return `char-${slug || 'unknown'}`;
+}
+
+function pacingNpcKey(npcId: string | undefined): string | undefined {
+  if (!npcId) return undefined;
+  return slugId(npcId.replace(/^char-/i, '')) || undefined;
+}
+
 function relationshipTextForScene(scene: PlannedScene): string {
   return [
     scene.title,
@@ -635,7 +651,8 @@ function buildNpcPacingContract(
   text: string,
   priorBondNpcKeys?: Set<string>,
 ): RelationshipPacingContract {
-  const priorBond = hasPriorBond(npcId, priorBondNpcKeys);
+  const canonicalNpcId = canonicalPacingNpcId(npcId);
+  const priorBond = hasPriorBond(npcId, priorBondNpcKeys) || hasPriorBond(canonicalNpcId, priorBondNpcKeys);
   const maxStage = sceneCanEarnRelationshipAdvancement(scene)
     ? 'intimate'
     : maxRelationshipStageWithoutChoice(priorScenes);
@@ -649,9 +666,9 @@ function buildNpcPacingContract(
     : positionalTarget;
   const early = !priorBond && priorScenes <= 1 && targetStage !== 'friend';
   return {
-    id: `${scene.id}-rel-${slugId(npcId)}`,
+    id: `${scene.id}-rel-${slugId(canonicalNpcId)}`,
     source: relationshipSourceForScene(scene),
-    npcId,
+    npcId: canonicalNpcId,
     startStage,
     targetStage,
     allowedLabels: priorBond
@@ -744,8 +761,15 @@ function applyRelationshipPacingContracts(
     }
 
     const contracts = [...(scene.relationshipPacing ?? [])];
+    for (const contract of contracts) {
+      if (contract.npcId) contract.npcId = canonicalPacingNpcId(contract.npcId);
+    }
     const npcs = (scene.npcsInvolved ?? [])
-      .filter((npc) => npc && !isProtagonistRelationshipRef(npc, protagonistKeys) && !contracts.some((c) => c.npcId === npc))
+      .filter((npc) => {
+        if (!npc || isProtagonistRelationshipRef(npc, protagonistKeys)) return false;
+        const key = pacingNpcKey(npc);
+        return !contracts.some((c) => pacingNpcKey(c.npcId) === key);
+      })
       .slice(0, 3);
     for (const npc of npcs) {
       contracts.push(buildNpcPacingContract(scene, npc, npcSeen.get(npc) ?? 0, text, priorBondNpcKeys));
@@ -2563,6 +2587,9 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   normalizeRelationshipPacingStages(scenes);
   attachSceneConstructionProfiles(scenes);
   attachSceneEventOwnershipProfiles(scenes);
+  for (const ep of episodes) {
+    repairCausalCueOwnershipOrder(scenes, { episodeNumber: ep.episodeNumber });
+  }
 
   const spineValidator = new EpisodeSpineContractValidator();
   for (const ep of episodes) {

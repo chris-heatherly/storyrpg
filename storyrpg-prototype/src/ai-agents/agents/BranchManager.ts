@@ -63,6 +63,9 @@ export interface BranchManagerInput {
    * skeleton only). Set true to force annotation for debug.
    */
   skipLlmAnnotation?: boolean;
+
+  /** Advisory pipeline memory from prior runs and current indexed facts. */
+  memoryContext?: string;
 }
 
 // Output types
@@ -356,7 +359,10 @@ deterministically from the scene graph — treat it as fixed and authoritative.
 - **Genre**: ${input.storyContext.genre}
 - **Tone**: ${input.storyContext.tone}
 
-${structuralContext}
+${structuralContext}${input.memoryContext ? `
+## Pipeline Memory (Insights from Prior Generations)
+${input.memoryContext}
+` : ''}
 ## Episode
 - **ID**: ${input.episodeId}
 - **Title**: ${input.episodeTitle}

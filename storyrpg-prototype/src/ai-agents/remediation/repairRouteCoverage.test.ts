@@ -522,6 +522,17 @@ const FINAL_GATE_ROUTES: Record<string, RoutedGateCase[]> = {
       expected: 'same_scene_retry', // deterministic label handler + style rewrite
     },
     {
+      name: 'relationship delta above ledger cap (deterministic clamp)',
+      issue: {
+        validator: 'RelationshipArcLedgerValidator',
+        severity: 'error',
+        message: 'Scene "s1-3" changes char-mika-dragan.trust by 10, above the ledger cap 8 without major evidence.',
+        sceneId: 's1-3',
+        episodeNumber: 1,
+      },
+      expected: 'same_scene_retry',
+    },
+    {
       name: 'relationship stage reached without a player relationship choice (choice-architecture class)',
       issue: {
         validator: 'RelationshipArcLedgerValidator',

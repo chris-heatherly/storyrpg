@@ -1402,6 +1402,79 @@ describe('planned scene obligation binder', () => {
     expect(rescue?.requiredBeats?.map((beat) => beat.id) ?? []).not.toContain(publicAftermathBeat.id);
   });
 
+  it('anchors synthetic blog aftermath after a later writing scene instead of threat alone', () => {
+    const result = rebindPlannedSceneObligations([
+      scene({
+        id: 'treatment-enc-1-1',
+        order: 1,
+        kind: 'encounter',
+        title: 'Cismigiu attack',
+        dramaticPurpose: 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger.',
+        locations: ['Cismigiu Gardens'],
+        encounter: {
+          type: 'combat',
+          sourceSynopsis: 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger.',
+          authoredAnchor: 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger.',
+          difficulty: 'moderate',
+          relevantSkills: [],
+          centralConflict: 'Attack and rescue in the park.',
+          isBranchPoint: false,
+        },
+      }),
+      scene({
+        id: 's1-blog-aftermath',
+        order: 2,
+        title: 'The post becomes public pressure',
+        dramaticPurpose: 'The post becomes visible public pressure as strangers react online.',
+        locations: ['Online'],
+        narrativeRole: 'payoff',
+        planningOrigin: {
+          kind: 'binder_split',
+          splitKind: 'viral_aftermath',
+          parentSceneId: 'treatment-enc-1-1',
+          reason: 'Synthetic viral aftermath helper placed after threat.',
+        },
+        turnContract: {
+          turnId: 's1-blog-aftermath-turn',
+          source: 'treatment',
+          centralTurn: 'The post becomes visible public pressure.',
+          beforeState: 'Private testimony.',
+          turnEvent: 'The readership number climbs until the post becomes a public signal.',
+          afterState: 'Public attention attaches danger to the story.',
+          handoff: 'Let the public attention become pressure without restaging the writing moment.',
+        },
+        requiredBeats: [{
+          id: 'blog-metric',
+          sourceTurn: 'By evening the Dating After Dusk post has gone viral with tens of thousands of reads.',
+          mustDepict: 'By evening the Dating After Dusk post has gone viral with tens of thousands of reads.',
+          tier: 'authored',
+        }],
+      }),
+      scene({
+        id: 's1-7',
+        order: 3,
+        title: 'Late-night writing',
+        dramaticPurpose: 'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight',
+        locations: ['Apartment'],
+        turnContract: {
+          turnId: 's1-7-turn',
+          source: 'treatment',
+          centralTurn: 'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight',
+          beforeState: 'The night is still private.',
+          turnEvent: 'At 4am she turns the night into the first Dating After Dusk post under the codename Mr. Midnight',
+          afterState: 'The post exists.',
+          handoff: 'Hand public attention forward.',
+        },
+      }),
+    ], { episodeNumber: 1 });
+
+    const writingIndex = result.scenes.findIndex((item) => item.id === 's1-7');
+    const aftermathIndex = result.scenes.findIndex((item) => item.id === 's1-blog-aftermath');
+    expect(writingIndex).toBeGreaterThanOrEqual(0);
+    expect(aftermathIndex).toBeGreaterThan(writingIndex);
+    expect(result.scenes[writingIndex].order).toBeLessThan(result.scenes[aftermathIndex].order);
+  });
+
   it('relieves unsafe rooftop overload by moving Valcescu, blog metric, and abstract season pressure obligations', () => {
     const valcescuChoice = contract(
       'valcescu-choice',

@@ -120,6 +120,7 @@ import {
 import { applySceneConstructionProfilesToScenes } from '../utils/sceneConstructionProfile';
 import {
   attachSceneEventOwnershipProfiles,
+  repairCausalCueOwnershipOrder,
 } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
@@ -6837,7 +6838,18 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         scene.recommendedBeatCount = Math.max(scene.recommendedBeatCount ?? 0, budget.recommended);
       }
     }
+    const causalRepairDiagnostics = repairCausalCueOwnershipOrder(blueprint.scenes, { episodeNumber: input.episodeNumber });
+    // Causal reorder may rewrite sequential leadsTo after the earlier
+    // repairSceneTransitions pass; resync transitionOut before craft gates.
+    if (causalRepairDiagnostics.some((diagnostic) =>
+      /Reordered lateNightWriting|Inserted lateNightWriting/.test(diagnostic.message)
+    )) {
+      this.repairSceneTransitions(blueprint);
+    }
     const ownershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: input.episodeNumber })
+      .filter((diagnostic) => diagnostic.severity === 'error')
+      .map((diagnostic) => diagnostic.message);
+    const causalRepairErrors = causalRepairDiagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
     const preflight = new SceneOwnershipPreflightValidator().validate({
@@ -6848,7 +6860,7 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     const preflightIssues = preflight.issues
       .filter((issue) => issue.severity === 'error')
       .map((issue) => issue.message);
-    const allIssues = [...issues, ...ownershipIssues, ...preflightIssues];
+    const allIssues = [...issues, ...ownershipIssues, ...causalRepairErrors, ...preflightIssues];
     blueprint.sceneOwnershipStamp = {
       version: EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION,
       finalizedAt: new Date().toISOString(),

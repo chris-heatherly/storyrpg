@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Assembly, assertNoAuthorOnlyEncounterFields, type AssemblyDeps } from './assembly';
+import { Assembly, assertNoAuthorOnlyEncounterFields, resolveSceneRelationshipPacing, type AssemblyDeps } from './assembly';
 import type { PipelineEvent } from './events';
 
 /**
@@ -51,6 +51,48 @@ describe('encounter provenance assembly boundary', () => {
     expect(() => assertNoAuthorOnlyEncounterFields({
       description: 'You are trapped between the gate and the shadow.',
     }, 'scene-1')).not.toThrow();
+  });
+});
+
+describe('resolveSceneRelationshipPacing', () => {
+  const plannedContract = {
+    id: 's1-3-rel-mika',
+    source: 'planner' as const,
+    npcId: 'char-mika-dragan',
+    startStage: 'acquaintance' as const,
+    targetStage: 'acquaintance' as const,
+    allowedLabels: ['guarded warmth'],
+    blockedLabels: ['friend'],
+    requiredEvidence: [],
+    minScenesSinceIntroduction: 0,
+    maxDeltaThisScene: 8,
+    mechanicDimensions: ['trust', 'respect'] as Array<'trust' | 'respect'>,
+  };
+
+  it('reattaches season-plan pacing when the assembled scene lost its contracts', () => {
+    const brief = {
+      seasonPlan: {
+        scenePlan: {
+          scenes: [{ id: 's1-3', relationshipPacing: [plannedContract] }],
+        },
+      },
+    } as any;
+
+    expect(resolveSceneRelationshipPacing('s1-3', [], brief)).toEqual([plannedContract]);
+    expect(resolveSceneRelationshipPacing('s1-3', undefined, brief)).toEqual([plannedContract]);
+  });
+
+  it('prefers scene pacing over season plan when both are present', () => {
+    const existing = [{ ...plannedContract, maxDeltaThisScene: 6 }];
+    const brief = {
+      seasonPlan: {
+        scenePlan: {
+          scenes: [{ id: 's1-3', relationshipPacing: [plannedContract] }],
+        },
+      },
+    } as any;
+
+    expect(resolveSceneRelationshipPacing('s1-3', existing, brief)).toEqual(existing);
   });
 });
 
